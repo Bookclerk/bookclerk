@@ -157,13 +157,17 @@ fn a_lost_broker_reports_every_open_socket_as_abnormally_closed() {
     let recorder = Arc::new(Recorder::default());
     let sink: Arc<dyn SocketSink> = recorder.clone();
     broker.set_sink(Arc::downgrade(&sink));
-    broker
-        .inner
-        .open()
-        .insert("s1".into(), b"cursor-1".to_vec());
-    broker.inner.open().insert("s2".into(), Vec::new());
+    let info = |socket: &str, attachment: &[u8]| SocketInfo {
+        socket: socket.into(),
+        attachment: attachment.to_vec(),
+        ..SocketInfo::default()
+    };
+    broker.inner.record_open(1, &info("s1", b"cursor-1"));
+    broker.inner.record_open(1, &info("s2", b""));
+    // A replacement broker's socket is not the lost broker's to report.
+    broker.inner.record_open(2, &info("s3", b"other"));
 
-    report_lost(&Arc::downgrade(&broker.inner));
+    report_lost(&Arc::downgrade(&broker.inner), 1);
 
     assert_eq!(
         *recorder.seen.lock().expect("seen"),
@@ -172,9 +176,13 @@ fn a_lost_broker_reports_every_open_socket_as_abnormally_closed() {
             "closed s2 1006 false ".to_string(),
         ]
     );
-    assert!(broker.open_sockets().is_empty(), "the mirror is cleared");
+    assert_eq!(
+        broker.open_sockets(),
+        vec!["s3".to_string()],
+        "only the lost broker's sockets are cleared"
+    );
     // Nothing left to report: a second loss delivers nothing.
-    report_lost(&Arc::downgrade(&broker.inner));
+    report_lost(&Arc::downgrade(&broker.inner), 1);
     assert_eq!(recorder.seen.lock().expect("seen").len(), 2);
 }
 
@@ -184,7 +192,7 @@ fn a_lost_broker_with_no_handle_left_reports_nothing() {
     let broker = idle_broker(files.path());
     let weak = Arc::downgrade(&broker.inner);
     drop(broker);
-    report_lost(&weak);
+    report_lost(&weak, 1);
 }
 
 #[test]
@@ -197,8 +205,14 @@ fn a_refused_loss_report_is_logged_not_retried() {
     });
     let sink: Arc<dyn SocketSink> = recorder.clone();
     broker.set_sink(Arc::downgrade(&sink));
-    broker.inner.open().insert("s1".into(), Vec::new());
-    report_lost(&Arc::downgrade(&broker.inner));
+    broker.inner.record_open(
+        1,
+        &SocketInfo {
+            socket: "s1".into(),
+            ..SocketInfo::default()
+        },
+    );
+    report_lost(&Arc::downgrade(&broker.inner), 1);
     assert_eq!(recorder.seen.lock().expect("seen").len(), 1);
     assert!(broker.open_sockets().is_empty());
 }
@@ -235,17 +249,51 @@ fn a_close_that_beats_its_connect_answer_does_not_leave_the_socket_open() {
         ..SocketInfo::default()
     };
     // In order: open, then closed.
-    broker.inner.record_open(&info("s1"));
+    broker.inner.record_open(1, &info("s1"));
     assert_eq!(broker.open_sockets(), vec!["s1".to_string()]);
-    assert!(broker.inner.record_closed("s1"), "nothing left open");
+    assert!(broker.inner.holds(1));
+    assert!(broker.inner.record_closed(1, "s1"), "nothing left open");
     // Out of order: the close lands before the connect answer.
-    assert!(broker.inner.record_closed("s2"));
-    broker.inner.record_open(&info("s2"));
+    assert!(broker.inner.record_closed(1, "s2"));
+    broker.inner.record_open(1, &info("s2"));
     assert!(
         broker.open_sockets().is_empty(),
         "the late answer is dropped"
     );
     // The early close was used up; a later socket with that id is kept.
-    broker.inner.record_open(&info("s2"));
+    broker.inner.record_open(1, &info("s2"));
     assert_eq!(broker.open_sockets(), vec!["s2".to_string()]);
+    // A newer broker reusing an id is not closed by the older one.
+    broker.inner.record_open(2, &info("s2"));
+    broker.inner.record_closed(1, "s2");
+    assert!(broker.inner.holds(2), "the newer broker keeps its socket");
+    // A broker that ends forgets its early closes.
+    assert!(broker.inner.record_closed(3, "s4"));
+    assert!(broker.inner.take_generation(3).is_empty());
+    broker.inner.record_open(3, &info("s4"));
+    assert!(broker.inner.holds(3));
+}
+
+#[tokio::test]
+async fn an_event_waits_for_the_sink_the_deployment_installs() {
+    let files = tempfile::tempdir().expect("files");
+    let broker = idle_broker(files.path());
+    let recorder = Arc::new(Recorder::default());
+    let sink: Arc<dyn SocketSink> = recorder.clone();
+    let inner = Arc::clone(&broker.inner);
+    let delivery = tokio::spawn(async move {
+        deliver(
+            &inner,
+            SocketEvent::Message(SocketMessage {
+                socket: "s1".into(),
+                ..SocketMessage::default()
+            }),
+        )
+        .await;
+    });
+    tokio::task::yield_now().await;
+    assert!(recorder.seen.lock().expect("seen").is_empty());
+    broker.set_sink(Arc::downgrade(&sink));
+    delivery.await.expect("delivery");
+    assert_eq!(*recorder.seen.lock().expect("seen"), vec!["message s1"]);
 }

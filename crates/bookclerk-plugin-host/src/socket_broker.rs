@@ -24,8 +24,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::pin::Pin;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bookclerk_config::Config;
@@ -42,6 +44,14 @@ use crate::{DiscoveredPlugin, GuestRuntimeKind, SpawnPlan, SpawnTransport};
 
 /// Close code reported for sockets lost when the broker process dies.
 const CLOSE_ABNORMAL: u16 = 1006;
+
+/// How long an event waits for the deployment to install its sink.
+///
+/// A guest can open a socket while it starts, before the deployment has
+/// the proxy that takes events; the broker's delivery queue holds later
+/// messages meanwhile, so nothing is dropped unless the deployment never
+/// finishes.
+const SINK_WAIT: Duration = Duration::from_secs(30);
 
 /// What a socket delivered: a message, or its close.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,52 +108,133 @@ struct Inner {
     /// The running broker, if any. Held across a connect so two connects
     /// do not start two brokers.
     link: tokio::sync::Mutex<Option<Link>>,
-    /// Open sockets and the attachment the host last saw for each, so the
-    /// host can report them closed if the broker dies.
-    open: Mutex<BTreeMap<String, Vec<u8>>>,
+    /// Open sockets, so the host can report them closed if their broker
+    /// dies.
+    open: Mutex<BTreeMap<String, Opened>>,
     /// Sockets whose close reached the host before their connect answer
-    /// did, so the late answer does not resurrect them in `open`. Lock
-    /// after `open`.
-    closed_early: Mutex<BTreeSet<String>>,
+    /// did, by broker generation, so the late answer does not resurrect
+    /// them in `open`. Lock after `open`.
+    closed_early: Mutex<BTreeSet<(u64, String)>>,
+    /// The last broker generation started; each broker process gets the
+    /// next one.
+    generation: AtomicU64,
+    /// Woken when the sink is installed.
+    sink_ready: tokio::sync::Notify,
+}
+
+/// One socket the host believes open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Opened {
+    /// The broker generation holding it; only that broker's loss reports
+    /// it.
+    generation: u64,
+    /// The attachment the host last saw.
+    attachment: Vec<u8>,
 }
 
 impl Inner {
     /// Locks the open-socket mirror; a poisoned lock still holds a map.
-    fn open(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Vec<u8>>> {
+    fn open(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Opened>> {
         self.open
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Locks the set of sockets closed before their connect was recorded.
-    fn closed_early(&self) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
+    fn closed_early(&self) -> std::sync::MutexGuard<'_, BTreeSet<(u64, String)>> {
         self.closed_early
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Records a socket the broker opened, unless its close already came.
+    /// Records a socket broker `generation` opened, unless its close
+    /// already came.
     ///
     /// Runs on the link thread as the connect answer arrives, so a caller
     /// that stops waiting still leaves the socket mirrored.
-    fn record_open(&self, info: &SocketInfo) {
+    fn record_open(&self, generation: u64, info: &SocketInfo) {
         let mut open = self.open();
-        if !self.closed_early().remove(&info.socket) {
-            open.insert(info.socket.clone(), info.attachment.clone());
+        if !self
+            .closed_early()
+            .remove(&(generation, info.socket.clone()))
+        {
+            let opened = Opened {
+                generation,
+                attachment: info.attachment.clone(),
+            };
+            open.insert(info.socket.clone(), opened);
         }
     }
 
-    /// Records a socket the broker closed.
+    /// Records a socket broker `generation` closed.
     ///
     /// # Returns
     ///
-    /// Whether no socket remains open.
-    fn record_closed(&self, socket: &str) -> bool {
+    /// Whether that broker holds no open socket any more.
+    fn record_closed(&self, generation: u64, socket: &str) -> bool {
         let mut open = self.open();
-        if open.remove(socket).is_none() {
-            self.closed_early().insert(socket.to_string());
+        match open.get(socket) {
+            Some(opened) if opened.generation == generation => {
+                open.remove(socket);
+            }
+            Some(_) => {}
+            None => {
+                self.closed_early().insert((generation, socket.to_string()));
+            }
         }
-        open.is_empty()
+        !open.values().any(|opened| opened.generation == generation)
+    }
+
+    /// Whether broker `generation` holds an open socket.
+    fn holds(&self, generation: u64) -> bool {
+        self.open()
+            .values()
+            .any(|opened| opened.generation == generation)
+    }
+
+    /// Forgets everything broker `generation` held.
+    ///
+    /// # Returns
+    ///
+    /// Its sockets that were still open, with their attachments.
+    fn take_generation(&self, generation: u64) -> Vec<(String, Vec<u8>)> {
+        let mut open = self.open();
+        self.closed_early()
+            .retain(|(owner, _)| *owner != generation);
+        let lost: Vec<String> = open
+            .iter()
+            .filter(|(_, opened)| opened.generation == generation)
+            .map(|(socket, _)| socket.clone())
+            .collect();
+        lost.into_iter()
+            .filter_map(|socket| {
+                let opened = open.remove(&socket)?;
+                Some((socket, opened.attachment))
+            })
+            .collect()
+    }
+
+    /// The sink, waiting up to [`SINK_WAIT`] for the deployment to install
+    /// one; `None` when none came or the guest proxy is gone.
+    async fn sink_when_ready(&self) -> Option<Arc<dyn SocketSink>> {
+        let installed = async {
+            loop {
+                let ready = self.sink_ready.notified();
+                tokio::pin!(ready);
+                ready.as_mut().enable();
+                if self.sink.get().is_some() {
+                    return;
+                }
+                ready.await;
+            }
+        };
+        if tokio::time::timeout(SINK_WAIT, installed).await.is_err() {
+            tracing::warn!(
+                plugin = %self.plugin.manifest.id,
+                "no guest took socket events in time"
+            );
+        }
+        self.sink()
     }
 
     /// The sink, while the instance's guest proxy is alive.
@@ -187,6 +278,8 @@ impl SocketBroker {
                 link: tokio::sync::Mutex::new(None),
                 open: Mutex::new(BTreeMap::new()),
                 closed_early: Mutex::new(BTreeSet::new()),
+                generation: AtomicU64::new(0),
+                sink_ready: tokio::sync::Notify::new(),
             }),
         }
     }
@@ -197,6 +290,7 @@ impl SocketBroker {
     /// instance's proxy alive.
     pub fn set_sink(&self, sink: Weak<dyn SocketSink>) {
         let _ = self.inner.sink.set(sink);
+        self.inner.sink_ready.notify_waiters();
     }
 
     /// Ids of the sockets the host believes open, oldest id first.
@@ -287,8 +381,8 @@ impl SocketBroker {
             .await
             .unwrap_or(Err(missing));
         if outcome.is_ok() {
-            if let Some(slot) = self.inner.open().get_mut(&id) {
-                *slot = kept;
+            if let Some(opened) = self.inner.open().get_mut(&id) {
+                opened.attachment = kept;
             }
         }
         outcome
@@ -371,18 +465,72 @@ async fn start(inner: &Arc<Inner>) -> AbiResult<Link> {
         crate::rpc_session::abandon_spawned(spawned);
         return Err(AbiError::forbidden(err.to_string()));
     }
-    // A fresh broker numbers its sockets afresh; an early close recorded
-    // against the last one must not swallow a new socket's id.
-    inner.closed_early().clear();
+    // Like a guest session, the broker joins the authority table, so a
+    // grant change fences it: its process stops and its sockets are
+    // reported lost. A change that landed during the spawn fences it here.
+    let identity =
+        crate::ExecutorIdentity::from_plugin_with_runtime(&inner.plugin, "", plan.runtime)
+            .with_overlay_config(&inner.config)
+            .with_persisted_and_effective(&spawned.persisted_grant, &spawned.grant);
+    if identity.grant_revision.is_empty() {
+        crate::rpc_session::abandon_spawned(spawned);
+        return Err(AbiError::unavailable(
+            "the socket broker spawn is missing an authority revision",
+        ));
+    }
+    let fenced = Arc::new(tokio::sync::Notify::new());
+    let fence = {
+        let _epoch = crate::authority::lock_grant_epoch();
+        if let Err(err) = crate::rpc_session::grant_still_current(
+            &spawned.files_dir,
+            &inner.plugin,
+            &inner.config,
+            &identity,
+            inner.deployed_endpoint.as_ref().map(|e| e.as_deref()),
+        ) {
+            spawned.cancel.store(true, Ordering::SeqCst);
+            crate::rpc_session::abandon_spawned(spawned);
+            return Err(AbiError::forbidden(err.to_string()));
+        }
+        let hook = Arc::clone(&fenced);
+        crate::authority::register_session_revisions_on_with_deployed_endpoint(
+            inner.plugin.plugin_key().canonical(),
+            &identity.grant_revision,
+            &identity.authority_revision,
+            Arc::new(move || hook.notify_one()),
+            Arc::clone(&spawned.cancel),
+            inner.deployed_endpoint.clone(),
+        )
+    };
+    let generation = inner.generation.fetch_add(1, Ordering::SeqCst) + 1;
     let (tx, rx) = mpsc::unbounded_channel();
-    let weak = Arc::downgrade(inner);
+    let link = LinkRun {
+        generation,
+        inner: Arc::downgrade(inner),
+        fence,
+        fenced,
+    };
     let name = format!("bc-sockets-{}", inner.plugin.manifest.id);
     let name: String = name.chars().take(15).collect();
     std::thread::Builder::new()
         .name(name)
-        .spawn(move || run_link(spawned, rx, weak))
+        .spawn(move || run_link(spawned, rx, link))
         .map_err(|err| AbiError::unavailable(format!("socket broker thread: {err}")))?;
     Ok(Link { tx })
+}
+
+/// What one broker's link thread runs with.
+struct LinkRun {
+    /// The broker's generation, tagging the sockets it opens.
+    generation: u64,
+    /// Shared broker state; weak so the link never keeps a dropped broker
+    /// alive.
+    inner: Weak<Inner>,
+    /// The broker's cancel flag in the authority table, unregistered when
+    /// the link ends.
+    fence: Arc<AtomicBool>,
+    /// Woken when a grant change fences the broker.
+    fenced: Arc<tokio::sync::Notify>,
 }
 
 /// The broker's stdio, shared by the link's reader and writer halves so
@@ -427,6 +575,8 @@ struct HostHandler {
     /// Shared broker state; weak so the link never keeps a dropped
     /// broker alive.
     inner: Weak<Inner>,
+    /// The broker's generation.
+    generation: u64,
     /// Set when the last open socket closed, so the link stops the broker.
     idle: Arc<tokio::sync::Notify>,
 }
@@ -437,8 +587,10 @@ impl SocketHandler for HostHandler {
         let Some(inner) = self.inner.upgrade() else {
             return Ok(());
         };
-        if let Some(slot) = inner.open().get_mut(&event.socket) {
-            slot.clone_from(&event.attachment);
+        if let Some(opened) = inner.open().get_mut(&event.socket) {
+            if opened.generation == self.generation {
+                opened.attachment.clone_from(&event.attachment);
+            }
         }
         deliver(&inner, SocketEvent::Message(event)).await;
         Ok(())
@@ -448,7 +600,7 @@ impl SocketHandler for HostHandler {
         let Some(inner) = self.inner.upgrade() else {
             return Ok(());
         };
-        let now_idle = inner.record_closed(&event.socket);
+        let now_idle = inner.record_closed(self.generation, &event.socket);
         deliver(&inner, SocketEvent::Closed(event)).await;
         if now_idle {
             self.idle.notify_one();
@@ -459,7 +611,7 @@ impl SocketHandler for HostHandler {
 
 /// Hands one event to the sink, logging a failure.
 async fn deliver(inner: &Inner, event: SocketEvent) {
-    let Some(sink) = inner.sink() else {
+    let Some(sink) = inner.sink_when_ready().await else {
         tracing::debug!(plugin = %inner.plugin.manifest.id, "socket event with no guest to take it");
         return;
     };
@@ -473,8 +625,14 @@ async fn deliver(inner: &Inner, event: SocketEvent) {
 }
 
 /// The broker link thread: serves commands until the broker idles, dies,
-/// or every handle is gone, then tears the process down.
-fn run_link(spawned: SpawnedStdio, mut rx: mpsc::UnboundedReceiver<Command>, inner: Weak<Inner>) {
+/// is fenced, or every handle is gone, then tears the process down.
+fn run_link(spawned: SpawnedStdio, mut rx: mpsc::UnboundedReceiver<Command>, link: LinkRun) {
+    let LinkRun {
+        generation,
+        inner,
+        fence,
+        fenced,
+    } = link;
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -482,7 +640,9 @@ fn run_link(spawned: SpawnedStdio, mut rx: mpsc::UnboundedReceiver<Command>, inn
         Ok(runtime) => runtime,
         Err(err) => {
             tracing::warn!(error = %err, "socket broker runtime");
+            crate::authority::unregister_session(&fence);
             crate::rpc_session::abandon_spawned(spawned);
+            report_lost(&inner, generation);
             return;
         }
     };
@@ -496,6 +656,7 @@ fn run_link(spawned: SpawnedStdio, mut rx: mpsc::UnboundedReceiver<Command>, inn
                 let idle = Arc::new(tokio::sync::Notify::new());
                 let handler: Arc<dyn SocketHandler> = Arc::new(HostHandler {
                     inner: inner.clone(),
+                    generation,
                     idle: Arc::clone(&idle),
                 });
                 let (sockets, rpc) =
@@ -507,17 +668,26 @@ fn run_link(spawned: SpawnedStdio, mut rx: mpsc::UnboundedReceiver<Command>, inn
                     tokio::select! {
                         command = rx.recv() => match command {
                             Some(command) => {
-                                tokio::task::spawn_local(serve(Rc::clone(&sockets), inner.clone(), command));
+                                tokio::task::spawn_local(serve(
+                                    Rc::clone(&sockets),
+                                    inner.clone(),
+                                    generation,
+                                    command,
+                                ));
                             }
                             None => break,
                         },
                         () = idle.notified() => {
                             let still_idle = inner
                                 .upgrade()
-                                .is_none_or(|inner| inner.open().is_empty());
+                                .is_none_or(|inner| !inner.holds(generation));
                             if still_idle {
                                 break;
                             }
+                        }
+                        () = fenced.notified() => {
+                            ended_by_broker = true;
+                            break;
                         }
                         _ = &mut rpc => {
                             ended_by_broker = true;
@@ -533,21 +703,26 @@ fn run_link(spawned: SpawnedStdio, mut rx: mpsc::UnboundedReceiver<Command>, inn
             .await
     });
     drop(runtime);
+    crate::authority::unregister_session(&fence);
     if let Ok(cell) = Rc::try_unwrap(held.0) {
         crate::rpc_session::abandon_spawned(cell.into_inner());
     }
     if lost {
-        report_lost(&after);
+        report_lost(&after, generation);
+    } else if let Some(inner) = after.upgrade() {
+        // An idle or dropped broker holds nothing; forget its early closes.
+        let _ = inner.take_generation(generation);
     }
 }
 
-/// Reports every socket the host still believed open as closed with 1006,
-/// after the broker process died under them.
-fn report_lost(inner: &Weak<Inner>) {
+/// Reports every socket broker `generation` held as closed with 1006,
+/// after the broker process died or was fenced under them. Sockets a
+/// replacement broker opened meanwhile are not touched.
+fn report_lost(inner: &Weak<Inner>, generation: u64) {
     let Some(inner) = inner.upgrade() else {
         return;
     };
-    let lost: Vec<(String, Vec<u8>)> = std::mem::take(&mut *inner.open()).into_iter().collect();
+    let lost = inner.take_generation(generation);
     if lost.is_empty() {
         return;
     }
@@ -576,13 +751,14 @@ fn report_lost(inner: &Weak<Inner>) {
 async fn serve(
     sockets: Rc<bookclerk_plugin_abi::SocketsClient>,
     inner: Weak<Inner>,
+    generation: u64,
     command: Command,
 ) {
     match command {
         Command::Connect(request, reply) => {
             let outcome = sockets.connect(request).await;
             if let (Ok(info), Some(inner)) = (&outcome, inner.upgrade()) {
-                inner.record_open(info);
+                inner.record_open(generation, info);
             }
             let _ = reply.send(outcome);
         }

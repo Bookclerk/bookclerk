@@ -644,10 +644,14 @@ tcp = ["abs.example.com:443"]
   `connect` and stops it once the last socket closed, so an instance
   with no socket runs nothing. The broker belongs to the deployment, not
   to the plugin process: a plugin that sleeps or restarts keeps its
-  sockets, and a message for a sleeping plugin starts it. If the broker
-  dies, each of its sockets is reported closed with 1006 and the
-  attachment the host last saw. Redeploying the instance starts a fresh
-  broker, and the old one's sockets close with it.
+  sockets, and a message for a sleeping plugin starts it. A message that
+  arrives while the instance is still starting waits for it rather than
+  being dropped. If the broker dies, each of its sockets is reported
+  closed with 1006 and the attachment the host last saw. A change to the
+  plugin's grant stops the broker the same way, like any other plugin
+  process; the next `connect` starts a broker under the new grant.
+  Redeploying the instance starts a fresh broker, and the old one's
+  sockets close with it.
 - **Delivery.** Messages for one socket reach the plugin in order, one
   at a time. Up to 32 may wait while the plugin starts; past that the
   broker stops reading the socket (heartbeats included) until the plugin

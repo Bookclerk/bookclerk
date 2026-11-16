@@ -18,8 +18,8 @@ use async_trait::async_trait;
 use bookclerk_config::{Config, Paths};
 use bookclerk_plugin_abi::{SocketConnectRequest, SocketFrame, Sockets as _};
 use bookclerk_plugin_host::{
-    consent_request, discover_plugins, BrokerSockets, DiscoveredPlugin, PluginGrantStore,
-    SocketBroker, SocketEvent, SocketSink,
+    consent_request, discover_plugins, fence_plugin_key, BrokerSockets, DiscoveredPlugin,
+    PluginGrantStore, SocketBroker, SocketEvent, SocketSink,
 };
 use futures::{SinkExt as _, StreamExt as _};
 use tokio::net::TcpListener;
@@ -165,15 +165,68 @@ async fn the_host_broker_holds_a_socket_and_stops_when_it_closes() {
     );
 
     // With no socket open the broker process stops; the next connect starts
-    // a fresh one, which a refused target does not keep open.
+    // a fresh one. A live server on a port the grant does not cover is
+    // refused by policy and never sees a connection.
+    let ungranted = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let ungranted_port = ungranted.local_addr().expect("addr").port();
     let refused = broker
         .connect(SocketConnectRequest {
-            url: format!("ws://127.0.0.1:{}/", port.wrapping_add(1).max(1)),
+            url: format!("ws://127.0.0.1:{ungranted_port}/"),
             ..SocketConnectRequest::default()
         })
-        .await;
-    assert!(refused.is_err(), "an ungranted port is refused");
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.code,
+        bookclerk_plugin_abi::PluginErrorCode::Forbidden,
+        "{refused:?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), ungranted.accept())
+            .await
+            .is_err(),
+        "the ungranted server saw no connection"
+    );
     assert!(broker.open_sockets().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_grant_change_stops_the_broker_and_reports_its_sockets_lost() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.expect("accept");
+        let mut socket = tokio_tungstenite::accept_async(tcp).await.expect("upgrade");
+        // Held open until the broker goes away.
+        while let Some(Ok(_)) = socket.next().await {}
+    });
+
+    let files = tempfile::tempdir().expect("files");
+    let (config, plugin) = install(files.path(), port, true);
+    let key = plugin.plugin_key().canonical().to_string();
+    let broker = SocketBroker::new(plugin, config, None);
+    let recorder = Arc::new(Recorder::default());
+    let sink: Arc<dyn SocketSink> = recorder.clone();
+    broker.set_sink(Arc::downgrade(&sink));
+    let info = broker
+        .connect(SocketConnectRequest {
+            url: format!("ws://127.0.0.1:{port}/"),
+            attachment: b"held".to_vec(),
+            ..SocketConnectRequest::default()
+        })
+        .await
+        .unwrap_or_else(|err| panic!("connect through the broker: {err}"));
+    assert_eq!(broker.open_sockets(), vec![info.socket.clone()]);
+
+    fence_plugin_key(&key);
+
+    recorder.wait_for(1).await;
+    assert_eq!(recorder.seen.lock().unwrap()[0], "closed 1006 held");
+    assert!(broker.open_sockets().is_empty());
+    tokio::time::timeout(Duration::from_secs(30), server)
+        .await
+        .expect("the server saw the broker go")
+        .expect("server");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

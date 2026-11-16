@@ -2835,7 +2835,7 @@ pub(crate) fn abandon_spawned(mut spawned: crate::spawn_stdio::SpawnedStdio) {
 }
 
 /// True when the grant file still matches the revision captured at spawn.
-fn grant_still_current(
+pub(crate) fn grant_still_current(
     files_dir: &std::path::Path,
     plugin: &DiscoveredPlugin,
     config: &Config,
