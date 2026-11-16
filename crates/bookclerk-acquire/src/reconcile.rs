@@ -279,7 +279,7 @@ pub(crate) fn title_update(
             }
         }
         None => {
-            let owner = title.acquired_by.is_none() || title.acquired_by == title.book_uuid;
+            let owner = title.acquired_by.is_none() || title.acquired_here();
             if title.status == AcquireStatus::Acquired && owner && !walk.already_matched(title) {
                 TitleUpdate::Cleared
             } else {
@@ -1286,7 +1286,7 @@ mod reconcile_integration {
             published_at: None,
             status: AcquireStatus::Acquired,
             storage_key: Some("a.m4b".into()),
-            acquired_by: Some("mine".into()),
+            acquired_by: Some("h".into()),
             pdf_status: AcquireStatus::NotAcquired,
             pdf_storage_key: None,
             pdf_acquired_by: None,
@@ -1303,6 +1303,7 @@ mod reconcile_integration {
         );
         assert_eq!(title_update(&title, &walk, None), TitleUpdate::Cleared);
         let sibling = AcquireTitle {
+            holding_id: "other".into(),
             book_uuid: Some("theirs".into()),
             ..title.clone()
         };

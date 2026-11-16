@@ -1577,11 +1577,11 @@ mod tests {
             status: status.as_str().into(),
             storage_key: None,
             error_message: None,
-            title_uuid: "t".into(),
+            holding_id: "t".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             pdf_status: AcquireStatus::NotAcquired.as_str().into(),
             pdf_storage_key: None,
-            pdf_title_uuid: None,
+            pdf_holding_id: None,
         }
     }
 

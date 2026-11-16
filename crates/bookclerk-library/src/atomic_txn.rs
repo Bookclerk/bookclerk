@@ -112,13 +112,13 @@ pub trait AtomicTxnBackend: Send + Sync {
 
     /// Update acquire status and, when acquired, publish `book_acquired` in the same transaction.
     ///
-    /// `edition_id` is the title's edition: its `edition_acquisitions` row
-    /// is written in the same batch (only the title that acquired an edition,
-    /// while it stays in the library, changes it).
+    /// `title` is the title's edition and account holding: the edition's
+    /// `edition_acquisitions` row is written in the same batch (only the
+    /// holding that acquired an edition, while it exists, changes it).
     async fn set_acquire_status(
         &self,
         book_uuid: &str,
-        edition_id: Option<&str>,
+        title: Option<&crate::TitleHolding>,
         status: crate::models::AcquireStatus,
         storage_key: Option<&str>,
         error_message: Option<&str>,

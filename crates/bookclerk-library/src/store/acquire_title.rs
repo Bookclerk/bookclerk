@@ -79,14 +79,15 @@ pub struct AcquireTitle {
     pub status: AcquireStatus,
     /// Primary destination key of the edition's audio once acquired.
     pub storage_key: Option<String>,
-    /// The library title (`books.uuid`) whose write set the edition's
-    /// audio state; `None` when no title of it was ever queued.
+    /// The account holding (`holdings.id`) whose title's write set the
+    /// edition's audio state; `None` when no title of it was ever queued.
     pub acquired_by: Option<String>,
     /// The edition's companion PDF state.
     pub pdf_status: AcquireStatus,
     /// Destination key of the companion PDF once acquired.
     pub pdf_storage_key: Option<String>,
-    /// The library title (`books.uuid`) whose write set the PDF state.
+    /// The account holding (`holdings.id`) whose title's write set the
+    /// PDF state.
     pub pdf_acquired_by: Option<String>,
     /// The flat `books` row of this account's title, while that table
     /// exists: the status writes are still keyed by it.
@@ -103,6 +104,20 @@ pub struct AcquireTitlePage {
 }
 
 impl AcquireTitle {
+    /// True when this title's holding set the edition's audio state: the
+    /// one whose writes change it once acquired.
+    #[must_use]
+    pub fn acquired_here(&self) -> bool {
+        self.acquired_by.as_deref() == Some(self.holding_id.as_str())
+    }
+
+    /// True when this title's holding set the edition's companion PDF
+    /// state.
+    #[must_use]
+    pub fn pdf_acquired_here(&self) -> bool {
+        self.pdf_acquired_by.as_deref() == Some(self.holding_id.as_str())
+    }
+
     /// Naming and display fallback: ASIN, else ISBN, else the store's
     /// product id (the same order as the flat row's).
     #[must_use]
@@ -414,10 +429,10 @@ impl TitleRows {
                 Some(row) => (
                     AcquireStatus::parse(&row.status).unwrap_or_default(),
                     row.storage_key.clone(),
-                    Some(row.title_uuid.clone()),
+                    Some(row.holding_id.clone()),
                     AcquireStatus::parse(&row.pdf_status).unwrap_or_default(),
                     row.pdf_storage_key.clone(),
-                    row.pdf_title_uuid.clone(),
+                    row.pdf_holding_id.clone(),
                 ),
                 None => (
                     AcquireStatus::NotAcquired,
@@ -593,8 +608,8 @@ mod tests {
             assert_eq!(view.storage_key, flat.storage_key);
             assert_eq!(view.pdf_status, flat.pdf_status);
             assert_eq!(view.pdf_storage_key, flat.pdf_storage_key);
-            assert_eq!(view.acquired_by.as_deref(), Some(flat.uuid.as_str()));
-            assert_eq!(view.pdf_acquired_by.as_deref(), Some(flat.uuid.as_str()));
+            assert!(view.acquired_here(), "{name}");
+            assert!(view.pdf_acquired_here(), "{name}");
 
             // Another account of the store that does not hold it, and an
             // unknown product, have no view.

@@ -140,7 +140,7 @@ pub async fn convert_book(
 /// another title acquired the edition.
 fn acquiring_title(title: &AcquireTitle) -> Result<&str> {
     match title.book_uuid.as_deref() {
-        Some(uuid) if title.acquired_by.as_deref() == Some(uuid) => Ok(uuid),
+        Some(uuid) if title.acquired_here() => Ok(uuid),
         _ => Err(AcquireError::Other(anyhow::anyhow!(
             "{}: another title acquired this edition; convert that title",
             title.product_id

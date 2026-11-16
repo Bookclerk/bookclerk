@@ -667,9 +667,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 else {
                     continue;
                 };
-                if title.status == AcquireStatus::Acquired
-                    && title.acquired_by.as_deref() == Some(book.uuid.as_str())
-                {
+                if title.status == AcquireStatus::Acquired && title.acquired_here() {
                     targets.push(title);
                 }
             }

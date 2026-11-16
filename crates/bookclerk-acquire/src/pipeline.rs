@@ -278,10 +278,7 @@ async fn acquire_book_recorded(
             // The edition was acquired by this title: its files are this
             // title's own. Another title's copy is checked before it is
             // shared ([`share_acquired_sibling`]).
-            if title.status == AcquireStatus::Acquired
-                && title.acquired_by.is_some()
-                && title.acquired_by == title.book_uuid
-            {
+            if title.status == AcquireStatus::Acquired && title.acquired_here() {
                 let primary_key = title.storage_key.clone().unwrap_or_default();
                 tracing::info!(
                     asin = %req.asin,
@@ -1817,7 +1814,7 @@ async fn stored_edition_pdf(
     else {
         return Ok(None);
     };
-    if title.pdf_acquired_by.is_some() && title.pdf_acquired_by == title.book_uuid {
+    if title.pdf_acquired_here() {
         return Ok(Some(key));
     }
     let Some(book_uuid) = title.book_uuid.as_deref() else {
@@ -2939,11 +2936,11 @@ pub async fn share_acquired_sibling(
         return Ok(None);
     };
     let edition = title.edition_id.clone();
-    // The edition records which title acquired it (`edition_acquisitions`).
+    // The edition records which holding acquired it (`edition_acquisitions`).
     let Some(acquisition) = library.edition_acquisition(&edition).await? else {
         return Ok(None);
     };
-    if acquisition.status != AcquireStatus::Acquired || acquisition.title_uuid == book_uuid {
+    if acquisition.status != AcquireStatus::Acquired || acquisition.holding_id == title.holding_id {
         return Ok(None);
     }
     let Some(key) = acquisition
@@ -3993,7 +3990,14 @@ mod tests {
             acquired.storage_key.as_deref(),
             Some(first.storage_key.as_str())
         );
-        assert_eq!(acquired.title_uuid, first_uuid);
+        assert_eq!(
+            Some(acquired.holding_id.clone()),
+            store
+                .title_holding_of_book(&first_uuid)
+                .await
+                .unwrap()
+                .map(|t| t.holding_id)
+        );
         // A sibling title's failure leaves the edition acquired; the title
         // that fetched it can demote it.
         store

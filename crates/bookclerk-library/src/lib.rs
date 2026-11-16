@@ -207,8 +207,9 @@ pub use store::{
     HeldIdentifiers, HoldingSelection, LibraryStore, NewBook, NewListeningProgress,
     NewTitleRequest, NewTitleRequestSource, NodeHoldingSelection, QueueRank, SavedFilterRecord,
     ScannedTitle, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste, StoredFeed,
-    StoredQueueRank, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER,
-    BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT, HOLDING_REMOVED, MAX_QUEUE_REASONS,
+    StoredQueueRank, TitleHolding, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE,
+    ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT, HOLDING_REMOVED,
+    MAX_QUEUE_REASONS,
 };
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,
