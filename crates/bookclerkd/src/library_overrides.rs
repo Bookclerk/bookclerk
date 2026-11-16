@@ -1,6 +1,6 @@
 //! An Administrator's resolution decisions: pin a store listing to the
-//! edition it sells, remove a pin, and page the conflicts the resolver left
-//! (`docs/adr/library-data-model.md`).
+//! edition it sells, remove a pin, page the conflicts the resolver left,
+//! and split a wrongly merged work (`docs/adr/library-data-model.md`).
 //!
 //! Only the operator, an Owner or an Administrator may call these routes.
 //! A pin moves the listing at once and publishes the edition events the
@@ -11,7 +11,10 @@ use std::sync::Arc;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use bookclerk_library::{ConflictCursor, EntityKind, LibraryError, PinOutcome, ResolutionConflict};
+use bookclerk_library::{
+    ConflictCursor, EntityKind, LibraryError, PinOutcome, ResolutionConflict, SplitOutcome,
+    MAX_SPLIT_EXPRESSIONS,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
@@ -267,6 +270,95 @@ pub(crate) async fn list_conflicts(
         conflicts: rows.into_iter().map(conflict_json).collect(),
         next_cursor: next.map(|c| c.encode()),
     }))
+}
+
+/// Body of `POST /api/library/works/{id}/split`.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SplitBody {
+    /// The expressions to move to the new work (1 to 12), from the work
+    /// detail's editions (`expression_id`).
+    #[schema(example = json!(["4e5f6a7b-8c9d-4e0f-a1b2-c3d4e5f6a7b8"]))]
+    expression_ids: Vec<String>,
+}
+
+/// The result of a split.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct SplitJson {
+    /// The new work the expressions moved to.
+    #[schema(example = "7d6c5b4a-3928-4f1e-8d7c-6b5a49382716")]
+    work_id: String,
+    /// The work that was split.
+    #[schema(example = "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b")]
+    split_from: String,
+}
+
+/// Splits a work an automatic merge joined wrongly.
+///
+/// The named expressions move, with their editions, listings and holdings,
+/// to a new work that copies the work's title, credits, series and each
+/// person's own state. New listings with the same title keep joining the
+/// original work. Only the operator, an Owner or an Administrator may
+/// split.
+#[utoipa::path(
+    post,
+    path = "/api/library/works/{id}/split",
+    params(("id" = String, Path, description = "Work id.")),
+    request_body = SplitBody,
+    responses(
+        (status = 200, description = "The new work.", body = SplitJson),
+        (status = 400, description = "No expression, too many, or the work would be left empty.", body = ErrorMessage, example = json!({"error": "a split must leave the work at least one expression"})),
+        (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
+        (status = 403, description = "The caller is not an Administrator.", body = ErrorMessage, example = json!({"error": "only an Administrator can change how listings resolve"})),
+        (status = 404, description = "No such work, or an expression is not the work's.", body = ErrorMessage, example = json!({"error": "work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b not found"})),
+        (status = 409, description = "The work changed while it was being split.", body = ErrorMessage, example = json!({"error": "the work changed while it was being split; try again"})),
+        (status = 500, description = "The split could not be written.", body = ErrorMessage, example = json!({"error": "the library could not be changed"})),
+    ),
+)]
+pub(crate) async fn post_work_split(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<SplitBody>,
+) -> Result<Json<SplitJson>, OverrideError> {
+    let user_id = administrator(&state, &headers).await?;
+    let library = state.library_snapshot().await;
+    let bad = |message: String| (StatusCode::BAD_REQUEST, Json(ErrorMessage::new(message)));
+    let outcome = match library.split_work(&id, &body.expression_ids, user_id).await {
+        Ok(outcome) => outcome,
+        Err(LibraryError::Conflict(_)) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(ErrorMessage::new(
+                    "the work changed while it was being split; try again",
+                )),
+            ))
+        }
+        Err(err) => return Err(failed("post_work_split", &err)),
+    };
+    match outcome {
+        SplitOutcome::Split { work_id } => {
+            tracing::info!(split_from = %id, %work_id, ?user_id, "work split");
+            Ok(Json(SplitJson {
+                work_id,
+                split_from: id,
+            }))
+        }
+        SplitOutcome::UnknownWork => Err(not_found(EntityKind::Work, &id)),
+        SplitOutcome::BadCount => Err(bad(format!(
+            "name 1 to {MAX_SPLIT_EXPRESSIONS} expressions to move"
+        ))),
+        SplitOutcome::NotOfWork(ids) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorMessage::new(format!(
+                "work {id} has no expression {}",
+                ids.join(", ")
+            ))),
+        )),
+        SplitOutcome::WouldEmpty => Err(bad(
+            "a split must leave the work at least one expression".into()
+        )),
+    }
 }
 
 /// The wire form of one conflict.

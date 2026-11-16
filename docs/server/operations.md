@@ -69,6 +69,7 @@ OS.
 | `GET /api/library/works` | Yes | The library's works, one row per work, paged by cursor and filterable by media kind, kind, acquire status and account; `q` searches titles, people, series and store identifiers |
 | `GET /api/library/works/{id}` | Yes | One work with its editions, store listings, holdings and the caller's own state |
 | `PUT`/`DELETE /api/library/listings/{id}/pin` | Provisioner | Pin a store listing to the edition it sells (it moves there at once, with its holdings and offers, and later scans keep it there), or remove the pin (the listing stays where it is) |
+| `POST /api/library/works/{id}/split` | Provisioner | Split a wrongly merged work: up to 12 of its expressions move, with their editions, listings and holdings, to a new work that copies its title, credits, series and each person's own state; new listings with the same title keep joining the original |
 | `GET /api/library/conflicts` | Provisioner | The identifier clashes and ambiguous matches the resolver left for an Administrator, paged by cursor |
 | `GET /api/library/editions/{id}/cover` | Yes | The JPEG cover written beside an acquired edition's file, when this node runs a local destination |
 | `GET /api/jobs` (also `/jobs`) | Yes | The durable job list: progress, attempts, times |

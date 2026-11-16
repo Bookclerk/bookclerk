@@ -12177,6 +12177,223 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
+    "/api/library/works/{id}/split": {
+      "post": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Splits a work an automatic merge joined wrongly.",
+        "description": "The named expressions move, with their editions, listings and holdings,\nto a new work that copies the work's title, credits, series and each\nperson's own state. New listings with the same title keep joining the\noriginal work. Only the operator, an Owner or an Administrator may\nsplit.",
+        "operationId": "post_work_split",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Work id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SplitBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The new work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SplitJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No expression, too many, or the work would be left empty. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "a split must leave the work at least one expression"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can change how listings resolve"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such work, or an expression is not the work's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The work changed while it was being split.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the work changed while it was being split; try again"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `expression_ids` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The split could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
     "/api/config/node-invites": {
       "get": {
         "tags": [
@@ -41442,6 +41659,46 @@
               "$ref": "#/components/schemas/SourceInfo"
             },
             "description": "Enabled storefronts the SPA may offer for connect / login."
+          }
+        }
+      },
+      "SplitBody": {
+        "type": "object",
+        "description": "Body of `POST /api/library/works/{id}/split`.",
+        "required": [
+          "expression_ids"
+        ],
+        "properties": {
+          "expression_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The expressions to move to the new work (1 to 12), from the work\ndetail's editions (`expression_id`).",
+            "example": [
+              "4e5f6a7b-8c9d-4e0f-a1b2-c3d4e5f6a7b8"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "SplitJson": {
+        "type": "object",
+        "description": "The result of a split.",
+        "required": [
+          "work_id",
+          "split_from"
+        ],
+        "properties": {
+          "work_id": {
+            "type": "string",
+            "description": "The new work the expressions moved to.",
+            "example": "7d6c5b4a-3928-4f1e-8d7c-6b5a49382716"
+          },
+          "split_from": {
+            "type": "string",
+            "description": "The work that was split.",
+            "example": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b"
           }
         }
       },
