@@ -16,6 +16,7 @@ mod cache;
 mod carried_accounts;
 mod catalog_lookup;
 mod cluster_links;
+pub(crate) use cluster_links::from_object;
 mod connections_request;
 mod cron_fires;
 mod deployments;

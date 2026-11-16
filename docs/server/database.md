@@ -714,8 +714,11 @@ library holds as works, expressions and editions:
 - `contributors` and `credits`, `series` and `series_entries`;
 - `resolution_overrides` (an Administrator's pins and splits; a pin is
   made with `PUT /api/library/listings/{id}/pin`, which moves the listing
-  to the edition in the same batch, and each write of the row gets a new
-  `revision`) and `resolution_conflicts` (identifier clashes the resolver
+  to the edition in the same batch, and a split with
+  `POST /api/library/works/{id}/split`, which moves the expressions to a
+  new work and isolates it in the same batch, after locking the original
+  work's row so two splits of one work cannot both pass their checks on
+  Postgres; each write of the row gets a new `revision`) and `resolution_conflicts` (identifier clashes the resolver
   recorded instead of merging, listed by `GET /api/library/conflicts` and
   dropped when the listing is pinned);
 - `edition_files`: every key an acquire or a host upload wrote, per

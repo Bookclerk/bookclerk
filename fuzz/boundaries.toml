@@ -273,6 +273,13 @@ input_from = "Owner or operator"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.work_split_request]
+crate = "bookclerk-library"
+boundary = "An Administrator's choice of expressions to move out of a wrongly merged work, from POST /api/library/works/{id}/split"
+input_from = "Administrator, Owner or operator"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.connections_request]
 crate = "bookclerk-library"
 boundary = "A branch Owner's store connections to add to one library, or one to disconnect, from POST /api/config/join/connections and POST /api/config/join/connections/disconnect"

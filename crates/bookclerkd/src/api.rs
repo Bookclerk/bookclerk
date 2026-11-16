@@ -1242,6 +1242,7 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
             crate::library_overrides::delete_listing_pin
         ))
         .routes(routes!(crate::library_overrides::list_conflicts))
+        .routes(routes!(crate::library_overrides::post_work_split))
         .routes(routes!(
             crate::node_api::get_node_invites,
             crate::node_api::post_node_invite

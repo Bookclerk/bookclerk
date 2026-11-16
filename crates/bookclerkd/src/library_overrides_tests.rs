@@ -218,3 +218,111 @@ async fn conflicts_page_with_a_cursor() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json["error"], "invalid page cursor");
 }
+
+/// Scans "Dune" read by `narrator` (product `asin`) and returns its work
+/// and expression.
+async fn scan_reading(library: &LibraryStore, asin: &str, narrator: &str) -> (String, String) {
+    let mut book = NewBook::minimal(asin, "acct", "us", "Dune");
+    book.authors = Some("Frank Herbert".into());
+    book.narrators = Some(narrator.into());
+    let saved = library.upsert_book(&book).await.expect("book");
+    let work = library
+        .work_id_for_book(&saved.uuid)
+        .await
+        .expect("work read")
+        .expect("a scanned title has a work");
+    let detail = library
+        .library_work_detail(&work)
+        .await
+        .expect("detail")
+        .expect("the work exists");
+    let edition = detail
+        .editions
+        .iter()
+        .find(|e| e.listings.iter().any(|l| l.product_id == asin))
+        .expect("the scanned edition");
+    (work, edition.expression_id.clone())
+}
+
+#[tokio::test]
+async fn an_administrator_splits_a_work() {
+    let (_state, app, library) = crate::auth::tests::phase2_harness(TOKEN).await;
+    library
+        .upsert_account("audible", "acct", "us", None, true, "audible")
+        .await
+        .expect("account");
+    let (work, _) = scan_reading(&library, "B001", "Scott Brick").await;
+    let (same, simon) = scan_reading(&library, "B002", "Simon Vance").await;
+    assert_eq!(same, work, "two readings of one work");
+    let admin = crate::auth::tests::portal_cookie_for(&library, "test", "administrator-ext").await;
+    let member = crate::auth::tests::portal_cookie_for(&library, "test", "member-ext").await;
+    let uri = format!("/api/library/works/{work}/split");
+    let body = serde_json::json!({ "expression_ids": [simon] }).to_string();
+
+    let (status, _) = call(&app, Some(&member), "POST", &uri, Some(&body)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, json) = call(
+        &app,
+        Some(&admin),
+        "POST",
+        &uri,
+        Some(r#"{"expression_ids": []}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"], "name 1 to 12 expressions to move");
+    let long = serde_json::json!({ "expression_ids": ["x".repeat(65)] }).to_string();
+    let (status, json) = call(&app, Some(&admin), "POST", &uri, Some(&long)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"], "an expression id is 1 to 64 bytes");
+    let (status, json) = call(
+        &app,
+        Some(&admin),
+        "POST",
+        &uri,
+        Some(r#"{"expression_ids": ["elsewhere"]}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        json["error"],
+        format!("work {work} has no expression elsewhere")
+    );
+    let (status, json) = call(
+        &app,
+        Some(&admin),
+        "POST",
+        "/api/library/works/nope/split",
+        Some(&body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json["error"], "work nope not found");
+
+    let (status, json) = call(&app, Some(&admin), "POST", &uri, Some(&body)).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["split_from"], work.as_str());
+    let new = json["work_id"].as_str().expect("new work").to_string();
+    assert_ne!(new, work);
+    let detail = library
+        .library_work_detail(&new)
+        .await
+        .expect("detail")
+        .expect("the new work exists");
+    assert_eq!(detail.editions.len(), 1);
+    assert_eq!(detail.editions[0].expression_id, simon);
+
+    let (status, json) = call(
+        &app,
+        Some(&admin),
+        "POST",
+        &format!("/api/library/works/{new}/split"),
+        Some(&body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "its only expression stays");
+    assert_eq!(
+        json["error"],
+        "a split must leave the work at least one expression"
+    );
+}

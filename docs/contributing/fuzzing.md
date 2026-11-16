@@ -59,6 +59,7 @@ boundary extends it.
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
 | `members_books_request` | A library operator's "Acquire all of this branch's members' books" choice, the body of `PUT /api/config/branches/members-books` | `bookclerk-library::control_plane::parse_members_books_request` |
+| `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
 
@@ -360,6 +361,13 @@ only that. The others check:
   and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/members_books_request.rs`, replayed from
   `bookclerk-library`.
+- **`work_split_request`**: reads the body as an untyped JSON value. It
+  is accepted exactly when it is one object with no repeated keys and
+  exactly the key `expression_ids`, an array of strings each 1 to 64 bytes
+  long, with 1 to 12 distinct values (a repeated id counts once). The
+  parser then returns those ids sorted and distinct, and otherwise refuses
+  it as `Invalid`. The shared oracle is `fuzz/oracles/work_split_request.rs`,
+  replayed from `bookclerk-library`.
 - **`sharing_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
   besides `cluster_id`, `share_books`, `include_branches`,

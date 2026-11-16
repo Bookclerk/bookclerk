@@ -198,6 +198,10 @@ pub use store::{
     search_feed::ListingRef,
     set_dispatch_chunk_for_test,
     user_title_state::{FieldEdit, UserStateEdit},
+    work_split::{
+        parse_work_split_request, SplitOutcome, WorkSplitBody, WorkSplitRequest,
+        MAX_SPLIT_EXPRESSIONS, MAX_SPLIT_EXPRESSION_ID_BYTES,
+    },
     AcquiredBookKey, BookPage, CandidateRef, CatalogEnrichmentFields, DiscoverSubject,
     EditionAcquisition, EditionFile, FileOwner, FileRole, HeldIdentifiers, HoldingSelection,
     LibraryStore, NewBook, NewListeningProgress, NewTitleRequest, NewTitleRequestSource,

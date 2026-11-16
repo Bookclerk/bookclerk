@@ -401,6 +401,9 @@ Administrator pins a listing to an edition with
 the recorded conflicts from `GET /api/library/conflicts`. A pin moves the
 listing in the batch that records it, and its `edition_linked` dedup key
 carries the pin's revision, so moving a listing back publishes again.
+`POST /api/library/works/{id}/split` moves some of a work's expressions to
+a new work (copying its title, credits, series and each person's state)
+and isolates the new work, so the matcher keeps joining the original.
 
 User-facing pages (the glossary, *Where books go*, *Branches*, the plugin ABI
 reference) change with the step that changes their behaviour.
