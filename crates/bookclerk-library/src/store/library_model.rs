@@ -1416,6 +1416,16 @@ impl LibraryStore {
         Ok(None)
     }
 
+    /// [`Self::record_listing_page_with_details`] with no store text, as
+    /// the page tests drive it.
+    #[cfg(test)]
+    pub(crate) async fn record_listing_page(
+        &self,
+        items: &[(resolve::Listing, resolve::HoldingDraft, WorkEnrichment)],
+    ) {
+        self.record_listing_page_with_details(items, &[]).await;
+    }
+
     /// Resolves a page of listings, each with its holding and the fields
     /// its library title offers its work, logging a listing that fails
     /// rather than returning it (see [`LibraryStore::record_listing`]).
@@ -1427,9 +1437,16 @@ impl LibraryStore {
     /// goes through [`Self::record_listing`], which reads its own snapshot
     /// and writes under the usual guards. Settling the unchanged listings
     /// first is the same as scanning them first, which a scan is free to do.
-    pub(crate) async fn record_listing_page(
+    ///
+    /// Each resolved listing's store text is filled from `details` (same
+    /// order as `items`; a missing entry writes none). A settled listing
+    /// whose stored text already says the same costs no write; the rest
+    /// are written together once the page is resolved, and a failed write
+    /// is logged.
+    pub(crate) async fn record_listing_page_with_details(
         &self,
         items: &[(resolve::Listing, resolve::HoldingDraft, WorkEnrichment)],
+        details: &[crate::ListingDetail],
     ) {
         let Some((_, first, _)) = items.first() else {
             return;
@@ -1450,7 +1467,9 @@ impl LibraryStore {
             std::collections::HashSet::new();
         let mut written_editions: std::collections::HashSet<String> =
             std::collections::HashSet::new();
-        for (listing, holding, fill) in items {
+        let mut text_writes: Vec<(String, crate::ListingDetail)> = Vec::new();
+        for (index, (listing, holding, fill)) in items.iter().enumerate() {
+            let detail = details.get(index);
             let settled = match &pool {
                 Some(_)
                     if written_keys.contains(&listing.key)
@@ -1470,6 +1489,12 @@ impl LibraryStore {
             };
             let result = match settled {
                 Ok(Some(plan)) => {
+                    if let Some(detail) = detail {
+                        let stored = pool.as_ref().and_then(|p| p.stored_listing(&listing.key));
+                        if stored.is_none_or(|row| detail.changes(row)) {
+                            text_writes.push((plan.listing.id.clone(), detail.clone()));
+                        }
+                    }
                     let edition_id = &plan.listing.edition_id;
                     let known = pool.as_ref().and_then(|p| p.work_of_edition(edition_id));
                     if known.is_some_and(|work| !fill.fills(work)) {
@@ -1483,6 +1508,9 @@ impl LibraryStore {
                     match self.record_listing(listing, holding).await {
                         Ok(plan) => {
                             written_editions.insert(plan.listing.edition_id.clone());
+                            if let Some(detail) = detail {
+                                text_writes.push((plan.listing.id.clone(), detail.clone()));
+                            }
                             self.fill_work_from_book(&plan.listing.edition_id, fill)
                                 .await
                         }
@@ -1498,6 +1526,15 @@ impl LibraryStore {
                     "library title stored but not resolved into the library model; the next scan retries"
                 );
             }
+        }
+        if text_writes.is_empty() {
+            return;
+        }
+        if let Err(err) = self.record_listing_details(&text_writes).await {
+            tracing::warn!(
+                error = %err,
+                "store text of a page of listings not written; the next scan retries"
+            );
         }
     }
 

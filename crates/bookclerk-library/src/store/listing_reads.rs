@@ -107,6 +107,14 @@ pub(crate) struct ListingPool {
 }
 
 impl ListingPool {
+    /// The stored listing row for `key`, when the pool read one.
+    pub(crate) fn stored_listing(
+        &self,
+        key: &resolve::ListingKey,
+    ) -> Option<&store_listings::Model> {
+        self.listings.get(&listing_key(key))?.as_ref()
+    }
+
     /// The stored work an edition reaches, when the pool read the edition,
     /// its expression and the work.
     pub(crate) fn work_of_edition(&self, edition_id: &str) -> Option<&works::Model> {

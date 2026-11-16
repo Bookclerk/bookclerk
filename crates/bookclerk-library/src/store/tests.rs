@@ -8755,3 +8755,279 @@ async fn library_cards_slide_expire_and_stay_apart_from_browser_sessions() {
         assert!(left.is_empty(), "{name}");
     }
 }
+
+#[tokio::test]
+async fn a_pdf_status_is_recorded_on_the_titles_edition_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        for account in ["acct-a", "acct-b"] {
+            store
+                .upsert_account("audible", account, "us", None, true, "audible")
+                .await
+                .unwrap();
+            store
+                .upsert_book(&NewBook::minimal("B0PDF0001", account, "us", "Maps"))
+                .await
+                .unwrap();
+        }
+        let first = store
+            .get_book("B0PDF0001", "acct-a")
+            .await
+            .unwrap()
+            .unwrap();
+        let second = store
+            .get_book("B0PDF0001", "acct-b")
+            .await
+            .unwrap()
+            .unwrap();
+        let edition = store.edition_of_book(&first.uuid).await.unwrap().unwrap();
+        assert_eq!(
+            store
+                .edition_of_book(&second.uuid)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(edition.as_str()),
+            "both accounts' titles sell one edition"
+        );
+
+        // The first PDF write creates the row; the audio stays not acquired.
+        store
+            .set_pdf_status("B0PDF0001", "acct-a", AcquireStatus::Queued, None)
+            .await
+            .unwrap();
+        let row = store.edition_acquisition(&edition).await.unwrap().unwrap();
+        assert_eq!(row.status, AcquireStatus::NotAcquired, "{}", profile.name());
+        assert_eq!(row.pdf_status, AcquireStatus::Queued, "{}", profile.name());
+        assert_eq!(row.pdf_title_uuid.as_deref(), Some(first.uuid.as_str()));
+
+        store
+            .set_pdf_status(
+                "B0PDF0001",
+                "acct-a",
+                AcquireStatus::Acquired,
+                Some("a.pdf"),
+            )
+            .await
+            .unwrap();
+        // An audio write keeps the PDF columns.
+        store
+            .set_acquire_status("B0PDF0001", "acct-b", AcquireStatus::Queued, None, None)
+            .await
+            .unwrap();
+        // Another title's PDF write leaves the acquired PDF alone.
+        store
+            .set_pdf_status("B0PDF0001", "acct-b", AcquireStatus::Error, None)
+            .await
+            .unwrap();
+        let row = store.edition_acquisition(&edition).await.unwrap().unwrap();
+        assert_eq!(row.status, AcquireStatus::Queued, "{}", profile.name());
+        assert_eq!(row.title_uuid, second.uuid);
+        assert_eq!(
+            row.pdf_status,
+            AcquireStatus::Acquired,
+            "{}",
+            profile.name()
+        );
+        assert_eq!(row.pdf_storage_key.as_deref(), Some("a.pdf"));
+        assert_eq!(row.pdf_title_uuid.as_deref(), Some(first.uuid.as_str()));
+
+        // Once the acquiring title leaves the library, another title's write
+        // takes over.
+        kit.connection()
+            .execute_unprepared(&format!("DELETE FROM books WHERE uuid = '{}'", first.uuid))
+            .await
+            .unwrap();
+        store
+            .set_pdf_status("B0PDF0001", "acct-b", AcquireStatus::Downloading, None)
+            .await
+            .unwrap();
+        let row = store.edition_acquisition(&edition).await.unwrap().unwrap();
+        assert_eq!(
+            row.pdf_status,
+            AcquireStatus::Downloading,
+            "{}",
+            profile.name()
+        );
+        assert_eq!(row.pdf_storage_key, None);
+        assert_eq!(row.pdf_title_uuid.as_deref(), Some(second.uuid.as_str()));
+    }
+}
+
+#[tokio::test]
+async fn a_scanned_title_fills_its_listings_store_text_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        store
+            .upsert_account("audible", "acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let mut book = NewBook::minimal("B0SER0001", "acct", "us", "Book One");
+        book.series = Some("Saga".into());
+        book.series_index = Some("1".into());
+        book.series_asin = Some("B0SAGA".into());
+        book.publisher = Some("First House".into());
+        book.is_abridged = true;
+        let stored = store.upsert_book(&book).await.unwrap();
+        let edition = store.edition_of_book(&stored.uuid).await.unwrap().unwrap();
+        let listing = crate::entities::store_listings::Entity::find()
+            .filter(crate::entities::store_listings::Column::EditionId.eq(edition.as_str()))
+            .one(store.db())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            listing.series.as_deref(),
+            Some("Saga"),
+            "{}",
+            profile.name()
+        );
+        assert_eq!(listing.series_index.as_deref(), Some("1"));
+        assert_eq!(listing.series_product_id.as_deref(), Some("B0SAGA"));
+        assert_eq!(listing.publisher.as_deref(), Some("First House"));
+        assert_eq!(listing.is_abridged, Some(1));
+
+        // A later scan that leaves a field out keeps the stored value.
+        let mut again = NewBook::minimal("B0SER0001", "acct", "us", "Book One");
+        again.publisher = Some("Second House".into());
+        store.upsert_book(&again).await.unwrap();
+        let record = store
+            .catalog_listings(std::slice::from_ref(&listing.id))
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(record.detail.series_product_id.as_deref(), Some("B0SAGA"));
+        assert_eq!(
+            record.detail.publisher.as_deref(),
+            Some("Second House"),
+            "{}",
+            profile.name()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_scanned_page_writes_store_text_only_when_it_changes_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        store
+            .upsert_account("audible", "acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let page = |publisher: &str| -> Vec<ScannedTitle> {
+            ["B0PAGE001", "B0PAGE002", "B0PAGE003"]
+                .iter()
+                .map(|asin| {
+                    let mut book = NewBook::minimal(*asin, "acct", "us", *asin);
+                    book.series = Some("Saga".into());
+                    book.series_asin = Some("B0SAGA".into());
+                    book.publisher = Some(publisher.into());
+                    ScannedTitle::from(book)
+                })
+                .collect()
+        };
+        let listings = || async {
+            let mut rows = crate::entities::store_listings::Entity::find()
+                .all(store.db())
+                .await
+                .unwrap();
+            rows.sort_by(|a, b| a.product_id.cmp(&b.product_id));
+            rows
+        };
+        store.upsert_scanned_titles(&page("First")).await.unwrap();
+        let first = listings().await;
+        assert_eq!(first.len(), 3, "{}", profile.name());
+        assert!(first.iter().all(|row| {
+            row.series_product_id.as_deref() == Some("B0SAGA")
+                && row.publisher.as_deref() == Some("First")
+        }));
+
+        // The same page again settles every listing from the pool and
+        // writes no store text.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        store.upsert_scanned_titles(&page("First")).await.unwrap();
+        let again = listings().await;
+        for (before, after) in first.iter().zip(&again) {
+            assert_eq!(before.updated_at, after.updated_at, "{}", profile.name());
+        }
+
+        store.upsert_scanned_titles(&page("Second")).await.unwrap();
+        assert!(
+            listings()
+                .await
+                .iter()
+                .all(|row| row.publisher.as_deref() == Some("Second")),
+            "{}",
+            profile.name()
+        );
+    }
+}
+
+#[test]
+fn listing_text_changes_only_for_a_set_field_that_differs() {
+    let row = crate::entities::store_listings::Model {
+        id: "l".into(),
+        plugin_key: "audible".into(),
+        marketplace: "us".into(),
+        product_id: "p".into(),
+        edition_id: "e".into(),
+        title: "T".into(),
+        categories: None,
+        subtitle: Some("Sub".into()),
+        authors: None,
+        narrators: None,
+        series: None,
+        series_index: None,
+        series_product_id: None,
+        description: None,
+        publisher: None,
+        published_at: None,
+        length_minutes: Some(60),
+        language: None,
+        cover_url: None,
+        url: None,
+        rating_overall: Some(4.5),
+        rating_count: None,
+        is_abridged: Some(0),
+        observed_at: String::new(),
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    let same = crate::ListingDetail {
+        subtitle: Some(" Sub ".into()),
+        authors: Some("  ".into()),
+        length_minutes: Some(60),
+        rating_overall: Some(4.5),
+        is_abridged: Some(false),
+        ..crate::ListingDetail::default()
+    };
+    assert!(!same.changes(&row));
+    assert!(!crate::ListingDetail::default().changes(&row));
+    for changed in [
+        crate::ListingDetail {
+            series_product_id: Some("S".into()),
+            ..crate::ListingDetail::default()
+        },
+        crate::ListingDetail {
+            length_minutes: Some(61),
+            ..crate::ListingDetail::default()
+        },
+        crate::ListingDetail {
+            rating_overall: Some(4.0),
+            ..crate::ListingDetail::default()
+        },
+        crate::ListingDetail {
+            rating_count: Some(3),
+            ..crate::ListingDetail::default()
+        },
+        crate::ListingDetail {
+            is_abridged: Some(true),
+            ..crate::ListingDetail::default()
+        },
+    ] {
+        assert!(changed.changes(&row), "{changed:?}");
+    }
+}

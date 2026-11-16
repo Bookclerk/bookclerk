@@ -4319,6 +4319,7 @@ impl LibraryStore {
         let books: Vec<&NewBook> = titles.iter().map(|title| &title.book).collect();
         let records = self.upsert_book_rows(&books).await?;
         let mut listings = Vec::with_capacity(titles.len());
+        let mut details = Vec::with_capacity(titles.len());
         for (title, record) in titles.iter().zip(&records) {
             let listing = match &title.listing {
                 Some(listing) => {
@@ -4345,9 +4346,11 @@ impl LibraryStore {
                     holding_from_book(&title.book),
                     WorkEnrichment::of_book(record),
                 ));
+                details.push(crate::ListingDetail::of_book(record));
             }
         }
-        self.record_listing_page(&listings).await;
+        self.record_listing_page_with_details(&listings, &details)
+            .await;
         Ok(records)
     }
 
@@ -4376,8 +4379,17 @@ impl LibraryStore {
         };
         let result = match linked {
             Ok(plan) => {
-                self.fill_work_from_book(&plan.listing.edition_id, &WorkEnrichment::of_book(record))
-                    .await
+                let detail = crate::ListingDetail::of_book(record);
+                match self.record_listing_detail(&plan.listing.id, &detail).await {
+                    Ok(()) => {
+                        self.fill_work_from_book(
+                            &plan.listing.edition_id,
+                            &WorkEnrichment::of_book(record),
+                        )
+                        .await
+                    }
+                    Err(err) => Err(err),
+                }
             }
             Err(err) => Err(err),
         };
@@ -4818,6 +4830,11 @@ impl LibraryStore {
 
     /// Updates companion PDF acquire status and optional storage key.
     ///
+    /// The status is recorded on the title row and, when the title is linked
+    /// to an edition, on that edition's `edition_acquisitions` row too. An
+    /// edition whose PDF another existing title already acquired keeps that
+    /// title's PDF state.
+    ///
     /// # Arguments
     ///
     /// * `title_id` - Product id / ASIN / ISBN used as the title key.
@@ -4840,11 +4857,23 @@ impl LibraryStore {
         pdf_storage_key: Option<&str>,
     ) -> Result<()> {
         let model = self.resolve_book(title_id, account_id).await?;
+        let title_uuid = model.uuid.clone();
         let mut am: books::ActiveModel = model.into();
         am.pdf_status = Set(status.as_str().to_string());
         am.pdf_storage_key = Set(pdf_storage_key.map(str::to_string));
         am.updated_at = Set(now_str());
         self.update_book_bumped(am).await?;
+        // The edition's PDF state, which outlives `books` (book model step 6).
+        if let Some(edition) = self.edition_of_book(&title_uuid).await? {
+            event_outbox::update_edition_pdf_on(
+                &self.db,
+                &edition,
+                &title_uuid,
+                status,
+                pdf_storage_key,
+            )
+            .await?;
+        }
         Ok(())
     }
 

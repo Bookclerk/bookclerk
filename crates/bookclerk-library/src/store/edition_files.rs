@@ -193,6 +193,14 @@ pub struct EditionAcquisition {
     pub title_uuid: String,
     /// RFC 3339 time of that write.
     pub updated_at: String,
+    /// Where the edition's companion PDF acquire stands; a status this
+    /// build does not know reads as [`AcquireStatus::NotAcquired`].
+    pub pdf_status: AcquireStatus,
+    /// Destination key of the companion PDF once acquired.
+    pub pdf_storage_key: Option<String>,
+    /// The library title (`books.uuid`) whose write set the PDF state;
+    /// `None` until a PDF write happens.
+    pub pdf_title_uuid: Option<String>,
 }
 
 impl From<edition_acquisitions::Model> for EditionAcquisition {
@@ -204,6 +212,9 @@ impl From<edition_acquisitions::Model> for EditionAcquisition {
             error_message: row.error_message,
             title_uuid: row.title_uuid,
             updated_at: row.updated_at,
+            pdf_status: AcquireStatus::parse(&row.pdf_status).unwrap_or_default(),
+            pdf_storage_key: row.pdf_storage_key,
+            pdf_title_uuid: row.pdf_title_uuid,
         }
     }
 }
