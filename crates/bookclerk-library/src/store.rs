@@ -7873,6 +7873,7 @@ impl LibraryStore {
     }
 }
 
+pub(crate) mod acquire_title;
 pub(crate) mod catalog_listings;
 pub(crate) mod discover;
 pub(crate) mod edition_files;
@@ -7897,6 +7898,7 @@ pub(crate) mod work_detail;
 pub(crate) mod work_search;
 pub(crate) mod work_split;
 pub(crate) mod write_batches;
+pub use acquire_title::AcquireTitle;
 pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
     StoredFeed,
