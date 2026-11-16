@@ -113,8 +113,8 @@ The plugin keeps the users it has reported in its `LISTENING_STATE`
 database, as a hash of each user id. So a user created while the plugin
 slept is still reported by the next poll. If recording a new user fails,
 the next poll reports that user again and the host mints a second
-ticket. A poll reply lost on its way to the host is not retried, so the
-users in it get no ticket.
+ticket. A poll reply lost on its way to the host is not retried, so a
+user the plugin had already recorded gets no ticket.
 
 > [!NOTE]
 > Without the `LISTENING_STATE` database grant, the plugin cannot keep
