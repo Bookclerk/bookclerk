@@ -175,6 +175,7 @@ impl WorkerdRoot {
             databases: BTreeMap::new(),
             queues: BTreeMap::new(),
             kv: BTreeMap::new(),
+            sockets_token: None,
         };
         let requested = self.manifest_families();
         let reply: OpenReply = call(
@@ -309,6 +310,31 @@ impl WorkerdRoot {
             });
             kv.insert(named.name, token);
         }
+        // One sockets-only grant token for the instance's broker: the adapter
+        // isolate reaches it over `/sockets/*` and installs `env.SOCKETS`.
+        // The sockets themselves belong to the instance, not this token, so
+        // revoking the token when the open ends leaves them open.
+        let (sockets_token, sockets_grant) =
+            match bindings.sockets.filter(|_| self.capabilities.sockets) {
+                Some(sockets) => {
+                    let token = format!("{:032x}", rand::random::<u128>());
+                    self.table.borrow_mut().insert(
+                        token.clone(),
+                        GrantedSlot::sockets_only(
+                            Rc::from(sockets),
+                            grant_expiry(invocation.deadline_unix_ms),
+                        ),
+                    );
+                    (
+                        Some(token.clone()),
+                        Some(RevokeGrant {
+                            table: Rc::clone(&self.table),
+                            grant: token,
+                        }),
+                    )
+                }
+                None => (None, None),
+            };
         let ctx = BridgeContext {
             invocation,
             config: bindings.config,
@@ -317,6 +343,7 @@ impl WorkerdRoot {
             databases,
             queues,
             kv,
+            sockets_token,
         };
         let ctx_json = context_header(&ctx)?;
         let grants = Rc::new(OpenGrants {
@@ -324,6 +351,7 @@ impl WorkerdRoot {
             _databases: database_grants,
             _queues: queue_grants,
             _kv: kv_grants,
+            _sockets: sockets_grant,
         });
         let keepalive: Option<Rc<dyn std::any::Any>> =
             Some(Rc::clone(&grants) as Rc<dyn std::any::Any>);
@@ -471,8 +499,9 @@ struct OpenReply {
 /// `env`. `eventsToken` is the granted-channel bearer the adapter isolate
 /// turns into the author's `EVENTS` binding, `databases` maps each named
 /// `[[databases]]` binding to its database-only bearer for `/db/execute`,
-/// and `queues` maps each `[[queues.producers]]` binding to its queue-only
-/// bearer for `/queues/send`; the author sees no token, only the bindings
+/// `queues` maps each `[[queues.producers]]` binding to its queue-only
+/// bearer for `/queues/send`, and `socketsToken` is the bearer for
+/// `/sockets/*` behind `SOCKETS`; the author sees no token, only the bindings
 /// the adapter builds.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -490,6 +519,9 @@ struct BridgeContext {
     /// `[[kv_namespaces]]` binding → kv-only bearer for `/kv/*`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     kv: BTreeMap<String, String>,
+    /// Sockets-only bearer for `/sockets/*` (the `SOCKETS` binding).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sockets_token: Option<String>,
 }
 
 /// `JobRunner.job` context: the durable job id on top of the open context.
@@ -509,6 +541,7 @@ struct OpenGrants {
     _databases: Vec<RevokeGrant>,
     _queues: Vec<RevokeGrant>,
     _kv: Vec<RevokeGrant>,
+    _sockets: Option<RevokeGrant>,
 }
 
 /// Grant expiry for an `open`: the invocation deadline when it has one,
@@ -751,6 +784,7 @@ impl JobRunner for InvokeJobRunner {
                 events: None,
                 queue: None,
                 kv: None,
+                sockets: None,
             },
         );
         let _revoke = RevokeGrant {
@@ -896,6 +930,7 @@ mod tests {
             databases: BTreeMap::from([("DB".to_string(), "tok".to_string())]),
             queues: BTreeMap::from([("NOTIFY".to_string(), "qtok".to_string())]),
             kv: BTreeMap::from([("KV".to_string(), "ktok".to_string())]),
+            sockets_token: Some("stok".into()),
         };
         let json = context_header(&JobBridgeContext {
             job_id: &base.invocation.id,
@@ -909,6 +944,7 @@ mod tests {
         assert_eq!(v["databases"]["DB"], "tok");
         assert_eq!(v["queues"]["NOTIFY"], "qtok");
         assert_eq!(v["kv"]["KV"], "ktok");
+        assert_eq!(v["socketsToken"], "stok");
         assert!(v.get("config").is_some());
     }
 }

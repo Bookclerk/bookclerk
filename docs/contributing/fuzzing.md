@@ -42,6 +42,7 @@ boundary extends it.
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL, headers, subprotocols, heartbeat pairs and attachment, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
+| `socket_route` | A workerd plugin's `env.SOCKETS` calls on the granted reverse channel: the `POST /sockets/<op>` JSON body for `connect`, `send`, `close`, `attachment` and `list` | `bookclerk-workerd::granted_sockets` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
@@ -230,6 +231,15 @@ only that. The others check:
   socket is reported closed once, with its last attachment; and the
   listing matches the model. The shared oracle is
   `fuzz/oracles/socket_broker.rs`, replayed from `bookclerk-workerd`.
+- **`socket_route`**: the first byte picks the operation and the rest is
+  the JSON body. An unknown operation is refused as not found, and nothing
+  else is; a body that is not a JSON object, or that carries a field the
+  operation does not define, is refused as invalid; every accepted call is
+  inside restated ABI rules (socket ids, frame and attachment sizes, close
+  codes and reasons, and the connect checks the broker applies); and an
+  accepted call written back out in the route's form parses the same way.
+  The shared oracle is `fuzz/oracles/socket_route.rs`, replayed from
+  `bookclerk-workerd`.
 - **`guest_sql_authz`**: every table, column, function and schema action
   that SQLite's own authorizer reports for an admitted statement is inside
   the policy. The shared oracle is `fuzz/oracles/guest_sql_authz.rs`,

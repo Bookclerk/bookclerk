@@ -377,3 +377,110 @@ fn socket_broker_seeds_are_current() {
         );
     }
 }
+
+/// The `socket_route` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/socket_route.rs"]
+mod socket_route_oracle;
+
+/// Regular files directly under `fuzz/corpus/socket_route/`.
+// Test helper: a missing corpus is a failed test, not a handled error.
+#[allow(clippy::expect_used)]
+fn socket_route_corpus() -> Vec<PathBuf> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/socket_route")
+        .canonicalize()
+        .expect("canonicalize socket_route corpus");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("socket_route corpus")
+        .map(|entry| entry.expect("entry").path())
+        .filter_map(|path| path.canonicalize().ok())
+        .filter(|path| path.starts_with(&dir) && path.is_file())
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "empty socket_route corpus");
+    files
+}
+
+/// Mirrors `fuzz/fuzz_targets/socket_route.rs` with the shared oracle.
+// Test code: an unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_socket_route_holds_invariants() {
+    for path in socket_route_corpus() {
+        socket_route_oracle::check(&std::fs::read(&path).expect("read"));
+    }
+}
+
+/// One `socket_route` seed: the operation selector byte, then the body.
+fn route_seed(op: u8, body: &str) -> Vec<u8> {
+    let mut seed = vec![op];
+    seed.extend_from_slice(body.as_bytes());
+    seed
+}
+
+/// Seeds for `socket_route`. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn socket_route_seeds_are_current() {
+    let seeds: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "connect_abs.bin",
+            route_seed(
+                0,
+                r#"{"url":"wss://abs.example:13378/socket.io/?EIO=4&transport=websocket","protocols":["chat"],"headers":[{"name":"Authorization","value":"Bearer t"}],"autoResponses":[{"request":{"text":"2"},"response":{"text":"3"}}],"attachment":"aGk="}"#,
+            ),
+        ),
+        (
+            "connect_owned_header.bin",
+            route_seed(
+                0,
+                r#"{"url":"wss://a.example/","headers":[{"name":"Sec-WebSocket-Key","value":"x"}]}"#,
+            ),
+        ),
+        (
+            "connect_extra_field.bin",
+            route_seed(0, r#"{"url":"wss://a.example/","proxy":"x"}"#),
+        ),
+        (
+            "send_binary.bin",
+            route_seed(1, r#"{"socket":"g1_abc","frame":{"binary":"AAEC"}}"#),
+        ),
+        (
+            "send_both_kinds.bin",
+            route_seed(1, r#"{"socket":"g1_abc","frame":{"text":"a","binary":"AA=="}}"#),
+        ),
+        (
+            "send_bad_id.bin",
+            route_seed(1, r#"{"socket":"../g1","frame":{"text":"a"}}"#),
+        ),
+        (
+            "close_reserved.bin",
+            route_seed(2, r#"{"socket":"g1_abc","code":1006,"reason":"x"}"#),
+        ),
+        ("close_default.bin", route_seed(2, r#"{"socket":"g1_abc"}"#)),
+        (
+            "attachment.bin",
+            route_seed(3, r#"{"socket":"g2_x","attachment":"AQID"}"#),
+        ),
+        ("list.bin", route_seed(4, "{}")),
+        ("list_not_object.bin", route_seed(4, "[]")),
+        ("unknown_op.bin", route_seed(9, "{}")),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/socket_route");
+    if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+        std::fs::create_dir_all(&dir).expect("corpus dir");
+    }
+    for (name, seed) in seeds {
+        let path = dir.join(name);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
+}
