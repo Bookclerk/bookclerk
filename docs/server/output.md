@@ -103,6 +103,12 @@ A match leaves files where they are. To move matched audio and its
 sidecars onto your naming layout instead, set
 `library.fix_storage_layout = true`.
 
+Matching works per edition. When two accounts own the same book, its file
+is matched once and both accounts see it as acquired. When the file is
+gone, the account whose acquire recorded it marks the book not acquired.
+`bookclerk library convert` also converts each edition once, through that
+account.
+
 ## Several destinations
 
 When some destinations already have a title and others don't,

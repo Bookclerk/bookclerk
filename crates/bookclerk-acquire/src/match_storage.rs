@@ -14,7 +14,7 @@
 
 use std::collections::HashSet;
 
-use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
+use bookclerk_library::{AcquireStatus, AcquireTitle, LibraryStore};
 use bookclerk_source::DownloadOptions;
 use bookclerk_storage::{bookclerk_meta_sidecar_key, is_audio_key, StorageBackend};
 use tracing::{debug, info, warn};
@@ -22,7 +22,7 @@ use tracing::{debug, info, warn};
 use crate::error::{AcquireError, Result};
 use crate::naming::sidecar_key;
 use crate::pipeline::planned_storage_key;
-use crate::reconcile::request_from_book;
+use crate::reconcile::{request_from_title, title_update, TitleUpdate, TitleWalk};
 
 /// Known sidecar suffixes written next to a acquired audio file (stem-prefixed:
 /// `Title [ASIN].metadata.json`).
@@ -148,68 +148,73 @@ pub async fn match_storage_using_index(
         .map(|a| a.to_ascii_uppercase())
         .collect();
     let mut summary = MatchStorageSummary::default();
-    let mut after_id = None;
+    let mut walk = TitleWalk::default();
+    let mut after = None;
     loop {
-        let books = library
-            .list_books_page(options.account.as_deref(), after_id, 64)
+        let page = library
+            .acquire_titles_page(options.account.as_deref(), after.as_deref(), 64)
             .await?;
-        if books.is_empty() {
-            break;
-        }
-        after_id = books.last().map(|book| book.id);
-        for book in &books {
+        for title in &page.titles {
             if !filter.is_empty() {
-                let ids = book_identity_tokens(book);
+                let ids = title_identity_tokens(title);
                 if !ids.iter().any(|id| filter.contains(id)) {
                     continue;
                 }
             }
-
-            let Some(mut key) = find_audio_for_book(book, index, storage, library).await? else {
-                if options.only_mark_found {
-                    summary.unchanged += 1;
-                    continue;
-                }
-                if options.clear_missing && book.acquire_status == AcquireStatus::Acquired {
-                    let still_there = match book.storage_key.as_deref() {
-                        Some(key) => storage.exists(key).await?,
-                        None => false,
-                    };
-                    if still_there {
-                        summary.unchanged += 1;
-                        continue;
-                    }
-                    library
-                        .set_acquire_status(
-                            book.title_id(),
-                            &book.account_id,
-                            AcquireStatus::NotAcquired,
-                            None,
-                            None,
-                        )
-                        .await?;
-                    summary.cleared += 1;
-                } else {
-                    summary.unchanged += 1;
-                }
-                continue;
-            };
-
-            if options.only_clear_missing {
-                if let Some(scan_id) = index.scan_id() {
-                    let _ = library.storage_scan_claim(scan_id, &key).await;
-                }
+            // Another account's title of the edition was matched (and maybe
+            // relocated) earlier in this walk; its view predates that.
+            if walk.already_matched(title) {
                 summary.unchanged += 1;
                 continue;
             }
+            // The status writes are still keyed by the title's flat row.
+            let Some(book_uuid) = title.book_uuid.as_deref() else {
+                summary.unchanged += 1;
+                continue;
+            };
+
+            let Some(mut key) = find_audio_for_title(title, index, storage, library).await? else {
+                if options.only_mark_found || !options.clear_missing {
+                    summary.unchanged += 1;
+                    continue;
+                }
+                if title_update(title, &walk, None) != TitleUpdate::Cleared {
+                    summary.unchanged += 1;
+                    continue;
+                }
+                let still_there = match title.storage_key.as_deref() {
+                    Some(key) => storage.exists(key).await?,
+                    None => false,
+                };
+                if still_there {
+                    summary.unchanged += 1;
+                    continue;
+                }
+                library
+                    .set_acquire_status(
+                        book_uuid,
+                        &title.account_id,
+                        AcquireStatus::NotAcquired,
+                        None,
+                        None,
+                    )
+                    .await?;
+                summary.cleared += 1;
+                continue;
+            };
 
             if let Some(scan_id) = index.scan_id() {
                 let _ = library.storage_scan_claim(scan_id, &key).await;
             }
+            if options.only_clear_missing {
+                summary.unchanged += 1;
+                continue;
+            }
 
             if options.fix_layout {
                 let planned =
-                    planned_storage_key(library, &request_from_book(book, &options.download)).await;
+                    planned_storage_key(library, &request_from_title(title, &options.download))
+                        .await;
                 if planned != key {
                     match relocate_with_sidecars(storage, &key, &planned).await {
                         Ok(()) => {
@@ -229,30 +234,34 @@ pub async fn match_storage_using_index(
                 }
             }
 
-            let already = book.acquire_status == AcquireStatus::Acquired
-                && book.storage_key.as_deref() == Some(key.as_str());
-            if already {
-                summary.unchanged += 1;
-            } else {
-                library
-                    .set_acquire_status(
-                        book.title_id(),
-                        &book.account_id,
-                        AcquireStatus::Acquired,
-                        Some(&key),
-                        None,
-                    )
-                    .await?;
-                summary.matched += 1;
-                if let Some(scan_id) = index.scan_id() {
-                    let _ = library.storage_scan_claim(scan_id, &key).await;
+            match title_update(title, &walk, Some(&key)) {
+                TitleUpdate::Acquired(key) => {
+                    library
+                        .set_acquire_status(
+                            book_uuid,
+                            &title.account_id,
+                            AcquireStatus::Acquired,
+                            Some(&key),
+                            None,
+                        )
+                        .await?;
+                    walk.record_match(title);
+                    summary.matched += 1;
+                    if let Some(scan_id) = index.scan_id() {
+                        let _ = library.storage_scan_claim(scan_id, &key).await;
+                    }
+                    info!(
+                        asin = %title.asin_or_isbn(),
+                        key = %key,
+                        "matched existing acquired media via storage probe"
+                    );
                 }
-                info!(
-                    asin = %book.asin_or_isbn(),
-                    key = %key,
-                    "matched existing acquired media via storage probe"
-                );
+                TitleUpdate::Unchanged | TitleUpdate::Cleared => summary.unchanged += 1,
             }
+        }
+        match page.next {
+            Some(next) => after = Some(next),
+            None => break,
         }
     }
 
@@ -267,17 +276,16 @@ pub async fn match_storage_using_index(
     Ok(summary)
 }
 
-/// Uppercased title/ASIN/ISBN/UUID tokens used to match an audio object to a book.
-fn book_identity_tokens(book: &BookRecord) -> Vec<String> {
+/// Uppercased product id/ASIN/ISBN/UUID tokens used to match an audio
+/// object to a title.
+fn title_identity_tokens(title: &AcquireTitle) -> Vec<String> {
     let mut ids = Vec::new();
     for raw in [
-        Some(book.title_id()),
-        Some(book.download_product_id()),
-        Some(book.asin_or_isbn()),
-        book.asin.as_deref(),
-        book.isbn.as_deref(),
-        Some(book.product_id.as_str()),
-        Some(book.uuid.as_str()),
+        Some(title.product_id.as_str()),
+        Some(title.asin_or_isbn()),
+        title.asin.as_deref(),
+        title.isbn.as_deref(),
+        title.book_uuid.as_deref(),
     ]
     .into_iter()
     .flatten()
@@ -289,19 +297,20 @@ fn book_identity_tokens(book: &BookRecord) -> Vec<String> {
     ids
 }
 
-/// Resolves a book’s audio key from a still-present `storage_key`, then identity-token lookup.
-async fn find_audio_for_book(
-    book: &BookRecord,
+/// Resolves a title's audio key from the edition's still-present
+/// `storage_key`, then identity-token lookup.
+async fn find_audio_for_title(
+    title: &AcquireTitle,
     index: &crate::reconcile::StorageIndex,
     storage: &dyn StorageBackend,
     library: &LibraryStore,
 ) -> Result<Option<String>> {
-    if let Some(key) = &book.storage_key {
+    if let Some(key) = &title.storage_key {
         if is_audio_key(key) && storage.exists(key).await.map_err(AcquireError::Storage)? {
             return Ok(Some(key.clone()));
         }
     }
-    for id in book_identity_tokens(book) {
+    for id in title_identity_tokens(title) {
         if let Some(scan_id) = index.scan_id() {
             let mut after: Option<(i64, String)> = None;
             loop {
@@ -679,6 +688,67 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(summary.matched, 1);
+    }
+
+    #[tokio::test]
+    async fn an_edition_two_accounts_hold_is_matched_once_and_cleared_by_its_owner() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        backend
+            .put(
+                "Old Layout/Cool Book [B00EXAMPLE1].m4b",
+                Bytes::from_static(b"audio"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        for account in ["acct", "other"] {
+            library
+                .upsert_account("audible", account, "us", None, true, "audible")
+                .await
+                .unwrap();
+            library
+                .upsert_book(&NewBook::minimal("B00EXAMPLE1", account, "us", "Cool Book"))
+                .await
+                .unwrap();
+        }
+        let summary = match_storage_to_library(&library, &backend, MatchStorageOptions::default())
+            .await
+            .unwrap();
+        assert_eq!((summary.matched, summary.unchanged), (1, 1));
+
+        // The file goes away: only the title that acquired the edition
+        // clears it.
+        backend
+            .delete("Old Layout/Cool Book [B00EXAMPLE1].m4b")
+            .await
+            .unwrap();
+        let summary = match_storage_to_library(&library, &backend, MatchStorageOptions::default())
+            .await
+            .unwrap();
+        assert_eq!((summary.cleared, summary.unchanged), (1, 1));
+        let title = library
+            .acquire_title("audible", "other", "us", "B00EXAMPLE1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(title.status, AcquireStatus::NotAcquired);
+
+        // A filter that names neither title walks none of them.
+        let none = match_storage_to_library(
+            &library,
+            &backend,
+            MatchStorageOptions {
+                asins: vec!["B0NOTHERE".into()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((none.matched, none.unchanged, none.cleared), (0, 0, 0));
     }
 
     #[tokio::test]

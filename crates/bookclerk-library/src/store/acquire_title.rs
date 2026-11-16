@@ -7,12 +7,14 @@
 //! `books` row. While `books` still exists the view also names the flat
 //! row's UUID, which the status writes are still keyed by.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
 use super::LibraryStore;
 use crate::entities::{
-    books, edition_acquisitions, edition_identifiers, editions, expressions, holdings,
+    accounts, books, edition_acquisitions, edition_identifiers, editions, expressions, holdings,
     store_listings, works,
 };
 use crate::error::{LibraryError, Result};
@@ -21,6 +23,8 @@ use crate::models::AcquireStatus;
 /// One title an account holds, as acquire reads it from the library model.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AcquireTitle {
+    /// `holdings.id` of the account's holding.
+    pub holding_id: String,
     /// The edition the listing sells: the key the title's files and acquire
     /// state belong to.
     pub edition_id: String,
@@ -28,6 +32,9 @@ pub struct AcquireTitle {
     pub listing_id: String,
     /// Provenance-qualified PluginKey of the store.
     pub plugin_key: String,
+    /// Display alias of the store's plugin (`audible`, `libro`, …), as the
+    /// account records it.
+    pub source: String,
     /// The holding account's id at that store.
     pub account_id: String,
     /// Lower-cased marketplace (empty for a store with one).
@@ -86,6 +93,15 @@ pub struct AcquireTitle {
     pub book_uuid: Option<String>,
 }
 
+/// One page of [`LibraryStore::acquire_titles_page`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcquireTitlePage {
+    /// The page's titles, in holding order.
+    pub titles: Vec<AcquireTitle>,
+    /// The cursor of the next page; `None` once the walk is done.
+    pub next: Option<String>,
+}
+
 impl AcquireTitle {
     /// Naming and display fallback: ASIN, else ISBN, else the store's
     /// product id (the same order as the flat row's).
@@ -112,6 +128,36 @@ fn parse_time(text: Option<&str>) -> Option<DateTime<Utc>> {
         .ok()
         .and_then(|day| day.and_hms_opt(0, 0, 0))
         .map(|at| at.and_utc())
+}
+
+/// The rows of the library model one page of holdings reads, keyed for
+/// assembling each holding's [`AcquireTitle`].
+#[derive(Default)]
+struct TitleRows {
+    /// Store listings by id.
+    listings: HashMap<String, store_listings::Model>,
+    /// Editions by id.
+    editions: HashMap<String, editions::Model>,
+    /// Expressions by id.
+    expressions: HashMap<String, expressions::Model>,
+    /// Works by id.
+    works: HashMap<String, works::Model>,
+    /// Each edition's identifiers.
+    identifiers: HashMap<String, Vec<edition_identifiers::Model>>,
+    /// Edition acquire state by edition id.
+    acquisitions: HashMap<String, edition_acquisitions::Model>,
+    /// Flat `books` rows by (plugin key, account, product id).
+    books: HashMap<(String, String, String), books::Model>,
+    /// Account display aliases by (plugin key, account).
+    sources: HashMap<(String, String), String>,
+}
+
+/// Sorted, de-duplicated copy of `ids`.
+fn distinct(ids: impl Iterator<Item = String>) -> Vec<String> {
+    let mut ids: Vec<String> = ids.collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 impl LibraryStore {
@@ -162,41 +208,195 @@ impl LibraryStore {
         else {
             return Ok(None);
         };
-        let edition = editions::Entity::find_by_id(listing.edition_id.clone())
-            .one(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
-        let expression = match &edition {
-            Some(edition) => expressions::Entity::find_by_id(edition.expression_id.clone())
-                .one(self.db())
-                .await
-                .map_err(LibraryError::Orm)?,
-            None => None,
+        Ok(self.acquire_titles_of(vec![holding]).await?.pop())
+    }
+
+    /// One page of the titles accounts hold, as acquire reads them, in
+    /// holding order: what reconcile and storage matching walk.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - Only this account's titles, when set.
+    /// * `after` - The previous page's [`AcquireTitlePage::next`]; `None`
+    ///   for the first page.
+    /// * `limit` - Most holdings the page reads (1 to 64, and at most the
+    ///   database's `maxResultRows`).
+    ///
+    /// # Returns
+    ///
+    /// The page's titles and the cursor of the next page. A holding whose
+    /// listing is gone has no title, so a page can be short or empty while
+    /// more follow: walk until `next` is `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn acquire_titles_page(
+        &self,
+        account_id: Option<&str>,
+        after: Option<&str>,
+        limit: u64,
+    ) -> Result<AcquireTitlePage> {
+        let want = match self.db_capabilities().max_result_rows {
+            0 => limit.clamp(1, 64),
+            rows => limit.clamp(1, 64).min(u64::from(rows).max(1)),
         };
-        let work = match &expression {
-            Some(expression) => works::Entity::find_by_id(expression.work_id.clone())
-                .one(self.db())
-                .await
-                .map_err(LibraryError::Orm)?,
-            None => None,
-        };
-        let identifiers = edition_identifiers::Entity::find()
-            .filter(edition_identifiers::Column::EditionId.eq(listing.edition_id.as_str()))
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
-        let acquisition = edition_acquisitions::Entity::find_by_id(listing.edition_id.clone())
-            .one(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
-        let book_uuid = books::Entity::find()
-            .filter(books::Column::PluginKey.eq(plugin_key))
-            .filter(books::Column::AccountId.eq(account_id))
-            .filter(books::Column::ProductId.eq(product_id.as_str()))
-            .one(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .map(|book| book.uuid);
+        let mut query = super::holdings::find_holdings()
+            .filter(holdings::Column::HolderKind.eq("account"))
+            .order_by_asc(holdings::Column::Id)
+            .limit(want);
+        if let Some(account_id) = account_id {
+            query = query.filter(holdings::Column::AccountId.eq(account_id));
+        }
+        if let Some(after) = after {
+            query = query.filter(holdings::Column::Id.gt(after));
+        }
+        let holdings = query.all(self.db()).await.map_err(LibraryError::Orm)?;
+        let full = u64::try_from(holdings.len()).unwrap_or(u64::MAX) >= want;
+        let next = holdings
+            .last()
+            .filter(|_| full)
+            .map(|holding| holding.id.clone());
+        Ok(AcquireTitlePage {
+            titles: self.acquire_titles_of(holdings).await?,
+            next,
+        })
+    }
+
+    /// The titles of `holdings` (account holdings), in their order, read in
+    /// one chunked query per table.
+    async fn acquire_titles_of(&self, holdings: Vec<holdings::Model>) -> Result<Vec<AcquireTitle>> {
+        if holdings.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = self.title_rows(&holdings).await?;
+        Ok(holdings
+            .into_iter()
+            .filter_map(|holding| rows.title(holding))
+            .collect())
+    }
+
+    /// Reads the rows the titles of `holdings` are built from.
+    async fn title_rows(&self, holdings: &[holdings::Model]) -> Result<TitleRows> {
+        use super::library_model::{find_chunked, find_chunked_paged};
+        let mut rows = TitleRows::default();
+        let listing_ids = distinct(holdings.iter().map(|h| h.listing_id.clone()));
+        rows.listings = find_chunked::<store_listings::Entity, _>(self, &listing_ids, |part| {
+            store_listings::Entity::find().filter(store_listings::Column::Id.is_in(part.to_vec()))
+        })
+        .await?
+        .into_iter()
+        .map(|m| (m.id.clone(), m))
+        .collect();
+        let edition_ids = distinct(rows.listings.values().map(|l| l.edition_id.clone()));
+        rows.editions = find_chunked::<editions::Entity, _>(self, &edition_ids, |part| {
+            editions::Entity::find().filter(editions::Column::Id.is_in(part.to_vec()))
+        })
+        .await?
+        .into_iter()
+        .map(|m| (m.id.clone(), m))
+        .collect();
+        let expression_ids = distinct(rows.editions.values().map(|e| e.expression_id.clone()));
+        rows.expressions = find_chunked::<expressions::Entity, _>(self, &expression_ids, |part| {
+            expressions::Entity::find().filter(expressions::Column::Id.is_in(part.to_vec()))
+        })
+        .await?
+        .into_iter()
+        .map(|m| (m.id.clone(), m))
+        .collect();
+        let work_ids = distinct(rows.expressions.values().map(|e| e.work_id.clone()));
+        rows.works = find_chunked::<works::Entity, _>(self, &work_ids, |part| {
+            works::Entity::find().filter(works::Column::Id.is_in(part.to_vec()))
+        })
+        .await?
+        .into_iter()
+        .map(|m| (m.id.clone(), m))
+        .collect();
+        for identifier in
+            find_chunked_paged::<edition_identifiers::Entity, _>(self, &edition_ids, |part| {
+                edition_identifiers::Entity::find()
+                    .filter(edition_identifiers::Column::EditionId.is_in(part.to_vec()))
+                    .order_by_asc(edition_identifiers::Column::EditionId)
+                    .order_by_asc(edition_identifiers::Column::Scheme)
+                    .order_by_asc(edition_identifiers::Column::Marketplace)
+                    .order_by_asc(edition_identifiers::Column::Value)
+            })
+            .await?
+        {
+            rows.identifiers
+                .entry(identifier.edition_id.clone())
+                .or_default()
+                .push(identifier);
+        }
+        rows.acquisitions =
+            find_chunked::<edition_acquisitions::Entity, _>(self, &edition_ids, |part| {
+                edition_acquisitions::Entity::find()
+                    .filter(edition_acquisitions::Column::EditionId.is_in(part.to_vec()))
+            })
+            .await?
+            .into_iter()
+            .map(|m| (m.edition_id.clone(), m))
+            .collect();
+        let product_ids = distinct(rows.listings.values().map(|l| l.product_id.clone()));
+        rows.books = find_chunked_paged::<books::Entity, _>(self, &product_ids, |part| {
+            books::Entity::find()
+                .filter(books::Column::ProductId.is_in(part.to_vec()))
+                .order_by_asc(books::Column::Id)
+        })
+        .await?
+        .into_iter()
+        .map(|m| {
+            (
+                (
+                    m.plugin_key.clone(),
+                    m.account_id.clone(),
+                    m.product_id.clone(),
+                ),
+                m,
+            )
+        })
+        .collect();
+        let account_ids = distinct(holdings.iter().filter_map(|h| h.account_id.clone()));
+        rows.sources = find_chunked_paged::<accounts::Entity, _>(self, &account_ids, |part| {
+            accounts::Entity::find()
+                .filter(accounts::Column::AccountId.is_in(part.to_vec()))
+                .order_by_asc(accounts::Column::Id)
+        })
+        .await?
+        .into_iter()
+        .map(|m| ((m.plugin_key, m.account_id), m.source))
+        .collect();
+        Ok(rows)
+    }
+}
+
+impl TitleRows {
+    /// The title of one account holding; `None` when the holding names no
+    /// account or its listing is gone.
+    fn title(&self, holding: holdings::Model) -> Option<AcquireTitle> {
+        let plugin_key = holding.plugin_key?;
+        let account_id = holding.account_id?;
+        let listing = self.listings.get(&holding.listing_id)?.clone();
+        let edition = self.editions.get(&listing.edition_id);
+        let expression = edition.and_then(|e| self.expressions.get(&e.expression_id));
+        let work = expression.and_then(|e| self.works.get(&e.work_id));
+        let identifiers = self
+            .identifiers
+            .get(&listing.edition_id)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let acquisition = self.acquisitions.get(&listing.edition_id);
+        let book = self.books.get(&(
+            plugin_key.clone(),
+            account_id.clone(),
+            listing.product_id.clone(),
+        ));
+        let source = self
+            .sources
+            .get(&(plugin_key.clone(), account_id.clone()))
+            .cloned()
+            .or_else(|| book.map(|b| b.source.clone()))
+            .unwrap_or_default();
 
         let asins = || identifiers.iter().filter(|m| m.scheme == "asin");
         let asin = asins()
@@ -213,11 +413,11 @@ impl LibraryStore {
             match acquisition {
                 Some(row) => (
                     AcquireStatus::parse(&row.status).unwrap_or_default(),
-                    row.storage_key,
-                    Some(row.title_uuid),
+                    row.storage_key.clone(),
+                    Some(row.title_uuid.clone()),
                     AcquireStatus::parse(&row.pdf_status).unwrap_or_default(),
-                    row.pdf_storage_key,
-                    row.pdf_title_uuid,
+                    row.pdf_storage_key.clone(),
+                    row.pdf_title_uuid.clone(),
                 ),
                 None => (
                     AcquireStatus::NotAcquired,
@@ -229,12 +429,17 @@ impl LibraryStore {
                 ),
             };
         let (edition_subtitle, edition_published, edition_minutes) = edition
-            .map(|e| (e.subtitle, e.published_at, e.duration_minutes))
+            .map(|e| {
+                (
+                    e.subtitle.clone(),
+                    e.published_at.clone(),
+                    e.duration_minutes,
+                )
+            })
             .unwrap_or_default();
         let abridged_expression = expression
-            .as_ref()
             .is_some_and(|e| e.abridgement == bookclerk_resolve::Abridgement::Abridged.as_str());
-        let content_kind = match work.as_ref() {
+        let content_kind = match work {
             Some(w) if w.kind == bookclerk_resolve::WorkKind::Podcast.as_str() => {
                 // An episode names its show's product on the listing even
                 // before the show's work is linked as its parent.
@@ -246,11 +451,13 @@ impl LibraryStore {
             }
             _ => "book",
         };
-        Ok(Some(AcquireTitle {
+        Some(AcquireTitle {
+            holding_id: holding.id,
             edition_id: listing.edition_id,
             listing_id: listing.id,
             plugin_key: listing.plugin_key,
-            account_id: account_id.to_string(),
+            source,
+            account_id,
             marketplace: listing.marketplace,
             product_id: listing.product_id,
             asin,
@@ -280,8 +487,8 @@ impl LibraryStore {
             pdf_status,
             pdf_storage_key,
             pdf_acquired_by,
-            book_uuid,
-        }))
+            book_uuid: book.map(|b| b.uuid.clone()),
+        })
     }
 }
 
@@ -469,5 +676,94 @@ mod tests {
         orphan.series_asin = Some("B0NOSHOW".into());
         store.upsert_book(&orphan).await.unwrap();
         assert_eq!(kind("B0EP0002").await, "episode");
+    }
+
+    #[tokio::test]
+    async fn a_walk_of_pages_reads_every_held_title_under_every_profile() {
+        for profile in crate::test_support::Profile::ALL {
+            let kit = crate::test_support::sqlite::memory(profile).await;
+            let store = kit.store();
+            let name = profile.name();
+            for account in ["acct", "other"] {
+                store
+                    .upsert_account("audible", account, "us", None, true, "audible")
+                    .await
+                    .unwrap();
+            }
+            for product in ["B0PAGE001", "B0PAGE002", "B0PAGE003"] {
+                store
+                    .upsert_book(&NewBook::minimal(product, "acct", "us", product))
+                    .await
+                    .unwrap();
+            }
+            // The other account holds one of the same products.
+            store
+                .upsert_book(&NewBook::minimal("B0PAGE002", "other", "us", "B0PAGE002"))
+                .await
+                .unwrap();
+
+            let walk = |account: Option<&'static str>| {
+                let store = store.clone();
+                async move {
+                    let mut titles = Vec::new();
+                    let mut after = None;
+                    let mut pages = 0;
+                    loop {
+                        let page = store
+                            .acquire_titles_page(account, after.as_deref(), 2)
+                            .await
+                            .unwrap();
+                        pages += 1;
+                        titles.extend(page.titles);
+                        match page.next {
+                            Some(next) => after = Some(next),
+                            None => break,
+                        }
+                    }
+                    (titles, pages)
+                }
+            };
+
+            let (all, pages) = walk(None).await;
+            assert_eq!(all.len(), 4, "{name}");
+            assert!(pages >= 2, "{name}: paged by two");
+            for title in &all {
+                let single = store
+                    .acquire_title(
+                        &title.plugin_key,
+                        &title.account_id,
+                        &title.marketplace,
+                        &title.product_id,
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(single.as_ref(), Some(title), "{name}");
+                assert_eq!(title.source, "audible", "{name}");
+                assert!(title.book_uuid.is_some(), "{name}");
+            }
+            let mut held: Vec<_> = all
+                .iter()
+                .map(|t| (t.account_id.as_str(), t.product_id.as_str()))
+                .collect();
+            held.sort_unstable();
+            assert_eq!(
+                held,
+                vec![
+                    ("acct", "B0PAGE001"),
+                    ("acct", "B0PAGE002"),
+                    ("acct", "B0PAGE003"),
+                    ("other", "B0PAGE002"),
+                ],
+                "{name}"
+            );
+
+            let (other, _) = walk(Some("other")).await;
+            assert_eq!(other.len(), 1, "{name}");
+            assert_eq!(other[0].account_id, "other");
+            // Two accounts' titles of one product share its edition.
+            let shared: Vec<_> = all.iter().filter(|t| t.product_id == "B0PAGE002").collect();
+            assert_eq!(shared[0].edition_id, shared[1].edition_id, "{name}");
+            assert_ne!(shared[0].book_uuid, shared[1].book_uuid, "{name}");
+        }
     }
 }

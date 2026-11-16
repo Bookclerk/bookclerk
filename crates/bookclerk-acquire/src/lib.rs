@@ -43,7 +43,7 @@ pub use pipeline::{
     CoverImages, PlannedTitleNames, NAME_WILDCARD, NUMBER_WILDCARD,
 };
 pub use reconcile::{
-    extract_asins_from_key, find_existing_for_book, find_existing_for_request, reconcile_library,
+    extract_asins_from_key, find_existing_for_request, find_existing_for_title, reconcile_library,
     ReconcileOptions, ReconcileSummary, StorageIndex,
 };
 pub use storage_scan::{scan_storage, ScanCheckpoint};

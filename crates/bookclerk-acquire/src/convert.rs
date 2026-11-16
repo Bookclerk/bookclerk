@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
+use bookclerk_library::{AcquireStatus, AcquireTitle, LibraryStore};
 use bookclerk_media::encode_to_mp3;
 use bookclerk_storage::{ObjectMeta, StorageBackend};
 
@@ -53,7 +53,9 @@ pub struct ConvertSummary {
 ///
 /// * `library` - Library store used to update acquire status / storage key.
 /// * `storage` - Object storage backend holding the source and destination objects.
-/// * `book` - Acquired book row whose `storage_key` points at m4b/m4a.
+/// * `title` - The held title whose edition's audio (its `storage_key`) is
+///   an m4b/m4a. It must be the title that acquired the edition, since only
+///   that title's writes change an acquired edition's key.
 /// * `req` - Cache directory, force flag, and LAME settings.
 ///
 /// # Returns
@@ -62,16 +64,16 @@ pub struct ConvertSummary {
 ///
 /// # Errors
 ///
-/// Returns [`AcquireError`] when the source is missing/ineligible, encode fails,
-/// or library/storage updates fail.
+/// Returns [`AcquireError`] when the source is missing/ineligible, another
+/// title acquired the edition, encode fails, or library/storage updates fail.
 pub async fn convert_book(
     library: &LibraryStore,
     storage: &dyn StorageBackend,
-    book: &BookRecord,
+    title: &AcquireTitle,
     req: &ConvertRequest,
 ) -> Result<String> {
-    let title_id = book.title_id();
-    let key = book
+    let title_id = acquiring_title(title)?;
+    let key = title
         .storage_key
         .as_ref()
         .ok_or_else(|| AcquireError::Other(anyhow::anyhow!("{title_id}: no storage_key")))?;
@@ -86,8 +88,8 @@ pub async fn convert_book(
     if !req.force && storage.exists(&mp3_key).await? {
         library
             .set_acquire_status(
-                book.title_id(),
-                &book.account_id,
+                title_id,
+                &title.account_id,
                 AcquireStatus::Acquired,
                 Some(&mp3_key),
                 None,
@@ -96,7 +98,7 @@ pub async fn convert_book(
         return Ok(mp3_key);
     }
 
-    let file_id = book.asin_or_isbn();
+    let file_id = title.asin_or_isbn();
     let work_dir = req.cache_dir.join("convert").join(format!(
         "{file_id}-{}",
         std::time::SystemTime::now()
@@ -109,7 +111,7 @@ pub async fn convert_book(
     convert_with_encoder(
         library,
         storage,
-        book,
+        title,
         req,
         &work_dir,
         &mp3_key,
@@ -129,11 +131,28 @@ pub async fn convert_book(
     .await
 }
 
+/// The library UUID of `title` when it is the title that acquired its
+/// edition: the one whose status write moves the edition's key.
+///
+/// # Errors
+///
+/// Returns [`AcquireError::Other`] when `title` has no library row or
+/// another title acquired the edition.
+fn acquiring_title(title: &AcquireTitle) -> Result<&str> {
+    match title.book_uuid.as_deref() {
+        Some(uuid) if title.acquired_by.as_deref() == Some(uuid) => Ok(uuid),
+        _ => Err(AcquireError::Other(anyhow::anyhow!(
+            "{}: another title acquired this edition; convert that title",
+            title.product_id
+        ))),
+    }
+}
+
 /// Streams conversion scratch under `work_dir` using `encode` for the output file.
 pub(crate) async fn convert_with_encoder<F, Fut>(
     library: &LibraryStore,
     storage: &dyn StorageBackend,
-    book: &BookRecord,
+    title: &AcquireTitle,
     req: &ConvertRequest,
     work_dir: &Path,
     mp3_key: &str,
@@ -143,9 +162,10 @@ where
     F: FnOnce(PathBuf, PathBuf, u64) -> Fut,
     Fut: std::future::Future<Output = std::result::Result<(), String>>,
 {
-    let key = book.storage_key.as_deref().unwrap_or("");
+    let title_id = acquiring_title(title)?;
+    let key = title.storage_key.as_deref().unwrap_or("");
     let ext = key.rsplit('.').next().unwrap_or("bin");
-    let file_id = book.asin_or_isbn();
+    let file_id = title.asin_or_isbn();
     tokio::fs::create_dir_all(work_dir).await?;
     let input = work_dir.join(format!("{file_id}.{ext}"));
     let output = work_dir.join(format!("{file_id}.mp3"));
@@ -258,7 +278,7 @@ where
             content_type: Some("audio/mpeg".into()),
             content_length: Some(out_len),
             asin: Some(file_id.to_string()),
-            title: Some(book.title.clone()),
+            title: Some(title.title.clone()),
             creation_time: None,
             last_write_time: None,
             ..Default::default()
@@ -266,8 +286,8 @@ where
         storage.put_file(mp3_key, &output, meta).await?;
         library
             .set_acquire_status(
-                book.title_id(),
-                &book.account_id,
+                title_id,
+                &title.account_id,
                 AcquireStatus::Acquired,
                 Some(mp3_key),
                 None,
@@ -495,7 +515,7 @@ mod tests {
         )
     }
 
-    async fn acquired_book(store: &LibraryStore) -> bookclerk_library::BookRecord {
+    async fn acquired_book(store: &LibraryStore) -> bookclerk_library::AcquireTitle {
         store
             .upsert_account("audible", "acct", "us", None, true, "audible")
             .await
@@ -515,10 +535,36 @@ mod tests {
             .await
             .unwrap();
         store
-            .get_book("B00CONVERT1", "acct")
+            .acquire_title("audible", "acct", "us", "B00CONVERT1")
             .await
             .unwrap()
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn only_the_title_that_acquired_the_edition_converts_it() {
+        let store = library().await;
+        let owner = acquired_book(&store).await;
+        store
+            .upsert_account("audible", "other", "us", None, true, "audible")
+            .await
+            .unwrap();
+        store
+            .upsert_book(&NewBook::minimal("B00CONVERT1", "other", "us", "Convert"))
+            .await
+            .unwrap();
+        let sibling = store
+            .acquire_title("audible", "other", "us", "B00CONVERT1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sibling.edition_id, owner.edition_id);
+        let dir = tempfile::tempdir().unwrap();
+        let root = LocalFsBackend::new(dir.path().join("store")).unwrap();
+        let err = convert_book(&store, &root, &sibling, &request(dir.path(), 10_000))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("another title"), "{err}");
     }
 
     fn request(cache: &Path, quota: u64) -> ConvertRequest {
