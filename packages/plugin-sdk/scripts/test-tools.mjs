@@ -455,12 +455,12 @@ console.log("ok binding errors name the row index");
   }
   const types = renderEnvTypes({ ...outbound, sockets: { binding: "PUSH" } });
   if (!types.includes("PUSH: SocketsBinding;") || !types.includes("SocketsBinding }")) {
-    console.error("FAIL sockets env types", types);
+    console.error("FAIL sockets env types: missing the PUSH SocketsBinding property or import");
     process.exit(1);
   }
   const formatted = formatManifest({ ...outbound, sockets: { binding: "PUSH" } });
   if (!formatted.includes('[sockets]\nbinding = "PUSH"')) {
-    console.error("FAIL sockets format", formatted);
+    console.error("FAIL sockets format: missing the renamed [sockets] table");
     process.exit(1);
   }
   console.log("ok [sockets] validates, formats and types as SocketsBinding");
