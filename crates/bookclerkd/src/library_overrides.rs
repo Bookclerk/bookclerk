@@ -72,6 +72,7 @@ pub(crate) struct ConflictJson {
     kind: String,
     /// The editions (`strong_identifiers`) or works (the other kinds)
     /// involved.
+    #[schema(example = json!(["6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b", "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"]))]
     subject_ids: Vec<String>,
     /// The listing's storefront PluginKey.
     #[schema(example = "plugin:audible")]
@@ -96,6 +97,9 @@ pub(crate) struct ConflictPage {
     /// The conflicts, by listing.
     conflicts: Vec<ConflictJson>,
     /// Pass as `cursor` for the next page; absent on the last page.
+    #[schema(
+        example = "eyJsaXN0aW5nX2lkIjoiMmY0ZTZhOGMiLCJraW5kIjoiYW1iaWd1b3VzX3dvcmsiLCJzdWJqZWN0X2lkcyI6IltdIn0"
+    )]
     next_cursor: Option<String>,
 }
 
