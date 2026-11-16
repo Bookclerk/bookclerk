@@ -7853,6 +7853,7 @@ pub(crate) mod library_index;
 pub(crate) mod library_model;
 pub(crate) mod listening;
 pub(crate) mod listing_reads;
+pub(crate) mod overrides;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
 pub(crate) mod request_queue;

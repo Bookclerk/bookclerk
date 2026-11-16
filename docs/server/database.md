@@ -712,9 +712,12 @@ library holds as works, expressions and editions:
   instead of keeping their own copies
   ([Shared listing pool](../internals/discovery.md#shared-listing-pool));
 - `contributors` and `credits`, `series` and `series_entries`;
-- `resolution_overrides` (an Administrator's pins and splits) and
-  `resolution_conflicts` (identifier clashes the resolver recorded instead
-  of merging);
+- `resolution_overrides` (an Administrator's pins and splits; a pin is
+  made with `PUT /api/library/listings/{id}/pin`, which moves the listing
+  to the edition in the same batch, and each write of the row gets a new
+  `revision`) and `resolution_conflicts` (identifier clashes the resolver
+  recorded instead of merging, listed by `GET /api/library/conflicts` and
+  dropped when the listing is pinned);
 - `edition_files`: every key an acquire or a host upload wrote, per
   destination, with the edition it belongs to (a branch's delivered
   title's included), its role (`audio`, `part`,

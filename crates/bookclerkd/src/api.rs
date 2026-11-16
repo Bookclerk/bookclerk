@@ -1235,6 +1235,13 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         // Member or Host to the store accounts linked to them.
         .routes(routes!(trigger_scan))
         .routes(routes!(trigger_acquire))
+        // How listings resolve: the handlers admit only the operator, an
+        // Owner or an Administrator.
+        .routes(routes!(
+            crate::library_overrides::put_listing_pin,
+            crate::library_overrides::delete_listing_pin
+        ))
+        .routes(routes!(crate::library_overrides::list_conflicts))
         .routes(routes!(
             crate::node_api::get_node_invites,
             crate::node_api::post_node_invite

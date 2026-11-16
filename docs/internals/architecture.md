@@ -165,6 +165,8 @@ the API. Config reload swaps auth before listen rebind. See [sign-in.md](../serv
 | `POST` | `/api/library/acquire`, `/acquire` | yes | Queue acquire |
 | `GET` | `/api/library/works` | yes | Works from the page index, by cursor, or matching a search (`q`) |
 | `GET` | `/api/library/works/{id}` | yes | One work with editions, listings, holdings and own state |
+| `PUT`/`DELETE` | `/api/library/listings/{id}/pin` | Administrator | Pin a listing to an edition (moves it now), or drop the pin |
+| `GET` | `/api/library/conflicts` | Administrator | Conflicts the resolver recorded, by cursor |
 | `GET` | `/api/library/editions/{id}/cover` | yes | Best-effort local cover of an acquired edition |
 | static | `/` | no | Built React UI (`ui/dist`) when present |
 

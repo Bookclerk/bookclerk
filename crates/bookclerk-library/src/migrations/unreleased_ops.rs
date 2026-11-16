@@ -471,6 +471,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     // An Administrator's decision the resolver obeys: pin a listing to an
     // edition, or keep the work matcher away from a work it split.
+    // `revision` is new with every write of the row, so the events a pin
+    // publishes are told apart from an earlier pin to the same edition.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS resolution_overrides (
         subject_kind TEXT NOT NULL CHECK (subject_kind IN ('listing', 'work')),
@@ -479,6 +481,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         target_id TEXT,
         created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
         created_at TEXT NOT NULL,
+        revision TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (subject_kind, subject_id)
     )",
     ),

@@ -186,6 +186,7 @@ pub use store::{
         WorkEnrichment,
     },
     listening::{ListeningIdentifiers, ListeningMatch, ListeningProgressWrite},
+    overrides::{ConflictCursor, PinOutcome, ResolutionConflict, MAX_CONFLICT_PAGE},
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
     prefer_enrichment_source,

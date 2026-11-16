@@ -395,6 +395,12 @@ serves the cover an acquire wrote beside an edition's file, and
 `POST /api/library/acquire` takes `editions`, each queued as one of its
 titles until `books` is retired. The web app lists works, and
 `/api/library/books` (with `/{uuid}` and `/{uuid}/cover`) is removed.
+`PUT /api/library/works/{id}/state` edits the caller's own state, and an
+Administrator pins a listing to an edition with
+`PUT /api/library/listings/{id}/pin` (`DELETE` removes the pin) and reads
+the recorded conflicts from `GET /api/library/conflicts`. A pin moves the
+listing in the batch that records it, and its `edition_linked` dedup key
+carries the pin's revision, so moving a listing back publishes again.
 
 User-facing pages (the glossary, *Where books go*, *Branches*, the plugin ABI
 reference) change with the step that changes their behaviour.
