@@ -728,7 +728,7 @@ impl LibraryStore {
     /// # Returns
     ///
     /// Each key with a fresh answer, mapped to its listings in the store's
-    /// order (at most [`STORE_CALL_MAX_HITS`]). Absent or expired keys are
+    /// order (at most 500 per key). Absent or expired keys are
     /// left out.
     ///
     /// # Errors
