@@ -733,7 +733,11 @@ library holds as works, expressions and editions:
   storage key, last error) and the account holding (`holding_id`) whose
   title's write set it, written with the title's own status. Only that
   holding changes an acquired edition while it exists, so a sibling
-  title's failed attempt never hides its files. The companion PDF's state
+  title's failed attempt never hides its files. A write applies only
+  while its holding still holds the edition when it runs, so a status read
+  before a revoke or rescan cannot name a holding that is gone. Once the
+  acquiring holding is gone, the edition has no owner and any title that
+  holds it (reconcile included) may change it. The companion PDF's state
   (`pdf_status`, `pdf_storage_key`) and the holding that set it
   (`pdf_holding_id`) follow the same rule.
 - `library_work_rows`: the page index, one row per top-level work that

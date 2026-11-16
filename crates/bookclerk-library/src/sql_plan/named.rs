@@ -2522,13 +2522,17 @@ fn plan_set_acquire_status(
             ),
             // The edition's row: created when missing, then set unless
             // another holding that still exists acquired it (that holding's
-            // writes alone change an acquired edition).
+            // writes alone change an acquired edition). The writing holding
+            // must still hold the edition when the plan runs: it was read
+            // before, and a revoke or rescan may have removed it since.
             sql(
                 "INSERT OR IGNORE INTO edition_acquisitions (\
                     edition_id, status, storage_key, error_message, holding_id, updated_at\
                  ) SELECT ?, ?, ?, ?, ?, ? \
                  WHERE ? != '' AND EXISTS (SELECT 1 FROM books WHERE uuid = ?) \
-                   AND EXISTS (SELECT 1 FROM editions WHERE id = ?)",
+                   AND EXISTS (SELECT 1 FROM editions WHERE id = ?) \
+                   AND EXISTS (SELECT 1 FROM holdings WHERE id = ? \
+                     AND listing_id IN (SELECT id FROM store_listings WHERE edition_id = ?))",
                 vec![
                     j_str(edition),
                     j_str(status),
@@ -2538,6 +2542,8 @@ fn plan_set_acquire_status(
                     j_str(now),
                     j_str(edition),
                     j_str(book_uuid),
+                    j_str(edition),
+                    j_str(holding),
                     j_str(edition),
                 ],
             ),
@@ -2547,7 +2553,9 @@ fn plan_set_acquire_status(
                  WHERE edition_id = ? \
                    AND (status != 'acquired' OR holding_id = ? \
                         OR NOT EXISTS (SELECT 1 FROM holdings WHERE id = edition_acquisitions.holding_id)) \
-                   AND EXISTS (SELECT 1 FROM books WHERE uuid = ?)",
+                   AND EXISTS (SELECT 1 FROM books WHERE uuid = ?) \
+                   AND EXISTS (SELECT 1 FROM holdings WHERE id = ? \
+                     AND listing_id IN (SELECT id FROM store_listings WHERE edition_id = ?))",
                 vec![
                     j_str(status),
                     j_opt_str(storage_key),
@@ -2557,6 +2565,8 @@ fn plan_set_acquire_status(
                     j_str(edition),
                     j_str(holding),
                     j_str(book_uuid),
+                    j_str(holding),
+                    j_str(edition),
                 ],
             ),
             sql(
@@ -5150,6 +5160,21 @@ mod tests {
             .unwrap();
         run("b1", "queued", None);
         assert_eq!(edition_row(&conn), ("queued".into(), None, "h-b1".into()));
+        // A write naming a holding that no longer exists (read before a
+        // revoke or rescan removed it) changes nothing.
+        conn.execute("DELETE FROM holdings WHERE id = 'h-b1'", [])
+            .unwrap();
+        run("b1", "acquired", Some("c.m4b"));
+        assert_eq!(edition_row(&conn), ("queued".into(), None, "h-b1".into()));
+        conn.execute("DELETE FROM edition_acquisitions", [])
+            .unwrap();
+        run("b1", "acquired", Some("c.m4b"));
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM edition_acquisitions", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

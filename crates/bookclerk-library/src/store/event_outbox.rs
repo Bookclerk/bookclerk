@@ -22,7 +22,7 @@ use crate::column_read::SelectColumnExt;
 use crate::control_plane::{bump_if_stamped, bump_on, exec_bumped_via, sea_probe, Bump, LiveTopic};
 use crate::entities::{
     books, domain_events, edition_acquisitions, event_deliveries, event_outbox_stats,
-    event_subscriber_nodes, holdings, plugin_instances,
+    event_subscriber_nodes, holdings, plugin_instances, store_listings,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{
@@ -3152,6 +3152,39 @@ async fn holding_exists<C: ConnectionTrait>(db: &C, holding_id: &str) -> Result<
         .is_some())
 }
 
+/// Whether holding `holding_id` still exists and holds a listing of
+/// edition `edition_id`, read when the write runs.
+///
+/// The holding a write names was read before the write (from the title's
+/// books row); a revoke or rescan in between deletes or replaces it, and
+/// such a write must not name a holding that no longer holds the edition.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Orm`] when a read fails.
+async fn holding_holds_edition<C: ConnectionTrait>(
+    db: &C,
+    holding_id: &str,
+    edition_id: &str,
+) -> Result<bool> {
+    let Some(holding) = super::holdings::find_holdings()
+        .filter(holdings::Column::Id.eq(holding_id))
+        .one(db)
+        .await
+        .map_err(LibraryError::Orm)?
+    else {
+        return Ok(false);
+    };
+    Ok(store_listings::Entity::find()
+        .filter(store_listings::Column::Id.eq(holding.listing_id))
+        .filter(store_listings::Column::EditionId.eq(edition_id))
+        .into_column::<String, _>(store_listings::Column::Id)
+        .one(db)
+        .await
+        .map_err(LibraryError::Orm)?
+        .is_some())
+}
+
 /// Write an edition's acquire state for a write from account holding
 /// `holding_id`: creates the row when missing, and leaves an edition
 /// another holding that still exists acquired alone, since that holding's
@@ -3165,6 +3198,9 @@ pub(crate) async fn update_edition_acquisition_on<C: ConnectionTrait>(
     storage_key: Option<&str>,
     error_message: Option<&str>,
 ) -> Result<()> {
+    if !holding_holds_edition(db, holding_id, edition_id).await? {
+        return Ok(());
+    }
     let row = edition_acquisitions::ActiveModel {
         edition_id: Set(edition_id.to_string()),
         status: Set(status.as_str().to_string()),
@@ -3211,6 +3247,9 @@ pub(crate) async fn update_edition_pdf_on<C: ConnectionTrait>(
     status: AcquireStatus,
     pdf_storage_key: Option<&str>,
 ) -> Result<()> {
+    if !holding_holds_edition(db, holding_id, edition_id).await? {
+        return Ok(());
+    }
     let now = now_str();
     let pdf = |row: &mut edition_acquisitions::ActiveModel| {
         row.pdf_status = Set(status.as_str().to_string());

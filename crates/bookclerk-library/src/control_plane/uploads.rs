@@ -1692,6 +1692,8 @@ pub async fn commit_upload(
                 text(holding),
                 text(&now),
                 text(edition),
+                text(holding),
+                text(edition),
             ];
             binds.extend(gate());
             statements.push(exec(
@@ -1699,7 +1701,10 @@ pub async fn commit_upload(
                     "INSERT OR IGNORE INTO edition_acquisitions (\
                         edition_id, status, storage_key, error_message, holding_id, updated_at\
                      ) SELECT ?, 'acquired', ?, NULL, ?, ? \
-                     WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?) AND {gate_sql}"
+                     WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?) \
+                       AND EXISTS (SELECT 1 FROM holdings WHERE id = ? \
+                         AND listing_id IN (SELECT id FROM store_listings WHERE edition_id = ?)) \
+                       AND {gate_sql}"
                 ),
                 binds,
             ));
@@ -1709,10 +1714,13 @@ pub async fn commit_upload(
                 text(&now),
                 text(edition),
                 text(holding),
+                text(holding),
+                text(edition),
             ];
             binds.extend(gate());
-            // Another live holding that acquired this edition keeps it, as
-            // in `plan_set_acquire_status`.
+            // Another live holding that acquired this edition keeps it, and
+            // the uploading holding must still hold the edition, as in
+            // `plan_set_acquire_status`.
             statements.push(exec(
                 &format!(
                     "UPDATE edition_acquisitions SET status = 'acquired', storage_key = ?, \
@@ -1721,6 +1729,8 @@ pub async fn commit_upload(
                         AND (status != 'acquired' OR holding_id = ? \
                              OR NOT EXISTS (SELECT 1 FROM holdings \
                                             WHERE id = edition_acquisitions.holding_id)) \
+                        AND EXISTS (SELECT 1 FROM holdings WHERE id = ? \
+                          AND listing_id IN (SELECT id FROM store_listings WHERE edition_id = ?)) \
                         AND {gate_sql}"
                 ),
                 binds,
