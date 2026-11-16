@@ -18,6 +18,7 @@ import {
   utcDay,
 } from "./limits.ts";
 import {
+  cookiePairs,
   cookiesForContainer,
   decodeLaunchForm,
   MAX_FORM_BYTES,
@@ -27,7 +28,7 @@ import {
   SESSION_COOKIE,
   siteverifyPassed,
 } from "./inputs.ts";
-import type { Env, SessionApi } from "./env.ts";
+import type { Env, PortalHandoff, SessionApi } from "./env.ts";
 import {
   endedPage,
   htmlResponse,
@@ -253,6 +254,22 @@ function redirect(location: string, cookies: string[] = []): Response {
   });
   for (const c of cookies) headers.append("Set-Cookie", c);
   return new Response(null, { status: 303, headers });
+}
+
+/**
+ * The `Set-Cookie` line that hands the visitor's portal session to the
+ * browser. It lasts until the demo session's hard stop, like the Worker's
+ * own cookie: a cookie without `Max-Age` lives only as long as the browser
+ * process, and mobile browsers end that process while the visitor is in
+ * another app, which signed visitors out with time still left.
+ *
+ * @param portal - The portal session and the hard stop.
+ * @param nowSeconds - The time now, Unix seconds.
+ * @returns The `Set-Cookie` line.
+ */
+export function portalCookie(portal: PortalHandoff, nowSeconds: number): string {
+  const maxAge = Math.max(0, portal.endsAt - nowSeconds);
+  return `${PORTAL_COOKIE}=${portal.value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
 }
 
 /** Clears the Worker's session cookie and bookclerkd's portal session. */
@@ -530,7 +547,17 @@ async function proxy(
   ]) {
     forwarded.headers.delete(h);
   }
-  const cookies = cookiesForContainer(request.headers.get("Cookie"));
+  let cookies = cookiesForContainer(request.headers.get("Cookie"));
+  // A browser that still holds the demo's cookie but lost the portal
+  // session (a cookie from before it lasted the whole session, or one the
+  // browser dropped) gets it back instead of bookclerkd's sign-in page,
+  // which the demo refuses. The demo's cookie already lets that browser
+  // read it from /_demo/enter, so this gives nobody more than they have.
+  const restored = hasPortalCookie(cookies) ? null : await sessionStub(env, id).portalSession();
+  if (restored)
+    cookies = cookies
+      ? `${cookies}; ${PORTAL_COOKIE}=${restored.value}`
+      : `${PORTAL_COOKIE}=${restored.value}`;
   if (cookies) forwarded.headers.set("Cookie", cookies);
   const upstream = await timed("session", () => sessionStub(env, id).fetch(forwarded), deps.now);
   const state = upstream.headers.get("X-Demo-State");
@@ -540,7 +567,26 @@ async function proxy(
     if (timing !== null) answer.headers.set("Server-Timing", timing);
     return answer;
   }
-  return forwardResponse(upstream);
+  const answer = await forwardResponse(upstream);
+  // A cookie bookclerkd set on this answer (impersonation) wins.
+  if (
+    restored &&
+    !answer.webSocket &&
+    !answer.headers.getSetCookie().some((l) => l.startsWith(`${PORTAL_COOKIE}=`))
+  ) {
+    answer.headers.append("Set-Cookie", portalCookie(restored, Math.floor(deps.now() / 1000)));
+  }
+  return answer;
+}
+
+/**
+ * Whether the cookies passed to the container carry a portal session.
+ *
+ * @param cookies - The `Cookie` header built for the container.
+ * @returns True when a non-empty `bookclerk_portal_session` is present.
+ */
+function hasPortalCookie(cookies: string): boolean {
+  return cookiePairs(cookies).some(([name, value]) => name === PORTAL_COOKIE && value !== "");
 }
 
 /**
@@ -661,7 +707,7 @@ export async function handle(
   if (path === "/_demo/enter") {
     const portal = id ? await sessionStub(env, id).portalSession() : null;
     if (!portal) return redirect(id ? "/_demo/wait" : "/");
-    return redirect("/", [`${PORTAL_COOKIE}=${portal}; Path=/; HttpOnly; Secure; SameSite=Lax`]);
+    return redirect("/", [portalCookie(portal, Math.floor(deps.now() / 1000))]);
   }
   if (path === "/_demo/end") {
     if (request.method !== "POST") return redirect("/");
