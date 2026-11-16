@@ -86,6 +86,7 @@ mod rpc_session;
 mod socket_broker;
 mod spawn_plan;
 mod spawn_stdio;
+mod user_poll;
 
 pub use bookclerk_plugin_sdk::protocol;
 pub use bookclerk_plugin_sdk::{
@@ -223,3 +224,4 @@ pub use spawn_stdio::{
     retry_abandoned_acl_journals, revoke_plugin_state_before_purge, TEST_CHANNEL_IDENT_ENV,
     TEST_CHANNEL_TAG_FILE, TEST_INJECT_EXTRA_ENDPOINT_ENV, TEST_OBSERVE_EXTRA_ENDPOINT_ENV,
 };
+pub use user_poll::{ON_DEMAND_USER_POLL_INTERVAL, RESIDENT_USER_POLL_INTERVAL};

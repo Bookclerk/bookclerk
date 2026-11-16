@@ -267,9 +267,10 @@ existing `plugin-grants.json` approval carried onto it.
 
 ### Plugins that sleep when idle
 
-Some plugins only answer triggers and lookups: events, queue messages,
-cron fires, metadata lookups and cover fetches. The reconciler starts one
-of these once, checks its health, and then lets it sleep:
+Integration plugins work through calls: events, queue messages, cron
+fires, metadata lookups, cover fetches, sign-ins and remote-library work
+such as scans. The reconciler starts one of these once, checks its health,
+and then lets it sleep:
 
 1. After 60 seconds with no call in flight, the host stops the guest
    process. The deployment stays healthy and keeps its subscriptions,
@@ -282,6 +283,16 @@ of these once, checks its health, and then lets it sleep:
 
 While a plugin sleeps, its health reads "asleep; starts on its next call"
 without waking it.
+
+A remote library such as Audiobookshelf sleeps the same way once every
+plugin database it declares is granted, since that is where it remembers
+what it already reported; without them it stays running. The host asks it
+for new users every 5 minutes, and that poll wakes it, so a new user can
+wait up to 5 minutes for a claim ticket. See
+[Watching users](integrations.md#watching-users). A sign-in provider
+(`oidc`) starts on the next sign-in. The host keeps its sign-in client
+list after the first answer, so a config sync does not wake it; a failed
+read is asked again on the next sync.
 
 Storefronts sleep the same way, after 5 minutes without a call, because
 their work comes in bursts: a scan pages through a library and an acquire
@@ -300,8 +311,7 @@ The destination's name and instance id stay known while it sleeps, so
 checks that only need to know which destination is which do not wake it.
 
 > [!NOTE]
-> Other storage plugins, remote libraries such as Audiobookshelf, sign-in
-> providers (`oidc`), plugins that belong to more than one family, and
+> Other storage plugins, plugins that belong to more than one family, and
 > Python plugins stay running for now. Python guests take several seconds
 > to start.
 

@@ -1,8 +1,7 @@
 //! [`Integration`] adapter over an external plugin process.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bookclerk_config::Config;
@@ -15,7 +14,6 @@ use bookclerk_plugin_sdk::{
     MetadataLookupParams, MetadataRecord, MetadataSearchParams, ScanLibraryParams,
     PRODUCT_API_VERSION,
 };
-use tracing::warn;
 
 use crate::discover::DiscoveredPlugin;
 use crate::rpc_session::{PluginSession, SessionServices, HOST_SHARED_ACCOUNT};
@@ -44,10 +42,9 @@ pub struct ExternalIntegration {
     queue_subscriptions: Vec<QueueSubscription>,
     /// `[triggers] crons` schedules from `plugin.toml`.
     cron_schedules: Vec<bookclerk_plugin_manifest::CronSchedule>,
-    /// Cancels the host-side `event_poll` loop from [`Self::start`].
-    poll_cancel: Arc<AtomicBool>,
-    /// Bumped on each [`Self::start`]/[`Self::stop`] so a superseded poll loop exits.
-    poll_epoch: Arc<AtomicU64>,
+    /// Generation of the host-side new-user poll from [`Self::start`]; each
+    /// start and stop ends the loop before it.
+    user_poll: crate::user_poll::PollGeneration,
     /// Deployment instance id. `None` until the reconciler binds one.
     plugin_instance_id: Option<String>,
 }
@@ -169,8 +166,7 @@ impl ExternalIntegration {
             event_subscriptions,
             queue_subscriptions,
             cron_schedules,
-            poll_cancel: Arc::new(AtomicBool::new(false)),
-            poll_epoch: Arc::new(AtomicU64::new(0)),
+            user_poll: crate::user_poll::PollGeneration::default(),
             plugin_instance_id: None,
         })
     }
@@ -287,6 +283,94 @@ fn combine_health(reports: Vec<bookclerk_plugin_sdk::HealthOk>) -> (bool, Option
     (ok, (!details.is_empty()).then(|| details.join("; ")))
 }
 
+/// Asks a guest's `remoteLibrary` for the users it has queued since the
+/// last poll.
+///
+/// A user with an empty `provider` is returned as is; the poll loop fills
+/// in the plugin alias.
+///
+/// # Errors
+///
+/// Returns the guest's `poll_events` failure, or a missing entrypoint.
+async fn poll_session_users(
+    session: &PluginSession,
+) -> bookclerk_integrations::Result<Vec<ExternalUser>> {
+    let users = session
+        .remote_library(|stub| async move { stub.poll_events().await })
+        .await?;
+    Ok(users
+        .into_iter()
+        .map(|user| ExternalUser {
+            provider: user.provider,
+            external_user_id: user.external_user_id,
+            display_name: user.display_name,
+            access_token: None,
+        })
+        .collect())
+}
+
+impl ExternalIntegration {
+    /// Asks the guest for the users it has queued since the last poll.
+    ///
+    /// # Returns
+    ///
+    /// No users when the guest exports no `remoteLibrary`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the guest's `poll_events` failure.
+    pub(crate) async fn poll_external_users(
+        &self,
+    ) -> bookclerk_integrations::Result<Vec<ExternalUser>> {
+        if !self
+            .session
+            .has_entrypoint(crate::Entrypoint::RemoteLibrary)
+        {
+            return Ok(Vec::new());
+        }
+        poll_session_users(&self.session).await
+    }
+
+    /// The guest's relying-party templates from its `oidcClients` RPC.
+    ///
+    /// Unlike [`Integration::provided_oidc_clients`], a failed RPC is an
+    /// error here rather than an empty list, so a caller that caches the
+    /// answer can tell a failure from a guest that offers no clients.
+    ///
+    /// # Returns
+    ///
+    /// No clients when the guest exports no `oidc` entrypoint: client
+    /// registration must match credential login.
+    ///
+    /// # Errors
+    ///
+    /// Returns the guest's `oidcClients` failure.
+    pub(crate) async fn fetch_oidc_clients(
+        &self,
+    ) -> bookclerk_integrations::Result<Vec<ProvidedOidcClient>> {
+        if !self.session.has_entrypoint(crate::Entrypoint::Oidc) {
+            return Ok(Vec::new());
+        }
+        let clients = self.session.oidc_clients().await?;
+        Ok(clients
+            .into_iter()
+            .map(|t| {
+                let display_name = t.display_name_or_id().to_string();
+                let default_scopes = t.scopes_or_default();
+                ProvidedOidcClient {
+                    client_id: t.client_id,
+                    display_name,
+                    callback_path: t.callback_path,
+                    public_client: t.public_client,
+                    default_scopes,
+                    issue_refresh_token: t.issue_refresh_token,
+                    origin_config_key: t.origin_config_key,
+                }
+            })
+            .collect())
+    }
+}
+
 #[async_trait]
 impl Integration for ExternalIntegration {
     fn id(&self) -> &str {
@@ -314,61 +398,30 @@ impl Integration for ExternalIntegration {
                 .int_call(|stub| async move { stub.start().await })
                 .await;
         }
-        // Host polls `event_poll` and kicks off core workflows (e.g. claim tickets).
-        // The plugin remains oblivious to what the host does with the signal.
+        // The host polls `poll_events` and hands each user to the daemon's
+        // hook (claim tickets); the plugin does not know what the host does
+        // with them. Under an on-demand proxy the proxy owns this poll and
+        // passes no hook here, so a woken guest starts no loop of its own.
         if remote_library {
             if let Some(on_user) = ctx.on_external_user {
-                let epoch = self.poll_epoch.fetch_add(1, Ordering::SeqCst) + 1;
-                self.poll_cancel.store(false, Ordering::SeqCst);
-                let session = self.session.clone();
-                let plugin_id = self.id().to_string();
-                let cancel = self.poll_cancel.clone();
-                let epoch_flag = self.poll_epoch.clone();
-                tokio::spawn(async move {
-                    loop {
-                        if cancel.load(Ordering::SeqCst)
-                            || epoch_flag.load(Ordering::SeqCst) != epoch
-                        {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_secs(30)).await;
-                        if cancel.load(Ordering::SeqCst)
-                            || epoch_flag.load(Ordering::SeqCst) != epoch
-                        {
-                            break;
-                        }
-                        match session
-                            .remote_library(|stub| async move { stub.poll_events().await })
-                            .await
-                        {
-                            Ok(users) => {
-                                for user in users {
-                                    on_user(ExternalUser {
-                                        provider: if user.provider.is_empty() {
-                                            plugin_id.clone()
-                                        } else {
-                                            user.provider
-                                        },
-                                        external_user_id: user.external_user_id,
-                                        display_name: user.display_name,
-                                        access_token: None,
-                                    });
-                                }
-                            }
-                            Err(err) => {
-                                warn!(id = %plugin_id, %err, "integration event_poll failed");
-                            }
-                        }
-                    }
-                });
+                let session = Arc::clone(&self.session);
+                crate::user_poll::spawn(
+                    &self.user_poll,
+                    crate::user_poll::RESIDENT_USER_POLL_INTERVAL,
+                    self.id().to_string(),
+                    on_user,
+                    move || {
+                        let session = Arc::clone(&session);
+                        async move { Some(poll_session_users(&session).await) }
+                    },
+                );
             }
         }
         Ok(())
     }
 
     async fn stop(&self) -> bookclerk_integrations::Result<()> {
-        self.poll_epoch.fetch_add(1, Ordering::SeqCst);
-        self.poll_cancel.store(true, Ordering::SeqCst);
+        self.user_poll.end();
         if self
             .session
             .has_entrypoint(crate::Entrypoint::RemoteLibrary)
@@ -647,28 +700,8 @@ impl Integration for ExternalIntegration {
     async fn provided_oidc_clients(
         &self,
     ) -> bookclerk_integrations::Result<Vec<ProvidedOidcClient>> {
-        // Client registration must match credential login: only guests that
-        // negotiated the `oidc` entrypoint may materialize IdP relying parties.
-        if !self.session.has_entrypoint(crate::Entrypoint::Oidc) {
-            return Ok(Vec::new());
-        }
-        match self.session.oidc_clients().await {
-            Ok(clients) => Ok(clients
-                .into_iter()
-                .map(|t| {
-                    let display_name = t.display_name_or_id().to_string();
-                    let default_scopes = t.scopes_or_default();
-                    ProvidedOidcClient {
-                        client_id: t.client_id,
-                        display_name,
-                        callback_path: t.callback_path,
-                        public_client: t.public_client,
-                        default_scopes,
-                        issue_refresh_token: t.issue_refresh_token,
-                        origin_config_key: t.origin_config_key,
-                    }
-                })
-                .collect()),
+        match self.fetch_oidc_clients().await {
+            Ok(clients) => Ok(clients),
             Err(err) => {
                 tracing::debug!(
                     plugin = %self.session.id(),

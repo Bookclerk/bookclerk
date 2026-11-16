@@ -182,7 +182,7 @@ impl RemoteLibrary for AbsIntegration {
     }
 
     async fn start(&self) -> Result<(), PluginError> {
-        guest_start(Arc::clone(&self.state))
+        guest_start(Arc::clone(&self.state), self.listening.as_ref())
             .await
             .map_err(|e| PluginError::internal(e.to_string()))
     }
@@ -200,7 +200,10 @@ impl RemoteLibrary for AbsIntegration {
     }
 
     async fn poll_events(&self) -> Result<Vec<ExternalUser>, PluginError> {
-        Ok(guest_event_poll(&self.state).await.users)
+        guest_event_poll(&self.state, self.listening.as_ref())
+            .await
+            .map(|polled| polled.users)
+            .map_err(|e| PluginError::internal(e.to_string()))
     }
 }
 

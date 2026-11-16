@@ -9,6 +9,7 @@ mod client;
 pub mod guest;
 mod integration;
 mod listening;
+pub mod watch;
 
 pub use brand::{brand_for_id, matches_id, BRAND};
 pub use client::{

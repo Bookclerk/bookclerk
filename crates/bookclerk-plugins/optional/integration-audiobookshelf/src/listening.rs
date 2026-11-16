@@ -78,12 +78,14 @@ pub fn migrations() -> Vec<PluginMigration> {
 ///
 /// # Returns
 ///
-/// [`migrations`] for [`LISTENING_STATE_BINDING`], nothing for any other
-/// binding.
+/// [`migrations`] plus the user-watch table ([`crate::watch::migration`])
+/// for [`LISTENING_STATE_BINDING`], nothing for any other binding.
 #[must_use]
 pub fn migrations_for(binding: &str) -> Vec<PluginMigration> {
     if binding == LISTENING_STATE_BINDING {
-        migrations()
+        let mut all = migrations();
+        all.push(crate::watch::migration());
+        all
     } else {
         Vec::new()
     }
@@ -692,7 +694,11 @@ mod tests {
 
     #[test]
     fn the_migrations_answer_for_the_listening_binding_only() {
-        assert_eq!(migrations_for(LISTENING_STATE_BINDING).len(), 1);
+        let ids: Vec<String> = migrations_for(LISTENING_STATE_BINDING)
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, ["abs-listening-v1", "abs-user-watch-v1"]);
         assert!(migrations_for("SCAN_STATE").is_empty());
     }
 }

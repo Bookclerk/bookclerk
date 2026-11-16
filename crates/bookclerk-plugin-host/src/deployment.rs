@@ -1444,6 +1444,11 @@ async fn spawn_integration(
         }
     };
     integration.bind_plugin_instance(&request.plugin_instance_id);
+    // A remote library without its database grant keeps its memory in the
+    // process, so it stays resident.
+    let starter = starter.filter(|_| {
+        crate::on_demand::state_survives_sleep(&plugin.manifest, integration.session().grant())
+    });
     let root = request.plugin_root.clone();
     let opened_config = integration.opened_config().clone();
     let opened_secrets = integration.opened_secrets().clone();
@@ -1466,7 +1471,7 @@ async fn spawn_integration(
                     );
                 }
             }
-            // A trigger-driven plugin is registered behind a proxy that
+            // A plugin that may sleep is registered behind a proxy that
             // keeps its place in the registry while the guest sleeps.
             let (registered, process): (
                 Arc<dyn bookclerk_integrations::Integration>,
@@ -1480,6 +1485,7 @@ async fn spawn_integration(
                         Box::new(starter),
                         shared,
                         runtime.on_demand_idle,
+                        crate::ON_DEMAND_USER_POLL_INTERVAL,
                     );
                     if let Some(broker) = &broker {
                         let sink: Arc<dyn crate::SocketSink> = proxy.clone();

@@ -91,11 +91,36 @@ as the sign-in issuer and in shareable invite links:
 - Reports health through `integrations status` and `integrations test`.
 - On `book_acquired`, can ask Audiobookshelf to scan the library.
 - Can watch Audiobookshelf users with `pollEvents`, so the host can mint
-  claim tickets.
+  claim tickets. See [Watching users](#watching-users).
 - Lets people sign back in with Audiobookshelf credentials
   (`oidc.authenticateUser`), when allowed.
 - Can sync listening progress (`supports_listening_sync`) into the shared
   `listening_progress` table. Discover uses it when it is there.
+
+### Watching users
+
+With `watch_users` on, the host asks the plugin for new Audiobookshelf
+users on a schedule and mints a claim ticket for each one:
+
+1. The first time the plugin starts, it records the users the server
+   already has. Those users never get a ticket.
+2. On each poll, the plugin lists the server's users and reports the ones
+   it has not reported before.
+3. The host polls every 5 minutes while the plugin sleeps between calls,
+   or every 30 seconds when it stays running.
+
+The plugin keeps the users it has reported in its `LISTENING_STATE`
+database, as a hash of each user id. So a user created while the plugin
+slept is still reported by the next poll. If recording a new user fails,
+the next poll reports that user again and the host mints a second
+ticket. A poll reply lost on its way to the host is not retried, so a
+user the plugin had already recorded gets no ticket.
+
+> [!NOTE]
+> Without the `LISTENING_STATE` database grant, the plugin cannot keep
+> that list across a sleep, so it stays running and remembers reported
+> users in memory. A daemon restart then records the server's users
+> again, and a user created while the daemon was down gets no ticket.
 
 ### Listening sync
 
