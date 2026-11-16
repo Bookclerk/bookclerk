@@ -191,6 +191,11 @@ own token, and its hits and fetch time apply only while the call still
 carries it, so two members refreshing one call at once never leave a mix of
 both answers.
 
+A fetch reads the cached answers of every call a store's budget can reach,
+and the listings they name, in a few batched reads before it makes any
+call. An answer it makes and caches is reused by a later call in the same
+fetch with the same key.
+
 ### Shared listing pool
 
 Catalog data has one home: the library model's `store_listings`
