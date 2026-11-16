@@ -308,17 +308,23 @@ mod tests {
                 key("root")
             ))],
         };
-        let unit = BindingDatabase::open(Profile::Minimum, vec![strict])
-            .await
-            .unwrap();
-        let db = DatabaseBinding::from_session(Arc::new(unit));
-        let mut memory = HashSet::new();
-        let mut watch = UserWatch::new(Some(&db), &mut memory);
-        assert_eq!(watch.seed(&users(&["root"])).await.unwrap(), 1);
-        let fresh = watch.take_new(users(&["root", "ada"])).await.unwrap();
-        assert_eq!(ids(&fresh), ["ada"]);
-        let again = watch.take_new(users(&["root", "ada"])).await.unwrap();
-        assert_eq!(ids(&again), ["ada"], "an unrecorded user is reported again");
+        for profile in Profile::ALL {
+            let unit = BindingDatabase::open(profile, vec![strict.clone()])
+                .await
+                .unwrap();
+            let db = DatabaseBinding::from_session(Arc::new(unit));
+            let mut memory = HashSet::new();
+            let mut watch = UserWatch::new(Some(&db), &mut memory);
+            assert_eq!(watch.seed(&users(&["root"])).await.unwrap(), 1);
+            let fresh = watch.take_new(users(&["root", "ada"])).await.unwrap();
+            assert_eq!(ids(&fresh), ["ada"], "{profile:?}");
+            let again = watch.take_new(users(&["root", "ada"])).await.unwrap();
+            assert_eq!(
+                ids(&again),
+                ["ada"],
+                "{profile:?}: an unrecorded user is reported again"
+            );
+        }
     }
 
     #[tokio::test]
