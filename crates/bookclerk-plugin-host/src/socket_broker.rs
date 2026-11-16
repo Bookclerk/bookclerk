@@ -20,7 +20,7 @@
 //! `[sockets]` and the covering grant has the `sockets` token.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -101,6 +101,10 @@ struct Inner {
     /// Open sockets and the attachment the host last saw for each, so the
     /// host can report them closed if the broker dies.
     open: Mutex<BTreeMap<String, Vec<u8>>>,
+    /// Sockets whose close reached the host before their connect answer
+    /// did, so the late answer does not resurrect them in `open`. Lock
+    /// after `open`.
+    closed_early: Mutex<BTreeSet<String>>,
 }
 
 impl Inner {
@@ -109,6 +113,37 @@ impl Inner {
         self.open
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Locks the set of sockets closed before their connect was recorded.
+    fn closed_early(&self) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
+        self.closed_early
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Records a socket the broker opened, unless its close already came.
+    ///
+    /// Runs on the link thread as the connect answer arrives, so a caller
+    /// that stops waiting still leaves the socket mirrored.
+    fn record_open(&self, info: &SocketInfo) {
+        let mut open = self.open();
+        if !self.closed_early().remove(&info.socket) {
+            open.insert(info.socket.clone(), info.attachment.clone());
+        }
+    }
+
+    /// Records a socket the broker closed.
+    ///
+    /// # Returns
+    ///
+    /// Whether no socket remains open.
+    fn record_closed(&self, socket: &str) -> bool {
+        let mut open = self.open();
+        if open.remove(socket).is_none() {
+            self.closed_early().insert(socket.to_string());
+        }
+        open.is_empty()
     }
 
     /// The sink, while the instance's guest proxy is alive.
@@ -151,6 +186,7 @@ impl SocketBroker {
                 sink: OnceLock::new(),
                 link: tokio::sync::Mutex::new(None),
                 open: Mutex::new(BTreeMap::new()),
+                closed_early: Mutex::new(BTreeSet::new()),
             }),
         }
     }
@@ -208,11 +244,6 @@ impl SocketBroker {
                 continue;
             }
             if let Ok(outcome) = answer.await {
-                if let Ok(info) = &outcome {
-                    self.inner
-                        .open()
-                        .insert(info.socket.clone(), info.attachment.clone());
-                }
                 return outcome;
             }
         }
@@ -340,6 +371,9 @@ async fn start(inner: &Arc<Inner>) -> AbiResult<Link> {
         crate::rpc_session::abandon_spawned(spawned);
         return Err(AbiError::forbidden(err.to_string()));
     }
+    // A fresh broker numbers its sockets afresh; an early close recorded
+    // against the last one must not swallow a new socket's id.
+    inner.closed_early().clear();
     let (tx, rx) = mpsc::unbounded_channel();
     let weak = Arc::downgrade(inner);
     let name = format!("bc-sockets-{}", inner.plugin.manifest.id);
@@ -414,11 +448,7 @@ impl SocketHandler for HostHandler {
         let Some(inner) = self.inner.upgrade() else {
             return Ok(());
         };
-        let now_idle = {
-            let mut open = inner.open();
-            open.remove(&event.socket);
-            open.is_empty()
-        };
+        let now_idle = inner.record_closed(&event.socket);
         deliver(&inner, SocketEvent::Closed(event)).await;
         if now_idle {
             self.idle.notify_one();
@@ -477,7 +507,7 @@ fn run_link(spawned: SpawnedStdio, mut rx: mpsc::UnboundedReceiver<Command>, inn
                     tokio::select! {
                         command = rx.recv() => match command {
                             Some(command) => {
-                                tokio::task::spawn_local(serve(Rc::clone(&sockets), command));
+                                tokio::task::spawn_local(serve(Rc::clone(&sockets), inner.clone(), command));
                             }
                             None => break,
                         },
@@ -541,11 +571,20 @@ fn report_lost(inner: &Weak<Inner>) {
     });
 }
 
-/// Runs one command against the broker's `Sockets`.
-async fn serve(sockets: Rc<bookclerk_plugin_abi::SocketsClient>, command: Command) {
+/// Runs one command against the broker's `Sockets`, recording a socket
+/// it opened before answering the caller.
+async fn serve(
+    sockets: Rc<bookclerk_plugin_abi::SocketsClient>,
+    inner: Weak<Inner>,
+    command: Command,
+) {
     match command {
         Command::Connect(request, reply) => {
-            let _ = reply.send(sockets.connect(request).await);
+            let outcome = sockets.connect(request).await;
+            if let (Ok(info), Some(inner)) = (&outcome, inner.upgrade()) {
+                inner.record_open(info);
+            }
+            let _ = reply.send(outcome);
         }
         Command::Send(socket, frame, reply) => {
             let _ = reply.send(sockets.send(socket, frame).await);

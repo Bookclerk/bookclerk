@@ -224,3 +224,28 @@ async fn the_sockets_binding_forwards_to_the_broker() {
     assert!(sockets.list().await.expect("list").is_empty());
     assert!(sockets.broker.open_sockets().is_empty());
 }
+
+#[test]
+fn a_close_that_beats_its_connect_answer_does_not_leave_the_socket_open() {
+    let files = tempfile::tempdir().expect("files");
+    let broker = idle_broker(files.path());
+    let info = |socket: &str| SocketInfo {
+        socket: socket.into(),
+        attachment: b"a".to_vec(),
+        ..SocketInfo::default()
+    };
+    // In order: open, then closed.
+    broker.inner.record_open(&info("s1"));
+    assert_eq!(broker.open_sockets(), vec!["s1".to_string()]);
+    assert!(broker.inner.record_closed("s1"), "nothing left open");
+    // Out of order: the close lands before the connect answer.
+    assert!(broker.inner.record_closed("s2"));
+    broker.inner.record_open(&info("s2"));
+    assert!(
+        broker.open_sockets().is_empty(),
+        "the late answer is dropped"
+    );
+    // The early close was used up; a later socket with that id is kept.
+    broker.inner.record_open(&info("s2"));
+    assert_eq!(broker.open_sockets(), vec!["s2".to_string()]);
+}
