@@ -357,6 +357,30 @@ async fn writes_the_store_record_when_there_is_one() {
         james.cover_url.as_deref(),
         Some("https://m.media-amazon.com/images/I/james.jpg")
     );
+    // The bake lists the held book's cover for the Library page, which
+    // shows it once the page index is built.
+    let mut after = None;
+    while let Some(next) = store
+        .rebuild_library_index_page(after.as_deref())
+        .await
+        .unwrap()
+    {
+        after = Some(next);
+    }
+    let urls = bookclerk_demo_seed::covers::cover_urls(&store)
+        .await
+        .unwrap();
+    assert_eq!(
+        urls.first().map(String::as_str),
+        Some("https://m.media-amazon.com/images/I/phm.jpg"),
+        "{urls:?}"
+    );
+    assert!(urls.iter().all(|u| u.starts_with("https://")), "{urls:?}");
+    assert_eq!(
+        urls.iter().collect::<BTreeSet<_>>().len(),
+        urls.len(),
+        "no cover is listed twice"
+    );
 }
 
 #[test]
@@ -473,7 +497,26 @@ fn reads_each_mode_and_refuses_anything_else() {
         parse_mode(args(&["--bake-finish"])).unwrap(),
         Mode::BakeFinish
     );
+    assert_eq!(
+        parse_mode(args(&["--list-covers", "covers.txt"])).unwrap(),
+        Mode::ListCovers(std::path::PathBuf::from("covers.txt"))
+    );
+    assert_eq!(
+        parse_mode(args(&[
+            "--bake-covers",
+            "covers.txt",
+            "http://127.0.0.1:8787"
+        ]))
+        .unwrap(),
+        Mode::BakeCovers {
+            list: std::path::PathBuf::from("covers.txt"),
+            base: "http://127.0.0.1:8787".into(),
+        }
+    );
     for bad in [
+        &["--list-covers"][..],
+        &["--bake-covers", "covers.txt"][..],
+        &["--bake-covers", "covers.txt", "http://x", "extra"][..],
         &["--write-records"][..],
         &["--write-records", "out.json", "extra"][..],
         &["--bake-finish", "extra"][..],

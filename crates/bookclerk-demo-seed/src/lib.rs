@@ -28,6 +28,8 @@
 //! and no claim ticket, the store accounts hold no tokens, and the branch's
 //! credential keys are placeholders that never verify a signature.
 
+pub mod covers;
+
 use anyhow::{bail, Context};
 use bookclerk_library::control_plane::{
     accept_catalog_batch, begin_catalog, default_instance_for_key, ensure_hand_managed,
@@ -983,6 +985,19 @@ pub enum Mode {
     /// image ships (`packaging/demo/bake-seed.sh`), removing every secret
     /// and runtime file a container must make for itself.
     BakeFinish,
+    /// `--list-covers <path>`: write the cover URLs a new session's first
+    /// pages can show to the path, one per line ([`covers::cover_urls`]).
+    /// Run with bookclerkd stopped.
+    ListCovers(std::path::PathBuf),
+    /// `--bake-covers <path> <base-url>`: request each cover listed in the
+    /// path from the bookclerkd at the base URL, so the bake's cover cache
+    /// holds them ([`covers::warm`]).
+    BakeCovers {
+        /// The list `--list-covers` wrote.
+        list: std::path::PathBuf,
+        /// bookclerkd's address, such as `http://127.0.0.1:8787`.
+        base: String,
+    },
 }
 
 /// Parses the seed binary's arguments into a [`Mode`].
@@ -1007,6 +1022,17 @@ pub fn parse_mode(mut args: impl Iterator<Item = String>) -> anyhow::Result<Mode
             None => bail!("--write-records needs a path"),
         },
         Some(flag) if flag == "--bake-finish" => Mode::BakeFinish,
+        Some(flag) if flag == "--list-covers" => match args.next() {
+            Some(path) => Mode::ListCovers(path.into()),
+            None => bail!("--list-covers needs a path"),
+        },
+        Some(flag) if flag == "--bake-covers" => match (args.next(), args.next()) {
+            (Some(list), Some(base)) => Mode::BakeCovers {
+                list: list.into(),
+                base,
+            },
+            _ => bail!("--bake-covers needs a list path and bookclerkd's base URL"),
+        },
         Some(other) => bail!("unexpected argument `{other}`"),
     };
     match args.next() {

@@ -1653,6 +1653,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bookclerk-config",
+ "bookclerk-cover",
  "bookclerk-library",
  "bookclerk-node-proto",
  "bookclerk-plugin-database-sqlite",
@@ -1667,6 +1668,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "ureq",
  "wiremock",
 ]
 

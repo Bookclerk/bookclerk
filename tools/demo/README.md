@@ -27,6 +27,19 @@ a schema change that breaks it fails there.
 
 The bake then runs `bookclerkd` once, with a throwaway operator token kept
 in its environment, until it has stored Sam's Discover shelves.
+
+Next it bakes the covers a new session shows first, so a container does
+not download and decode them while the visitor waits on a quarter of a
+CPU. With `bookclerkd` stopped, `bookclerk-demo-seed --list-covers` lists
+each held work's cover (as the Library page shows it), then the covers of
+the store listings Discover ranks from (its cached store calls and stored
+candidates), at most 400. `bookclerkd` runs again while
+`bookclerk-demo-seed --bake-covers` requests each one from it, which
+downloads it through the `covers` plugin and stores the processed JPEGs
+in `cache/covers/`. A cover that fails is left for a container to fetch.
+The cache is keyed by image URL, not by the URL-signing key the next step
+deletes, so the entries stay valid under each container's new key.
+
 `bookclerk-demo-seed --bake-finish` then strips everything a container must
 make for itself, and the build fails if any of it is left:
 

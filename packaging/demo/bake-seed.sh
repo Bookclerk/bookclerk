@@ -8,11 +8,18 @@
 #      and approves and deploys the storefronts and covers.
 #   2. bookclerkd runs until it has replayed the seed's events and stored
 #      Sam's Discover shelves, then stops.
-#   3. bookclerk-demo-seed --bake-finish strips this install's own state:
+#   3. With bookclerkd stopped, bookclerk-demo-seed --list-covers lists the
+#      covers a new session's first pages show (the Library and the store
+#      listings Discover ranks from); bookclerkd then runs again while
+#      bookclerk-demo-seed --bake-covers requests each one, so the cover
+#      cache ships with them and a container does not download them while
+#      the visitor waits. The cache is keyed by image URL, not by the
+#      signing key step 4 deletes, so the entries stay valid.
+#   4. bookclerk-demo-seed --bake-finish strips this install's own state:
 #      the cluster secret fingerprint, leases and heartbeats in the library
 #      (refusing a library that holds any sealed secret or session), and
 #      master.key, the covers URL key, plugin sessions and logs on disk.
-#   4. The check below fails the build if any secret file is left.
+#   5. The check below fails the build if any secret file is left.
 #
 # The node identity (node-identity.json: node_id and cluster_id) is baked
 # too, so every demo container shares the same two ids. That is acceptable:
@@ -34,19 +41,30 @@ dir=${BOOKCLERK_FILES_DIR:?BOOKCLERK_FILES_DIR must name the template dir}
 BOOKCLERK_OPERATOR_TOKEN=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
 export BOOKCLERK_OPERATOR_TOKEN
 
-/opt/bookclerk/bookclerkd &
-daemon=$!
-trap 'kill "$daemon" 2>/dev/null || true' EXIT
+# Starts bookclerkd in the background and waits until it answers.
+start_daemon() {
+	/opt/bookclerk/bookclerkd &
+	daemon=$!
+	trap 'kill "$daemon" 2>/dev/null || true' EXIT
+	waited=0
+	until bookclerk daemon status >/dev/null 2>&1; do
+		waited=$((waited + 1))
+		if [ "$waited" -gt 120 ]; then
+			echo "bake-seed: bookclerkd did not answer within 120 s" >&2
+			exit 1
+		fi
+		sleep 1
+	done
+}
 
-waited=0
-until bookclerk daemon status >/dev/null 2>&1; do
-	waited=$((waited + 1))
-	if [ "$waited" -gt 120 ]; then
-		echo "bake-seed: bookclerkd did not answer within 120 s" >&2
-		exit 1
-	fi
-	sleep 1
-done
+# Stops the bookclerkd start_daemon started.
+stop_daemon() {
+	kill -TERM "$daemon"
+	wait "$daemon" || true
+	trap - EXIT
+}
+
+start_daemon
 
 # Done when a Discover feed is stored and no job is pending or running, three
 # checks in a row. Past the cap the bake keeps whatever is stored, and a
@@ -69,9 +87,19 @@ while [ "$quiet" -lt 3 ]; do
 	sleep 1
 done
 
-kill -TERM "$daemon"
-wait "$daemon" || true
-trap - EXIT
+stop_daemon
+
+# Bake the covers (step 3). Best effort: a cover that fails is fetched by
+# the container that first shows it.
+covers=$(mktemp)
+/opt/bookclerk/bookclerk-demo-seed --list-covers "$covers"
+start_daemon
+listen=${BOOKCLERK_DAEMON_LISTEN:-127.0.0.1:8787}
+listen=${listen%%,*}
+/opt/bookclerk/bookclerk-demo-seed --bake-covers "$covers" "http://127.0.0.1:${listen##*:}" ||
+	echo "bake-seed: baking covers failed; containers fetch them" >&2
+stop_daemon
+rm -f "$covers"
 unset BOOKCLERK_OPERATOR_TOKEN
 
 /opt/bookclerk/bookclerk-demo-seed --bake-finish
