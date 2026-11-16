@@ -2024,6 +2024,21 @@ impl PluginManifest {
                     )));
                 }
             }
+            // Producers may share one publisher binding, but `env.SOCKETS`
+            // is its own property and cannot take a publisher's name.
+            if let Some(b) = &self.sockets {
+                let name = b.name_or(DEFAULT_SOCKETS_BINDING);
+                if self
+                    .events
+                    .producers
+                    .iter()
+                    .any(|p| p.binding_name() == name)
+                {
+                    return Err(Error::message(
+                        "plugin.toml: [sockets][0] binding collides with another binding",
+                    ));
+                }
+            }
         }
         // Crons fire through the integration registry, and a deployment
         // spawns a storefront, storage or database adapter in its own
@@ -3055,6 +3070,16 @@ mode = "outbound"
         let bad = PluginManifest::parse(&outbound("[sockets]\nbinding = \"push\"\n"))
             .expect_err("lowercase binding");
         assert!(bad.to_string().contains("[sockets]"), "{bad}");
+        let publisher = PluginManifest::parse(&outbound(
+            "[sockets]\nbinding = \"EVENTS\"\n[[events.producers]]\ntype = \"echo_done\"\n",
+        ))
+        .expect_err("sockets named after the event publisher");
+        assert!(
+            publisher
+                .to_string()
+                .contains("[sockets][0] binding collides"),
+            "{publisher}"
+        );
         assert!(
             !PluginManifest::parse(&native(""))
                 .unwrap()

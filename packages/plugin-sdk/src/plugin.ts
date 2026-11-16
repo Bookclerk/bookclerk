@@ -3274,7 +3274,9 @@ class GrantedKv extends RpcTarget implements KvNamespaceBinding {
  * survives the Workers RPC hop to the author isolate.
  */
 class GrantedSockets extends RpcTarget implements SocketsTransport {
+  /** Granted reverse channel that serves `POST /sockets/<op>`. */
   #granted: GrantedFetcher;
+  /** `Authorization` header carrying the sockets-only grant token. */
   #auth: Record<string, string>;
 
   /**
@@ -3287,6 +3289,15 @@ class GrantedSockets extends RpcTarget implements SocketsTransport {
     this.#auth = auth;
   }
 
+  /**
+   * Makes one `POST /sockets/<op>` call on the granted channel.
+   *
+   * @param op - Operation, the path segment after `/sockets/`.
+   * @param body - That operation's JSON fields, bytes already base64.
+   * @returns `{ ok }` with the route's reply body, or `{ err }` with the
+   *   host's code (`unavailable` when the channel cannot be reached,
+   *   `internal` for a reply that is not JSON); never throws.
+   */
   async call(op: SocketOp, body: Record<string, unknown>): Promise<SocketTransportReply> {
     let resp: Response;
     try {

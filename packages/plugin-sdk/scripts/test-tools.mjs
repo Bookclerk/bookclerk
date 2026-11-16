@@ -439,6 +439,14 @@ console.log("ok binding errors name the row index");
       { ...outbound, sockets: {}, kv_namespaces: [{ binding: "SOCKETS" }] },
       "[kv_namespaces][0] binding collides",
     ],
+    [
+      {
+        ...outbound,
+        sockets: { binding: "EVENTS" },
+        events: { producers: [{ type: "echo_done" }] },
+      },
+      "[sockets][0] binding collides",
+    ],
   ];
   for (const [manifest, expected] of cases) {
     const message = bindingMessage(manifest);

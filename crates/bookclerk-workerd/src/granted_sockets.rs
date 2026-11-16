@@ -20,10 +20,12 @@ use bookclerk_plugin_abi::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Largest `/sockets/*` request body: one base64 frame at
-/// `maxSocketFrameBytes`, plus room for a connect request's URL, headers and
-/// heartbeat pairs. The ABI checks bound each field; this only bounds the read.
-pub const MAX_SOCKET_ROUTE_BODY_BYTES: u32 = (MAX_SOCKET_FRAME_BYTES * 4).div_ceil(3) + 64 * 1024;
+/// Largest `/sockets/*` request body: one frame at `maxSocketFrameBytes` in
+/// its worst JSON form, plus room for a connect request's URL, headers and
+/// heartbeat pairs. A text frame of control characters escapes to six bytes
+/// per byte (`\u0000`), which outgrows base64's four per three. The ABI checks
+/// bound each field once decoded; this only bounds the read.
+pub const MAX_SOCKET_ROUTE_BODY_BYTES: u32 = MAX_SOCKET_FRAME_BYTES * 6 + 64 * 1024;
 
 /// Operations the route serves, in path spelling.
 pub const SOCKET_ROUTE_OPS: [&str; 5] = ["connect", "send", "close", "attachment", "list"];

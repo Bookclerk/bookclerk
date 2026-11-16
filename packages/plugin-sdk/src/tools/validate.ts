@@ -951,6 +951,15 @@ function validateSurface(m: Manifest): void {
     }
     bindings.add(name);
   }
+  // Producers may share one publisher binding, but `env.SOCKETS` is its own
+  // property and cannot take a publisher's name.
+  const socketsName = named.find(([table]) => table === "sockets")?.[1];
+  if (
+    socketsName !== undefined &&
+    named.some(([table, name]) => table === "events.producers" && name === socketsName)
+  ) {
+    throw new Error("plugin.toml: [sockets][0] binding collides with another binding");
+  }
 }
 
 /** Newest compatibility date the pinned workerd binary honors. */

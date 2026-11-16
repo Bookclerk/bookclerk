@@ -669,6 +669,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bookclerk-plugin-sdk",
+ "bookclerk-scan-delta",
  "bookclerk-storefront",
  "bytes",
  "chrono",
@@ -691,6 +692,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bookclerk-plugin-sdk",
+ "bookclerk-scan-delta",
  "bookclerk-storefront",
  "bytes",
  "chrono",
@@ -723,6 +725,15 @@ dependencies = [
  "thiserror",
  "tracing",
  "windows",
+]
+
+[[package]]
+name = "bookclerk-scan-delta"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-plugin-sdk",
+ "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]

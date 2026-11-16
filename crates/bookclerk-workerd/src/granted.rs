@@ -3576,6 +3576,24 @@ Transfer-Encoding: chunked\r\n\
     }
 
     #[tokio::test]
+    async fn sockets_route_reads_a_largest_escaped_text_frame() {
+        let body = serde_json::to_string(&crate::granted_sockets::RouteSend {
+            socket: "g1_a".into(),
+            frame: crate::granted_sockets::RouteFrame::Text(
+                "\0".repeat(bookclerk_plugin_abi::MAX_SOCKET_FRAME_BYTES as usize),
+            ),
+        })
+        .expect("send json");
+        let (response, dispatched) = sockets_exchange(sockets_request("send", &body), |call| {
+            assert!(matches!(call, SocketCall::Send { .. }));
+            Ok(SocketReply::Done)
+        })
+        .await;
+        assert!(dispatched, "{response}");
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    }
+
+    #[tokio::test]
     async fn sockets_route_carries_host_refusals() {
         let (response, dispatched) = sockets_exchange(
             sockets_request("send", r#"{"socket":"g1_a","frame":{"text":"hi"}}"#),

@@ -234,4 +234,11 @@ fn the_body_cap_fits_a_largest_frame() {
     };
     let body = serde_json::to_vec(&frame).unwrap();
     assert!(body.len() <= MAX_SOCKET_ROUTE_BODY_BYTES as usize);
+    let escaped = RouteSend {
+        socket: "g1_a".into(),
+        frame: RouteFrame::Text("\0".repeat(MAX_SOCKET_FRAME_BYTES as usize)),
+    };
+    let body = serde_json::to_vec(&escaped).unwrap();
+    assert!(body.len() <= MAX_SOCKET_ROUTE_BODY_BYTES as usize);
+    assert!(parse_socket_call("send", &body).is_ok());
 }

@@ -1193,7 +1193,13 @@ async def _socket_call(stub: Any, op: str, body: dict[str, Any]) -> dict[str, An
     """
     if stub is None:
         raise PluginError.from_wire("unavailable", "SOCKETS is not granted to this invocation")
-    reply = py(await stub.call(op, js(body))) or {}
+    try:
+        raw = await stub.call(op, js(body))
+    except PluginError:
+        raise
+    except Exception as err:  # noqa: BLE001 - an RPC failure has no type of its own
+        raise PluginError.from_wire("unavailable", f"sockets {op}: {err}") from err
+    reply = py(raw) or {}
     err = _get(reply, "err")
     if err is not None:
         raise PluginError.from_wire(

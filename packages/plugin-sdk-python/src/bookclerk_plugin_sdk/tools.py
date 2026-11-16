@@ -1015,6 +1015,13 @@ def _validate_surface(m: dict[str, Any]) -> None:
                 f"plugin.toml: [{table}][{index}] binding collides with another binding"
             )
         bindings.add(name)
+    # Producers may share one publisher binding, but ``env.SOCKETS`` is its own
+    # property and cannot take a publisher's name.
+    sockets_name = next((name for table, name, _ in named if table == "sockets"), None)
+    if sockets_name is not None and any(
+        table == "events.producers" and name == sockets_name for table, name, _ in named
+    ):
+        raise ValueError("plugin.toml: [sockets][0] binding collides with another binding")
 
 
 def _workerd_modules_dir(plugin_dir: Path, m: dict[str, Any]) -> Path:

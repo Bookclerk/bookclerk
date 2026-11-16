@@ -1937,6 +1937,14 @@ def test_sockets_need_outbound_and_a_free_binding():
         validate_manifest({**outbound, "sockets": {"binding": "push"}})
     with pytest.raises(ValueError, match=r"\[kv_namespaces\]\[0\] binding collides"):
         validate_manifest({**outbound, "sockets": {}, "kv_namespaces": [{"binding": "SOCKETS"}]})
+    with pytest.raises(ValueError, match=r"\[sockets\]\[0\] binding collides"):
+        validate_manifest(
+            {
+                **outbound,
+                "sockets": {"binding": "EVENTS"},
+                "events": {"producers": [{"type": "echo_done"}]},
+            }
+        )
 
 
 def test_sockets_types_and_format():

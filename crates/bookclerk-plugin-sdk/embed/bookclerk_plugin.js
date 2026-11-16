@@ -11672,7 +11672,9 @@ var GrantedKv = class extends RpcTarget {
   }
 };
 var GrantedSockets = class extends RpcTarget {
+  /** Granted reverse channel that serves `POST /sockets/<op>`. */
   #granted;
+  /** `Authorization` header carrying the sockets-only grant token. */
   #auth;
   /**
    * @param granted - Granted reverse channel.
@@ -11683,6 +11685,15 @@ var GrantedSockets = class extends RpcTarget {
     this.#granted = granted;
     this.#auth = auth;
   }
+  /**
+   * Makes one `POST /sockets/<op>` call on the granted channel.
+   *
+   * @param op - Operation, the path segment after `/sockets/`.
+   * @param body - That operation's JSON fields, bytes already base64.
+   * @returns `{ ok }` with the route's reply body, or `{ err }` with the
+   *   host's code (`unavailable` when the channel cannot be reached,
+   *   `internal` for a reply that is not JSON); never throws.
+   */
   async call(op, body) {
     let resp;
     try {

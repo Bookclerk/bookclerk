@@ -707,6 +707,17 @@ class QueueDispatchTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(raised.exception.code, "unavailable")
 
+        class _BrokenStub:
+            async def call(self, op, body):
+                raise RuntimeError("channel closed")
+
+        with self.assertRaises(PluginError) as raised:
+            await Camel().bookclerkSocketMessage(
+                {"sockets": [{"name": "SOCKETS", "sockets": _BrokenStub()}]},
+                {"socket": "g1_a", "frame": {"kind": "text", "value": "x"}},
+            )
+        self.assertEqual(raised.exception.code, "unavailable")
+
     def test_socket_attachment_and_frame_limits(self) -> None:
         from bookclerk_plugin_sdk.workerd import (
             MAX_SOCKET_ATTACHMENT_BYTES,

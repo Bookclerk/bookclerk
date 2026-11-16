@@ -17,7 +17,8 @@
 //!   bytes from `[A-Za-z0-9_-]`, frames up to `MAX_SOCKET_FRAME_BYTES`,
 //!   attachments up to `MAX_SOCKET_ATTACHMENT_BYTES`, close codes a peer may
 //!   send with reasons up to 123 bytes, and connect requests the broker
-//!   would dial (`validate_socket_connect`);
+//!   would dial (the `socket_request` oracle's independent restatement of
+//!   `validate_socket_connect`);
 //! - parse what it accepts the same way again after the call is written back
 //!   out in the route's JSON form.
 
@@ -29,6 +30,12 @@ use bookclerk_workerd::granted_sockets::{
     parse_socket_call, RouteAttachment, RouteAutoResponse, RouteClose, RouteConnect, RouteList,
     RouteSend, SocketCall, SOCKET_ROUTE_OPS,
 };
+
+/// The connect rules, restated independently of `validate_socket_connect` in
+/// the `socket_request` oracle; this target uses only its connect check.
+#[allow(dead_code)]
+#[path = "socket_request.rs"]
+mod socket_request;
 
 /// Fields each operation's body may carry.
 fn allowed_fields(op: &str) -> &'static [&'static str] {
@@ -147,6 +154,7 @@ pub fn check(data: &[u8]) {
     };
     match &call {
         SocketCall::Connect(request) => {
+            socket_request::check_connect(request);
             assert!(
                 validate_socket_connect(request).is_ok(),
                 "connect outside the rules"
