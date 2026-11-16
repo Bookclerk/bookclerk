@@ -260,15 +260,12 @@ impl WorkSearchIndex {
         library: &LibraryStore,
         work_ids: &[String],
     ) -> Result<usize> {
+        // Two episodes of one show resolve to the same document.
         let mut docs = Vec::new();
         let mut tops = Vec::new();
-        for id in work_ids {
-            let (top, doc) = library.work_search_document(id).await?;
-            // Two episodes of one show resolve to the same document.
-            if !tops.contains(&top) {
-                tops.push(top);
-                docs.extend(doc);
-            }
+        for (top, doc) in library.work_search_documents(work_ids).await? {
+            tops.push(top);
+            docs.extend(doc);
         }
         let mut writer = self
             .index
@@ -311,8 +308,8 @@ impl WorkSearchIndex {
             let Some(last) = ids.last().cloned() else {
                 break;
             };
-            for id in &ids {
-                if let (_, Some(doc)) = library.work_search_document(id).await? {
+            for (_, doc) in library.work_search_documents(&ids).await? {
+                if let Some(doc) = doc {
                     self.add(&mut writer, &doc)?;
                     count += 1;
                 }

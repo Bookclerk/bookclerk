@@ -445,7 +445,7 @@ async fn a_stale_refresh_cannot_bring_back_a_work_that_lost_its_holdings() {
     // The stalled refresh now writes: the fence row refuses it.
     assert_eq!(
         store
-            .write_work_row(&work, Some(stale), &[], stale_stamp)
+            .write_work_rows(&[(work.clone(), Some(stale), Vec::new())], stale_stamp)
             .await
             .unwrap(),
         0
@@ -857,4 +857,100 @@ async fn tags_and_progress_filter_by_the_users_own_state_under(profile: Profile)
     );
     assert!(filtered(&store, finished(None, true)).await.is_empty());
     assert_eq!(filtered(&store, finished(None, false)).await.len(), 4);
+}
+
+#[tokio::test]
+async fn one_refresh_of_many_works_writes_each_row_and_its_values() {
+    for profile in Profile::ALL {
+        one_refresh_of_many_works_writes_each_row_and_its_values_under(profile).await;
+    }
+}
+
+/// [`one_refresh_of_many_works_writes_each_row_and_its_values`] under one
+/// profile: the rows and values of many works share batches, cut to the
+/// profile's limits, and each row is still counted once and fenced alone.
+async fn one_refresh_of_many_works_writes_each_row_and_its_values_under(profile: Profile) {
+    let store = store_under(profile).await;
+    let mut works = Vec::new();
+    for i in 0..40 {
+        let mut book = NewBook::minimal(format!("M{i:03}"), "acct-1", "us", format!("Many {i:03}"));
+        book.authors = Some(format!("Author {i:03}, Shared Author"));
+        book.narrators = Some(format!("Narrator {i:03}"));
+        book.series = Some(format!("Series {}", i % 4));
+        book.series_index = Some(format!("{i}"));
+        let saved = store.upsert_book(&book).await.unwrap();
+        works.push(
+            store
+                .work_id_for_book(&saved.uuid)
+                .await
+                .unwrap()
+                .expect("a scanned title has a work"),
+        );
+    }
+    works.push("no-such-work".to_string());
+    assert_eq!(
+        store.refresh_library_works(&works).await.unwrap(),
+        40,
+        "{profile:?}: every held work's row is written once"
+    );
+    let rows = walk_rows(
+        &store,
+        WorkPageQuery {
+            limit: 7,
+            ..WorkPageQuery::default()
+        },
+    )
+    .await;
+    assert_eq!(rows.len(), 40, "{profile:?}");
+    let first = &rows[0];
+    assert_eq!(first.title, "Many 000", "{profile:?}");
+    assert_eq!(
+        first.authors.as_deref(),
+        Some("Author 000, Shared Author"),
+        "{profile:?}"
+    );
+    assert_eq!(first.series.as_deref(), Some("Series 0"), "{profile:?}");
+    let values = |facet| {
+        let store = store.clone();
+        async move {
+            let mut values = Vec::new();
+            let mut after: Option<String> = None;
+            loop {
+                let page = store
+                    .library_facet_values(FacetValuesOf::Facet(facet), after.as_deref(), 500)
+                    .await
+                    .unwrap();
+                values.extend(page.values);
+                match page.next {
+                    Some(next) => after = Some(next),
+                    None => return values,
+                }
+            }
+        }
+    };
+    let authors = values(WorkFacet::Author).await;
+    assert_eq!(
+        authors.len(),
+        41,
+        "{profile:?}: 40 own authors and one shared"
+    );
+    let shared = authors
+        .iter()
+        .find(|v| v.value == "Shared Author")
+        .expect("the shared author is a value");
+    assert_eq!(shared.works, 40, "{profile:?}");
+    assert_eq!(values(WorkFacet::Narrator).await.len(), 40, "{profile:?}");
+    assert_eq!(values(WorkFacet::Series).await.len(), 4, "{profile:?}");
+    // A refresh stamped earlier than the rows now writes none of them.
+    let stale_stamp = "2000-01-01T00:00:00.000000Z";
+    let stale: Vec<_> = works[..40]
+        .iter()
+        .map(|work| (work.clone(), None, Vec::new()))
+        .collect();
+    assert_eq!(
+        store.write_work_rows(&stale, stale_stamp).await.unwrap(),
+        0,
+        "{profile:?}: the fence refuses an older refresh"
+    );
+    assert_eq!(walk(&store, WorkPageQuery::default()).await.len(), 40);
 }
