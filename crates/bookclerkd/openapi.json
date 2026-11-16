@@ -12200,7 +12200,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SplitBody"
+                "$ref": "#/components/schemas/WorkSplitBody"
               }
             }
           },
@@ -12218,7 +12218,7 @@
             }
           },
           "400": {
-            "description": "No expression, too many, or the work would be left empty. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "No expression, too many, an id over 64 bytes, or the work would be left empty. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -41662,26 +41662,6 @@
           }
         }
       },
-      "SplitBody": {
-        "type": "object",
-        "description": "Body of `POST /api/library/works/{id}/split`.",
-        "required": [
-          "expression_ids"
-        ],
-        "properties": {
-          "expression_ids": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "The expressions to move to the new work (1 to 12), from the work\ndetail's editions (`expression_id`).",
-            "example": [
-              "4e5f6a7b-8c9d-4e0f-a1b2-c3d4e5f6a7b8"
-            ]
-          }
-        },
-        "additionalProperties": false
-      },
       "SplitJson": {
         "type": "object",
         "description": "The result of a split.",
@@ -44033,6 +44013,26 @@
           "book",
           "podcast"
         ]
+      },
+      "WorkSplitBody": {
+        "type": "object",
+        "description": "`POST /api/library/works/{id}/split` body: the expressions to move.",
+        "required": [
+          "expression_ids"
+        ],
+        "properties": {
+          "expression_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The expressions to move to the new work (1 to 12 distinct ids, each\nat most 64 bytes), from the work detail's editions\n(`expression_id`).",
+            "example": [
+              "4e5f6a7b-8c9d-4e0f-a1b2-c3d4e5f6a7b8"
+            ]
+          }
+        },
+        "additionalProperties": false
       },
       "WorkStateEdit": {
         "type": "object",

@@ -13,7 +13,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use bookclerk_library::{
     ConflictCursor, EntityKind, LibraryError, PinOutcome, ResolutionConflict, SplitOutcome,
-    MAX_SPLIT_EXPRESSIONS,
+    WorkSplitBody, MAX_SPLIT_EXPRESSIONS,
 };
 use serde::{Deserialize, Serialize};
 
@@ -272,16 +272,6 @@ pub(crate) async fn list_conflicts(
     }))
 }
 
-/// Body of `POST /api/library/works/{id}/split`.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SplitBody {
-    /// The expressions to move to the new work (1 to 12), from the work
-    /// detail's editions (`expression_id`).
-    #[schema(example = json!(["4e5f6a7b-8c9d-4e0f-a1b2-c3d4e5f6a7b8"]))]
-    expression_ids: Vec<String>,
-}
-
 /// The result of a split.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct SplitJson {
@@ -304,10 +294,10 @@ pub(crate) struct SplitJson {
     post,
     path = "/api/library/works/{id}/split",
     params(("id" = String, Path, description = "Work id.")),
-    request_body = SplitBody,
+    request_body = WorkSplitBody,
     responses(
         (status = 200, description = "The new work.", body = SplitJson),
-        (status = 400, description = "No expression, too many, or the work would be left empty.", body = ErrorMessage, example = json!({"error": "a split must leave the work at least one expression"})),
+        (status = 400, description = "No expression, too many, an id over 64 bytes, or the work would be left empty.", body = ErrorMessage, example = json!({"error": "a split must leave the work at least one expression"})),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The caller is not an Administrator.", body = ErrorMessage, example = json!({"error": "only an Administrator can change how listings resolve"})),
         (status = 404, description = "No such work, or an expression is not the work's.", body = ErrorMessage, example = json!({"error": "work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b not found"})),
@@ -319,12 +309,21 @@ pub(crate) async fn post_work_split(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
-    Json(body): Json<SplitBody>,
+    Json(body): Json<WorkSplitBody>,
 ) -> Result<Json<SplitJson>, OverrideError> {
     let user_id = administrator(&state, &headers).await?;
-    let library = state.library_snapshot().await;
     let bad = |message: String| (StatusCode::BAD_REQUEST, Json(ErrorMessage::new(message)));
-    let outcome = match library.split_work(&id, &body.expression_ids, user_id).await {
+    // The same parse the fuzz target drives (`parse_work_split_request`).
+    let request = match body.validate() {
+        Ok(request) => request,
+        Err(LibraryError::Invalid(message)) => return Err(bad(message)),
+        Err(err) => return Err(failed("post_work_split", &err)),
+    };
+    let library = state.library_snapshot().await;
+    let outcome = match library
+        .split_work(&id, request.expression_ids(), user_id)
+        .await
+    {
         Ok(outcome) => outcome,
         Err(LibraryError::Conflict(_)) => {
             return Err((

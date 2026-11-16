@@ -15,6 +15,7 @@ use std::collections::BTreeSet;
 
 use bookclerk_plugin_abi::{DbValue, TypedDbStatement};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QuerySelect};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use super::{now_str, LibraryStore};
@@ -25,6 +26,110 @@ use crate::error::{LibraryError, Result};
 /// Most expressions one split moves: the batch's widest statement binds
 /// each id twice, and the minimum database profile allows 32 binds.
 pub const MAX_SPLIT_EXPRESSIONS: usize = 12;
+
+/// Longest expression id a split body may name, in bytes; ids are UUIDs.
+pub const MAX_SPLIT_EXPRESSION_ID_BYTES: usize = 64;
+
+/// `POST /api/library/works/{id}/split` body: the expressions to move.
+#[derive(Debug, utoipa::ToSchema)]
+// Read by the schema only (no unknown fields); `WorkSplitFields` enforces
+// it.
+#[serde(deny_unknown_fields)]
+pub struct WorkSplitBody {
+    /// The expressions to move to the new work (1 to 12 distinct ids, each
+    /// at most 64 bytes), from the work detail's editions
+    /// (`expression_id`).
+    #[schema(example = json!(["4e5f6a7b-8c9d-4e0f-a1b2-c3d4e5f6a7b8"]))]
+    expression_ids: Vec<String>,
+}
+
+/// [`WorkSplitBody`]'s fields as JSON carries them; read only from a JSON
+/// object ([`WorkSplitBody`]'s `Deserialize`), never from an array.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkSplitFields {
+    /// See [`WorkSplitBody::expression_ids`].
+    expression_ids: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for WorkSplitBody {
+    /// Reads the body from a JSON object only.
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let fields: WorkSplitFields =
+            crate::control_plane::from_object(deserializer, "a JSON object with expression_ids")?;
+        Ok(Self {
+            expression_ids: fields.expression_ids,
+        })
+    }
+}
+
+/// A validated [`WorkSplitBody`]: 1 to [`MAX_SPLIT_EXPRESSIONS`] distinct
+/// expression ids, each 1 to [`MAX_SPLIT_EXPRESSION_ID_BYTES`] bytes,
+/// sorted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkSplitRequest {
+    /// The expressions to move, sorted and distinct.
+    expression_ids: Vec<String>,
+}
+
+impl WorkSplitRequest {
+    /// The expressions to move, sorted and distinct.
+    #[must_use]
+    pub fn expression_ids(&self) -> &[String] {
+        &self.expression_ids
+    }
+}
+
+impl WorkSplitBody {
+    /// Checks the body: every id 1 to [`MAX_SPLIT_EXPRESSION_ID_BYTES`]
+    /// bytes, and 1 to [`MAX_SPLIT_EXPRESSIONS`] distinct ids (a repeated
+    /// id counts once).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] for an empty or overlong id, or a
+    /// count outside the bounds.
+    pub fn validate(self) -> Result<WorkSplitRequest> {
+        if self
+            .expression_ids
+            .iter()
+            .any(|id| id.is_empty() || id.len() > MAX_SPLIT_EXPRESSION_ID_BYTES)
+        {
+            return Err(LibraryError::Invalid(format!(
+                "an expression id is 1 to {MAX_SPLIT_EXPRESSION_ID_BYTES} bytes"
+            )));
+        }
+        let expression_ids: Vec<String> = self
+            .expression_ids
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if expression_ids.is_empty() || expression_ids.len() > MAX_SPLIT_EXPRESSIONS {
+            return Err(LibraryError::Invalid(format!(
+                "name 1 to {MAX_SPLIT_EXPRESSIONS} expressions to move"
+            )));
+        }
+        Ok(WorkSplitRequest { expression_ids })
+    }
+}
+
+/// Parses and validates a `POST /api/library/works/{id}/split` body from
+/// its raw bytes, sans IO, the way the route reads it: JSON into
+/// [`WorkSplitBody`], then [`WorkSplitBody::validate`].
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for bytes that are not the body's JSON
+/// shape (unknown or repeated fields, wrong types, a missing field, an
+/// array instead of an object) or ids outside the bounds.
+pub fn parse_work_split_request(body: &[u8]) -> Result<WorkSplitRequest> {
+    serde_json::from_slice::<WorkSplitBody>(body)
+        .map_err(|err| LibraryError::Invalid(format!("split body: {err}")))?
+        .validate()
+}
 
 /// What [`LibraryStore::split_work`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,6 +354,15 @@ fn split_statements(p: &SplitWrite<'_>) -> Vec<TypedDbStatement> {
     };
 
     let mut out = vec![
+        // Takes the original work's row lock first, so on an engine whose
+        // batch runs at READ COMMITTED (native Postgres) a concurrent split
+        // of the same work waits here, and its guard below then reads the
+        // committed state instead of passing on the same snapshot. SQLite
+        // and D1 already serialize writers.
+        batch::exec(
+            "UPDATE works SET updated_at = updated_at WHERE id = ?",
+            vec![batch::text(p.work_id)],
+        ),
         batch::exec(
             &format!(
                 "INSERT INTO works \
@@ -362,6 +476,44 @@ mod tests {
     use crate::models::UserRole;
     use crate::test_support::{sqlite, Profile};
     use crate::{FieldEdit, UserStateEdit};
+
+    #[test]
+    fn a_split_body_is_validated_like_the_route_reads_it() {
+        let ok = parse_work_split_request(br#"{"expression_ids": ["b", "a", "b"]}"#).unwrap();
+        assert_eq!(ok.expression_ids(), ["a", "b"], "sorted, distinct");
+        let twelve: Vec<String> = (0..12).map(|i| format!("e{i:02}")).collect();
+        let body = serde_json::json!({ "expression_ids": twelve }).to_string();
+        assert_eq!(
+            parse_work_split_request(body.as_bytes())
+                .unwrap()
+                .expression_ids()
+                .len(),
+            12
+        );
+        let longest = serde_json::json!({ "expression_ids": ["x".repeat(64)] }).to_string();
+        assert!(parse_work_split_request(longest.as_bytes()).is_ok());
+        let thirteen: Vec<String> = (0..13).map(|i| format!("e{i:02}")).collect();
+        for refused in [
+            serde_json::json!({ "expression_ids": thirteen }).to_string(),
+            serde_json::json!({ "expression_ids": [] }).to_string(),
+            serde_json::json!({ "expression_ids": [""] }).to_string(),
+            serde_json::json!({ "expression_ids": ["x".repeat(65)] }).to_string(),
+            r#"{"expression_ids": ["a"], "extra": 1}"#.into(),
+            r#"{"expression_ids": ["a"], "expression_ids": ["b"]}"#.into(),
+            r#"[["a"]]"#.into(),
+            r#"{"expression_ids": "a"}"#.into(),
+            "{}".into(),
+            "not json".into(),
+        ] {
+            assert!(
+                matches!(
+                    parse_work_split_request(refused.as_bytes()),
+                    Err(LibraryError::Invalid(_))
+                ),
+                "{refused}"
+            );
+        }
+    }
 
     /// A catalog listing of "Dune" by Frank Herbert in series "Dune": an
     /// unabridged audiobook (`abridged` false) or an abridged one, each

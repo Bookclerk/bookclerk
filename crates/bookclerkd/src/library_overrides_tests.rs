@@ -271,6 +271,10 @@ async fn an_administrator_splits_a_work() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json["error"], "name 1 to 12 expressions to move");
+    let long = serde_json::json!({ "expression_ids": ["x".repeat(65)] }).to_string();
+    let (status, json) = call(&app, Some(&admin), "POST", &uri, Some(&long)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"], "an expression id is 1 to 64 bytes");
     let (status, json) = call(
         &app,
         Some(&admin),

@@ -284,6 +284,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "work_split_request"
+path = "fuzz_targets/work_split_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "job_cap_request"
 path = "fuzz_targets/job_cap_request.rs"
 test = false
