@@ -69,6 +69,20 @@ Older SDKs that only opened a pathname or named-pipe proxy cannot reach
 the host and fail closed; rebuild guests against this SDK. Pathname,
 `abstract:` and `\\.\pipe\` forms remain for tests.
 
+## Pushed sockets
+
+A plugin that declares `[sockets]` (see
+[Pushed sockets](../../abi.md#pushed-sockets-sockets)) receives `Sockets`
+on `Bindings::sockets` in `open` and may return a `SocketHandler` on
+`Entrypoints::socket_handler`. The host holds each connection, answers the
+declared heartbeats and calls the handler once per message, so the plugin
+process may sleep in between. The `sockets` module wraps one socket id
+in `HostWebSocket` (`send_text`, `close`, `serialize_attachment`,
+`deserialize_attachment`), the same surface the TypeScript and Python
+SDKs give their handlers, and `text_heartbeat("2", "3")` builds a
+heartbeat pair. Attachments are JSON of at most 2 KiB, so a socket reads
+the same from every SDK.
+
 ## Author tools
 
 The `bookclerk-plugin` author CLI (`check`, `fmt`, `sync-embed`,

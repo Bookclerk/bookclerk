@@ -1916,3 +1916,66 @@ def test_package_writes_the_archive_readable_but_not_executable(tmp_path: Path) 
     os.umask(umask)
     archive = package_plugin(_native_plugin(tmp_path), tmp_path / "dist")
     assert archive.stat().st_mode & 0o777 == 0o644 & ~umask
+
+
+def test_sockets_need_outbound_and_a_free_binding():
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    base = {
+        "api_version": 3,
+        "id": "echo",
+        "runtime": "native",
+        "command": "./echo",
+        "entrypoints": ["cli"],
+        "capabilities": {"network": {"mode": "deny"}},
+    }
+    with pytest.raises(ValueError, match=r"\[sockets\] needs capabilities.network.mode"):
+        validate_manifest({**base, "sockets": {}})
+    outbound = {**base, "capabilities": {"network": {"mode": "outbound", "tcp": []}}}
+    validate_manifest({**outbound, "sockets": {}})
+    with pytest.raises(ValueError, match=r"\[sockets\]\[0\] binding must be"):
+        validate_manifest({**outbound, "sockets": {"binding": "push"}})
+    with pytest.raises(ValueError, match=r"\[kv_namespaces\]\[0\] binding collides"):
+        validate_manifest({**outbound, "sockets": {}, "kv_namespaces": [{"binding": "SOCKETS"}]})
+    with pytest.raises(ValueError, match=r"\[sockets\]\[0\] binding collides"):
+        validate_manifest(
+            {
+                **outbound,
+                "sockets": {"binding": "EVENTS"},
+                "events": {"producers": [{"type": "echo_done"}]},
+            }
+        )
+    with pytest.raises(ValueError, match=r"\[sockets\]\[0\] binding collides"):
+        validate_manifest(
+            {
+                **outbound,
+                "sockets": {"binding": "EVENTS"},
+                "events": {"producers": [{"type": "echo_done", "binding": "CUSTOM"}]},
+            }
+        )
+
+
+def test_sockets_types_and_format():
+    manifest = {"id": "abs", "sockets": {"binding": "PUSH"}}
+    props = {name: type_ for name, type_, _ in env_properties_for(manifest)}
+    assert props["PUSH"] == "SocketsBinding"
+    from bookclerk_plugin_sdk.tools import render_env_types
+
+    stub = render_env_types(manifest)
+    assert "from bookclerk_plugin_sdk.workerd import SocketsBinding" in stub
+    assert "    PUSH: SocketsBinding" in stub
+    with pytest.raises(ValueError, match="collides with a Bookclerk binding"):
+        env_properties_for({"id": "x", "databases": [{"binding": "SOCKETS"}]})
+    text = format_manifest(
+        {
+            "api_version": 3,
+            "id": "echo",
+            "runtime": "native",
+            "command": "./echo",
+            "entrypoints": ["cli"],
+            "oauth": {},
+            "sockets": {"binding": "PUSH"},
+            "capabilities": {"network": {"mode": "outbound", "tcp": []}},
+        }
+    )
+    assert '[oauth]\n\n[sockets]\nbinding = "PUSH"\n' in text

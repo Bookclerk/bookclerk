@@ -426,6 +426,61 @@ if (!rowIndexed) {
   process.exit(1);
 }
 console.log("ok binding errors name the row index");
+// [sockets]: outbound only, a valid name that collides with nothing, and the
+// generated Env types it as SocketsBinding under its (renamed) binding.
+{
+  const { renderEnvTypes } = await import("../dist/tools/types.js");
+  const outbound = { ...bindingBase, capabilities: { network: { mode: "outbound", tcp: [] } } };
+  const cases = [
+    [{ ...bindingBase, sockets: {} }, "[sockets] needs capabilities.network.mode"],
+    [{ ...outbound, sockets: {} }, ""],
+    [{ ...outbound, sockets: { binding: "push" } }, "[sockets][0] binding must be"],
+    [
+      { ...outbound, sockets: {}, kv_namespaces: [{ binding: "SOCKETS" }] },
+      "[kv_namespaces][0] binding collides",
+    ],
+    [
+      {
+        ...outbound,
+        sockets: { binding: "EVENTS" },
+        events: { producers: [{ type: "echo_done" }] },
+      },
+      "[sockets][0] binding collides",
+    ],
+    [
+      {
+        ...outbound,
+        sockets: { binding: "EVENTS" },
+        events: { producers: [{ type: "echo_done", binding: "CUSTOM" }] },
+      },
+      "[sockets][0] binding collides",
+    ],
+  ];
+  for (const [manifest, expected] of cases) {
+    const message = bindingMessage(manifest);
+    const ok = expected === "" ? message === "" : message.includes(expected);
+    if (!ok) {
+      console.error(
+        "FAIL sockets",
+        JSON.stringify(manifest.sockets),
+        "->",
+        message || "(accepted)",
+      );
+      process.exit(1);
+    }
+  }
+  const types = renderEnvTypes({ ...outbound, sockets: { binding: "PUSH" } });
+  if (!types.includes("PUSH: SocketsBinding;") || !types.includes("SocketsBinding }")) {
+    console.error("FAIL sockets env types: missing the PUSH SocketsBinding property or import");
+    process.exit(1);
+  }
+  const formatted = formatManifest({ ...outbound, sockets: { binding: "PUSH" } });
+  if (!formatted.includes('[sockets]\nbinding = "PUSH"')) {
+    console.error("FAIL sockets format: missing the renamed [sockets] table");
+    process.exit(1);
+  }
+  console.log("ok [sockets] validates, formats and types as SocketsBinding");
+}
 const nameOnly = formatManifest({
   api_version: 3,
   id: "echo",

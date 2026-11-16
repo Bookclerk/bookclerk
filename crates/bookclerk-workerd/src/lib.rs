@@ -25,6 +25,7 @@ pub mod ensure;
 pub mod grant;
 pub mod granted;
 pub mod granted_http;
+pub mod granted_sockets;
 pub mod inherited_link;
 pub mod invoke;
 pub mod pin;

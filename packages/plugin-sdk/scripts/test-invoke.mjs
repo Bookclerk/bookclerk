@@ -58,9 +58,58 @@ const enc = new TextEncoder();
 
 // --- Author isolate stand-ins --------------------------------------------
 
-const calls = { event: 0, queue: 0, queueSends: [], storefront: [], scheduled: [] };
+const calls = { event: 0, queue: 0, queueSends: [], storefront: [], scheduled: [], sockets: [] };
 
 class Plugin extends BookclerkEntrypoint {
+  async webSocketMessage(ws, message) {
+    const seen = ws.deserializeAttachment();
+    calls.sockets.push({ kind: "message", id: ws.id, message, seen });
+    if (message === "subscribe") {
+      // Woken by a message: open a second socket and remember progress.
+      const opened = await this.env.SOCKETS.connect("wss://abs.example/socket.io/", {
+        protocols: ["chat"],
+        headers: { Authorization: "Bearer t" },
+        autoResponses: [{ request: "2", response: "3" }],
+        attachment: { room: "lib" },
+      });
+      calls.sockets.push({
+        kind: "opened",
+        id: opened.id,
+        url: opened.url,
+        protocol: opened.protocol,
+        attachment: opened.deserializeAttachment(),
+      });
+      await ws.send(new Uint8Array([1, 2, 3]));
+      await ws.serializeAttachment({ count: (seen?.count ?? 0) + 1 });
+      calls.sockets.push({ kind: "after", attachment: ws.deserializeAttachment() });
+      const open = await this.env.SOCKETS.getWebSockets();
+      calls.sockets.push({ kind: "listed", ids: open.map((socket) => socket.id) });
+      calls.sockets.push({
+        kind: "tooBig",
+        code: await ws.serializeAttachment("x".repeat(3000)).catch((err) => err.code),
+      });
+      calls.sockets.push({
+        kind: "gone",
+        code: await this.env.SOCKETS.getWebSockets()
+          .then(() => "ok")
+          .catch((err) => err.code),
+      });
+      await ws.close(4000, "done");
+    }
+    if (message === "boom") throw new Error("handler failed");
+  }
+
+  async webSocketClose(ws, code, reason, wasClean) {
+    calls.sockets.push({
+      kind: "close",
+      id: ws.id,
+      code,
+      reason,
+      wasClean,
+      seen: ws.deserializeAttachment(),
+    });
+  }
+
   async scheduled(controller) {
     calls.scheduled.push(controller);
     if (controller.cron === "0 0 * * *") throw new Error("nightly failed");
@@ -439,6 +488,30 @@ const granted = {
       this.puts = [...(this.puts ?? []), { key: u.searchParams.get("key"), bytes }];
       return Response.json({ key: u.searchParams.get("key"), bytesWritten: bytes.length });
     }
+    if (u.pathname.startsWith("/sockets/")) {
+      const body = JSON.parse(init.body);
+      (this.sockets ??= []).push({ path: u.pathname, auth: init.headers?.Authorization, body });
+      switch (u.pathname) {
+        case "/sockets/connect":
+          return Response.json({
+            socket: "g1_s2",
+            url: body.url,
+            protocol: body.protocols[0],
+            attachment: body.attachment,
+          });
+        case "/sockets/list":
+          if (this.socketsGone) {
+            return Response.json(
+              { error: { code: "unavailable", message: "broker restarting" } },
+              { status: 503 },
+            );
+          }
+          this.socketsGone = true;
+          return Response.json({ sockets: [{ socket: "g1_s1", url: "wss://a/", attachment: "" }] });
+        default:
+          return Response.json({});
+      }
+    }
     if (u.pathname.startsWith("/kv/")) {
       const body = JSON.parse(init.body);
       const store = (this.kv ??= new Map());
@@ -553,6 +626,7 @@ const contextJson = JSON.stringify(
     queues: { NOTIFY: "qtok" },
     kv: { KV: "ktok" },
     databases: { DB: "dtok" },
+    sockets: { SOCKETS: "socktok" },
   }),
 );
 
@@ -897,6 +971,107 @@ function decodeReply(reply, resultsCodec, caps) {
   );
   assert.equal(failed.kind, "err");
   assert.match(String(failed.value.message), /nightly failed/);
+}
+
+// --- SocketHandler: messages and closes reach webSocketMessage / webSocketClose --
+
+{
+  const attachment = enc.encode(JSON.stringify({ count: 4 }));
+  const ok = decodeReply(
+    await invoke("SocketHandler", "message", W.SocketHandlerMessageParamsCodec, {
+      event: { socket: "g1_s1", frame: { kind: "text", value: "subscribe" }, attachment },
+    }),
+    W.SocketHandlerMessageResultsCodec,
+  );
+  assert.equal(ok.kind, "ok", JSON.stringify(ok));
+  const [message, opened, after, listed, tooBig, gone] = calls.sockets;
+  assert.deepEqual(message, {
+    kind: "message",
+    id: "g1_s1",
+    message: "subscribe",
+    seen: { count: 4 },
+  });
+  assert.deepEqual(opened, {
+    kind: "opened",
+    id: "g1_s2",
+    url: "wss://abs.example/socket.io/",
+    protocol: "chat",
+    attachment: { room: "lib" },
+  });
+  assert.deepEqual(after, { kind: "after", attachment: { count: 5 } });
+  assert.deepEqual(listed, { kind: "listed", ids: ["g1_s1"] });
+  assert.deepEqual(tooBig, { kind: "tooBig", code: "payload_too_large" });
+  assert.deepEqual(gone, { kind: "gone", code: "unavailable" }, "a host failure keeps its code");
+
+  const sent = granted.sockets;
+  assert.ok(
+    sent.every((r) => r.auth === "Bearer socktok"),
+    "every call carries the sockets grant",
+  );
+  assert.deepEqual(
+    sent.map((r) => r.path),
+    [
+      "/sockets/connect",
+      "/sockets/send",
+      "/sockets/attachment",
+      "/sockets/list",
+      "/sockets/list",
+      "/sockets/close",
+    ],
+  );
+  assert.deepEqual(sent[0].body.headers, [{ name: "Authorization", value: "Bearer t" }]);
+  assert.deepEqual(sent[0].body.autoResponses, [
+    { request: { text: "2" }, response: { text: "3" } },
+  ]);
+  assert.deepEqual(sent[1].body, { socket: "g1_s1", frame: { binary: "AQID" } });
+  assert.deepEqual(JSON.parse(atob(sent[2].body.attachment)), { count: 5 });
+  assert.deepEqual(sent[5].body, { socket: "g1_s1", code: 4000, reason: "done" });
+
+  calls.sockets.length = 0;
+  const binary = decodeReply(
+    await invoke("SocketHandler", "message", W.SocketHandlerMessageParamsCodec, {
+      event: { socket: "g1_s1", frame: { kind: "binary", value: new Uint8Array([9, 8]) } },
+    }),
+    W.SocketHandlerMessageResultsCodec,
+  );
+  assert.equal(binary.kind, "ok");
+  assert.ok(calls.sockets[0].message instanceof ArrayBuffer, "binary arrives as an ArrayBuffer");
+  assert.deepEqual([...new Uint8Array(calls.sockets[0].message)], [9, 8]);
+  assert.equal(calls.sockets[0].seen, null, "no attachment reads as null");
+
+  const failed = decodeReply(
+    await invoke("SocketHandler", "message", W.SocketHandlerMessageParamsCodec, {
+      event: { socket: "g1_s1", frame: { kind: "text", value: "boom" } },
+    }),
+    W.SocketHandlerMessageResultsCodec,
+  );
+  assert.equal(failed.kind, "err");
+  assert.match(String(failed.value.message), /handler failed/);
+
+  calls.sockets.length = 0;
+  const closed = decodeReply(
+    await invoke("SocketHandler", "closed", W.SocketHandlerClosedParamsCodec, {
+      event: {
+        socket: "g1_s1",
+        code: 1006,
+        reason: "the socket broker stopped",
+        clean: false,
+        attachment,
+      },
+    }),
+    W.SocketHandlerClosedResultsCodec,
+  );
+  assert.equal(closed.kind, "ok");
+  assert.deepEqual(calls.sockets, [
+    {
+      kind: "close",
+      id: "g1_s1",
+      code: 1006,
+      reason: "the socket broker stopped",
+      wasClean: false,
+      seen: { count: 4 },
+    },
+  ]);
 }
 
 // --- QueueConsumer: one author call per batch; env.<QUEUE> sends via GRANTED --

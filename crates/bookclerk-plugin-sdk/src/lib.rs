@@ -12,6 +12,7 @@
 //! | Native guest (`runtime = "native"`) | [`PluginWorker`] / [`serve`] (`api_version = 3`) |
 //! | Fetch / upload work paths | [`fetch_work_dir`], [`upload_file_path`] |
 //! | Mediated TCP sockets | [`connect_socket`] / [`net`] (Workers `connect()` equivalent) |
+//! | Host-held WebSockets that let the plugin sleep (`[sockets]`) | [`sockets`] / [`HostWebSocket`] |
 //! | Native HTTPS through the socket proxy | feature `http` → `http::Client` |
 //! | OAuth callback without guest listen | [`callback_tunnel`] |
 //! | Workerd / Wasm guests | [`workerd`] + npm `@bookclerk/plugin-sdk` |
@@ -50,6 +51,7 @@ pub mod net;
 mod pass_fd;
 pub mod protocol;
 mod scan_page;
+pub mod sockets;
 pub mod workerd;
 
 pub use callback_tunnel::{TunnelGuest, TunnelHost, TunnelStream};
@@ -89,6 +91,10 @@ pub use protocol::{
     MAX_RPC_LINE_BYTES, PROTOCOL_NAME,
 };
 pub use scan_page::{scan_page, StorePage};
+pub use sockets::{
+    HostWebSocket, SocketAutoResponse, SocketClosed, SocketConnectRequest, SocketFrame,
+    SocketHandler, SocketHeader, SocketInfo, SocketMessage, Sockets,
+};
 
 pub use bookclerk_plugin_abi::{
     byte_source_from_async_read, canonical_execute_request_hash, connect_plugin,

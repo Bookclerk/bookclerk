@@ -204,5 +204,11 @@ export type {
   QueueBinding,
   QueueSendBatchEntry,
   QueueSendOptions,
+  HostWebSocket,
+  SocketAutoResponsePair,
+  SocketConnectOptions,
+  SocketMessageData,
+  SocketSendData,
+  SocketsBinding,
   StorageBinding,
 } from "./env.js";

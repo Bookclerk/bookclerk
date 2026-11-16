@@ -24,6 +24,7 @@ const RESERVED_BINDINGS: ReadonlySet<string> = new Set([
   "WORK_FS",
   "KV",
   "OAUTH",
+  "SOCKETS",
 ]);
 
 /** One property of the generated `Env` interface. */
@@ -148,6 +149,13 @@ export function envPropertiesFor(m: Manifest): EnvProperty[] {
       doc: `\`[[kv_namespaces]]\` durable KV namespace \`${namespace}\` (Workers \`KVNamespace\`-shaped).`,
     });
   }
+  if (m.sockets) {
+    props.push({
+      name: m.sockets.binding || "SOCKETS",
+      type: "SocketsBinding",
+      doc: "`[sockets]` host-brokered WebSockets; messages reach `webSocketMessage` / `webSocketClose`.",
+    });
+  }
   if (m.oauth) {
     props.push({
       name: m.oauth.binding ?? "OAUTH",
@@ -209,6 +217,7 @@ export function renderEnvTypes(m: Manifest): string {
       "EventPublisherBinding",
       "KvNamespaceBinding",
       "QueueBinding",
+      "SocketsBinding",
       "StorageBinding",
     ].filter((t) => used.has(t)),
   ];

@@ -342,6 +342,13 @@ async fn run_isolate(
         #[cfg(not(unix))]
         granted_tcp,
         manifest.capabilities(),
+        manifest
+            .sockets
+            .as_ref()
+            .map_or(bookclerk_plugin_manifest::DEFAULT_SOCKETS_BINDING, |b| {
+                b.name_or(bookclerk_plugin_manifest::DEFAULT_SOCKETS_BINDING)
+            })
+            .to_string(),
     )
     .await;
     let _ = child.kill().await;
@@ -570,6 +577,7 @@ async fn mediate_bridge(
     #[cfg(unix)] granted_unix: Option<std::os::unix::net::UnixListener>,
     #[cfg(not(unix))] granted_tcp: Option<std::net::TcpListener>,
     capabilities: bookclerk_plugin_abi::PluginCapabilities,
+    sockets_binding: String,
 ) -> Result<()> {
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -601,7 +609,13 @@ async fn mediate_bridge(
                 let listener = tokio::net::TcpListener::from_std(std_listener)?;
                 spawn_granted(listener, token, Rc::clone(&table));
             }
-            mediate_bridge_stdio(http, table, capabilities, Backend::Author).await
+            mediate_bridge_stdio(
+                http,
+                table,
+                capabilities,
+                Backend::Author { sockets_binding },
+            )
+            .await
         })
         .await
 }

@@ -57,6 +57,8 @@ import type {
   QueueBinding,
   QueueSendBatchEntry,
   QueueSendOptions,
+  HostWebSocket,
+  SocketMessageData,
 } from "./env.js";
 import { PluginError, parseLimitExceeded } from "./errors.js";
 import { ExecuteStreamFrameCodec, encodeMessage } from "./generated-wire.js";
@@ -68,6 +70,14 @@ import {
   type InvokeOutcome,
 } from "./invoke.js";
 import { requirePluginMigrationRegistration } from "./plugin-migrations.js";
+import {
+  hostWebSocketOf,
+  socketMessageData,
+  socketsBinding,
+  type SocketOp,
+  type SocketsTransport,
+  type SocketTransportReply,
+} from "./sockets.js";
 import type {
   AuthenticateUserParams,
   CatalogDetailParams,
@@ -117,6 +127,8 @@ import type {
   ScanPage,
   ScanParams,
   ScheduledController,
+  SocketClosed as WireSocketClosed,
+  SocketMessage as WireSocketMessage,
   SearchCatalogParams,
   SourceAccount,
 } from "./generated.js";
@@ -566,6 +578,16 @@ export interface GrantedContext {
   queues?: NamedQueue[];
   /** `[[kv_namespaces]]` bindings, when granted. */
   kv?: NamedKv[];
+  /** The `[sockets]` binding, when granted (at most one entry). */
+  sockets?: NamedSockets[];
+}
+
+/** The granted `[sockets]` binding on the granted context. */
+export interface NamedSockets {
+  /** Binding name (`env.<name>`, `SOCKETS` unless renamed). */
+  name: string;
+  /** The adapter's grant (crosses the adapter → author RPC boundary). */
+  sockets: SocketsTransport;
 }
 
 /** One granted `[[kv_namespaces]]` binding on the granted context. */
@@ -669,7 +691,10 @@ export interface NamedDatabase {
  * plus the grant tokens the adapter exchanges for the author's `EVENTS` and
  * `env.<BINDING>` stubs. Authors never receive this shape.
  */
-export interface BridgeContext extends Omit<GrantedContext, "databases" | "queues" | "kv"> {
+export interface BridgeContext extends Omit<
+  GrantedContext,
+  "databases" | "queues" | "kv" | "sockets"
+> {
   /** Granted-channel bearer for `env.EVENTS.publish`; stripped before dispatch. */
   eventsToken?: string;
   /** Named `[[databases]]` binding → database-only bearer for `/db/execute`. */
@@ -678,6 +703,8 @@ export interface BridgeContext extends Omit<GrantedContext, "databases" | "queue
   queues?: Record<string, string>;
   /** `[[kv_namespaces]]` binding → kv-only bearer for `/kv/*`. */
   kv?: Record<string, string>;
+  /** `[sockets]` binding → sockets-only bearer for `/sockets/*`. */
+  sockets?: Record<string, string>;
 }
 
 /** Job-runner bridge context: the durable job id plus {@link GrantedContext}. */
@@ -782,6 +809,8 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
         merged[entry.name] = entry.kv;
       }
     }
+    const sockets = socketsTransportOf(context);
+    if (sockets) merged[sockets.name] = socketsBinding(sockets.sockets);
   }
   return Object.freeze(merged) as BookclerkEnv;
 }
@@ -839,6 +868,19 @@ function transportDatabase(entry: GrantedDatabaseTransport): DatabaseBinding {
     ...(readLimits ? { limits: readLimits } : {}),
     ...(streamed ? { executeStreamed: streamed } : {}),
   });
+}
+
+/**
+ * The granted `[sockets]` entry of a context, if any.
+ *
+ * @param context - Granted context.
+ * @returns The binding name and the adapter's grant, or `undefined`.
+ */
+function socketsTransportOf(context: GrantedContext | undefined): NamedSockets | undefined {
+  const list = context && Array.isArray(context.sockets) ? context.sockets : [];
+  return list.find(
+    (entry) => entry && typeof entry.name === "string" && entry.name !== "" && entry.sockets,
+  );
 }
 
 function applyInvocationEnv(instance: object, context: GrantedContext | undefined): void {
@@ -1663,6 +1705,28 @@ export class BookclerkEntrypoint<
   job?(job: JobController): Promise<JobCompletion | void> | JobCompletion | void;
 
   /**
+   * `[sockets]` handler, the Workers `webSocketMessage(ws, message)`: one
+   * message arrived on a host-brokered socket while the plugin may have been
+   * asleep. `ws` carries the socket's id and its attachment as it was when
+   * the message arrived. Throwing reports the failure to the host; the
+   * socket stays open.
+   */
+  webSocketMessage?(ws: HostWebSocket, message: SocketMessageData): Promise<void> | void;
+
+  /**
+   * `[sockets]` handler, the Workers `webSocketClose(ws, code, reason,
+   * wasClean)`: a host-brokered socket closed, by the server, the network,
+   * or the host (1006 when the connection dropped or the host stopped the
+   * socket's broker). The socket's id is never reused.
+   */
+  webSocketClose?(
+    ws: HostWebSocket,
+    code: number,
+    reason: string,
+    wasClean: boolean,
+  ): Promise<void> | void;
+
+  /**
    * Complete ordered plugin-owned migration sequence for one named binding.
    * The host calls this at binding initialization, before ordinary execute.
    */
@@ -1751,6 +1815,56 @@ export class BookclerkEntrypoint<
     }
     applyInvocationEnv(this, context);
     await this.scheduled(scheduledControllerOf(wire));
+  }
+
+  /**
+   * Adapter dispatch for `SocketHandler.message`.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wire - Wire `SocketMessage`.
+   * @returns Resolves when the author's handler completes.
+   * @internal
+   */
+  async bookclerkSocketMessage(
+    context: GrantedContext,
+    wire: Partial<WireSocketMessage>,
+  ): Promise<void> {
+    if (typeof this.webSocketMessage !== "function") {
+      throw unsupported("webSocketMessage");
+    }
+    applyInvocationEnv(this, context);
+    const ws = hostWebSocketOf(socketsTransportOf(context)?.sockets, {
+      socket: wire?.socket,
+      attachment: wire?.attachment,
+    });
+    await this.webSocketMessage(ws, socketMessageData(wire?.frame));
+  }
+
+  /**
+   * Adapter dispatch for `SocketHandler.closed`. Without a
+   * `webSocketClose` handler the close is acknowledged and ignored.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wire - Wire `SocketClosed`.
+   * @returns Resolves when the author's handler completes.
+   * @internal
+   */
+  async bookclerkSocketClosed(
+    context: GrantedContext,
+    wire: Partial<WireSocketClosed>,
+  ): Promise<void> {
+    if (typeof this.webSocketClose !== "function") return;
+    applyInvocationEnv(this, context);
+    const ws = hostWebSocketOf(socketsTransportOf(context)?.sockets, {
+      socket: wire?.socket,
+      attachment: wire?.attachment,
+    });
+    await this.webSocketClose(
+      ws,
+      Number(wire?.code ?? 0) || 0,
+      String(wire?.reason ?? ""),
+      wire?.clean === true,
+    );
   }
 
   /**
@@ -2549,6 +2663,8 @@ export type AuthorStub = Pick<
   | "bookclerkEvent"
   | "bookclerkQueue"
   | "bookclerkScheduled"
+  | "bookclerkSocketMessage"
+  | "bookclerkSocketClosed"
   | "bookclerkJob"
   | "bookclerkDatabaseMigrations"
   | "bookclerkShutdown"
@@ -3151,6 +3267,63 @@ class GrantedKv extends RpcTarget implements KvNamespaceBinding {
 }
 
 /**
+ * `[sockets]` grant handed to the author: the adapter exchanges the
+ * sockets-only grant token on `POST /sockets/<op>`, so the author isolate
+ * never holds the bearer. Every failure, including a channel that cannot be
+ * reached, comes back as an `err` value rather than a throw, so its code
+ * survives the Workers RPC hop to the author isolate.
+ */
+class GrantedSockets extends RpcTarget implements SocketsTransport {
+  /** Granted reverse channel that serves `POST /sockets/<op>`. */
+  #granted: GrantedFetcher;
+  /** `Authorization` header carrying the sockets-only grant token. */
+  #auth: Record<string, string>;
+
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the sockets grant.
+   */
+  constructor(granted: GrantedFetcher, auth: Record<string, string>) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+
+  /**
+   * Makes one `POST /sockets/<op>` call on the granted channel.
+   *
+   * @param op - Operation, the path segment after `/sockets/`.
+   * @param body - That operation's JSON fields, bytes already base64.
+   * @returns `{ ok }` with the route's reply body, or `{ err }` with the
+   *   host's code (`unavailable` when the channel cannot be reached,
+   *   `internal` for a reply that is not JSON); never throws.
+   */
+  async call(op: SocketOp, body: Record<string, unknown>): Promise<SocketTransportReply> {
+    let resp: Response;
+    try {
+      resp = await this.#granted.fetch(`http://granted/sockets/${op}`, {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      return { err: { code: "unavailable", message: `sockets ${op}: ${errorMessage(err)}` } };
+    }
+    const value = (await resp.json().catch(() => null)) as
+      (Record<string, unknown> & { error?: { code?: string; message?: string } }) | null;
+    if (value && value.error) {
+      return {
+        err: { code: value.error.code || "internal", message: value.error.message || "" },
+      };
+    }
+    if (!resp.ok || !value || typeof value !== "object") {
+      return { err: { code: "internal", message: `sockets ${op} HTTP ${resp.status}` } };
+    }
+    return { ok: value };
+  }
+}
+
+/**
  * Named `[[databases]]` binding transport handed to the author: the adapter
  * exchanges the binding's database-only grant token on `POST /db/execute`,
  * so the author isolate never holds the bearer itself. ABI failures come
@@ -3656,7 +3829,7 @@ function createInvocationAdapter() {
      */
     #bindContext(ctx: BridgeContext | undefined): GrantedContext {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, databases, queues, kv, ...rest } = source;
+      const { eventsToken, databases, queues, kv, sockets, ...rest } = source;
       const bound: GrantedContext = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
@@ -3693,6 +3866,17 @@ function createInvocationAdapter() {
           named.push({ name, kv: new GrantedKv(granted, { Authorization: `Bearer ${token}` }) });
         }
         if (named.length > 0) bound.kv = named;
+      }
+      if (sockets && typeof sockets === "object" && !Array.isArray(sockets) && granted) {
+        const named: NamedSockets[] = [];
+        for (const [name, token] of Object.entries(sockets)) {
+          if (!name || typeof token !== "string" || !token) continue;
+          named.push({
+            name,
+            sockets: new GrantedSockets(granted, { Authorization: `Bearer ${token}` }),
+          });
+        }
+        if (named.length > 0) bound.sockets = named.slice(0, 1);
       }
       return bound;
     }

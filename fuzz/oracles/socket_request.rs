@@ -137,8 +137,8 @@ fn check_url(url: &str) {
     }
 }
 
-/// Checks a decoded connect request.
-fn check_connect(request: &SocketConnectRequest) {
+/// Checks a decoded connect request against the restated rules.
+pub fn check_connect(request: &SocketConnectRequest) {
     check_url(&request.url);
     let expected = parse_socket_url(&request.url).is_ok() && connect_rules_hold(request);
     let actual = validate_socket_connect(request);

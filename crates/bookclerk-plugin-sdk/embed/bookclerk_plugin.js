@@ -22,6 +22,8 @@ var MAX_SCAN_CURSOR_BYTES = 4096;
 var MAX_EVENT_PAYLOAD_BYTES = 65536;
 var MAX_KV_VALUE_BYTES = 1048576;
 var MAX_KV_KEY_BYTES = 512;
+var MAX_SOCKET_FRAME_BYTES = 262144;
+var MAX_SOCKET_ATTACHMENT_BYTES = 2048;
 var MAX_KV_METADATA_BYTES = 1024;
 var MAX_PLUGIN_MIGRATION_OPS = 256;
 var MAX_PLUGIN_MIGRATION_TOTAL_OPS = 2048;
@@ -4558,6 +4560,83 @@ var CoverImagesReplyCodec = {
     }
   }
 };
+var SocketFrameCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    switch (v.kind) {
+      case "text":
+        s.setUint16(0, 0);
+        s.setText(0, v.value ?? "");
+        break;
+      case "binary":
+        s.setUint16(0, 1);
+        s.setData(0, v.value ?? EMPTY_BYTES);
+        break;
+      default:
+        throw unknownUnion("SocketFrame", v.kind);
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "text", value: s.getText(0) };
+      case 1:
+        return { kind: "binary", value: s.getData(0) };
+      default:
+        throw unknownUnion("SocketFrame", disc);
+    }
+  }
+};
+var SocketMessageCodec = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    s.setText(0, v.socket ?? "");
+    if (v.frame != null) {
+      SocketFrameCodec.write(s.initStruct(1, 1, 1), v.frame, caps);
+    }
+    s.setData(2, v.attachment ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    return {
+      socket: s.getText(0),
+      frame: SocketFrameCodec.read(s.getStruct(1, 1, 1), caps),
+      attachment: s.getData(2)
+    };
+  }
+};
+var SocketClosedCodec = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.socket ?? "");
+    s.setUint16(0, v.code ?? 0);
+    if (v.reason !== void 0) {
+      s.setText(1, v.reason ?? "");
+    }
+    s.setBool(16, v.clean ?? false);
+    s.setData(2, v.attachment ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    void caps;
+    const out = {
+      socket: s.getText(0),
+      code: s.getUint16(0),
+      clean: s.getBool(16),
+      attachment: s.getData(2)
+    };
+    const reasonValue = s.getText(1);
+    if (!(reasonValue === "")) {
+      out.reason = reasonValue;
+    }
+    return out;
+  }
+};
 var DbValueCodec = {
   dataWords: 2,
   pointerCount: 1,
@@ -5946,6 +6025,62 @@ var QueueConsumerQueueResultsCodec = {
   read(s, caps) {
     return {
       result: QueueBatchReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var SocketHandlerMessageParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.event != null) {
+      SocketMessageCodec.write(s.initStruct(0, 0, 3), v.event, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      event: SocketMessageCodec.read(s.getStruct(0, 0, 3), caps)
+    };
+  }
+};
+var SocketHandlerMessageResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var SocketHandlerClosedParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.event != null) {
+      SocketClosedCodec.write(s.initStruct(0, 1, 3), v.event, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      event: SocketClosedCodec.read(s.getStruct(0, 1, 3), caps)
+    };
+  }
+};
+var SocketHandlerClosedResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps)
     };
   }
 };
@@ -9114,6 +9249,22 @@ var METHODS = {
       ok: okEmpty
     })
   },
+  SocketHandler: {
+    message: spec({
+      params: SocketHandlerMessageParamsCodec,
+      results: SocketHandlerMessageResultsCodec,
+      stub: "author",
+      call: (s, p, cx) => s.bookclerkSocketMessage(cx.host.bindContext(cx.ctx), p.event ?? {}),
+      ok: okEmpty
+    }),
+    closed: spec({
+      params: SocketHandlerClosedParamsCodec,
+      results: SocketHandlerClosedResultsCodec,
+      stub: "author",
+      call: (s, p, cx) => s.bookclerkSocketClosed(cx.host.bindContext(cx.ctx), p.event ?? {}),
+      ok: okEmpty
+    })
+  },
   JobRunner: {
     job: spec({
       params: JobRunnerJobParamsCodec,
@@ -9400,6 +9551,151 @@ function migrationTooLarge(message) {
   err.code = "payload_too_large";
   err.wireCode = "payload_too_large";
   return err;
+}
+
+// dist/sockets.js
+function toBase64(bytes) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++)
+    bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+function fromBase64(text) {
+  if (typeof text !== "string" || text === "")
+    return new Uint8Array();
+  const bin = atob(text);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++)
+    out[i] = bin.charCodeAt(i);
+  return out;
+}
+function sendBytes(data) {
+  if (typeof data === "string")
+    return null;
+  if (data instanceof ArrayBuffer)
+    return new Uint8Array(data);
+  if (ArrayBuffer.isView(data))
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  throw PluginError.fromWire("invalid_params", "a socket message must be a string or bytes");
+}
+function routeFrame(data) {
+  const bytes = sendBytes(data);
+  const size = bytes ? bytes.byteLength : new TextEncoder().encode(data).byteLength;
+  if (size > MAX_SOCKET_FRAME_BYTES) {
+    throw PluginError.fromWire("payload_too_large", `socket message of ${size} bytes exceeds ${MAX_SOCKET_FRAME_BYTES}`);
+  }
+  return bytes ? { binary: toBase64(bytes) } : { text: data };
+}
+function socketMessageData(frame2) {
+  if (frame2 && frame2.kind === "binary") {
+    const bytes = frame2.value instanceof Uint8Array ? frame2.value : new Uint8Array();
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  }
+  return frame2 && typeof frame2.value === "string" ? frame2.value : "";
+}
+function encodeAttachment(value) {
+  if (value === null || value === void 0)
+    return new Uint8Array();
+  let text;
+  try {
+    text = JSON.stringify(value);
+  } catch (err) {
+    throw PluginError.fromWire("invalid_params", `socket attachment is not JSON: ${String(err)}`);
+  }
+  if (text === void 0) {
+    throw PluginError.fromWire("invalid_params", "socket attachment is not JSON");
+  }
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.byteLength > MAX_SOCKET_ATTACHMENT_BYTES) {
+    throw PluginError.fromWire("payload_too_large", `socket attachment of ${bytes.byteLength} bytes exceeds ${MAX_SOCKET_ATTACHMENT_BYTES}`);
+  }
+  return bytes;
+}
+function decodeAttachment(bytes) {
+  if (bytes.byteLength === 0)
+    return null;
+  const text = new TextDecoder().decode(bytes);
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+async function call(transport, op, body) {
+  if (!transport) {
+    throw PluginError.fromWire("unavailable", "SOCKETS is not granted to this invocation");
+  }
+  const reply = await transport.call(op, body);
+  if ("err" in reply) {
+    throw PluginError.fromWire(reply.err.code || "internal", reply.err.message || "");
+  }
+  return reply.ok ?? {};
+}
+var HostSocket = class {
+  id;
+  url;
+  protocol;
+  #transport;
+  #attachment;
+  /**
+   * @param transport - The adapter's grant.
+   * @param fields - Socket id, URL, subprotocol and attachment.
+   */
+  constructor(transport, fields) {
+    this.id = String(fields.socket ?? "");
+    this.url = typeof fields.url === "string" ? fields.url : "";
+    this.protocol = typeof fields.protocol === "string" ? fields.protocol : "";
+    this.#transport = transport;
+    this.#attachment = fields.attachment instanceof Uint8Array ? fields.attachment : fromBase64(fields.attachment);
+  }
+  async send(message) {
+    await call(this.#transport, "send", { socket: this.id, frame: routeFrame(message) });
+  }
+  async close(code, reason) {
+    await call(this.#transport, "close", {
+      socket: this.id,
+      code: Math.max(0, Math.floor(Number(code ?? 0) || 0)),
+      reason: String(reason ?? "")
+    });
+  }
+  async serializeAttachment(value) {
+    const bytes = encodeAttachment(value);
+    await call(this.#transport, "attachment", { socket: this.id, attachment: toBase64(bytes) });
+    this.#attachment = bytes;
+  }
+  deserializeAttachment() {
+    return decodeAttachment(this.#attachment);
+  }
+};
+function hostWebSocketOf(transport, fields) {
+  return new HostSocket(transport, fields);
+}
+function connectBody(url, options) {
+  const headers = options?.headers;
+  const pairs = Array.isArray(headers) ? headers : Object.entries(headers ?? {});
+  return {
+    url: String(url ?? ""),
+    protocols: (options?.protocols ?? []).map(String),
+    headers: pairs.map(([name, value]) => ({ name: String(name), value: String(value) })),
+    autoResponses: (options?.autoResponses ?? []).map((pair) => ({
+      request: routeFrame(pair.request),
+      response: routeFrame(pair.response)
+    })),
+    attachment: toBase64(encodeAttachment(options?.attachment))
+  };
+}
+function socketsBinding(transport) {
+  return Object.freeze({
+    async connect(url, options) {
+      const info = await call(transport, "connect", connectBody(url, options));
+      return new HostSocket(transport, info);
+    },
+    async getWebSockets() {
+      const reply = await call(transport, "list", {});
+      const sockets = Array.isArray(reply.sockets) ? reply.sockets : [];
+      return sockets.map((info) => new HostSocket(transport, info));
+    }
+  });
 }
 
 // dist/plugin.js
@@ -9704,6 +10000,9 @@ function invocationEnv(rawEnv, context) {
         merged[entry.name] = entry.kv;
       }
     }
+    const sockets = socketsTransportOf(context);
+    if (sockets)
+      merged[sockets.name] = socketsBinding(sockets.sockets);
   }
   return Object.freeze(merged);
 }
@@ -9717,6 +10016,10 @@ function transportDatabase(entry) {
     ...readLimits ? { limits: readLimits } : {},
     ...streamed ? { executeStreamed: streamed } : {}
   });
+}
+function socketsTransportOf(context) {
+  const list = context && Array.isArray(context.sockets) ? context.sockets : [];
+  return list.find((entry) => entry && typeof entry.name === "string" && entry.name !== "" && entry.sockets);
 }
 function applyInvocationEnv(instance, context) {
   const target = instance;
@@ -10268,6 +10571,44 @@ var BookclerkEntrypoint = class extends WorkerEntrypoint {
     }
     applyInvocationEnv(this, context);
     await this.scheduled(scheduledControllerOf(wire));
+  }
+  /**
+   * Adapter dispatch for `SocketHandler.message`.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wire - Wire `SocketMessage`.
+   * @returns Resolves when the author's handler completes.
+   * @internal
+   */
+  async bookclerkSocketMessage(context, wire) {
+    if (typeof this.webSocketMessage !== "function") {
+      throw unsupported("webSocketMessage");
+    }
+    applyInvocationEnv(this, context);
+    const ws = hostWebSocketOf(socketsTransportOf(context)?.sockets, {
+      socket: wire?.socket,
+      attachment: wire?.attachment
+    });
+    await this.webSocketMessage(ws, socketMessageData(wire?.frame));
+  }
+  /**
+   * Adapter dispatch for `SocketHandler.closed`. Without a
+   * `webSocketClose` handler the close is acknowledged and ignored.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wire - Wire `SocketClosed`.
+   * @returns Resolves when the author's handler completes.
+   * @internal
+   */
+  async bookclerkSocketClosed(context, wire) {
+    if (typeof this.webSocketClose !== "function")
+      return;
+    applyInvocationEnv(this, context);
+    const ws = hostWebSocketOf(socketsTransportOf(context)?.sockets, {
+      socket: wire?.socket,
+      attachment: wire?.attachment
+    });
+    await this.webSocketClose(ws, Number(wire?.code ?? 0) || 0, String(wire?.reason ?? ""), wire?.clean === true);
   }
   /**
    * Adapter dispatch for the `job(controller)` trigger.
@@ -11330,6 +11671,52 @@ var GrantedKv = class extends RpcTarget {
     };
   }
 };
+var GrantedSockets = class extends RpcTarget {
+  /** Granted reverse channel that serves `POST /sockets/<op>`. */
+  #granted;
+  /** `Authorization` header carrying the sockets-only grant token. */
+  #auth;
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the sockets grant.
+   */
+  constructor(granted, auth) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+  /**
+   * Makes one `POST /sockets/<op>` call on the granted channel.
+   *
+   * @param op - Operation, the path segment after `/sockets/`.
+   * @param body - That operation's JSON fields, bytes already base64.
+   * @returns `{ ok }` with the route's reply body, or `{ err }` with the
+   *   host's code (`unavailable` when the channel cannot be reached,
+   *   `internal` for a reply that is not JSON); never throws.
+   */
+  async call(op, body) {
+    let resp;
+    try {
+      resp = await this.#granted.fetch(`http://granted/sockets/${op}`, {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/json" },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      return { err: { code: "unavailable", message: `sockets ${op}: ${errorMessage(err)}` } };
+    }
+    const value = await resp.json().catch(() => null);
+    if (value && value.error) {
+      return {
+        err: { code: value.error.code || "internal", message: value.error.message || "" }
+      };
+    }
+    if (!resp.ok || !value || typeof value !== "object") {
+      return { err: { code: "internal", message: `sockets ${op} HTTP ${resp.status}` } };
+    }
+    return { ok: value };
+  }
+};
 var GrantedDatabase = class extends RpcTarget {
   #granted;
   #auth;
@@ -11681,7 +12068,7 @@ function createInvocationAdapter() {
      */
     #bindContext(ctx) {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, databases, queues, kv, ...rest } = source;
+      const { eventsToken, databases, queues, kv, sockets, ...rest } = source;
       const bound = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
@@ -11724,6 +12111,19 @@ function createInvocationAdapter() {
         }
         if (named2.length > 0)
           bound.kv = named2;
+      }
+      if (sockets && typeof sockets === "object" && !Array.isArray(sockets) && granted) {
+        const named2 = [];
+        for (const [name, token] of Object.entries(sockets)) {
+          if (!name || typeof token !== "string" || !token)
+            continue;
+          named2.push({
+            name,
+            sockets: new GrantedSockets(granted, { Authorization: `Bearer ${token}` })
+          });
+        }
+        if (named2.length > 0)
+          bound.sockets = named2.slice(0, 1);
       }
       return bound;
     }

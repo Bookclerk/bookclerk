@@ -2561,6 +2561,7 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "url",
  "webpki-roots 1.0.11",
 ]
 

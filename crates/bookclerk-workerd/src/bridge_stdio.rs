@@ -53,7 +53,11 @@ pub enum Backend {
     /// Author isolate (`runtime = "workerd"`): every entrypoint call is a
     /// Cap'n Proto `POST /invoke` (or a streamed body route) on the bridge
     /// worker.
-    Author,
+    Author {
+        /// Name the `[sockets]` binding takes on the author's `env`
+        /// (`binding = "..."`, default `SOCKETS`).
+        sockets_binding: String,
+    },
     /// Verified native guest (inherited `BOOKCLERK_GATEWAY_GUEST_RPC`): entrypoint calls
     /// are typed Cap'n Proto forwards to the guest's own capabilities. The
     /// client must have been created with `connect_plugin` on this `LocalSet`
@@ -175,6 +179,7 @@ impl WorkerdRoot {
             databases: BTreeMap::new(),
             queues: BTreeMap::new(),
             kv: BTreeMap::new(),
+            sockets: BTreeMap::new(),
         };
         let requested = self.manifest_families();
         let reply: OpenReply = call(
@@ -224,7 +229,12 @@ impl WorkerdRoot {
     /// Author `open`: mint the `EVENTS` grant, then export one typed client
     /// per manifest family over a shared [`InvokeClient`] carrying this
     /// invocation's bridge context.
-    fn open_author(&self, invocation: Invocation, bindings: Bindings) -> AbiResult<Entrypoints> {
+    fn open_author(
+        &self,
+        invocation: Invocation,
+        bindings: Bindings,
+        sockets_binding: &str,
+    ) -> AbiResult<Entrypoints> {
         // The host's `EVENTS` publisher becomes an events-only grant token the
         // adapter isolate exchanges on `/events/publish`; it is revoked when
         // the last exported entrypoint of this `open` drops.
@@ -309,6 +319,32 @@ impl WorkerdRoot {
             });
             kv.insert(named.name, token);
         }
+        // One sockets-only grant token for the instance's broker: the adapter
+        // isolate reaches it over `/sockets/*` and installs the `[sockets]`
+        // binding on the author's `env`.
+        // The sockets themselves belong to the instance, not this token, so
+        // revoking the token when the open ends leaves them open.
+        let (sockets, sockets_grant) = match bindings.sockets.filter(|_| self.capabilities.sockets)
+        {
+            Some(sockets) => {
+                let token = format!("{:032x}", rand::random::<u128>());
+                self.table.borrow_mut().insert(
+                    token.clone(),
+                    GrantedSlot::sockets_only(
+                        Rc::from(sockets),
+                        grant_expiry(invocation.deadline_unix_ms),
+                    ),
+                );
+                (
+                    BTreeMap::from([(sockets_binding.to_string(), token.clone())]),
+                    Some(RevokeGrant {
+                        table: Rc::clone(&self.table),
+                        grant: token,
+                    }),
+                )
+            }
+            None => (BTreeMap::new(), None),
+        };
         let ctx = BridgeContext {
             invocation,
             config: bindings.config,
@@ -317,6 +353,7 @@ impl WorkerdRoot {
             databases,
             queues,
             kv,
+            sockets,
         };
         let ctx_json = context_header(&ctx)?;
         let grants = Rc::new(OpenGrants {
@@ -324,6 +361,7 @@ impl WorkerdRoot {
             _databases: database_grants,
             _queues: queue_grants,
             _kv: kv_grants,
+            _sockets: sockets_grant,
         });
         let keepalive: Option<Rc<dyn std::any::Any>> =
             Some(Rc::clone(&grants) as Rc<dyn std::any::Any>);
@@ -471,8 +509,9 @@ struct OpenReply {
 /// `env`. `eventsToken` is the granted-channel bearer the adapter isolate
 /// turns into the author's `EVENTS` binding, `databases` maps each named
 /// `[[databases]]` binding to its database-only bearer for `/db/execute`,
-/// and `queues` maps each `[[queues.producers]]` binding to its queue-only
-/// bearer for `/queues/send`; the author sees no token, only the bindings
+/// `queues` maps each `[[queues.producers]]` binding to its queue-only
+/// bearer for `/queues/send`, and `sockets` maps the `[sockets]` binding to
+/// its bearer for `/sockets/*`; the author sees no token, only the bindings
 /// the adapter builds.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -490,6 +529,10 @@ struct BridgeContext {
     /// `[[kv_namespaces]]` binding → kv-only bearer for `/kv/*`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     kv: BTreeMap<String, String>,
+    /// `[sockets]` binding name → sockets-only bearer for `/sockets/*`; at
+    /// most one entry.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    sockets: BTreeMap<String, String>,
 }
 
 /// `JobRunner.job` context: the durable job id on top of the open context.
@@ -509,6 +552,7 @@ struct OpenGrants {
     _databases: Vec<RevokeGrant>,
     _queues: Vec<RevokeGrant>,
     _kv: Vec<RevokeGrant>,
+    _sockets: Option<RevokeGrant>,
 }
 
 /// Grant expiry for an `open`: the invocation deadline when it has one,
@@ -572,7 +616,7 @@ fn context_header<C: Serialize>(ctx: &C) -> AbiResult<String> {
 impl PluginWorker for WorkerdRoot {
     async fn describe(&self) -> AbiResult<PluginDescribe> {
         let describe: PluginDescribe = match &self.backend {
-            Backend::Author => call(&self.http, "/describe", &serde_json::json!({})).await?,
+            Backend::Author { .. } => call(&self.http, "/describe", &serde_json::json!({})).await?,
             Backend::Native(client) => self.describe_native(client).await?,
         };
         if describe.api_version != PRODUCT_API_VERSION {
@@ -587,7 +631,9 @@ impl PluginWorker for WorkerdRoot {
     async fn open(&self, invocation: Invocation, bindings: Bindings) -> AbiResult<Entrypoints> {
         match &self.backend {
             Backend::Native(client) => self.open_native(client, invocation, bindings).await,
-            Backend::Author => self.open_author(invocation, bindings),
+            Backend::Author { sockets_binding } => {
+                self.open_author(invocation, bindings, sockets_binding)
+            }
         }
     }
 
@@ -597,7 +643,7 @@ impl PluginWorker for WorkerdRoot {
     async fn database_migrations(&self, binding: &str) -> AbiResult<Vec<PluginMigration>> {
         let migrations = match &self.backend {
             Backend::Native(client) => client.database_migrations(binding).await?,
-            Backend::Author => {
+            Backend::Author { .. } => {
                 let worker = PluginClient::new(
                     InvokeClient::new(self.http.clone(), None).typed(),
                     MAX_STREAM_WINDOW_BYTES,
@@ -614,7 +660,7 @@ impl PluginWorker for WorkerdRoot {
     async fn shutdown(&self) -> AbiResult<()> {
         let native = match &self.backend {
             Backend::Native(client) => client.shutdown().await,
-            Backend::Author => Ok(()),
+            Backend::Author { .. } => Ok(()),
         };
         let bridge = self
             .http
@@ -751,6 +797,7 @@ impl JobRunner for InvokeJobRunner {
                 events: None,
                 queue: None,
                 kv: None,
+                sockets: None,
             },
         );
         let _revoke = RevokeGrant {
@@ -896,6 +943,7 @@ mod tests {
             databases: BTreeMap::from([("DB".to_string(), "tok".to_string())]),
             queues: BTreeMap::from([("NOTIFY".to_string(), "qtok".to_string())]),
             kv: BTreeMap::from([("KV".to_string(), "ktok".to_string())]),
+            sockets: BTreeMap::from([("SOCKETS".to_string(), "stok".to_string())]),
         };
         let json = context_header(&JobBridgeContext {
             job_id: &base.invocation.id,
@@ -909,6 +957,7 @@ mod tests {
         assert_eq!(v["databases"]["DB"], "tok");
         assert_eq!(v["queues"]["NOTIFY"], "qtok");
         assert_eq!(v["kv"]["KV"], "ktok");
+        assert_eq!(v["sockets"]["SOCKETS"], "stok");
         assert!(v.get("config").is_some());
     }
 }

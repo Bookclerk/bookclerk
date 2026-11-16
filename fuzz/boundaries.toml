@@ -147,6 +147,13 @@ input_from = "store"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.socket_route]
+crate = "bookclerk-workerd"
+boundary = "A workerd isolate's env.SOCKETS calls on the granted reverse channel: the POST /sockets/<op> JSON body for connect, send, close, attachment and list"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.db_stream]
 crate = "bookclerk-plugin-abi"
 boundary = "executeStreamed frames an adapter sends, reassembled under the streamed result budget"

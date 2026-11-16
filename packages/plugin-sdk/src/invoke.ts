@@ -682,6 +682,24 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       ok: okEmpty,
     }),
   },
+  SocketHandler: {
+    message: spec<W.SocketHandlerMessageParams, W.SocketHandlerMessageResults["result"]>({
+      params: W.SocketHandlerMessageParamsCodec,
+      results: W.SocketHandlerMessageResultsCodec,
+      stub: "author",
+      call: (s, p, cx) =>
+        (s as AuthorStub).bookclerkSocketMessage(cx.host.bindContext(cx.ctx), p.event ?? {}),
+      ok: okEmpty,
+    }),
+    closed: spec<W.SocketHandlerClosedParams, W.SocketHandlerClosedResults["result"]>({
+      params: W.SocketHandlerClosedParamsCodec,
+      results: W.SocketHandlerClosedResultsCodec,
+      stub: "author",
+      call: (s, p, cx) =>
+        (s as AuthorStub).bookclerkSocketClosed(cx.host.bindContext(cx.ctx), p.event ?? {}),
+      ok: okEmpty,
+    }),
+  },
   JobRunner: {
     job: spec<W.JobRunnerJobParams, W.JobRunnerJobResults["result"]>({
       params: W.JobRunnerJobParamsCodec,

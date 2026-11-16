@@ -923,6 +923,13 @@ def _validate_surface(m: dict[str, Any]) -> None:
                 )
     _validate_queues(m)
     _validate_kv_namespaces(m)
+    if m.get("sockets") is not None and (
+        ((m.get("capabilities") or {}).get("network") or {}).get("mode") != "outbound"
+    ):
+        raise ValueError(
+            'plugin.toml: [sockets] needs capabilities.network.mode = "outbound" '
+            "(every socket URL must pass the network grant)"
+        )
     for index, consumer in enumerate(consumers):
         event_type = str(consumer.get("type") or "")
         if not event_type.strip():
@@ -967,7 +974,7 @@ def _validate_surface(m: dict[str, Any]) -> None:
         if name in bindings:
             raise ValueError(f"plugin.toml: [[databases]] binding `{name}` is duplicated")
         bindings.add(name)
-    reserved = {"CONFIG", "SECRETS", "EVENTS", "WORK_FS", _LOOPBACK_ENV}
+    reserved = {"CONFIG", "SECRETS", "EVENTS", "WORK_FS", _LOOPBACK_ENV, "SOCKETS"}
     # Row index, not the binding text. The text can be an oauth name, and an
     # error that includes it is logged as clear text.
     named: list[tuple[str, str, int]] = []
@@ -980,6 +987,9 @@ def _validate_surface(m: dict[str, Any]) -> None:
     oauth = m.get(_LOOPBACK_TABLE)
     if isinstance(oauth, dict):
         named.append(("oauth", str(oauth.get("binding") or _LOOPBACK_ENV), 0))
+    sockets = m.get("sockets")
+    if isinstance(sockets, dict):
+        named.append(("sockets", str(sockets.get("binding") or "SOCKETS"), 0))
     for index, kv in enumerate(m.get("kv_namespaces") or []):
         named.append(("kv_namespaces", str(kv.get("binding") or "KV"), index))
     for index, producer in enumerate((m.get("events") or {}).get("producers") or []):
@@ -1005,6 +1015,17 @@ def _validate_surface(m: dict[str, Any]) -> None:
                 f"plugin.toml: [{table}][{index}] binding collides with another binding"
             )
         bindings.add(name)
+    # Producers may share one publisher binding, but ``env.SOCKETS`` is its own
+    # property and cannot take a publisher's name, nor ``EVENTS``, which the
+    # generated ``Env`` always carries when the plugin publishes.
+    sockets_name = next((name for table, name, _ in named if table == "sockets"), None)
+    producer_names = [name for table, name, _ in named if table == "events.producers"]
+    if (
+        sockets_name is not None
+        and producer_names
+        and (sockets_name == "EVENTS" or sockets_name in producer_names)
+    ):
+        raise ValueError("plugin.toml: [sockets][0] binding collides with another binding")
 
 
 def _workerd_modules_dir(plugin_dir: Path, m: dict[str, Any]) -> Path:
@@ -1464,6 +1485,7 @@ def format_manifest(m: dict[str, Any]) -> str:
     _emit_queues(lines, m.get("queues"))
     _named_binding(lines, "[work_fs]", m.get("work_fs"))
     _named_binding(lines, f"[{_LOOPBACK_TABLE}]", m.get(_LOOPBACK_TABLE))
+    _named_binding(lines, "[sockets]", m.get("sockets"))
 
     caps = m.get("capabilities") or {}
     net = caps.get("network") or {}
@@ -1697,7 +1719,9 @@ def package_plugin(plugin_dir: Path, out_dir: Path) -> Path:
 TYPES_OUTPUT_FILE = "bookclerk_configuration.py"
 """Default ``types`` output filename next to ``plugin.toml``."""
 
-_RESERVED_BINDINGS = frozenset({"CONFIG", _SEALED_ENV, "EVENTS", "WORK_FS", "KV", _LOOPBACK_ENV})
+_RESERVED_BINDINGS = frozenset(
+    {"CONFIG", _SEALED_ENV, "EVENTS", "WORK_FS", "KV", _LOOPBACK_ENV, "SOCKETS"}
+)
 
 
 def _var_type(value: Any) -> str:
@@ -1779,6 +1803,16 @@ def env_properties_for(m: dict[str, Any]) -> list[tuple[str, str, str]]:
                 "(Workers `Queue`-shaped `send` / `send_batch`).",
             )
         )
+    sockets = m.get("sockets")
+    if isinstance(sockets, dict):
+        props.append(
+            (
+                str(sockets.get("binding") or "SOCKETS"),
+                "SocketsBinding",
+                "`[sockets]` host-brokered WebSockets; messages reach `web_socket_message` / "
+                "`web_socket_close`.",
+            )
+        )
     loopback = m.get(_LOOPBACK_TABLE)
     if isinstance(loopback, dict):
         props.append(
@@ -1835,7 +1869,9 @@ def render_env_types(m: dict[str, Any]) -> str:
     if any(t == "DatabaseBinding" for _, t, _ in props):
         lines.append("")
         lines.append("from bookclerk_plugin_sdk.db_value import DatabaseBinding")
-    workerd_types = sorted({t for _, t, _ in props if t in ("KvNamespace", "QueueBinding")})
+    workerd_types = sorted(
+        {t for _, t, _ in props if t in ("KvNamespace", "QueueBinding", "SocketsBinding")}
+    )
     if workerd_types:
         lines.append(f"from bookclerk_plugin_sdk.workerd import {', '.join(workerd_types)}")
     lines += [
