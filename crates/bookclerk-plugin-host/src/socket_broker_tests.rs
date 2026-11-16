@@ -353,3 +353,28 @@ fn colliding_ids_from_two_brokers_are_tracked_apart() {
         vec![("same".to_string(), b"new-2".to_vec())]
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_event_still_reaches_a_sink_installed_long_after_it_arrived() {
+    let files = tempfile::tempdir().expect("files");
+    let broker = idle_broker(files.path());
+    let recorder = Arc::new(Recorder::default());
+    let sink: Arc<dyn SocketSink> = recorder.clone();
+    let inner = Arc::downgrade(&broker.inner);
+    let delivery = tokio::spawn(async move {
+        deliver(
+            &inner,
+            SocketEvent::Message(SocketMessage {
+                socket: "s1".into(),
+                ..SocketMessage::default()
+            }),
+        )
+        .await;
+    });
+    // A slow start: far longer than any old time limit.
+    tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+    assert!(!delivery.is_finished(), "the event is still waiting");
+    broker.set_sink(Arc::downgrade(&sink));
+    delivery.await.expect("delivery");
+    assert_eq!(*recorder.seen.lock().expect("seen"), vec!["message s1"]);
+}

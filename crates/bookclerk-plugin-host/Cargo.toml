@@ -63,7 +63,7 @@ futures.workspace = true
 tempfile.workspace = true
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 wiremock.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "io-util", "test-util"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
 [lints]
