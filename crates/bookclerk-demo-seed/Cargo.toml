@@ -20,6 +20,7 @@ bookclerk-cover.workspace = true
 bookclerk-library.workspace = true
 bookclerk-node-proto.workspace = true
 bookclerk-plugin-host.workspace = true
+bookclerk-resolve.workspace = true
 bookclerk-source.workspace = true
 futures.workspace = true
 tracing.workspace = true

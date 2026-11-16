@@ -58,25 +58,7 @@ pub(crate) fn catalog_listing(
     };
     CatalogListing {
         draft,
-        detail: ListingDetail {
-            subtitle: hit.subtitle.clone(),
-            authors: hit.authors(),
-            narrators: hit.narrators(),
-            series: hit.series(),
-            series_index: hit.series_index(),
-            // A podcast episode's show is the store's series product.
-            series_product_id: hit.parent_product_id.clone(),
-            description: hit.description.clone(),
-            publisher: hit.publisher.clone(),
-            published_at: hit.published_at.clone(),
-            length_minutes: hit.length_minutes,
-            language: hit.language.clone(),
-            cover_url: hit.cover_url.clone(),
-            url: hit.url.clone(),
-            rating_overall: hit.rating_overall,
-            rating_count: hit.rating_count,
-            is_abridged: hit.is_abridged,
-        },
+        detail: ListingDetail::of_catalog_hit(&hit),
         offers: if offer.is_empty() {
             Vec::new()
         } else {

@@ -1659,6 +1659,7 @@ dependencies = [
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-host",
  "bookclerk-plugin-source-libro",
+ "bookclerk-resolve",
  "bookclerk-source",
  "chrono",
  "futures",

@@ -18,6 +18,10 @@ covers plugin, with exactly the grants their manifests request, then looks
 each title up in its store's public catalog through the storefront plugins
 (the search Discover uses, at most 15 seconds) and writes the record the
 store returns, so product ids, cover art and descriptions match the store.
+The record lands where a store's own answer would: the scan text on the
+title's store listing, then the record's full store text (cover, synopsis,
+rating) on that listing, whose cover becomes the cover of the edition it
+sells, for Sam's books and the branch's titles alike.
 A title not found live uses its committed store record
 (`crates/bookclerk-demo-seed/records.json`) when there is one, and otherwise
 keeps built-in fields under a made-up `demo-…` id.

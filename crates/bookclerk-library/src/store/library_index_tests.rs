@@ -1036,4 +1036,61 @@ async fn a_works_cover_comes_from_its_edition_listing_or_work() {
         Some("https://img.example/store.jpg")
     );
     assert_eq!(covers(&store, "no-such-edition").await, None);
+
+    // The store's cover became the edition's own; a later store text,
+    // written by store key, updates the listing but keeps the edition's.
+    let edition_cover = |store: &LibraryStore, id: &str| {
+        let id = id.to_owned();
+        let db = store.db().clone();
+        async move {
+            crate::entities::editions::Entity::find_by_id(id)
+                .one(&db)
+                .await
+                .unwrap()
+                .unwrap()
+                .cover_url
+        }
+    };
+    assert_eq!(
+        edition_cover(&store, &edition).await.as_deref(),
+        Some("https://img.example/store.jpg")
+    );
+    let row = crate::entities::store_listings::Entity::find_by_id(listing.clone())
+        .one(store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    let key = bookclerk_resolve::ListingKey {
+        plugin_key: row.plugin_key,
+        marketplace: row.marketplace,
+        product_id: row.product_id,
+    };
+    let missing = bookclerk_resolve::ListingKey {
+        product_id: "not-listed".into(),
+        ..key.clone()
+    };
+    let later = crate::ListingDetail {
+        cover_url: Some("https://img.example/later.jpg".into()),
+        description: Some("From the store.".into()),
+        ..crate::ListingDetail::default()
+    };
+    let named = store
+        .record_store_text(&[(key, later.clone()), (missing, later)])
+        .await
+        .unwrap();
+    assert_eq!(named, 1, "a key with no listing is skipped");
+    let row = crate::entities::store_listings::Entity::find_by_id(listing)
+        .one(store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.cover_url.as_deref(),
+        Some("https://img.example/later.jpg")
+    );
+    assert_eq!(row.description.as_deref(), Some("From the store."));
+    assert_eq!(
+        edition_cover(&store, &edition).await.as_deref(),
+        Some("https://img.example/store.jpg")
+    );
 }

@@ -385,8 +385,8 @@ cover of its own or a store's cover on one of its listings, then an
 acquired one, then audio. A held work always names one, even before any
 cover is known, because store text and a title's enrichment are written
 after the link whose event refreshed the row. The route reads the cover
-when it serves the page: the edition's own, else the first store cover
-among its listings, else its work's (or, for an episode, its show's), so
+when it serves the page: the edition's own (the first store cover a
+listing of it reported), else the first store cover among its listings, else its work's (or, for an episode, its show's), so
 a cover stored later shows without another refresh. The work detail route
 gives each edition its cover the same way.
 
