@@ -78,3 +78,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "catalog_snapshot_memo"
+required-features = ["host-helpers"]
