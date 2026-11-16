@@ -954,3 +954,86 @@ async fn one_refresh_of_many_works_writes_each_row_and_its_values_under(profile:
     );
     assert_eq!(walk(&store, WorkPageQuery::default()).await.len(), 40);
 }
+
+/// The page index row of `work`, when it has one.
+async fn row_of(store: &LibraryStore, work: &str) -> Option<super::LibraryWorkRow> {
+    walk_rows(
+        store,
+        WorkPageQuery {
+            limit: 50,
+            ..WorkPageQuery::default()
+        },
+    )
+    .await
+    .into_iter()
+    .find(|row| row.work_id == work)
+}
+
+#[tokio::test]
+async fn a_works_cover_comes_from_its_edition_listing_or_work() {
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+    let store = store().await;
+    let work = scan(&store, "B0C1", "acct-1", "Covered", "A. Author").await;
+    store
+        .refresh_library_works(std::slice::from_ref(&work))
+        .await
+        .unwrap();
+    // A held work names its cover edition even before any cover is known.
+    let edition = row_of(&store, &work)
+        .await
+        .expect("the held work has a row")
+        .cover_edition_id
+        .expect("a held work names a cover edition");
+    let covers = |store: &LibraryStore, edition: &str| {
+        let ids = [edition.to_string()];
+        let store = store.clone();
+        async move {
+            store
+                .edition_cover_urls(&ids)
+                .await
+                .unwrap()
+                .get(&ids[0])
+                .cloned()
+        }
+    };
+    assert_eq!(covers(&store, &edition).await, None);
+
+    // The work's cover (a title's enrichment) shows once it is stored,
+    // without the row being refreshed.
+    let stored = crate::entities::works::Entity::find_by_id(work.clone())
+        .one(store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut am: crate::entities::works::ActiveModel = stored.into();
+    am.cover_url = Set(Some("https://img.example/work.jpg".into()));
+    am.update(store.db()).await.unwrap();
+    assert_eq!(
+        covers(&store, &edition).await.as_deref(),
+        Some("https://img.example/work.jpg")
+    );
+
+    // A store's cover on the edition's listing wins over the work's.
+    let detail = store.library_work_detail(&work).await.unwrap().unwrap();
+    let listing = detail.editions[0].listings[0].id.clone();
+    store
+        .record_listing_detail(
+            &listing,
+            &crate::ListingDetail {
+                cover_url: Some("https://img.example/store.jpg".into()),
+                ..crate::ListingDetail::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        covers(&store, &edition).await.as_deref(),
+        Some("https://img.example/store.jpg")
+    );
+    let detail = store.library_work_detail(&work).await.unwrap().unwrap();
+    assert_eq!(
+        detail.editions[0].cover_url.as_deref(),
+        Some("https://img.example/store.jpg")
+    );
+    assert_eq!(covers(&store, "no-such-edition").await, None);
+}

@@ -20,6 +20,35 @@ use crate::entities::{
 use crate::error::{LibraryError, Result};
 use crate::models::{AcquireStatus, UserTitleState};
 
+/// The cover an edition shows: the first non-blank URL among
+/// `candidates`, which callers give in this order:
+///
+/// 1. the edition's own `cover_url`;
+/// 2. its listings' store covers (`store_listings.cover_url`), in id order
+///    so the choice is stable;
+/// 3. its work's cover (`works.cover_url`, which a title's enrichment
+///    fills), and for an episode its show's.
+///
+/// A link writes no cover onto the edition, so most editions show a
+/// store's art or their work's.
+///
+/// # Arguments
+///
+/// * `candidates` - Cover URLs in the order above; `None` and blank
+///   entries are skipped.
+///
+/// # Returns
+///
+/// The cover URL, or `None` when no candidate has one.
+pub(crate) fn edition_cover<'a>(
+    candidates: impl IntoIterator<Item = Option<&'a str>>,
+) -> Option<&'a str> {
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|url| !url.trim().is_empty())
+}
+
 /// Who holds a listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HoldingHolder {
@@ -235,6 +264,14 @@ impl LibraryStore {
                     .push(detail);
             }
         }
+        let mut listing_covers: HashMap<String, String> = HashMap::new();
+        for listing in &listings {
+            if let Some(cover) = edition_cover([listing.cover_url.as_deref()]) {
+                listing_covers
+                    .entry(listing.edition_id.clone())
+                    .or_insert_with(|| cover.to_string());
+            }
+        }
         let mut listings_by_edition: HashMap<String, Vec<EditionListing>> = HashMap::new();
         for listing in listings {
             let holdings = holdings_by_listing.remove(&listing.id).unwrap_or_default();
@@ -280,7 +317,12 @@ impl LibraryStore {
                     subtitle: edition.subtitle,
                     published_at: edition.published_at,
                     duration_minutes: edition.duration_minutes,
-                    cover_url: edition.cover_url,
+                    cover_url: edition_cover([
+                        edition.cover_url.as_deref(),
+                        listing_covers.get(&edition.id).map(String::as_str),
+                        work.cover_url.as_deref(),
+                    ])
+                    .map(str::to_string),
                     id: edition.id,
                 })
             })
@@ -301,8 +343,9 @@ impl LibraryStore {
         }))
     }
 
-    /// The store cover URLs of `edition_ids`, for a page of index rows
-    /// (each names its cover edition).
+    /// The cover URLs of `edition_ids`, for a page of index rows (each
+    /// names its cover edition), chosen as [`edition_cover`] says: the
+    /// edition's own, else a listing's, else its work's (or show's).
     ///
     /// # Returns
     ///
@@ -315,15 +358,101 @@ impl LibraryStore {
         &self,
         edition_ids: &[String],
     ) -> Result<HashMap<String, String>> {
-        Ok(
-            find_chunked::<editions::Entity, _>(self, edition_ids, |part| {
-                editions::Entity::find().filter(editions::Column::Id.is_in(part.iter().cloned()))
+        let edition_rows = find_chunked::<editions::Entity, _>(self, edition_ids, |part| {
+            editions::Entity::find().filter(editions::Column::Id.is_in(part.iter().cloned()))
+        })
+        .await?;
+        let mut covers: HashMap<String, String> = HashMap::new();
+        for edition in &edition_rows {
+            if let Some(own) = edition_cover([edition.cover_url.as_deref()]) {
+                covers.insert(edition.id.clone(), own.to_string());
+            }
+        }
+        let uncovered: Vec<String> = edition_rows
+            .iter()
+            .filter(|e| !covers.contains_key(&e.id))
+            .map(|e| e.id.clone())
+            .collect();
+        for listing in find_chunked_paged::<store_listings::Entity, _>(self, &uncovered, |part| {
+            store_listings::Entity::find()
+                .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
+                .order_by_asc(store_listings::Column::Id)
+        })
+        .await?
+        {
+            if let Some(cover) = edition_cover([listing.cover_url.as_deref()]) {
+                covers
+                    .entry(listing.edition_id)
+                    .or_insert_with(|| cover.to_string());
+            }
+        }
+        let uncovered: Vec<&editions::Model> = edition_rows
+            .iter()
+            .filter(|e| !covers.contains_key(&e.id))
+            .collect();
+        if uncovered.is_empty() {
+            return Ok(covers);
+        }
+        let expression_ids: Vec<String> = uncovered
+            .iter()
+            .map(|e| e.expression_id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let work_of_expression: HashMap<String, String> =
+            find_chunked::<expressions::Entity, _>(self, &expression_ids, |part| {
+                expressions::Entity::find()
+                    .filter(expressions::Column::Id.is_in(part.iter().cloned()))
             })
             .await?
             .into_iter()
-            .filter_map(|e| Some((e.id, e.cover_url.filter(|url| !url.is_empty())?)))
-            .collect(),
-        )
+            .map(|x| (x.id, x.work_id))
+            .collect();
+        let work_ids: Vec<String> = work_of_expression
+            .values()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mut works_by_id: HashMap<String, works::Model> = self.works_by_id(&work_ids).await?;
+        let parent_ids: Vec<String> = works_by_id
+            .values()
+            .filter_map(|w| w.parent_work_id.clone())
+            .filter(|id| !works_by_id.contains_key(id))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        works_by_id.extend(self.works_by_id(&parent_ids).await?);
+        for edition in uncovered {
+            let work = work_of_expression
+                .get(&edition.expression_id)
+                .and_then(|id| works_by_id.get(id));
+            let parent = work
+                .and_then(|w| w.parent_work_id.as_ref())
+                .and_then(|id| works_by_id.get(id));
+            if let Some(cover) = edition_cover([
+                work.and_then(|w| w.cover_url.as_deref()),
+                parent.and_then(|w| w.cover_url.as_deref()),
+            ]) {
+                covers.insert(edition.id.clone(), cover.to_string());
+            }
+        }
+        Ok(covers)
+    }
+
+    /// Works by id, for the ids that exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    async fn works_by_id(&self, ids: &[String]) -> Result<HashMap<String, works::Model>> {
+        Ok(find_chunked::<works::Entity, _>(self, ids, |part| {
+            works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
+        })
+        .await?
+        .into_iter()
+        .map(|w| (w.id.clone(), w))
+        .collect())
     }
 
     /// One user's own state for one work.
