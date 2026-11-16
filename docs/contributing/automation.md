@@ -785,7 +785,11 @@ shows it as "Last updated", in the reader's own time zone.
 - **`publish`** checks out only `scripts/docs-publish.py` from the default
   branch. It mints the [Automation App](#automation-app) token for
   `bookclerk-docs` alone (contents: write), and writes one commit through
-  the Git Data API, so GitHub signs it as the App.
+  the Git Data API, so GitHub signs it as the App. Pages over 32 KiB are
+  uploaded as blobs first, so each create-tree call stays small. GitHub
+  sometimes answers a create-tree call with HTTP 422 "Sorry, your request
+  timed out" or a 5xx; the script retries those up to four times, waiting
+  5, 10 and 20 seconds.
 
 A manual run publishes only from `main`. The publish script refuses
 redirects, so the token is only sent to `api.github.com`.
