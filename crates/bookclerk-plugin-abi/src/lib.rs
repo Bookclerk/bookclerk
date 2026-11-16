@@ -234,8 +234,9 @@ pub use db_rpc::{
     canonical_execute_request_hash, decode_db_capabilities_reply_bytes, decode_db_value_bytes,
     decode_execute_request_bytes, decode_execute_result_reply_bytes,
     decode_execute_stream_frame_bytes, encoded_db_capabilities_reply_bytes, encoded_db_value_bytes,
-    encoded_execute_reply_bytes, encoded_execute_request_bytes, encoded_execute_result_reply_bytes,
-    encoded_execute_stream_frame_bytes, encoded_statement_result_bytes,
+    encoded_db_value_len, encoded_execute_reply_bytes, encoded_execute_request_bytes,
+    encoded_execute_result_reply_bytes, encoded_execute_stream_frame_bytes,
+    encoded_statement_result_bytes,
 };
 pub use db_stream::{
     decode_execute_stream, encode_execute_stream, encode_execute_stream_error, ExecuteStream,

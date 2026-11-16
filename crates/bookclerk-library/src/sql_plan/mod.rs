@@ -144,11 +144,9 @@ pub fn validate_execute_request(
             let mut binds_len = 0usize;
             for param in &stmt.parameters {
                 binds_len = binds_len.saturating_add(
-                    bookclerk_plugin_abi::encoded_db_value_bytes(param)
-                        .map_err(|err| {
-                            crate::LibraryError::Other(anyhow::anyhow!(err.to_string()))
-                        })?
-                        .len(),
+                    bookclerk_plugin_abi::encoded_db_value_len(param).map_err(|err| {
+                        crate::LibraryError::Other(anyhow::anyhow!(err.to_string()))
+                    })?,
                 );
             }
             let payload = stmt.sql.len().saturating_add(binds_len);
@@ -214,6 +212,49 @@ pub fn authorize_typed_request(
     req: &mut ExecuteRequest,
     caps: &DbCapabilities,
 ) -> crate::error::Result<()> {
+    authorize_typed_request_as(req, caps, RequestHashStamp::Canonical)
+}
+
+/// Whether [`authorize_typed_request`] would accept `req`, without paying
+/// for its digest.
+///
+/// A host read probes each chunk of a lookup with this before sending it,
+/// and the proxy then authorizes the statement for real, so the probe's
+/// digest was thrown away. The probe stamps a placeholder of the digest's
+/// exact length instead, so the size limits see the same request bytes, and
+/// checks the TEXT the digest's encoding would have refused.
+///
+/// # Errors
+///
+/// The errors of [`authorize_typed_request`], except a retry-token
+/// mismatch: `req` must carry no `requestHash`.
+pub fn admit_typed_request(
+    req: &mut ExecuteRequest,
+    caps: &DbCapabilities,
+) -> crate::error::Result<()> {
+    authorize_typed_request_as(req, caps, RequestHashStamp::Placeholder)
+}
+
+/// What [`authorize_typed_request_as`] stamps as the request hash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestHashStamp {
+    /// The canonical digest, checked against a caller's retry token.
+    Canonical,
+    /// A stand-in of the digest's length, for a probe whose request is
+    /// never sent.
+    Placeholder,
+}
+
+/// Characters of a hex SHA-256 digest, what
+/// [`bookclerk_plugin_abi::canonical_execute_request_hash`] returns.
+const REQUEST_HASH_HEX_LEN: usize = 64;
+
+/// [`authorize_typed_request`], stamping the hash `stamp` names.
+fn authorize_typed_request_as(
+    req: &mut ExecuteRequest,
+    caps: &DbCapabilities,
+    stamp: RequestHashStamp,
+) -> crate::error::Result<()> {
     bookclerk_plugin_abi::desugar_execute_request(req);
     for stmt in &mut req.statements {
         stmt.kind = host_statement_kind(&stmt.sql);
@@ -238,8 +279,13 @@ pub fn authorize_typed_request(
     if req.operation_id.is_empty() {
         req.operation_id = uuid::Uuid::new_v4().to_string();
     }
-    let computed = bookclerk_plugin_abi::canonical_execute_request_hash(req)
-        .map_err(|err| crate::LibraryError::Other(anyhow::anyhow!(err.to_string())))?;
+    let computed = match stamp {
+        RequestHashStamp::Canonical => bookclerk_plugin_abi::canonical_execute_request_hash(req),
+        RequestHashStamp::Placeholder => {
+            portable_request(req).map(|()| "0".repeat(REQUEST_HASH_HEX_LEN))
+        }
+    }
+    .map_err(|err| crate::LibraryError::Other(anyhow::anyhow!(err.to_string())))?;
     if !req.request_hash.is_empty() && req.request_hash != computed {
         return Err(crate::LibraryError::Other(anyhow::anyhow!(
             "retry token requestHash does not match the canonical request"
@@ -247,6 +293,21 @@ pub fn authorize_typed_request(
     }
     req.request_hash = computed;
     validate_execute_request(req, caps)?;
+    Ok(())
+}
+
+/// Refuses what encoding `req` for its digest refuses: no statements, or
+/// U+0000 in a statement's SQL or a TEXT bind.
+fn portable_request(req: &ExecuteRequest) -> bookclerk_plugin_abi::Result<()> {
+    if req.statements.is_empty() {
+        return Err(bookclerk_plugin_abi::PluginError::invalid_params(
+            "execute statements must be non-empty",
+        ));
+    }
+    for stmt in &req.statements {
+        bookclerk_plugin_abi::require_portable_text(&stmt.sql)?;
+        bookclerk_plugin_abi::require_portable_text_binds(&stmt.parameters)?;
+    }
     Ok(())
 }
 
@@ -777,6 +838,48 @@ mod limits_tests {
         typed.request_hash.clear();
         let err = super::authorize_typed_request(&mut typed, &caps).unwrap_err();
         assert!(err.to_string().contains("maxRequestBytes"), "{err}");
+    }
+
+    #[test]
+    fn admit_typed_request_agrees_with_authorize_at_the_request_cap() {
+        use super::{admit_typed_request, authorize_typed_request};
+        let request = |sql: &str, parameters: Vec<DbValue>| ExecuteRequest {
+            operation_id: "proxy-query-0".into(),
+            request_hash: String::new(),
+            statements: vec![stmt(sql, parameters)],
+            deadline_unix_ms: 0,
+        };
+        let sql = "SELECT id FROM books WHERE id IN (?, ?)";
+        let binds = vec![DbValue::Text("a".repeat(40)), DbValue::Text("b".into())];
+        let mut sent = request(sql, binds.clone());
+        authorize_typed_request(&mut sent, &DbCapabilities::advertised_sqlite()).unwrap();
+        let sent_len = bookclerk_plugin_abi::encoded_execute_request_bytes(&sent)
+            .unwrap()
+            .len();
+        // At the exact size of the request as sent, one byte under, and one
+        // over, the probe answers as the real authorization does.
+        for cap in [sent_len - 1, sent_len, sent_len + 1] {
+            let mut caps = DbCapabilities::advertised_sqlite();
+            caps.max_request_bytes = u32::try_from(cap).unwrap();
+            let real = authorize_typed_request(&mut request(sql, binds.clone()), &caps).is_ok();
+            let probe = admit_typed_request(&mut request(sql, binds.clone()), &caps).is_ok();
+            assert_eq!(probe, real, "cap {cap} of {sent_len}");
+            assert_eq!(real, cap >= sent_len, "cap {cap} of {sent_len}");
+        }
+        // With no size caps, TEXT the digest cannot encode is still refused.
+        let mut caps = DbCapabilities::advertised_sqlite();
+        caps.max_request_bytes = 0;
+        caps.max_payload_bytes = 0;
+        for bad in [
+            request(
+                "SELECT id FROM books WHERE id = ?",
+                vec![DbValue::Text("a\0b".into())],
+            ),
+            request("SELECT 'a\0b'", vec![]),
+        ] {
+            assert!(authorize_typed_request(&mut bad.clone(), &caps).is_err());
+            assert!(admit_typed_request(&mut bad.clone(), &caps).is_err());
+        }
     }
 
     #[test]

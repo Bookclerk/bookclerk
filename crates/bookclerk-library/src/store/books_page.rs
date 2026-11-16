@@ -767,11 +767,7 @@ fn filter_values(
 /// statement later with the reason.
 fn statement_payload_bytes(sql: &str, values: &[DbValue]) -> usize {
     values.iter().fold(sql.len(), |total, value| {
-        total.saturating_add(
-            bookclerk_plugin_abi::encoded_db_value_bytes(value)
-                .map(|bytes| bytes.len())
-                .unwrap_or(0),
-        )
+        total.saturating_add(bookclerk_plugin_abi::encoded_db_value_len(value).unwrap_or(0))
     })
 }
 

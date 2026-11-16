@@ -67,8 +67,8 @@ pub use classify::{
 };
 pub use exec::{
     cap_query_sql, encoded_proxy_row_len, execute_physical_sql, json_cell_utf8_len,
-    note_encoded_result_bytes, query_physical_sql, query_physical_sql_typed, sea_value_to_json,
-    AtomicSession, ExecCaps, PhysicalEngine, SqlExecTarget,
+    note_encoded_result_bytes, query_physical_sql, query_physical_sql_typed, sea_cell_utf8_len,
+    sea_value_json_len, sea_value_to_json, AtomicSession, ExecCaps, PhysicalEngine, SqlExecTarget,
 };
 pub use guest_receipt::{
     guest_batch_is_read_only, guest_receipt_applied_stmt, guest_receipt_finalize_stmts,
