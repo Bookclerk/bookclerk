@@ -247,6 +247,7 @@ export function formatManifest(m: Manifest): string {
   emitQueues(lines, m.queues);
   emitNamedBinding(lines, "[work_fs]", m.work_fs);
   emitNamedBinding(lines, "[oauth]", m.oauth);
+  emitNamedBinding(lines, "[sockets]", m.sockets);
 
   lines.push("");
   lines.push("[capabilities.network]");

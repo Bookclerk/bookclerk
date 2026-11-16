@@ -21,6 +21,7 @@ Outside the isolate (authoring / unit tests), lightweight stubs stand in for
 
 from __future__ import annotations
 
+import base64
 import inspect
 import json
 import time
@@ -86,6 +87,8 @@ from ._abi import (  # noqa: E402  (re-export)
     MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
     MAX_PLUGIN_MIGRATION_TOTAL_OPS,
     MAX_SCALAR_BYTES,
+    MAX_SOCKET_ATTACHMENT_BYTES,
+    MAX_SOCKET_FRAME_BYTES,
     MAX_STREAM_WINDOW_BYTES,
     PLUGIN_ERROR_CODES,
     PRODUCT_API_VERSION,
@@ -101,6 +104,8 @@ __all__ = [
     "MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES",
     "MAX_PLUGIN_MIGRATION_TOTAL_OPS",
     "MAX_SCALAR_BYTES",
+    "MAX_SOCKET_ATTACHMENT_BYTES",
+    "MAX_SOCKET_FRAME_BYTES",
     "MAX_STREAM_WINDOW_BYTES",
     "PRODUCT_API_VERSION",
     "AdapterDatabaseSession",
@@ -110,6 +115,7 @@ __all__ = [
     "EventBatch",
     "EventMessage",
     "GuestDatabase",
+    "HostWebSocket",
     "JobController",
     "KvNamespace",
     "CoverEntrypoint",
@@ -122,10 +128,13 @@ __all__ = [
     "QueueMessage",
     "RemoteLibraryEntrypoint",
     "ScheduledController",
+    "SocketsBinding",
     "StorageEntrypoint",
     "StorefrontEntrypoint",
     "cli_args",
     "decode_extensible_config",
+    "decode_socket_attachment",
+    "encode_socket_attachment",
     "event_batch_results",
     "granted_databases",
     "job_outcome_for",
@@ -133,9 +142,11 @@ __all__ = [
     "json_payload",
     "py",
     "queue_batch_results",
+    "socket_message_data",
     "transport_database",
     "transport_kv",
     "transport_queue",
+    "transport_sockets",
 ]
 
 
@@ -508,6 +519,9 @@ def _invocation_env(raw_env: Any, context: Any) -> _EnvView:
             if not isinstance(name, str) or not name or namespace is None:
                 continue
             granted[name] = transport_kv(namespace)
+    sockets = _sockets_stub(ctx)
+    if sockets is not None:
+        granted[sockets[0]] = transport_sockets(sockets[1])
     return _EnvView(raw_env, granted)
 
 
@@ -1053,6 +1067,289 @@ def transport_kv(stub: Any) -> KvNamespace:
 
 
 # ---------------------------------------------------------------------------
+# ``[sockets]``: host-brokered WebSockets shaped like hibernatable Workers sockets
+# ---------------------------------------------------------------------------
+
+
+def _b64(data: bytes) -> str:
+    """Standard base64 text of ``data``."""
+    return base64.b64encode(data).decode("ascii")
+
+
+def _from_b64(text: Any) -> bytes:
+    """Decode standard base64; anything that is not a non-empty string is empty."""
+    if not isinstance(text, str) or not text:
+        return b""
+    return base64.b64decode(text)
+
+
+def _route_frame(data: str | bytes | bytearray | memoryview) -> dict[str, str]:
+    """Route JSON form of one socket message, checked against ``MAX_SOCKET_FRAME_BYTES``.
+
+    Args:
+        data: ``str`` for a text message, bytes-like for a binary one.
+
+    Returns:
+        ``{"text": ...}`` or ``{"binary": <base64>}``.
+
+    Raises:
+        PluginError: ``invalid_params`` for another type, ``payload_too_large``
+            for a message over ``MAX_SOCKET_FRAME_BYTES`` bytes.
+    """
+    if isinstance(data, str):
+        size = _utf8_len(data)
+        raw: bytes | None = None
+    elif isinstance(data, (bytes, bytearray, memoryview)):
+        raw = bytes(data)
+        size = len(raw)
+    else:
+        raise PluginError.from_wire("invalid_params", "a socket message must be str or bytes")
+    if size > MAX_SOCKET_FRAME_BYTES:
+        raise PluginError.from_wire(
+            "payload_too_large",
+            f"socket message of {size} bytes exceeds {MAX_SOCKET_FRAME_BYTES}",
+        )
+    return {"binary": _b64(raw)} if raw is not None else {"text": data}  # type: ignore[dict-item]
+
+
+def encode_socket_attachment(value: Any) -> bytes:
+    """Encode a socket attachment as the host stores it: UTF-8 JSON.
+
+    Args:
+        value: JSON-serializable value; ``None`` stores no bytes.
+
+    Returns:
+        At most ``MAX_SOCKET_ATTACHMENT_BYTES`` bytes.
+
+    Raises:
+        PluginError: ``invalid_params`` when JSON cannot encode the value,
+            ``payload_too_large`` when it does not fit.
+    """
+    if value is None:
+        return b""
+    try:
+        text = json.dumps(value, separators=(",", ":"))
+    except (TypeError, ValueError) as err:
+        raise PluginError.from_wire(
+            "invalid_params", f"socket attachment is not JSON: {err}"
+        ) from err
+    data = text.encode("utf-8")
+    if len(data) > MAX_SOCKET_ATTACHMENT_BYTES:
+        raise PluginError.from_wire(
+            "payload_too_large",
+            f"socket attachment of {len(data)} bytes exceeds {MAX_SOCKET_ATTACHMENT_BYTES}",
+        )
+    return data
+
+
+def decode_socket_attachment(data: bytes) -> Any:
+    """Decode stored socket attachment bytes.
+
+    Args:
+        data: Bytes the host kept.
+
+    Returns:
+        The JSON value, ``None`` when empty, or the text itself when the bytes
+        are not JSON (an attachment another SDK stored).
+    """
+    if not data:
+        return None
+    text = data.decode("utf-8", errors="replace")
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def socket_message_data(frame: Any) -> str | bytes:
+    """The message a handler receives for one wire frame.
+
+    Args:
+        frame: Decoded wire ``SocketFrame`` (``{"kind", "value"}``).
+
+    Returns:
+        ``str`` for a text frame, ``bytes`` for a binary one.
+    """
+    frame = py(frame)
+    if _get(frame, "kind") == "binary":
+        return _bytes(_get(frame, "value"))
+    value = _get(frame, "value")
+    return value if isinstance(value, str) else ""
+
+
+async def _socket_call(stub: Any, op: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Make one ``POST /sockets/<op>`` call through the adapter's grant.
+
+    Args:
+        stub: The adapter's ``SocketsTransport`` stub, or ``None`` when not granted.
+        op: ``connect``, ``send``, ``close``, ``attachment`` or ``list``.
+        body: That operation's JSON fields (bytes already base64).
+
+    Returns:
+        The reply body.
+
+    Raises:
+        PluginError: ``unavailable`` without a grant, otherwise the host's code.
+    """
+    if stub is None:
+        raise PluginError.from_wire("unavailable", "SOCKETS is not granted to this invocation")
+    reply = py(await stub.call(op, js(body))) or {}
+    err = _get(reply, "err")
+    if err is not None:
+        raise PluginError.from_wire(
+            str(_get(err, "code", "") or "internal"), str(_get(err, "message", "") or "")
+        )
+    ok = _get(reply, "ok")
+    return dict(ok) if isinstance(ok, dict) else {}
+
+
+class HostWebSocket:
+    """One host-held WebSocket, shaped like a hibernatable Workers ``WebSocket``.
+
+    The broker owns the connection; this handle only names it, so it stays
+    valid across invocations and the guest may sleep between messages.
+
+    Attributes:
+        id: Socket id the host assigned (``connect`` / ``get_web_sockets``).
+        url: URL the socket dialed, without credentials.
+        protocol: Subprotocol the server chose, or an empty string.
+    """
+
+    def __init__(self, stub: Any, fields: Any) -> None:
+        fields = py(fields) or {}
+        self.id = str(_get(fields, "socket", "") or "")
+        url = _get(fields, "url", "")
+        self.url = url if isinstance(url, str) else ""
+        protocol = _get(fields, "protocol", "")
+        self.protocol = protocol if isinstance(protocol, str) else ""
+        self._stub = stub
+        attachment = _get(fields, "attachment")
+        self._attachment = (
+            attachment
+            if isinstance(attachment, bytes)
+            else _from_b64(attachment)
+            if isinstance(attachment, str)
+            else _bytes(attachment)
+        )
+
+    async def send(self, message: str | bytes) -> None:
+        """Send one message.
+
+        Args:
+            message: ``str`` (text frame) or bytes (binary frame), at most
+                ``MAX_SOCKET_FRAME_BYTES`` bytes.
+        """
+        await _socket_call(self._stub, "send", {"socket": self.id, "frame": _route_frame(message)})
+
+    async def close(self, code: int = 0, reason: str = "") -> None:
+        """Close the socket.
+
+        Args:
+            code: Close code; ``0`` sends 1000.
+            reason: Close reason, at most 123 UTF-8 bytes.
+        """
+        await _socket_call(
+            self._stub,
+            "close",
+            {"socket": self.id, "code": max(0, int(code or 0)), "reason": str(reason or "")},
+        )
+
+    async def serialize_attachment(self, value: Any) -> None:
+        """Store a JSON value with the socket, handed back with every message.
+
+        Args:
+            value: JSON-serializable value of at most
+                ``MAX_SOCKET_ATTACHMENT_BYTES`` encoded bytes; ``None`` clears it.
+        """
+        data = encode_socket_attachment(value)
+        await _socket_call(self._stub, "attachment", {"socket": self.id, "attachment": _b64(data)})
+        self._attachment = data
+
+    def deserialize_attachment(self) -> Any:
+        """The stored attachment value, or ``None`` when none is set."""
+        return decode_socket_attachment(self._attachment)
+
+
+class SocketsBinding:
+    """``[sockets]`` binding (``env.SOCKETS``): dial host-held WebSockets.
+
+    Every URL must pass the plugin's network grant. Messages arrive on the
+    default entrypoint's ``web_socket_message(ws, message)``, closes on
+    ``web_socket_close(ws, code, reason, was_clean)``.
+    """
+
+    def __init__(self, stub: Any) -> None:
+        self._stub = stub
+
+    async def connect(
+        self,
+        url: str,
+        *,
+        protocols: list[str] | None = None,
+        headers: dict[str, str] | list[tuple[str, str]] | None = None,
+        auto_responses: list[tuple[str | bytes, str | bytes]] | None = None,
+        attachment: Any = None,
+    ) -> HostWebSocket:
+        """Open one socket the host holds.
+
+        Args:
+            url: ``wss://`` or ``ws://`` URL on the network grant.
+            protocols: Requested subprotocols.
+            headers: Extra request headers (values may be credentials).
+            auto_responses: ``(request, response)`` heartbeat pairs the host
+                answers without waking the guest.
+            attachment: Initial JSON attachment.
+
+        Returns:
+            The socket handle.
+        """
+        pairs = list(headers.items()) if isinstance(headers, dict) else list(headers or [])
+        body = {
+            "url": str(url or ""),
+            "protocols": [str(p) for p in (protocols or [])],
+            "headers": [{"name": str(n), "value": str(v)} for n, v in pairs],
+            "autoResponses": [
+                {"request": _route_frame(req), "response": _route_frame(resp)}
+                for req, resp in (auto_responses or [])
+            ],
+            "attachment": _b64(encode_socket_attachment(attachment)),
+        }
+        return HostWebSocket(self._stub, await _socket_call(self._stub, "connect", body))
+
+    async def get_web_sockets(self) -> list[HostWebSocket]:
+        """The plugin's open sockets, oldest first."""
+        reply = await _socket_call(self._stub, "list", {})
+        sockets = reply.get("sockets")
+        return (
+            [HostWebSocket(self._stub, info) for info in (sockets or [])]
+            if isinstance(sockets, list)
+            else []
+        )
+
+
+def transport_sockets(stub: Any) -> SocketsBinding:
+    """Wrap the adapter's granted sockets stub as a :class:`SocketsBinding`.
+
+    Args:
+        stub: ``SocketsTransport``-shaped JS stub from the granted context.
+
+    Returns:
+        The author-facing binding.
+    """
+    return SocketsBinding(stub)
+
+
+def _sockets_stub(context: Any) -> tuple[str, Any] | None:
+    """The granted ``[sockets]`` entry of a context, as ``(name, stub)``."""
+    for entry in _get(context, "sockets") or []:
+        name = _get(entry, "name")
+        stub = _get(entry, "sockets")
+        if isinstance(name, str) and name and stub is not None:
+            return name, stub
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Job trigger: ``job(controller)`` shaped like Workers ``scheduled(controller)``
 # ---------------------------------------------------------------------------
 
@@ -1337,6 +1634,52 @@ class BookclerkEntrypoint(WorkerEntrypoint):
             raise _unsupported("scheduled")
         _apply_invocation_env(self, context)
         await _await_maybe(handler(ScheduledController.from_wire(wire_controller)))
+
+    def _socket_handle(self, context: Any, wire: Any) -> HostWebSocket:
+        """The :class:`HostWebSocket` a socket event names."""
+        entry = _sockets_stub(context)
+        return HostWebSocket(
+            entry[1] if entry else None,
+            {"socket": _get(wire, "socket", ""), "attachment": _get(wire, "attachment")},
+        )
+
+    async def bookclerkSocketMessage(self, context: Any = None, wire: Any = None) -> None:
+        """Adapter dispatch: one host-held socket message to ``web_socket_message(ws, message)``.
+
+        Text arrives as ``str``, binary as ``bytes``.
+
+        Raises:
+            PluginError: ``unsupported`` when the author defines no handler.
+        """
+        handler = getattr(self, "web_socket_message", None) or getattr(
+            self, "webSocketMessage", None
+        )
+        if not callable(handler):
+            raise _unsupported("webSocketMessage")
+        _apply_invocation_env(self, context)
+        wire = py(wire) or {}
+        await _await_maybe(
+            handler(self._socket_handle(context, wire), socket_message_data(_get(wire, "frame")))
+        )
+
+    async def bookclerkSocketClosed(self, context: Any = None, wire: Any = None) -> None:
+        """Adapter dispatch: a host-held socket closed, to ``web_socket_close(ws, code, reason, was_clean)``.
+
+        Without a handler the close is acknowledged and ignored.
+        """
+        handler = getattr(self, "web_socket_close", None) or getattr(self, "webSocketClose", None)
+        if not callable(handler):
+            return
+        _apply_invocation_env(self, context)
+        wire = py(wire) or {}
+        await _await_maybe(
+            handler(
+                self._socket_handle(context, wire),
+                int(_get(wire, "code", 0) or 0),
+                str(_get(wire, "reason", "") or ""),
+                _get(wire, "clean") is True,
+            )
+        )
 
     async def bookclerkJob(self, context=None, invocation=None, granted=None):
         """Adapter dispatch: run one durable job through ``job(controller)``.

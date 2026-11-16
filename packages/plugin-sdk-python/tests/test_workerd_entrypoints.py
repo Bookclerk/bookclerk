@@ -589,6 +589,151 @@ class QueueDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("list", {"prefix": "cur", "limit": 10}), stub.calls)
         self.assertIn(("get", "cursor", "arrayBuffer"), stub.calls)
 
+    async def test_socket_handlers_receive_host_web_sockets(self) -> None:
+        from bookclerk_plugin_sdk.workerd import HostWebSocket, SocketsBinding
+
+        class _SocketsStub:
+            def __init__(self) -> None:
+                self.calls: list = []
+
+            async def call(self, op, body):
+                self.calls.append((op, body))
+                if op == "connect":
+                    return {
+                        "ok": {
+                            "socket": "g1_a",
+                            "url": body["url"],
+                            "protocol": "chat",
+                            "attachment": body["attachment"],
+                        }
+                    }
+                if op == "list":
+                    return {"ok": {"sockets": [{"socket": "g1_a", "url": "wss://abs.example/"}]}}
+                if op == "send" and body["frame"] == {"text": "boom"}:
+                    return {"err": {"code": "not_found", "message": "socket closed"}}
+                return {"ok": {}}
+
+        stub = _SocketsStub()
+        seen: list = []
+
+        class Default(BookclerkEntrypoint):
+            async def scheduled(self, controller) -> None:
+                sockets = self.env.SOCKETS
+                assert isinstance(sockets, SocketsBinding)
+                ws = await sockets.connect(
+                    "wss://abs.example/socket.io/",
+                    protocols=["chat"],
+                    headers={"Authorization": "Bearer t"},
+                    auto_responses=[("2", "3"), (b"\x01", b"\x02")],
+                    attachment={"user": "u1"},
+                )
+                seen.append((ws.id, ws.url, ws.protocol, ws.deserialize_attachment()))
+                seen.append([s.id for s in await sockets.get_web_sockets()])
+
+            async def web_socket_message(self, ws: HostWebSocket, message) -> None:
+                seen.append(("message", ws.id, message, ws.deserialize_attachment()))
+                await ws.send(b"\x00\xff")
+                await ws.serialize_attachment({"n": 2})
+                seen.append(ws.deserialize_attachment())
+                try:
+                    await ws.send("boom")
+                except PluginError as err:
+                    seen.append(err.code)
+
+            async def web_socket_close(self, ws, code, reason, was_clean) -> None:
+                seen.append(("close", ws.id, code, reason, was_clean))
+                await ws.close(1000, "bye")
+
+        context = {"sockets": [{"name": "SOCKETS", "sockets": stub}]}
+        await Default().bookclerkScheduled(context, {"cron": "* * * * *"})
+        await Default().bookclerkSocketMessage(
+            context,
+            {"socket": "g1_a", "frame": {"kind": "text", "value": "42"}, "attachment": b"7"},
+        )
+        await Default().bookclerkSocketMessage(
+            context, {"socket": "g1_a", "frame": {"kind": "binary", "value": b"\x01"}}
+        )
+        await Default().bookclerkSocketClosed(
+            context, {"socket": "g1_a", "code": 1006, "reason": "", "clean": False}
+        )
+        self.assertEqual(
+            seen[:3],
+            [
+                ("g1_a", "wss://abs.example/socket.io/", "chat", {"user": "u1"}),
+                ["g1_a"],
+                ("message", "g1_a", "42", 7),
+            ],
+        )
+        self.assertEqual(seen[3:5], [{"n": 2}, "not_found"])
+        self.assertEqual(seen[5], ("message", "g1_a", b"\x01", None))
+        self.assertEqual(seen[-1], ("close", "g1_a", 1006, "", False))
+        connect = stub.calls[0]
+        self.assertEqual(connect[0], "connect")
+        self.assertEqual(
+            connect[1],
+            {
+                "url": "wss://abs.example/socket.io/",
+                "protocols": ["chat"],
+                "headers": [{"name": "Authorization", "value": "Bearer t"}],
+                "autoResponses": [
+                    {"request": {"text": "2"}, "response": {"text": "3"}},
+                    {"request": {"binary": "AQ=="}, "response": {"binary": "Ag=="}},
+                ],
+                "attachment": "eyJ1c2VyIjoidTEifQ==",
+            },
+        )
+        self.assertIn(("send", {"socket": "g1_a", "frame": {"binary": "AP8="}}), stub.calls)
+        self.assertIn(("attachment", {"socket": "g1_a", "attachment": "eyJuIjoyfQ=="}), stub.calls)
+        self.assertEqual(
+            stub.calls[-1], ("close", {"socket": "g1_a", "code": 1000, "reason": "bye"})
+        )
+
+    async def test_socket_dispatch_without_handlers_or_grant(self) -> None:
+        class Bare(BookclerkEntrypoint):
+            pass
+
+        with self.assertRaises(PluginError) as raised:
+            await Bare().bookclerkSocketMessage({}, {"socket": "g1_a"})
+        self.assertEqual(raised.exception.code, "unsupported")
+        self.assertIsNone(await Bare().bookclerkSocketClosed({}, {"socket": "g1_a"}))
+
+        class Camel(BookclerkEntrypoint):
+            async def webSocketMessage(self, ws, message) -> None:  # noqa: N802
+                await ws.send(message)
+
+        with self.assertRaises(PluginError) as raised:
+            await Camel().bookclerkSocketMessage(
+                {}, {"socket": "g1_a", "frame": {"kind": "text", "value": "x"}}
+            )
+        self.assertEqual(raised.exception.code, "unavailable")
+
+    def test_socket_attachment_and_frame_limits(self) -> None:
+        from bookclerk_plugin_sdk.workerd import (
+            MAX_SOCKET_ATTACHMENT_BYTES,
+            MAX_SOCKET_FRAME_BYTES,
+            decode_socket_attachment,
+            encode_socket_attachment,
+            socket_message_data,
+        )
+
+        self.assertEqual(encode_socket_attachment(None), b"")
+        self.assertIsNone(decode_socket_attachment(b""))
+        self.assertEqual(decode_socket_attachment(b"not json"), "not json")
+        with self.assertRaises(PluginError) as raised:
+            encode_socket_attachment("x" * MAX_SOCKET_ATTACHMENT_BYTES)
+        self.assertEqual(raised.exception.code, "payload_too_large")
+        with self.assertRaises(PluginError) as raised:
+            encode_socket_attachment({1, 2})
+        self.assertEqual(raised.exception.code, "invalid_params")
+        with self.assertRaises(PluginError) as raised:
+            workerd_module._route_frame("x" * (MAX_SOCKET_FRAME_BYTES + 1))
+        self.assertEqual(raised.exception.code, "payload_too_large")
+        with self.assertRaises(PluginError) as raised:
+            workerd_module._route_frame(7)  # type: ignore[arg-type]
+        self.assertEqual(raised.exception.code, "invalid_params")
+        self.assertEqual(socket_message_data(None), "")
+        self.assertEqual(socket_message_data({"kind": "binary", "value": [1, 2]}), b"\x01\x02")
+
     async def test_queue_handler_exception_retries_undecided(self) -> None:
         from bookclerk_plugin_sdk.workerd import QueueBatch
 

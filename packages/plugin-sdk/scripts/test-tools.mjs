@@ -458,7 +458,12 @@ console.log("ok binding errors name the row index");
     console.error("FAIL sockets env types", types);
     process.exit(1);
   }
-  console.log("ok [sockets] validates and types as SocketsBinding");
+  const formatted = formatManifest({ ...outbound, sockets: { binding: "PUSH" } });
+  if (!formatted.includes('[sockets]\nbinding = "PUSH"')) {
+    console.error("FAIL sockets format", formatted);
+    process.exit(1);
+  }
+  console.log("ok [sockets] validates, formats and types as SocketsBinding");
 }
 const nameOnly = formatManifest({
   api_version: 3,
