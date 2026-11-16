@@ -90,9 +90,9 @@ async fn a_dropped_sink_is_not_kept_alive() {
     assert!(broker.inner.sink().is_some());
     drop(sink);
     assert!(broker.inner.sink().is_none());
-    // Delivering with no sink is a quiet no-op.
+    // Delivering with a retired sink is a quiet no-op.
     deliver(
-        &broker.inner,
+        &Arc::downgrade(&broker.inner),
         SocketEvent::Closed(SocketClosed {
             socket: "s1".into(),
             code: CLOSE_ABNORMAL,
@@ -280,7 +280,7 @@ async fn an_event_waits_for_the_sink_the_deployment_installs() {
     let broker = idle_broker(files.path());
     let recorder = Arc::new(Recorder::default());
     let sink: Arc<dyn SocketSink> = recorder.clone();
-    let inner = Arc::clone(&broker.inner);
+    let inner = Arc::downgrade(&broker.inner);
     let delivery = tokio::spawn(async move {
         deliver(
             &inner,
@@ -296,4 +296,29 @@ async fn an_event_waits_for_the_sink_the_deployment_installs() {
     broker.set_sink(Arc::downgrade(&sink));
     delivery.await.expect("delivery");
     assert_eq!(*recorder.seen.lock().expect("seen"), vec!["message s1"]);
+}
+
+#[tokio::test]
+async fn an_event_waiting_for_a_sink_ends_when_the_broker_is_dropped() {
+    let files = tempfile::tempdir().expect("files");
+    let broker = idle_broker(files.path());
+    let inner = Arc::downgrade(&broker.inner);
+    let delivery = tokio::spawn(async move {
+        deliver(
+            &inner,
+            SocketEvent::Message(SocketMessage {
+                socket: "s1".into(),
+                ..SocketMessage::default()
+            }),
+        )
+        .await;
+    });
+    tokio::task::yield_now().await;
+    assert!(!delivery.is_finished(), "it waits while the broker lives");
+    // A failed deployment start drops every handle; the wait ends.
+    drop(broker);
+    tokio::time::timeout(std::time::Duration::from_secs(5), delivery)
+        .await
+        .expect("the wait ended")
+        .expect("delivery");
 }

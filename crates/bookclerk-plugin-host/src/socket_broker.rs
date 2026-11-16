@@ -27,7 +27,6 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::task::{Context, Poll};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bookclerk_config::Config;
@@ -44,14 +43,6 @@ use crate::{DiscoveredPlugin, GuestRuntimeKind, SpawnPlan, SpawnTransport};
 
 /// Close code reported for sockets lost when the broker process dies.
 const CLOSE_ABNORMAL: u16 = 1006;
-
-/// How long an event waits for the deployment to install its sink.
-///
-/// A guest can open a socket while it starts, before the deployment has
-/// the proxy that takes events; the broker's delivery queue holds later
-/// messages meanwhile, so nothing is dropped unless the deployment never
-/// finishes.
-const SINK_WAIT: Duration = Duration::from_secs(30);
 
 /// What a socket delivered: a message, or its close.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,8 +109,9 @@ struct Inner {
     /// The last broker generation started; each broker process gets the
     /// next one.
     generation: AtomicU64,
-    /// Woken when the sink is installed.
-    sink_ready: tokio::sync::Notify,
+    /// Woken when the sink is installed and when this state is dropped,
+    /// so an event waiting for a sink ends either way.
+    sink_ready: Arc<tokio::sync::Notify>,
 }
 
 /// One socket the host believes open.
@@ -214,29 +206,6 @@ impl Inner {
             .collect()
     }
 
-    /// The sink, waiting up to [`SINK_WAIT`] for the deployment to install
-    /// one; `None` when none came or the guest proxy is gone.
-    async fn sink_when_ready(&self) -> Option<Arc<dyn SocketSink>> {
-        let installed = async {
-            loop {
-                let ready = self.sink_ready.notified();
-                tokio::pin!(ready);
-                ready.as_mut().enable();
-                if self.sink.get().is_some() {
-                    return;
-                }
-                ready.await;
-            }
-        };
-        if tokio::time::timeout(SINK_WAIT, installed).await.is_err() {
-            tracing::warn!(
-                plugin = %self.plugin.manifest.id,
-                "no guest took socket events in time"
-            );
-        }
-        self.sink()
-    }
-
     /// The sink, while the instance's guest proxy is alive.
     fn sink(&self) -> Option<Arc<dyn SocketSink>> {
         self.sink.get().and_then(Weak::upgrade)
@@ -279,7 +248,7 @@ impl SocketBroker {
                 open: Mutex::new(BTreeMap::new()),
                 closed_early: Mutex::new(BTreeSet::new()),
                 generation: AtomicU64::new(0),
-                sink_ready: tokio::sync::Notify::new(),
+                sink_ready: Arc::new(tokio::sync::Notify::new()),
             }),
         }
     }
@@ -584,24 +553,29 @@ struct HostHandler {
 #[async_trait::async_trait(?Send)]
 impl SocketHandler for HostHandler {
     async fn message(&self, event: SocketMessage) -> AbiResult<()> {
-        let Some(inner) = self.inner.upgrade() else {
-            return Ok(());
-        };
-        if let Some(opened) = inner.open().get_mut(&event.socket) {
-            if opened.generation == self.generation {
-                opened.attachment.clone_from(&event.attachment);
+        {
+            let Some(inner) = self.inner.upgrade() else {
+                return Ok(());
+            };
+            let mut open = inner.open();
+            if let Some(opened) = open.get_mut(&event.socket) {
+                if opened.generation == self.generation {
+                    opened.attachment.clone_from(&event.attachment);
+                }
             }
         }
-        deliver(&inner, SocketEvent::Message(event)).await;
+        deliver(&self.inner, SocketEvent::Message(event)).await;
         Ok(())
     }
 
     async fn closed(&self, event: SocketClosed) -> AbiResult<()> {
-        let Some(inner) = self.inner.upgrade() else {
-            return Ok(());
+        let now_idle = {
+            let Some(inner) = self.inner.upgrade() else {
+                return Ok(());
+            };
+            inner.record_closed(self.generation, &event.socket)
         };
-        let now_idle = inner.record_closed(self.generation, &event.socket);
-        deliver(&inner, SocketEvent::Closed(event)).await;
+        deliver(&self.inner, SocketEvent::Closed(event)).await;
         if now_idle {
             self.idle.notify_one();
         }
@@ -609,18 +583,53 @@ impl SocketHandler for HostHandler {
     }
 }
 
+impl Drop for Inner {
+    fn drop(&mut self) {
+        // Ends any wait for a sink that will now never come.
+        self.sink_ready.notify_waiters();
+    }
+}
+
+/// The instance's sink, once the deployment installed it.
+///
+/// A guest can open a socket while it starts, before the deployment has
+/// the proxy that takes events. The event then waits, holding only a weak
+/// reference, until the sink arrives or the deployment gives the broker
+/// up (a failed start drops every handle). Meanwhile the broker's delivery
+/// queue holds the socket's later messages and its reads pause, so nothing
+/// is dropped.
+///
+/// # Returns
+///
+/// The sink; `None` when the broker is gone or its guest proxy retired.
+async fn sink_when_ready(inner: &Weak<Inner>) -> Option<Arc<dyn SocketSink>> {
+    let ready = Arc::clone(&inner.upgrade()?.sink_ready);
+    loop {
+        let installed = ready.notified();
+        tokio::pin!(installed);
+        installed.as_mut().enable();
+        {
+            let inner = inner.upgrade()?;
+            if inner.sink.get().is_some() {
+                return inner.sink();
+            }
+        }
+        installed.await;
+    }
+}
+
 /// Hands one event to the sink, logging a failure.
-async fn deliver(inner: &Inner, event: SocketEvent) {
-    let Some(sink) = inner.sink_when_ready().await else {
-        tracing::debug!(plugin = %inner.plugin.manifest.id, "socket event with no guest to take it");
+async fn deliver(inner: &Weak<Inner>, event: SocketEvent) {
+    let plugin = match inner.upgrade() {
+        Some(inner) => inner.plugin.manifest.id.clone(),
+        None => return,
+    };
+    let Some(sink) = sink_when_ready(inner).await else {
+        tracing::debug!(%plugin, "socket event with no guest to take it");
         return;
     };
     if let Err(err) = sink.deliver_socket_event(event).await {
-        tracing::warn!(
-            plugin = %inner.plugin.manifest.id,
-            error = %err,
-            "a plugin did not take a socket event"
-        );
+        tracing::warn!(%plugin, error = %err, "a plugin did not take a socket event");
     }
 }
 
@@ -719,10 +728,10 @@ fn run_link(spawned: SpawnedStdio, mut rx: mpsc::UnboundedReceiver<Command>, lin
 /// after the broker process died or was fenced under them. Sockets a
 /// replacement broker opened meanwhile are not touched.
 fn report_lost(inner: &Weak<Inner>, generation: u64) {
-    let Some(inner) = inner.upgrade() else {
-        return;
+    let lost = match inner.upgrade() {
+        Some(inner) => inner.take_generation(generation),
+        None => return,
     };
-    let lost = inner.take_generation(generation);
     if lost.is_empty() {
         return;
     }
@@ -741,7 +750,7 @@ fn report_lost(inner: &Weak<Inner>, generation: u64) {
                 clean: false,
                 attachment,
             };
-            deliver(&inner, SocketEvent::Closed(event)).await;
+            deliver(inner, SocketEvent::Closed(event)).await;
         }
     });
 }
