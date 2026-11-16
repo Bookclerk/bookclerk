@@ -279,7 +279,22 @@ pub(super) async fn acquire_plan(
             .iter()
             .map(|destination| (destination.id.as_str(), destination.backend.as_ref()))
             .collect();
-        match bookclerk_acquire::share_acquired_sibling(library, &backends, &book).await {
+        let shared = match library
+            .acquire_title(
+                &book.plugin_key,
+                &book.account_id,
+                &book.marketplace,
+                &book.product_id,
+            )
+            .await
+        {
+            Ok(Some(title)) => {
+                bookclerk_acquire::share_acquired_sibling(library, &backends, &title).await
+            }
+            Ok(None) => Ok(None),
+            Err(err) => Err(err.into()),
+        };
+        match shared {
             Ok(Some(_)) => continue,
             Ok(None) => {}
             Err(err) => {
