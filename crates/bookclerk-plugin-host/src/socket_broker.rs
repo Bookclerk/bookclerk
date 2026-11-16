@@ -99,13 +99,15 @@ struct Inner {
     /// The running broker, if any. Held across a connect so two connects
     /// do not start two brokers.
     link: tokio::sync::Mutex<Option<Link>>,
-    /// Open sockets, so the host can report them closed if their broker
-    /// dies.
-    open: Mutex<BTreeMap<String, Opened>>,
+    /// Open sockets and the attachment the host last saw for each, keyed
+    /// by the broker generation that opened them and the socket id, so the
+    /// host can report them closed if their broker dies. Keying by
+    /// generation keeps two brokers' sockets apart even if their ids match.
+    open: Mutex<BTreeMap<SocketKey, Vec<u8>>>,
     /// Sockets whose close reached the host before their connect answer
     /// did, by broker generation, so the late answer does not resurrect
     /// them in `open`. Lock after `open`.
-    closed_early: Mutex<BTreeSet<(u64, String)>>,
+    closed_early: Mutex<BTreeSet<SocketKey>>,
     /// The last broker generation started; each broker process gets the
     /// next one.
     generation: AtomicU64,
@@ -114,26 +116,20 @@ struct Inner {
     sink_ready: Arc<tokio::sync::Notify>,
 }
 
-/// One socket the host believes open.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Opened {
-    /// The broker generation holding it; only that broker's loss reports
-    /// it.
-    generation: u64,
-    /// The attachment the host last saw.
-    attachment: Vec<u8>,
-}
+/// A socket as the host tracks it: the broker generation that opened it
+/// and the id that broker minted.
+type SocketKey = (u64, String);
 
 impl Inner {
     /// Locks the open-socket mirror; a poisoned lock still holds a map.
-    fn open(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Opened>> {
+    fn open(&self) -> std::sync::MutexGuard<'_, BTreeMap<SocketKey, Vec<u8>>> {
         self.open
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Locks the set of sockets closed before their connect was recorded.
-    fn closed_early(&self) -> std::sync::MutexGuard<'_, BTreeSet<(u64, String)>> {
+    fn closed_early(&self) -> std::sync::MutexGuard<'_, BTreeSet<SocketKey>> {
         self.closed_early
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -145,16 +141,10 @@ impl Inner {
     /// Runs on the link thread as the connect answer arrives, so a caller
     /// that stops waiting still leaves the socket mirrored.
     fn record_open(&self, generation: u64, info: &SocketInfo) {
+        let key = (generation, info.socket.clone());
         let mut open = self.open();
-        if !self
-            .closed_early()
-            .remove(&(generation, info.socket.clone()))
-        {
-            let opened = Opened {
-                generation,
-                attachment: info.attachment.clone(),
-            };
-            open.insert(info.socket.clone(), opened);
+        if !self.closed_early().remove(&key) {
+            open.insert(key, info.attachment.clone());
         }
     }
 
@@ -164,24 +154,26 @@ impl Inner {
     ///
     /// Whether that broker holds no open socket any more.
     fn record_closed(&self, generation: u64, socket: &str) -> bool {
+        let key = (generation, socket.to_string());
         let mut open = self.open();
-        match open.get(socket) {
-            Some(opened) if opened.generation == generation => {
-                open.remove(socket);
-            }
-            Some(_) => {}
-            None => {
-                self.closed_early().insert((generation, socket.to_string()));
-            }
+        if open.remove(&key).is_none() {
+            self.closed_early().insert(key);
         }
-        !open.values().any(|opened| opened.generation == generation)
+        !open.keys().any(|(owner, _)| *owner == generation)
     }
 
     /// Whether broker `generation` holds an open socket.
     fn holds(&self, generation: u64) -> bool {
-        self.open()
-            .values()
-            .any(|opened| opened.generation == generation)
+        self.open().keys().any(|(owner, _)| *owner == generation)
+    }
+
+    /// Replaces the attachment the host last saw for an open socket of
+    /// broker `generation`.
+    fn record_attachment(&self, generation: u64, socket: &str, attachment: &[u8]) {
+        if let Some(slot) = self.open().get_mut(&(generation, socket.to_string())) {
+            slot.clear();
+            slot.extend_from_slice(attachment);
+        }
     }
 
     /// Forgets everything broker `generation` held.
@@ -193,16 +185,11 @@ impl Inner {
         let mut open = self.open();
         self.closed_early()
             .retain(|(owner, _)| *owner != generation);
-        let lost: Vec<String> = open
-            .iter()
-            .filter(|(_, opened)| opened.generation == generation)
-            .map(|(socket, _)| socket.clone())
-            .collect();
+        let kept = open.split_off(&(generation.saturating_add(1), String::new()));
+        let lost = open.split_off(&(generation, String::new()));
+        open.extend(kept);
         lost.into_iter()
-            .filter_map(|socket| {
-                let opened = open.remove(&socket)?;
-                Some((socket, opened.attachment))
-            })
+            .map(|((_, socket), attachment)| (socket, attachment))
             .collect()
     }
 
@@ -265,7 +252,11 @@ impl SocketBroker {
     /// Ids of the sockets the host believes open, oldest id first.
     #[must_use]
     pub fn open_sockets(&self) -> Vec<String> {
-        self.inner.open().keys().cloned().collect()
+        self.inner
+            .open()
+            .keys()
+            .map(|(_, socket)| socket.clone())
+            .collect()
     }
 
     /// Sends one command to the running broker.
@@ -350,9 +341,9 @@ impl SocketBroker {
             .await
             .unwrap_or(Err(missing));
         if outcome.is_ok() {
-            if let Some(opened) = self.inner.open().get_mut(&id) {
-                opened.attachment = kept;
-            }
+            // The current broker holds the socket the command reached.
+            let current = self.inner.generation.load(Ordering::SeqCst);
+            self.inner.record_attachment(current, &id, &kept);
         }
         outcome
     }
@@ -557,12 +548,7 @@ impl SocketHandler for HostHandler {
             let Some(inner) = self.inner.upgrade() else {
                 return Ok(());
             };
-            let mut open = inner.open();
-            if let Some(opened) = open.get_mut(&event.socket) {
-                if opened.generation == self.generation {
-                    opened.attachment.clone_from(&event.attachment);
-                }
-            }
+            inner.record_attachment(self.generation, &event.socket, &event.attachment);
         }
         deliver(&self.inner, SocketEvent::Message(event)).await;
         Ok(())

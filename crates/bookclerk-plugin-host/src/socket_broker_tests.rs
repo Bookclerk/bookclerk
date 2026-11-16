@@ -267,6 +267,7 @@ fn a_close_that_beats_its_connect_answer_does_not_leave_the_socket_open() {
     broker.inner.record_open(2, &info("s2"));
     broker.inner.record_closed(1, "s2");
     assert!(broker.inner.holds(2), "the newer broker keeps its socket");
+    broker.inner.record_closed(2, "s2");
     // A broker that ends forgets its early closes.
     assert!(broker.inner.record_closed(3, "s4"));
     assert!(broker.inner.take_generation(3).is_empty());
@@ -321,4 +322,34 @@ async fn an_event_waiting_for_a_sink_ends_when_the_broker_is_dropped() {
         .await
         .expect("the wait ended")
         .expect("delivery");
+}
+
+#[test]
+fn colliding_ids_from_two_brokers_are_tracked_apart() {
+    let files = tempfile::tempdir().expect("files");
+    let broker = idle_broker(files.path());
+    let recorder = Arc::new(Recorder::default());
+    let sink: Arc<dyn SocketSink> = recorder.clone();
+    broker.set_sink(Arc::downgrade(&sink));
+    let info = |attachment: &[u8]| SocketInfo {
+        socket: "same".into(),
+        attachment: attachment.to_vec(),
+        ..SocketInfo::default()
+    };
+    // The dying broker's socket and its replacement's share an id.
+    broker.inner.record_open(1, &info(b"old"));
+    broker.inner.record_open(2, &info(b"new"));
+    broker.inner.record_attachment(2, "same", b"new-2");
+
+    report_lost(&Arc::downgrade(&broker.inner), 1);
+
+    assert_eq!(
+        *recorder.seen.lock().expect("seen"),
+        vec!["closed same 1006 false old".to_string()]
+    );
+    assert!(broker.inner.holds(2), "the replacement's socket is kept");
+    assert_eq!(
+        broker.inner.take_generation(2),
+        vec![("same".to_string(), b"new-2".to_vec())]
+    );
 }
