@@ -447,6 +447,14 @@ console.log("ok binding errors name the row index");
       },
       "[sockets][0] binding collides",
     ],
+    [
+      {
+        ...outbound,
+        sockets: { binding: "EVENTS" },
+        events: { producers: [{ type: "echo_done", binding: "CUSTOM" }] },
+      },
+      "[sockets][0] binding collides",
+    ],
   ];
   for (const [manifest, expected] of cases) {
     const message = bindingMessage(manifest);

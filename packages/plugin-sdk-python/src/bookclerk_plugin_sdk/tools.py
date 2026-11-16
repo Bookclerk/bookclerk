@@ -1016,10 +1016,14 @@ def _validate_surface(m: dict[str, Any]) -> None:
             )
         bindings.add(name)
     # Producers may share one publisher binding, but ``env.SOCKETS`` is its own
-    # property and cannot take a publisher's name.
+    # property and cannot take a publisher's name, nor ``EVENTS``, which the
+    # generated ``Env`` always carries when the plugin publishes.
     sockets_name = next((name for table, name, _ in named if table == "sockets"), None)
-    if sockets_name is not None and any(
-        table == "events.producers" and name == sockets_name for table, name, _ in named
+    producer_names = [name for table, name, _ in named if table == "events.producers"]
+    if (
+        sockets_name is not None
+        and producer_names
+        and (sockets_name == "EVENTS" or sockets_name in producer_names)
     ):
         raise ValueError("plugin.toml: [sockets][0] binding collides with another binding")
 

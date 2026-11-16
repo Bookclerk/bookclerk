@@ -2025,14 +2025,15 @@ impl PluginManifest {
                 }
             }
             // Producers may share one publisher binding, but `env.SOCKETS`
-            // is its own property and cannot take a publisher's name.
+            // is its own property and cannot take a publisher's name, nor
+            // `EVENTS`, which the SDKs' generated `Env` always carries when
+            // the plugin publishes.
             if let Some(b) = &self.sockets {
                 let name = b.name_or(DEFAULT_SOCKETS_BINDING);
-                if self
-                    .events
-                    .producers
-                    .iter()
-                    .any(|p| p.binding_name() == name)
+                let producers = &self.events.producers;
+                if !producers.is_empty()
+                    && (name == DEFAULT_EVENTS_BINDING
+                        || producers.iter().any(|p| p.binding_name() == name))
                 {
                     return Err(Error::message(
                         "plugin.toml: [sockets][0] binding collides with another binding",
@@ -3079,6 +3080,16 @@ mode = "outbound"
                 .to_string()
                 .contains("[sockets][0] binding collides"),
             "{publisher}"
+        );
+        let renamed_publisher = PluginManifest::parse(&outbound(
+            "[sockets]\nbinding = \"EVENTS\"\n[[events.producers]]\ntype = \"echo_done\"\nbinding = \"CUSTOM\"\n",
+        ))
+        .expect_err("sockets named EVENTS beside a renamed publisher");
+        assert!(
+            renamed_publisher
+                .to_string()
+                .contains("[sockets][0] binding collides"),
+            "{renamed_publisher}"
         );
         assert!(
             !PluginManifest::parse(&native(""))
