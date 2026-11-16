@@ -1273,9 +1273,9 @@ async fn store_plain_fetch(
         if let Some((overlaid, tree)) =
             overlay_audible_chapters_for_plain(library, req, plain_duration).await
         {
-            let audible_asin = resolve_book(library, req)
+            let audible_asin = resolve_title(library, req)
                 .await
-                .and_then(|b| b.asin.clone());
+                .and_then(|t| t.asin.clone());
             tracing::info!(
                 id = %status_key(req),
                 source = %req.source,
@@ -1902,9 +1902,9 @@ async fn object_meta_for(
     content_type: &str,
     content_length: Option<u64>,
 ) -> ObjectMeta {
-    let book = resolve_book(library, req).await;
-    let created = resolve_timestamp(req.options.creation_time, book.as_ref());
-    let modified = resolve_timestamp(req.options.last_write_time, book.as_ref());
+    let title_view = resolve_title(library, req).await;
+    let created = resolve_timestamp(req.options.creation_time, title_view.as_ref());
+    let modified = resolve_timestamp(req.options.last_write_time, title_view.as_ref());
     ObjectMeta {
         content_type: Some(content_type.into()),
         content_length,
@@ -1919,9 +1919,9 @@ async fn object_meta_for(
 /// Prefer enriched Audible ASIN for S3 object metadata when present; otherwise
 /// the acquire product id (Audible ASIN or Libro ISBN).
 async fn object_asin_for(library: &LibraryStore, req: &AcquireRequest) -> String {
-    resolve_book(library, req)
+    resolve_title(library, req)
         .await
-        .and_then(|b| b.audible_asin().map(str::to_string))
+        .and_then(|t| t.asin)
         .unwrap_or_else(|| req.asin.clone())
 }
 
@@ -2007,12 +2007,12 @@ struct PlainAudibleCatalog {
 
 /// True when the library row has an enrichment Audible ASIN distinct from the store product id.
 async fn plain_source_has_audible_asin(library: &LibraryStore, req: &AcquireRequest) -> bool {
-    resolve_book(library, req)
+    resolve_title(library, req)
         .await
-        .and_then(|b| {
-            let asin = b.asin.as_deref()?;
-            // Audible-native rows set asin == product_id; enrichment ASINs differ.
-            if asin == b.product_id.as_str() {
+        .and_then(|t| {
+            let asin = t.asin.as_deref()?;
+            // Audible-native titles have asin == product_id; enrichment ASINs differ.
+            if asin == t.product_id.as_str() {
                 None
             } else {
                 Some(())
@@ -2027,13 +2027,13 @@ async fn fetch_plain_catalog_overlay(
     req: &AcquireRequest,
     work_dir: &Path,
 ) -> PlainAudibleCatalog {
-    let Some(book) = resolve_book(library, req).await else {
+    let Some(title) = resolve_title(library, req).await else {
         return PlainAudibleCatalog::default();
     };
-    let Some(audible_asin) = book.audible_asin().map(str::to_string) else {
+    let Some(audible_asin) = title.asin.clone() else {
         return PlainAudibleCatalog::default();
     };
-    let region = book_region(&book);
+    let region = title_region(&title);
     let Some(record) =
         bookclerk_enrich::enrichment_for_asin(req.metadata.providers(), &audible_asin, region)
             .await
@@ -2065,12 +2065,12 @@ async fn fetch_plain_catalog_overlay(
     }
 }
 
-/// Marketplace of a library row, `us` when blank.
-fn book_region(book: &BookRecord) -> &str {
-    if book.marketplace.trim().is_empty() {
+/// Marketplace of a title, `us` when blank.
+fn title_region(title: &bookclerk_library::AcquireTitle) -> &str {
+    if title.marketplace.trim().is_empty() {
         "us"
     } else {
-        book.marketplace.as_str()
+        title.marketplace.as_str()
     }
 }
 
@@ -2132,7 +2132,7 @@ async fn build_fixup_request(
     replace_chapters: bool,
     catalog: &PlainAudibleCatalog,
 ) -> FixupRequest {
-    let book = resolve_book(library, req).await;
+    let book = resolve_title(library, req).await;
     let year = catalog.year.clone().or_else(|| {
         book.as_ref()
             .and_then(|b| b.published_at)
@@ -2200,9 +2200,9 @@ async fn apply_storage_timestamps(
     req: &AcquireRequest,
     keys: &[String],
 ) {
-    let book = resolve_book(library, req).await;
-    let created = resolve_timestamp(req.options.creation_time, book.as_ref());
-    let modified = resolve_timestamp(req.options.last_write_time, book.as_ref());
+    let title = resolve_title(library, req).await;
+    let created = resolve_timestamp(req.options.creation_time, title.as_ref());
+    let modified = resolve_timestamp(req.options.last_write_time, title.as_ref());
     if created.is_none() && modified.is_none() {
         return;
     }
@@ -2216,7 +2216,7 @@ async fn apply_storage_timestamps(
 /// Resolves a file-timestamp mode to a `SystemTime` (`now`, purchase time, or publication time).
 fn resolve_timestamp(
     mode: FileTimestampMode,
-    book: Option<&bookclerk_library::BookRecord>,
+    book: Option<&bookclerk_library::AcquireTitle>,
 ) -> Option<SystemTime> {
     match mode {
         FileTimestampMode::Now => Some(SystemTime::now()),
@@ -2226,6 +2226,32 @@ fn resolve_timestamp(
         FileTimestampMode::Published => book.and_then(|b| b.published_at).map(|dt| {
             SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(dt.timestamp().max(0) as u64)
         }),
+    }
+}
+
+/// The library model's view of the request's title
+/// ([`LibraryStore::acquire_title`]), found through its library row
+/// ([`resolve_book`]) while requests still name one; `None` when the row is
+/// missing or its listing is not resolved yet.
+async fn resolve_title(
+    library: &LibraryStore,
+    req: &AcquireRequest,
+) -> Option<bookclerk_library::AcquireTitle> {
+    let book = resolve_book(library, req).await?;
+    match library
+        .acquire_title(
+            &book.plugin_key,
+            &book.account_id,
+            &book.marketplace,
+            &book.product_id,
+        )
+        .await
+    {
+        Ok(title) => title,
+        Err(err) => {
+            tracing::warn!(asin = %req.asin, error = %err, "could not read the title from the library model");
+            None
+        }
     }
 }
 
@@ -2258,9 +2284,9 @@ async fn overlay_audible_chapters_for_plain(
     req: &AcquireRequest,
     plain_audio_duration_ms: Option<u64>,
 ) -> Option<(Vec<(String, u64)>, Value)> {
-    let book = resolve_book(library, req).await?;
-    let audible_asin = book.audible_asin()?.to_string();
-    let region = book_region(&book).to_string();
+    let title = resolve_title(library, req).await?;
+    let audible_asin = title.asin.clone()?;
+    let region = title_region(&title).to_string();
     let answer = req
         .metadata
         .providers()
@@ -2321,10 +2347,10 @@ fn probe_audio_duration_ms(path: &Path) -> Option<u64> {
 
 /// Builds a naming context from the request, filling gaps from the library row.
 async fn base_naming_ctx(library: &LibraryStore, req: &AcquireRequest) -> NamingContext {
-    let book = resolve_book(library, req).await;
+    let book = resolve_title(library, req).await;
     let library_id = match (&req.library_id, &book) {
         (Some(id), _) => Some(id.clone()),
-        (None, Some(book)) => library_id_or_none(library, &book.uuid).await,
+        (None, Some(title)) => bookclerk_library::library_id(&title.edition_id),
         (None, None) => None,
     };
     NamingContext {
@@ -2345,7 +2371,7 @@ async fn base_naming_ctx(library: &LibraryStore, req: &AcquireRequest) -> Naming
             .series_index
             .clone()
             .or_else(|| book.as_ref().and_then(|b| b.series_index.clone())),
-        series_asin: book.as_ref().and_then(|b| b.series_asin.clone()),
+        series_asin: book.as_ref().and_then(|b| b.series_product_id.clone()),
         year_published: book
             .as_ref()
             .and_then(|b| b.published_at)
@@ -2356,7 +2382,7 @@ async fn base_naming_ctx(library: &LibraryStore, req: &AcquireRequest) -> Naming
         categories: book.as_ref().and_then(|b| b.categories.clone()),
         length_minutes: book.as_ref().and_then(|b| b.length_minutes),
         is_abridged: book.as_ref().is_some_and(|b| b.is_abridged),
-        content_kind: book.as_ref().map(|b| b.content_kind.clone()),
+        content_kind: book.as_ref().map(|b| b.content_kind.to_string()),
         ..Default::default()
     }
 }
