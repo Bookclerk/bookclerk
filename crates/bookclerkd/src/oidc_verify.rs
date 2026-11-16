@@ -231,10 +231,7 @@ pub async fn verify_id_token(
     nonce: &str,
     signing_algs: &[CoreJwsSigningAlgorithm],
 ) -> Result<Value, ()> {
-    let jwks: Value = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| ())?
+    let jwks: Value = crate::oidc_rp::http_client()?
         .get(jwks_uri)
         .header(reqwest::header::ACCEPT, "application/json")
         .send()

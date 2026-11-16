@@ -83,6 +83,12 @@ pub fn normalize_region(region: &str) -> String {
 
 /// Shared HTTP client for public metadata calls.
 ///
+/// Built once per process and cloned, so every public lookup reuses one
+/// connection pool (and its TLS connections) instead of handshaking per
+/// call. The client holds no cookies and only a fixed `User-Agent`, so
+/// sharing it carries nothing between calls; in a plugin guest it lives in
+/// that guest's own process.
+///
 /// # Returns
 ///
 /// On success, the inner `Client` value.
@@ -91,6 +97,24 @@ pub fn normalize_region(region: &str) -> String {
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn public_http_client() -> Result<Client> {
+    static SHARED: Mutex<Option<Client>> = Mutex::new(None);
+    let mut shared = SHARED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(client) = shared.as_ref() {
+        return Ok(client.clone());
+    }
+    let client = build_public_http_client()?;
+    *shared = Some(client.clone());
+    Ok(client)
+}
+
+/// Builds the client [`public_http_client`] shares.
+///
+/// # Errors
+///
+/// Returns [`CatalogError::Http`] when the client cannot be built.
+fn build_public_http_client() -> Result<Client> {
     Client::builder()
         .timeout(HTTP_TIMEOUT)
         .user_agent(concat!("bookclerk/", env!("CARGO_PKG_VERSION")))

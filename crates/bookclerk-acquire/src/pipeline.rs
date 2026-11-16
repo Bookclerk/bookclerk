@@ -1660,7 +1660,7 @@ async fn store_companion_pdf_sidecars(
         return Ok(Vec::new());
     }
     let pdf_path = work_dir.join(format!("{}.pdf", req.asin));
-    let client = reqwest::Client::new();
+    let client = download_http_client();
     let response = match client.get(pdf_url).send().await {
         Ok(resp) => match resp.error_for_status() {
             Ok(ok) => ok,
@@ -3039,7 +3039,7 @@ async fn download_and_store_companion_pdf(
             "acquire scratch quota exceeded (0 bytes remaining)"
         )));
     }
-    let client = reqwest::Client::new();
+    let client = download_http_client();
     let response = client
         .get(&pdf_url)
         .send()
@@ -3082,6 +3082,16 @@ async fn download_and_store_companion_pdf(
         written_keys,
         matched_existing: false,
     })
+}
+
+/// The HTTP client companion downloads (cover PDFs) share.
+///
+/// Built once per process and cloned, so downloads reuse one connection
+/// pool instead of handshaking per file. It holds no cookies and no default
+/// headers.
+fn download_http_client() -> reqwest::Client {
+    static SHARED: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    SHARED.get_or_init(reqwest::Client::new).clone()
 }
 
 #[cfg(test)]

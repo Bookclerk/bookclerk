@@ -45,6 +45,26 @@ Other clients pick aws-lc-rs through their features:
 > built only with the opt-in `onnx-embeddings` feature of `bookclerkd` and
 > `bookclerk-cli`, never in a default host build.
 
+## Reusing connections
+
+A TLS handshake costs far more CPU than the request it opens: about
+2.4 ms per request on a client built for the call, against about 0.2 ms
+on a client whose connection is kept alive (measured through an HTTPS
+proxy on one core; a small VPS is several times slower). So HTTP clients
+are built once and reused:
+
+- In a plugin guest, `bookclerk_plugin_sdk::http::Client::new()` hands out
+  clones of one client per guest process, so every call shares one
+  connection pool. That client has no cookie jar and no default headers,
+  and it never leaves the guest's own process, so nothing carries between
+  plugins, accounts or requests. A client with cookies, its own headers
+  or its own redirect rules is built with `Client::builder()` and keeps
+  its own pool; build it once per signed-in account, not per call.
+- In the host, the public Audible catalog client
+  (`bookclerk_audible_catalog::public_http_client`), the companion-file
+  download client and the OIDC client (no redirects) are each built once
+  per process.
+
 ## Checking the tree
 
 These commands list who brings a second crypto library into the build:
