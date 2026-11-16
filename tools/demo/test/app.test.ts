@@ -14,13 +14,24 @@ import {
   withNoTransform,
 } from "../src/app.ts";
 import { CACHE_CONTROL, cacheClassOf } from "../src/cache-control.ts";
-import type { Env, SessionApi } from "../src/env.ts";
+import type { Env, PortalHandoff, SessionApi } from "../src/env.ts";
 import { finish, recordStartup } from "../src/limits.ts";
 import type { LiveStatus } from "../src/live.ts";
 import { createD1 } from "../test-support/d1.ts";
 import { SECURITY_HEADERS } from "../src/pages.ts";
 
 const ORIGIN = "https://demo.example.test";
+
+/**
+ * A browser's cookies once it entered the app: the demo's own plus the
+ * portal session `/_demo/enter` handed it.
+ *
+ * @param cookie - The demo's session cookie pair.
+ * @returns Both pairs.
+ */
+function withPortal(cookie: string): string {
+  return `${cookie}; bookclerk_portal_session=${"p".repeat(64)}`;
+}
 
 /** A fake session object: state machine plus a scripted container. */
 class FakeStub implements SessionApi {
@@ -54,9 +65,15 @@ class FakeStub implements SessionApi {
     };
   }
 
-  /** @returns A portal session once ready. */
-  async portalSession(): Promise<string | null> {
-    return this.state === "ready" ? "p".repeat(64) : null;
+  /** Times the Worker asked for the portal session. */
+  portalReads = 0;
+
+  /** @returns A portal session and the hard stop once ready. */
+  async portalSession(): Promise<PortalHandoff | null> {
+    this.portalReads += 1;
+    return this.state === "ready"
+      ? { value: "p".repeat(64), endsAt: this.opened?.endsAt ?? 0 }
+      : null;
   }
 
   /**
@@ -441,10 +458,63 @@ describe("a running session", () => {
     );
     assert.equal(res.status, 303);
     assert.equal(res.headers.get("Location"), "/");
-    assert.match(
-      res.headers.getSetCookie()[0] ?? "",
-      /^bookclerk_portal_session=p{64}; Path=\/; HttpOnly; Secure; SameSite=Lax$/,
+    // It lasts as long as the demo's own cookie, so a mobile browser that
+    // ends its process in the background does not drop it.
+    const endsAt = onlyStub(env).opened!.endsAt;
+    const maxAge = endsAt - Math.floor(deps.now() / 1000);
+    assert.ok(maxAge > 0);
+    assert.equal(
+      res.headers.getSetCookie()[0],
+      `bookclerk_portal_session=${"p".repeat(64)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`,
     );
+  });
+
+  it("gives a browser that lost the portal session it back instead of the sign-in page", async () => {
+    const { env, deps, cookie, stub } = await ready();
+    const res = await handle(
+      new Request(`${ORIGIN}/api/auth/me`, { headers: { Cookie: cookie } }),
+      env,
+      deps,
+    );
+    assert.equal(res.status, 200);
+    assert.equal(
+      stub.forwarded[0]!.headers.get("Cookie"),
+      `bookclerk_portal_session=${"p".repeat(64)}`,
+    );
+    const endsAt = stub.opened!.endsAt;
+    assert.deepEqual(res.headers.getSetCookie(), [
+      `bookclerk_portal_session=${"p".repeat(64)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${endsAt - Math.floor(deps.now() / 1000)}`,
+    ]);
+  });
+
+  it("keeps the browser's own portal session and a cookie bookclerkd sets", async () => {
+    const { env, deps, cookie, stub } = await ready();
+    const own = await handle(
+      new Request(`${ORIGIN}/api/auth/me`, {
+        headers: { Cookie: `${cookie}; bookclerk_portal_session=${"q".repeat(64)}` },
+      }),
+      env,
+      deps,
+    );
+    assert.equal(stub.portalReads, 0);
+    assert.equal(
+      stub.forwarded[0]!.headers.get("Cookie"),
+      `bookclerk_portal_session=${"q".repeat(64)}`,
+    );
+    assert.deepEqual(own.headers.getSetCookie(), []);
+
+    stub.reply = () =>
+      new Response("{}", {
+        headers: { "Set-Cookie": `bookclerk_portal_session=${"r".repeat(64)}; Path=/; Max-Age=60` },
+      });
+    const set = await handle(
+      new Request(`${ORIGIN}/api/auth/me`, { headers: { Cookie: cookie } }),
+      env,
+      deps,
+    );
+    assert.deepEqual(set.headers.getSetCookie(), [
+      `bookclerk_portal_session=${"r".repeat(64)}; Path=/; Max-Age=60; Secure`,
+    ]);
   });
 
   it("refuses acquire without contacting the container", async () => {
@@ -515,7 +585,7 @@ describe("a running session", () => {
       return new Response("{}", { headers: h });
     };
     const res = await handle(
-      new Request(`${ORIGIN}/api/status`, { headers: { Cookie: cookie } }),
+      new Request(`${ORIGIN}/api/status`, { headers: { Cookie: withPortal(cookie) } }),
       env,
       deps,
     );
@@ -630,7 +700,7 @@ describe("a running session", () => {
     const { env, deps, cookie, stub } = await ready();
     stub.reply = () => Response.json({ error: "invite expired" }, { status: 410 });
     const res = await handle(
-      new Request(`${ORIGIN}/invite`, { headers: { Cookie: cookie } }),
+      new Request(`${ORIGIN}/invite`, { headers: { Cookie: withPortal(cookie) } }),
       env,
       deps,
     );

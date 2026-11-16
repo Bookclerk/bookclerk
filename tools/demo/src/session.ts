@@ -9,7 +9,7 @@
 // status to the visitor's open pages over WebSockets (live.ts).
 
 import { Container } from "@cloudflare/containers";
-import type { Env, SessionApi } from "./env.ts";
+import type { Env, PortalHandoff, SessionApi } from "./env.ts";
 import { finish, recordStartup } from "./limits.ts";
 import { timed } from "./timing.ts";
 import {
@@ -306,15 +306,16 @@ export class DemoSession extends Container<Env> implements SessionApi {
   }
 
   /**
-   * The visitor's portal session, handed to their browser once on entry.
+   * The visitor's portal session, handed to their browser on entry and
+   * again whenever the browser has lost it.
    *
-   * @returns The session when ready; otherwise null.
+   * @returns The session and the hard stop when ready; otherwise null.
    */
-  async portalSession(): Promise<string | null> {
+  async portalSession(): Promise<PortalHandoff | null> {
     const meta = await this.meta();
     if (meta?.state !== "ready") return null;
     const secrets = await this.ctx.storage.get<SessionSecrets>("secrets");
-    return secrets?.portalSession ?? null;
+    return secrets ? { value: secrets.portalSession, endsAt: meta.endsAt } : null;
   }
 
   /**

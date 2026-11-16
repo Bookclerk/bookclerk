@@ -79,8 +79,11 @@ every content signal to `no` (`use=immediate`).
    visitor waits on
    `/_demo/wait`, which says how long a start usually takes: the median of
    the last week's recorded startup times (`sessions.startup_seconds`).
-3. `/_demo/enter` hands the browser the portal session cookie. From then on
-   every request goes through the Worker (`src/app.ts`), which:
+3. `/_demo/enter` hands the browser the portal session cookie, which lasts
+   until the session's hard stop like the Worker's own cookie. (A cookie
+   without an expiry lives only as long as the browser process, and mobile
+   browsers end that process while the visitor is in another app.) From
+   then on every request goes through the Worker (`src/app.ts`), which:
    - refuses any operation not allowed for the demo (`src/routes.ts`) before
      the container sees it: acquire and download, plugin installs and
      settings, users, auth changes, node and cluster routes, among others.
@@ -88,6 +91,11 @@ every content signal to `no` (`use=immediate`).
      test fails when the two drift;
    - refuses cross-site writes itself, then strips `Authorization`,
      `Cookie` (other than bookclerkd's own) and client IP headers;
+   - hands the portal session back when a browser that still has the
+     Worker's cookie arrives without it, on that request and in a
+     `Set-Cookie`, so a lost cookie never lands the visitor on bookclerkd's
+     sign-in page (whose sign-in the demo refuses). The Worker's cookie
+     already lets that browser fetch it from `/_demo/enter`;
    - counts store sign-in starts against per-session and per-day limits;
    - forwards the request as the visitor's own session, so bookclerkd
      authorizes everything as the visitor's Owner account and
