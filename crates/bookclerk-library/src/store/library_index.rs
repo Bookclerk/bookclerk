@@ -50,7 +50,11 @@ use crate::models::AcquireStatus;
 /// Layout of `library_work_rows` this binary writes. A library with no
 /// finished build of this layout is rebuilt; bump it when a change to how
 /// rows are derived needs every row rewritten.
-pub const LIBRARY_INDEX_LAYOUT: i64 = 1;
+///
+/// - 2: every work with an edition names a cover edition, whose cover may
+///   come from a store listing or the work, so libraries indexed under 1
+///   (no cover edition unless the edition row had a cover) are rebuilt.
+pub const LIBRARY_INDEX_LAYOUT: i64 = 2;
 
 /// RFC 3339 now, with microseconds so stamps order as text.
 fn stamp(at: chrono::DateTime<Utc>) -> String {
@@ -443,15 +447,32 @@ pub(crate) fn build_work_row(
         .copied()
         .max_by_key(|s| acquire_rank(*s))
         .unwrap_or(AcquireStatus::NotAcquired);
-    // The cover: a held edition with a cover, acquired editions first, then
-    // audio, then by id so the choice is stable.
+    // The cover edition: held editions first, then one with a cover of its
+    // own or a store's on one of its listings, then acquired, then audio,
+    // then by id so the choice is stable. Every work with an edition gets
+    // one, so a cover that arrives after this row was written (store text
+    // and a title's enrichment are written after the link that refreshed
+    // it) still shows: the API reads the edition's cover, else its work's,
+    // when it serves the row (`edition_cover_urls`).
+    let has_cover = |e: &editions::Model| {
+        super::work_detail::edition_cover(
+            std::iter::once(e.cover_url.as_deref()).chain(
+                inputs
+                    .listings
+                    .iter()
+                    .filter(|l| l.edition_id == e.id)
+                    .map(|l| l.cover_url.as_deref()),
+            ),
+        )
+        .is_some()
+    };
     let cover_edition_id = inputs
         .editions
         .iter()
-        .filter(|e| e.cover_url.as_deref().is_some_and(|url| !url.is_empty()))
         .min_by_key(|e| {
             (
                 !held_editions.contains(e.id.as_str()),
+                !has_cover(e),
                 statuses.get(e.id.as_str()) != Some(&AcquireStatus::Acquired),
                 e.media_kind != MediaKind::Audio.as_str(),
                 e.id.clone(),
@@ -1704,6 +1725,44 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
         }
+    }
+
+    #[test]
+    fn a_listing_cover_makes_its_edition_the_cover_edition() {
+        let mut covered = listing("l2", "e2", None);
+        covered.cover_url = Some("https://img.example/e2.jpg".into());
+        let mut blank = listing("l1", "e1", None);
+        blank.cover_url = Some("  ".into());
+        let inputs = WorkRowInputs {
+            work: Some(work("w1")),
+            editions: vec![edition("e1", "audio", false), edition("e2", "audio", false)],
+            listing_editions: HashMap::from([
+                ("l1".into(), "e1".into()),
+                ("l2".into(), "e2".into()),
+            ]),
+            listings: vec![blank, covered],
+            holdings: vec![
+                holding("h1", "l1", "2026-02-01T00:00:00Z"),
+                holding("h2", "l2", "2026-02-01T00:00:00Z"),
+            ],
+            ..WorkRowInputs::default()
+        };
+        let row = build_work_row(&inputs, "now").expect("row");
+        assert_eq!(row.cover_edition_id.as_deref(), Some("e2"));
+        let none = WorkRowInputs {
+            listings: vec![listing("l1", "e1", None)],
+            editions: vec![edition("e1", "audio", false)],
+            ..inputs
+        };
+        assert_eq!(
+            build_work_row(&none, "now")
+                .expect("row")
+                .cover_edition_id
+                .as_deref(),
+            // With no cover known, the best held edition is still named, so
+            // a cover stored later (or the work's) shows without a refresh.
+            Some("e1")
+        );
     }
 
     #[test]

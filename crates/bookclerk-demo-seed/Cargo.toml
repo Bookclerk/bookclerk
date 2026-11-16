@@ -16,9 +16,11 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 bookclerk-config.workspace = true
+bookclerk-cover.workspace = true
 bookclerk-library.workspace = true
 bookclerk-node-proto.workspace = true
 bookclerk-plugin-host.workspace = true
+bookclerk-resolve.workspace = true
 bookclerk-source.workspace = true
 futures.workspace = true
 tracing.workspace = true
@@ -27,10 +29,12 @@ sea-orm.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
+ureq.workspace = true
 
 [dev-dependencies]
 bookclerk-plugin-database-sqlite.workspace = true
 bookclerk-plugin-source-libro.workspace = true
+rand.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 wiremock.workspace = true

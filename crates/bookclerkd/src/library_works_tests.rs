@@ -47,6 +47,36 @@ async fn list(state: &Arc<AppState>, query: WorksQuery) -> WorksPage {
 }
 
 #[tokio::test]
+async fn a_work_with_a_stored_cover_lists_a_cover_path() {
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+    let files = tempfile::tempdir().expect("tempdir");
+    let (state, library, ids) = library_with_three_works(&files).await;
+    // A title's enrichment stores its cover on the work, after the link
+    // that indexed it; the list shows it without another refresh.
+    let work = bookclerk_library::entities::works::Entity::find_by_id(ids[1].clone())
+        .one(library.db())
+        .await
+        .expect("read")
+        .expect("work");
+    let mut am: bookclerk_library::entities::works::ActiveModel = work.into();
+    am.cover_url = Set(Some("https://img.example/dune.jpg".into()));
+    am.update(library.db()).await.expect("cover");
+    let page = list(&state, WorksQuery::default()).await;
+    let dune = page.works.iter().find(|w| w.title == "Dune").expect("Dune");
+    let path = dune
+        .cover_path
+        .as_deref()
+        .expect("the work's cover is listed");
+    assert!(path.starts_with("/api/covers/"), "{path}");
+    let hobbit = page
+        .works
+        .iter()
+        .find(|w| w.title == "The Hobbit")
+        .expect("The Hobbit");
+    assert!(hobbit.cover_path.is_none(), "no cover is known for it");
+}
+
+#[tokio::test]
 async fn works_page_by_cursor_in_title_order() {
     let files = tempfile::tempdir().expect("tempdir");
     let (state, _library, _ids) = library_with_three_works(&files).await;

@@ -13,11 +13,11 @@ use bookclerk_demo_seed::{
     SeedReport, Seeded, StoreRecords, SAMPLE_BRANCH, SAMPLE_LOGIN, STOREFRONTS,
 };
 use bookclerk_library::control_plane::branch_title_counts;
-use bookclerk_library::entities::nodes;
+use bookclerk_library::entities::{editions, nodes, store_listings};
 use bookclerk_library::{AcquireStatus, LibraryStore, UserRole};
 use bookclerk_source::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_source::CatalogHit;
-use sea_orm::EntityTrait;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 /// Plugin keys the test pretends the storefronts were enrolled under.
 fn plugin_keys() -> BTreeMap<&'static str, String> {
@@ -312,6 +312,7 @@ async fn writes_the_store_record_when_there_is_one() {
         "demo-circe",
         CatalogHit {
             identifiers: ids(IdentifierScheme::Isbn, "9781549140396"),
+            cover_url: Some("https://m.media-amazon.com/images/I/circe.jpg".into()),
             ..hit("9781549140396", "Circe", "Madeline Miller")
         },
     );
@@ -342,6 +343,48 @@ async fn writes_the_store_record_when_there_is_one() {
         .filter(|b| b.title != "Project Hail Mary")
         .all(|b| b.product_id.starts_with("demo-") && b.cover_url.is_none()));
 
+    // The record's store text is on the listing, and its cover is the
+    // edition's own, for a held book and for a branch's title alike.
+    for (product, cover) in [
+        ("B08G9PRS1K", "https://m.media-amazon.com/images/I/phm.jpg"),
+        (
+            "9781549140396",
+            "https://m.media-amazon.com/images/I/circe.jpg",
+        ),
+    ] {
+        let listing = store_listings::Entity::find()
+            .filter(store_listings::Column::ProductId.eq(product))
+            .one(store.db())
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("{product} is listed"));
+        assert_eq!(listing.cover_url.as_deref(), Some(cover), "{product}");
+        let edition = editions::Entity::find_by_id(listing.edition_id)
+            .one(store.db())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(edition.cover_url.as_deref(), Some(cover), "{product}");
+    }
+    let phm_listing = store_listings::Entity::find()
+        .filter(store_listings::Column::ProductId.eq("B08G9PRS1K"))
+        .one(store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        phm_listing.description.as_deref(),
+        Some("A lone astronaut.")
+    );
+    // A title without a record has no cover anywhere.
+    assert!(editions::Entity::find()
+        .all(store.db())
+        .await
+        .unwrap()
+        .iter()
+        .filter(|e| e.title != "Project Hail Mary" && e.title != "Circe")
+        .all(|e| e.cover_url.is_none()));
+
     let sam = store
         .get_user_by_login_name(SAMPLE_LOGIN)
         .await
@@ -356,6 +399,36 @@ async fn writes_the_store_record_when_there_is_one() {
     assert_eq!(
         james.cover_url.as_deref(),
         Some("https://m.media-amazon.com/images/I/james.jpg")
+    );
+    // The bake lists the covers of the Library page's first rows, held
+    // books and the branch's titles, in title order, which it shows once
+    // the page index is built.
+    let mut after = None;
+    while let Some(next) = store
+        .rebuild_library_index_page(after.as_deref())
+        .await
+        .unwrap()
+    {
+        after = Some(next);
+    }
+    let urls = bookclerk_demo_seed::covers::cover_urls(&store)
+        .await
+        .unwrap();
+    assert_eq!(
+        urls.get(..2),
+        Some(
+            &[
+                "https://m.media-amazon.com/images/I/circe.jpg".to_owned(),
+                "https://m.media-amazon.com/images/I/phm.jpg".to_owned(),
+            ][..]
+        ),
+        "{urls:?}"
+    );
+    assert!(urls.iter().all(|u| u.starts_with("https://")), "{urls:?}");
+    assert_eq!(
+        urls.iter().collect::<BTreeSet<_>>().len(),
+        urls.len(),
+        "no cover is listed twice"
     );
 }
 
@@ -473,7 +546,26 @@ fn reads_each_mode_and_refuses_anything_else() {
         parse_mode(args(&["--bake-finish"])).unwrap(),
         Mode::BakeFinish
     );
+    assert_eq!(
+        parse_mode(args(&["--list-covers", "covers.txt"])).unwrap(),
+        Mode::ListCovers(std::path::PathBuf::from("covers.txt"))
+    );
+    assert_eq!(
+        parse_mode(args(&[
+            "--bake-covers",
+            "covers.txt",
+            "http://127.0.0.1:8787"
+        ]))
+        .unwrap(),
+        Mode::BakeCovers {
+            list: std::path::PathBuf::from("covers.txt"),
+            base: "http://127.0.0.1:8787".into(),
+        }
+    );
     for bad in [
+        &["--list-covers"][..],
+        &["--bake-covers", "covers.txt"][..],
+        &["--bake-covers", "covers.txt", "http://x", "extra"][..],
         &["--write-records"][..],
         &["--write-records", "out.json", "extra"][..],
         &["--bake-finish", "extra"][..],

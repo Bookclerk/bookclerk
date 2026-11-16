@@ -647,3 +647,80 @@ async fn discover_candidates_are_read_whole_under_every_profile() {
         }
     }
 }
+
+#[tokio::test]
+async fn store_text_reaches_every_listing_of_a_shared_product_id_under_every_profile() {
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        // Two stores list each product id (an ISBN both sell), so the
+        // listing read returns twice as many rows as ids and must page
+        // under the smallest result cap.
+        let keys: Vec<bookclerk_resolve::ListingKey> = (0..20)
+            .flat_map(|i| {
+                ["audible", "libro"].map(|plugin| bookclerk_resolve::ListingKey {
+                    plugin_key: plugin.to_owned(),
+                    marketplace: String::from("us"),
+                    product_id: format!("shared-{i:03}"),
+                })
+            })
+            .collect();
+        let titles: Vec<crate::CatalogListing> = keys
+            .iter()
+            .map(|key| crate::CatalogListing {
+                draft: bookclerk_resolve::ListingDraft {
+                    plugin_key: key.plugin_key.clone(),
+                    marketplace: Some(key.marketplace.clone()),
+                    product_id: key.product_id.clone(),
+                    title: format!("Shared {}", key.product_id),
+                    work_kind: Some(bookclerk_resolve::WorkKind::Book),
+                    expression_kind: Some(bookclerk_resolve::ExpressionKind::Narration),
+                    media_kind: Some(bookclerk_resolve::MediaKind::Audio),
+                    ..bookclerk_resolve::ListingDraft::default()
+                },
+                detail: crate::ListingDetail::default(),
+                offers: Vec::new(),
+            })
+            .collect();
+        let ids = store.record_catalog_listings(&titles).await.unwrap().ids;
+        assert!(ids.iter().all(Option::is_some), "{}", profile.name());
+        let cover = |key: &bookclerk_resolve::ListingKey| {
+            format!(
+                "https://img.example/{}/{}.jpg",
+                key.plugin_key, key.product_id
+            )
+        };
+        let texts: Vec<(bookclerk_resolve::ListingKey, crate::ListingDetail)> = keys
+            .iter()
+            .map(|key| {
+                (
+                    key.clone(),
+                    crate::ListingDetail {
+                        cover_url: Some(cover(key)),
+                        ..crate::ListingDetail::default()
+                    },
+                )
+            })
+            .collect();
+        let named = store.record_store_text(&texts).await.unwrap();
+        assert_eq!(named, keys.len(), "{}", profile.name());
+        for (key, id) in keys.iter().zip(ids.iter().flatten()) {
+            let row = crate::entities::store_listings::Entity::find_by_id(id.clone())
+                .one(store.db())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                row.cover_url.as_deref(),
+                Some(cover(key).as_str()),
+                "{}",
+                profile.name()
+            );
+            let edition = crate::entities::editions::Entity::find_by_id(row.edition_id)
+                .one(store.db())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(edition.cover_url.is_some(), "{}", profile.name());
+        }
+    }
+}

@@ -18,7 +18,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 
 use bookclerk_plugin_abi::TypedDbStatement;
 use bookclerk_resolve as resolve;
@@ -160,6 +160,35 @@ impl ListingDetail {
 }
 
 impl ListingDetail {
+    /// The store text of a storefront catalog record, as the store
+    /// reported it.
+    ///
+    /// Everything the record carries is taken, including cover, synopsis,
+    /// product page and rating; a podcast episode's show product becomes
+    /// [`Self::series_product_id`]. HTML entities are left as the record
+    /// has them.
+    #[must_use]
+    pub fn of_catalog_hit(hit: &bookclerk_storefront::CatalogHit) -> Self {
+        Self {
+            subtitle: hit.subtitle.clone(),
+            authors: hit.authors(),
+            narrators: hit.narrators(),
+            series: hit.series(),
+            series_index: hit.series_index(),
+            series_product_id: hit.parent_product_id.clone(),
+            description: hit.description.clone(),
+            publisher: hit.publisher.clone(),
+            published_at: hit.published_at.clone(),
+            length_minutes: hit.length_minutes,
+            language: hit.language.clone(),
+            cover_url: hit.cover_url.clone(),
+            url: hit.url.clone(),
+            rating_overall: hit.rating_overall,
+            rating_count: hit.rating_count,
+            is_abridged: hit.is_abridged,
+        }
+    }
+
     /// True when writing these fields would change `row`: a field set here
     /// (blank counts as unset) differs from the stored value.
     #[must_use]
@@ -263,6 +292,40 @@ fn real_opt(value: Option<f64>) -> bookclerk_plugin_abi::DbValue {
         Some(v) => bookclerk_plugin_abi::DbValue::Float64(v),
         None => bookclerk_plugin_abi::DbValue::Null(bookclerk_plugin_abi::DbType::Float64),
     }
+}
+
+/// The statements that write a listing's store text: [`detail_update`],
+/// then, when the text carries a cover, [`edition_cover_fill`].
+fn detail_writes(listing_id: &str, detail: &ListingDetail, now: &str) -> Vec<TypedDbStatement> {
+    let mut writes = vec![detail_update(listing_id, detail, now)];
+    if let Some(cover) = detail
+        .cover_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
+        writes.push(edition_cover_fill(listing_id, cover, now));
+    }
+    writes
+}
+
+/// The statement that gives the edition a listing sells the store's cover
+/// when the edition has none yet.
+///
+/// An edition's own cover is the first one the library shows for it; the
+/// first store that reports one sets it, and a later store or a later
+/// answer never replaces it.
+fn edition_cover_fill(listing_id: &str, cover: &str, now: &str) -> TypedDbStatement {
+    batch::exec(
+        "UPDATE editions SET cover_url = ?, updated_at = ? \
+         WHERE (cover_url IS NULL OR cover_url = '') \
+         AND id IN (SELECT edition_id FROM store_listings WHERE id = ?)",
+        vec![
+            batch::text(cover),
+            batch::text(now),
+            batch::text(listing_id),
+        ],
+    )
 }
 
 /// The statement that fills a listing's store text, keeping a stored
@@ -556,7 +619,9 @@ impl LibraryStore {
             // A title an answer lists twice is written once, with the
             // first copy's text and every copy's offers.
             if resolved && done.insert(id.clone()) {
-                if let Some(full) = batches.push(detail_update(&id, &input.detail, &now_text))? {
+                if let Some(full) =
+                    batches.push_group(detail_writes(&id, &input.detail, &now_text))?
+                {
                     self.run_catalog_batch(full).await?;
                 }
             }
@@ -605,7 +670,8 @@ impl LibraryStore {
     }
 
     /// Fills a stored listing's store text, keeping a stored value `detail`
-    /// leaves out.
+    /// leaves out. A cover in `detail` also becomes the cover of the
+    /// edition the listing sells when that edition has none.
     ///
     /// # Arguments
     ///
@@ -621,7 +687,7 @@ impl LibraryStore {
         listing_id: &str,
         detail: &ListingDetail,
     ) -> Result<()> {
-        self.run_catalog_batch(vec![detail_update(listing_id, detail, &now_str())])
+        self.run_catalog_batch(detail_writes(listing_id, detail, &now_str()))
             .await
     }
 
@@ -645,7 +711,7 @@ impl LibraryStore {
         let mut batches = WriteBatches::new(self.db_capabilities(), "listing text");
         let mut first_error = None;
         for (listing_id, detail) in details {
-            if let Some(full) = batches.push(detail_update(listing_id, detail, &now))? {
+            if let Some(full) = batches.push_group(detail_writes(listing_id, detail, &now))? {
                 if let Err(err) = self.run_catalog_batch(full).await {
                     first_error.get_or_insert(err);
                 }
@@ -657,6 +723,96 @@ impl LibraryStore {
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    /// Fills the store text of stored listings named by their store key, as
+    /// a store's answer for titles the library already lists would.
+    ///
+    /// Each listing keeps a stored value its text leaves out, and a cover
+    /// in the text also becomes the cover of the edition the listing sells
+    /// when that edition has none.
+    ///
+    /// # Arguments
+    ///
+    /// * `texts` - `(store key, store text)` pairs; a key with no stored
+    ///   listing is skipped.
+    ///
+    /// A held work whose edition gained a cover has its page index row
+    /// refreshed, so the row can name that edition as its cover edition.
+    ///
+    /// # Returns
+    ///
+    /// How many of `texts` named a stored listing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error of the listing read, of the first write
+    /// batch that failed (after every batch was tried), or of the row
+    /// refresh.
+    pub async fn record_store_text(
+        &self,
+        texts: &[(resolve::ListingKey, ListingDetail)],
+    ) -> Result<usize> {
+        let products: Vec<String> = texts
+            .iter()
+            .map(|(key, _)| key.product_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        // Several stores can share a product id (an ISBN), so the read is
+        // paged by result rows, not only by bind count.
+        let rows = super::library_model::find_chunked_paged::<store_listings::Entity, _>(
+            self,
+            &products,
+            |part| {
+                store_listings::Entity::find()
+                    .filter(store_listings::Column::ProductId.is_in(part.iter().cloned()))
+                    .order_by_asc(store_listings::Column::Id)
+            },
+        )
+        .await?;
+        let listings: HashMap<(String, String, String), (String, String)> = rows
+            .into_iter()
+            .map(|row| {
+                (
+                    (row.plugin_key, row.marketplace, row.product_id),
+                    (row.id, row.edition_id),
+                )
+            })
+            .collect();
+        let mut writes: Vec<(String, ListingDetail)> = Vec::new();
+        let mut covered_editions: BTreeSet<String> = BTreeSet::new();
+        for (key, detail) in texts {
+            let Some((id, edition_id)) = listings.get(&(
+                key.plugin_key.clone(),
+                key.marketplace.clone(),
+                key.product_id.clone(),
+            )) else {
+                continue;
+            };
+            if detail
+                .cover_url
+                .as_deref()
+                .is_some_and(|c| !c.trim().is_empty())
+            {
+                covered_editions.insert(edition_id.clone());
+            }
+            writes.push((id.clone(), detail.clone()));
+        }
+        self.record_listing_details(&writes).await?;
+        // A cover can make another edition the better cover edition of a
+        // held work whose row was written before the cover was known.
+        let mut works: BTreeSet<String> = BTreeSet::new();
+        for edition_id in &covered_editions {
+            if let Some(work) = self.work_of_edition(edition_id).await? {
+                works.insert(work);
+            }
+        }
+        if !works.is_empty() {
+            self.refresh_library_works(&works.into_iter().collect::<Vec<_>>())
+                .await?;
+        }
+        Ok(writes.len())
     }
 
     /// Sends one chunk of catalog writes as one atomic host batch.

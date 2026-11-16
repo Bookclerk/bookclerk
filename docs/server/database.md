@@ -701,7 +701,9 @@ library holds as works, expressions and editions:
 - `store_listings` (one per plugin, marketplace and product, with the
   store's own text for it: synopsis, cover, credits as printed, series and
   the store's own series or show product id, ratings; a scan fills it from
-  the title it lists, writing only a field that changed),
+  the title it lists, writing only a field that changed; a cover in a
+  store's text also becomes the cover of the edition the listing sells
+  when that edition has none, so the first store to report one sets it),
   `listing_offers` (its price per audience, `non_member` or `member`) and
   `holdings` (who holds each listing: an account or a branch library, in
   typed columns whose foreign keys drop the holding with its account or

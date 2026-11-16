@@ -380,6 +380,16 @@ refresh never overwrites a newer one. Keeping an unheld work's row (rather
 than deleting it) keeps that stamp, so a slow refresh that read the work
 while it was still held cannot add it back.
 
+Each row names a cover edition: a held edition, preferring one with a
+cover of its own or a store's cover on one of its listings, then an
+acquired one, then audio. A held work always names one, even before any
+cover is known, because store text and a title's enrichment are written
+after the link whose event refreshed the row. The route reads the cover
+when it serves the page: the edition's own (the first store cover a
+listing of it reported), else the first store cover among its listings, else its work's (or, for an episode, its show's), so
+a cover stored later shows without another refresh. The work detail route
+gives each edition its cover the same way.
+
 Each row carries the sort keys of every order the page offers: title,
 first author, newest holding, series then position (works in no series
 last), newest reported purchase and longest held runtime (works with no

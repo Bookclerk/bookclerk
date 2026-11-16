@@ -28,6 +28,8 @@
 //! and no claim ticket, the store accounts hold no tokens, and the branch's
 //! credential keys are placeholders that never verify a signature.
 
+pub mod covers;
+
 use anyhow::{bail, Context};
 use bookclerk_library::control_plane::{
     accept_catalog_batch, begin_catalog, default_instance_for_key, ensure_hand_managed,
@@ -37,9 +39,10 @@ use bookclerk_library::control_plane::{
 use bookclerk_library::entities::{node_credentials, nodes};
 use bookclerk_library::CatalogEnrichmentFields;
 use bookclerk_library::{
-    AcquireStatus, LibraryStore, NewBook, NewTitleRequest, RequestStatus, UserRole,
+    AcquireStatus, LibraryStore, ListingDetail, NewBook, NewTitleRequest, RequestStatus, UserRole,
 };
 use bookclerk_node_proto::{CatalogFile, CatalogMetadata, CatalogTitle};
+use bookclerk_resolve::ListingKey;
 use bookclerk_source::CatalogHit;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -715,12 +718,58 @@ pub async fn seed(
     }
 
     let branch_titles = add_branch(store, cluster_id, user.id, plugin_keys, records, when).await?;
+    add_store_text(store, plugin_keys, records).await?;
     Ok(Seeded::Wrote(SeedReport {
         user_id: user.id,
         books,
         branch_titles,
         wishlist: WISHLIST.len(),
     }))
+}
+
+/// Writes each seeded title's storefront record onto its store listing, as
+/// the store's own answer for a title the library already lists would.
+///
+/// A scan reports no cover, synopsis or rating, so without this the seeded
+/// listings carry only scan text. The record's cover also becomes the cover
+/// of the edition the listing sells, so Sam's books and the branch's titles
+/// show their covers as editions of the library, not only through their work.
+async fn add_store_text(
+    store: &LibraryStore,
+    plugin_keys: &BTreeMap<&str, String>,
+    records: &StoreRecords,
+) -> anyhow::Result<()> {
+    let texts: Vec<(ListingKey, ListingDetail)> = LIBRARY
+        .iter()
+        .chain(BRANCH)
+        .filter_map(|sample| {
+            let plugin_key = plugin_keys.get(sample.store.id)?;
+            let hit = records.get(sample.product_id)?;
+            let book = new_book(sample, Some(hit));
+            let key = ListingKey {
+                plugin_key: plugin_key.clone(),
+                marketplace: listing_marketplace(&book.marketplace),
+                product_id: bookclerk_resolve::stored_product_id(&book.product_id),
+            };
+            Some((key, ListingDetail::of_catalog_hit(hit)))
+        })
+        .collect();
+    store
+        .record_store_text(&texts)
+        .await
+        .context("add the store text of the sample titles")?;
+    Ok(())
+}
+
+/// The marketplace a listing of `market` is stored under: lower-cased, and
+/// a storefront's own spelling (`en-US`, padded) as no marketplace.
+fn listing_marketplace(market: &str) -> String {
+    let market = market.trim().to_ascii_lowercase();
+    if bookclerk_node_proto::is_marketplace(&market) {
+        market
+    } else {
+        String::new()
+    }
 }
 
 /// Where the library keeps a sample title's audio, as an acquire would name it.
@@ -881,16 +930,9 @@ fn catalog_title(sample: &SampleTitle, hit: Option<&CatalogHit>) -> CatalogTitle
     CatalogTitle {
         store: sample.store.id.into(),
         product_id: book.product_id,
-        marketplace: {
-            // A storefront's own spelling (`en-US`, padded) is sent as no
-            // marketplace rather than refusing the whole sample batch.
-            let market = book.marketplace.trim().to_ascii_lowercase();
-            if bookclerk_node_proto::is_marketplace(&market) {
-                market
-            } else {
-                String::new()
-            }
-        },
+        // A storefront's own spelling is sent as no marketplace rather than
+        // refusing the whole sample batch.
+        marketplace: listing_marketplace(&book.marketplace),
         metadata: CatalogMetadata {
             title: book.title,
             subtitle: book.subtitle,
@@ -983,6 +1025,19 @@ pub enum Mode {
     /// image ships (`packaging/demo/bake-seed.sh`), removing every secret
     /// and runtime file a container must make for itself.
     BakeFinish,
+    /// `--list-covers <path>`: write the cover URLs a new session's first
+    /// pages can show to the path, one per line ([`covers::cover_urls`]).
+    /// Run with bookclerkd stopped.
+    ListCovers(std::path::PathBuf),
+    /// `--bake-covers <path> <base-url>`: request each cover listed in the
+    /// path from the bookclerkd at the base URL, so the bake's cover cache
+    /// holds them ([`covers::warm`]).
+    BakeCovers {
+        /// The list `--list-covers` wrote.
+        list: std::path::PathBuf,
+        /// bookclerkd's address, such as `http://127.0.0.1:8787`.
+        base: String,
+    },
 }
 
 /// Parses the seed binary's arguments into a [`Mode`].
@@ -1007,6 +1062,17 @@ pub fn parse_mode(mut args: impl Iterator<Item = String>) -> anyhow::Result<Mode
             None => bail!("--write-records needs a path"),
         },
         Some(flag) if flag == "--bake-finish" => Mode::BakeFinish,
+        Some(flag) if flag == "--list-covers" => match args.next() {
+            Some(path) => Mode::ListCovers(path.into()),
+            None => bail!("--list-covers needs a path"),
+        },
+        Some(flag) if flag == "--bake-covers" => match (args.next(), args.next()) {
+            (Some(list), Some(base)) => Mode::BakeCovers {
+                list: list.into(),
+                base,
+            },
+            _ => bail!("--bake-covers needs a list path and bookclerkd's base URL"),
+        },
         Some(other) => bail!("unexpected argument `{other}`"),
     };
     match args.next() {
