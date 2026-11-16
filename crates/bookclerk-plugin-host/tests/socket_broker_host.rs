@@ -194,11 +194,18 @@ async fn the_host_broker_holds_a_socket_and_stops_when_it_closes() {
 async fn a_grant_change_stops_the_broker_and_reports_its_sockets_lost() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("addr").port();
+    let (frames_tx, mut frames) = tokio::sync::mpsc::unbounded_channel();
     let server = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await.expect("accept");
         let mut socket = tokio_tungstenite::accept_async(tcp).await.expect("upgrade");
         // Held open until the broker goes away.
         while let Some(Ok(_)) = socket.next().await {}
+        // The replacement broker's socket: report every frame it carries.
+        let (tcp, _) = listener.accept().await.expect("accept again");
+        let mut socket = tokio_tungstenite::accept_async(tcp).await.expect("upgrade");
+        while let Some(Ok(frame)) = socket.next().await {
+            let _ = frames_tx.send(frame);
+        }
     });
 
     let files = tempfile::tempdir().expect("files");
@@ -223,9 +230,49 @@ async fn a_grant_change_stops_the_broker_and_reports_its_sockets_lost() {
     recorder.wait_for(1).await;
     assert_eq!(recorder.seen.lock().unwrap()[0], "closed 1006 held");
     assert!(broker.open_sockets().is_empty());
+
+    // The next connect starts a replacement broker. The lost socket's id
+    // never reaches it, even if the replacement minted the same id.
+    let replacement = broker
+        .connect(SocketConnectRequest {
+            url: format!("ws://127.0.0.1:{port}/"),
+            ..SocketConnectRequest::default()
+        })
+        .await
+        .unwrap_or_else(|err| panic!("connect through the replacement: {err}"));
+    assert_ne!(replacement.socket, info.socket, "ids are never reused");
+    let stale = broker
+        .send(info.socket.clone(), SocketFrame::Text("stale".into()))
+        .await
+        .unwrap_err();
+    assert_eq!(stale.code, bookclerk_plugin_abi::PluginErrorCode::NotFound);
+    let stale = broker
+        .set_attachment(info.socket.clone(), b"stale".to_vec())
+        .await
+        .unwrap_err();
+    assert_eq!(stale.code, bookclerk_plugin_abi::PluginErrorCode::NotFound);
+    broker
+        .close(info.socket.clone(), 1000, String::new())
+        .await
+        .expect("closing a lost socket is a no-op");
+    assert_eq!(broker.open_sockets(), vec![replacement.socket.clone()]);
+    broker
+        .send(replacement.socket.clone(), SocketFrame::Text("live".into()))
+        .await
+        .expect("the replacement socket still works");
+    let first = tokio::time::timeout(Duration::from_secs(30), frames.recv())
+        .await
+        .expect("a frame in time")
+        .expect("frame");
+    assert_eq!(first, Message::text("live"), "no stale frame got through");
+
+    broker
+        .close(replacement.socket.clone(), 1000, String::new())
+        .await
+        .expect("close");
     tokio::time::timeout(Duration::from_secs(30), server)
         .await
-        .expect("the server saw the broker go")
+        .expect("the server saw both sockets go")
         .expect("server");
 }
 
