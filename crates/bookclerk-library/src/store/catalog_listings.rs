@@ -730,7 +730,7 @@ impl LibraryStore {
     ///
     /// Each listing keeps a stored value its text leaves out, and a cover
     /// in the text also becomes the cover of the edition the listing sells
-    /// when that edition has none ([`Self::record_listing_detail`]).
+    /// when that edition has none.
     ///
     /// # Arguments
     ///
