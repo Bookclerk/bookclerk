@@ -98,10 +98,12 @@ impl<'a> UserWatch<'a> {
 
     /// The users in `users` not reported before, now recorded as known.
     ///
-    /// Reporting is at least once: when recording them fails part way, the
-    /// users are still returned, and those whose rows were not written are
-    /// reported again by the next poll (the host then mints a second claim
-    /// ticket for the same person rather than none).
+    /// A failed write does not lose users: when recording them fails part
+    /// way, the users are still returned, and those whose rows were not
+    /// written are reported again by the next poll (the host then mints a
+    /// second claim ticket for the same person rather than none). A reply
+    /// lost after the rows were written is not retried, because
+    /// `pollEvents` has no acknowledgement.
     ///
     /// # Errors
     ///
