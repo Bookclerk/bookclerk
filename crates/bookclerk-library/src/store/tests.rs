@@ -7546,6 +7546,24 @@ async fn job_retention_and_listing_read_through_their_indexes() {
 }
 
 #[tokio::test]
+async fn top_level_work_pages_walk_the_parent_index_in_order() {
+    let store = kit_store().await;
+    let page = query_plan(
+        &store,
+        "SELECT id FROM works WHERE parent_work_id IS NULL AND id > 'w' ORDER BY id LIMIT 100",
+    )
+    .await;
+    // A range search on the cursor, not a full scan of the index.
+    assert!(
+        page.contains(
+            "SEARCH works USING COVERING INDEX idx_works_parent (parent_work_id=? AND id>?)"
+        ),
+        "{page}"
+    );
+    assert!(!page.contains("TEMP B-TREE"), "{page}");
+}
+
+#[tokio::test]
 async fn works_page_by_id_and_embedding_hashes_read_in_bulk_under_every_profile() {
     for profile in crate::test_support::Profile::ALL {
         let kit = crate::test_support::sqlite::memory(profile).await;

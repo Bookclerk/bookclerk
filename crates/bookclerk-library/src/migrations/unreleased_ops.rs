@@ -313,7 +313,12 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_works_match ON works(match_key)"),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_works_parent ON works(parent_work_id)"),
+    // `id` second, so a walk over top-level works (`parent_work_id IS NULL`
+    // in id order, a page at a time) reads the index in order instead of
+    // sorting every top-level work for each page.
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_works_parent ON works(parent_work_id, id)",
+    ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_works_title ON works(title)"),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS work_identifiers (
