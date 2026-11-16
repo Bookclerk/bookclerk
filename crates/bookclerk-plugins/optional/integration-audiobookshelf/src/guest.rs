@@ -1,12 +1,12 @@
 //! Guest-process helpers for the external Audiobookshelf integration plugin.
 //!
 //! Opaque config JSON (from `[integrations.audiobookshelf]` / spawn config) drives
-//! the HTTP client. User-watch queues newly observed users for
-//! [`guest_event_poll`] — the host owns claim-ticket / portal workflows.
+//! the HTTP client. The user watch reports users created on the server from
+//! [`guest_event_poll`], which the host calls on its own schedule; the host
+//! owns claim-ticket and portal workflows.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bookclerk_integrations::{ExternalUser, IntegrationError, Result};
 use bookclerk_plugin_sdk::{
@@ -19,6 +19,7 @@ use tracing::{debug, info, warn};
 use crate::client::AbsApiClient;
 use crate::integration::AudiobookshelfConfig;
 use crate::listening::collect_listening_changes;
+use crate::watch::UserWatch;
 
 /// Integration id written on listening rows and external-user records.
 const PROVIDER: &str = "audiobookshelf";
@@ -31,12 +32,9 @@ pub struct AbsGuestState {
     client: Option<AbsApiClient>,
     /// Why the client is missing (empty API key or constructor failure).
     config_error: Option<String>,
-    /// ABS user ids already seen by the watch loop (dedupes event-poll queue).
+    /// Keys of the ABS users already reported, when the plugin database is
+    /// not granted (see [`crate::watch`]).
     known_users: HashSet<String>,
-    /// Newly observed users waiting for the host to claim via `guest_event_poll`.
-    queued_users: VecDeque<AbiExternalUser>,
-    /// True after the background user-watch task has been spawned.
-    watch_started: bool,
 }
 
 impl AbsGuestState {
@@ -99,8 +97,6 @@ impl AbsGuestState {
             client,
             config_error,
             known_users: HashSet::new(),
-            queued_users: VecDeque::new(),
-            watch_started: false,
         }
     }
 
@@ -116,86 +112,98 @@ impl AbsGuestState {
     }
 }
 
-/// Start ABS guest background work (user watch → queue for [`guest_event_poll`]).
+/// Seeds the user watch with the users the server already has.
+///
+/// Runs each time the guest starts. With the plugin database, only the
+/// first start ever records users, and the users a server has then are
+/// never reported; without it, every start seeds its in-memory set again.
+/// A failed seed is logged; the next [`guest_event_poll`] then seeds the
+/// empty set instead and reports nobody.
+///
+/// # Arguments
+///
+/// * `state` - Shared guest state with the ABS client and config.
+/// * `memory` - The plugin's `LISTENING_STATE` database, when granted.
 ///
 /// # Errors
 ///
-/// Returns an error when the operation fails.
-pub async fn guest_start(state: Arc<Mutex<AbsGuestState>>) -> Result<()> {
-    let (client, watch_users) = {
-        let mut g = state.lock().await;
-        if g.watch_started {
-            return Ok(());
-        }
-        let client = match g.require_client() {
-            Ok(c) => c.clone(),
-            Err(err) => return Err(err),
-        };
-        let watch = g.config.watch_users;
-        g.watch_started = true;
-        (client, watch)
-    };
-    if !watch_users {
+/// Returns an error when the integration has no usable client.
+pub async fn guest_start(
+    state: Arc<Mutex<AbsGuestState>>,
+    memory: Option<&DatabaseBinding>,
+) -> Result<()> {
+    let mut g = state.lock().await;
+    let client = g.require_client()?.clone();
+    if !g.config.watch_users {
         debug!("ABS guest user watch disabled");
         return Ok(());
     }
-
-    // Seed known set, then poll for newly observed users.
-    {
-        let mut g = state.lock().await;
-        match client.list_users().await {
-            Ok(users) => {
-                for u in users {
-                    g.known_users.insert(u.id);
-                }
-                info!(
-                    count = g.known_users.len(),
-                    "seeded ABS guest user watch set"
-                );
-            }
-            Err(err) => warn!(%err, "failed to seed ABS guest users"),
-        }
+    if memory.is_none() {
+        warn!(
+            "ABS user watch has no LISTENING_STATE database; users created while the guest sleeps are not reported"
+        );
     }
-
-    let watch_state = state.clone();
-    let watch_client = client.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(30)).await;
-            match watch_client.list_users().await {
-                Ok(users) => {
-                    let mut g = watch_state.lock().await;
-                    for user in users {
-                        if g.known_users.insert(user.id.clone()) {
-                            info!(
-                                user_id = %user.id,
-                                username = %user.username,
-                                "ABS guest user observed"
-                            );
-                            g.queued_users.push_back(AbiExternalUser {
-                                provider: PROVIDER.into(),
-                                external_user_id: user.id,
-                                display_name: Some(user.username),
-                                access_token: None,
-                            });
-                        }
-                    }
-                }
-                Err(err) => warn!(%err, "ABS guest user poll failed"),
+    match client.list_users().await {
+        Ok(users) => {
+            let mut watch = UserWatch::new(memory, &mut g.known_users);
+            match watch.seed(&users).await {
+                Ok(0) => {}
+                Ok(count) => info!(count, "seeded ABS guest user watch set"),
+                Err(err) => warn!(%err, "failed to seed the ABS user watch"),
             }
         }
-    });
+        Err(err) => warn!(%err, "failed to seed ABS guest users"),
+    }
     Ok(())
 }
 
-/// Drains newly observed ABS users queued by the background watch loop.
+/// Reports the ABS users created since the last poll.
 ///
-/// Call from the host's event-poll RPC so user create/update notifications can
-/// be applied without blocking the watch task.
-pub async fn guest_event_poll(state: &Mutex<AbsGuestState>) -> EventPollResult {
+/// Lists the server's users and returns those the watch has not reported
+/// (see [`crate::watch`]). When the watch has no users yet (the seed at
+/// start failed), this poll seeds it and reports nobody.
+///
+/// # Arguments
+///
+/// * `state` - Shared guest state with the ABS client and config.
+/// * `memory` - The plugin's `LISTENING_STATE` database, when granted.
+///
+/// # Errors
+///
+/// Returns an error when the client is missing, ABS cannot list its users,
+/// or the watch database fails.
+pub async fn guest_event_poll(
+    state: &Mutex<AbsGuestState>,
+    memory: Option<&DatabaseBinding>,
+) -> Result<EventPollResult> {
     let mut g = state.lock().await;
-    let users: Vec<_> = g.queued_users.drain(..).collect();
-    EventPollResult { users }
+    if !g.config.watch_users {
+        return Ok(EventPollResult::default());
+    }
+    let client = g.require_client()?.clone();
+    let users = client.list_users().await?;
+    let mut watch = UserWatch::new(memory, &mut g.known_users);
+    let watch_err = |err: bookclerk_plugin_sdk::PluginError| {
+        IntegrationError::message(format!("ABS user watch: {err}"))
+    };
+    if watch.seed(&users).await.map_err(watch_err)? > 0 {
+        return Ok(EventPollResult::default());
+    }
+    let fresh = watch.take_new(users).await.map_err(watch_err)?;
+    Ok(EventPollResult {
+        users: fresh
+            .into_iter()
+            .map(|user| {
+                info!(user_id = %user.id, username = %user.username, "ABS guest user observed");
+                AbiExternalUser {
+                    provider: PROVIDER.into(),
+                    external_user_id: user.id,
+                    display_name: Some(user.username),
+                    access_token: None,
+                }
+            })
+            .collect(),
+    })
 }
 
 /// Probes ABS connectivity and returns the typed health reply for the host status strip.
@@ -398,5 +406,109 @@ mod tests {
             assert!(!has_client(&state));
             assert!(state.config_error.is_some());
         }
+    }
+
+    /// ABS server listing users with the given ids.
+    async fn server(ids: &[&str]) -> wiremock::MockServer {
+        use wiremock::matchers::{method, path};
+        let server = wiremock::MockServer::start().await;
+        let users: Vec<Value> = ids
+            .iter()
+            .map(|id| json!({ "id": id, "username": format!("{id}-name") }))
+            .collect();
+        wiremock::Mock::given(method("GET"))
+            .and(path("/api/users"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(json!({ "users": users })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// Guest state for `server`, as one guest process would build it.
+    fn state_for(server: &wiremock::MockServer, watch_users: bool) -> Arc<Mutex<AbsGuestState>> {
+        let config = json!({ "base_url": server.uri(), "watch_users": watch_users });
+        Arc::new(Mutex::new(AbsGuestState::from_bindings_json(
+            &config,
+            &json!({ "api_key": "k" }),
+        )))
+    }
+
+    /// A fresh `LISTENING_STATE` database with every migration applied,
+    /// under `profile`.
+    async fn database(profile: bookclerk_db_testkit::Profile) -> DatabaseBinding {
+        let unit = bookclerk_db_testkit::BindingDatabase::open(
+            profile,
+            crate::listening_migrations_for(crate::LISTENING_STATE_BINDING),
+        )
+        .await
+        .unwrap();
+        DatabaseBinding::from_session(Arc::new(unit))
+    }
+
+    /// The external user ids a poll reported.
+    fn reported(result: &EventPollResult) -> Vec<&str> {
+        result
+            .users
+            .iter()
+            .map(|user| user.external_user_id.as_str())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_user_created_while_the_guest_slept_is_reported_by_the_next_guest() {
+        for profile in bookclerk_db_testkit::Profile::ALL {
+            let db = database(profile).await;
+            let before = server(&["root", "ada"]).await;
+            let first = state_for(&before, true);
+            guest_start(Arc::clone(&first), Some(&db)).await.unwrap();
+            let quiet = guest_event_poll(&first, Some(&db)).await.unwrap();
+            assert!(quiet.users.is_empty(), "seeded users are never reported");
+
+            // The guest slept; a new process starts against the grown server.
+            let after = server(&["root", "ada", "grace"]).await;
+            let woken = state_for(&after, true);
+            guest_start(Arc::clone(&woken), Some(&db)).await.unwrap();
+            let polled = guest_event_poll(&woken, Some(&db)).await.unwrap();
+            assert_eq!(reported(&polled), ["grace"], "{profile:?}");
+            assert_eq!(polled.users[0].provider, PROVIDER);
+            assert_eq!(polled.users[0].display_name.as_deref(), Some("grace-name"));
+            assert!(guest_event_poll(&woken, Some(&db))
+                .await
+                .unwrap()
+                .users
+                .is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_poll_seeds_the_watch_when_the_start_could_not() {
+        let abs = server(&["root"]).await;
+        let state = state_for(&abs, true);
+        let first = guest_event_poll(&state, None).await.unwrap();
+        assert!(first.users.is_empty());
+        let grown = server(&["root", "ada"]).await;
+        let config = json!({ "base_url": grown.uri(), "watch_users": true });
+        let mut g = state.lock().await;
+        let known = std::mem::take(&mut g.known_users);
+        *g = AbsGuestState::from_bindings_json(&config, &json!({ "api_key": "k" }));
+        g.known_users = known;
+        drop(g);
+        let next = guest_event_poll(&state, None).await.unwrap();
+        assert_eq!(reported(&next), ["ada"]);
+    }
+
+    #[tokio::test]
+    async fn a_disabled_watch_reports_nobody() {
+        let abs = server(&["root", "ada"]).await;
+        let state = state_for(&abs, false);
+        guest_start(Arc::clone(&state), None).await.unwrap();
+        assert!(guest_event_poll(&state, None)
+            .await
+            .unwrap()
+            .users
+            .is_empty());
+        assert!(abs.received_requests().await.unwrap_or_default().is_empty());
     }
 }

@@ -1,6 +1,6 @@
 # ADR: Event delivery follows the Workers model
 
-- **Status:** Accepted (decisions 1 to 8); later phases proposed
+- **Status:** Accepted (decisions 1 to 9); later phases proposed
 - **Date:** 2026-11-11
 
 ## Context
@@ -125,15 +125,27 @@ callers await a promise, and long work is a durable job.
    without a push channel move to a host-scheduled poll instead. The ABI
    shape and checks land first; the broker, the SDK WebSocket API and
    on-demand remote libraries woken by socket messages follow.
+9. **On-demand remote libraries and sign-in providers.** Every
+   integration that is not Python sleeps behind the integration proxy,
+   including plugins that export `remoteLibrary` or `oidc`. The proxy
+   owns the remote library's new-user poll (`pollEvents`): it wakes the
+   guest every 5 minutes, several idle timeouts apart, and hands each
+   user to the daemon's hook. Woken guests never get the hook, so a guest
+   runs no poll of its own. A resident Python guest is still polled every
+   30 seconds through its session. A guest keeps what must outlive a
+   sleep in its plugin database: Audiobookshelf stores a hash of each
+   user it has reported, so a user created while it slept is still
+   reported. A sign-in call wakes the guest like a lookup, and the
+   guest's `oidcClients` answer is read once per proxy, since a changed
+   package or config replaces the proxy. Pushed socket messages (decision
+   8) will bring new users without waiting for the poll.
 
 The following phases are proposed and get their own pull requests and
 updates to this record:
 
-- **On-demand activation for the rest.** Remote libraries (woken by
-  pushed socket messages, decision 8, or a host-scheduled poll) and the
-  remaining storage guests sleep too, with an idle timeout per family.
-  Python guests need a faster start (snapshots or prewarming) before
-  they can.
+- **On-demand activation for the rest.** The remaining storage guests
+  sleep too, with an idle timeout per family. Python guests need a
+  faster start (snapshots or prewarming) before they can.
 - **Batched delivery.** `event(batch)` and `queue(batch)` receive up to
   `max_batch_size` messages per call.
 - **Richer host-side filters.** Envelope selectors and per-instance

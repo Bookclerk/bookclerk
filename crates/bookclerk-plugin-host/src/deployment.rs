@@ -1466,7 +1466,7 @@ async fn spawn_integration(
                     );
                 }
             }
-            // A trigger-driven plugin is registered behind a proxy that
+            // A plugin that may sleep is registered behind a proxy that
             // keeps its place in the registry while the guest sleeps.
             let (registered, process): (
                 Arc<dyn bookclerk_integrations::Integration>,
@@ -1480,6 +1480,7 @@ async fn spawn_integration(
                         Box::new(starter),
                         shared,
                         runtime.on_demand_idle,
+                        crate::ON_DEMAND_USER_POLL_INTERVAL,
                     );
                     if let Some(broker) = &broker {
                         let sink: Arc<dyn crate::SocketSink> = proxy.clone();
