@@ -9,6 +9,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use bookclerk_integrations::{ExternalUser, IntegrationError, Result};
+use bookclerk_plugin_sdk::sockets::{
+    text_heartbeat, SocketConnectRequest, SocketFrame, SocketMessage, Sockets,
+};
 use bookclerk_plugin_sdk::{
     DatabaseBinding, EventPollResult, ExternalUser as AbiExternalUser, HealthOk, ListeningProgress,
 };
@@ -19,6 +22,7 @@ use tracing::{debug, info, warn};
 use crate::client::AbsApiClient;
 use crate::integration::AudiobookshelfConfig;
 use crate::listening::collect_listening_changes;
+use crate::push;
 use crate::watch::UserWatch;
 
 /// Integration id written on listening rows and external-user records.
@@ -372,6 +376,114 @@ pub async fn guest_on_event(state: &Mutex<AbsGuestState>, params: &Value) -> Res
     client.scan_library(&library_id, false).await
 }
 
+/// Opens the pushed-event socket when none is open, so the host learns of a
+/// new ABS user as soon as the server announces it.
+///
+/// Does nothing without the `SOCKETS` binding, with the user watch off, or
+/// without an API key. A socket that closes is not reopened at once: the
+/// next start or poll opens it again, so a server that keeps refusing the
+/// key is retried at the poll's pace rather than in a loop. The host answers
+/// the server's Engine.IO ping itself, so an open socket costs no wakes.
+///
+/// # Arguments
+///
+/// * `state` - Shared guest state with the ABS config.
+/// * `sockets` - The plugin's `SOCKETS` binding, when granted.
+///
+/// # Returns
+///
+/// `true` when a socket was opened by this call.
+///
+/// # Errors
+///
+/// Returns the host's error when the open sockets cannot be listed or the
+/// socket cannot be opened.
+pub async fn guest_ensure_push(
+    state: &Mutex<AbsGuestState>,
+    sockets: Option<&dyn Sockets>,
+) -> Result<bool> {
+    let Some(sockets) = sockets else {
+        return Ok(false);
+    };
+    let url = {
+        let g = state.lock().await;
+        if !g.config.watch_users || g.client.is_none() {
+            return Ok(false);
+        }
+        let Some(url) = push::socket_url(&g.config.base_url) else {
+            return Ok(false);
+        };
+        url
+    };
+    let socket_err = |err: bookclerk_plugin_sdk::PluginError| {
+        IntegrationError::message(format!("ABS push: {err}"))
+    };
+    if !sockets.list().await.map_err(socket_err)?.is_empty() {
+        return Ok(false);
+    }
+    sockets
+        .connect(SocketConnectRequest {
+            url,
+            auto_responses: vec![text_heartbeat(push::PING, push::PONG)],
+            ..SocketConnectRequest::default()
+        })
+        .await
+        .map_err(socket_err)?;
+    info!("opened the ABS pushed-event socket");
+    Ok(true)
+}
+
+/// Answers one frame pushed on the ABS socket.
+///
+/// Sends the handshake replies (joining the namespace, then authenticating
+/// with the API key), closes the socket when the server rejects the key,
+/// and reports whether the frame announced a new user.
+///
+/// # Arguments
+///
+/// * `state` - Shared guest state with the API key.
+/// * `sockets` - The plugin's `SOCKETS` binding.
+/// * `event` - The pushed frame.
+///
+/// # Returns
+///
+/// `true` when the server announced a user created on it.
+///
+/// # Errors
+///
+/// Returns the host's error when a reply cannot be sent.
+pub async fn guest_push_frame(
+    state: &Mutex<AbsGuestState>,
+    sockets: &dyn Sockets,
+    event: &SocketMessage,
+) -> Result<bool> {
+    let SocketFrame::Text(text) = &event.frame else {
+        return Ok(false);
+    };
+    let api_key = {
+        let g = state.lock().await;
+        g.config.api_key.clone().unwrap_or_default()
+    };
+    let reaction = push::on_frame(text, &api_key);
+    let socket_err = |err: bookclerk_plugin_sdk::PluginError| {
+        IntegrationError::message(format!("ABS push: {err}"))
+    };
+    if let Some(reply) = reaction.reply {
+        sockets
+            .send(event.socket.clone(), SocketFrame::Text(reply))
+            .await
+            .map_err(socket_err)?;
+    }
+    if reaction.close {
+        warn!("ABS closed the pushed-event channel; the next poll opens it again");
+        sockets
+            .close(event.socket.clone(), 1000, String::new())
+            .await
+            .map_err(socket_err)?;
+    }
+    Ok(reaction.new_user)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,5 +622,188 @@ mod tests {
             .users
             .is_empty());
         assert!(abs.received_requests().await.unwrap_or_default().is_empty());
+    }
+
+    /// What a fake `SOCKETS` binding was asked to do.
+    #[derive(Debug, PartialEq)]
+    enum SocketCall {
+        Connect(String, usize),
+        Send(String, String),
+        Close(String, u16),
+    }
+
+    /// A `SOCKETS` binding that records calls and holds `open` sockets.
+    #[derive(Default)]
+    struct FakeSockets {
+        open: std::cell::RefCell<Vec<String>>,
+        calls: std::cell::RefCell<Vec<SocketCall>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl Sockets for FakeSockets {
+        async fn connect(
+            &self,
+            request: SocketConnectRequest,
+        ) -> std::result::Result<
+            bookclerk_plugin_sdk::sockets::SocketInfo,
+            bookclerk_plugin_sdk::PluginError,
+        > {
+            assert_eq!(
+                request.auto_responses,
+                vec![text_heartbeat("2", "3")],
+                "the host answers the server's ping"
+            );
+            self.calls.borrow_mut().push(SocketCall::Connect(
+                request.url.clone(),
+                request.auto_responses.len(),
+            ));
+            self.open.borrow_mut().push("s1".into());
+            Ok(bookclerk_plugin_sdk::sockets::SocketInfo {
+                socket: "s1".into(),
+                url: request.url,
+                ..Default::default()
+            })
+        }
+
+        async fn send(
+            &self,
+            socket: String,
+            frame: SocketFrame,
+        ) -> std::result::Result<(), bookclerk_plugin_sdk::PluginError> {
+            let SocketFrame::Text(text) = frame else {
+                panic!("binary frame sent");
+            };
+            self.calls.borrow_mut().push(SocketCall::Send(socket, text));
+            Ok(())
+        }
+
+        async fn close(
+            &self,
+            socket: String,
+            code: u16,
+            _reason: String,
+        ) -> std::result::Result<(), bookclerk_plugin_sdk::PluginError> {
+            self.open.borrow_mut().retain(|open| *open != socket);
+            self.calls
+                .borrow_mut()
+                .push(SocketCall::Close(socket, code));
+            Ok(())
+        }
+
+        async fn set_attachment(
+            &self,
+            _socket: String,
+            _attachment: Vec<u8>,
+        ) -> std::result::Result<(), bookclerk_plugin_sdk::PluginError> {
+            Ok(())
+        }
+
+        async fn list(
+            &self,
+        ) -> std::result::Result<
+            Vec<bookclerk_plugin_sdk::sockets::SocketInfo>,
+            bookclerk_plugin_sdk::PluginError,
+        > {
+            Ok(self
+                .open
+                .borrow()
+                .iter()
+                .map(|socket| bookclerk_plugin_sdk::sockets::SocketInfo {
+                    socket: socket.clone(),
+                    ..Default::default()
+                })
+                .collect())
+        }
+    }
+
+    /// A text frame pushed on socket `s1`.
+    fn pushed(text: &str) -> SocketMessage {
+        SocketMessage {
+            socket: "s1".into(),
+            frame: SocketFrame::Text(text.into()),
+            attachment: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_push_socket_is_opened_once() {
+        let state = Arc::new(Mutex::new(AbsGuestState::from_bindings_json(
+            &json!({ "base_url": "https://abs.example/" }),
+            &json!({ "api_key": "k" }),
+        )));
+        let sockets = FakeSockets::default();
+        assert!(guest_ensure_push(&state, Some(&sockets)).await.unwrap());
+        assert!(!guest_ensure_push(&state, Some(&sockets)).await.unwrap());
+        assert_eq!(
+            *sockets.calls.borrow(),
+            vec![SocketCall::Connect(
+                "wss://abs.example/socket.io/?EIO=4&transport=websocket".into(),
+                1
+            )]
+        );
+        assert!(
+            !guest_ensure_push(&state, None).await.unwrap(),
+            "no binding"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_push_socket_without_a_watch_or_a_key() {
+        let sockets = FakeSockets::default();
+        for (config, secrets) in [
+            (
+                json!({ "base_url": "https://abs.example", "watch_users": false }),
+                json!({ "api_key": "k" }),
+            ),
+            (json!({ "base_url": "https://abs.example" }), json!({})),
+        ] {
+            let state = Mutex::new(AbsGuestState::from_bindings_json(&config, &secrets));
+            assert!(!guest_ensure_push(&state, Some(&sockets)).await.unwrap());
+        }
+        assert!(sockets.calls.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_push_handshake_authenticates_and_reports_new_users() {
+        let state = Mutex::new(AbsGuestState::from_bindings_json(
+            &json!({ "base_url": "https://abs.example" }),
+            &json!({ "api_key": "secret-key" }),
+        ));
+        let sockets = FakeSockets::default();
+        sockets.open.borrow_mut().push("s1".into());
+        assert!(
+            !guest_push_frame(&state, &sockets, &pushed(r#"0{"sid":"a"}"#))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !guest_push_frame(&state, &sockets, &pushed(r#"40{"sid":"b"}"#))
+                .await
+                .unwrap()
+        );
+        assert!(
+            guest_push_frame(&state, &sockets, &pushed(r#"42["user_added",{"id":"u9"}]"#))
+                .await
+                .unwrap()
+        );
+        let binary = SocketMessage {
+            frame: SocketFrame::Binary(vec![1]),
+            ..pushed("")
+        };
+        assert!(!guest_push_frame(&state, &sockets, &binary).await.unwrap());
+        assert!(
+            !guest_push_frame(&state, &sockets, &pushed(r#"42["invalid_token"]"#))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            *sockets.calls.borrow(),
+            vec![
+                SocketCall::Send("s1".into(), "40".into()),
+                SocketCall::Send("s1".into(), r#"42["auth","secret-key"]"#.into()),
+                SocketCall::Close("s1".into(), 1000),
+            ]
+        );
+        assert!(sockets.open.borrow().is_empty());
     }
 }

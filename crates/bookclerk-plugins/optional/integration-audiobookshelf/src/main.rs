@@ -2,15 +2,18 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bookclerk_plugin_integration_audiobookshelf::guest::{
-    guest_authenticate_user, guest_diagnose, guest_event_poll, guest_health, guest_on_event,
-    guest_scan_library, guest_start, guest_sync_listening, AbsGuestState,
+    guest_authenticate_user, guest_diagnose, guest_ensure_push, guest_event_poll, guest_health,
+    guest_on_event, guest_push_frame, guest_scan_library, guest_start, guest_sync_listening,
+    AbsGuestState,
 };
 use bookclerk_plugin_integration_audiobookshelf::{BRAND, LISTENING_STATE_BINDING};
 use bookclerk_plugin_sdk::manifest_capabilities;
+use bookclerk_plugin_sdk::sockets::{SocketHandler, SocketMessage, Sockets};
 use bookclerk_plugin_sdk::{
     serve, AuthenticateUserParams, Bindings, Brand, DatabaseBinding, DomainEvent, Entrypoints,
     EventConsumer, EventResult, ExternalUser, HealthOk, Invocation, ListeningProgress, Oidc,
@@ -87,18 +90,28 @@ impl PluginWorker for AbsRoot {
         let state = self.state_from_bindings(&bindings).await?;
         let listening =
             DatabaseBinding::take_named_from_bindings(&mut bindings, LISTENING_STATE_BINDING);
+        let sockets: Option<Rc<dyn Sockets>> = bindings.sockets.take().map(Rc::from);
         Ok(Entrypoints {
             event_consumer: Some(Box::new(AbsIntegration {
                 state: Arc::clone(&state),
                 listening: None,
+                sockets: None,
             })),
             remote_library: Some(Box::new(AbsIntegration {
                 state: Arc::clone(&state),
                 listening,
+                sockets: sockets.clone(),
             })),
+            socket_handler: sockets.map(|sockets| {
+                Box::new(AbsPush {
+                    state: Arc::clone(&state),
+                    sockets,
+                }) as Box<dyn SocketHandler>
+            }),
             oidc: Some(Box::new(AbsIntegration {
                 state,
                 listening: None,
+                sockets: None,
             })),
             ..Entrypoints::default()
         })
@@ -117,6 +130,38 @@ struct AbsIntegration {
     /// `LISTENING_STATE` on the remote-library entrypoint, once the operator
     /// approved it: what the last listening sync sent.
     listening: Option<DatabaseBinding>,
+    /// `SOCKETS` on the remote-library entrypoint, once the operator granted
+    /// it: the host-held channel ABS pushes new users on.
+    sockets: Option<Rc<dyn Sockets>>,
+}
+
+impl AbsIntegration {
+    /// Opens the pushed-event socket when it is missing; a failure is
+    /// logged, since polling still finds every new user.
+    async fn ensure_push(&self) {
+        if let Err(err) = guest_ensure_push(&self.state, self.sockets.as_deref()).await {
+            tracing::warn!(%err, "could not open the ABS pushed-event socket; polling continues");
+        }
+    }
+}
+
+/// The `[sockets]` handler: frames ABS pushes on the host-held socket.
+struct AbsPush {
+    state: Arc<Mutex<AbsGuestState>>,
+    sockets: Rc<dyn Sockets>,
+}
+
+#[async_trait(?Send)]
+impl SocketHandler for AbsPush {
+    async fn message(&self, event: SocketMessage) -> Result<(), PluginError> {
+        let new_user = guest_push_frame(&self.state, self.sockets.as_ref(), &event)
+            .await
+            .map_err(|e| PluginError::internal(e.to_string()))?;
+        if new_user {
+            tracing::info!("ABS announced a new user");
+        }
+        Ok(())
+    }
 }
 
 #[async_trait(?Send)]
@@ -184,7 +229,9 @@ impl RemoteLibrary for AbsIntegration {
     async fn start(&self) -> Result<(), PluginError> {
         guest_start(Arc::clone(&self.state), self.listening.as_ref())
             .await
-            .map_err(|e| PluginError::internal(e.to_string()))
+            .map_err(|e| PluginError::internal(e.to_string()))?;
+        self.ensure_push().await;
+        Ok(())
     }
 
     async fn scan_library(&self, params: ScanLibraryParams) -> Result<(), PluginError> {
@@ -200,6 +247,7 @@ impl RemoteLibrary for AbsIntegration {
     }
 
     async fn poll_events(&self) -> Result<Vec<ExternalUser>, PluginError> {
+        self.ensure_push().await;
         guest_event_poll(&self.state, self.listening.as_ref())
             .await
             .map(|polled| polled.users)
