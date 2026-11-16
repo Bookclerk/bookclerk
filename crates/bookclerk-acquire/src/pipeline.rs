@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use bookclerk_config::{FileTimestampMode, MultiDestinationMode, OutputBackendKind};
 use bookclerk_enrich::{asin_identifier, chapter_info_from_layout, MetadataProviders};
-use bookclerk_library::{AcquireStatus, BookRecord, FileOwner, LibraryStore};
+use bookclerk_library::{AcquireStatus, FileOwner, LibraryStore};
 use bookclerk_media::{
     align_chapter_starts_async, bookclerk_tool_tag, encode_to_mp3, fixup_audiobook,
     package_m4b_from_mp3, parse_mp4, track_duration_ms, ChapterAlignOptions, FixupRequest,
@@ -274,9 +274,15 @@ async fn acquire_book_recorded(
     }
 
     if !req.force && !req.options.overwrite_existing {
-        if let Some(book) = resolve_book(library, &req).await {
-            if book.acquire_status == AcquireStatus::Acquired {
-                let primary_key = book.storage_key.clone().unwrap_or_default();
+        if let Some(title) = resolve_title(library, &req).await {
+            // The edition was acquired by this title: its files are this
+            // title's own. Another title's copy is checked before it is
+            // shared ([`share_acquired_sibling`]).
+            if title.status == AcquireStatus::Acquired
+                && title.acquired_by.is_some()
+                && title.acquired_by == title.book_uuid
+            {
+                let primary_key = title.storage_key.clone().unwrap_or_default();
                 tracing::info!(
                     asin = %req.asin,
                     key = %primary_key,
@@ -295,7 +301,7 @@ async fn acquire_book_recorded(
                 .iter()
                 .map(|item| (destination_id(item.kind), item.backend.as_ref()))
                 .collect();
-            if let Some(primary_key) = share_acquired_sibling(library, &backends, &book).await? {
+            if let Some(primary_key) = share_acquired_sibling(library, &backends, &title).await? {
                 tracing::info!(
                     asin = %req.asin,
                     key = %primary_key,
@@ -1639,9 +1645,14 @@ async fn store_companion_pdf_sidecars(
         return Ok(Vec::new());
     };
 
+    // A failed reuse check is a companion PDF failure; the audio this
+    // runs after is already stored and keeps its status.
     if !req.force {
-        if let Some(book) = resolve_book(library, req).await {
-            if book.pdf_status == AcquireStatus::Acquired && book.pdf_storage_key.is_some() {
+        match stored_edition_pdf(library, destinations, req).await {
+            Ok(Some(_)) => return Ok(Vec::new()),
+            Ok(None) => {}
+            Err(err) => {
+                record_companion_pdf_failure(library, req, &err).await;
                 return Ok(Vec::new());
             }
         }
@@ -1749,8 +1760,8 @@ async fn record_companion_pdf_failure(
 ///
 /// # Errors
 ///
-/// Returns [`AcquireError`] only when the library lookup for the existing PDF
-/// status fails. Download and store failures are recorded on `pdf_status`.
+/// Never returns an error today: a failed check for an already stored PDF,
+/// and download and store failures, are recorded on `pdf_status` instead.
 async fn resume_missing_companion_pdf(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
@@ -1761,8 +1772,11 @@ async fn resume_missing_companion_pdf(
         return Ok(());
     }
     if !req.force {
-        if let Some(book) = resolve_book(library, req).await {
-            if companion_pdf_is_stored(&book) {
+        match stored_edition_pdf(library, destinations, req).await {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+            Err(err) => {
+                record_companion_pdf_failure(library, req, &err).await;
                 return Ok(());
             }
         }
@@ -1776,13 +1790,53 @@ async fn resume_missing_companion_pdf(
     }
 }
 
-/// True when the library row already has a stored companion PDF.
-fn companion_pdf_is_stored(book: &BookRecord) -> bool {
-    book.pdf_status == AcquireStatus::Acquired
-        && book
-            .pdf_storage_key
-            .as_deref()
-            .is_some_and(|key| !key.is_empty())
+/// The key of the companion PDF the request's edition already stores, when
+/// the request's title may use it.
+///
+/// A PDF this title acquired is its own. One another title of the edition
+/// acquired is used once it is present on the primary destination, and is
+/// then recorded for this title too, as [`share_acquired_sibling`] shares
+/// the audio.
+///
+/// # Errors
+///
+/// Returns an error when the primary destination cannot be checked or the
+/// status write fails.
+async fn stored_edition_pdf(
+    library: &LibraryStore,
+    destinations: &AcquireDestinations,
+    req: &AcquireRequest,
+) -> Result<Option<String>> {
+    let Some(title) = resolve_title(library, req).await else {
+        return Ok(None);
+    };
+    let Some(key) = title
+        .pdf_storage_key
+        .clone()
+        .filter(|key| title.pdf_status == AcquireStatus::Acquired && !key.is_empty())
+    else {
+        return Ok(None);
+    };
+    if title.pdf_acquired_by.is_some() && title.pdf_acquired_by == title.book_uuid {
+        return Ok(Some(key));
+    }
+    let Some(book_uuid) = title.book_uuid.as_deref() else {
+        return Ok(None);
+    };
+    let primary = destinations.primary_destination();
+    let primary = (destination_id(primary.kind), primary.backend.as_ref());
+    if !sibling_pdf_is_present(Some(&primary), Some(&key)).await? {
+        return Ok(None);
+    }
+    library
+        .set_pdf_status(
+            book_uuid,
+            &title.account_id,
+            AcquireStatus::Acquired,
+            Some(&key),
+        )
+        .await?;
+    Ok(Some(key))
 }
 
 /// Persist nested `chapters.tree.json` (provider layout with adjusted timestamps).
@@ -2879,16 +2933,17 @@ async fn name_held_elsewhere(library: &LibraryStore, key: &str, owner: &FileOwne
 pub async fn share_acquired_sibling(
     library: &LibraryStore,
     destinations: &[(&str, &dyn StorageBackend)],
-    book: &BookRecord,
+    title: &bookclerk_library::AcquireTitle,
 ) -> Result<Option<String>> {
-    let Some(edition) = library.edition_of_book(&book.uuid).await? else {
+    let Some(book_uuid) = title.book_uuid.as_deref() else {
         return Ok(None);
     };
+    let edition = title.edition_id.clone();
     // The edition records which title acquired it (`edition_acquisitions`).
     let Some(acquisition) = library.edition_acquisition(&edition).await? else {
         return Ok(None);
     };
-    if acquisition.status != AcquireStatus::Acquired || acquisition.title_uuid == book.uuid {
+    if acquisition.status != AcquireStatus::Acquired || acquisition.title_uuid == book_uuid {
         return Ok(None);
     }
     let Some(key) = acquisition
@@ -2923,29 +2978,28 @@ pub async fn share_acquired_sibling(
     }
     library
         .set_acquire_status(
-            &book.uuid,
-            &book.account_id,
+            book_uuid,
+            &title.account_id,
             AcquireStatus::Acquired,
             Some(key),
             None,
         )
         .await?;
-    // The companion PDF stays per title: shared from the acquiring title
-    // when it has one on the primary destination.
-    if let Some(sibling) = library.get_book_by_uuid(&acquisition.title_uuid).await? {
-        if companion_pdf_is_stored(&sibling)
-            && sibling_pdf_is_present(destinations.first(), sibling.pdf_storage_key.as_deref())
-                .await?
-        {
-            library
-                .set_pdf_status(
-                    &book.uuid,
-                    &book.account_id,
-                    AcquireStatus::Acquired,
-                    sibling.pdf_storage_key.as_deref(),
-                )
-                .await?;
-        }
+    // The edition's companion PDF is shared too when it is on the primary
+    // destination.
+    let pdf_key = acquisition
+        .pdf_storage_key
+        .as_deref()
+        .filter(|key| acquisition.pdf_status == AcquireStatus::Acquired && !key.is_empty());
+    if pdf_key.is_some() && sibling_pdf_is_present(destinations.first(), pdf_key).await? {
+        library
+            .set_pdf_status(
+                book_uuid,
+                &title.account_id,
+                AcquireStatus::Acquired,
+                pdf_key,
+            )
+            .await?;
     }
     Ok(Some(key.to_string()))
 }
@@ -3011,17 +3065,13 @@ async fn acquire_pdf_only_recorded(
     let primary_req = request_for_destination(req, destinations.primary_destination());
 
     if !primary_req.force {
-        if let Some(book) = resolve_book(library, &primary_req).await {
-            if companion_pdf_is_stored(&book) {
-                if let Some(key) = book.pdf_storage_key {
-                    return Ok(AcquireResult {
-                        asin: primary_req.asin.clone(),
-                        storage_key: key,
-                        written_keys: Vec::new(),
-                        matched_existing: true,
-                    });
-                }
-            }
+        if let Some(key) = stored_edition_pdf(library, destinations, &primary_req).await? {
+            return Ok(AcquireResult {
+                asin: primary_req.asin.clone(),
+                storage_key: key,
+                written_keys: Vec::new(),
+                matched_existing: true,
+            });
         }
     }
 
@@ -3128,8 +3178,21 @@ fn download_http_client() -> reqwest::Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bookclerk_library::{EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload};
+    use bookclerk_library::{BookRecord, EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload};
 
+    /// The library model's acquire view of a stored title.
+    async fn view_of(store: &LibraryStore, book: &BookRecord) -> bookclerk_library::AcquireTitle {
+        store
+            .acquire_title(
+                &book.plugin_key,
+                &book.account_id,
+                &book.marketplace,
+                &book.product_id,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+    }
     /// Answers every URL containing `ok` with a fixed JPEG.
     struct FixedCovers;
 
@@ -4259,7 +4322,7 @@ mod tests {
             .await
             .unwrap());
         assert_eq!(
-            share_acquired_sibling(&store, &backends, &second)
+            share_acquired_sibling(&store, &backends, &view_of(&store, &second).await)
                 .await
                 .unwrap(),
             None,
@@ -4303,7 +4366,7 @@ mod tests {
             .collect();
         let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
         assert_eq!(
-            share_acquired_sibling(&store, &backends, &second)
+            share_acquired_sibling(&store, &backends, &view_of(&store, &second).await)
                 .await
                 .unwrap(),
             Some(first.storage_key),
@@ -4348,7 +4411,7 @@ mod tests {
             .collect();
         let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
         assert_eq!(
-            share_acquired_sibling(&store, &backends, &second)
+            share_acquired_sibling(&store, &backends, &view_of(&store, &second).await)
                 .await
                 .unwrap(),
             Some(first.storage_key),
@@ -4361,6 +4424,75 @@ mod tests {
             AcquireStatus::Acquired,
             "a missing PDF is not recorded as acquired"
         );
+    }
+
+    #[tokio::test]
+    async fn an_editions_stored_pdf_is_used_by_another_title() {
+        let store = test_store().await;
+        let first_uuid = edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
+        let second_uuid = edition_book(&store, "B00SAME", "user-2", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let dest = tmp.path().join("dest");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&dest, puts);
+        let job = job_id(&store).await;
+        let first_req = edition_req(&cache, job.clone(), "B00SAME", "user-1", &first_uuid);
+        let second_req = edition_req(&cache, job, "B00SAME", "user-2", &second_uuid);
+
+        // Nothing stored yet.
+        assert_eq!(
+            stored_edition_pdf(&store, &destinations, &second_req)
+                .await
+                .unwrap(),
+            None
+        );
+        // The first title's PDF is recorded but missing: not used.
+        store
+            .set_pdf_status(
+                &first_uuid,
+                "user-1",
+                AcquireStatus::Acquired,
+                Some("Twin/twin.pdf"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_edition_pdf(&store, &destinations, &second_req)
+                .await
+                .unwrap(),
+            None
+        );
+        // Its own title uses it without a probe; another title once it is
+        // on the primary destination, and records it.
+        assert_eq!(
+            stored_edition_pdf(&store, &destinations, &first_req)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("Twin/twin.pdf")
+        );
+        destinations
+            .primary_destination()
+            .backend
+            .put(
+                "Twin/twin.pdf",
+                bytes::Bytes::from_static(b"%PDF-1.4"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_edition_pdf(&store, &destinations, &second_req)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("Twin/twin.pdf")
+        );
+        let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        assert_eq!(second.pdf_status, AcquireStatus::Acquired);
+        assert_eq!(second.pdf_storage_key.as_deref(), Some("Twin/twin.pdf"));
     }
 
     #[tokio::test]

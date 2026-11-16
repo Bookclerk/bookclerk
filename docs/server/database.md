@@ -769,7 +769,8 @@ edition with no listing or holding.
 A book is acquired once per edition: the account rows of one edition share
 its files, and an acquire of one is marked acquired at the key the
 edition's acquiring title recorded (`edition_acquisitions`) when every
-destination already holds it. A host upload never replaces a file of
+destination already holds it. The companion PDF is shared the same way
+once it is on the primary destination. A host upload never replaces a file of
 its edition that another account's acquire or upload wrote, and an acquire
 never writes a key another edition holds: the write is refused before it
 reaches storage. A book with
