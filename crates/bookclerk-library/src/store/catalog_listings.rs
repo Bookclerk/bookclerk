@@ -108,6 +108,9 @@ pub struct ListingDetail {
     pub series: Option<String>,
     /// Position in the series (`1`, `2.5`).
     pub series_index: Option<String>,
+    /// The store's own product id for the series or podcast show (an
+    /// Audible series ASIN); store-specific, so it lives on the listing.
+    pub series_product_id: Option<String>,
     /// Synopsis, kept whole.
     pub description: Option<String>,
     /// Publisher or imprint.
@@ -128,6 +131,74 @@ pub struct ListingDetail {
     pub rating_count: Option<i64>,
     /// Abridged (`true`), unabridged (`false`) or unknown.
     pub is_abridged: Option<bool>,
+}
+
+impl ListingDetail {
+    /// The store text a scanned library title carries, for its listing.
+    ///
+    /// Only the fields a scan reports are taken: the flat row's synopsis,
+    /// language, cover and rating can come from metadata enrichment rather
+    /// than the store, so they are left out. A title the store marks
+    /// unabridged is left unknown, since the flat row cannot tell
+    /// unabridged from unreported.
+    #[must_use]
+    pub fn of_book(book: &crate::models::BookRecord) -> Self {
+        Self {
+            subtitle: book.subtitle.clone(),
+            authors: book.authors.clone(),
+            narrators: book.narrators.clone(),
+            series: book.series.clone(),
+            series_index: book.series_index.clone(),
+            series_product_id: book.series_asin.clone(),
+            publisher: book.publisher.clone(),
+            published_at: book.published_at.map(|t| t.to_rfc3339()),
+            length_minutes: book.length_minutes,
+            is_abridged: book.is_abridged.then_some(true),
+            ..Self::default()
+        }
+    }
+}
+
+impl ListingDetail {
+    /// True when writing these fields would change `row`: a field set here
+    /// (blank counts as unset) differs from the stored value.
+    #[must_use]
+    pub(crate) fn changes(&self, row: &store_listings::Model) -> bool {
+        fn text(offered: Option<&String>, stored: Option<&String>) -> bool {
+            offered
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+                .is_some_and(|v| stored.map(String::as_str) != Some(v))
+        }
+        text(self.subtitle.as_ref(), row.subtitle.as_ref())
+            || text(self.authors.as_ref(), row.authors.as_ref())
+            || text(self.narrators.as_ref(), row.narrators.as_ref())
+            || text(self.series.as_ref(), row.series.as_ref())
+            || text(self.series_index.as_ref(), row.series_index.as_ref())
+            || text(
+                self.series_product_id.as_ref(),
+                row.series_product_id.as_ref(),
+            )
+            || text(self.description.as_ref(), row.description.as_ref())
+            || text(self.publisher.as_ref(), row.publisher.as_ref())
+            || text(self.published_at.as_ref(), row.published_at.as_ref())
+            || text(self.language.as_ref(), row.language.as_ref())
+            || text(self.cover_url.as_ref(), row.cover_url.as_ref())
+            || text(self.url.as_ref(), row.url.as_ref())
+            || self
+                .length_minutes
+                .is_some_and(|v| row.length_minutes != Some(v))
+            || self
+                .rating_overall
+                .filter(|v| v.is_finite())
+                .is_some_and(|v| row.rating_overall != Some(v))
+            || self
+                .rating_count
+                .is_some_and(|v| row.rating_count != Some(v))
+            || self
+                .is_abridged
+                .is_some_and(|v| row.is_abridged != Some(i64::from(v)))
+    }
 }
 
 /// One title a store's catalog answer reported.
@@ -201,7 +272,8 @@ fn detail_update(listing_id: &str, detail: &ListingDetail, now: &str) -> TypedDb
         "UPDATE store_listings SET \
          subtitle = COALESCE(?, subtitle), authors = COALESCE(?, authors), \
          narrators = COALESCE(?, narrators), series = COALESCE(?, series), \
-         series_index = COALESCE(?, series_index), description = COALESCE(?, description), \
+         series_index = COALESCE(?, series_index), \
+         series_product_id = COALESCE(?, series_product_id), description = COALESCE(?, description), \
          publisher = COALESCE(?, publisher), published_at = COALESCE(?, published_at), \
          length_minutes = COALESCE(?, length_minutes), language = COALESCE(?, language), \
          cover_url = COALESCE(?, cover_url), url = COALESCE(?, url), \
@@ -214,6 +286,7 @@ fn detail_update(listing_id: &str, detail: &ListingDetail, now: &str) -> TypedDb
             text_trim(detail.narrators.as_deref()),
             text_trim(detail.series.as_deref()),
             text_trim(detail.series_index.as_deref()),
+            text_trim(detail.series_product_id.as_deref()),
             text_trim(detail.description.as_deref()),
             text_trim(detail.publisher.as_deref()),
             text_trim(detail.published_at.as_deref()),
@@ -277,6 +350,7 @@ fn record_of(m: store_listings::Model) -> CatalogListingRecord {
             narrators: m.narrators,
             series: m.series,
             series_index: m.series_index,
+            series_product_id: m.series_product_id,
             description: m.description,
             publisher: m.publisher,
             published_at: m.published_at,
@@ -517,6 +591,61 @@ impl LibraryStore {
         let mut first_error = None;
         for (listing_id, offer) in offers.iter().filter(|(_, o)| !o.is_empty()) {
             if let Some(full) = batches.push_group(offer_upsert(listing_id, offer).to_vec())? {
+                if let Err(err) = self.run_catalog_batch(full).await {
+                    first_error.get_or_insert(err);
+                }
+            }
+        }
+        if let Some(last) = batches.finish() {
+            if let Err(err) = self.run_catalog_batch(last).await {
+                first_error.get_or_insert(err);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    /// Fills a stored listing's store text, keeping a stored value `detail`
+    /// leaves out.
+    ///
+    /// # Arguments
+    ///
+    /// * `listing_id` - `store_listings.id`; an id no longer stored writes
+    ///   nothing.
+    /// * `detail` - The store's text for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    pub(crate) async fn record_listing_detail(
+        &self,
+        listing_id: &str,
+        detail: &ListingDetail,
+    ) -> Result<()> {
+        self.run_catalog_batch(vec![detail_update(listing_id, detail, &now_str())])
+            .await
+    }
+
+    /// Fills the store text of many stored listings, in batches sized from
+    /// the database plugin's limits.
+    ///
+    /// # Arguments
+    ///
+    /// * `details` - `(listing id, store text)` pairs; an id no longer
+    ///   stored writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first batch's database error, after every batch was
+    /// tried.
+    pub(crate) async fn record_listing_details(
+        &self,
+        details: &[(String, ListingDetail)],
+    ) -> Result<()> {
+        let now = now_str();
+        let mut batches = WriteBatches::new(self.db_capabilities(), "listing text");
+        let mut first_error = None;
+        for (listing_id, detail) in details {
+            if let Some(full) = batches.push(detail_update(listing_id, detail, &now))? {
                 if let Err(err) = self.run_catalog_batch(full).await {
                     first_error.get_or_insert(err);
                 }

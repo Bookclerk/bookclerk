@@ -433,6 +433,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         narrators TEXT,
         series TEXT,
         series_index TEXT,
+        series_product_id TEXT,
         description TEXT,
         publisher TEXT,
         published_at TEXT,
@@ -1553,7 +1554,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // row. Once acquired, only that title's writes change the row (or any
     // title's, after that one leaves the library), never a sibling title's
     // queued, downloading or failed attempt. An edition with no row is not
-    // acquired.
+    // acquired. The `pdf_*` columns hold the edition's companion PDF the
+    // same way, with `pdf_title_uuid` the title whose write set them.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS edition_acquisitions (
         edition_id TEXT PRIMARY KEY NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
@@ -1561,7 +1563,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         storage_key TEXT,
         error_message TEXT,
         title_uuid TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        pdf_status TEXT NOT NULL DEFAULT 'not_acquired' CHECK (pdf_status IN ('not_acquired', 'queued', 'downloading', 'acquired', 'error')),
+        pdf_storage_key TEXT,
+        pdf_title_uuid TEXT
     )",
     ),
     // The library's page index (docs/adr/library-data-model.md, decision 8

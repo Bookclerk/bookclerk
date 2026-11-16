@@ -699,7 +699,9 @@ library holds as works, expressions and editions:
   `edition_identifiers` (a strong identifier is unique through
   `strong_key`);
 - `store_listings` (one per plugin, marketplace and product, with the
-  store's own text for it: synopsis, cover, credits as printed, ratings),
+  store's own text for it: synopsis, cover, credits as printed, series and
+  the store's own series or show product id, ratings; a scan fills it from
+  the title it lists, writing only a field that changed),
   `listing_offers` (its price per audience, `non_member` or `member`) and
   `holdings` (who holds each listing: an account or a branch library, in
   typed columns whose foreign keys drop the holding with its account or
@@ -730,7 +732,9 @@ library holds as works, expressions and editions:
 - `edition_acquisitions`: each edition's acquire state (status, primary
   storage key, last error) and the title whose write set it, written with
   the title's own status. Only that title changes an acquired edition, so
-  a sibling title's failed attempt never hides its files.
+  a sibling title's failed attempt never hides its files. The companion
+  PDF's state (`pdf_status`, `pdf_storage_key`) and the title that set it
+  (`pdf_title_uuid`) follow the same rule.
 - `library_work_rows`: the page index, one row per top-level work that
   has ever been held (title and author sort keys, first series, cover
   edition, media kinds, furthest acquire state, edition and holding

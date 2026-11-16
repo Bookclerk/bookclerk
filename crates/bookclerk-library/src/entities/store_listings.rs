@@ -32,6 +32,9 @@ pub struct Model {
     pub series: Option<String>,
     /// Position in that series as the store writes it (`1`, `2.5`).
     pub series_index: Option<String>,
+    /// The store's product id for the series or podcast show (an Audible
+    /// series ASIN), when it reports one.
+    pub series_product_id: Option<String>,
     /// The store's synopsis, kept whole (may contain HTML).
     pub description: Option<String>,
     /// Publisher or imprint as the store lists it.

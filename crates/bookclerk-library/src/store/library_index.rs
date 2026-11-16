@@ -1579,6 +1579,9 @@ mod tests {
             error_message: None,
             title_uuid: "t".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
+            pdf_status: AcquireStatus::NotAcquired.as_str().into(),
+            pdf_storage_key: None,
+            pdf_title_uuid: None,
         }
     }
 
@@ -1686,6 +1689,7 @@ mod tests {
             narrators: None,
             series: None,
             series_index: None,
+            series_product_id: None,
             description: None,
             publisher: None,
             published_at: None,

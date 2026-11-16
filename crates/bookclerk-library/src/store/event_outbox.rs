@@ -3158,6 +3158,9 @@ pub(crate) async fn update_edition_acquisition_on<C: ConnectionTrait>(
         error_message: Set(error_message.map(str::to_string)),
         title_uuid: Set(title_uuid.to_string()),
         updated_at: Set(now_str()),
+        // Left to the column defaults on insert and untouched on update:
+        // the PDF state is written by `update_edition_pdf_on`.
+        ..Default::default()
     };
     match edition_acquisitions::Entity::find_by_id(edition_id.to_string())
         .one(db)
@@ -3177,6 +3180,73 @@ pub(crate) async fn update_edition_acquisition_on<C: ConnectionTrait>(
                     .map_err(LibraryError::Orm)?
                     .is_some() => {}
         Some(_) => {
+            row.update(db).await.map_err(LibraryError::Orm)?;
+        }
+    }
+    Ok(())
+}
+
+/// Records `title_uuid`'s companion PDF state on its edition's row,
+/// creating the row (audio not acquired) when the edition has none.
+///
+/// Once the PDF is acquired, only the title that acquired it changes it,
+/// while that title stays in the library; the audio columns are never
+/// touched.
+///
+/// # Errors
+///
+/// Returns the read or write error.
+pub(crate) async fn update_edition_pdf_on<C: ConnectionTrait>(
+    db: &C,
+    edition_id: &str,
+    title_uuid: &str,
+    status: AcquireStatus,
+    pdf_storage_key: Option<&str>,
+) -> Result<()> {
+    let now = now_str();
+    let pdf = |row: &mut edition_acquisitions::ActiveModel| {
+        row.pdf_status = Set(status.as_str().to_string());
+        row.pdf_storage_key = Set(pdf_storage_key.map(str::to_string));
+        row.pdf_title_uuid = Set(Some(title_uuid.to_string()));
+        row.updated_at = Set(now.clone());
+    };
+    match edition_acquisitions::Entity::find_by_id(edition_id.to_string())
+        .one(db)
+        .await
+        .map_err(LibraryError::Orm)?
+    {
+        None => {
+            let mut row = edition_acquisitions::ActiveModel {
+                edition_id: Set(edition_id.to_string()),
+                status: Set(AcquireStatus::NotAcquired.as_str().to_string()),
+                storage_key: Set(None),
+                error_message: Set(None),
+                title_uuid: Set(title_uuid.to_string()),
+                ..Default::default()
+            };
+            pdf(&mut row);
+            row.insert(db).await.map_err(LibraryError::Orm)?;
+        }
+        Some(current) => {
+            let held_by_other = current.pdf_status == AcquireStatus::Acquired.as_str()
+                && current
+                    .pdf_title_uuid
+                    .as_deref()
+                    .is_some_and(|owner| owner != title_uuid);
+            if held_by_other {
+                let owner = current.pdf_title_uuid.clone().unwrap_or_default();
+                let owner_present = books::Entity::find()
+                    .filter(books::Column::Uuid.eq(owner))
+                    .one(db)
+                    .await
+                    .map_err(LibraryError::Orm)?
+                    .is_some();
+                if owner_present {
+                    return Ok(());
+                }
+            }
+            let mut row: edition_acquisitions::ActiveModel = current.into();
+            pdf(&mut row);
             row.update(db).await.map_err(LibraryError::Orm)?;
         }
     }

@@ -64,6 +64,8 @@ pub(crate) fn catalog_listing(
             narrators: hit.narrators(),
             series: hit.series(),
             series_index: hit.series_index(),
+            // A podcast episode's show is the store's series product.
+            series_product_id: hit.parent_product_id.clone(),
             description: hit.description.clone(),
             publisher: hit.publisher.clone(),
             published_at: hit.published_at.clone(),
