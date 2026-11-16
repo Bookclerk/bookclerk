@@ -649,13 +649,30 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
         } => {
             let storage = storage_for_host(&host).await?;
             let filter: Vec<String> = asins.into_iter().map(|a| a.to_ascii_uppercase()).collect();
-            let targets: Vec<_> = store
-                .list_books(account.as_deref())
-                .await?
-                .into_iter()
-                .filter(|b| b.acquire_status == AcquireStatus::Acquired)
-                .filter(|b| filter.is_empty() || filter.iter().any(|a| title_id_matches(b, a)))
-                .collect();
+            // One title per edition: the one that acquired it, whose status
+            // write moves the edition's key.
+            let mut targets = Vec::new();
+            for book in store.list_books(account.as_deref()).await? {
+                if !(filter.is_empty() || filter.iter().any(|a| title_id_matches(&book, a))) {
+                    continue;
+                }
+                let Some(title) = store
+                    .acquire_title(
+                        &book.plugin_key,
+                        &book.account_id,
+                        &book.marketplace,
+                        &book.product_id,
+                    )
+                    .await?
+                else {
+                    continue;
+                };
+                if title.status == AcquireStatus::Acquired
+                    && title.acquired_by.as_deref() == Some(book.uuid.as_str())
+                {
+                    targets.push(title);
+                }
+            }
             if targets.is_empty() {
                 eprintln!("nothing to convert");
                 return Ok(());

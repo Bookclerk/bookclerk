@@ -7898,7 +7898,7 @@ pub(crate) mod work_detail;
 pub(crate) mod work_search;
 pub(crate) mod work_split;
 pub(crate) mod write_batches;
-pub use acquire_title::AcquireTitle;
+pub use acquire_title::{AcquireTitle, AcquireTitlePage};
 pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
     StoredFeed,
