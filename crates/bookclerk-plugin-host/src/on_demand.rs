@@ -32,7 +32,7 @@ use bookclerk_plugin_abi::{
 use bookclerk_plugin_manifest::CronSchedule;
 
 use crate::activation::{Activation, Busy, Guest, GuestStarter, OnDemandStatus, WakeError};
-use crate::{Entrypoint, PluginFamily, PluginManifest};
+use crate::{Entrypoint, PluginFamily, PluginManifest, SocketEvent, SocketSink};
 
 /// How long a trigger-driven guest stays up after its last call returns.
 ///
@@ -61,9 +61,19 @@ pub fn activates_on_demand(manifest: &PluginManifest) -> bool {
 }
 
 /// A running integration guest the proxy forwards to.
-pub(crate) trait AwakeGuest: Integration + Guest {}
+pub(crate) trait AwakeGuest: Integration + Guest + SocketSink {}
 
-impl<T: Integration + Guest> AwakeGuest for T {}
+impl<T: Integration + Guest + SocketSink> AwakeGuest for T {}
+
+#[async_trait]
+impl SocketSink for crate::ExternalIntegration {
+    async fn deliver_socket_event(&self, event: SocketEvent) -> std::result::Result<(), String> {
+        self.session()
+            .deliver_socket_event(event)
+            .await
+            .map_err(|err| err.to_string())
+    }
+}
 
 #[async_trait]
 impl Guest for crate::ExternalIntegration {
@@ -205,6 +215,16 @@ impl OnDemandIntegration {
                 self.identity.id
             )),
         })
+    }
+}
+
+/// A socket message wakes a sleeping guest the way a trigger does; the
+/// broker held the socket while it slept.
+#[async_trait]
+impl SocketSink for OnDemandIntegration {
+    async fn deliver_socket_event(&self, event: SocketEvent) -> std::result::Result<(), String> {
+        let (guest, _busy) = self.awake().await.map_err(|err| err.to_string())?;
+        guest.deliver_socket_event(event).await
     }
 }
 

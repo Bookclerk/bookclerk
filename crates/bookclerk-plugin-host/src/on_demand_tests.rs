@@ -95,6 +95,17 @@ impl Integration for FakeGuest {
 }
 
 #[async_trait]
+impl crate::SocketSink for FakeGuest {
+    async fn deliver_socket_event(
+        &self,
+        _event: crate::SocketEvent,
+    ) -> std::result::Result<(), String> {
+        self.delivered.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl Guest for FakeGuest {
     fn guest_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
@@ -247,6 +258,25 @@ async fn the_next_call_wakes_a_sleeping_guest_and_reuses_it_while_busy() {
     assert_eq!(guests.len(), 1);
     assert_eq!(guests[0].delivered.load(Ordering::SeqCst), 3);
     assert_eq!(proxy.guest_pid(), Some(4242));
+}
+
+#[tokio::test]
+async fn a_socket_message_wakes_a_sleeping_guest() {
+    use crate::SocketSink as _;
+    let (proxy, first, started) = proxy(Duration::from_millis(40), Duration::ZERO, None);
+    wait_asleep(&proxy, &first).await;
+    let message = bookclerk_plugin_abi::SocketMessage {
+        socket: "s1".into(),
+        frame: bookclerk_plugin_abi::SocketFrame::Text("42".into()),
+        attachment: b"cursor".to_vec(),
+    };
+    proxy
+        .deliver_socket_event(crate::SocketEvent::Message(message))
+        .await
+        .expect("delivered");
+    assert_eq!(proxy.wakes(), 1);
+    let guests = started.lock().expect("started").clone();
+    assert_eq!(guests[0].delivered.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

@@ -35,7 +35,10 @@ socket broker instead: no isolate and no guest, just the plugin ABI's
 `Sockets` served on stdio, with the host's `SocketHandler` on the same
 connection, under the same effective egress policy (see
 [Pushed sockets](../plugins/abi.md#pushed-sockets-sockets)). A manifest
-without `[sockets]` refuses broker mode.
+without `[sockets]` refuses broker mode. The host starts it through the
+ordinary spawn path, as the front door alone with no native sibling,
+whatever the plugin's runtime, and only under a grant with the `sockets`
+token (`bookclerk_plugin_host::SocketBroker`).
 
 `BOOKCLERK_WORKERD_STATE_DIR` is the host-owned `session-<nonce>/` directory
 (also the gateway `TMPDIR`). The guest `TMPDIR` is its own scratch, so it

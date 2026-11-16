@@ -594,10 +594,11 @@ tcp = ["abs.example.com:443"]
 ```
 
 > [!NOTE]
-> The broker that holds sockets is built, but the host doesn't start it
-> yet: until it does, the host never hands a plugin the `Sockets` binding
-> (`Bindings.sockets` is null), so a plugin keeps its polling fallback.
-> The SDK WebSocket API arrives with that host wiring.
+> The host hands out the `Sockets` binding to deployed integrations (the
+> family Audiobookshelf belongs to) whose grant has the `sockets` token.
+> Storefront and storage deployments don't get it yet, and the SDK
+> WebSocket API, with `env.SOCKETS` for workerd plugins, comes next. Until
+> a plugin uses it, it keeps its polling fallback.
 
 - **Binding.** `Sockets.connect` takes a `ws://` or `wss://` URL, the
   subprotocols to offer, extra request headers, up to 4 heartbeat pairs
@@ -639,6 +640,18 @@ tcp = ["abs.example.com:443"]
   host's `User-Agent` (see [User-Agent](capabilities.md#user-agent)) and
   gives up on a connection after 10 seconds, a handshake after 15, a
   frame write after 10 and a close after 5.
+- **Lifetime.** The host starts the broker on the plugin's first
+  `connect` and stops it once the last socket closed, so an instance
+  with no socket runs nothing. The broker belongs to the deployment, not
+  to the plugin process: a plugin that sleeps or restarts keeps its
+  sockets, and a message for a sleeping plugin starts it. A message that
+  arrives while the instance is still starting waits for it rather than
+  being dropped. If the broker dies, each of its sockets is reported
+  closed with 1006 and the attachment the host last saw. A change to the
+  plugin's grant stops the broker the same way, like any other plugin
+  process; the next `connect` starts a broker under the new grant.
+  Redeploying the instance starts a fresh broker, and the old one's
+  sockets close with it.
 - **Delivery.** Messages for one socket reach the plugin in order, one
   at a time. Up to 32 may wait while the plugin starts; past that the
   broker stops reading the socket (heartbeats included) until the plugin

@@ -701,7 +701,7 @@ fn brand_from_abi(brand: Option<&bookclerk_plugin_sdk::Brand>) -> Option<Brand> 
 /// jail's outbound TCP grant. Any other plugin, an alias twin included,
 /// gets `None` and reaches the network only through its own
 /// `[capabilities.network]` consent.
-fn deployed_endpoint_for(
+pub(crate) fn deployed_endpoint_for(
     plugin: &DiscoveredPlugin,
     granted_config: &serde_json::Value,
 ) -> Option<Option<String>> {

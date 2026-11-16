@@ -5,7 +5,7 @@ mod database;
 mod declared_media;
 mod destination;
 mod destination_local;
-mod integration;
+pub(crate) mod integration;
 mod plugin_backups;
 mod plugin_migration_apply;
 mod scan_pass;
