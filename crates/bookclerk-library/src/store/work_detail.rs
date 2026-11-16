@@ -220,6 +220,13 @@ impl LibraryStore {
                 .order_by_asc(works::Column::Id)
         })
         .await?;
+        // An episode's own cover comes before its show's.
+        let episode_covers: HashMap<String, String> = episodes
+            .iter()
+            .filter_map(|w| {
+                edition_cover([w.cover_url.as_deref()]).map(|c| (w.id.clone(), c.to_string()))
+            })
+            .collect();
         work_ids.extend(episodes.into_iter().map(|w| w.id));
         let expressions: HashMap<String, expressions::Model> =
             find_chunked_paged::<expressions::Entity, _>(self, &work_ids, |part| {
@@ -320,6 +327,7 @@ impl LibraryStore {
                     cover_url: edition_cover([
                         edition.cover_url.as_deref(),
                         listing_covers.get(&edition.id).map(String::as_str),
+                        episode_covers.get(&expression.work_id).map(String::as_str),
                         work.cover_url.as_deref(),
                     ])
                     .map(str::to_string),

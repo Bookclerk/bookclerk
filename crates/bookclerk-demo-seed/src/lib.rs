@@ -749,7 +749,7 @@ async fn add_store_text(
             let key = ListingKey {
                 plugin_key: plugin_key.clone(),
                 marketplace: listing_marketplace(&book.marketplace),
-                product_id: book.product_id,
+                product_id: bookclerk_resolve::stored_product_id(&book.product_id),
             };
             Some((key, ListingDetail::of_catalog_hit(hit)))
         })

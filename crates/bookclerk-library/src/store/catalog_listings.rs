@@ -18,7 +18,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 
 use bookclerk_plugin_abi::TypedDbStatement;
 use bookclerk_resolve as resolve;
@@ -737,14 +737,18 @@ impl LibraryStore {
     /// * `texts` - `(store key, store text)` pairs; a key with no stored
     ///   listing is skipped.
     ///
+    /// A held work whose edition gained a cover has its page index row
+    /// refreshed, so the row can name that edition as its cover edition.
+    ///
     /// # Returns
     ///
     /// How many of `texts` named a stored listing.
     ///
     /// # Errors
     ///
-    /// Returns the database error of the listing read or of the first
-    /// write batch that failed, after every batch was tried.
+    /// Returns the database error of the listing read, of the first write
+    /// batch that failed (after every batch was tried), or of the row
+    /// refresh.
     pub async fn record_store_text(
         &self,
         texts: &[(resolve::ListingKey, ListingDetail)],
@@ -755,29 +759,59 @@ impl LibraryStore {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let mut ids: HashMap<(String, String, String), String> = HashMap::new();
-        for chunk in products.chunks(self.lookup_chunk()) {
-            for row in store_listings::Entity::find()
-                .filter(store_listings::Column::ProductId.is_in(chunk.iter().cloned()))
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                ids.insert((row.plugin_key, row.marketplace, row.product_id), row.id);
-            }
-        }
-        let writes: Vec<(String, ListingDetail)> = texts
-            .iter()
-            .filter_map(|(key, detail)| {
-                ids.get(&(
-                    key.plugin_key.clone(),
-                    key.marketplace.clone(),
-                    key.product_id.clone(),
-                ))
-                .map(|id| (id.clone(), detail.clone()))
+        // Several stores can share a product id (an ISBN), so the read is
+        // paged by result rows, not only by bind count.
+        let rows = super::library_model::find_chunked_paged::<store_listings::Entity, _>(
+            self,
+            &products,
+            |part| {
+                store_listings::Entity::find()
+                    .filter(store_listings::Column::ProductId.is_in(part.iter().cloned()))
+                    .order_by_asc(store_listings::Column::Id)
+            },
+        )
+        .await?;
+        let listings: HashMap<(String, String, String), (String, String)> = rows
+            .into_iter()
+            .map(|row| {
+                (
+                    (row.plugin_key, row.marketplace, row.product_id),
+                    (row.id, row.edition_id),
+                )
             })
             .collect();
+        let mut writes: Vec<(String, ListingDetail)> = Vec::new();
+        let mut covered_editions: BTreeSet<String> = BTreeSet::new();
+        for (key, detail) in texts {
+            let Some((id, edition_id)) = listings.get(&(
+                key.plugin_key.clone(),
+                key.marketplace.clone(),
+                key.product_id.clone(),
+            )) else {
+                continue;
+            };
+            if detail
+                .cover_url
+                .as_deref()
+                .is_some_and(|c| !c.trim().is_empty())
+            {
+                covered_editions.insert(edition_id.clone());
+            }
+            writes.push((id.clone(), detail.clone()));
+        }
         self.record_listing_details(&writes).await?;
+        // A cover can make another edition the better cover edition of a
+        // held work whose row was written before the cover was known.
+        let mut works: BTreeSet<String> = BTreeSet::new();
+        for edition_id in &covered_editions {
+            if let Some(work) = self.work_of_edition(edition_id).await? {
+                works.insert(work);
+            }
+        }
+        if !works.is_empty() {
+            self.refresh_library_works(&works.into_iter().collect::<Vec<_>>())
+                .await?;
+        }
         Ok(writes.len())
     }
 

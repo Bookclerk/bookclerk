@@ -41,7 +41,8 @@ dir=${BOOKCLERK_FILES_DIR:?BOOKCLERK_FILES_DIR must name the template dir}
 BOOKCLERK_OPERATOR_TOKEN=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
 export BOOKCLERK_OPERATOR_TOKEN
 
-# Starts bookclerkd in the background and waits until it answers.
+# Starts bookclerkd in the background and waits until it answers; fails
+# when it does not answer within 120 s (the daemon may still be running).
 start_daemon() {
 	/opt/bookclerk/bookclerkd &
 	daemon=$!
@@ -51,7 +52,7 @@ start_daemon() {
 		waited=$((waited + 1))
 		if [ "$waited" -gt 120 ]; then
 			echo "bake-seed: bookclerkd did not answer within 120 s" >&2
-			exit 1
+			return 1
 		fi
 		sleep 1
 	done
@@ -59,12 +60,12 @@ start_daemon() {
 
 # Stops the bookclerkd start_daemon started.
 stop_daemon() {
-	kill -TERM "$daemon"
+	kill -TERM "$daemon" 2>/dev/null || true
 	wait "$daemon" || true
 	trap - EXIT
 }
 
-start_daemon
+start_daemon || exit 1
 
 # Done when a Discover feed is stored and no job is pending or running, three
 # checks in a row. Past the cap the bake keeps whatever is stored, and a
@@ -92,13 +93,18 @@ stop_daemon
 # Bake the covers (step 3). Best effort: a cover that fails is fetched by
 # the container that first shows it.
 covers=$(mktemp)
-/opt/bookclerk/bookclerk-demo-seed --list-covers "$covers"
-start_daemon
-listen=${BOOKCLERK_DAEMON_LISTEN:-127.0.0.1:8787}
-listen=${listen%%,*}
-/opt/bookclerk/bookclerk-demo-seed --bake-covers "$covers" "http://127.0.0.1:${listen##*:}" ||
-	echo "bake-seed: baking covers failed; containers fetch them" >&2
-stop_daemon
+if ! /opt/bookclerk/bookclerk-demo-seed --list-covers "$covers"; then
+	echo "bake-seed: listing covers failed; containers fetch them" >&2
+elif ! start_daemon; then
+	echo "bake-seed: bookclerkd did not restart; containers fetch the covers" >&2
+	stop_daemon
+else
+	listen=${BOOKCLERK_DAEMON_LISTEN:-127.0.0.1:8787}
+	listen=${listen%%,*}
+	/opt/bookclerk/bookclerk-demo-seed --bake-covers "$covers" "http://127.0.0.1:${listen##*:}" ||
+		echo "bake-seed: baking covers failed; containers fetch them" >&2
+	stop_daemon
+fi
 rm -f "$covers"
 unset BOOKCLERK_OPERATOR_TOKEN
 
