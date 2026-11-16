@@ -108,6 +108,12 @@ export type Manifest = {
   work_fs?: { binding?: string };
   /** `[oauth]` — loopback OAuth callback binding (default name `OAUTH`). */
   oauth?: { binding?: string };
+  /**
+   * `[sockets]` — host-brokered WebSockets (default name `SOCKETS`) that stay
+   * open while the plugin sleeps; needs `capabilities.network.mode =
+   * "outbound"`.
+   */
+  sockets?: { binding?: string };
   /** Network policy the operator must consent to. */
   capabilities: {
     /** Egress policy (`deny` / `outbound`, plus hostname domains for workerd). */
@@ -613,6 +619,11 @@ export function validateManifest(m: Manifest): void {
   validateSurface(m);
   validateSettings(m);
   validateOwnUserAgent(m);
+  if (m.sockets && m.capabilities?.network?.mode !== "outbound") {
+    throw new Error(
+      'plugin.toml: [sockets] needs capabilities.network.mode = "outbound" (every socket URL must pass the network grant)',
+    );
+  }
   const runtime = m.runtime ?? "native";
   if (runtime === "native") {
     if (!m.command || !String(m.command).trim()) {
@@ -905,13 +916,14 @@ function validateSurface(m: Manifest): void {
     }
     bindings.add(name);
   }
-  const reserved = new Set(["CONFIG", "SECRETS", "EVENTS", "WORK_FS", "OAUTH"]);
+  const reserved = new Set(["CONFIG", "SECRETS", "EVENTS", "WORK_FS", "OAUTH", "SOCKETS"]);
   // Row index, not the binding text. The text can be an oauth name, and an
   // error that includes it is logged as clear text.
   const named: Array<[string, string, number]> = [];
   if (m.secrets) named.push(["secrets", m.secrets.binding || "SECRETS", 0]);
   if (m.work_fs) named.push(["work_fs", m.work_fs.binding || "WORK_FS", 0]);
   if (m.oauth) named.push(["oauth", m.oauth.binding || "OAUTH", 0]);
+  if (m.sockets) named.push(["sockets", m.sockets.binding || "SOCKETS", 0]);
   for (const [index, kv] of (m.kv_namespaces ?? []).entries()) {
     named.push(["kv_namespaces", kv.binding || "KV", index]);
   }

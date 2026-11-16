@@ -374,6 +374,73 @@ function wireQueueMessage(overrides = {}) {
   );
 }
 
+// --- BookclerkEntrypoint socket handlers and the SOCKETS helpers ----------
+
+{
+  const sockets = await import(join(dist, "sockets.js"));
+  const context = { invocation: { id: "inv-ws" } };
+  // No webSocketClose: a close is acknowledged and ignored.
+  await new BookclerkEntrypoint({}, {}).bookclerkSocketClosed(context, {
+    socket: "g1_a",
+    code: 1000,
+  });
+  // No webSocketMessage: the host hears `unsupported`.
+  await assert.rejects(
+    () => new BookclerkEntrypoint({}, {}).bookclerkSocketMessage(context, { socket: "g1_a" }),
+    (err) => err instanceof PluginError && err.wireCode === "unsupported",
+  );
+  // A handle without a granted transport fails as `unavailable`, not a crash.
+  let handle;
+  class Plugin extends BookclerkEntrypoint {
+    async webSocketMessage(ws) {
+      handle = ws;
+    }
+  }
+  await new Plugin({}, {}).bookclerkSocketMessage(context, {
+    socket: "g1_a",
+    frame: { kind: "text", value: "hi" },
+  });
+  await assert.rejects(
+    () => handle.send("x"),
+    (err) => err instanceof PluginError && err.wireCode === "unavailable",
+  );
+
+  // Attachments are JSON, bounded, and tolerate another SDK's raw bytes.
+  assert.deepEqual(sockets.encodeAttachment(null), new Uint8Array());
+  assert.deepEqual(sockets.decodeAttachment(sockets.encodeAttachment({ a: [1] })), { a: [1] });
+  assert.equal(sockets.decodeAttachment(new TextEncoder().encode("not json")), "not json");
+  assert.throws(
+    () => sockets.encodeAttachment("x".repeat(2048)),
+    (err) => err.wireCode === "payload_too_large",
+  );
+  assert.throws(
+    () => sockets.encodeAttachment(() => 1),
+    (err) => err.wireCode === "invalid_params",
+  );
+  const cyclic = {};
+  cyclic.self = cyclic;
+  assert.throws(
+    () => sockets.encodeAttachment(cyclic),
+    (err) => err.wireCode === "invalid_params",
+  );
+
+  // Frames: text stays text, views are sent without their surrounding buffer.
+  assert.deepEqual(sockets.routeFrame("hi"), { text: "hi" });
+  const view = new Uint8Array([0, 1, 2, 3]).subarray(1, 3);
+  assert.deepEqual(sockets.routeFrame(view), { binary: "AQI=" });
+  assert.deepEqual(sockets.routeFrame(new Uint8Array([7]).buffer), { binary: "Bw==" });
+  assert.throws(
+    () => sockets.routeFrame(new Uint8Array(262_145)),
+    (err) => err.wireCode === "payload_too_large",
+  );
+  assert.throws(
+    () => sockets.routeFrame(42),
+    (err) => err.wireCode === "invalid_params",
+  );
+  assert.equal(sockets.socketMessageData(undefined), "");
+  assert.equal(sockets.socketMessageData({ kind: "text", value: "t" }), "t");
+}
+
 // --- JobController + jobOutcomeFor ----------------------------------------
 
 const jobInvocation = {

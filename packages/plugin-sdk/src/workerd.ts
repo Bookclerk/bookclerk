@@ -130,6 +130,7 @@ export type {
   RetryOptions,
   NamedKv,
   NamedQueue,
+  NamedSockets,
   QueueOutcome,
   QueueRetryOptions,
   WireQueueBatch,
@@ -151,6 +152,12 @@ export type {
   QueueBinding,
   QueueSendBatchEntry,
   QueueSendOptions,
+  HostWebSocket,
+  SocketAutoResponsePair,
+  SocketConnectOptions,
+  SocketMessageData,
+  SocketSendData,
+  SocketsBinding,
   StorageBinding,
 } from "./env.js";
 export { InvokeError, dispatchInvoke } from "./invoke.js";

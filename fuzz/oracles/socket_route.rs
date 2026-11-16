@@ -87,12 +87,10 @@ fn route_body(call: &SocketCall) -> Vec<u8> {
             code: *code,
             reason: reason.clone(),
         }),
-        SocketCall::SetAttachment { socket, attachment } => {
-            serde_json::to_vec(&RouteAttachment {
-                socket: socket.clone(),
-                attachment: attachment.clone(),
-            })
-        }
+        SocketCall::SetAttachment { socket, attachment } => serde_json::to_vec(&RouteAttachment {
+            socket: socket.clone(),
+            attachment: attachment.clone(),
+        }),
         SocketCall::List => serde_json::to_vec(&RouteList {}),
     };
     match encoded {
@@ -137,7 +135,10 @@ pub fn check(data: &[u8]) {
             return;
         }
         Ok(_) => {
-            assert!(object.is_some(), "{op}: accepted a body that is not an object");
+            assert!(
+                object.is_some(),
+                "{op}: accepted a body that is not an object"
+            );
             assert_eq!(stray, Some(false), "{op}: accepted an unknown field");
         }
     }
@@ -146,11 +147,17 @@ pub fn check(data: &[u8]) {
     };
     match &call {
         SocketCall::Connect(request) => {
-            assert!(validate_socket_connect(request).is_ok(), "connect outside the rules");
+            assert!(
+                validate_socket_connect(request).is_ok(),
+                "connect outside the rules"
+            );
         }
         SocketCall::Send { socket, frame } => {
             assert!(id_ok(socket), "send id");
-            assert!(frame_len(frame) <= MAX_SOCKET_FRAME_BYTES as usize, "send frame");
+            assert!(
+                frame_len(frame) <= MAX_SOCKET_FRAME_BYTES as usize,
+                "send frame"
+            );
         }
         SocketCall::Close {
             socket,

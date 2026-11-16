@@ -448,7 +448,10 @@ fn socket_route_seeds_are_current() {
         ),
         (
             "send_both_kinds.bin",
-            route_seed(1, r#"{"socket":"g1_abc","frame":{"text":"a","binary":"AA=="}}"#),
+            route_seed(
+                1,
+                r#"{"socket":"g1_abc","frame":{"text":"a","binary":"AA=="}}"#,
+            ),
         ),
         (
             "send_bad_id.bin",
