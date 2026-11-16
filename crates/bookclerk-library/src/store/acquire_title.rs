@@ -226,7 +226,9 @@ impl LibraryStore {
             .is_some_and(|e| e.abridgement == bookclerk_resolve::Abridgement::Abridged.as_str());
         let content_kind = match work.as_ref() {
             Some(w) if w.kind == bookclerk_resolve::WorkKind::Podcast.as_str() => {
-                if w.parent_work_id.is_some() {
+                // An episode names its show's product on the listing even
+                // before the show's work is linked as its parent.
+                if w.parent_work_id.is_some() || listing.series_product_id.is_some() {
                     "episode"
                 } else {
                     "podcast"
@@ -446,5 +448,12 @@ mod tests {
         };
         assert_eq!(kind("B0SHOW").await, "podcast");
         assert_eq!(kind("B0EP0001").await, "episode");
+
+        // An episode whose show is not in the library yet is still one.
+        let mut orphan = NewBook::minimal("B0EP0002", "acct", "us", "Episode 2");
+        orphan.content_kind = "episode".into();
+        orphan.series_asin = Some("B0NOSHOW".into());
+        store.upsert_book(&orphan).await.unwrap();
+        assert_eq!(kind("B0EP0002").await, "episode");
     }
 }

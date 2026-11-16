@@ -1908,7 +1908,12 @@ async fn object_meta_for(
     ObjectMeta {
         content_type: Some(content_type.into()),
         content_length,
-        asin: Some(object_asin_for(library, req).await),
+        asin: Some(
+            title_view
+                .as_ref()
+                .and_then(|t| t.asin.clone())
+                .unwrap_or_else(|| req.asin.clone()),
+        ),
         title: Some(title.to_string()),
         creation_time: created.map(system_time_rfc3339),
         last_write_time: modified.map(system_time_rfc3339),
