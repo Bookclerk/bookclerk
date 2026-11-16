@@ -330,6 +330,45 @@ impl ExternalIntegration {
         }
         poll_session_users(&self.session).await
     }
+
+    /// The guest's relying-party templates from its `oidcClients` RPC.
+    ///
+    /// Unlike [`Integration::provided_oidc_clients`], a failed RPC is an
+    /// error here rather than an empty list, so a caller that caches the
+    /// answer can tell a failure from a guest that offers no clients.
+    ///
+    /// # Returns
+    ///
+    /// No clients when the guest exports no `oidc` entrypoint: client
+    /// registration must match credential login.
+    ///
+    /// # Errors
+    ///
+    /// Returns the guest's `oidcClients` failure.
+    pub(crate) async fn fetch_oidc_clients(
+        &self,
+    ) -> bookclerk_integrations::Result<Vec<ProvidedOidcClient>> {
+        if !self.session.has_entrypoint(crate::Entrypoint::Oidc) {
+            return Ok(Vec::new());
+        }
+        let clients = self.session.oidc_clients().await?;
+        Ok(clients
+            .into_iter()
+            .map(|t| {
+                let display_name = t.display_name_or_id().to_string();
+                let default_scopes = t.scopes_or_default();
+                ProvidedOidcClient {
+                    client_id: t.client_id,
+                    display_name,
+                    callback_path: t.callback_path,
+                    public_client: t.public_client,
+                    default_scopes,
+                    issue_refresh_token: t.issue_refresh_token,
+                    origin_config_key: t.origin_config_key,
+                }
+            })
+            .collect())
+    }
 }
 
 #[async_trait]
@@ -661,28 +700,8 @@ impl Integration for ExternalIntegration {
     async fn provided_oidc_clients(
         &self,
     ) -> bookclerk_integrations::Result<Vec<ProvidedOidcClient>> {
-        // Client registration must match credential login: only guests that
-        // negotiated the `oidc` entrypoint may materialize IdP relying parties.
-        if !self.session.has_entrypoint(crate::Entrypoint::Oidc) {
-            return Ok(Vec::new());
-        }
-        match self.session.oidc_clients().await {
-            Ok(clients) => Ok(clients
-                .into_iter()
-                .map(|t| {
-                    let display_name = t.display_name_or_id().to_string();
-                    let default_scopes = t.scopes_or_default();
-                    ProvidedOidcClient {
-                        client_id: t.client_id,
-                        display_name,
-                        callback_path: t.callback_path,
-                        public_client: t.public_client,
-                        default_scopes,
-                        issue_refresh_token: t.issue_refresh_token,
-                        origin_config_key: t.origin_config_key,
-                    }
-                })
-                .collect()),
+        match self.fetch_oidc_clients().await {
+            Ok(clients) => Ok(clients),
             Err(err) => {
                 tracing::debug!(
                     plugin = %self.session.id(),

@@ -36,6 +36,8 @@ struct FakeGuest {
     oidc_asks: AtomicUsize,
     /// Set when `start` was handed a new-user hook.
     started_with_hook: AtomicBool,
+    /// While set, `oidcClients` fails.
+    oidc_fails: AtomicBool,
 }
 
 impl FakeGuest {
@@ -52,6 +54,7 @@ impl FakeGuest {
             polls: AtomicUsize::new(0),
             oidc_asks: AtomicUsize::new(0),
             started_with_hook: AtomicBool::new(false),
+            oidc_fails: AtomicBool::new(false),
         })
     }
 
@@ -123,6 +126,11 @@ impl Integration for FakeGuest {
         &self,
     ) -> bookclerk_integrations::Result<Vec<bookclerk_integrations::ProvidedOidcClient>> {
         self.oidc_asks.fetch_add(1, Ordering::SeqCst);
+        if self.oidc_fails.load(Ordering::SeqCst) {
+            return Err(bookclerk_integrations::IntegrationError::message(
+                "oidcClients failed",
+            ));
+        }
         Ok(vec![bookclerk_integrations::ProvidedOidcClient {
             client_id: "fake".into(),
             display_name: "Fake".into(),
@@ -147,6 +155,12 @@ impl super::ExternalUserPoll for FakeGuest {
             display_name: None,
             access_token: None,
         }])
+    }
+
+    async fn fetch_oidc_clients(
+        &self,
+    ) -> bookclerk_integrations::Result<Vec<bookclerk_integrations::ProvidedOidcClient>> {
+        Integration::provided_oidc_clients(self).await
     }
 }
 
@@ -800,4 +814,59 @@ async fn sign_in_clients_are_read_from_the_guest_once() {
         started.lock().expect("started").is_empty(),
         "a later ask does not wake the guest"
     );
+}
+
+#[tokio::test]
+async fn a_failed_sign_in_client_read_is_retried_on_the_next_ask() {
+    let (proxy, first, _started) = proxy(Duration::from_secs(60), Duration::ZERO, None);
+    first.oidc_fails.store(true, Ordering::SeqCst);
+    let failed = proxy.provided_oidc_clients().await.expect("fallback");
+    assert!(failed.is_empty(), "a failure reads as no clients");
+    first.oidc_fails.store(false, Ordering::SeqCst);
+    assert_eq!(
+        proxy.provided_oidc_clients().await.expect("clients").len(),
+        1
+    );
+    assert_eq!(
+        proxy.provided_oidc_clients().await.expect("cached").len(),
+        1
+    );
+    assert_eq!(
+        first.oidc_asks.load(Ordering::SeqCst),
+        2,
+        "only the success is kept"
+    );
+}
+
+/// A grant holding the given database bindings.
+fn grant_with_databases(databases: &[&str]) -> crate::PluginGrant {
+    crate::PluginGrant {
+        bindings: databases
+            .iter()
+            .map(|name| format!("{}{name}", crate::consent::DATABASE_BINDING_PREFIX))
+            .collect(),
+        ..crate::PluginGrant::empty()
+    }
+}
+
+#[test]
+fn a_remote_library_sleeps_only_with_every_database_granted() {
+    use super::state_survives_sleep;
+    let library = manifest(
+        "native",
+        "\"remoteLibrary\"",
+        "[[databases]]\nbinding = \"LISTENING_STATE\"\n",
+    );
+    assert!(state_survives_sleep(
+        &library,
+        &grant_with_databases(&["LISTENING_STATE"])
+    ));
+    assert!(!state_survives_sleep(&library, &grant_with_databases(&[])));
+    let stateless = manifest("native", "\"remoteLibrary\"", "");
+    assert!(
+        !state_survives_sleep(&stateless, &grant_with_databases(&[])),
+        "a remote library with no database keeps its memory in the process"
+    );
+    let trigger = manifest("native", "", EVENTS);
+    assert!(state_survives_sleep(&trigger, &grant_with_databases(&[])));
 }

@@ -1444,6 +1444,11 @@ async fn spawn_integration(
         }
     };
     integration.bind_plugin_instance(&request.plugin_instance_id);
+    // A remote library without its database grant keeps its memory in the
+    // process, so it stays resident.
+    let starter = starter.filter(|_| {
+        crate::on_demand::state_survives_sleep(&plugin.manifest, integration.session().grant())
+    });
     let root = request.plugin_root.clone();
     let opened_config = integration.opened_config().clone();
     let opened_secrets = integration.opened_secrets().clone();

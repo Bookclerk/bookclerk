@@ -107,16 +107,19 @@ users on a schedule and mints a claim ticket for each one:
 2. On each poll, the plugin lists the server's users and reports the ones
    it has not reported before.
 3. The host polls every 5 minutes while the plugin sleeps between calls,
-   or every 30 seconds when it stays running (a Python build).
+   or every 30 seconds when it stays running.
 
 The plugin keeps the users it has reported in its `LISTENING_STATE`
 database, as a hash of each user id. So a user created while the plugin
-slept is still reported by the next poll.
+slept is still reported by the next poll. Reporting is at least once: if
+recording a new user fails, the next poll reports that user again and
+the host mints a second ticket.
 
 > [!NOTE]
-> Without the `LISTENING_STATE` database grant, the plugin remembers
-> reported users only while it runs. Each start records the server's
-> users again, so a user created while the plugin slept gets no ticket.
+> Without the `LISTENING_STATE` database grant, the plugin cannot keep
+> that list across a sleep, so it stays running and remembers reported
+> users in memory. A daemon restart then records the server's users
+> again, and a user created while the daemon was down gets no ticket.
 
 ### Listening sync
 

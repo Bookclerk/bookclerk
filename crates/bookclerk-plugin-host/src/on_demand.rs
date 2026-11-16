@@ -62,7 +62,35 @@ pub fn activates_on_demand(manifest: &PluginManifest) -> bool {
     manifest.families() == [PluginFamily::Integration] && !manifest.declares_python()
 }
 
-/// A guest that hands over the users it has queued for the host.
+/// True when a deployment that [`activates_on_demand`] accepts keeps what
+/// it must remember across a sleep.
+///
+/// A `remoteLibrary` guest remembers what it already reported to the host
+/// (for Audiobookshelf, the users it has seen) in its plugin database, so
+/// it sleeps only when it declares at least one `[[databases]]` binding and
+/// the grant holds every one of them. Without them it stays resident and
+/// keeps that memory in its process. Other integrations keep nothing across
+/// calls.
+///
+/// # Arguments
+///
+/// * `manifest` - the installed manifest the deployment spawns.
+/// * `grant` - the instance's approved grant.
+#[must_use]
+pub(crate) fn state_survives_sleep(manifest: &PluginManifest, grant: &crate::PluginGrant) -> bool {
+    if !manifest.has_entrypoint(crate::Entrypoint::RemoteLibrary) {
+        return true;
+    }
+    let granted = crate::granted_database_bindings(grant);
+    !manifest.databases.is_empty()
+        && manifest
+            .databases
+            .iter()
+            .all(|database| granted.contains(&database.binding))
+}
+
+/// The host-only calls a proxy makes on a running guest, beyond
+/// [`Integration`].
 #[async_trait]
 pub(crate) trait ExternalUserPoll: Send + Sync {
     /// The users queued since the last poll.
@@ -71,12 +99,23 @@ pub(crate) trait ExternalUserPoll: Send + Sync {
     ///
     /// Returns the guest's `poll_events` failure.
     async fn poll_external_users(&self) -> bookclerk_integrations::Result<Vec<ExternalUser>>;
+
+    /// The guest's relying-party templates, with a failed RPC as an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the guest's `oidcClients` failure.
+    async fn fetch_oidc_clients(&self) -> bookclerk_integrations::Result<Vec<ProvidedOidcClient>>;
 }
 
 #[async_trait]
 impl ExternalUserPoll for crate::ExternalIntegration {
     async fn poll_external_users(&self) -> bookclerk_integrations::Result<Vec<ExternalUser>> {
         crate::ExternalIntegration::poll_external_users(self).await
+    }
+
+    async fn fetch_oidc_clients(&self) -> bookclerk_integrations::Result<Vec<ProvidedOidcClient>> {
+        crate::ExternalIntegration::fetch_oidc_clients(self).await
     }
 }
 
@@ -523,18 +562,31 @@ impl Integration for OnDemandIntegration {
     /// The guest's relying-party templates, read from the guest once.
     ///
     /// The daemon asks every integration on each config sync; only the
-    /// first ask wakes the guest (at deploy time it is still running), and
-    /// a failed ask is not kept.
+    /// first successful ask wakes the guest (at deploy time it is still
+    /// running). A failed wake or RPC is not kept: like a resident
+    /// integration, the proxy answers it with no clients (the daemon then
+    /// relies on `plugin.toml`), and the next sync asks the guest again.
     async fn provided_oidc_clients(
         &self,
     ) -> bookclerk_integrations::Result<Vec<ProvidedOidcClient>> {
-        self.oidc_clients
+        let read = self
+            .oidc_clients
             .get_or_try_init(|| async {
                 let (guest, _busy) = self.awake().await?;
-                guest.provided_oidc_clients().await
+                guest.fetch_oidc_clients().await
             })
-            .await
-            .cloned()
+            .await;
+        match read {
+            Ok(clients) => Ok(clients.clone()),
+            Err(err) => {
+                tracing::debug!(
+                    integration = %self.identity.id,
+                    %err,
+                    "oidcClients unavailable; falling back to plugin.toml"
+                );
+                Ok(Vec::new())
+            }
+        }
     }
 }
 

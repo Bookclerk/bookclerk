@@ -135,9 +135,11 @@ callers await a promise, and long work is a durable job.
    30 seconds through its session. A guest keeps what must outlive a
    sleep in its plugin database: Audiobookshelf stores a hash of each
    user it has reported, so a user created while it slept is still
-   reported. A sign-in call wakes the guest like a lookup, and the
-   guest's `oidcClients` answer is read once per proxy, since a changed
-   package or config replaces the proxy. Pushed socket messages (decision
+   reported. A `remoteLibrary` guest therefore sleeps only when it
+   declares a `[[databases]]` binding and its grant holds every one;
+   otherwise it stays resident. A sign-in call wakes the guest like a
+   lookup, and the guest's first successful `oidcClients` answer is kept
+   per proxy, since a changed package or config replaces the proxy. Pushed socket messages (decision
    8) will bring new users without waiting for the poll.
 
 The following phases are proposed and get their own pull requests and

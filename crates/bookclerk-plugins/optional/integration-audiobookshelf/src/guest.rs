@@ -160,7 +160,7 @@ pub async fn guest_start(
 /// Reports the ABS users created since the last poll.
 ///
 /// Lists the server's users and returns those the watch has not reported
-/// (see [`crate::watch`]). When the watch has no users yet (the seed at
+/// (see [`crate::watch`]). When the watch was never seeded (the seed at
 /// start failed), this poll seeds it and reports nobody.
 ///
 /// # Arguments

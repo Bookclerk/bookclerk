@@ -20,10 +20,17 @@ use sha2::{Digest, Sha256};
 
 use crate::client::AbsUser;
 
+/// The `person` row written after a complete seed. It sorts before every
+/// key (keys are lowercase hex), and a set without it has not been seeded:
+/// a seed cut short is redone in full, so no user the server already had is
+/// ever reported.
+const SEEDED: &str = "!seeded";
+
 /// The `database_migrations` entry that adds the user-watch table.
 ///
-/// `abs_watch_users` holds one row per ABS user already reported or seeded;
-/// its `person` column is a hash of the ABS user id, never the id.
+/// `abs_watch_users` holds one row per ABS user already reported or seeded,
+/// plus a marker row once the first seed completed; its `person` column is
+/// a hash of the ABS user id, never the id.
 #[must_use]
 pub fn migration() -> PluginMigration {
     PluginMigration {
@@ -53,12 +60,16 @@ impl<'a> UserWatch<'a> {
         Self { db, memory }
     }
 
-    /// Records every user in `users` as known when the set is empty, so the
-    /// users a server already has are never reported.
+    /// Records every user in `users` as known when the set was never seeded,
+    /// so the users a server already has are never reported.
+    ///
+    /// With the database, the seed is complete only once its marker row is
+    /// written after every user row; a seed that fails part way leaves no
+    /// marker, and the next seed records every user again.
     ///
     /// # Returns
     ///
-    /// The number of users recorded (0 when the set already had users).
+    /// The number of users recorded (0 when the set was already seeded).
     ///
     /// # Errors
     ///
@@ -66,12 +77,14 @@ impl<'a> UserWatch<'a> {
     pub(crate) async fn seed(&mut self, users: &[AbsUser]) -> Result<usize, PluginError> {
         match self.db {
             Some(db) => {
-                if !known(db).await?.is_empty() {
+                if known(db).await?.seeded {
                     return Ok(0);
                 }
-                let keys: Vec<String> = users.iter().map(|user| key(&user.id)).collect();
+                let mut keys: Vec<String> = users.iter().map(|user| key(&user.id)).collect();
+                let count = keys.len();
+                keys.push(SEEDED.to_string());
                 insert(db, &keys).await?;
-                Ok(keys.len())
+                Ok(count)
             }
             None => {
                 if !self.memory.is_empty() {
@@ -85,19 +98,21 @@ impl<'a> UserWatch<'a> {
 
     /// The users in `users` not reported before, now recorded as known.
     ///
-    /// They are recorded before they are returned, so a failed write
-    /// reports nothing and the next poll asks again.
+    /// Reporting is at least once: when recording them fails part way, the
+    /// users are still returned, and those whose rows were not written are
+    /// reported again by the next poll (the host then mints a second claim
+    /// ticket for the same person rather than none).
     ///
     /// # Errors
     ///
-    /// Returns the database's error.
+    /// Returns the database's error when the known set cannot be read.
     pub(crate) async fn take_new(
         &mut self,
         users: Vec<AbsUser>,
     ) -> Result<Vec<AbsUser>, PluginError> {
         match self.db {
             Some(db) => {
-                let mut seen = known(db).await?;
+                let mut seen = known(db).await?.keys;
                 let mut keys = Vec::new();
                 let mut fresh = Vec::new();
                 for user in users {
@@ -107,7 +122,12 @@ impl<'a> UserWatch<'a> {
                         fresh.push(user);
                     }
                 }
-                insert(db, &keys).await?;
+                if let Err(err) = insert(db, &keys).await {
+                    tracing::warn!(
+                        %err,
+                        "ABS user watch could not record new users; the next poll reports them again"
+                    );
+                }
                 Ok(fresh)
             }
             None => Ok(users
@@ -118,12 +138,20 @@ impl<'a> UserWatch<'a> {
     }
 }
 
-/// Every user key the database holds.
+/// What the watch table holds.
+struct Known {
+    /// Every user key.
+    keys: HashSet<String>,
+    /// Whether the first seed completed.
+    seeded: bool,
+}
+
+/// Every user key the database holds, and whether it was seeded.
 ///
 /// # Errors
 ///
 /// Returns the binding's error, and `internal` for a row of the wrong shape.
-async fn known(db: &DatabaseBinding) -> Result<HashSet<String>, PluginError> {
+async fn known(db: &DatabaseBinding) -> Result<Known, PluginError> {
     let rows = read_keyed(
         db,
         "SELECT person FROM abs_watch_users WHERE person > ? ORDER BY person LIMIT ?",
@@ -131,12 +159,15 @@ async fn known(db: &DatabaseBinding) -> Result<HashSet<String>, PluginError> {
         "person",
     )
     .await?;
-    rows.into_iter()
+    let mut keys: HashSet<String> = rows
+        .into_iter()
         .map(|row| match row.get("person") {
             Some(DbValue::Text(person)) => Ok(person.clone()),
             _ => Err(PluginError::internal("watch user row has the wrong shape")),
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+    let seeded = keys.remove(SEEDED);
+    Ok(Known { keys, seeded })
 }
 
 /// Records `keys` as known, in batches that fit one request each.
@@ -245,6 +276,49 @@ mod tests {
             let fresh = watch.take_new(users(&with_new)).await.unwrap();
             assert_eq!(ids(&fresh), ["newcomer"], "{profile:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_seed_cut_short_is_redone_in_full() {
+        for profile in Profile::ALL {
+            let db = database(profile).await;
+            // A seed that wrote one user row and stopped before its marker.
+            insert(&db, &[key("root")]).await.unwrap();
+            let mut memory = HashSet::new();
+            let mut watch = UserWatch::new(Some(&db), &mut memory);
+            assert_eq!(watch.seed(&users(&["root", "ada"])).await.unwrap(), 2);
+            assert_eq!(watch.seed(&users(&["root", "ada"])).await.unwrap(), 0);
+            let fresh = watch.take_new(users(&["root", "ada"])).await.unwrap();
+            assert!(
+                fresh.is_empty(),
+                "{profile:?}: a baseline user was reported"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn new_users_are_reported_even_when_recording_them_fails() {
+        // A table that accepts only the marker and `root`, so recording any
+        // other user fails.
+        let strict = PluginMigration {
+            id: "abs-user-watch-strict".into(),
+            operations: vec![PluginMigrationOp::Schema(format!(
+                "CREATE TABLE IF NOT EXISTS abs_watch_users (person TEXT NOT NULL PRIMARY KEY \
+                 CHECK (person IN ('{SEEDED}', '{}')))",
+                key("root")
+            ))],
+        };
+        let unit = BindingDatabase::open(Profile::Minimum, vec![strict])
+            .await
+            .unwrap();
+        let db = DatabaseBinding::from_session(Arc::new(unit));
+        let mut memory = HashSet::new();
+        let mut watch = UserWatch::new(Some(&db), &mut memory);
+        assert_eq!(watch.seed(&users(&["root"])).await.unwrap(), 1);
+        let fresh = watch.take_new(users(&["root", "ada"])).await.unwrap();
+        assert_eq!(ids(&fresh), ["ada"]);
+        let again = watch.take_new(users(&["root", "ada"])).await.unwrap();
+        assert_eq!(ids(&again), ["ada"], "an unrecorded user is reported again");
     }
 
     #[tokio::test]
