@@ -72,10 +72,15 @@ pub struct AcquireTitle {
     pub status: AcquireStatus,
     /// Primary destination key of the edition's audio once acquired.
     pub storage_key: Option<String>,
+    /// The library title (`books.uuid`) whose write set the edition's
+    /// audio state; `None` when no title of it was ever queued.
+    pub acquired_by: Option<String>,
     /// The edition's companion PDF state.
     pub pdf_status: AcquireStatus,
     /// Destination key of the companion PDF once acquired.
     pub pdf_storage_key: Option<String>,
+    /// The library title (`books.uuid`) whose write set the PDF state.
+    pub pdf_acquired_by: Option<String>,
     /// The flat `books` row of this account's title, while that table
     /// exists: the status writes are still keyed by it.
     pub book_uuid: Option<String>,
@@ -204,20 +209,25 @@ impl LibraryStore {
             .filter(|m| m.scheme == "isbn")
             .map(|m| m.value.clone())
             .min();
-        let (status, storage_key, pdf_status, pdf_storage_key) = match acquisition {
-            Some(row) => (
-                AcquireStatus::parse(&row.status).unwrap_or_default(),
-                row.storage_key,
-                AcquireStatus::parse(&row.pdf_status).unwrap_or_default(),
-                row.pdf_storage_key,
-            ),
-            None => (
-                AcquireStatus::NotAcquired,
-                None,
-                AcquireStatus::NotAcquired,
-                None,
-            ),
-        };
+        let (status, storage_key, acquired_by, pdf_status, pdf_storage_key, pdf_acquired_by) =
+            match acquisition {
+                Some(row) => (
+                    AcquireStatus::parse(&row.status).unwrap_or_default(),
+                    row.storage_key,
+                    Some(row.title_uuid),
+                    AcquireStatus::parse(&row.pdf_status).unwrap_or_default(),
+                    row.pdf_storage_key,
+                    row.pdf_title_uuid,
+                ),
+                None => (
+                    AcquireStatus::NotAcquired,
+                    None,
+                    None,
+                    AcquireStatus::NotAcquired,
+                    None,
+                    None,
+                ),
+            };
         let (edition_subtitle, edition_published, edition_minutes) = edition
             .map(|e| (e.subtitle, e.published_at, e.duration_minutes))
             .unwrap_or_default();
@@ -266,8 +276,10 @@ impl LibraryStore {
             ),
             status,
             storage_key,
+            acquired_by,
             pdf_status,
             pdf_storage_key,
+            pdf_acquired_by,
             book_uuid,
         }))
     }
@@ -374,6 +386,8 @@ mod tests {
             assert_eq!(view.storage_key, flat.storage_key);
             assert_eq!(view.pdf_status, flat.pdf_status);
             assert_eq!(view.pdf_storage_key, flat.pdf_storage_key);
+            assert_eq!(view.acquired_by.as_deref(), Some(flat.uuid.as_str()));
+            assert_eq!(view.pdf_acquired_by.as_deref(), Some(flat.uuid.as_str()));
 
             // Another account of the store that does not hold it, and an
             // unknown product, have no view.
