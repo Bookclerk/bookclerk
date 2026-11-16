@@ -353,7 +353,8 @@ mod tests {
         use wiremock::matchers::{header, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let server = MockServer::start().await;
-        let key = TokenKey::from_bytes([3u8; 32]);
+        // A fresh key per run, as the daemon makes one per install.
+        let key = TokenKey::from_bytes(rand::random());
         let good = "https://img.example/good.jpg".to_string();
         let bad = "https://img.example/bad.jpg".to_string();
         let good_token = token::sign(&key, &good).expect("sign");
@@ -386,7 +387,7 @@ mod tests {
         let none = tokio::task::spawn_blocking(|| {
             warm(
                 "http://127.0.0.1:9",
-                &TokenKey::from_bytes([3u8; 32]),
+                &TokenKey::from_bytes(rand::random()),
                 None,
                 &["https://img.example/late.jpg".to_string()],
                 Duration::ZERO,
