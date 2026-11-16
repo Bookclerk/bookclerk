@@ -440,7 +440,7 @@ paths = [
     "crates/bookclerkd/src/library_works.rs",
     "crates/bookclerkd/src/library_index.rs",
     "crates/bookclerkd/src/search_index.rs",
-    "crates/bookclerk-search/src/engine.rs",
+    "crates/bookclerk-search/src/index_dir.rs",
     "crates/bookclerk-search/src/works.rs",
 ]
 

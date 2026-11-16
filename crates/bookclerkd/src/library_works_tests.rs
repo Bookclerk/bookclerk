@@ -149,7 +149,7 @@ async fn a_bad_cursor_or_one_of_another_order_is_a_400() {
 /// Builds the works search index for `library` under `state`'s files.
 async fn index_works(state: &Arc<AppState>, library: &LibraryStore) {
     let dir = state.config.read().await.paths().search_index_dir.clone();
-    let index = WorkSearchIndex::open(&WorkSearchIndex::dir_beside(&dir)).expect("works index");
+    let index = WorkSearchIndex::open(&dir).expect("works index");
     index.rebuild(library).await.expect("rebuild");
 }
 

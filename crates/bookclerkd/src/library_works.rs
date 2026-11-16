@@ -821,29 +821,24 @@ async fn search_page(
         None => 0,
     };
     let dir = state.config.read().await.paths().search_index_dir.clone();
-    let window = WorkSearchIndex::open_and_match_ids(
-        WorkSearchIndex::dir_beside(&dir),
-        q.into(),
-        start,
-        SEARCH_SCAN_BUDGET,
-    )
-    .await
-    .map_err(|err| match err {
-        SearchError::Query(message) => bad_request(format!("invalid search query: {message}")),
-        SearchError::NotReady => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorMessage::new(
-                "the search index is being built; try again shortly",
-            )),
-        ),
-        other => {
-            tracing::warn!(error = %other, "GET /api/library/works: search failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorMessage::new("the search index could not be read")),
-            )
-        }
-    })?;
+    let window = WorkSearchIndex::open_and_match_ids(dir, q.into(), start, SEARCH_SCAN_BUDGET)
+        .await
+        .map_err(|err| match err {
+            SearchError::Query(message) => bad_request(format!("invalid search query: {message}")),
+            SearchError::NotReady => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage::new(
+                    "the search index is being built; try again shortly",
+                )),
+            ),
+            other => {
+                tracing::warn!(error = %other, "GET /api/library/works: search failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorMessage::new("the search index could not be read")),
+                )
+            }
+        })?;
     let library = state.library_snapshot().await;
     let limit = usize::try_from(filters.limit).unwrap_or(usize::MAX);
     let (rows, used) = fill_search_page(

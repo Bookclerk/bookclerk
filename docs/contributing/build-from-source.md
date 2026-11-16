@@ -55,7 +55,7 @@ cp config/config.example.toml "$BOOKCLERK_FILES_DIR/config.toml"
 ```
 
 On first use, Bookclerk also creates `library.db`, `cache/`,
-`search_index/` and `plugins/` under the files folder. Store credentials
+`search_index_works/` and `plugins/` under the files folder. Store credentials
 are stored in the `encrypted_secrets` table inside `library.db`; there is
 no `Accounts/` folder.
 

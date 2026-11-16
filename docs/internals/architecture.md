@@ -113,7 +113,6 @@ BookclerkFiles/
   config.toml
   library.db          # incl. encrypted_secrets (auth + Widevine CDM + S3 keys)
   cache/
-  search_index/
   search_index_works/
   plugins/            # host-local trees (immutable to guests)
     .versions/<digest>/        # materialized installed versions, shared by instances
