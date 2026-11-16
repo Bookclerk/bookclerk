@@ -172,13 +172,13 @@ fn a_lost_broker_reports_every_open_socket_as_abnormally_closed() {
     assert_eq!(
         *recorder.seen.lock().expect("seen"),
         vec![
-            "closed s1 1006 false cursor-1".to_string(),
-            "closed s2 1006 false ".to_string(),
+            "closed g1_s1 1006 false cursor-1".to_string(),
+            "closed g1_s2 1006 false ".to_string(),
         ]
     );
     assert_eq!(
         broker.open_sockets(),
-        vec!["s3".to_string()],
+        vec!["g2_s3".to_string()],
         "only the lost broker's sockets are cleared"
     );
     // Nothing left to report: a second loss delivers nothing.
@@ -250,7 +250,7 @@ fn a_close_that_beats_its_connect_answer_does_not_leave_the_socket_open() {
     };
     // In order: open, then closed.
     broker.inner.record_open(1, &info("s1"));
-    assert_eq!(broker.open_sockets(), vec!["s1".to_string()]);
+    assert_eq!(broker.open_sockets(), vec!["g1_s1".to_string()]);
     assert!(broker.inner.holds(1));
     assert!(broker.inner.record_closed(1, "s1"), "nothing left open");
     // Out of order: the close lands before the connect answer.
@@ -262,7 +262,7 @@ fn a_close_that_beats_its_connect_answer_does_not_leave_the_socket_open() {
     );
     // The early close was used up; a later socket with that id is kept.
     broker.inner.record_open(1, &info("s2"));
-    assert_eq!(broker.open_sockets(), vec!["s2".to_string()]);
+    assert_eq!(broker.open_sockets(), vec!["g1_s2".to_string()]);
     // A newer broker reusing an id is not closed by the older one.
     broker.inner.record_open(2, &info("s2"));
     broker.inner.record_closed(1, "s2");
@@ -345,9 +345,16 @@ fn colliding_ids_from_two_brokers_are_tracked_apart() {
 
     assert_eq!(
         *recorder.seen.lock().expect("seen"),
-        vec!["closed same 1006 false old".to_string()]
+        vec!["closed g1_same 1006 false old".to_string()]
     );
     assert!(broker.inner.holds(2), "the replacement's socket is kept");
+    // The guest sees two distinct ids for the two sockets.
+    assert_eq!(broker.open_sockets(), vec!["g2_same".to_string()]);
+    assert_eq!(
+        broker_socket("g1_same"),
+        Some((1, "same")),
+        "a command for the lost socket names the lost broker, so the replacement refuses it"
+    );
     assert_eq!(
         broker.inner.take_generation(2),
         vec![("same".to_string(), b"new-2".to_vec())]
@@ -377,4 +384,16 @@ async fn an_event_still_reaches_a_sink_installed_long_after_it_arrived() {
     broker.set_sink(Arc::downgrade(&sink));
     delivery.await.expect("delivery");
     assert_eq!(*recorder.seen.lock().expect("seen"), vec!["message s1"]);
+}
+
+#[test]
+fn guest_socket_ids_round_trip_and_reject_foreign_ids() {
+    let id = guest_socket(7, "s0000abcd-3");
+    assert_eq!(id, "g7_s0000abcd-3");
+    assert_eq!(broker_socket(&id), Some((7, "s0000abcd-3")));
+    bookclerk_plugin_abi::sockets::check_socket_id(&guest_socket(u64::MAX, &"x".repeat(30)))
+        .expect("the longest guest id is still a valid socket id");
+    for foreign in ["s1", "g_s1", "gx_s1", "g1_", "g1"] {
+        assert_eq!(broker_socket(foreign), None, "{foreign}");
+    }
 }

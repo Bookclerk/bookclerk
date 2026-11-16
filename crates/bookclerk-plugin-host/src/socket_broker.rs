@@ -255,7 +255,7 @@ impl SocketBroker {
         self.inner
             .open()
             .keys()
-            .map(|(_, socket)| socket.clone())
+            .map(|(generation, socket)| guest_socket(*generation, socket))
             .collect()
     }
 
@@ -341,9 +341,9 @@ impl SocketBroker {
             .await
             .unwrap_or(Err(missing));
         if outcome.is_ok() {
-            // The current broker holds the socket the command reached.
-            let current = self.inner.generation.load(Ordering::SeqCst);
-            self.inner.record_attachment(current, &id, &kept);
+            if let Some((generation, socket)) = broker_socket(&id) {
+                self.inner.record_attachment(generation, socket, &kept);
+            }
         }
         outcome
     }
@@ -550,6 +550,8 @@ impl SocketHandler for HostHandler {
             };
             inner.record_attachment(self.generation, &event.socket, &event.attachment);
         }
+        let mut event = event;
+        event.socket = guest_socket(self.generation, &event.socket);
         deliver(&self.inner, SocketEvent::Message(event)).await;
         Ok(())
     }
@@ -561,6 +563,8 @@ impl SocketHandler for HostHandler {
             };
             inner.record_closed(self.generation, &event.socket)
         };
+        let mut event = event;
+        event.socket = guest_socket(self.generation, &event.socket);
         deliver(&self.inner, SocketEvent::Closed(event)).await;
         if now_idle {
             self.idle.notify_one();
@@ -730,7 +734,7 @@ fn report_lost(inner: &Weak<Inner>, generation: u64) {
     runtime.block_on(async {
         for (socket, attachment) in lost {
             let event = SocketClosed {
-                socket,
+                socket: guest_socket(generation, &socket),
                 code: CLOSE_ABNORMAL,
                 reason: Some("the socket broker stopped".to_string()),
                 clean: false,
@@ -749,27 +753,72 @@ async fn serve(
     generation: u64,
     command: Command,
 ) {
+    // The broker's id for a guest's socket, when this broker holds it; a
+    // socket of an earlier broker is no longer open.
+    let held = |guest: &str| -> Option<String> {
+        broker_socket(guest)
+            .filter(|(owner, _)| *owner == generation)
+            .map(|(_, socket)| socket.to_string())
+    };
+    let to_guest = |mut info: SocketInfo| {
+        info.socket = guest_socket(generation, &info.socket);
+        info
+    };
     match command {
         Command::Connect(request, reply) => {
             let outcome = sockets.connect(request).await;
             if let (Ok(info), Some(inner)) = (&outcome, inner.upgrade()) {
                 inner.record_open(generation, info);
             }
+            let _ = reply.send(outcome.map(to_guest));
+        }
+        Command::Send(guest, frame, reply) => {
+            let outcome = match held(&guest) {
+                Some(socket) => sockets.send(socket, frame).await,
+                None => Err(not_open(&guest)),
+            };
             let _ = reply.send(outcome);
         }
-        Command::Send(socket, frame, reply) => {
-            let _ = reply.send(sockets.send(socket, frame).await);
+        Command::Close(guest, code, reason, reply) => {
+            let outcome = match held(&guest) {
+                Some(socket) => sockets.close(socket, code, reason).await,
+                None => Ok(()),
+            };
+            let _ = reply.send(outcome);
         }
-        Command::Close(socket, code, reason, reply) => {
-            let _ = reply.send(sockets.close(socket, code, reason).await);
-        }
-        Command::SetAttachment(socket, attachment, reply) => {
-            let _ = reply.send(sockets.set_attachment(socket, attachment).await);
+        Command::SetAttachment(guest, attachment, reply) => {
+            let outcome = match held(&guest) {
+                Some(socket) => sockets.set_attachment(socket, attachment).await,
+                None => Err(not_open(&guest)),
+            };
+            let _ = reply.send(outcome);
         }
         Command::List(reply) => {
-            let _ = reply.send(sockets.list().await);
+            let outcome = sockets
+                .list()
+                .await
+                .map(|infos| infos.into_iter().map(to_guest).collect());
+            let _ = reply.send(outcome);
         }
     }
+}
+
+/// The id a guest sees for broker `generation`'s socket `socket`.
+///
+/// Each broker mints its own ids, and two brokers' ids can match; the
+/// generation prefix keeps every id the guest sees unique for the
+/// instance's life, as the ABI promises. Broker ids are at most 30 bytes,
+/// so the result stays within the 64-byte id limit.
+fn guest_socket(generation: u64, socket: &str) -> String {
+    format!("g{generation}_{socket}")
+}
+
+/// Splits a guest-visible socket id into its broker generation and the
+/// broker's own id; `None` for an id this host never minted.
+fn broker_socket(guest: &str) -> Option<(u64, &str)> {
+    let (generation, socket) = guest.strip_prefix('g')?.split_once('_')?;
+    let generation = generation.parse().ok()?;
+    (!socket.is_empty()).then_some((generation, socket))
 }
 
 /// The `SOCKETS` binding a guest session hands out: the instance's broker.
