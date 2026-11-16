@@ -1645,12 +1645,17 @@ async fn store_companion_pdf_sidecars(
         return Ok(Vec::new());
     };
 
-    if !req.force
-        && stored_edition_pdf(library, destinations, req)
-            .await?
-            .is_some()
-    {
-        return Ok(Vec::new());
+    // A failed reuse check is a companion PDF failure; the audio this
+    // runs after is already stored and keeps its status.
+    if !req.force {
+        match stored_edition_pdf(library, destinations, req).await {
+            Ok(Some(_)) => return Ok(Vec::new()),
+            Ok(None) => {}
+            Err(err) => {
+                record_companion_pdf_failure(library, req, &err).await;
+                return Ok(Vec::new());
+            }
+        }
     }
 
     let remaining = remaining_temp_budget(library, req, work_dir).await?;
@@ -1755,8 +1760,8 @@ async fn record_companion_pdf_failure(
 ///
 /// # Errors
 ///
-/// Returns [`AcquireError`] only when the library lookup for the existing PDF
-/// status fails. Download and store failures are recorded on `pdf_status`.
+/// Never returns an error today: a failed check for an already stored PDF,
+/// and download and store failures, are recorded on `pdf_status` instead.
 async fn resume_missing_companion_pdf(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
@@ -1766,12 +1771,15 @@ async fn resume_missing_companion_pdf(
     if !req.options.download_pdf {
         return Ok(());
     }
-    if !req.force
-        && stored_edition_pdf(library, destinations, req)
-            .await?
-            .is_some()
-    {
-        return Ok(());
+    if !req.force {
+        match stored_edition_pdf(library, destinations, req).await {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+            Err(err) => {
+                record_companion_pdf_failure(library, req, &err).await;
+                return Ok(());
+            }
+        }
     }
     match acquire_pdf_only_recorded(library, destinations, req, source).await {
         Ok(_) => Ok(()),
