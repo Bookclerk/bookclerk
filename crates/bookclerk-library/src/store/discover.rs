@@ -14,6 +14,8 @@
 //! refer to `store_listings` rows and keep only what is personal to the
 //! subject or to the call.
 
+use std::collections::{BTreeSet, HashMap};
+
 use chrono::{DateTime, Utc};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
@@ -709,6 +711,85 @@ impl LibraryStore {
         ))
     }
 
+    /// [`Self::get_discover_store_call`] for many calls at once, in a few
+    /// chunked reads instead of two per call.
+    ///
+    /// A discover fetch asks one store dozens of calls (deals, each seed,
+    /// each starter genre); reading their cached answers up front saves two
+    /// database round trips per call. Like the single read, a call row is
+    /// read first and its hits after, so an answer being rewritten reads as
+    /// expired, never as part of its hits.
+    ///
+    /// # Arguments
+    ///
+    /// * `call_keys` - Keys the caller derived; duplicates are read once.
+    /// * `max_age` - Oldest answer still worth reusing.
+    ///
+    /// # Returns
+    ///
+    /// Each key with a fresh answer, mapped to its listings in the store's
+    /// order (at most [`STORE_CALL_MAX_HITS`]). Absent or expired keys are
+    /// left out.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    pub async fn get_discover_store_calls(
+        &self,
+        call_keys: &[String],
+        max_age: chrono::Duration,
+    ) -> Result<HashMap<String, Vec<StoreCallHit>>> {
+        let keys: Vec<String> = call_keys
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if keys.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let now = Utc::now();
+        let fresh: Vec<String> = super::library_model::find_chunked::<
+            discover_store_calls::Entity,
+            _,
+        >(self, &keys, |part| {
+            discover_store_calls::Entity::find()
+                .filter(discover_store_calls::Column::CallKey.is_in(part.iter().cloned()))
+        })
+        .await?
+        .into_iter()
+        .filter(|m| parse_dt(&m.fetched_at) + max_age > now)
+        .map(|m| m.call_key)
+        .collect();
+        let rows = super::library_model::find_chunked_paged::<discover_store_call_hits::Entity, _>(
+            self,
+            &fresh,
+            |part| {
+                discover_store_call_hits::Entity::find()
+                    .filter(discover_store_call_hits::Column::CallKey.is_in(part.iter().cloned()))
+                    .order_by_asc(discover_store_call_hits::Column::CallKey)
+                    .order_by_asc(discover_store_call_hits::Column::Position)
+            },
+        )
+        .await?;
+        let mut out: HashMap<String, Vec<StoreCallHit>> =
+            fresh.into_iter().map(|key| (key, Vec::new())).collect();
+        let cap = usize::try_from(STORE_CALL_MAX_HITS).unwrap_or(usize::MAX);
+        for m in rows {
+            let Some(hits) = out.get_mut(&m.call_key) else {
+                continue;
+            };
+            if hits.len() < cap {
+                hits.push(StoreCallHit {
+                    listing_id: m.listing_id,
+                    origin: m.origin,
+                    rank_hint: m.rank_hint.and_then(|r| u32::try_from(r).ok()),
+                });
+            }
+        }
+        Ok(out)
+    }
+
     /// Stores (or refreshes) one cached storefront answer: the call row and
     /// the listings it answered, replacing the previous answer's hits.
     ///
@@ -1360,6 +1441,57 @@ mod tests {
             store.get_discover_store_call("k1", day).await.unwrap(),
             Some(hits(&pool[1..2]))
         );
+    }
+
+    #[tokio::test]
+    async fn store_calls_read_together_match_reading_them_one_by_one() {
+        for profile in crate::test_support::Profile::ALL {
+            let kit = crate::test_support::sqlite::memory(profile).await;
+            store_calls_read_together_under(kit.store()).await;
+        }
+    }
+
+    /// [`store_calls_read_together_match_reading_them_one_by_one`] on one
+    /// database profile.
+    async fn store_calls_read_together_under(store: &LibraryStore) {
+        let day = chrono::Duration::hours(24);
+        let pool = refs(store, &["a", "b", "c", "d"]).await;
+        store
+            .put_discover_store_call("k1", "libro", &hits(&pool[..2]))
+            .await
+            .unwrap();
+        let reversed: Vec<_> = pool.iter().rev().cloned().collect();
+        store
+            .put_discover_store_call("k2", "chirp", &hits(&reversed))
+            .await
+            .unwrap();
+        // A write still in progress reads as expired.
+        let partial = super::store_call_statements("k3", "libro", "w1", &hits(&pool[..1]));
+        store.run_candidate_batch(partial.head).await.unwrap();
+        store.run_candidate_batch(partial.hits).await.unwrap();
+        let keys: Vec<String> = ["k1", "k2", "k3", "absent", "k1"]
+            .iter()
+            .map(|k| (*k).to_string())
+            .collect();
+        let together = store.get_discover_store_calls(&keys, day).await.unwrap();
+        for key in &keys {
+            assert_eq!(
+                together.get(key).cloned(),
+                store.get_discover_store_call(key, day).await.unwrap(),
+                "{key}"
+            );
+        }
+        assert_eq!(together.len(), 2, "{together:?}");
+        assert!(store
+            .get_discover_store_calls(&keys, chrono::Duration::zero())
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .get_discover_store_calls(&[], day)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
