@@ -596,9 +596,20 @@ tcp = ["abs.example.com:443"]
 > [!NOTE]
 > The host hands out the `Sockets` binding to deployed integrations (the
 > family Audiobookshelf belongs to) whose grant has the `sockets` token.
-> Storefront and storage deployments don't get it yet, and the SDK
-> WebSocket API, with `env.SOCKETS` for workerd plugins, comes next. Until
-> a plugin uses it, it keeps its polling fallback.
+> Storefront and storage deployments don't get it yet. Until a plugin uses
+> it, it keeps its polling fallback.
+
+Each SDK shapes the binding like Durable Objects' hibernatable WebSockets:
+`env.SOCKETS.connect(url, options)` and `getWebSockets()` in TypeScript
+(`get_web_sockets()` in Python), with messages on the default
+entrypoint's `webSocketMessage(ws, message)` and closes on
+`webSocketClose(ws, code, reason, wasClean)` (`web_socket_message` and
+`web_socket_close` in Python). Rust plugins use the binding directly or
+through `bookclerk_plugin_sdk::sockets::HostWebSocket`. SDK attachments
+are UTF-8 JSON, so any SDK reads what another stored. See the
+[TypeScript](sdk/typescript/README.md#pushed-sockets),
+[Python](sdk/python/README.md#pushed-sockets) and
+[Rust](sdk/rust/README.md#pushed-sockets) guides.
 
 - **Binding.** `Sockets.connect` takes a `ws://` or `wss://` URL, the
   subprotocols to offer, extra request headers, up to 4 heartbeat pairs

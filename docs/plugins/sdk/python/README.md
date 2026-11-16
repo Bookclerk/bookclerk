@@ -120,6 +120,39 @@ the host accepts; see [Paged scans](../../abi.md#paged-scans). Generate a typed 
 python -m bookclerk_plugin_sdk types .   # writes bookclerk_configuration.py
 ```
 
+## Pushed sockets
+
+A plugin that declares `[sockets]` (see
+[Pushed sockets](../../abi.md#pushed-sockets-sockets)) gets
+`self.env.SOCKETS`, a `SocketsBinding` shaped like Durable Objects'
+hibernatable WebSockets. The host holds the connection, so the plugin may
+sleep between messages, and each message reaches the default entrypoint:
+
+```python
+class Default(BookclerkEntrypoint):
+    async def scheduled(self, controller):
+        if await self.env.SOCKETS.get_web_sockets():
+            return
+        await self.env.SOCKETS.connect(
+            "wss://abs.example.com/socket.io/?EIO=4&transport=websocket",
+            headers={"Authorization": f"Bearer {self.env.SECRETS['token']}"},
+            auto_responses=[("2", "3")],  # answered without waking the plugin
+            attachment={"library": "main"},
+        )
+
+    async def web_socket_message(self, ws, message):
+        library = ws.deserialize_attachment()["library"]
+        ...
+
+    async def web_socket_close(self, ws, code, reason, was_clean):
+        ...
+```
+
+Text arrives as `str` and binary as `bytes`. `await ws.send(...)`,
+`await ws.close(code, reason)` and `await ws.serialize_attachment(value)`
+act on the host's socket; the attachment is JSON of at most 2 KiB, kept
+for the socket's life.
+
 ## Testing database code
 
 `create_test_database()` from `bookclerk_plugin_sdk.testkit` gives a
