@@ -2,6 +2,15 @@
 
 Outbound Audiobookshelf plugin (scan, listening sync, credential return-visit).
 
+## New users
+
+With `watch_users` on, the host polls the plugin for new Audiobookshelf
+users and mints a claim ticket for each. The plugin also opens
+Audiobookshelf's Socket.io channel through the host (`[sockets]`): the host
+holds it while the plugin sleeps and answers its pings, and a `user_added`
+message makes the plugin ask the host to poll at once. `src/push.rs` reads
+the channel; `src/watch.rs` remembers which users were reported.
+
 ## OpenID Connect (Bookclerk as IdP)
 
 Bookclerk hosts a core OIDC authorization server (`/.well-known/openid-configuration`,

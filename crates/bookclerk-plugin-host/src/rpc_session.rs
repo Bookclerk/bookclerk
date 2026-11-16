@@ -1352,16 +1352,27 @@ impl PluginSession {
 
     /// Hands one socket event to the guest's `socketHandler` entrypoint.
     ///
+    /// # Returns
+    ///
+    /// The guest's reply to a message (whether it asks for an events poll
+    /// now); the default for a close.
+    ///
     /// # Errors
     ///
     /// Returns a plugin error when the guest did not export `socketHandler`
     /// or its handler failed.
-    pub async fn deliver_socket_event(&self, event: crate::SocketEvent) -> Result<()> {
+    pub async fn deliver_socket_event(
+        &self,
+        event: crate::SocketEvent,
+    ) -> Result<bookclerk_plugin_abi::SocketMessageOk> {
         self.entrypoint_call(
             move |handler: Box<dyn bookclerk_plugin_abi::SocketHandler>| async move {
                 match event {
                     crate::SocketEvent::Message(message) => handler.message(message).await,
-                    crate::SocketEvent::Closed(closed) => handler.closed(closed).await,
+                    crate::SocketEvent::Closed(closed) => handler
+                        .closed(closed)
+                        .await
+                        .map(|()| bookclerk_plugin_abi::SocketMessageOk::default()),
                 }
             },
             |call| Work::SocketHandler { call },

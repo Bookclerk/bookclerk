@@ -97,6 +97,7 @@ class Plugin extends BookclerkEntrypoint {
       await ws.close(4000, "done");
     }
     if (message === "boom") throw new Error("handler failed");
+    if (message === "user_added") return { pollEvents: true };
   }
 
   async webSocketClose(ws, code, reason, wasClean) {
@@ -1035,9 +1036,18 @@ function decodeReply(reply, resultsCodec, caps) {
     W.SocketHandlerMessageResultsCodec,
   );
   assert.equal(binary.kind, "ok");
+  assert.deepEqual(binary.value, { pollEvents: false }, "a handler returning nothing asks nothing");
   assert.ok(calls.sockets[0].message instanceof ArrayBuffer, "binary arrives as an ArrayBuffer");
   assert.deepEqual([...new Uint8Array(calls.sockets[0].message)], [9, 8]);
   assert.equal(calls.sockets[0].seen, null, "no attachment reads as null");
+
+  const asks = decodeReply(
+    await invoke("SocketHandler", "message", W.SocketHandlerMessageParamsCodec, {
+      event: { socket: "g1_s1", frame: { kind: "text", value: "user_added" } },
+    }),
+    W.SocketHandlerMessageResultsCodec,
+  );
+  assert.deepEqual(asks, { kind: "ok", value: { pollEvents: true } }, "the ask reaches the host");
 
   const failed = decodeReply(
     await invoke("SocketHandler", "message", W.SocketHandlerMessageParamsCodec, {

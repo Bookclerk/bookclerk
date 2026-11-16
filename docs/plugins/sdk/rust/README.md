@@ -81,7 +81,11 @@ in `HostWebSocket` (`send_text`, `close`, `serialize_attachment`,
 `deserialize_attachment`), the same surface the TypeScript and Python
 SDKs give their handlers, and `text_heartbeat("2", "3")` builds a
 heartbeat pair. Attachments are JSON of at most 2 KiB, so a socket reads
-the same from every SDK.
+the same from every SDK. `SocketHandler::message` returns a `SocketMessageOk`; a remote
+library sets `poll_events` when a message announced a new user, and the
+host calls `poll_events` right away instead of at its next scheduled
+poll. The Audiobookshelf plugin is a worked example
+(`crates/bookclerk-plugins/optional/integration-audiobookshelf/src/push.rs`).
 
 ## Author tools
 

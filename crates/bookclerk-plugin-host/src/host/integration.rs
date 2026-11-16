@@ -310,6 +310,12 @@ async fn poll_session_users(
 }
 
 impl ExternalIntegration {
+    /// Asks this integration's resident poll loop, when one runs, to poll
+    /// the guest's new users now.
+    pub(crate) fn poll_users_now(&self) {
+        self.user_poll.poll_now();
+    }
+
     /// Asks the guest for the users it has queued since the last poll.
     ///
     /// # Returns

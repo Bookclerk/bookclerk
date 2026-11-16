@@ -144,11 +144,12 @@ struct RecordingHandler {
 
 #[async_trait::async_trait(?Send)]
 impl SocketHandler for RecordingHandler {
-    async fn message(&self, event: SocketMessage) -> Result<()> {
+    async fn message(&self, event: SocketMessage) -> Result<SocketMessageOk> {
+        let poll_events = event.frame == SocketFrame::Text("poll".into());
         self.seen
             .borrow_mut()
             .push(format!("message {} {:?}", event.socket, event.frame));
-        Ok(())
+        Ok(SocketMessageOk { poll_events })
     }
 
     async fn closed(&self, event: SocketClosed) -> Result<()> {
@@ -166,7 +167,7 @@ async fn host_deliveries_reach_the_guest_handler() {
     let client = SocketHandlerClient::new(capnp_rpc::new_client(SocketHandlerServer {
         inner: Arc::clone(&guest) as Arc<dyn SocketHandler>,
     }));
-    client
+    let quiet = client
         .message(SocketMessage {
             socket: "s-1".into(),
             frame: SocketFrame::Binary(vec![9]),
@@ -174,6 +175,16 @@ async fn host_deliveries_reach_the_guest_handler() {
         })
         .await
         .expect("message");
+    assert!(!quiet.poll_events);
+    let asks = client
+        .message(SocketMessage {
+            socket: "s-1".into(),
+            frame: SocketFrame::Text("poll".into()),
+            attachment: Vec::new(),
+        })
+        .await
+        .expect("message");
+    assert!(asks.poll_events, "the guest's ask reaches the host");
     client
         .closed(SocketClosed {
             socket: "s-1".into(),
@@ -197,6 +208,7 @@ async fn host_deliveries_reach_the_guest_handler() {
         *guest.seen.borrow(),
         vec![
             "message s-1 Binary([9])".to_string(),
+            "message s-1 Text(\"poll\")".to_string(),
             "closed s-1 1006 false".to_string(),
         ]
     );
@@ -332,8 +344,9 @@ async fn the_guest_server_refuses_bad_deliveries() {
         event.init_frame().set_text("x");
     }
     let reply = req.send().promise.await.expect("rpc");
-    let err =
-        read_unit(reply.get().expect("reply").get_result().expect("result")).expect_err("bad id");
+    let err = read_socket_message_reply(reply.get().expect("reply").get_result().expect("result"))
+        .expect("decodes")
+        .expect_err("bad id");
     assert_eq!(err.code, PluginErrorCode::InvalidParams);
 
     let mut req = raw.closed_request();

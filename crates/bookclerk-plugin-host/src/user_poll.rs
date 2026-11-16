@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_integrations::ExternalUser;
+use tokio::sync::Notify;
 
 /// How often the host polls a resident remote library for new users.
 ///
@@ -38,6 +39,9 @@ pub(crate) type OnExternalUser = Arc<dyn Fn(ExternalUser) + Send + Sync>;
 pub(crate) struct PollGeneration {
     /// The current generation; bumped by every start and stop.
     current: Arc<AtomicU64>,
+    /// Wakes the running loop for an immediate poll; `None` while no loop
+    /// runs, so an ask with no loop leaves nothing behind.
+    wake: std::sync::Mutex<Option<Arc<Notify>>>,
 }
 
 impl PollGeneration {
@@ -50,6 +54,35 @@ impl PollGeneration {
     /// Ends any running loop.
     pub(crate) fn end(&self) {
         self.current.fetch_add(1, Ordering::SeqCst);
+        if let Some(wake) = self.wake_slot().take() {
+            // A loop waiting out its interval sees the new generation now.
+            wake.notify_one();
+        }
+    }
+
+    /// Asks the running loop to poll now instead of at the end of its
+    /// interval (a guest said a pushed message announced a new user). Asks
+    /// that arrive while a poll runs are folded into one more poll. Does
+    /// nothing while no loop runs.
+    pub(crate) fn poll_now(&self) {
+        if let Some(wake) = self.wake_slot().as_ref() {
+            wake.notify_one();
+        }
+    }
+
+    /// The wake slot, recovered from a poisoned lock (it holds no
+    /// invariant a panic could break).
+    fn wake_slot(&self) -> std::sync::MutexGuard<'_, Option<Arc<Notify>>> {
+        self.wake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A fresh wake for a new loop, replacing the last loop's.
+    fn new_wake(&self) -> Arc<Notify> {
+        let wake = Arc::new(Notify::new());
+        *self.wake_slot() = Some(Arc::clone(&wake));
+        wake
     }
 
     /// A handle the loop checks to see whether `generation` is still
@@ -62,8 +95,8 @@ impl PollGeneration {
 
 /// Spawns the poll loop for one remote library.
 ///
-/// The loop waits `interval`, calls `poll`, and hands every user it returns
-/// to `on_user`, until `generations` moves past the generation it was
+/// The loop waits `interval` (or less, when [`PollGeneration::poll_now`]
+/// asks), calls `poll`, and hands every user it returns to `on_user`, until `generations` moves past the generation it was
 /// spawned under or `poll` returns `None` (its owner is gone). A failed poll
 /// is logged and the loop keeps its schedule.
 ///
@@ -88,9 +121,13 @@ pub(crate) fn spawn<F, Fut>(
     Fut: Future<Output = Option<bookclerk_integrations::Result<Vec<ExternalUser>>>> + Send,
 {
     let current = generations.watch(generations.next());
+    let wake = generations.new_wake();
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(interval).await;
+            tokio::select! {
+                () = tokio::time::sleep(interval) => {}
+                () = wake.notified() => {}
+            }
             if !current() {
                 break;
             }

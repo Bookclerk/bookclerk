@@ -1157,9 +1157,9 @@ export interface SocketHandler {
    * One message arrived on an open socket.
    *
    * @param event - Socket, frame, and attachment.
-   * @returns {@link EmptyReply}
+   * @returns {@link SocketMessageReply}
    */
-  message(event: SocketMessage): Promise<EmptyReply>;
+  message(event: SocketMessage): Promise<SocketMessageReply>;
   /**
    * A socket closed, by the remote side, the network, or the host.
    *
@@ -3275,6 +3275,22 @@ export interface SocketList {
 export type SocketListReply =
   | { kind: "ok"; value: SocketList } // Success: the open sockets.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Reply of `SocketHandler.message`. */
+export type SocketMessageReply =
+  | { kind: "ok"; value: SocketMessageOk } // Success: what the guest asks of the host after the message.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** What a guest asks of the host after handling one pushed message. */
+export interface SocketMessageOk {
+  /**
+   * True asks the host to call `Integration.pollEvents` now, while the
+   * guest is awake, instead of at the next scheduled poll: the message
+   * announced something the poll hands over (a new user). The host ignores
+   * it for a plugin whose host schedules no poll.
+   */
+  pollEvents: boolean;
+}
 
 /** Argument of `SocketHandler.message`. */
 export interface SocketMessage {

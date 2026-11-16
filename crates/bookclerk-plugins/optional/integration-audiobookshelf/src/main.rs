@@ -13,7 +13,7 @@ use bookclerk_plugin_integration_audiobookshelf::guest::{
 };
 use bookclerk_plugin_integration_audiobookshelf::{BRAND, LISTENING_STATE_BINDING};
 use bookclerk_plugin_sdk::manifest_capabilities;
-use bookclerk_plugin_sdk::sockets::{SocketHandler, SocketMessage, Sockets};
+use bookclerk_plugin_sdk::sockets::{SocketHandler, SocketMessage, SocketMessageOk, Sockets};
 use bookclerk_plugin_sdk::{
     serve, AuthenticateUserParams, Bindings, Brand, DatabaseBinding, DomainEvent, Entrypoints,
     EventConsumer, EventResult, ExternalUser, HealthOk, Invocation, ListeningProgress, Oidc,
@@ -153,14 +153,14 @@ struct AbsPush {
 
 #[async_trait(?Send)]
 impl SocketHandler for AbsPush {
-    async fn message(&self, event: SocketMessage) -> Result<(), PluginError> {
+    async fn message(&self, event: SocketMessage) -> Result<SocketMessageOk, PluginError> {
         let new_user = guest_push_frame(&self.state, self.sockets.as_ref(), &event)
             .await
             .map_err(|e| PluginError::internal(e.to_string()))?;
-        if new_user {
-            tracing::info!("ABS announced a new user");
-        }
-        Ok(())
+        // A new user asks the host to poll now; the poll reports them.
+        Ok(SocketMessageOk {
+            poll_events: new_user,
+        })
     }
 }
 

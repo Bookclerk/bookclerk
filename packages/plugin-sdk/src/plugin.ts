@@ -129,6 +129,7 @@ import type {
   ScheduledController,
   SocketClosed as WireSocketClosed,
   SocketMessage as WireSocketMessage,
+  SocketMessageOk,
   SearchCatalogParams,
   SourceAccount,
 } from "./generated.js";
@@ -1709,9 +1710,14 @@ export class BookclerkEntrypoint<
    * message arrived on a host-brokered socket while the plugin may have been
    * asleep. `ws` carries the socket's id and its attachment as it was when
    * the message arrived. Throwing reports the failure to the host; the
-   * socket stays open.
+   * socket stays open. Return `{ pollEvents: true }` when the message
+   * announced something `pollEvents` hands over (a new user), and the host
+   * polls now instead of at its next scheduled poll.
    */
-  webSocketMessage?(ws: HostWebSocket, message: SocketMessageData): Promise<void> | void;
+  webSocketMessage?(
+    ws: HostWebSocket,
+    message: SocketMessageData,
+  ): Promise<Partial<SocketMessageOk> | void> | Partial<SocketMessageOk> | void;
 
   /**
    * `[sockets]` handler, the Workers `webSocketClose(ws, code, reason,
@@ -1822,13 +1828,13 @@ export class BookclerkEntrypoint<
    *
    * @param context - Granted bindings for this invocation.
    * @param wire - Wire `SocketMessage`.
-   * @returns Resolves when the author's handler completes.
+   * @returns What the handler asks of the host (`pollEvents`).
    * @internal
    */
   async bookclerkSocketMessage(
     context: GrantedContext,
     wire: Partial<WireSocketMessage>,
-  ): Promise<void> {
+  ): Promise<SocketMessageOk> {
     if (typeof this.webSocketMessage !== "function") {
       throw unsupported("webSocketMessage");
     }
@@ -1837,7 +1843,8 @@ export class BookclerkEntrypoint<
       socket: wire?.socket,
       attachment: wire?.attachment,
     });
-    await this.webSocketMessage(ws, socketMessageData(wire?.frame));
+    const asked = await this.webSocketMessage(ws, socketMessageData(wire?.frame));
+    return { pollEvents: asked?.pollEvents === true };
   }
 
   /**

@@ -621,6 +621,12 @@ are UTF-8 JSON, so any SDK reads what another stored. See the
   and the socket's attachment, and `closed` once when the socket ends,
   with the close code, the reason and whether the close was clean. A
   plugin that returns no handler gets no pushed messages.
+- **Poll now.** `message` replies with `SocketMessageOk`. Setting
+  `pollEvents` asks the host to call `pollEvents` right away, while the
+  plugin is awake, instead of at the next scheduled poll. A remote
+  library sets it when a message announces a new user, so the user gets
+  a claim ticket within seconds. The host ignores it for a plugin whose
+  host schedules no poll.
 - **Heartbeats.** Each pair names a request frame and its reply. When an
   incoming frame equals a request exactly (same kind and bytes), the host
   sends the reply and doesn't wake the plugin, so a Socket.io ping `2`

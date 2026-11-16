@@ -36,6 +36,7 @@ use bookclerk_plugin_manifest::CronSchedule;
 use crate::activation::{Activation, Busy, Guest, GuestStarter, OnDemandStatus, WakeError};
 use crate::user_poll::PollGeneration;
 use crate::{PluginFamily, PluginManifest, SocketEvent, SocketSink};
+use bookclerk_plugin_abi::SocketMessageOk;
 
 /// How long a trigger-driven guest stays up after its last call returns.
 ///
@@ -126,11 +127,21 @@ impl<T: Integration + Guest + SocketSink + ExternalUserPoll> AwakeGuest for T {}
 
 #[async_trait]
 impl SocketSink for crate::ExternalIntegration {
-    async fn deliver_socket_event(&self, event: SocketEvent) -> std::result::Result<(), String> {
-        self.session()
+    async fn deliver_socket_event(
+        &self,
+        event: SocketEvent,
+    ) -> std::result::Result<SocketMessageOk, String> {
+        let reply = self
+            .session()
             .deliver_socket_event(event)
             .await
-            .map_err(|err| err.to_string())
+            .map_err(|err| err.to_string())?;
+        if reply.poll_events {
+            // A resident guest's own loop; under a proxy no loop runs here
+            // and the proxy polls instead.
+            self.poll_users_now();
+        }
+        Ok(reply)
     }
 }
 
@@ -309,9 +320,17 @@ impl OnDemandIntegration {
 /// broker held the socket while it slept.
 #[async_trait]
 impl SocketSink for OnDemandIntegration {
-    async fn deliver_socket_event(&self, event: SocketEvent) -> std::result::Result<(), String> {
+    async fn deliver_socket_event(
+        &self,
+        event: SocketEvent,
+    ) -> std::result::Result<SocketMessageOk, String> {
         let (guest, _busy) = self.awake().await.map_err(|err| err.to_string())?;
-        guest.deliver_socket_event(event).await
+        let reply = guest.deliver_socket_event(event).await?;
+        if reply.poll_events {
+            // The guest is awake now, so the poll costs no extra start.
+            self.user_poll.poll_now();
+        }
+        Ok(reply)
     }
 }
 

@@ -78,9 +78,9 @@ async fn a_dropped_sink_is_not_kept_alive() {
         async fn deliver_socket_event(
             &self,
             _event: SocketEvent,
-        ) -> std::result::Result<(), String> {
+        ) -> std::result::Result<SocketMessageOk, String> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(())
+            Ok(SocketMessageOk::default())
         }
     }
     let files = tempfile::tempdir().expect("files");
@@ -130,7 +130,10 @@ struct Recorder {
 
 #[async_trait]
 impl SocketSink for Recorder {
-    async fn deliver_socket_event(&self, event: SocketEvent) -> std::result::Result<(), String> {
+    async fn deliver_socket_event(
+        &self,
+        event: SocketEvent,
+    ) -> std::result::Result<SocketMessageOk, String> {
         let line = match event {
             SocketEvent::Message(message) => format!("message {}", message.socket),
             SocketEvent::Closed(closed) => format!(
@@ -145,7 +148,7 @@ impl SocketSink for Recorder {
         if self.refuse {
             Err("the guest refused".into())
         } else {
-            Ok(())
+            Ok(SocketMessageOk::default())
         }
     }
 }

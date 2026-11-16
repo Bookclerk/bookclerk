@@ -4591,6 +4591,53 @@ var SocketFrameCodec = {
     }
   }
 };
+var SocketMessageReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          SocketMessageOkCodec.write(s.initStruct(0, 1, 0), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("SocketMessageReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: SocketMessageOkCodec.read(s.getStruct(0, 1, 0), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("SocketMessageReply", disc);
+    }
+  }
+};
+var SocketMessageOkCodec = {
+  dataWords: 1,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.pollEvents ?? false);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      pollEvents: s.getBool(0)
+    };
+  }
+};
 var SocketMessageCodec = {
   dataWords: 0,
   pointerCount: 3,
@@ -6047,12 +6094,12 @@ var SocketHandlerMessageResultsCodec = {
   pointerCount: 1,
   write(s, v, caps) {
     if (v.result != null) {
-      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+      SocketMessageReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
     }
   },
   read(s, caps) {
     return {
-      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+      result: SocketMessageReplyCodec.read(s.getStruct(0, 1, 1), caps)
     };
   }
 };
@@ -9255,7 +9302,9 @@ var METHODS = {
       results: SocketHandlerMessageResultsCodec,
       stub: "author",
       call: (s, p, cx) => s.bookclerkSocketMessage(cx.host.bindContext(cx.ctx), p.event ?? {}),
-      ok: okEmpty
+      ok: (value) => okValue({
+        pollEvents: value?.pollEvents === true
+      })
     }),
     closed: spec({
       params: SocketHandlerClosedParamsCodec,
@@ -10577,7 +10626,7 @@ var BookclerkEntrypoint = class extends WorkerEntrypoint {
    *
    * @param context - Granted bindings for this invocation.
    * @param wire - Wire `SocketMessage`.
-   * @returns Resolves when the author's handler completes.
+   * @returns What the handler asks of the host (`pollEvents`).
    * @internal
    */
   async bookclerkSocketMessage(context, wire) {
@@ -10589,7 +10638,8 @@ var BookclerkEntrypoint = class extends WorkerEntrypoint {
       socket: wire?.socket,
       attachment: wire?.attachment
     });
-    await this.webSocketMessage(ws, socketMessageData(wire?.frame));
+    const asked = await this.webSocketMessage(ws, socketMessageData(wire?.frame));
+    return { pollEvents: asked?.pollEvents === true };
   }
   /**
    * Adapter dispatch for `SocketHandler.closed`. Without a

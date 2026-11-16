@@ -1,7 +1,7 @@
 //! Broker tests against a local WebSocket server.
 
 use super::*;
-use bookclerk_plugin_abi::{PluginErrorCode, SocketAutoResponse, SocketHeader};
+use bookclerk_plugin_abi::{PluginErrorCode, SocketAutoResponse, SocketHeader, SocketMessageOk};
 use bookclerk_plugin_manifest::NetworkMode;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
@@ -20,14 +20,14 @@ struct Recorder(Rc<Seen>);
 
 #[async_trait::async_trait(?Send)]
 impl SocketHandler for Recorder {
-    async fn message(&self, event: SocketMessage) -> Result<()> {
+    async fn message(&self, event: SocketMessage) -> Result<SocketMessageOk> {
         self.0.events.borrow_mut().push(format!(
             "message {:?} {}",
             event.frame,
             String::from_utf8_lossy(&event.attachment)
         ));
         self.0.notify.notify_one();
-        Ok(())
+        Ok(SocketMessageOk::default())
     }
 
     async fn closed(&self, event: SocketClosed) -> Result<()> {
@@ -286,7 +286,7 @@ struct Replier {
 
 #[async_trait::async_trait(?Send)]
 impl SocketHandler for Replier {
-    async fn message(&self, event: SocketMessage) -> Result<()> {
+    async fn message(&self, event: SocketMessage) -> Result<SocketMessageOk> {
         let first = self.seen.events.borrow().is_empty();
         self.seen.events.borrow_mut().push("message".into());
         self.seen.notify.notify_one();
@@ -307,7 +307,7 @@ impl SocketHandler for Replier {
                     .await?;
             }
         }
-        Ok(())
+        Ok(SocketMessageOk::default())
     }
 
     async fn closed(&self, _event: SocketClosed) -> Result<()> {
@@ -379,11 +379,11 @@ struct Stuck {
 
 #[async_trait::async_trait(?Send)]
 impl SocketHandler for Stuck {
-    async fn message(&self, _event: SocketMessage) -> Result<()> {
+    async fn message(&self, _event: SocketMessage) -> Result<SocketMessageOk> {
         self.seen.events.borrow_mut().push("message".into());
         self.seen.notify.notify_one();
         self.gate.notified().await;
-        Ok(())
+        Ok(SocketMessageOk::default())
     }
 
     async fn closed(&self, _event: SocketClosed) -> Result<()> {

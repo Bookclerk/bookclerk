@@ -153,6 +153,10 @@ Text arrives as `str` and binary as `bytes`. `await ws.send(...)`,
 act on the host's socket; the attachment is JSON of at most 2 KiB, kept
 for the socket's life.
 
+A remote library whose message announced a new user returns
+`{"poll_events": True}` from `web_socket_message`, and the host calls
+`poll_events` right away instead of at its next scheduled poll.
+
 ## Testing database code
 
 `create_test_database()` from `bookclerk_plugin_sdk.testkit` gives a

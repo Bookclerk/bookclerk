@@ -1161,6 +1161,21 @@ def decode_socket_attachment(data: bytes) -> Any:
         return text
 
 
+def socket_message_asks_poll(returned: Any) -> bool:
+    """Whether a ``web_socket_message`` return value asks the host to poll now.
+
+    Args:
+        returned: What the handler returned: ``None``, or a mapping with
+            ``poll_events`` / ``pollEvents``.
+
+    Returns:
+        ``True`` only for an explicit ``True`` under either key.
+    """
+    if not isinstance(returned, dict):
+        return False
+    return returned.get("poll_events") is True or returned.get("pollEvents") is True
+
+
 def socket_message_data(frame: Any) -> str | bytes:
     """The message a handler receives for one wire frame.
 
@@ -1649,10 +1664,16 @@ class BookclerkEntrypoint(WorkerEntrypoint):
             {"socket": _get(wire, "socket", ""), "attachment": _get(wire, "attachment")},
         )
 
-    async def bookclerkSocketMessage(self, context: Any = None, wire: Any = None) -> None:
+    async def bookclerkSocketMessage(self, context: Any = None, wire: Any = None) -> Any:
         """Adapter dispatch: one host-held socket message to ``web_socket_message(ws, message)``.
 
-        Text arrives as ``str``, binary as ``bytes``.
+        Text arrives as ``str``, binary as ``bytes``. The handler may return
+        ``{"poll_events": True}`` (or ``pollEvents``) when the message announced
+        something ``poll_events`` hands over, such as a new user; the host then
+        polls now instead of at its next scheduled poll.
+
+        Returns:
+            The wire ``SocketMessageOk``: ``{"pollEvents": bool}``.
 
         Raises:
             PluginError: ``unsupported`` when the author defines no handler.
@@ -1664,9 +1685,14 @@ class BookclerkEntrypoint(WorkerEntrypoint):
             raise _unsupported("webSocketMessage")
         _apply_invocation_env(self, context)
         wire = py(wire) or {}
-        await _await_maybe(
-            handler(self._socket_handle(context, wire), socket_message_data(_get(wire, "frame")))
+        asked = py(
+            await _await_maybe(
+                handler(
+                    self._socket_handle(context, wire), socket_message_data(_get(wire, "frame"))
+                )
+            )
         )
+        return js({"pollEvents": socket_message_asks_poll(asked)})
 
     async def bookclerkSocketClosed(self, context: Any = None, wire: Any = None) -> None:
         """Adapter dispatch: a host-held socket closed, to ``web_socket_close(ws, code, reason, was_clean)``.

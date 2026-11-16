@@ -639,7 +639,7 @@ export interface SocketHandlerMessageParams {
  * @internal
  */
 export interface SocketHandlerMessageResults {
-  result: T.EmptyReply;
+  result: T.SocketMessageReply;
 }
 
 /**
@@ -7842,6 +7842,65 @@ export const SocketListReplyCodec: StructCodec<T.SocketListReply> = {
 };
 
 /**
+ * Wire codec for `SocketMessageReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketMessageReplyCodec: StructCodec<T.SocketMessageReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          SocketMessageOkCodec.write(s.initStruct(0, 1, 0), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("SocketMessageReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: SocketMessageOkCodec.read(s.getStruct(0, 1, 0), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("SocketMessageReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `SocketMessageOk` (1 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const SocketMessageOkCodec: StructCodec<T.SocketMessageOk> = {
+  dataWords: 1,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.pollEvents ?? false);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      pollEvents: s.getBool(0),
+    };
+  },
+};
+
+/**
  * Wire codec for `SocketMessage` (0 data words, 3 pointers).
  *
  * @internal
@@ -10528,12 +10587,12 @@ export const SocketHandlerMessageResultsCodec: StructCodec<SocketHandlerMessageR
   pointerCount: 1,
   write(s, v, caps) {
     if (v.result != null) {
-      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+      SocketMessageReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
     }
   },
   read(s, caps) {
     return {
-      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+      result: SocketMessageReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

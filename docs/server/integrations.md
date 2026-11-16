@@ -109,6 +109,21 @@ users on a schedule and mints a claim ticket for each one:
 3. The host polls every 5 minutes while the plugin sleeps between calls,
    or every 30 seconds when it stays running.
 
+The plugin also listens to Audiobookshelf's live updates, so a new user
+usually gets a ticket within seconds instead of at the next poll:
+
+1. When it starts, and on each poll, the plugin opens Audiobookshelf's
+   Socket.io channel if it is closed, signing in with the API key. The
+   host holds the connection while the plugin sleeps and answers the
+   server's keep-alive pings itself.
+2. Each other message wakes the plugin. When Audiobookshelf announces a
+   new user (`user_added`), the plugin asks the host to poll now.
+3. If the channel closes (the server restarts or refuses the key), the
+   next poll opens it again. Polling keeps working the whole time.
+
+The live channel needs the `sockets` permission; without it the plugin
+only polls.
+
 The plugin keeps the users it has reported in its `LISTENING_STATE`
 database, as a hash of each user id. So a user created while the plugin
 slept is still reported by the next poll. If recording a new user fails,
