@@ -230,6 +230,11 @@ pub enum DbAtomicParams {
         /// in the same batch; `None` when the title has no edition yet.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         edition_id: Option<String>,
+        /// The account holding (`holdings.id`) the title is held by, which
+        /// the edition's row records as the writer; the edition's row is
+        /// left alone without one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        holding_id: Option<String>,
         /// Acquire status string (`acquired`, `downloading`, …).
         status: String,
         /// Object-storage key for the primary audio artifact.

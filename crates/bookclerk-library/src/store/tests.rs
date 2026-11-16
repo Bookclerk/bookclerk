@@ -104,7 +104,13 @@ async fn account_and_book_roundtrip() {
         .unwrap()
         .unwrap();
     assert_eq!(acquisition.status, AcquireStatus::Acquired);
-    assert_eq!(acquisition.title_uuid, updated.uuid);
+    let holding = store
+        .title_holding_of_book(&updated.uuid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(holding.edition_id, edition.unwrap());
+    assert_eq!(acquisition.holding_id, holding.holding_id);
 }
 
 #[tokio::test]
@@ -8782,6 +8788,20 @@ async fn a_pdf_status_is_recorded_on_the_titles_edition_under_every_profile() {
             .unwrap()
             .unwrap();
         let edition = store.edition_of_book(&first.uuid).await.unwrap().unwrap();
+        let held_by = |uuid: String| {
+            let store = store.clone();
+            async move {
+                store
+                    .title_holding_of_book(&uuid)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .holding_id
+            }
+        };
+        let first_holding = held_by(first.uuid.clone()).await;
+        let second_holding = held_by(second.uuid.clone()).await;
+        assert_ne!(first_holding, second_holding);
         assert_eq!(
             store
                 .edition_of_book(&second.uuid)
@@ -8800,7 +8820,7 @@ async fn a_pdf_status_is_recorded_on_the_titles_edition_under_every_profile() {
         let row = store.edition_acquisition(&edition).await.unwrap().unwrap();
         assert_eq!(row.status, AcquireStatus::NotAcquired, "{}", profile.name());
         assert_eq!(row.pdf_status, AcquireStatus::Queued, "{}", profile.name());
-        assert_eq!(row.pdf_title_uuid.as_deref(), Some(first.uuid.as_str()));
+        assert_eq!(row.pdf_holding_id.as_deref(), Some(first_holding.as_str()));
 
         store
             .set_pdf_status(
@@ -8823,7 +8843,7 @@ async fn a_pdf_status_is_recorded_on_the_titles_edition_under_every_profile() {
             .unwrap();
         let row = store.edition_acquisition(&edition).await.unwrap().unwrap();
         assert_eq!(row.status, AcquireStatus::Queued, "{}", profile.name());
-        assert_eq!(row.title_uuid, second.uuid);
+        assert_eq!(row.holding_id, second_holding);
         assert_eq!(
             row.pdf_status,
             AcquireStatus::Acquired,
@@ -8831,12 +8851,14 @@ async fn a_pdf_status_is_recorded_on_the_titles_edition_under_every_profile() {
             profile.name()
         );
         assert_eq!(row.pdf_storage_key.as_deref(), Some("a.pdf"));
-        assert_eq!(row.pdf_title_uuid.as_deref(), Some(first.uuid.as_str()));
+        assert_eq!(row.pdf_holding_id.as_deref(), Some(first_holding.as_str()));
 
-        // Once the acquiring title leaves the library, another title's write
-        // takes over.
+        // Once the acquiring holding is gone, another title's write takes
+        // over.
         kit.connection()
-            .execute_unprepared(&format!("DELETE FROM books WHERE uuid = '{}'", first.uuid))
+            .execute_unprepared(&format!(
+                "DELETE FROM holdings WHERE id = '{first_holding}'"
+            ))
             .await
             .unwrap();
         store
@@ -8851,7 +8873,7 @@ async fn a_pdf_status_is_recorded_on_the_titles_edition_under_every_profile() {
             profile.name()
         );
         assert_eq!(row.pdf_storage_key, None);
-        assert_eq!(row.pdf_title_uuid.as_deref(), Some(second.uuid.as_str()));
+        assert_eq!(row.pdf_holding_id.as_deref(), Some(second_holding.as_str()));
     }
 }
 

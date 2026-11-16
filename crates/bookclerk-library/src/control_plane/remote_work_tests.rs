@@ -2270,7 +2270,13 @@ async fn an_upload_keeps_the_edition_with_the_title_that_acquired_it() {
         .unwrap()
         .unwrap();
     assert_eq!(kept.status, crate::models::AcquireStatus::Acquired);
-    assert_eq!(kept.title_uuid, sam_book.uuid);
+    let sam_holding = w
+        .store
+        .title_holding_of_book(&sam_book.uuid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.holding_id, sam_holding.holding_id);
     assert_eq!(kept.storage_key.as_deref(), Some("Sam/Title/Title.m4b"));
 }
 

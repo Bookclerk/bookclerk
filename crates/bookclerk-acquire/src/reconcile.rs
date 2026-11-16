@@ -210,6 +210,10 @@ pub async fn reconcile_library(
 pub(crate) struct TitleWalk {
     /// Editions this walk recorded as acquired.
     matched: HashSet<String>,
+    /// Editions this walk cleared (their audio was missing): once the
+    /// acquiring holding is gone, every title of the edition may clear it,
+    /// and the first one does.
+    cleared: HashSet<String>,
 }
 
 impl TitleWalk {
@@ -222,6 +226,11 @@ impl TitleWalk {
     /// Notes that this walk recorded `title`'s edition as acquired.
     pub(crate) fn record_match(&mut self, title: &AcquireTitle) {
         self.matched.insert(title.edition_id.clone());
+    }
+
+    /// Notes that this walk cleared `title`'s edition.
+    pub(crate) fn record_clear(&mut self, title: &AcquireTitle) {
+        self.cleared.insert(title.edition_id.clone());
     }
 }
 
@@ -279,8 +288,9 @@ pub(crate) fn title_update(
             }
         }
         None => {
-            let owner = title.acquired_by.is_none() || title.acquired_by == title.book_uuid;
-            if title.status == AcquireStatus::Acquired && owner && !walk.already_matched(title) {
+            let owner = title.acquired_by.is_none() || title.acquired_here();
+            let settled = walk.already_matched(title) || walk.cleared.contains(&title.edition_id);
+            if title.status == AcquireStatus::Acquired && owner && !settled {
                 TitleUpdate::Cleared
             } else {
                 TitleUpdate::Unchanged
@@ -352,6 +362,7 @@ async fn reconcile_one(
                     None,
                 )
                 .await?;
+            walk.record_clear(&title);
             summary.cleared += 1;
         }
     }
@@ -1257,6 +1268,61 @@ mod reconcile_integration {
         }
     }
 
+    #[tokio::test]
+    async fn a_missing_edition_whose_acquiring_holding_is_gone_is_cleared() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().join("books")).unwrap();
+        let library = two_holders().await;
+        library
+            .set_acquire_status(
+                "B00EXAMPLE1",
+                "other",
+                AcquireStatus::Acquired,
+                Some("gone.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        let before = library
+            .acquire_title("audible", "other", "us", "B00EXAMPLE1")
+            .await
+            .unwrap()
+            .unwrap();
+        // Revoking the acquiring account removes its holding; reconnecting
+        // and rescanning links the title again under a new holding.
+        library
+            .revoke_credentials("audible", "other")
+            .await
+            .unwrap();
+        library
+            .mark_connection_active("audible", "other")
+            .await
+            .unwrap();
+        library
+            .upsert_book(&NewBook::minimal("B00EXAMPLE1", "other", "us", "Cool Book"))
+            .await
+            .unwrap();
+        let after = library
+            .acquire_title("audible", "other", "us", "B00EXAMPLE1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(before.holding_id, after.holding_id);
+        assert_eq!(after.status, AcquireStatus::Acquired);
+        assert_eq!(after.acquired_by, None);
+
+        let summary = reconcile_library(&library, &backend, ReconcileOptions::default())
+            .await
+            .unwrap();
+        assert_eq!((summary.cleared, summary.unchanged), (1, 1));
+        let title = library
+            .acquire_title("audible", "acct", "us", "B00EXAMPLE1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(title.status, AcquireStatus::NotAcquired);
+    }
+
     #[test]
     fn a_title_update_follows_the_editions_state() {
         let title = AcquireTitle {
@@ -1286,7 +1352,7 @@ mod reconcile_integration {
             published_at: None,
             status: AcquireStatus::Acquired,
             storage_key: Some("a.m4b".into()),
-            acquired_by: Some("mine".into()),
+            acquired_by: Some("h".into()),
             pdf_status: AcquireStatus::NotAcquired,
             pdf_storage_key: None,
             pdf_acquired_by: None,
@@ -1303,10 +1369,14 @@ mod reconcile_integration {
         );
         assert_eq!(title_update(&title, &walk, None), TitleUpdate::Cleared);
         let sibling = AcquireTitle {
+            holding_id: "other".into(),
             book_uuid: Some("theirs".into()),
             ..title.clone()
         };
         assert_eq!(title_update(&sibling, &walk, None), TitleUpdate::Unchanged);
+        let mut cleared = TitleWalk::default();
+        cleared.record_clear(&title);
+        assert_eq!(title_update(&title, &cleared, None), TitleUpdate::Unchanged);
         walk.record_match(&title);
         assert_eq!(
             title_update(&sibling, &walk, Some("b.m4b")),

@@ -511,6 +511,7 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
         DbAtomicParams::SetAcquireStatus {
             book_uuid,
             edition_id,
+            holding_id,
             status,
             storage_key,
             error_message,
@@ -533,6 +534,7 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
             plan_set_acquire_status(
                 book_uuid,
                 edition_id.as_deref(),
+                holding_id.as_deref(),
                 status,
                 storage_key.as_deref(),
                 error_message.as_deref(),
@@ -2452,6 +2454,7 @@ fn plan_publish_domain_event(row: &PublishRow<'_>, now: &str) -> AtomicPlan {
 fn plan_set_acquire_status(
     book_uuid: &str,
     edition_id: Option<&str>,
+    holding_id: Option<&str>,
     status: &str,
     storage_key: Option<&str>,
     error_message: Option<&str>,
@@ -2467,7 +2470,11 @@ fn plan_set_acquire_status(
     ordering_key: &str,
     now: &str,
 ) -> AtomicPlan {
-    let edition = edition_id.unwrap_or_default();
+    // The edition's row is written only for a title its account still holds.
+    let (edition, holding) = match (edition_id, holding_id) {
+        (Some(edition), Some(holding)) => (edition, holding),
+        _ => ("", ""),
+    };
     AtomicPlan {
         statements: vec![
             sql(
@@ -2514,42 +2521,52 @@ fn plan_set_acquire_status(
                 ],
             ),
             // The edition's row: created when missing, then set unless
-            // another title still in the library acquired it (that title's
-            // writes alone change an acquired edition).
+            // another holding that still exists acquired it (that holding's
+            // writes alone change an acquired edition). The writing holding
+            // must still hold the edition when the plan runs: it was read
+            // before, and a revoke or rescan may have removed it since.
             sql(
                 "INSERT OR IGNORE INTO edition_acquisitions (\
-                    edition_id, status, storage_key, error_message, title_uuid, updated_at\
+                    edition_id, status, storage_key, error_message, holding_id, updated_at\
                  ) SELECT ?, ?, ?, ?, ?, ? \
                  WHERE ? != '' AND EXISTS (SELECT 1 FROM books WHERE uuid = ?) \
-                   AND EXISTS (SELECT 1 FROM editions WHERE id = ?)",
+                   AND EXISTS (SELECT 1 FROM editions WHERE id = ?) \
+                   AND EXISTS (SELECT 1 FROM holdings WHERE id = ? \
+                     AND listing_id IN (SELECT id FROM store_listings WHERE edition_id = ?))",
                 vec![
                     j_str(edition),
                     j_str(status),
                     j_opt_str(storage_key),
                     j_opt_str(error_message),
-                    j_str(book_uuid),
+                    j_str(holding),
                     j_str(now),
                     j_str(edition),
                     j_str(book_uuid),
+                    j_str(edition),
+                    j_str(holding),
                     j_str(edition),
                 ],
             ),
             sql(
                 "UPDATE edition_acquisitions SET status = ?, storage_key = ?, error_message = ?, \
-                    title_uuid = ?, updated_at = ? \
+                    holding_id = ?, updated_at = ? \
                  WHERE edition_id = ? \
-                   AND (status != 'acquired' OR title_uuid = ? \
-                        OR NOT EXISTS (SELECT 1 FROM books WHERE uuid = edition_acquisitions.title_uuid)) \
-                   AND EXISTS (SELECT 1 FROM books WHERE uuid = ?)",
+                   AND (status != 'acquired' OR holding_id = ? \
+                        OR NOT EXISTS (SELECT 1 FROM holdings WHERE id = edition_acquisitions.holding_id)) \
+                   AND EXISTS (SELECT 1 FROM books WHERE uuid = ?) \
+                   AND EXISTS (SELECT 1 FROM holdings WHERE id = ? \
+                     AND listing_id IN (SELECT id FROM store_listings WHERE edition_id = ?))",
                 vec![
                     j_str(status),
                     j_opt_str(storage_key),
                     j_opt_str(error_message),
-                    j_str(book_uuid),
+                    j_str(holding),
                     j_str(now),
                     j_str(edition),
+                    j_str(holding),
                     j_str(book_uuid),
-                    j_str(book_uuid),
+                    j_str(holding),
+                    j_str(edition),
                 ],
             ),
             sql(
@@ -5037,13 +5054,15 @@ mod tests {
         assert_eq!(blocked.status, atomic_status::EMPTY);
     }
 
-    /// One `SetAcquireStatus` request for title `book` of edition `ed1`;
-    /// `step` keeps each request's operation id distinct.
+    /// One `SetAcquireStatus` request for title `book` of edition `ed1`,
+    /// held by holding `h-{book}`; `step` keeps each request's operation id
+    /// distinct.
     fn edition_status_req(step: u32, book: &str, status: &str, key: Option<&str>) -> NamedReq {
         test_req(
             DbAtomicParams::SetAcquireStatus {
                 book_uuid: book.into(),
                 edition_id: Some("ed1".into()),
+                holding_id: Some(format!("h-{book}")),
                 status: status.into(),
                 storage_key: key.map(str::to_string),
                 error_message: None,
@@ -5062,10 +5081,10 @@ mod tests {
         )
     }
 
-    /// The `(status, storage_key, title_uuid)` of edition `ed1`.
+    /// The `(status, storage_key, holding_id)` of edition `ed1`.
     fn edition_row(conn: &Connection) -> (String, Option<String>, String) {
         conn.query_row(
-            "SELECT status, storage_key, title_uuid FROM edition_acquisitions WHERE edition_id = 'ed1'",
+            "SELECT status, storage_key, holding_id FROM edition_acquisitions WHERE edition_id = 'ed1'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -5090,6 +5109,14 @@ mod tests {
              VALUES ('x1', 'w1', 'narration', 'unknown', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
             "INSERT INTO editions (id, expression_id, media_kind, title, created_at, updated_at) \
              VALUES ('ed1', 'x1', 'audio', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO store_listings (id, plugin_key, marketplace, product_id, edition_id, title, observed_at, created_at, updated_at) \
+             VALUES ('l1', 'audible', 'us', 'B00X', 'ed1', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO store_listings (id, plugin_key, marketplace, product_id, edition_id, title, observed_at, created_at, updated_at) \
+             VALUES ('l2', 'audible', 'uk', 'B00Y', 'ed1', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO holdings (id, listing_id, holder, holder_kind, plugin_key, account_id, entitlement, created_at, updated_at) \
+             VALUES ('h-b1', 'l1', 'audible/user-1', 'account', 'audible', 'user-1', 'purchase', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO holdings (id, listing_id, holder, holder_kind, plugin_key, account_id, entitlement, created_at, updated_at) \
+             VALUES ('h-b2', 'l2', 'audible/user-1', 'account', 'audible', 'user-1', 'purchase', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
         ] {
             conn.execute(sql, []).unwrap();
         }
@@ -5106,7 +5133,7 @@ mod tests {
         run("b1", "acquired", Some("a.m4b"));
         assert_eq!(
             edition_row(&conn),
-            ("acquired".into(), Some("a.m4b".into()), "b1".into())
+            ("acquired".into(), Some("a.m4b".into()), "h-b1".into())
         );
         // A sibling title's writes never change the acquired edition, not
         // even when it shares the copy.
@@ -5115,24 +5142,39 @@ mod tests {
         run("b2", "acquired", Some("a.m4b"));
         assert_eq!(
             edition_row(&conn),
-            ("acquired".into(), Some("a.m4b".into()), "b1".into())
+            ("acquired".into(), Some("a.m4b".into()), "h-b1".into())
         );
         // The title that acquired it can.
         run("b1", "not_acquired", None);
         assert_eq!(
             edition_row(&conn),
-            ("not_acquired".into(), None, "b1".into())
+            ("not_acquired".into(), None, "h-b1".into())
         );
         run("b2", "acquired", Some("b.m4b"));
         assert_eq!(
             edition_row(&conn),
-            ("acquired".into(), Some("b.m4b".into()), "b2".into())
+            ("acquired".into(), Some("b.m4b".into()), "h-b2".into())
         );
-        // Once that title leaves the library, a sibling's write applies.
-        conn.execute("DELETE FROM books WHERE uuid = 'b2'", [])
+        // Once that holding is gone, a sibling's write applies.
+        conn.execute("DELETE FROM holdings WHERE id = 'h-b2'", [])
             .unwrap();
         run("b1", "queued", None);
-        assert_eq!(edition_row(&conn), ("queued".into(), None, "b1".into()));
+        assert_eq!(edition_row(&conn), ("queued".into(), None, "h-b1".into()));
+        // A write naming a holding that no longer exists (read before a
+        // revoke or rescan removed it) changes nothing.
+        conn.execute("DELETE FROM holdings WHERE id = 'h-b1'", [])
+            .unwrap();
+        run("b1", "acquired", Some("c.m4b"));
+        assert_eq!(edition_row(&conn), ("queued".into(), None, "h-b1".into()));
+        conn.execute("DELETE FROM edition_acquisitions", [])
+            .unwrap();
+        run("b1", "acquired", Some("c.m4b"));
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM edition_acquisitions", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -5156,6 +5198,7 @@ mod tests {
             DbAtomicParams::SetAcquireStatus {
                 book_uuid: "b1".into(),
                 edition_id: None,
+                holding_id: None,
                 status: "acquired".into(),
                 storage_key: Some("Author/T/book.m4b".into()),
                 error_message: None,
@@ -5195,6 +5238,7 @@ mod tests {
             DbAtomicParams::SetAcquireStatus {
                 book_uuid: "missing".into(),
                 edition_id: None,
+                holding_id: None,
                 status: "acquired".into(),
                 storage_key: None,
                 error_message: None,
@@ -5653,6 +5697,7 @@ mod tests {
             DbAtomicParams::SetAcquireStatus {
                 book_uuid: "book-1".into(),
                 edition_id: None,
+                holding_id: None,
                 status: "done".into(),
                 storage_key: Some("key".into()),
                 error_message: None,

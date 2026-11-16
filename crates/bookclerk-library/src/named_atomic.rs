@@ -363,7 +363,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
     async fn set_acquire_status(
         &self,
         book_uuid: &str,
-        edition_id: Option<&str>,
+        title: Option<&crate::TitleHolding>,
         status: AcquireStatus,
         storage_key: Option<&str>,
         error_message: Option<&str>,
@@ -376,7 +376,8 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
         let result = self
             .call(DbAtomicParams::SetAcquireStatus {
                 book_uuid: book_uuid.to_string(),
-                edition_id: edition_id.map(str::to_string),
+                edition_id: title.map(|t| t.edition_id.clone()),
+                holding_id: title.map(|t| t.holding_id.clone()),
                 status: status.as_str().to_string(),
                 storage_key: storage_key.map(str::to_string),
                 error_message: error_message.map(str::to_string),

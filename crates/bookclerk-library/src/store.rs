@@ -4857,18 +4857,18 @@ impl LibraryStore {
         pdf_storage_key: Option<&str>,
     ) -> Result<()> {
         let model = self.resolve_book(title_id, account_id).await?;
-        let title_uuid = model.uuid.clone();
+        let title = self.title_holding_of_book(&model.uuid).await?;
         let mut am: books::ActiveModel = model.into();
         am.pdf_status = Set(status.as_str().to_string());
         am.pdf_storage_key = Set(pdf_storage_key.map(str::to_string));
         am.updated_at = Set(now_str());
         self.update_book_bumped(am).await?;
         // The edition's PDF state, which outlives `books` (book model step 6).
-        if let Some(edition) = self.edition_of_book(&title_uuid).await? {
+        if let Some(title) = title {
             event_outbox::update_edition_pdf_on(
                 &self.db,
-                &edition,
-                &title_uuid,
+                &title.edition_id,
+                &title.holding_id,
                 status,
                 pdf_storage_key,
             )
@@ -5013,18 +5013,18 @@ impl LibraryStore {
         error_message: Option<&str>,
     ) -> Result<()> {
         let model = self.resolve_book(title_id, account_id).await?;
-        let edition = self.edition_of_book(&model.uuid).await?;
+        let title = self.title_holding_of_book(&model.uuid).await?;
         if let Some(atomic) = &self.atomic {
             let event = event_outbox::acquire_status_event(
                 &model,
-                edition.as_deref(),
+                title.as_ref().map(|t| t.edition_id.as_str()),
                 status,
                 storage_key,
             )?;
             return atomic
                 .set_acquire_status(
                     &model.uuid,
-                    edition.as_deref(),
+                    title.as_ref(),
                     status,
                     storage_key,
                     error_message,
@@ -5040,7 +5040,7 @@ impl LibraryStore {
         match event_outbox::set_acquire_status_on(
             &txn,
             model,
-            edition.as_deref(),
+            title.as_ref(),
             status,
             storage_key,
             error_message,
@@ -7903,7 +7903,9 @@ pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
     StoredFeed,
 };
-pub use edition_files::{EditionAcquisition, EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
+pub use edition_files::{
+    EditionAcquisition, EditionFile, FileOwner, FileRole, TitleHolding, ACQUIRE_WRITER,
+};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};
 pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};

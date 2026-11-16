@@ -189,8 +189,9 @@ pub struct EditionAcquisition {
     pub storage_key: Option<String>,
     /// Last acquire failure message.
     pub error_message: Option<String>,
-    /// The library title (`books.uuid`) whose write set the state.
-    pub title_uuid: String,
+    /// The account holding (`holdings.id`) whose title's write set the
+    /// state.
+    pub holding_id: String,
     /// RFC 3339 time of that write.
     pub updated_at: String,
     /// Where the edition's companion PDF acquire stands; a status this
@@ -198,9 +199,9 @@ pub struct EditionAcquisition {
     pub pdf_status: AcquireStatus,
     /// Destination key of the companion PDF once acquired.
     pub pdf_storage_key: Option<String>,
-    /// The library title (`books.uuid`) whose write set the PDF state;
-    /// `None` until a PDF write happens.
-    pub pdf_title_uuid: Option<String>,
+    /// The account holding (`holdings.id`) whose title's write set the PDF
+    /// state; `None` until a PDF write happens.
+    pub pdf_holding_id: Option<String>,
 }
 
 impl From<edition_acquisitions::Model> for EditionAcquisition {
@@ -210,13 +211,23 @@ impl From<edition_acquisitions::Model> for EditionAcquisition {
             edition_id: row.edition_id,
             storage_key: row.storage_key,
             error_message: row.error_message,
-            title_uuid: row.title_uuid,
+            holding_id: row.holding_id,
             updated_at: row.updated_at,
             pdf_status: AcquireStatus::parse(&row.pdf_status).unwrap_or_default(),
             pdf_storage_key: row.pdf_storage_key,
-            pdf_title_uuid: row.pdf_title_uuid,
+            pdf_holding_id: row.pdf_holding_id,
         }
     }
+}
+
+/// The edition a library title sells and the account holding it is held
+/// by: the key its acquire writes are recorded under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitleHolding {
+    /// The edition the title's listing sells.
+    pub edition_id: String,
+    /// The account's holding of that listing (`holdings.id`).
+    pub holding_id: String,
 }
 
 /// A row read back into an [`EditionFile`]; `None` for a row whose
@@ -269,6 +280,52 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
             .map(|listing| listing.edition_id))
+    }
+
+    /// The edition a library title (`books.uuid`) sells and its account's
+    /// holding of the listing; `None` when the title is unknown, not
+    /// resolved yet, or no longer held by its account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read fails.
+    pub async fn title_holding_of_book(&self, book_uuid: &str) -> Result<Option<TitleHolding>> {
+        let Some(book) = books::Entity::find()
+            .filter(books::Column::Uuid.eq(book_uuid))
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        let Some(listing) = store_listings::Entity::find()
+            .filter(store_listings::Column::PluginKey.eq(book.plugin_key.as_str()))
+            .filter(
+                store_listings::Column::Marketplace
+                    .eq(bookclerk_resolve::stored_marketplace(&book.marketplace)),
+            )
+            .filter(
+                store_listings::Column::ProductId
+                    .eq(bookclerk_resolve::stored_product_id(&book.product_id)),
+            )
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        Ok(super::holdings::find_holdings()
+            .filter(holdings::Column::ListingId.eq(listing.id.as_str()))
+            .filter(holdings::Column::HolderKind.eq("account"))
+            .filter(holdings::Column::PluginKey.eq(book.plugin_key.as_str()))
+            .filter(holdings::Column::AccountId.eq(book.account_id.as_str()))
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(|holding| TitleHolding {
+                edition_id: listing.edition_id,
+                holding_id: holding.id,
+            }))
     }
 
     /// An edition's acquire state; `None` when no title of it was ever

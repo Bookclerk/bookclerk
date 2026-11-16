@@ -1602,11 +1602,13 @@ pub async fn commit_upload(
         };
         Some(model)
     };
-    // The title's edition takes the files too (`edition_acquisitions`).
-    let edition = match &model {
-        Some(model) => store.edition_of_book(&model.uuid).await?,
+    // The title's edition takes the files too (`edition_acquisitions`),
+    // recorded under the account holding the title is held by.
+    let title = match &model {
+        Some(model) => store.title_holding_of_book(&model.uuid).await?,
         None => None,
     };
+    let edition = title.as_ref().map(|t| t.edition_id.clone());
     let now = stamp(Utc::now());
     let gate_sql = "EXISTS (SELECT 1 FROM node_upload_sessions \
                      WHERE upload_id = ? AND state = 'committed' AND committed_at = ?)";
@@ -1681,42 +1683,54 @@ pub async fn commit_upload(
                 binds,
             ));
         }
-        if let Some(edition) = edition.as_deref() {
+        if let Some(title) = &title {
+            let edition = title.edition_id.as_str();
+            let holding = title.holding_id.as_str();
             let mut binds = vec![
                 text(edition),
                 text(&session.primary_key),
-                text(&session.book_uuid),
+                text(holding),
                 text(&now),
+                text(edition),
+                text(holding),
                 text(edition),
             ];
             binds.extend(gate());
             statements.push(exec(
                 &format!(
                     "INSERT OR IGNORE INTO edition_acquisitions (\
-                        edition_id, status, storage_key, error_message, title_uuid, updated_at\
+                        edition_id, status, storage_key, error_message, holding_id, updated_at\
                      ) SELECT ?, 'acquired', ?, NULL, ?, ? \
-                     WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?) AND {gate_sql}"
+                     WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?) \
+                       AND EXISTS (SELECT 1 FROM holdings WHERE id = ? \
+                         AND listing_id IN (SELECT id FROM store_listings WHERE edition_id = ?)) \
+                       AND {gate_sql}"
                 ),
                 binds,
             ));
             let mut binds = vec![
                 text(&session.primary_key),
-                text(&session.book_uuid),
+                text(holding),
                 text(&now),
                 text(edition),
-                text(&session.book_uuid),
+                text(holding),
+                text(holding),
+                text(edition),
             ];
             binds.extend(gate());
-            // Another live title that acquired this edition keeps it, as in
+            // Another live holding that acquired this edition keeps it, and
+            // the uploading holding must still hold the edition, as in
             // `plan_set_acquire_status`.
             statements.push(exec(
                 &format!(
                     "UPDATE edition_acquisitions SET status = 'acquired', storage_key = ?, \
-                       error_message = NULL, title_uuid = ?, updated_at = ? \
+                       error_message = NULL, holding_id = ?, updated_at = ? \
                       WHERE edition_id = ? \
-                        AND (status != 'acquired' OR title_uuid = ? \
-                             OR NOT EXISTS (SELECT 1 FROM books \
-                                            WHERE uuid = edition_acquisitions.title_uuid)) \
+                        AND (status != 'acquired' OR holding_id = ? \
+                             OR NOT EXISTS (SELECT 1 FROM holdings \
+                                            WHERE id = edition_acquisitions.holding_id)) \
+                        AND EXISTS (SELECT 1 FROM holdings WHERE id = ? \
+                          AND listing_id IN (SELECT id FROM store_listings WHERE edition_id = ?)) \
                         AND {gate_sql}"
                 ),
                 binds,

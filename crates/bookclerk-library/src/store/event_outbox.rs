@@ -16,12 +16,13 @@ use sea_orm::{
 use uuid::Uuid;
 
 use super::books_page::is_result_too_large;
+use super::edition_files::TitleHolding;
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
 use crate::column_read::SelectColumnExt;
 use crate::control_plane::{bump_if_stamped, bump_on, exec_bumped_via, sea_probe, Bump, LiveTopic};
 use crate::entities::{
     books, domain_events, edition_acquisitions, event_deliveries, event_outbox_stats,
-    event_subscriber_nodes, plugin_instances,
+    event_subscriber_nodes, holdings, plugin_instances, store_listings,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{
@@ -3110,22 +3111,24 @@ pub(crate) fn acquire_status_event(
 
 /// Apply acquire status and publish its outbox row ([`acquire_status_event`]).
 ///
-/// `edition_id` is the title's edition, whose `edition_acquisitions` row is
-/// written too ([`update_edition_acquisition_on`]).
+/// `title` is the title's edition and account holding, whose
+/// `edition_acquisitions` row is written too
+/// ([`update_edition_acquisition_on`]).
 pub(crate) async fn set_acquire_status_on<C: ConnectionTrait>(
     db: &C,
     model: books::Model,
-    edition_id: Option<&str>,
+    title: Option<&TitleHolding>,
     status: AcquireStatus,
     storage_key: Option<&str>,
     error_message: Option<&str>,
 ) -> Result<()> {
+    let edition_id = title.map(|t| t.edition_id.as_str());
     let spec = acquire_status_event(&model, edition_id, status, storage_key)?;
-    if let Some(edition_id) = edition_id {
+    if let Some(title) = title {
         update_edition_acquisition_on(
             db,
-            edition_id,
-            &model.uuid,
+            &title.edition_id,
+            &title.holding_id,
             status,
             storage_key,
             error_message,
@@ -3139,24 +3142,71 @@ pub(crate) async fn set_acquire_status_on<C: ConnectionTrait>(
     Ok(())
 }
 
-/// Write an edition's acquire state for a write from title `title_uuid`:
-/// creates the row when missing, and leaves an edition another title
-/// still in the library acquired alone, since that title's writes alone
-/// change it (the same rule as the named atomic operation's plan).
+/// True when holding `holding_id` (`holdings.id`) still exists.
+async fn holding_exists<C: ConnectionTrait>(db: &C, holding_id: &str) -> Result<bool> {
+    Ok(super::holdings::find_holdings()
+        .filter(holdings::Column::Id.eq(holding_id))
+        .one(db)
+        .await
+        .map_err(LibraryError::Orm)?
+        .is_some())
+}
+
+/// Whether holding `holding_id` still exists and holds a listing of
+/// edition `edition_id`, read when the write runs.
+///
+/// The holding a write names was read before the write (from the title's
+/// books row); a revoke or rescan in between deletes or replaces it, and
+/// such a write must not name a holding that no longer holds the edition.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Orm`] when a read fails.
+async fn holding_holds_edition<C: ConnectionTrait>(
+    db: &C,
+    holding_id: &str,
+    edition_id: &str,
+) -> Result<bool> {
+    let Some(holding) = super::holdings::find_holdings()
+        .filter(holdings::Column::Id.eq(holding_id))
+        .one(db)
+        .await
+        .map_err(LibraryError::Orm)?
+    else {
+        return Ok(false);
+    };
+    Ok(store_listings::Entity::find()
+        .filter(store_listings::Column::Id.eq(holding.listing_id))
+        .filter(store_listings::Column::EditionId.eq(edition_id))
+        .into_column::<String, _>(store_listings::Column::Id)
+        .one(db)
+        .await
+        .map_err(LibraryError::Orm)?
+        .is_some())
+}
+
+/// Write an edition's acquire state for a write from account holding
+/// `holding_id`: creates the row when missing, and leaves an edition
+/// another holding that still exists acquired alone, since that holding's
+/// writes alone change it (the same rule as the named atomic operation's
+/// plan).
 pub(crate) async fn update_edition_acquisition_on<C: ConnectionTrait>(
     db: &C,
     edition_id: &str,
-    title_uuid: &str,
+    holding_id: &str,
     status: AcquireStatus,
     storage_key: Option<&str>,
     error_message: Option<&str>,
 ) -> Result<()> {
+    if !holding_holds_edition(db, holding_id, edition_id).await? {
+        return Ok(());
+    }
     let row = edition_acquisitions::ActiveModel {
         edition_id: Set(edition_id.to_string()),
         status: Set(status.as_str().to_string()),
         storage_key: Set(storage_key.map(str::to_string)),
         error_message: Set(error_message.map(str::to_string)),
-        title_uuid: Set(title_uuid.to_string()),
+        holding_id: Set(holding_id.to_string()),
         updated_at: Set(now_str()),
         // Left to the column defaults on insert and untouched on update:
         // the PDF state is written by `update_edition_pdf_on`.
@@ -3172,13 +3222,8 @@ pub(crate) async fn update_edition_acquisition_on<C: ConnectionTrait>(
         }
         Some(current)
             if current.status == AcquireStatus::Acquired.as_str()
-                && current.title_uuid != title_uuid
-                && books::Entity::find()
-                    .filter(books::Column::Uuid.eq(&current.title_uuid))
-                    .one(db)
-                    .await
-                    .map_err(LibraryError::Orm)?
-                    .is_some() => {}
+                && current.holding_id != holding_id
+                && holding_exists(db, &current.holding_id).await? => {}
         Some(_) => {
             row.update(db).await.map_err(LibraryError::Orm)?;
         }
@@ -3186,12 +3231,11 @@ pub(crate) async fn update_edition_acquisition_on<C: ConnectionTrait>(
     Ok(())
 }
 
-/// Records `title_uuid`'s companion PDF state on its edition's row,
-/// creating the row (audio not acquired) when the edition has none.
+/// Records holding `holding_id`'s companion PDF state on its edition's
+/// row, creating the row (audio not acquired) when the edition has none.
 ///
-/// Once the PDF is acquired, only the title that acquired it changes it,
-/// while that title stays in the library; the audio columns are never
-/// touched.
+/// Once the PDF is acquired, only the holding that acquired it changes it,
+/// while that holding exists; the audio columns are never touched.
 ///
 /// # Errors
 ///
@@ -3199,15 +3243,18 @@ pub(crate) async fn update_edition_acquisition_on<C: ConnectionTrait>(
 pub(crate) async fn update_edition_pdf_on<C: ConnectionTrait>(
     db: &C,
     edition_id: &str,
-    title_uuid: &str,
+    holding_id: &str,
     status: AcquireStatus,
     pdf_storage_key: Option<&str>,
 ) -> Result<()> {
+    if !holding_holds_edition(db, holding_id, edition_id).await? {
+        return Ok(());
+    }
     let now = now_str();
     let pdf = |row: &mut edition_acquisitions::ActiveModel| {
         row.pdf_status = Set(status.as_str().to_string());
         row.pdf_storage_key = Set(pdf_storage_key.map(str::to_string));
-        row.pdf_title_uuid = Set(Some(title_uuid.to_string()));
+        row.pdf_holding_id = Set(Some(holding_id.to_string()));
         row.updated_at = Set(now.clone());
     };
     match edition_acquisitions::Entity::find_by_id(edition_id.to_string())
@@ -3221,7 +3268,7 @@ pub(crate) async fn update_edition_pdf_on<C: ConnectionTrait>(
                 status: Set(AcquireStatus::NotAcquired.as_str().to_string()),
                 storage_key: Set(None),
                 error_message: Set(None),
-                title_uuid: Set(title_uuid.to_string()),
+                holding_id: Set(holding_id.to_string()),
                 ..Default::default()
             };
             pdf(&mut row);
@@ -3230,18 +3277,12 @@ pub(crate) async fn update_edition_pdf_on<C: ConnectionTrait>(
         Some(current) => {
             let held_by_other = current.pdf_status == AcquireStatus::Acquired.as_str()
                 && current
-                    .pdf_title_uuid
+                    .pdf_holding_id
                     .as_deref()
-                    .is_some_and(|owner| owner != title_uuid);
+                    .is_some_and(|owner| owner != holding_id);
             if held_by_other {
-                let owner = current.pdf_title_uuid.clone().unwrap_or_default();
-                let owner_present = books::Entity::find()
-                    .filter(books::Column::Uuid.eq(owner))
-                    .one(db)
-                    .await
-                    .map_err(LibraryError::Orm)?
-                    .is_some();
-                if owner_present {
+                let owner = current.pdf_holding_id.clone().unwrap_or_default();
+                if holding_exists(db, &owner).await? {
                     return Ok(());
                 }
             }

@@ -153,8 +153,11 @@ async fn seed_books(store: &LibraryStore) {
         sea_orm::Statement::from_string(
             backend,
             "INSERT OR IGNORE INTO edition_acquisitions \
-                (edition_id, status, storage_key, error_message, title_uuid, updated_at) \
-             SELECT l.edition_id, b.acquire_status, NULL, NULL, b.uuid, b.updated_at \
+                (edition_id, status, storage_key, error_message, holding_id, updated_at) \
+             SELECT l.edition_id, b.acquire_status, NULL, NULL, \
+                    (SELECT h.id FROM holdings h WHERE h.listing_id = l.id \
+                       AND h.plugin_key = b.plugin_key AND h.account_id = b.account_id), \
+                    b.updated_at \
              FROM books b JOIN store_listings l \
                ON l.plugin_key = b.plugin_key AND l.product_id = b.product_id"
                 .to_string(),

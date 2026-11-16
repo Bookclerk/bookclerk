@@ -1555,23 +1555,24 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     // Each edition's acquire state (docs/adr/library-data-model.md): files
     // belong to editions, so one acquire serves every title of the edition.
-    // `title_uuid` is the library title (`books.uuid`) whose write set the
-    // row. Once acquired, only that title's writes change the row (or any
-    // title's, after that one leaves the library), never a sibling title's
-    // queued, downloading or failed attempt. An edition with no row is not
-    // acquired. The `pdf_*` columns hold the edition's companion PDF the
-    // same way, with `pdf_title_uuid` the title whose write set them.
+    // `holding_id` is the account holding (`holdings.id`) whose title's
+    // write set the row. Once acquired, only that holding's writes change
+    // the row (or any holding's, after that one is gone), never a sibling
+    // holding's queued, downloading or failed attempt. An edition with no
+    // row is not acquired. The `pdf_*` columns hold the edition's companion
+    // PDF the same way, with `pdf_holding_id` the holding whose write set
+    // them.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS edition_acquisitions (
         edition_id TEXT PRIMARY KEY NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
         status TEXT NOT NULL CHECK (status IN ('not_acquired', 'queued', 'downloading', 'acquired', 'error')),
         storage_key TEXT,
         error_message TEXT,
-        title_uuid TEXT NOT NULL,
+        holding_id TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         pdf_status TEXT NOT NULL DEFAULT 'not_acquired' CHECK (pdf_status IN ('not_acquired', 'queued', 'downloading', 'acquired', 'error')),
         pdf_storage_key TEXT,
-        pdf_title_uuid TEXT
+        pdf_holding_id TEXT
     )",
     ),
     // The library's page index (docs/adr/library-data-model.md, decision 8
