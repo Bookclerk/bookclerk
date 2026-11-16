@@ -328,6 +328,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_later_batch_failing_still_reports_every_new_user() {
+        // Enough users to span several write batches on the small profiles;
+        // the table refuses only the last one, so the earlier batches commit
+        // and the last batch fails.
+        let names: Vec<String> = (0..300).map(|i| format!("user-{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let strict = PluginMigration {
+            id: "abs-user-watch-strict-batches".into(),
+            operations: vec![PluginMigrationOp::Schema(format!(
+                "CREATE TABLE IF NOT EXISTS abs_watch_users (person TEXT NOT NULL PRIMARY KEY \
+                 CHECK (person <> '{}'))",
+                key("user-299")
+            ))],
+        };
+        for profile in Profile::ALL {
+            let unit = BindingDatabase::open(profile, vec![strict.clone()])
+                .await
+                .unwrap();
+            let db = DatabaseBinding::from_session(Arc::new(unit));
+            let mut memory = HashSet::new();
+            let mut watch = UserWatch::new(Some(&db), &mut memory);
+            assert_eq!(watch.seed(&users(&["root"])).await.unwrap(), 1);
+            let mut polled = vec!["root"];
+            polled.extend(&refs);
+            let fresh = watch.take_new(users(&polled)).await.unwrap();
+            assert_eq!(ids(&fresh), refs, "{profile:?}: every new user is reported");
+            let again = watch.take_new(users(&polled)).await.unwrap();
+            let again = ids(&again);
+            assert!(
+                again.contains(&"user-299"),
+                "{profile:?}: the user whose batch failed is reported again"
+            );
+            assert!(
+                again.iter().all(|id| refs.contains(id)),
+                "{profile:?}: a baseline user was reported"
+            );
+            if profile == Profile::Minimum {
+                assert!(
+                    again.len() < refs.len(),
+                    "the smallest profile commits the earlier batches"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn without_a_database_the_set_lives_in_memory() {
         let mut memory = HashSet::new();
         let mut watch = UserWatch::new(None, &mut memory);
