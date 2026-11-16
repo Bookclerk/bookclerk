@@ -863,7 +863,9 @@ transaction. Its `source` is the book's storefront plugin id too.
 batch as its rows:
 
 - `edition_linked` (`editionId`, `listingId`) when a listing is first
-  stored or now sells another edition;
+  stored or now sells another edition (an Administrator's pin publishes it
+  too, with `edition_updated` for the edition the listing left; each pin
+  publishes again, even back to an edition the listing sold before);
 - `edition_updated` (`editionId`) when the listing filled a missing
   subtitle, publication date or duration on its edition;
 - `holding_added` (`listingId`, `holder`, `holdingId`) when an account or

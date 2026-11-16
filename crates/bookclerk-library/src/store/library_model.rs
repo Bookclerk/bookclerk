@@ -3960,6 +3960,7 @@ mod store_tests {
             target_id: Set(Some("edition-that-was-removed".into())),
             created_by_user_id: Set(None),
             created_at: Set(now_str()),
+            revision: Set(String::new()),
         }
         .insert(&store.db)
         .await
@@ -4142,6 +4143,7 @@ mod store_tests {
             target_id: Set(Some(plans[1].listing.edition_id.clone())),
             created_by_user_id: Set(None),
             created_at: Set(now_str()),
+            revision: Set(String::new()),
         }
         .insert(&store.db)
         .await
@@ -4159,6 +4161,7 @@ mod store_tests {
             target_id: Set(None),
             created_by_user_id: Set(None),
             created_at: Set(now_str()),
+            revision: Set(String::new()),
         }
         .insert(&store.db)
         .await

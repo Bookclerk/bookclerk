@@ -11831,6 +11831,509 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
+    "/api/library/listings/{id}/pin": {
+      "put": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Pins a store listing to the edition it sells.",
+        "description": "The listing, with its holdings and offers, moves to the edition at once,\nand its recorded conflicts are dropped. Later scans keep it there. Only\nthe operator, an Owner or an Administrator may pin.",
+        "operationId": "put_listing_pin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Listing id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PinBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The pin, and the edition the listing left when it moved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PinJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can change how listings resolve"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such listing or edition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "edition 6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b not found"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `edition_id` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The pin could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      },
+      "delete": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Removes a listing's pin.",
+        "description": "The listing keeps selling the edition it was pinned to; only a new pin\nmoves it again.",
+        "operationId": "delete_listing_pin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Listing id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The pin is removed."
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can change how listings resolve"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The listing has no pin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "listing 2f4e6a8c-1b3d-4e5f-9a7b-8c6d4e2f0a1b has no pin"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The pin could not be removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/library/conflicts": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Pages the conflicts the resolver could not decide, for an Administrator\nto settle with a pin.",
+        "operationId": "list_conflicts",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, 1 to 200 (default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of conflicts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The cursor is not one this route made.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid page cursor"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can change how listings resolve"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The conflicts could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
     "/api/config/node-invites": {
       "get": {
         "tags": [
@@ -31493,6 +31996,85 @@
           }
         }
       },
+      "ConflictJson": {
+        "type": "object",
+        "description": "One conflict the resolver could not decide.",
+        "required": [
+          "listing_id",
+          "kind",
+          "subject_ids",
+          "plugin_key",
+          "product_id",
+          "title",
+          "edition_id",
+          "updated_at"
+        ],
+        "properties": {
+          "listing_id": {
+            "type": "string",
+            "description": "The listing whose resolution conflicted.",
+            "example": "2f4e6a8c-1b3d-4e5f-9a7b-8c6d4e2f0a1b"
+          },
+          "kind": {
+            "type": "string",
+            "description": "What conflicted: `strong_identifiers` (two editions share the\nlisting's strong identifiers), `work_identifiers` (its work\nidentifiers name two works), `ambiguous_work` (two works match its\ntitle and authors) or `work_kind_mismatch` (its work identifier names\na work of another kind).",
+            "example": "strong_identifiers"
+          },
+          "subject_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The editions (`strong_identifiers`) or works (the other kinds)\ninvolved."
+          },
+          "plugin_key": {
+            "type": "string",
+            "description": "The listing's storefront PluginKey.",
+            "example": "plugin:audible"
+          },
+          "product_id": {
+            "type": "string",
+            "description": "The store's product id.",
+            "example": "B0CXYZ1234"
+          },
+          "title": {
+            "type": "string",
+            "description": "The listing's title as the store reported it.",
+            "example": "Dune"
+          },
+          "edition_id": {
+            "type": "string",
+            "description": "The edition the listing sells now.",
+            "example": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "When the conflict was last seen (RFC 3339).",
+            "example": "2026-11-15T21:00:00Z"
+          }
+        }
+      },
+      "ConflictPage": {
+        "type": "object",
+        "description": "One page of conflicts.",
+        "required": [
+          "conflicts"
+        ],
+        "properties": {
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConflictJson"
+            },
+            "description": "The conflicts, by listing."
+          },
+          "next_cursor": {
+            "type": "string",
+            "description": "Pass as `cursor` for the next page; absent on the last page.",
+            "nullable": true
+          }
+        }
+      },
       "ConnectionChoice": {
         "anyOf": [
           {
@@ -37053,6 +37635,47 @@
           "none"
         ],
         "example": "auto"
+      },
+      "PinBody": {
+        "type": "object",
+        "description": "Body of `PUT /api/library/listings/{id}/pin`.",
+        "required": [
+          "edition_id"
+        ],
+        "properties": {
+          "edition_id": {
+            "type": "string",
+            "description": "The edition the listing sells.",
+            "example": "6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PinJson": {
+        "type": "object",
+        "description": "A listing's pin.",
+        "required": [
+          "listing_id",
+          "edition_id"
+        ],
+        "properties": {
+          "listing_id": {
+            "type": "string",
+            "description": "The listing.",
+            "example": "2f4e6a8c-1b3d-4e5f-9a7b-8c6d4e2f0a1b"
+          },
+          "edition_id": {
+            "type": "string",
+            "description": "The edition it is pinned to, and now sells.",
+            "example": "6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b"
+          },
+          "moved_from": {
+            "type": "string",
+            "description": "The edition it sold before, when the pin moved it; absent when it\nalready sold the pinned edition.",
+            "example": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+            "nullable": true
+          }
+        }
       },
       "PinnedSchemaSummary": {
         "type": "object",

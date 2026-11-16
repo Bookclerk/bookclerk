@@ -4076,6 +4076,32 @@ async fn authorize_provisioner(
     }
 }
 
+/// The library Administrator behind `headers`, for the routes that change
+/// how the library resolves listings (pins and conflicts).
+///
+/// The operator, an elevated Owner, an Owner or an Administrator is
+/// admitted, and an impersonating operator acts with the impersonated
+/// user's role, as for user provisioning.
+///
+/// # Returns
+///
+/// `None` for the operator, else the user's id.
+///
+/// # Errors
+///
+/// 401 when no one is signed in, 403 for a Member, Host or a session
+/// without a user.
+pub(crate) async fn library_administrator(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<i64>, StatusCode> {
+    let auth = state.auth_snapshot().await;
+    let library = state.library_snapshot().await;
+    Ok(authorize_provisioner(state, &auth, headers, &library)
+        .await?
+        .user_id())
+}
+
 /// Maps an impersonated first-party user onto that user's provisioner role.
 async fn provisioner_for_impersonated_user(
     library: &bookclerk_library::LibraryStore,
