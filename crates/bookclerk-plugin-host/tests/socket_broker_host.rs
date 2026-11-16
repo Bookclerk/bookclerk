@@ -16,10 +16,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bookclerk_config::{Config, Paths};
-use bookclerk_plugin_abi::{SocketConnectRequest, SocketFrame};
+use bookclerk_plugin_abi::{SocketConnectRequest, SocketFrame, Sockets as _};
 use bookclerk_plugin_host::{
-    consent_request, discover_plugins, DiscoveredPlugin, PluginGrantStore, SocketBroker,
-    SocketEvent, SocketSink,
+    consent_request, discover_plugins, BrokerSockets, DiscoveredPlugin, PluginGrantStore,
+    SocketBroker, SocketEvent, SocketSink,
 };
 use futures::{SinkExt as _, StreamExt as _};
 use tokio::net::TcpListener;
@@ -131,7 +131,9 @@ async fn the_host_broker_holds_a_socket_and_stops_when_it_closes() {
     let sink: Arc<dyn SocketSink> = recorder.clone();
     broker.set_sink(Arc::downgrade(&sink));
 
-    let info = broker
+    // The guest's `SOCKETS` binding is the broker behind the ABI trait.
+    let sockets = BrokerSockets::new(broker.clone());
+    let info = sockets
         .connect(SocketConnectRequest {
             url: format!("ws://127.0.0.1:{port}/socket.io/"),
             attachment: b"cursor-1".to_vec(),
@@ -140,7 +142,7 @@ async fn the_host_broker_holds_a_socket_and_stops_when_it_closes() {
         .await
         .unwrap_or_else(|err| panic!("connect through the broker: {err}"));
     assert_eq!(broker.open_sockets(), vec![info.socket.clone()]);
-    assert_eq!(broker.list().await.expect("list").len(), 1);
+    assert_eq!(sockets.list().await.expect("list").len(), 1);
     broker
         .set_attachment(info.socket.clone(), b"cursor-2".to_vec())
         .await
