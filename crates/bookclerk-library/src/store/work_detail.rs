@@ -344,7 +344,7 @@ impl LibraryStore {
     }
 
     /// The cover URLs of `edition_ids`, for a page of index rows (each
-    /// names its cover edition), chosen as [`edition_cover`] says: the
+    /// names its cover edition), chosen as `edition_cover` says: the
     /// edition's own, else a listing's, else its work's (or show's).
     ///
     /// # Returns
