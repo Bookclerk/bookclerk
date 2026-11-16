@@ -101,7 +101,7 @@ def assert_envelope(doc: dict) -> list[str]:
 
     indexed = (windows.get("api_with_rebuild") or {}).get("indexed")
     if indexed != 10_000:
-        problems.append(f"search index has {indexed} books, expected 10000")
+        problems.append(f"works search index has {indexed} works, expected 10000")
 
     if _cpu_is_one_core(doc.get("cpu_max", "")):
         line = doc.get("media_pool_line") or ""

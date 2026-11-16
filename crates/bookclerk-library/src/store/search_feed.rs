@@ -1,17 +1,11 @@
-//! Reads the node-local search index needs to follow library events.
+//! Maps listings to the library titles (`books` rows) that sell them.
 //!
-//! The search index holds one document per library title (`books` row). The
-//! library model's events name editions and listings
-//! (`edition_linked`, `edition_updated`, `holding_added`, and
-//! `holding_removed` once holdings can be removed), not titles, so the
-//! index consumer maps an event to the listings it touches, and each
-//! listing to the titles that sell it. A listing is matched to a title the
-//! way the resolver derives one: same plugin key, the stored marketplace and
-//! the stored product id ([`ListingRef`]).
-//!
-//! Refreshing by listing rather than by title lets the index drop a title
-//! whose row is gone: the consumer deletes every document carrying the
-//! listing's [`ListingRef::term`] and re-adds the titles that still sell it.
+//! The library model's events name editions and listings, not titles, so a
+//! reader that still keeps per-title data maps an event to the listings it
+//! touches, and each listing to the titles that sell it. A listing is
+//! matched to a title the way the resolver derives one: same plugin key,
+//! the stored marketplace and the stored product id ([`ListingRef`]).
+//! These reads go when `books` is retired.
 
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 
@@ -21,12 +15,12 @@ use crate::entities::{books, store_listings};
 use crate::error::{LibraryError, Result};
 use crate::models::BookRecord;
 
-/// The identity of a store listing as the search index stores it: plugin
-/// key, stored marketplace and stored product id.
+/// The identity of a store listing: plugin key, stored marketplace and
+/// stored product id.
 ///
 /// Built either from a `store_listings` row or from a library title, and
-/// both spell it the same way, so a title's document and its listing's
-/// refresh meet on one [`Self::term`].
+/// both spell it the same way, so a title and its listing meet on one
+/// [`Self::term`].
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ListingRef {
     /// Provenance-qualified PluginKey of the storefront.

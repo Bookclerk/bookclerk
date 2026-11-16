@@ -454,8 +454,8 @@ move_into_cgroup() {
   fi
 }
 
-# A library that has been running has its search indexes; without them the
-# daemon builds both in a job that races the timed load. The seed built the
+# A library that has been running has its works search index; without it the
+# daemon builds it in a job that races the timed load. The seed built the
 # library page index the same way.
 prebuild_log="${FILES}/envelope-prebuild.log"
 if ! BOOKCLERK_FILES_DIR="${FILES}" "${CLI}" library search --rebuild-index --limit 0 Title \
@@ -761,7 +761,7 @@ wait "${MIX_PID}"
 MIX_REBUILD_RC=$?
 set -e
 rebuild_ms="$(( (rebuild_end_ns - rebuild_start_ns) / 1000000 ))"
-indexed="$(sed -n 's/search index rebuilt: \([0-9]*\) book(s)/\1/p' "${rebuild_log}" | head -n 1)"
+indexed="$(sed -n 's/works search index rebuilt: \([0-9]*\) work(s)/\1/p' "${rebuild_log}" | head -n 1)"
 indexed="${indexed:-0}"
 stop_anon_poll "${rebuild_poll_pid}" "${rebuild_poll}"
 rebuild_window="$(anon_window_max "${rebuild_poll}")"

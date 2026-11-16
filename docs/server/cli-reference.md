@@ -61,7 +61,7 @@ Commands:
 - [`bookclerk library acquire`](#bookclerk-library-acquire): Download + decrypt + store titles: queues one acquire job per title id (or one for every pending title) for a bookclerkd node to run, and waits for them. `--dry-run` only prints planned keys, here
 - [`bookclerk library set-status`](#bookclerk-library-set-status): Match storage files to library rows and update acquire status
 - [`bookclerk library get-license`](#bookclerk-library-get-license): Fetch a content license for an ASIN
-- [`bookclerk library search`](#bookclerk-library-search): Search the library index
+- [`bookclerk library search`](#bookclerk-library-search): Search the library's works by title, people, series or store id
 - [`bookclerk library export`](#bookclerk-library-export): Export library rows as CSV / JSON / XLSX (alias of `export library`)
 - [`bookclerk library list`](#bookclerk-library-list): List books in the local library DB
 - [`bookclerk library convert`](#bookclerk-library-convert): Convert acquired m4b/m4a to mp3
@@ -212,7 +212,7 @@ Options:
 
 ### `bookclerk library search`
 
-Search the library index
+Search the library's works by title, people, series or store id
 
 ```text
 bookclerk library search [OPTIONS] <QUERY>
@@ -225,8 +225,8 @@ Arguments:
 Options:
 
 - `-n, --limit <LIMIT>`: Max results (0 = all) (default `10`)
-- `-b, --bare`: Print ASINs only
-- `--rebuild-index`: Rebuild the title and works search indexes before querying
+- `-b, --bare`: Print work ids only
+- `--rebuild-index`: Rebuild the works search index before querying
 - `--filter <FILTER>`: Run a saved quick filter by name
 
 ### `bookclerk library export`

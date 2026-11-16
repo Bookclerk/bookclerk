@@ -788,7 +788,7 @@ are selected, so the hosts are compiled once per run.
 2. `docker run --memory=1g --memory-swap=1g --cpus=1` runs the seed (10,000
    titles written 200 at a time, the way a scan page writes them, then the
    works page index built over them), a `bookclerk library search
-   --rebuild-index` that builds the title and works search indexes, the
+   --rebuild-index` that builds the works search index, the
    daemon and the load in an Ubuntu container of the runner's own release
    (`ubuntu:<VERSION_ID>` from `/etc/os-release`, or `ubuntu:24.04` on a
    non-Ubuntu host), because the hosts link the runner's glibc and libssl.

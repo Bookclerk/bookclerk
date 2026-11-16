@@ -280,61 +280,50 @@ Reserved classes (no worker in this release): `media`, `transcription`,
 
 ## Search index
 
-Searches read Tantivy indexes on the node's own disk, so each daemon keeps
-its own copies current. `bookclerk library search` reads the title index
-under `search_index/`; `GET /api/library/works?q=` reads the works index
-beside it, under `search_index_works/`, with one document per held
-top-level work (its titles, authors, narrators, series and store
-identifiers). Both are kept current the same way:
+Searches read a Tantivy works index on the node's own disk, so each
+daemon keeps its own copy current. `GET /api/library/works?q=` and
+`bookclerk library search` read it, under `search_index_works/`, with one
+document per held top-level work (its titles, authors, narrators, series
+and store identifiers). It is kept current two ways:
 
 - **From events.** Each node registers its own consumer,
   `host:search-index:{node id}`, on the `core.events` outbox for
-  `edition_linked`, `edition_updated`, `holding_added`, `holding_removed`
-  and `book_acquired`, all host event types no plugin may produce. The id names
-  the node, so every node gets every event (Discover's `host:discover` is
-  one consumer for the cluster). An edition event refreshes each listing
-  that sells the edition, a holding event its listing, and `book_acquired`
-  its title. Each of those events also refreshes the works index document
-  of its edition's or listing's work, which is dropped once the work is
-  gone or no longer held. A listing refresh deletes the listing's documents and adds
-  back the titles that still sell it (and any older document of the same
-  title), so a title that is gone leaves the index. A holding event whose
-  listing is already gone removes the marker below (from both indexes,
-  since its work can no longer be found), so the node rebuilds.
-  The index holds one document per `books` row, and a removed holding
-  leaves its row in place until the library model replaces `books`, so
-  until then `holding_removed` refreshes the title rather than dropping it.
+  `edition_linked`, `edition_updated`, `holding_added` and
+  `holding_removed`, all host event types no plugin may produce. The id
+  names the node, so every node gets every event (Discover's
+  `host:discover` is one consumer for the cluster). An edition event
+  refreshes the document of the edition's work, and a holding event the
+  document of its listing's work. A refresh deletes the work's document
+  and adds it back while the work is held, so a work nobody holds any
+  more leaves the index. A holding event whose listing is already gone
+  removes the marker below, since its work can no longer be found, so the
+  node rebuilds.
 - **Rebuild job.** A finished rebuild leaves a marker for the current
-  document layout in each index folder. When either is missing (a new node, a
+  document layout in the index folder. When it is missing (a new node, a
   deleted folder, or an index of an older layout, which is discarded), the
   heartbeat queues a `search_index_rebuild` job pinned to the node, at
   priority 50, after its beat is recorded. It queues at most one every ten
   minutes while the index stays incomplete, so a failing rebuild is not
-  re-queued on every beat. The job rebuilds each index whose marker is
-  missing: it reads every title (or every top-level work) in pages and
-  replaces that index in one commit.
+  re-queued on every beat. The job reads every top-level work in pages and
+  replaces the index in one commit.
 
-One writer runs at a time per index. A delivery that finds a rebuild (or
-the CLI) writing is retried after 10 s, for up to an hour. A CLI rebuild
+One writer runs at a time. A delivery that finds a rebuild (or the CLI)
+writing is retried after 10 s, for up to an hour. A CLI rebuild
 (`library search --rebuild-index`, or the one after `library scan`) that
 finds a daemon writing waits for it, pausing up to 2 s between tries, and
-gives up after five minutes. `library search --rebuild-index` rebuilds the
-title index and then the works index; the rebuild after `library scan`
-rebuilds only the title index, and leaves the works index to the daemon's
-job and its event refreshes. Searches read the last
-commit, so they keep answering from the old index while a rebuild runs.
-A works search on a node whose works index was never built (or is of an
-older layout) answers 503 until the job finishes; a search never creates
-or replaces an index.
+gives up after five minutes. Searches read the last commit, so they keep
+answering from the old index while a rebuild runs. A search on a node
+whose works index was never built (or is of an older layout) answers 503
+(the CLI says to run `library search --rebuild-index`) until the job
+finishes; a search never creates or replaces an index.
 
-The search matches, sorts by title, pages and counts in the index, and
-only the page's titles are read from the database, so there is no hit cap.
-A search that also filters by account or status takes every hit and lets
-the database filter and page them, since those columns can change without
-an event.
+> [!NOTE]
+> Earlier builds also kept a per-title index under `search_index/`.
+> Nothing reads or writes it any more, so that folder can be deleted.
 
 A works search answers in relevance order (title matches weigh most, then
-authors) and ignores `sort`. `author:`, `narrator:`, `series:`, `title:`
+authors) and ignores `sort`; the CLI prints each match's work id and
+title, best first. `author:`, `narrator:`, `series:`, `title:`
 and `identifiers:` (also spelled `asin:`, `isbn:` or `productid:`) narrow
 a term to one field; identifiers match whole and ignore case. Each request
 reads a window of at most 1,000 matches from the cursor's position, and

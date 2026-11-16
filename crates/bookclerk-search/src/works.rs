@@ -1,8 +1,7 @@
 //! The works search index: one document per held top-level work.
 //!
-//! `GET /api/library/works?q=` reads it. It lives beside the per-title
-//! index ([`crate::SearchEngine`]) in its own directory, so each can be
-//! rebuilt on its own, and like that index it is node-local and kept
+//! `GET /api/library/works?q=` and `bookclerk library search` read it. It
+//! is node-local, under `search_index_works/` in the files folder, and kept
 //! current by the daemon's search consumer.
 
 use std::path::{Path, PathBuf};
@@ -16,12 +15,15 @@ use tantivy::schema::{
 use tantivy::tokenizer::{LowerCaser, RawTokenizer, TextAnalyzer};
 use tantivy::{doc, Index, IndexWriter, ReloadPolicy, TantivyDocument, TantivyError, Term};
 
-use crate::engine::{writer_error, REFRESH_WRITER_HEAP, REPLACE_LOCK};
-use crate::{Result, SearchEngine, SearchError};
+use crate::index_dir::{
+    discard_index, open_index, writer_error, BUSY_PAUSE_FIRST, BUSY_PAUSE_MAX, REFRESH_WRITER_HEAP,
+    REPLACE_LOCK,
+};
+use crate::{Result, SearchError};
 
 /// Version of the works document layout; a rebuild marker of another
 /// version does not count.
-const WORKS_SCHEMA_VERSION: u32 = 2;
+const WORKS_SCHEMA_VERSION: u32 = 3;
 
 /// Tokenizer of the identifiers field: the whole value, lowercased, so a
 /// query's `B0DUNE` matches the stored `b0dune`.
@@ -44,6 +46,17 @@ fn complete_marker() -> String {
 /// index while a later rebuild runs.
 fn built_marker() -> String {
     format!("bookclerk-works-built-v{WORKS_SCHEMA_VERSION}")
+}
+
+/// One work a search found.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkHit {
+    /// The top-level work's id.
+    pub work_id: String,
+    /// The work's title, as indexed.
+    pub title: String,
+    /// Tantivy relevance score; higher is a better match.
+    pub score: f32,
 }
 
 /// One window of a query's matches.
@@ -77,7 +90,7 @@ fn normalize_work_query(input: &str) -> String {
 fn works_schema() -> (Schema, [Field; 8]) {
     let mut builder = Schema::builder();
     let work_id = builder.add_text_field("work_id", STRING | STORED);
-    let title = builder.add_text_field("title", TEXT);
+    let title = builder.add_text_field("title", TEXT | STORED);
     let other_titles = builder.add_text_field("other_titles", TEXT);
     let authors = builder.add_text_field("authors", TEXT);
     let narrators = builder.add_text_field("narrators", TEXT);
@@ -137,17 +150,6 @@ pub struct WorkSearchIndex {
 }
 
 impl WorkSearchIndex {
-    /// The works index directory beside the per-title index in
-    /// `search_index_dir` (`search_index_works/` next to `search_index/`).
-    #[must_use]
-    pub fn dir_beside(search_index_dir: &Path) -> PathBuf {
-        let name = search_index_dir
-            .file_name()
-            .map(|n| format!("{}_works", n.to_string_lossy()))
-            .unwrap_or_else(|| "search_index_works".into());
-        search_index_dir.with_file_name(name)
-    }
-
     /// Opens or creates the works index in `dir`, replacing an index of
     /// another layout.
     ///
@@ -158,15 +160,15 @@ impl WorkSearchIndex {
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir).map_err(index_error)?;
         let (schema, _) = works_schema();
-        let index = match SearchEngine::open_index(dir, schema.clone()) {
+        let index = match open_index(dir, schema.clone()) {
             Err(TantivyError::SchemaError(_)) => {
                 let _replacing = REPLACE_LOCK
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                match SearchEngine::open_index(dir, schema.clone()) {
+                match open_index(dir, schema.clone()) {
                     Err(TantivyError::SchemaError(_)) => {
-                        SearchEngine::discard_index(dir)?;
-                        SearchEngine::open_index(dir, schema)
+                        discard_index(dir)?;
+                        open_index(dir, schema)
                     }
                     other => other,
                 }
@@ -192,7 +194,7 @@ impl WorkSearchIndex {
             return Err(SearchError::NotReady);
         }
         let (schema, _) = works_schema();
-        match SearchEngine::open_index(dir, schema) {
+        match open_index(dir, schema) {
             Ok(index) => Ok(Self::with_index(dir, index)),
             Err(TantivyError::SchemaError(_)) => Err(SearchError::NotReady),
             Err(err) => Err(index_error(err)),
@@ -348,12 +350,12 @@ impl WorkSearchIndex {
         max_wait: std::time::Duration,
     ) -> Result<usize> {
         let deadline = tokio::time::Instant::now() + max_wait;
-        let mut pause = crate::engine::BUSY_PAUSE_FIRST;
+        let mut pause = BUSY_PAUSE_FIRST;
         loop {
             match self.rebuild(library).await {
                 Err(SearchError::Busy) if tokio::time::Instant::now() + pause <= deadline => {
                     tokio::time::sleep(pause).await;
-                    pause = (pause * 2).min(crate::engine::BUSY_PAUSE_MAX);
+                    pause = (pause * 2).min(BUSY_PAUSE_MAX);
                 }
                 outcome => return outcome,
             }
@@ -447,6 +449,54 @@ impl WorkSearchIndex {
             }
         }
         Ok(WorkMatches { ids, total })
+    }
+
+    /// The best `limit` matches of `raw_query` with their titles, best
+    /// first; a `limit` of 0 returns every match. Blocking.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Query`] for a query that does not parse, or
+    /// [`SearchError::Index`] when the index cannot be read.
+    pub fn search(&self, raw_query: &str, limit: usize) -> Result<Vec<WorkHit>> {
+        let Some(query) = self.parse(raw_query)? else {
+            return Ok(Vec::new());
+        };
+        let searcher = self
+            .index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .map(|reader: tantivy::IndexReader| reader.searcher())
+            .map_err(index_error)?;
+        // `TopDocs` refuses a zero limit, so "every match" is capped at the
+        // index size instead.
+        let top = match limit {
+            0 => usize::try_from(searcher.num_docs()).unwrap_or(usize::MAX),
+            n => n,
+        };
+        if top == 0 {
+            return Ok(Vec::new());
+        }
+        let docs = searcher
+            .search(&query, &TopDocs::with_limit(top).order_by_score())
+            .map_err(index_error)?;
+        let mut hits = Vec::with_capacity(docs.len());
+        for (score, addr) in docs {
+            let doc: TantivyDocument = searcher.doc(addr).map_err(index_error)?;
+            let text = |field: Field| {
+                doc.get_first(field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            hits.push(WorkHit {
+                work_id: text(self.work_id),
+                title: text(self.title),
+                score,
+            });
+        }
+        Ok(hits)
     }
 
     /// Parses a Lucene-style query over the searchable fields, or `None`
@@ -625,11 +675,25 @@ mod tests {
         assert_eq!(ids(&index, "dune"), works);
     }
 
-    #[test]
-    fn the_works_index_sits_beside_the_title_index() {
-        assert_eq!(
-            WorkSearchIndex::dir_beside(Path::new("/data/search_index")),
-            PathBuf::from("/data/search_index_works")
-        );
+    #[tokio::test]
+    async fn a_search_returns_titles_best_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let (library, works) = library_with(&[
+            ("B0HOBBIT", "The Hobbit", "J. R. R. Tolkien"),
+            ("B0SILM", "The Silmarillion", "J. R. R. Tolkien"),
+        ])
+        .await;
+        let index = WorkSearchIndex::open(dir.path()).unwrap();
+        index.rebuild(&library).await.unwrap();
+        let hits = index.search("hobbit", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].work_id, works[0]);
+        assert_eq!(hits[0].title, "The Hobbit");
+        assert_eq!(index.search("tolkien", 0).unwrap().len(), 2, "0 = all");
+        assert_eq!(index.search("tolkien", 1).unwrap().len(), 1);
+        assert!(index.search("  ", 0).unwrap().is_empty());
+        let empty = tempfile::tempdir().unwrap();
+        let none = WorkSearchIndex::open(empty.path()).unwrap();
+        assert!(none.search("tolkien", 0).unwrap().is_empty());
     }
 }

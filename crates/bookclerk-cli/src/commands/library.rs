@@ -6,7 +6,7 @@ use bookclerk_acquire::{
 use bookclerk_config::{AudioQuality, Config};
 use bookclerk_library::{AcquireStatus, LibraryStore};
 use bookclerk_plugin_host::HostControlPlane;
-use bookclerk_search::{SearchEngine, WorkSearchIndex};
+use bookclerk_search::WorkSearchIndex;
 use bookclerk_source::{source_scope, DownloadOptions, FetchOptions};
 use bookclerk_storage::StorageBackend;
 use clap::Subcommand;
@@ -168,17 +168,17 @@ pub enum LibraryCommand {
         #[arg(long, conflicts_with = "json")]
         full: bool,
     },
-    /// Search the library index.
+    /// Search the library's works by title, people, series or store id.
     Search {
         /// Lucene-style query string.
         query: String,
         /// Max results (0 = all).
         #[arg(short = 'n', long, default_value = "10")]
         limit: usize,
-        /// Print ASINs only.
+        /// Print work ids only.
         #[arg(short, long)]
         bare: bool,
-        /// Rebuild the title and works search indexes before querying.
+        /// Rebuild the works search index before querying.
         #[arg(long)]
         rebuild_index: bool,
         /// Run a saved quick filter by name.
@@ -314,9 +314,9 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     recon.unmatched_files
                 );
             }
-            let engine = SearchEngine::open(&paths.search_index_dir)?;
-            let indexed = engine.rebuild_waiting(&store, INDEX_WRITER_WAIT).await?;
-            println!("search index rebuilt: {indexed} book(s)");
+            let works = WorkSearchIndex::open(&paths.search_index_dir)?;
+            let indexed = works.rebuild_waiting(&store, INDEX_WRITER_WAIT).await?;
+            println!("works search index rebuilt: {indexed} work(s)");
             Ok(())
         }
         LibraryCommand::Acquire {
@@ -579,12 +579,9 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             rebuild_index,
             filter,
         } => {
-            let engine = SearchEngine::open(&paths.search_index_dir)?;
+            let works_dir = &paths.search_index_dir;
             if rebuild_index {
-                let n = engine.rebuild_waiting(&store, INDEX_WRITER_WAIT).await?;
-                println!("search index rebuilt: {n} book(s)");
-                let works =
-                    WorkSearchIndex::open(&WorkSearchIndex::dir_beside(&paths.search_index_dir))?;
+                let works = WorkSearchIndex::open(works_dir)?;
                 let n = works.rebuild_waiting(&store, INDEX_WRITER_WAIT).await?;
                 println!("works search index rebuilt: {n} work(s)");
             }
@@ -597,15 +594,21 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             } else {
                 query
             };
-            let hits = engine.search(&query_text, limit)?;
+            let index = match WorkSearchIndex::open_for_search(works_dir) {
+                Err(bookclerk_search::SearchError::NotReady) => anyhow::bail!(
+                    "the works search index is not built yet; run `bookclerk library search --rebuild-index`, or let the daemon build it"
+                ),
+                other => other?,
+            };
+            let hits = index.search(&query_text, limit)?;
             if limit != 0 {
                 println!("Found {} matching result(s).", hits.len());
             }
             for hit in hits {
                 if bare {
-                    println!("{}", hit.asin);
+                    println!("{}", hit.work_id);
                 } else {
-                    println!("{} — {}", hit.asin, hit.title);
+                    println!("{} — {}", hit.work_id, hit.title);
                 }
             }
             Ok(())

@@ -25,7 +25,7 @@ pub struct Paths {
     /// Reserved path (legacy). Logging goes to stderr + journald; Bookclerk does
     /// not write or rotate files here.
     pub log_dir: PathBuf,
-    /// Tantivy full-text search index (classic Lucene `SearchEngine`).
+    /// The node's Tantivy works search index (`search_index_works/`).
     pub search_index_dir: PathBuf,
     /// Downloaded ONNX embedding models (`discovery.embeddings_enabled`).
     pub models_dir: PathBuf,
@@ -39,7 +39,7 @@ impl Paths {
         let library_db = files_dir.join("library.db");
         let cache_dir = files_dir.join("cache");
         let log_dir = files_dir.join("logs");
-        let search_index_dir = files_dir.join("search_index");
+        let search_index_dir = files_dir.join("search_index_works");
         let models_dir = files_dir.join("models");
         Self {
             files_dir,
@@ -149,7 +149,10 @@ mod tests {
         assert_eq!(paths.config_file, PathBuf::from("/data/config.toml"));
         assert_eq!(paths.library_db, PathBuf::from("/data/library.db"));
         assert_eq!(paths.cache_dir, PathBuf::from("/data/cache"));
-        assert_eq!(paths.search_index_dir, PathBuf::from("/data/search_index"));
+        assert_eq!(
+            paths.search_index_dir,
+            PathBuf::from("/data/search_index_works")
+        );
         assert_eq!(paths.models_dir, PathBuf::from("/data/models"));
     }
 }
