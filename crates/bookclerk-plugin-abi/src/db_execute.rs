@@ -1664,6 +1664,33 @@ mod tests {
     }
 
     #[test]
+    fn encoded_db_value_len_matches_the_encoding() {
+        use crate::{encoded_db_value_bytes, encoded_db_value_len};
+        let mut cases = vec![
+            DbValue::Null(DbType::Text),
+            DbValue::Null(DbType::Bytes),
+            DbValue::Boolean(false),
+            DbValue::Int64(i64::MIN),
+            DbValue::Float64(-0.5),
+            DbValue::Text("é🦀".into()),
+        ];
+        // Every length across several word boundaries, and one past the
+        // default 1024-word first segment so the re-encode path is covered.
+        for n in (0..70).chain([8191, 8192, 8193, 20_000]) {
+            cases.push(DbValue::Text("x".repeat(n)));
+            cases.push(DbValue::Bytes(vec![7; n]));
+        }
+        for v in &cases {
+            assert_eq!(
+                encoded_db_value_len(v).unwrap(),
+                encoded_db_value_bytes(v).unwrap().len(),
+                "{v:?}"
+            );
+        }
+        encoded_db_value_len(&DbValue::Text("a\0b".into())).expect_err("TEXT NUL");
+    }
+
+    #[test]
     fn capnp_db_value_goldens_roundtrip() {
         use crate::{decode_db_value_bytes, encoded_db_value_bytes};
         let cases = [

@@ -393,8 +393,7 @@ impl SqliteProxy {
                 }
                 if caps.max_cell_bytes > 0 {
                     for (name, value) in &values {
-                        let cell = bookclerk_db_exec::sea_value_to_json(value);
-                        let n = bookclerk_db_exec::json_cell_utf8_len(&cell);
+                        let n = bookclerk_db_exec::sea_cell_utf8_len(value);
                         if n > cell_cap {
                             return Err(DbErr::Custom(format!(
                                 "{} (column `{name}`)",
