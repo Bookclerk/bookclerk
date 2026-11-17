@@ -55,10 +55,13 @@ been retried:
 - for a ``merge_group`` run, the pull request already entered the queue at
   least ``MIN_ENQUEUES_TO_PASS_STRANDED`` times on its current head and
   the same job was stranded the same way in its previous merge-group run
-  (the re-enqueue above retried it once).
+  (the re-enqueue above retried it once);
+- for a ``push`` run on ``main``, no retry is needed: that run is
+  build-only (it compiles and saves caches, and runs no checks), so the
+  missing job loses a cache save, not a check.
 
-Any other run (a ``main`` push, an OSV remediation run) never passes a
-stranded job.
+Any other run (a push to another branch, an OSV remediation run) never
+passes a stranded job.
 
 The checks are sans-IO functions over the bytes the GitHub API returns, so
 ``scripts/tests/test_merge_queue_requeue.py`` drives the same code the
@@ -107,6 +110,9 @@ MIN_PR_ATTEMPT_TO_PASS_STRANDED = 2
 
 # Jobs that fail or end because another job did, never on their own.
 FOLLOWER_JOBS = ("CI Gate", "merge-queue fail-fast")
+
+# The branch whose push runs are build-only (they compile and save caches).
+MAIN_BRANCH = "main"
 
 # The phrase GitHub's annotation uses when no hosted runner took the job.
 NOT_ACQUIRED = "was not acquired by Runner"
@@ -198,9 +204,10 @@ def gate_run(raw: bytes, repo: str) -> tuple[str, str, int] | None:
 
     Returns:
         ``(event, head branch, run_number)`` when the run is a
-        ``pull_request`` or ``merge_group`` run of ``CI_WORKFLOW_PATH`` in
-        ``repo`` with a non-empty head branch and a ``run_number`` of at
-        least 1; otherwise None. The run is still in progress, since
+        ``pull_request`` or ``merge_group`` run, or a ``push`` run on
+        ``main`` (``MAIN_BRANCH``), of ``CI_WORKFLOW_PATH`` in ``repo``
+        with a non-empty head branch and a ``run_number`` of at least 1;
+        otherwise None. The run is still in progress, since
         ``CI Gate`` is one of its jobs.
     """
     run = _load(raw)
@@ -211,7 +218,8 @@ def gate_run(raw: bytes, repo: str) -> tuple[str, str, int] | None:
     branch = run.get("head_branch")
     number = run.get("run_number")
     if (
-        event not in ("pull_request", "merge_group")
+        event not in ("pull_request", "merge_group", "push")
+        or (event == "push" and branch != MAIN_BRANCH)
         or run.get("path") != CI_WORKFLOW_PATH
         or not isinstance(base, dict)
         or base.get("full_name") != repo
@@ -755,21 +763,23 @@ def decide_stranded(repo: str, run_id: int, attempt: int, name: str, gh: Gh) -> 
         gh: Runs ``gh`` (``run_gh`` outside tests).
 
     Returns:
-        ``(True, reason)`` when the job never got a runner now and also
-        never got one on the try before (the previous attempt of a pull
-        request run, or the pull request's previous merge group on the
-        same head), else ``(False, reason)``; ``reason`` is one sentence.
+        ``(True, reason)`` when the job never got a runner now and either
+        the run is a build-only ``main`` push or the job also never got
+        one on the try before (the previous attempt of a pull request run,
+        or the pull request's previous merge group on the same head), else ``(False, reason)``; ``reason`` is one sentence.
     """
     if attempt < 1:
         return False, f"run {run_id} has no attempt {attempt}."
     try:
         context = gate_run(gh(["api", f"repos/{repo}/actions/runs/{run_id}"]), repo)
         if context is None:
-            return False, f"run {run_id} is not a pull request or merge-group CI run of {repo}."
+            return False, f"run {run_id} is not a pull request, merge-group or main push CI run of {repo}."
         event, branch, number = context
         now = f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100"
         if _stranded_with_annotation(repo, now, name, gh) is None:
             return False, f"{name} in run {run_id} ran, is missing, or was cancelled without GitHub's not-acquired annotation."
+        if event == "push":
+            return True, f"{name} never got a runner in build-only main push run {run_id}; it only saves caches, so CI Gate passes without it."
         if event == "pull_request":
             if attempt < MIN_PR_ATTEMPT_TO_PASS_STRANDED:
                 return False, f"{name} never got a runner on attempt {attempt}; it is re-run once first."

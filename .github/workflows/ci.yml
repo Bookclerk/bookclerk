@@ -1704,8 +1704,8 @@ jobs:
 
       # GitHub sometimes never gives the macOS job a runner. Once that has
       # been retried (a pull request run re-run once, a merge group
-      # re-enqueued once), the gate lets the run pass without it
-      # (docs/contributing/ci.md#macos-job). Reads the GitHub API only.
+      # re-enqueued once), or at once on a build-only main push, the gate
+      # lets the run pass without it (docs/contributing/ci.md#macos-job). Reads the GitHub API only.
       # `needs` reports such a job as `abandoned` (the jobs API says
       # `cancelled`).
       - name: Check whether the macOS job never got a runner
