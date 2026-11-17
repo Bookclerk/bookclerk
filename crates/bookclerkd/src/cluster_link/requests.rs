@@ -7,7 +7,7 @@
 //! answers each (`requests.finish`):
 //!
 //! - **Accepted** when this branch still lists the requested edition to
-//!   that library ([`book_for_request`]: the owner's books always, the
+//!   that library ([`title_for_request`]: the owner's books always, the
 //!   members' while the link's "List my members' books" setting is on and
 //!   they did not opt out, and nothing while "Share this branch's books"
 //!   is off). The book is recorded as requested by that library
@@ -32,9 +32,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_library::control_plane::{
-    book_for_request, load_cluster_link, record_link_request, ClusterLink, ScanRequester,
+    load_cluster_link, record_link_request, title_for_request, ClusterLink, ScanRequester,
 };
-use bookclerk_library::{AcquireStatus, BookRecord, JobTrigger, LibraryStore};
+use bookclerk_library::{AcquireStatus, AcquireTitle, JobTrigger, LibraryStore};
 use bookclerk_node_client::{HostClientHandle, OwnerCallError};
 use bookclerk_node_proto::{BranchRequest, RequestOutcome};
 use tokio::sync::{broadcast, watch};
@@ -50,9 +50,9 @@ const MAX_BATCHES_PER_PASS: usize = 20;
 
 /// Queues the download of a book this branch accepted a request for.
 pub trait RequestAcquirer: Send + Sync + 'static {
-    /// Queues an acquire of `book` in this install's own library, on the
+    /// Queues an acquire of `title` in this install's own library, on the
     /// account that holds it.
-    fn acquire(&self, book: &BookRecord) -> impl Future<Output = anyhow::Result<()>> + Send;
+    fn acquire(&self, title: &AcquireTitle) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 /// The daemon's [`RequestAcquirer`]: an ordinary acquire job, with the
@@ -64,13 +64,14 @@ pub struct DaemonAcquirer {
 }
 
 impl RequestAcquirer for DaemonAcquirer {
-    async fn acquire(&self, book: &BookRecord) -> anyhow::Result<()> {
+    async fn acquire(&self, title: &AcquireTitle) -> anyhow::Result<()> {
         let admitted = crate::jobs::enqueue_acquire(
             Arc::clone(&self.state),
             ScanRequester::Operator,
             crate::jobs::AcquireAsk {
-                titles: vec![book.uuid.clone()],
-                account: Some(book.account_id.clone()),
+                // The holding id names exactly this account's title.
+                titles: vec![title.holding_id.clone()],
+                account: Some(title.account_id.clone()),
                 ..crate::jobs::AcquireAsk::default()
             },
             JobTrigger::Scheduler,
@@ -262,14 +263,15 @@ impl<A: RequestAcquirer> RequestTaker<A> {
         link: &ClusterLink,
         request: &BranchRequest,
     ) -> anyhow::Result<RequestOutcome> {
-        let Some(book) = book_for_request(&self.library, request, link.list_members_books).await?
+        let Some(title) =
+            title_for_request(&self.library, request, link.list_members_books).await?
         else {
             return Ok(RequestOutcome::NotListed);
         };
-        if book.acquire_status != AcquireStatus::Acquired {
-            self.acquirer.acquire(&book).await?;
+        if title.status != AcquireStatus::Acquired {
+            self.acquirer.acquire(&title).await?;
         }
-        record_link_request(&self.library, &self.cluster_id, &book).await?;
+        record_link_request(&self.library, &self.cluster_id, &title).await?;
         Ok(RequestOutcome::Accepted)
     }
 }

@@ -51,9 +51,9 @@ use super::remote_work::{remote_job_fence, remote_lease_owner};
 use crate::entities::{jobs, link_requests};
 use crate::error::{LibraryError, Result};
 use crate::models::{
-    branch_request_dedup_key, BookRecord, BranchRequestTarget, JobKind, JobPayload, JobState,
-    JobTrigger,
+    branch_request_dedup_key, BranchRequestTarget, JobKind, JobPayload, JobState, JobTrigger,
 };
+use crate::store::AcquireTitle;
 use crate::store::LibraryStore;
 
 /// `POST /api/branch-requests` body: the work to ask a branch for, and
@@ -419,9 +419,9 @@ pub async fn finish_branch_request(
     })
 }
 
-/// On a branch: records that the library `cluster_id` asked for `book`,
-/// so the catalog sync sends it there. A book already recorded for that
-/// library is left as it is.
+/// On a branch: records that the library `cluster_id` asked for `title`
+/// (by its holding account and store listing), so the catalog sync sends
+/// it there. Asking again moves the request to now.
 ///
 /// # Errors
 ///
@@ -429,15 +429,15 @@ pub async fn finish_branch_request(
 pub async fn record_link_request(
     store: &LibraryStore,
     cluster_id: &str,
-    book: &BookRecord,
+    title: &AcquireTitle,
 ) -> Result<()> {
     let row = link_requests::ActiveModel {
         id: NotSet,
         cluster_id: Set(cluster_id.to_string()),
-        plugin_key: Set(book.plugin_key.clone()),
-        account_id: Set(book.account_id.clone()),
-        marketplace: Set(bookclerk_resolve::stored_marketplace(&book.marketplace)),
-        product_id: Set(bookclerk_resolve::stored_product_id(&book.product_id)),
+        plugin_key: Set(title.plugin_key.clone()),
+        account_id: Set(title.account_id.clone()),
+        marketplace: Set(bookclerk_resolve::stored_marketplace(&title.marketplace)),
+        product_id: Set(bookclerk_resolve::stored_product_id(&title.product_id)),
         created_at: Set(Utc::now().to_rfc3339()),
     };
     link_requests::Entity::insert(row)

@@ -10,6 +10,8 @@ use bookclerk_node_proto::{
 };
 use sea_orm::{ActiveModelTrait, ActiveValue::Set};
 
+use crate::BookRecord;
+
 use super::*;
 use crate::control_plane::{
     ask_branches, claimant_may_run, pending_questions, record_answers, AnswersRecorded, Claimant,
@@ -495,24 +497,28 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
         };
         // Listed only while the link lists members' books.
         assert!(
-            crate::control_plane::book_for_request(&store, &request, false)
+            crate::control_plane::title_for_request(&store, &request, false)
                 .await
                 .unwrap()
                 .is_none(),
             "{name}"
         );
-        let found = crate::control_plane::book_for_request(&store, &request, true)
+        let found = crate::control_plane::title_for_request(&store, &request, true)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(found.uuid, members.uuid, "{name}");
+        assert_eq!(
+            (found.account_id.as_str(), found.product_id.as_str()),
+            ("riley-acct", "B0MEMBOOK1"),
+            "{name}"
+        );
         // Another edition of the work is not the requested one.
         let other = BranchRequest {
             product_id: "B0ELSEWHERE".into(),
             ..request.clone()
         };
         assert!(
-            crate::control_plane::book_for_request(&store, &other, true)
+            crate::control_plane::title_for_request(&store, &other, true)
                 .await
                 .unwrap()
                 .is_none(),
