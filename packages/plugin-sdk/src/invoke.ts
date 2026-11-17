@@ -374,6 +374,13 @@ function wireMigration(migration: PluginMigration): WirePluginMigration {
   };
 }
 
+/**
+ * Maps wire listing options to the author's, turning each zero value (the
+ * wire's "absent") into `undefined`, hints included.
+ *
+ * @param options - Decoded wire options, or `undefined` when none were sent.
+ * @returns The options handed to `Destination.list`.
+ */
 function listOptions(
   options: Partial<W.DestinationListParams["options"]> | undefined,
 ): ListOptions {
@@ -386,6 +393,13 @@ function listOptions(
   };
 }
 
+/**
+ * Maps wire move options to the author's; `false` and empty text become
+ * `undefined`.
+ *
+ * @param options - Decoded wire options, or `undefined` when none were sent.
+ * @returns The options handed to `move` and `moveMany`.
+ */
 function moveOptions(
   options: Partial<W.DestinationMoveParams["options"]> | undefined,
 ): MoveOptions {
@@ -395,6 +409,15 @@ function moveOptions(
   };
 }
 
+/**
+ * Maps a wire `moveMany` request to the author's, refusing more than
+ * `MAX_BATCH_KEYS` explicit pairs. A prefix target is not counted: its page
+ * size is the author's `limit`.
+ *
+ * @param request - Decoded wire request, or `undefined` when none was sent.
+ * @returns The request handed to `moveMany`.
+ * @throws PluginError `payload_too_large` above the pair cap.
+ */
 function moveManyRequest(
   request: Partial<W.DestinationMoveManyParams["request"]> | undefined,
 ): MoveManyRequest {
@@ -410,8 +433,15 @@ function moveManyRequest(
   };
 }
 
-// The host never sends more than `MAX_BATCH_KEYS`; refuse a larger list
-// before the author's handler sees it.
+/**
+ * Checks a batch call's key list before the author's handler sees it. The
+ * host never sends an empty list or more than `MAX_BATCH_KEYS` keys.
+ *
+ * @param keys - Decoded wire keys, or `undefined` when none were sent.
+ * @returns The keys as strings, in the order sent.
+ * @throws PluginError `invalid_params` for no keys, `payload_too_large`
+ *   above the cap.
+ */
 function batchKeys(keys: string[] | undefined): string[] {
   const list = keys ?? [];
   if (list.length === 0) {
@@ -423,9 +453,17 @@ function batchKeys(keys: string[] | undefined): string[] {
   return list.map(String);
 }
 
-// Author outcomes carry an optional `{ code, message }`; the wire carries a
-// `PluginError` whose empty code means success, so a failure with an empty
-// code goes out as `internal` rather than as success.
+/**
+ * Maps the author's per-key outcomes to the wire's.
+ *
+ * An author outcome without `error` is a success and goes out with an empty
+ * wire code, which is how the wire spells success. An author outcome with
+ * `error` is a failure even when its code is empty, so an empty code goes
+ * out as `internal` rather than as success.
+ *
+ * @param outcomes - The author's outcomes, one per key.
+ * @returns Wire outcomes in the same order.
+ */
 function wireOutcomes(outcomes: KeyOutcome[]): WireKeyOutcome[] {
   return outcomes.map((o) => ({
     key: String(o.key ?? ""),
