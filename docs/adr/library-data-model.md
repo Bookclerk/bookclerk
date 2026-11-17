@@ -383,7 +383,10 @@ acquire job picks its titles from account holdings and their editions'
 state, not from `books`, so a title whose edition another account's title
 already acquired is not visited again. `book_acquired`
 names the edition (`editionId`), and a wishlist item records the edition
-that fulfilled it (`resolved_edition_id`).
+that fulfilled it (`resolved_edition_id`). Metadata gap-fill and the
+Audible catalog match walk held editions, not `books`: what they find
+fills the work, expression and edition, a matched ASIN becomes an edition
+identifier, and the edition records who enriched it (`enrich_source`).
 
 Step 6 also adds the page index the *Consequences* call for:
 `library_work_rows`, one row per held top-level work, refreshed by a

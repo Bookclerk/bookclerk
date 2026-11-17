@@ -91,6 +91,15 @@ after every page, so a large library never has to arrive in one piece.
 After a scan, books from other stores can get an Audible ASIN from
 Audible's public catalog search. This needs no Audible account.
 
+The match is made per edition: every held edition that has no ASIN yet
+is searched in the marketplace of the store that sells it. A confident
+match records the ASIN on the edition, fills in the description, genres,
+cover and language the book still lacks, and marks the edition so the
+match is not repeated. An ASIN another edition in the library already
+has stays with that edition, and the marked edition is not matched again.
+An edition that already has an ASIN, such as one an Audible scan
+reported with its ASIN, is skipped.
+
 - It is on while `library.enrich_from_audible = true` (the default).
 - `library.enrich_min_confidence` sets how sure a match must be (default
   `90`).

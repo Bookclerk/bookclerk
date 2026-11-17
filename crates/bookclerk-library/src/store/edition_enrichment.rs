@@ -33,11 +33,24 @@ pub struct EnrichCandidate {
     pub work_id: Option<String>,
     /// The edition's display title.
     pub title: String,
+    /// The edition's subtitle, else a listing's.
+    pub subtitle: Option<String>,
     /// The credited authors as the first listing of the edition prints
     /// them, when it does.
     pub authors: Option<String>,
+    /// The credited narrators as the first listing of the edition prints
+    /// them, when it does.
+    pub narrators: Option<String>,
+    /// The edition's running time in whole minutes, else a listing's.
+    pub duration_minutes: Option<i64>,
+    /// The marketplace of the edition's first listing (lower case, such as
+    /// `us`), which scopes an ASIN found for it.
+    pub marketplace: String,
     /// The edition's ISBN (the smallest when it has several).
     pub isbn: Option<String>,
+    /// The edition's ASIN (the smallest when it has several), which a
+    /// store listing or an earlier catalog match recorded.
+    pub asin: Option<String>,
     /// The work's description, else a listing's.
     pub description: Option<String>,
     /// The work's subjects.
@@ -59,13 +72,27 @@ pub struct EnrichCandidatePage {
     pub next: Option<String>,
 }
 
+/// An ASIN a catalog match found for an edition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditionAsin {
+    /// The ASIN as the catalog printed it (normalised when stored).
+    pub value: String,
+    /// The marketplace the ASIN is sold in (such as `us`).
+    pub marketplace: String,
+}
+
 /// What an enricher fills on one edition; `None` fields are left alone.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct EditionEnrichment {
+    /// An ASIN to record as the edition's identifier. An ASIN another
+    /// edition already holds stays there.
+    pub asin: Option<EditionAsin>,
     /// Description for the work, when it has none.
     pub description: Option<String>,
     /// Subjects for the work, when it has none.
     pub subjects: Option<String>,
+    /// Category labels for the work, when it has none.
+    pub categories: Option<String>,
     /// Cover for the edition (and the work), when it has none.
     pub cover_url: Option<String>,
     /// Language for the expression, when it has none.
@@ -192,12 +219,13 @@ impl LibraryStore {
             .map(|w| (w.id.clone(), w))
             .collect();
         let held_ids: Vec<String> = held_editions.iter().map(|e| e.id.clone()).collect();
-        let mut isbns: HashMap<String, String> = HashMap::new();
+        // The smallest ISBN and ASIN of each edition, keyed by scheme.
+        let mut smallest: HashMap<(String, String), String> = HashMap::new();
         for identifier in
             find_chunked_paged::<edition_identifiers::Entity, _>(self, &held_ids, |part| {
                 edition_identifiers::Entity::find()
                     .filter(edition_identifiers::Column::EditionId.is_in(part.to_vec()))
-                    .filter(edition_identifiers::Column::Scheme.eq("isbn"))
+                    .filter(edition_identifiers::Column::Scheme.is_in(["isbn", "asin"]))
                     .order_by_asc(edition_identifiers::Column::EditionId)
                     .order_by_asc(edition_identifiers::Column::Scheme)
                     .order_by_asc(edition_identifiers::Column::Value)
@@ -205,13 +233,18 @@ impl LibraryStore {
             })
             .await?
         {
-            let entry = isbns
-                .entry(identifier.edition_id)
+            let entry = smallest
+                .entry((identifier.edition_id, identifier.scheme))
                 .or_insert_with(|| identifier.value.clone());
             if identifier.value < *entry {
                 *entry = identifier.value;
             }
         }
+        let identifier = |edition_id: &str, scheme: &str| {
+            smallest
+                .get(&(edition_id.to_string(), scheme.to_string()))
+                .cloned()
+        };
 
         let candidates = held_editions
             .into_iter()
@@ -229,8 +262,19 @@ impl LibraryStore {
                     edition_id: edition.id.clone(),
                     work_id: work.map(|w| w.id.clone()),
                     title: edition.title.clone(),
+                    subtitle: present(edition.subtitle.clone())
+                        .or_else(|| from_listing(|l| l.subtitle.clone())),
                     authors: from_listing(|l| l.authors.clone()),
-                    isbn: isbns.get(&edition.id).cloned(),
+                    narrators: from_listing(|l| l.narrators.clone()),
+                    duration_minutes: edition
+                        .duration_minutes
+                        .or_else(|| listings.iter().find_map(|l| l.length_minutes)),
+                    marketplace: listings
+                        .first()
+                        .map(|l| l.marketplace.clone())
+                        .unwrap_or_default(),
+                    isbn: identifier(&edition.id, "isbn"),
+                    asin: identifier(&edition.id, "asin"),
                     description: present(work.and_then(|w| w.description.clone()))
                         .or_else(|| from_listing(|l| l.description.clone())),
                     subjects: present(work.and_then(|w| w.subjects.clone())),
@@ -286,7 +330,7 @@ impl LibraryStore {
                 language: lacking(row.language.as_deref(), fill.language.as_ref()),
                 cover_url: lacking(row.cover_url.as_deref(), fill.cover_url.as_ref()),
                 subjects: lacking(row.subjects.as_deref(), fill.subjects.as_ref()),
-                categories: None,
+                categories: lacking(row.categories.as_deref(), fill.categories.as_ref()),
                 enrich_source: Some(fill.source.clone()),
                 enrich_confidence: Some(fill.confidence),
                 enrich_updated_at: Some(chrono::Utc::now()),
@@ -307,7 +351,7 @@ impl LibraryStore {
                 let work_fill = WorkEnrichment {
                     description: lacking(work.description.as_deref(), fill.description.as_ref()),
                     subjects: lacking(work.subjects.as_deref(), fill.subjects.as_ref()),
-                    categories: None,
+                    categories: lacking(work.categories.as_deref(), fill.categories.as_ref()),
                     cover_url: lacking(work.cover_url.as_deref(), fill.cover_url.as_ref()),
                 };
                 if !work_fill.is_empty() {
@@ -323,6 +367,10 @@ impl LibraryStore {
             }
         }
 
+        if let Some(asin) = &fill.asin {
+            self.add_edition_asin(edition_id, asin).await?;
+        }
+
         let cover = lacking(edition.cover_url.as_deref(), fill.cover_url.as_ref());
         let mut am: editions::ActiveModel = edition.into();
         if let Some(cover) = cover {
@@ -335,6 +383,58 @@ impl LibraryStore {
         am.updated_at = Set(now);
         am.update(self.db()).await.map_err(LibraryError::Orm)?;
         Ok(())
+    }
+
+    /// Records `asin` as an identifier of edition `edition_id`; an ASIN
+    /// another edition already holds in that marketplace stays there.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the write fails.
+    async fn add_edition_asin(&self, edition_id: &str, asin: &EditionAsin) -> Result<()> {
+        use sea_orm::sea_query::OnConflict;
+        let Some(key) = bookclerk_resolve::IdentifierKey::new(
+            bookclerk_resolve::IdentifierScheme::Asin,
+            &asin.value,
+            Some(&asin.marketplace),
+            &asin.marketplace,
+        ) else {
+            return Ok(());
+        };
+        let am = edition_identifiers::ActiveModel {
+            edition_id: Set(edition_id.to_string()),
+            scheme: Set(key.scheme.as_str().to_string()),
+            value: Set(key.value.clone()),
+            marketplace: Set(key.marketplace.clone()),
+            strength: Set(key.strength().as_str().to_string()),
+            strong_key: Set(key.strong_key()),
+            created_at: Set(now_str()),
+        };
+        // The first edition to hold a strong identifier keeps it: either
+        // conflict (the same row, or the strong key on another edition)
+        // leaves the table as it is.
+        edition_identifiers::Entity::insert(am)
+            .on_conflict(OnConflict::new().do_nothing().to_owned())
+            .exec_without_returning(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// The UUIDs of the flat `books` rows whose listing sells edition
+    /// `edition_id`, in order, for writers that still keep those rows
+    /// current until the table is retired.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn edition_book_uuids(&self, edition_id: &str) -> Result<Vec<String>> {
+        Ok(self
+            .flat_rows_of_edition(edition_id)
+            .await?
+            .into_iter()
+            .map(|b| b.uuid)
+            .collect())
     }
 
     /// The flat `books` rows whose listing sells edition `edition_id`, in
@@ -451,6 +551,7 @@ mod tests {
                         language: Some("en".into()),
                         source: "metadata:openlibrary".into(),
                         confidence: 0.7,
+                        ..EditionEnrichment::default()
                     },
                 )
                 .await
@@ -512,6 +613,83 @@ mod tests {
                     .await,
                 Err(LibraryError::NotFound { .. })
             ));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_matched_asin_is_recorded_once_under_every_profile() {
+        for profile in Profile::ALL {
+            let kit = crate::test_support::sqlite::memory(profile).await;
+            let store = kit.store();
+            let name = profile.name();
+            store
+                .upsert_account("libro", "acct", "us", None, true, "libro")
+                .await
+                .unwrap();
+            for (product, title) in [("9780441172719", "Dune"), ("9780553293357", "Foundation")] {
+                let mut book = NewBook::minimal(product, "acct", "us", title);
+                book.plugin_key = "libro".into();
+                book.source = "libro".into();
+                book.asin = None;
+                book.narrators = Some("Scott Brick".into());
+                book.length_minutes = Some(1260);
+                store.upsert_book(&book).await.unwrap();
+            }
+            let candidates = walk(store).await;
+            assert_eq!(candidates.len(), 2, "{name}");
+            let first = &candidates[0];
+            assert_eq!(first.asin, None, "{name}");
+            assert_eq!(first.marketplace, "us", "{name}");
+            assert_eq!(first.narrators.as_deref(), Some("Scott Brick"), "{name}");
+            assert_eq!(first.duration_minutes, Some(1260), "{name}");
+
+            let fill = EditionEnrichment {
+                asin: Some(EditionAsin {
+                    value: "b00test01".into(),
+                    marketplace: "us".into(),
+                }),
+                categories: Some("Science Fiction".into()),
+                source: "audible".into(),
+                confidence: 0.95,
+                ..EditionEnrichment::default()
+            };
+            store
+                .enrich_edition(&first.edition_id, &fill)
+                .await
+                .unwrap();
+            // Recording it again, or on another edition, changes nothing.
+            store
+                .enrich_edition(&first.edition_id, &fill)
+                .await
+                .unwrap();
+            store
+                .enrich_edition(&candidates[1].edition_id, &fill)
+                .await
+                .unwrap();
+
+            let after = walk(store).await;
+            assert_eq!(after[0].asin.as_deref(), Some("B00TEST01"), "{name}");
+            assert_eq!(after[1].asin, None, "{name}: the first edition keeps it");
+            let work_id = after[0].work_id.clone().unwrap();
+            let work = works::Entity::find_by_id(work_id)
+                .one(store.db())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                work.categories.as_deref(),
+                Some("Science Fiction"),
+                "{name}"
+            );
+            assert_eq!(
+                store
+                    .edition_book_uuids(&after[0].edition_id)
+                    .await
+                    .unwrap()
+                    .len(),
+                1,
+                "{name}"
+            );
         }
     }
 

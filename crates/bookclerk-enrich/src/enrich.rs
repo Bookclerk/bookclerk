@@ -5,14 +5,14 @@
 //! then confidence scoring (duration / title / author), with ISBN / narrator
 //! / subtitle signals when available. No Audible account is required.
 
-use bookclerk_library::{LibraryStore, NewBook};
+use bookclerk_library::{EditionAsin, EditionEnrichment, LibraryStore, NewBook};
 use bookclerk_plugin_sdk::http::Client;
 use bookclerk_plugin_sdk::{
     CreditRole, IdentifierScheme, MediaKind, MetadataLookupParams, MetadataRecord,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::error::{EnrichError, Result};
+use crate::error::Result;
 use crate::match_score::{
     calculate_match_confidence, is_asin_title, is_valid_asin, normalize_isbn, MatchQuery,
     ScoreInput,
@@ -229,36 +229,87 @@ fn better_match(
     }
 }
 
-/// Apply a confident Audible catalog match onto a non-Audible ownership row.
+/// Apply a confident Audible catalog match to a held edition.
 ///
-/// Preserves `source`, `product_id`, `uuid`, `account_id`, and an existing
-/// `asin` (sets ASIN only when the row does not already have one). Catalog
-/// fields win for display metadata (title, contributors, series, ISBN, genres,
-/// publish date). Store-native `length_minutes` is kept when present — Audible
-/// runtimes include brand intro/outro that plain Acquire files omit.
+/// The edition records the matched ASIN as its identifier (in the
+/// edition's marketplace; an ASIN another edition already holds stays
+/// there), its work takes the description, genres and cover it lacks, its
+/// expression the language it lacks, and its own cover when it has none.
+/// The edition then records `audible` as its enrichment source.
+///
+/// While the flat `books` table exists, each of the edition's rows also
+/// takes the match as before: catalog fields win for display metadata
+/// (title, contributors, series, ISBN, genres, publish date), an existing
+/// `asin` is kept, and a store-native `length_minutes` is kept because
+/// Audible runtimes include brand intro/outro that plain Acquire files
+/// omit.
 ///
 /// # Arguments
 ///
 /// * `library` - Open library store used for reads/writes.
-/// * `book_uuid` - String `book_uuid` for this call.
-/// * `enrichment` - Catalog fields to merge onto the book row.
-///
-/// # Returns
-///
-/// On success, the inner `bookclerk_library::BookRecord` value.
+/// * `edition_id` - The held edition matched (`editions.id`).
+/// * `marketplace` - The marketplace the ASIN was matched in (such as `us`).
+/// * `matched` - The catalog match and its confidence.
 ///
 /// # Errors
 ///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
-pub async fn apply_enrichment_to_book(
+/// Returns an error when the edition is gone or a store read or write
+/// fails.
+pub async fn apply_enrichment_to_edition(
+    library: &LibraryStore,
+    edition_id: &str,
+    marketplace: &str,
+    matched: &ScoredMatch,
+) -> Result<()> {
+    let enrichment = &matched.enrichment;
+    for uuid in library.edition_book_uuids(edition_id).await? {
+        merge_into_book(library, &uuid, enrichment).await?;
+    }
+    library
+        .enrich_edition(
+            edition_id,
+            &EditionEnrichment {
+                asin: Some(EditionAsin {
+                    value: enrichment.asin.clone(),
+                    marketplace: marketplace.to_string(),
+                }),
+                description: enrichment.description.clone(),
+                subjects: None,
+                categories: enrichment.categories.clone(),
+                cover_url: enrichment.cover_url.clone(),
+                language: enrichment.language.clone(),
+                source: String::from(AUDIBLE_SOURCE),
+                confidence: matched.confidence,
+            },
+        )
+        .await?;
+    Ok(())
+}
+
+/// Merges a catalog match onto one flat `books` row, until that table is
+/// retired.
+///
+/// Preserves `source`, `product_id`, `uuid`, `account_id`, an existing
+/// `asin` and a store-native `length_minutes`; catalog fields win for the
+/// rest of the display metadata. A row that is gone is skipped.
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `book_uuid` - The row merged into.
+/// * `enrichment` - Catalog fields to merge onto the row.
+///
+/// # Errors
+///
+/// Returns an error when a store read or write fails.
+async fn merge_into_book(
     library: &LibraryStore,
     book_uuid: &str,
     enrichment: &Enrichment,
-) -> Result<bookclerk_library::BookRecord> {
-    let existing = library
-        .get_book_by_uuid(book_uuid)
-        .await?
-        .ok_or_else(|| EnrichError::Sync(format!("book not found: {book_uuid}")))?;
+) -> Result<()> {
+    let Some(existing) = library.get_book_by_uuid(book_uuid).await? else {
+        return Ok(());
+    };
 
     let title = if enrichment.title.is_empty() {
         existing.title.clone()
@@ -314,36 +365,25 @@ pub async fn apply_enrichment_to_book(
     // Metadata only: enrichment never asserts that the account holds the
     // title, so it cannot bring back a holding a scan removed.
     library.update_book_metadata(&book).await?;
-
-    library
-        .update_catalog_enrichment(
-            book_uuid,
-            &bookclerk_library::CatalogEnrichmentFields {
-                description: enrichment.description.clone(),
-                language: enrichment.language.clone(),
-                cover_url: enrichment.cover_url.clone(),
-                subjects: None,
-                categories: enrichment.categories.clone(),
-                enrich_source: Some(String::from("audible")),
-                enrich_confidence: enrichment.confidence,
-                enrich_updated_at: Some(chrono::Utc::now()),
-            },
-        )
-        .await?;
-
-    library
-        .get_book_by_uuid(book_uuid)
-        .await?
-        .ok_or_else(|| EnrichError::Sync(format!("book not found after enrich: {book_uuid}")))
+    Ok(())
 }
 
-/// Enrich library rows that lack an ASIN via the public Audible catalog and
-/// the deployed metadata providers.
+/// The enrichment source an Audible catalog match records on an edition.
+const AUDIBLE_SOURCE: &str = "audible";
+
+/// Held editions read per page while matching.
+const ENRICH_PAGE: u64 = 100;
+
+/// Match held editions that have no ASIN to the Audible catalog through the
+/// deployed metadata providers, and record each confident match.
 ///
-/// Source-agnostic: any non-`audible` row with title and/or ISBN is considered.
-/// Uses title, author, narrator, subtitle, ISBN, and duration when present.
-/// `min_confidence_percent` is 0–100 (default [`DEFAULT_ENRICH_MIN_CONFIDENCE`]).
-/// With no provider that answers ASIN lookups, nothing matches.
+/// Source-agnostic: any held edition with a title and/or an ISBN and no
+/// ASIN is considered, which leaves out every edition an Audible listing
+/// sells (its scan records the ASIN). Uses title, subtitle, author,
+/// narrator, ISBN, and running time when present, and searches the
+/// marketplace of the edition's first listing. `min_confidence_percent` is
+/// 0–100 (default [`DEFAULT_ENRICH_MIN_CONFIDENCE`]). With no provider that
+/// answers ASIN lookups, nothing matches.
 ///
 /// # Arguments
 ///
@@ -353,67 +393,77 @@ pub async fn apply_enrichment_to_book(
 ///
 /// # Returns
 ///
-/// On success, the inner `usize` value.
+/// How many editions were matched.
 ///
 /// # Errors
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
-pub async fn enrich_books_from_audible(
+pub async fn enrich_editions_from_audible(
     library: &LibraryStore,
     providers: &dyn MetadataProviders,
     min_confidence_percent: u8,
 ) -> Result<usize> {
-    let min_confidence = (min_confidence_percent.min(100) as f64) / 100.0;
+    let min_confidence = f64::from(min_confidence_percent.min(100)) / 100.0;
     let http = public_http_client()?;
     let mut enriched = 0usize;
+    let mut after: Option<String> = None;
 
-    for book in library.list_books(None).await? {
-        // Skip Audible-native rows (asin already equals product_id) and rows
-        // that already carry an enrichment ASIN.
-        if book.asin.as_deref() == Some(book.product_id.as_str()) {
-            continue;
-        }
-        if book.asin.is_some() {
-            continue;
-        }
-        if book.title.trim().is_empty() && book.isbn.is_none() {
-            continue;
-        }
-        let region = book.marketplace.as_str();
-        let query = MatchQuery {
-            title: book.title.as_str(),
-            subtitle: book.subtitle.as_deref(),
-            author: book.authors.as_deref(),
-            narrator: book.narrators.as_deref(),
-            isbn: book.isbn.as_deref(),
-            duration_minutes: book.length_minutes.map(|n| n as f64),
-        };
-        match lookup_by_metadata_with_client(&http, providers, &query, region, min_confidence)
-            .await?
-        {
-            Some(matched) => {
-                apply_enrichment_to_book(library, &book.uuid, &matched.enrichment).await?;
-                enriched += 1;
-                tracing::info!(
-                    uuid = %book.uuid,
-                    source = %book.source,
-                    title = %book.title,
-                    isbn = ?book.isbn,
-                    asin = %matched.enrichment.asin,
-                    confidence = matched.confidence,
-                    "enriched book from Audible metadata"
-                );
+    loop {
+        let page = library
+            .enrich_candidates_page(after.as_deref(), ENRICH_PAGE)
+            .await?;
+        for edition in &page.candidates {
+            // An edition with an ASIN needs no match, and one an earlier
+            // match marked is not matched again, even when the ASIN it
+            // found stayed with another edition.
+            if edition.asin.is_some() || edition.enrich_source.as_deref() == Some(AUDIBLE_SOURCE) {
+                continue;
             }
-            None => {
-                tracing::debug!(
-                    uuid = %book.uuid,
-                    source = %book.source,
-                    title = %book.title,
-                    isbn = ?book.isbn,
-                    min_confidence,
-                    "no Audible metadata match above confidence threshold"
-                );
+            if edition.title.trim().is_empty() && edition.isbn.is_none() {
+                continue;
             }
+            // Whole minutes fit an f64 exactly far beyond any real runtime.
+            #[allow(clippy::cast_precision_loss)]
+            let duration_minutes = edition.duration_minutes.map(|n| n as f64);
+            let query = MatchQuery {
+                title: edition.title.as_str(),
+                subtitle: edition.subtitle.as_deref(),
+                author: edition.authors.as_deref(),
+                narrator: edition.narrators.as_deref(),
+                isbn: edition.isbn.as_deref(),
+                duration_minutes,
+            };
+            let region = edition.marketplace.as_str();
+            match lookup_by_metadata_with_client(&http, providers, &query, region, min_confidence)
+                .await?
+            {
+                Some(matched) => {
+                    apply_enrichment_to_edition(library, &edition.edition_id, region, &matched)
+                        .await?;
+                    enriched += 1;
+                    tracing::info!(
+                        edition_id = %edition.edition_id,
+                        title = %edition.title,
+                        isbn = ?edition.isbn,
+                        asin = %matched.enrichment.asin,
+                        confidence = matched.confidence,
+                        "enriched edition from Audible metadata"
+                    );
+                }
+                None => {
+                    tracing::debug!(
+                        edition_id = %edition.edition_id,
+                        title = %edition.title,
+                        isbn = ?edition.isbn,
+                        min_confidence,
+                        "no Audible metadata match above confidence threshold"
+                    );
+                }
+            }
+        }
+        match page.next {
+            Some(next) => after = Some(next),
+            None => break,
         }
     }
 
@@ -639,10 +689,29 @@ mod tests {
             language: Some("english".into()),
             confidence: Some(0.95),
         };
-        let updated = apply_enrichment_to_book(&store, &row.uuid, &enrichment)
+        let edition = store.edition_of_book(&row.uuid).await.unwrap().unwrap();
+        let matched = ScoredMatch {
+            enrichment,
+            confidence: 0.95,
+        };
+        apply_enrichment_to_edition(&store, &edition, "us", &matched)
             .await
             .unwrap();
+        let updated = store.get_book_by_uuid(&row.uuid).await.unwrap().unwrap();
         assert_eq!(updated.asin.as_deref(), Some("B00TEST01"));
+        assert_eq!(updated.enrich_source.as_deref(), Some("audible"));
+        assert_eq!(updated.description.as_deref(), Some("Blurb"));
+        let page = store.enrich_candidates_page(None, 10).await.unwrap();
+        let held = &page.candidates[0];
+        assert_eq!(held.edition_id, edition);
+        assert_eq!(
+            held.asin.as_deref(),
+            Some("B00TEST01"),
+            "the edition records the ASIN"
+        );
+        assert_eq!(held.description.as_deref(), Some("Blurb"));
+        assert_eq!(held.language.as_deref(), Some("english"));
+        assert_eq!(held.enrich_source.as_deref(), Some("audible"));
         assert_eq!(updated.authors.as_deref(), Some("Ann Author"));
         assert_eq!(updated.length_minutes, Some(900), "Libro runtime must win");
         assert_eq!(updated.series.as_deref(), Some("Foundation"));
@@ -691,9 +760,15 @@ mod tests {
             language: None,
             confidence: Some(0.95),
         };
-        let updated = apply_enrichment_to_book(&store, &row.uuid, &enrichment)
+        let edition = store.edition_of_book(&row.uuid).await.unwrap().unwrap();
+        let matched = ScoredMatch {
+            enrichment,
+            confidence: 0.95,
+        };
+        apply_enrichment_to_edition(&store, &edition, "us", &matched)
             .await
             .unwrap();
+        let updated = store.get_book_by_uuid(&row.uuid).await.unwrap().unwrap();
         assert_eq!(updated.asin.as_deref(), Some("B00EXIST01"));
         assert_eq!(updated.title, "Audible Title");
     }
@@ -873,6 +948,63 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn held_editions_without_an_asin_are_matched() {
+        let store = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        store
+            .upsert_account("libro", "acct", "us", None, true, "libro")
+            .await
+            .unwrap();
+        // An ASIN-shaped title is scored without a catalog search.
+        let mut uuids = Vec::new();
+        for (product, title, asin) in [
+            ("9781111111111", "B00TEST001", None),
+            ("9782222222222", "B00NONE001", None),
+            ("9783333333333", "Already Matched", Some("B00EXIST01")),
+            ("9784444444444", "B00TEST001", None),
+        ] {
+            let mut book = NewBook::minimal(product, "acct", "us", title);
+            book.plugin_key = "libro".into();
+            book.source = "libro".into();
+            book.asin = asin.map(str::to_string);
+            book.authors = Some("Ann Author".into());
+            book.length_minutes = Some(320);
+            uuids.push(store.upsert_book(&book).await.unwrap().uuid);
+        }
+        let providers = ByAsin(vec![("B00TEST001".into(), full_record())]);
+        let matched = enrich_editions_from_audible(&store, &providers, 0)
+            .await
+            .unwrap();
+        assert_eq!(matched, 2, "only the editions with a provider record");
+        let first = store.get_book_by_uuid(&uuids[0]).await.unwrap().unwrap();
+        assert_eq!(first.asin.as_deref(), Some("B00TEST001"));
+        assert_eq!(first.enrich_source.as_deref(), Some("audible"));
+        let unmatched = store.get_book_by_uuid(&uuids[1]).await.unwrap().unwrap();
+        assert_eq!(unmatched.enrich_source, None);
+        let kept = store.get_book_by_uuid(&uuids[2]).await.unwrap().unwrap();
+        assert_eq!(
+            kept.enrich_source, None,
+            "an edition with an ASIN is skipped"
+        );
+        // The last edition matched the same ASIN, which stays with the
+        // first; both are marked, so a later scan matches neither again.
+        let page = store.enrich_candidates_page(None, 10).await.unwrap();
+        let with_asin = page
+            .candidates
+            .iter()
+            .filter(|c| c.asin.as_deref() == Some("B00TEST001"))
+            .count();
+        assert_eq!(with_asin, 1, "the ASIN stays with one edition");
+        assert_eq!(
+            enrich_editions_from_audible(&store, &providers, 0)
+                .await
+                .unwrap(),
+            0
         );
     }
 
