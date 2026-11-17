@@ -258,6 +258,7 @@ describe("libation_json", () => {
     assert.equal(htmlToText("a<br>b<BR />c</p>d"), "a\nb\nc\n\nd");
     assert.equal(htmlToText("&#65;&#x42;&#0;&#xD800;&amp;&unknown;"), "AB��&&unknown;");
     assert.equal(htmlToText("x  \n\n\n\ny"), "x\n\ny");
+    assert.equal(htmlToText("a<scr<script>ipt>b <i c &lt;d&gt;"), "aipt>b i c <d>");
   });
 });
 

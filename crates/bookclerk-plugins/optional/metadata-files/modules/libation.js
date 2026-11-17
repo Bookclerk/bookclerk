@@ -72,7 +72,9 @@ const ENTITIES = {
 };
 /**
  * Turns a store's HTML summary into plain text: paragraph and line breaks
- * become line breaks, other tags are dropped and entities are decoded.
+ * become line breaks, other tags are dropped and entities are decoded. A
+ * `<` left over after the tags are gone (an unclosed tag) is dropped too,
+ * so the only `<` in the text is one the summary wrote as an entity.
  *
  * @param html - The summary.
  * @returns Plain text.
@@ -82,6 +84,7 @@ export function htmlToText(html) {
         .replace(/<\s*br\s*\/?\s*>/gi, "\n")
         .replace(/<\s*\/\s*(?:p|div|li|h[1-6])\s*>/gi, "\n\n")
         .replace(/<[^>]*>/g, "")
+        .replace(/</g, "")
         .replace(/&(#x[0-9a-f]{1,6}|#[0-9]{1,7}|[a-z]{2,8});/gi, (whole, name) => {
         if (name.startsWith("#")) {
             const code = name[1] === "x" || name[1] === "X"
