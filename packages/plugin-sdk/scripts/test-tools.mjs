@@ -530,6 +530,11 @@ console.log("ok materialize rejects disk-only python even with both flags");
     console.error("FAIL smoke probes every health entrypoint", probed);
     process.exit(1);
   }
+  const files = healthInterfaces(["metadataFiles", "covers"]);
+  if (JSON.stringify(files) !== JSON.stringify(["CoverFetcher", "MetadataFiles"])) {
+    console.error("FAIL smoke probes metadataFiles health", files);
+    process.exit(1);
+  }
   if (healthInterfaces(["cli"]).length !== 0) {
     console.error("FAIL smoke probes no health for a cli-only plugin");
     process.exit(1);

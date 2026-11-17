@@ -32,6 +32,7 @@ export {
   JobController,
   CoverEntrypoint,
   MetadataEntrypoint,
+  MetadataFilesEntrypoint,
   NamedEntrypoint,
   OidcEntrypoint,
   PluginError,

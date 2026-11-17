@@ -229,6 +229,16 @@ impl ExternalIntegration {
                 .await?;
             health_result(ok)?;
         }
+        if self
+            .session
+            .has_entrypoint(crate::Entrypoint::MetadataFiles)
+        {
+            let ok = self
+                .session
+                .metadata_files(|files| async move { files.health().await })
+                .await?;
+            health_result(ok)?;
+        }
         Ok(())
     }
 
@@ -542,6 +552,16 @@ impl Integration for ExternalIntegration {
             reports.push(
                 self.session
                     .covers(|fetcher| async move { fetcher.health().await })
+                    .await?,
+            );
+        }
+        if self
+            .session
+            .has_entrypoint(crate::Entrypoint::MetadataFiles)
+        {
+            reports.push(
+                self.session
+                    .metadata_files(|files| async move { files.health().await })
                     .await?,
             );
         }

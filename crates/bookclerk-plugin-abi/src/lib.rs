@@ -5,7 +5,7 @@
 //! `describe()` advertises typed [`PluginCapabilities`], then
 //! `open(invocation, bindings)` returns the exported [`Entrypoints`]
 //! (`storefront`, `storage`, `databaseAdapter`, `remoteLibrary`, `cli`,
-//! `oidc`, `metadata`, `covers`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
+//! `oidc`, `metadata`, `covers`, `metadataFiles`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
 //! [`Bindings`] carry `CONFIG` / `SECRETS`, the `EVENTS` publisher, and named
 //! `[[databases]]` sessions — the Workers `env` idiom.
 //!
@@ -46,6 +46,7 @@
 //!
 //! | Module | Contents |
 //! | --- | --- |
+//! | [`metadata_files`] | Checks on `metadataFiles` requests and the records dialects return |
 //! | [`methods`] | Capability / consent method name constants (`login`, `event`, …) |
 //! | Crate-root DTOs | [`PluginDescribe`], health, CLI, destination objects |
 //! | [`kind`] | Kind-specific DTOs (source / integration / output) |
@@ -85,6 +86,7 @@ pub mod json_bytes;
 pub mod kind;
 mod limits;
 pub mod media;
+pub mod metadata_files;
 pub mod methods;
 pub mod package_version;
 mod plugin_migration;
@@ -251,7 +253,9 @@ pub use jobs::{read_all, stream_copy_keys, StreamCopyHandler, StreamCopySpec};
 pub use limits::{
     cover_sink_slot, ScalarLimits, MAX_COVER_BYTES, MAX_COVER_HEADER_BYTES, MAX_COVER_URLS,
     MAX_CRON_BYTES, MAX_EVENT_CURSOR_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES,
-    MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
+    MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_METADATA_FILE_BYTES,
+    MAX_METADATA_FILE_CHAPTERS, MAX_METADATA_FILE_DESCRIPTION_BYTES,
+    MAX_METADATA_FILE_LIST_ENTRIES, MAX_METADATA_FILE_TEXT_BYTES, MAX_PLUGIN_MIGRATION_OPS,
     MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS,
     MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
     MAX_SOCKETS_PER_INSTANCE, MAX_SOCKET_ATTACHMENT_BYTES, MAX_SOCKET_AUTO_RESPONSES,
@@ -262,12 +266,18 @@ pub use media::{
     check_record_kinds, decode_plain_fetch_bytes, encode_plain_fetch_bytes, media_support_is_empty,
     same_media_support, validate_media_support, validate_plain_fetch, FetchError, MediaError,
 };
+pub use metadata_files::{
+    check_parse_params, check_record_against_dialect, check_render_against_dialect,
+    check_render_params, check_rendered, decode_metadata_file_record_bytes,
+    encode_metadata_file_record_bytes, validate_metadata_file_record, MetadataFileDialect,
+    MetadataFileError,
+};
 pub use roles::{
     AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
     CoverFetcher, Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
-    JobController, JobRunner, KvNamespace, MetadataProvider, NamedKvBinding, NamedQueueBinding,
-    NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer,
-    ReadResult, RemoteLibrary, ScheduledHandler, SocketHandler, Sockets, Source,
+    JobController, JobRunner, KvNamespace, MetadataFiles, MetadataProvider, NamedKvBinding,
+    NamedQueueBinding, NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer,
+    QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler, SocketHandler, Sockets, Source,
     PURCHASE_HINTS_BUDGET,
 };
 #[cfg(feature = "host")]
@@ -278,8 +288,8 @@ pub use rpc::{
     serve_socket_broker, ContentSourceClient, CoverFetcherClient, DatabaseClient,
     DestinationClient, DestinationServer, EventConsumerClient, EventPublisherClient,
     EventReadCodec, EventReadMessage, HostBindings, JobRunnerClient, KvNamespaceClient,
-    MetadataProviderClient, OidcClient, OpenedEntrypoints, PluginCliClient, PluginClient,
-    PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient,
+    MetadataFilesClient, MetadataProviderClient, OidcClient, OpenedEntrypoints, PluginCliClient,
+    PluginClient, PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient,
     ScheduledHandlerClient, SocketCodec, SocketHandlerClient, SocketWireMessage, SocketsClient,
     SourceClient, SourceServer,
 };

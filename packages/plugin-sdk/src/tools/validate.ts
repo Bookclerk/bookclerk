@@ -32,7 +32,8 @@ export type Manifest = {
   args?: string[];
   /**
    * Named entrypoints the guest exports (`storefront`, `storage`,
-   * `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`, `covers`). Triggers for the
+   * `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`, `covers`,
+   * `metadataFiles`). Triggers for the
    * default entrypoint live under `[triggers]` / `[[events.consumers]]`.
    */
   entrypoints?: string[];
@@ -47,6 +48,14 @@ export type Manifest = {
     lists?: string[];
     /** Carriers `fetchTitle` can deliver; a subset of `lists`, storefronts only. */
     fetches?: string[];
+  };
+  /**
+   * `[metadata_files]` — the metadata file dialects a `metadataFiles` plugin
+   * implements. Required for that entrypoint, forbidden for others.
+   */
+  metadata_files?: {
+    /** One row per dialect; never empty. */
+    dialects?: MetadataFileDialectToml[];
   };
   /** Workerd isolate settings (required when `runtime = "workerd"`). */
   workerd?: {
@@ -457,6 +466,184 @@ function validateSettings(m: Manifest): void {
   }
 }
 
+/** One `[[metadata_files.dialects]]` row. */
+export type MetadataFileDialectToml = {
+  /** Dialect id (`[a-z][a-z0-9_]{0,63}`), unique within the plugin. */
+  id?: string;
+  /** Name shown in settings and on a book's files list. */
+  name?: string;
+  /** Exact file names the dialect reads, compared without ASCII case. */
+  file_names?: string[];
+  /** File name endings (each starting with `.`), compared without ASCII case. */
+  suffixes?: string[];
+  /** Fields the format carries (wire names such as `title`, `publishedAt`). */
+  fields?: string[];
+  /** Credit roles the format carries; required exactly when `fields` names `credits`. */
+  credit_roles?: string[];
+  /** Whether the dialect also writes files. */
+  writes?: boolean;
+};
+
+/** Fields a `[[metadata_files.dialects]].fields` entry may name. */
+const METADATA_FIELDS = [
+  "title",
+  "subtitle",
+  "description",
+  "publisher",
+  "publishedAt",
+  "language",
+  "genres",
+  "tags",
+  "abridgement",
+  "expressionKind",
+  "identifiers",
+  "credits",
+  "series",
+  "chapters",
+  "duration",
+];
+
+/** Credit roles a `[[metadata_files.dialects]].credit_roles` entry may name. */
+const CREDIT_ROLES = [
+  "author",
+  "narrator",
+  "translator",
+  "editor",
+  "illustrator",
+  "publisher",
+  "host",
+  "cast",
+  "adaptor",
+];
+
+/** Dialect id grammar, as the host's `is_dialect_id`. */
+const DIALECT_ID = /^[a-z][a-z0-9_]{0,63}$/;
+
+/**
+ * True when `name` is printable ASCII naming one file with no folder, as the
+ * host's `is_ascii_file_name`.
+ *
+ * @param name - File name or suffix as written in `plugin.toml`.
+ * @returns Whether the host would accept it.
+ */
+function isAsciiFileName(name: string): boolean {
+  return (
+    /^[\x20-\x7e]+$/.test(name) &&
+    name.length <= 255 &&
+    name !== "." &&
+    name !== ".." &&
+    !name.includes("/") &&
+    !name.includes("\\")
+  );
+}
+
+/**
+ * Checks `[metadata_files]` against the entrypoints, with the host's rules and
+ * messages (`manifest-cases.json`).
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} When a `metadataFiles` plugin has no dialects or another
+ *   plugin has the table, or a dialect has a bad or repeated id, no name, no
+ *   file names or suffixes, a malformed or repeated name or suffix, no or
+ *   unknown fields, a repeated field or credit role, or credit roles that do
+ *   not match `credits`.
+ */
+function validateMetadataFiles(m: Manifest): void {
+  const exported = ((m.entrypoints ?? []) as readonly string[]).includes("metadataFiles");
+  const table = m.metadata_files;
+  if (table == null) {
+    if (exported) {
+      throw new Error(
+        "plugin.toml: `[metadata_files]` is required for a plugin with the `metadataFiles` entrypoint (declare at least one dialect)",
+      );
+    }
+    return;
+  }
+  if (!exported) {
+    throw new Error("plugin.toml: `[metadata_files]` needs the `metadataFiles` entrypoint");
+  }
+  const dialects = table.dialects ?? [];
+  if (dialects.length === 0) {
+    throw new Error("plugin.toml: `[metadata_files].dialects` is empty");
+  }
+  const ids = new Set<string>();
+  const claimed = new Set<string>();
+  dialects.forEach((dialect, i) => {
+    const row = `plugin.toml: metadata_files.dialects[${i}]`;
+    const id = String(dialect.id ?? "");
+    if (!DIALECT_ID.test(id)) {
+      throw new Error(`${row}.id \`${id}\` is not an identifier ([a-z][a-z0-9_]{0,63})`);
+    }
+    if (ids.has(id)) {
+      throw new Error(`plugin.toml: metadata_files dialect id \`${id}\` is declared twice`);
+    }
+    ids.add(id);
+    if (!String(dialect.name ?? "").trim()) {
+      throw new Error(`${row}.name is required`);
+    }
+    const names = dialect.file_names ?? [];
+    const suffixes = dialect.suffixes ?? [];
+    if (names.length === 0 && suffixes.length === 0) {
+      throw new Error(`${row} declares no \`file_names\` or \`suffixes\``);
+    }
+    for (const name of names) {
+      if (!isAsciiFileName(name)) {
+        throw new Error(`${row}.file_names entry \`${name}\` is not a plain ASCII file name`);
+      }
+    }
+    for (const suffix of suffixes) {
+      if (suffix.length < 2 || !suffix.startsWith(".") || !isAsciiFileName(suffix)) {
+        throw new Error(
+          `${row}.suffixes entry \`${suffix}\` must start with \`.\` and be a plain ASCII file name`,
+        );
+      }
+    }
+    for (const name of [...names, ...suffixes]) {
+      const key = name.toLowerCase();
+      if (claimed.has(key)) {
+        throw new Error(`plugin.toml: metadata_files \`${name}\` is claimed twice`);
+      }
+      claimed.add(key);
+    }
+    const fields = dialect.fields ?? [];
+    for (const field of fields) {
+      if (!METADATA_FIELDS.includes(field)) {
+        throw new Error(`${row}.fields names unknown field \`${field}\``);
+      }
+    }
+    const roles = dialect.credit_roles ?? [];
+    for (const role of roles) {
+      if (!CREDIT_ROLES.includes(role)) {
+        throw new Error(`${row}.credit_roles names unknown role \`${role}\``);
+      }
+    }
+    if (fields.length === 0) {
+      throw new Error(`${row}.fields is empty`);
+    }
+    const seenFields = new Set<string>();
+    for (const field of fields) {
+      if (seenFields.has(field)) {
+        throw new Error(`${row}.fields names \`${field}\` twice`);
+      }
+      seenFields.add(field);
+    }
+    const seenRoles = new Set<string>();
+    for (const role of roles) {
+      if (seenRoles.has(role)) {
+        throw new Error(`${row}.credit_roles names \`${role}\` twice`);
+      }
+      seenRoles.add(role);
+    }
+    const credits = fields.includes("credits");
+    if (credits && roles.length === 0) {
+      throw new Error(`${row}.credit_roles is empty but \`fields\` names \`credits\``);
+    }
+    if (!credits && roles.length > 0) {
+      throw new Error(`${row}.credit_roles needs \`credits\` in \`fields\``);
+    }
+  });
+}
+
 /** Entrypoint wire names accepted in `entrypoints`. */
 export const ENTRYPOINT_NAMES = [
   "storefront",
@@ -467,6 +654,7 @@ export const ENTRYPOINT_NAMES = [
   "oidc",
   "metadata",
   "covers",
+  "metadataFiles",
 ] as const;
 
 const LOGO_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico"] as const;
@@ -616,6 +804,7 @@ export function validateManifest(m: Manifest): void {
     validateLogo(String(m.logo));
   }
   validateMedia(m);
+  validateMetadataFiles(m);
   validateSurface(m);
   validateSettings(m);
   validateOwnUserAgent(m);

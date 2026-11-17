@@ -72,6 +72,19 @@ const maxCoverBytes :UInt32 = 10485760;
 # either direction (a condition the host sends, a header the server sent).
 # The host ignores a longer header the fetcher returns.
 const maxCoverHeaderBytes :UInt32 = 1024;
+# Largest metadata file `MetadataFiles.parse` reads and `MetadataFiles.render`
+# returns. The host skips a larger sidecar before any plugin sees it.
+const maxMetadataFileBytes :UInt32 = 262144;
+# Longest description a `MetadataFileRecord` carries, in UTF-8 bytes.
+const maxMetadataFileDescriptionBytes :UInt32 = 65536;
+# Longest other text value in a `MetadataFileRecord` (a title, a name, a
+# genre, a chapter title), in UTF-8 bytes.
+const maxMetadataFileTextBytes :UInt32 = 1024;
+# Most entries in each list of a `MetadataFileRecord` other than chapters
+# (credits, genres, tags, identifiers, series).
+const maxMetadataFileListEntries :UInt32 = 256;
+# Most chapters in a `MetadataFileRecord`.
+const maxMetadataFileChapters :UInt32 = 2000;
 # Longest `KvNamespace` key in UTF-8 bytes.
 const maxKvKeyBytes :UInt32 = 512;
 # Largest WebSocket message, text or binary, that `Sockets.send` accepts or
@@ -385,6 +398,8 @@ struct Entrypoints {
   covers @11 :CoverFetcher;
   # `[sockets]` handler: messages and closes on host-brokered sockets.
   socketHandler @12 :SocketHandler;
+  # `metadataFiles` entrypoint.
+  metadataFiles @13 :MetadataFiles;
 }
 
 # Result union of `PluginWorker.open`.
@@ -1223,6 +1238,27 @@ interface CoverFetcher {
   ) -> (result :CoverImagesReply);
 }
 
+# `metadataFiles` entrypoint: reads and writes metadata files that sit next
+# to an edition's media (sidecars such as `metadata.json`, OPF, NFO or CUE),
+# one dialect per format. The plugin only converts bytes: the host reads the
+# file, chooses every path and writes the result, so a dialect plugin needs
+# no network or file grants. The manifest's `[metadata_files]` table names
+# each dialect, the file names it reads and the fields it carries, so the
+# host routes a file to a sleeping plugin without starting it.
+interface MetadataFiles {
+  # Liveness / readiness probe.
+  health @0 () -> (result :HealthReply);
+  # What one metadata file says about its edition.
+  parse @1 (
+      params :MetadataFileParseParams  # Dialect, file name and bytes.
+  ) -> (result :MetadataFileParseReply);
+  # The bytes of a metadata file with the given fields set to the record's
+  # values and everything else kept from the existing file.
+  render @2 (
+      params :MetadataFileRenderParams  # Dialect, record, fields and existing bytes.
+  ) -> (result :MetadataFileRenderReply);
+}
+
 # Marks an enum whose wire strings (where an enum travels as `Text`, e.g.
 # `PluginError.code`) are the snake_case form of the enumerant names
 # (`payloadTooLarge` -> "payload_too_large").
@@ -1302,6 +1338,8 @@ enum Entrypoint {
   metadata @6;
   # Cover fetcher: `fetchCovers` (`CoverFetcher`).
   covers @7;
+  # Metadata file dialects: `parse` and `render` (`MetadataFiles`).
+  metadataFiles @8;
 }
 
 # One declared event consumer: a `[[events.consumers]]` row the default
@@ -2888,6 +2926,149 @@ struct CoverImagesReply {
   union {
     # Success: one entry per requested URL.
     ok @0 :CoverImages;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# A field of a `MetadataFileRecord`. Dialects declare in the manifest which
+# fields their format carries; a parsed record lists the ones its file
+# states, and a render request lists the ones to write.
+enum MetadataField {
+  # `MetadataFileRecord.title`.
+  title @0;
+  # `MetadataFileRecord.subtitle`.
+  subtitle @1;
+  # `MetadataFileRecord.description`.
+  description @2;
+  # `MetadataFileRecord.publisher`.
+  publisher @3;
+  # `MetadataFileRecord.publishedAt`.
+  publishedAt @4;
+  # `MetadataFileRecord.language`.
+  language @5;
+  # `MetadataFileRecord.genres`.
+  genres @6;
+  # `MetadataFileRecord.tags`.
+  tags @7;
+  # `MetadataFileRecord.abridgement`.
+  abridgement @8;
+  # `MetadataFileRecord.expressionKind`.
+  expressionKind @9;
+  # `MetadataFileRecord.identifiers`.
+  identifiers @10;
+  # `MetadataFileRecord.credits` in the roles `creditRoles` names.
+  credits @11;
+  # `MetadataFileRecord.seriesEntries`.
+  series @12;
+  # `MetadataFileRecord.chapters`.
+  chapters @13;
+  # `MetadataFileRecord.durationMs`.
+  duration @14;
+}
+
+# What one metadata file says about the edition it sits beside. A field the
+# file does not state is left out of `present` and means "unknown", never
+# "cleared"; a field in `present` with an empty value means the file states
+# that it is empty. The host checks every value against the `maxMetadataFile*`
+# caps and refuses a record that states a field its dialect does not carry.
+struct MetadataFileRecord {
+  # Fields the file states, each at most once; at most the fields the
+  # dialect declares.
+  present @0 :List(MetadataField);
+  # Primary title.
+  title @1 :Text $optional;
+  # Subtitle when distinct from `title`.
+  subtitle @2 :Text $optional;
+  # Long description / blurb; at most `maxMetadataFileDescriptionBytes`.
+  description @3 :Text $optional;
+  # Publisher name.
+  publisher @4 :Text $optional;
+  # Publication date as `YYYY`, `YYYY-MM` or `YYYY-MM-DD`.
+  publishedAt @5 :Text $optional;
+  # Content language as the file prints it (a code or a name).
+  language @6 :Text $optional;
+  # Genre labels in file order.
+  genres @7 :List(Text);
+  # Free tags in file order.
+  tags @8 :List(Text);
+  # Whether the edition is abridged; `unknown` when the file does not say.
+  abridgement @9 :Abridgement;
+  # How the work is realised; `unspecified` when the file does not say.
+  expressionKind @10 :ExpressionKind;
+  # External identifiers the file carries.
+  identifiers @11 :List(Identifier);
+  # Credited contributors in billing order, only in the roles `creditRoles`
+  # names.
+  credits @12 :List(Credit);
+  # Credit roles the file states, each at most once. A role listed here
+  # with no credit means the file states nobody in that role; a role left
+  # out is unknown. Empty unless `present` holds `credits`.
+  creditRoles @13 :List(CreditRole);
+  # Series the work belongs to.
+  seriesEntries @14 :List(SeriesEntry);
+  # Chapter layout in pre-order (see `MetadataChapter`); at most
+  # `maxMetadataFileChapters`, starts never decreasing.
+  chapters @15 :List(MetadataChapter);
+  # Running time in milliseconds.
+  durationMs @16 :UInt64 $optional;
+}
+
+# Params of `MetadataFiles.parse`.
+struct MetadataFileParseParams {
+  # Dialect id from the manifest's `[[metadata_files.dialects]]` that the
+  # host routed the file to.
+  dialect @0 :Text;
+  # The file's name without any folder (`metadata.json`, `Book.opf`).
+  fileName @1 :Text;
+  # The whole file; at most `maxMetadataFileBytes`.
+  bytes @2 :Data;
+}
+
+# Success payload of `MetadataFiles.parse`.
+struct MetadataFileParsed {
+  # What the file says.
+  record @0 :MetadataFileRecord;
+}
+
+# Result union of `MetadataFiles.parse`. A file the dialect cannot read is
+# `invalid_params`, so the host records it as unreadable and moves on.
+struct MetadataFileParseReply {
+  union {
+    # Success: the parsed record.
+    ok @0 :MetadataFileParsed;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Params of `MetadataFiles.render`.
+struct MetadataFileRenderParams {
+  # Dialect id from the manifest; one that declares `writes = true`.
+  dialect @0 :Text;
+  # Values to write. Only the fields in `fields` are read from it.
+  record @1 :MetadataFileRecord;
+  # Fields to set, each at most once and all declared by the dialect. A
+  # listed field with an empty value removes it from the file.
+  fields @2 :List(MetadataField);
+  # The file as it is now; empty when the host is creating it. Everything
+  # the dialect does not change (unknown keys, comments, other fields) is
+  # kept. At most `maxMetadataFileBytes`.
+  existing @3 :Data;
+}
+
+# Success payload of `MetadataFiles.render`.
+struct MetadataFileRendered {
+  # The new file; at most `maxMetadataFileBytes`. Empty when the dialect has
+  # nothing left to write; the host decides whether to remove the file.
+  bytes @0 :Data;
+}
+
+# Result union of `MetadataFiles.render`.
+struct MetadataFileRenderReply {
+  union {
+    # Success: the new file.
+    ok @0 :MetadataFileRendered;
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }

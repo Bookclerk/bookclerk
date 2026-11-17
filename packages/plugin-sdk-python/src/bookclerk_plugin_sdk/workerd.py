@@ -9,7 +9,7 @@ The default export is a module-level ``Default`` class extending
 :class:`BookclerkEntrypoint` with optional ``event(batch)`` / ``job(job)``
 triggers. Named entrypoints from ``plugin.toml`` ``entrypoints`` are module-level
 classes named after the wire name (``Storefront``, ``Storage``, ``RemoteLibrary``,
-``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``, ``Covers``) extending the matching ``*Entrypoint``
+``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``, ``Covers``, ``MetadataFiles``) extending the matching ``*Entrypoint``
 base. The launcher's adapter isolate reaches them only through the
 ``bookclerk*`` dispatch methods; authors neither call nor override those.
 
@@ -119,6 +119,7 @@ __all__ = [
     "JobController",
     "KvNamespace",
     "CoverEntrypoint",
+    "MetadataFilesEntrypoint",
     "MetadataEntrypoint",
     "NamedEntrypoint",
     "OidcEntrypoint",
@@ -2198,6 +2199,38 @@ class CoverEntrypoint(NamedEntrypoint):
     async def fetchCovers(self, _params: abi.CoverFetchParams, _sink: Any) -> list[abi.CoverImage]:
         """Fetch each URL into ``_sink`` under its index (list of ``CoverImage``)."""
         raise _unsupported("fetchCovers")
+
+
+class MetadataFilesEntrypoint(NamedEntrypoint):
+    """``metadataFiles`` entrypoint: reads and writes metadata files for the host.
+
+    The host reads every file, chooses every path and writes every result, so
+    the entrypoint only converts bytes. Each dialect is a
+    ``[[metadata_files.dialects]]`` row in ``plugin.toml``; ``params["dialect"]``
+    names the row.
+    """
+
+    bookclerk_methods = ("health", "parse", "render")
+
+    async def health(self) -> abi.HealthOk:
+        """Liveness / readiness probe (``HealthOk``)."""
+        return {"ok": True, "detail": ""}
+
+    async def parse(self, _params: abi.MetadataFileParseParams) -> abi.MetadataFileRecord:
+        """What one file says (``MetadataFileRecord``).
+
+        List every field the file states in ``present``, including ones it
+        states as empty. Raise ``invalid_params`` for a file the dialect cannot
+        read.
+        """
+        raise _unsupported("parse")
+
+    async def render(self, _params: abi.MetadataFileRenderParams) -> bytes | str:
+        """The new file: ``existing`` with ``fields`` set from ``record``.
+
+        Everything else in the file is kept; a ``str`` is written as UTF-8.
+        """
+        raise _unsupported("render")
 
 
 # ---------------------------------------------------------------------------

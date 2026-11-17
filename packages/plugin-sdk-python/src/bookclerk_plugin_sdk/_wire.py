@@ -482,6 +482,9 @@ def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("socketHandler") is not None:
         if v["socketHandler"] is not None:
             s.set_cap(12, caps.export_cap(v["socketHandler"]))
+    if v.get("metadataFiles") is not None:
+        if v["metadataFiles"] is not None:
+            s.set_cap(13, caps.export_cap(v["metadataFiles"]))
 
 
 def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
@@ -526,18 +529,21 @@ def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
     socket_handler = caps.import_cap(s.get_cap_index(12))
     if not (socket_handler is None):
         out["socketHandler"] = socket_handler
+    metadata_files = caps.import_cap(s.get_cap_index(13))
+    if not (metadata_files is None):
+        out["metadataFiles"] = metadata_files
     return out
 
 
-_entrypoints_codec = _Codec(0, 13, _write_entrypoints, _read_entrypoints)
-"""Wire codec for ``Entrypoints`` (0 data words, 13 pointers)."""
+_entrypoints_codec = _Codec(0, 14, _write_entrypoints, _read_entrypoints)
+"""Wire codec for ``Entrypoints`` (0 data words, 14 pointers)."""
 
 
 def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _entrypoints_codec.write(s.init_struct(0, 0, 13), v["value"], caps)
+        _entrypoints_codec.write(s.init_struct(0, 0, 14), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -548,7 +554,7 @@ def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_entrypoints_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 13), caps)}
+        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 14), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown EntrypointsReply union member: {disc}")
@@ -4300,6 +4306,198 @@ _cover_images_reply_codec = _Codec(1, 1, _write_cover_images_reply, _read_cover_
 """Wire codec for ``CoverImagesReply`` (1 data words, 1 pointers)."""
 
 
+def _write_metadata_file_record(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u16_list(0, [_ord(A.METADATA_FIELDS, v, "MetadataField") for v in v["present"]])
+    if v.get("title") is not None:
+        s.set_text(1, v["title"])
+    if v.get("subtitle") is not None:
+        s.set_text(2, v["subtitle"])
+    if v.get("description") is not None:
+        s.set_text(3, v["description"])
+    if v.get("publisher") is not None:
+        s.set_text(4, v["publisher"])
+    if v.get("publishedAt") is not None:
+        s.set_text(5, v["publishedAt"])
+    if v.get("language") is not None:
+        s.set_text(6, v["language"])
+    s.set_text_list(7, v["genres"])
+    s.set_text_list(8, v["tags"])
+    s.set_u16(0, _ord(A.ABRIDGEMENTS, v["abridgement"], "Abridgement"))
+    s.set_u16(1, _ord(A.EXPRESSION_KINDS, v["expressionKind"], "ExpressionKind"))
+    items = s.init_struct_list(9, len(v["identifiers"]), 1, 2)
+    for item, elem in zip(items, v["identifiers"], strict=True):
+        _identifier_codec.write(item, elem, caps)
+    items = s.init_struct_list(10, len(v["credits"]), 1, 1)
+    for item, elem in zip(items, v["credits"], strict=True):
+        _credit_codec.write(item, elem, caps)
+    s.set_u16_list(11, [_ord(A.CREDIT_ROLES, v, "CreditRole") for v in v["creditRoles"]])
+    items = s.init_struct_list(12, len(v["seriesEntries"]), 0, 3)
+    for item, elem in zip(items, v["seriesEntries"], strict=True):
+        _series_entry_codec.write(item, elem, caps)
+    items = s.init_struct_list(13, len(v["chapters"]), 3, 1)
+    for item, elem in zip(items, v["chapters"], strict=True):
+        _metadata_chapter_codec.write(item, elem, caps)
+    if v.get("durationMs") is not None:
+        s.set_u64(1, v["durationMs"])
+
+
+def _read_metadata_file_record(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "present": [_from_ord(A.METADATA_FIELDS, v, "MetadataField") for v in s.get_u16_list(0)],
+        "genres": s.get_text_list(7),
+        "tags": s.get_text_list(8),
+        "abridgement": _from_ord(A.ABRIDGEMENTS, s.get_u16(0), "Abridgement"),
+        "expressionKind": _from_ord(A.EXPRESSION_KINDS, s.get_u16(1), "ExpressionKind"),
+        "identifiers": [_identifier_codec.read(item, caps) for item in s.get_struct_list(9, 1, 2)],
+        "credits": [_credit_codec.read(item, caps) for item in s.get_struct_list(10, 1, 1)],
+        "creditRoles": [_from_ord(A.CREDIT_ROLES, v, "CreditRole") for v in s.get_u16_list(11)],
+        "seriesEntries": [_series_entry_codec.read(item, caps) for item in s.get_struct_list(12, 0, 3)],
+        "chapters": [_metadata_chapter_codec.read(item, caps) for item in s.get_struct_list(13, 3, 1)],
+    }
+    title = s.get_text(1)
+    if not (title == ""):
+        out["title"] = title
+    subtitle = s.get_text(2)
+    if not (subtitle == ""):
+        out["subtitle"] = subtitle
+    description = s.get_text(3)
+    if not (description == ""):
+        out["description"] = description
+    publisher = s.get_text(4)
+    if not (publisher == ""):
+        out["publisher"] = publisher
+    published_at = s.get_text(5)
+    if not (published_at == ""):
+        out["publishedAt"] = published_at
+    language = s.get_text(6)
+    if not (language == ""):
+        out["language"] = language
+    duration_ms = s.get_u64(1)
+    if not (duration_ms == 0):
+        out["durationMs"] = duration_ms
+    return out
+
+
+_metadata_file_record_codec = _Codec(2, 14, _write_metadata_file_record, _read_metadata_file_record)
+"""Wire codec for ``MetadataFileRecord`` (2 data words, 14 pointers)."""
+
+
+def _write_metadata_file_parse_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["dialect"])
+    s.set_text(1, v["fileName"])
+    s.set_data(2, v["bytes"])
+
+
+def _read_metadata_file_parse_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "dialect": s.get_text(0),
+        "fileName": s.get_text(1),
+        "bytes": s.get_data(2),
+    }
+
+
+_metadata_file_parse_params_codec = _Codec(0, 3, _write_metadata_file_parse_params, _read_metadata_file_parse_params)
+"""Wire codec for ``MetadataFileParseParams`` (0 data words, 3 pointers)."""
+
+
+def _write_metadata_file_parsed(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _metadata_file_record_codec.write(s.init_struct(0, 2, 14), v["record"], caps)
+
+
+def _read_metadata_file_parsed(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "record": _metadata_file_record_codec.read(s.get_struct(0, 2, 14), caps),
+    }
+
+
+_metadata_file_parsed_codec = _Codec(0, 1, _write_metadata_file_parsed, _read_metadata_file_parsed)
+"""Wire codec for ``MetadataFileParsed`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_file_parse_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _metadata_file_parsed_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown MetadataFileParseReply union member: {kind}")
+
+
+def _read_metadata_file_parse_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _metadata_file_parsed_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown MetadataFileParseReply union member: {disc}")
+
+
+_metadata_file_parse_reply_codec = _Codec(1, 1, _write_metadata_file_parse_reply, _read_metadata_file_parse_reply)
+"""Wire codec for ``MetadataFileParseReply`` (1 data words, 1 pointers)."""
+
+
+def _write_metadata_file_render_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["dialect"])
+    _metadata_file_record_codec.write(s.init_struct(1, 2, 14), v["record"], caps)
+    s.set_u16_list(2, [_ord(A.METADATA_FIELDS, v, "MetadataField") for v in v["fields"]])
+    s.set_data(3, v["existing"])
+
+
+def _read_metadata_file_render_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "dialect": s.get_text(0),
+        "record": _metadata_file_record_codec.read(s.get_struct(1, 2, 14), caps),
+        "fields": [_from_ord(A.METADATA_FIELDS, v, "MetadataField") for v in s.get_u16_list(2)],
+        "existing": s.get_data(3),
+    }
+
+
+_metadata_file_render_params_codec = _Codec(0, 4, _write_metadata_file_render_params, _read_metadata_file_render_params)
+"""Wire codec for ``MetadataFileRenderParams`` (0 data words, 4 pointers)."""
+
+
+def _write_metadata_file_rendered(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_data(0, v["bytes"])
+
+
+def _read_metadata_file_rendered(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "bytes": s.get_data(0),
+    }
+
+
+_metadata_file_rendered_codec = _Codec(0, 1, _write_metadata_file_rendered, _read_metadata_file_rendered)
+"""Wire codec for ``MetadataFileRendered`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_file_render_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _metadata_file_rendered_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown MetadataFileRenderReply union member: {kind}")
+
+
+def _read_metadata_file_render_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _metadata_file_rendered_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown MetadataFileRenderReply union member: {disc}")
+
+
+_metadata_file_render_reply_codec = _Codec(1, 1, _write_metadata_file_render_reply, _read_metadata_file_render_reply)
+"""Wire codec for ``MetadataFileRenderReply`` (1 data words, 1 pointers)."""
+
+
 def _write_socket_frame(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "text":
@@ -7309,6 +7507,88 @@ def _read_cover_fetcher_fetch_covers_results(s: _StructReader, caps: _CapTable) 
 
 _cover_fetcher_fetch_covers_results_codec = _Codec(0, 1, _write_cover_fetcher_fetch_covers_results, _read_cover_fetcher_fetch_covers_results)
 """Wire codec for ``CoverFetcherFetchCoversResults`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_files_health_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    pass
+
+
+def _read_metadata_files_health_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {}
+
+
+_metadata_files_health_params_codec = _Codec(0, 0, _write_metadata_files_health_params, _read_metadata_files_health_params)
+"""Wire codec for ``MetadataFilesHealthParams`` (0 data words, 0 pointers)."""
+
+
+def _write_metadata_files_health_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_metadata_files_health_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _health_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_metadata_files_health_results_codec = _Codec(0, 1, _write_metadata_files_health_results, _read_metadata_files_health_results)
+"""Wire codec for ``MetadataFilesHealthResults`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_files_parse_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _metadata_file_parse_params_codec.write(s.init_struct(0, 0, 3), v["params"], caps)
+
+
+def _read_metadata_files_parse_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "params": _metadata_file_parse_params_codec.read(s.get_struct(0, 0, 3), caps),
+    }
+
+
+_metadata_files_parse_params_codec = _Codec(0, 1, _write_metadata_files_parse_params, _read_metadata_files_parse_params)
+"""Wire codec for ``MetadataFilesParseParams`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_files_parse_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _metadata_file_parse_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_metadata_files_parse_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _metadata_file_parse_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_metadata_files_parse_results_codec = _Codec(0, 1, _write_metadata_files_parse_results, _read_metadata_files_parse_results)
+"""Wire codec for ``MetadataFilesParseResults`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_files_render_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _metadata_file_render_params_codec.write(s.init_struct(0, 0, 4), v["params"], caps)
+
+
+def _read_metadata_files_render_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "params": _metadata_file_render_params_codec.read(s.get_struct(0, 0, 4), caps),
+    }
+
+
+_metadata_files_render_params_codec = _Codec(0, 1, _write_metadata_files_render_params, _read_metadata_files_render_params)
+"""Wire codec for ``MetadataFilesRenderParams`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_files_render_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _metadata_file_render_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_metadata_files_render_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _metadata_file_render_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_metadata_files_render_results_codec = _Codec(0, 1, _write_metadata_files_render_results, _read_metadata_files_render_results)
+"""Wire codec for ``MetadataFilesRenderResults`` (0 data words, 1 pointers)."""
 
 
 def _write_database_open_session_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

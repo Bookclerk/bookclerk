@@ -39,6 +39,7 @@ boundary extends it.
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
 | `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
+| `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL, headers, subprotocols, heartbeat pairs and attachment, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
@@ -196,6 +197,17 @@ only that. The others check:
   reply round-trips through the codec and is accepted again. The shared
   oracle is `fuzz/oracles/plain_fetch.rs`, replayed from
   `bookclerk-plugin-abi`.
+- **`metadata_file_record`**: the input is a `MetadataFileRecord` message.
+  The host accepts it exactly when an independent restatement of every
+  rule agrees: no field or credit role listed twice, a value only for a
+  field in `present`, each credit's role in `creditRoles`, labels on one
+  non-blank line within their caps, a partial ISO date, list and chapter
+  caps, and chapters in start order with no depth jump. An accepted
+  record is then checked against a fixed `abs_metadata_json` dialect,
+  and passes exactly when it states only that dialect's fields and roles.
+  An accepted record round-trips through the codec and is accepted again.
+  The shared oracle is `fuzz/oracles/metadata_file_record.rs`, replayed
+  from `bookclerk-plugin-abi`.
 - **`event_read`**: byte 0 modulo 4 picks a `/events/read` JSON body (0),
   a bare cursor (1), or a Cap'n Proto `EventReadRequest` (2) or
   `EventReadPage` (3). The body parser accepts exactly the JSON objects whose

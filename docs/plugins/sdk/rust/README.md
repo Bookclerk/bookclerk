@@ -28,8 +28,8 @@ A native guest implements `PluginWorker` (`describe`, and
 `open(invocation, bindings) -> Entrypoints`) and calls `serve`, the
 stdin and stdout Cap'n Proto runner. The entrypoints it returns are the
 same named entrypoints the other SDKs export as classes: storefront,
-storage, remote library, database adapter, CLI, OIDC, metadata and
-covers. The
+storage, remote library, database adapter, CLI, OIDC, metadata, covers
+and metadata files. The
 crate root re-exports the DTOs and helpers a guest needs; prefer
 `use bookclerk_plugin_sdk::…` over reaching into submodules.
 

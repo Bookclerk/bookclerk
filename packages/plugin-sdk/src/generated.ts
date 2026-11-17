@@ -28,6 +28,7 @@ import type {
   CatalogSort,
   CatalogField,
   Abridgement,
+  MetadataField,
   DbType,
   DbStatementKind,
   DbResultSelection,
@@ -51,6 +52,7 @@ export type {
   CatalogSort,
   CatalogField,
   Abridgement,
+  MetadataField,
   DbType,
   DbStatementKind,
   DbResultSelection,
@@ -402,6 +404,11 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   socketHandler?: SocketHandler | null;
+  /**
+   * `metadataFiles` entrypoint.
+   * Null when the guest does not export this capability.
+   */
+  metadataFiles?: MetadataFiles | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -1433,6 +1440,39 @@ export interface CoverFetcher {
    * @returns {@link CoverImagesReply}
    */
   fetchCovers(params: CoverFetchParams, sink: Destination): Promise<CoverImagesReply>;
+}
+
+/**
+ * `metadataFiles` entrypoint: reads and writes metadata files that sit next
+ * to an edition's media (sidecars such as `metadata.json`, OPF, NFO or CUE),
+ * one dialect per format. The plugin only converts bytes: the host reads the
+ * file, chooses every path and writes the result, so a dialect plugin needs
+ * no network or file grants. The manifest's `[metadata_files]` table names
+ * each dialect, the file names it reads and the fields it carries, so the
+ * host routes a file to a sleeping plugin without starting it.
+ */
+export interface MetadataFiles {
+  /**
+   * Liveness / readiness probe.
+   *
+   * @returns {@link HealthReply}
+   */
+  health(): Promise<HealthReply>;
+  /**
+   * What one metadata file says about its edition.
+   *
+   * @param params - Dialect, file name and bytes.
+   * @returns {@link MetadataFileParseReply}
+   */
+  parse(params: MetadataFileParseParams): Promise<MetadataFileParseReply>;
+  /**
+   * The bytes of a metadata file with the given fields set to the record's
+   * values and everything else kept from the existing file.
+   *
+   * @param params - Dialect, record, fields and existing bytes.
+   * @returns {@link MetadataFileRenderReply}
+   */
+  render(params: MetadataFileRenderParams): Promise<MetadataFileRenderReply>;
 }
 
 /**
@@ -3202,6 +3242,144 @@ export interface CoverImages {
 /** Result union of `CoverFetcher.fetchCovers`. */
 export type CoverImagesReply =
   | { kind: "ok"; value: CoverImages } // Success: one entry per requested URL.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/**
+ * What one metadata file says about the edition it sits beside. A field the
+ * file does not state is left out of `present` and means "unknown", never
+ * "cleared"; a field in `present` with an empty value means the file states
+ * that it is empty. The host checks every value against the `maxMetadataFile*`
+ * caps and refuses a record that states a field its dialect does not carry.
+ */
+export interface MetadataFileRecord {
+  /**
+   * Fields the file states, each at most once; at most the fields the
+   * dialect declares.
+   */
+  present: MetadataField[];
+  /**
+   * Primary title.
+   * Omitted when absent (wire zero value).
+   */
+  title?: string;
+  /**
+   * Subtitle when distinct from `title`.
+   * Omitted when absent (wire zero value).
+   */
+  subtitle?: string;
+  /**
+   * Long description / blurb; at most `maxMetadataFileDescriptionBytes`.
+   * Omitted when absent (wire zero value).
+   */
+  description?: string;
+  /**
+   * Publisher name.
+   * Omitted when absent (wire zero value).
+   */
+  publisher?: string;
+  /**
+   * Publication date as `YYYY`, `YYYY-MM` or `YYYY-MM-DD`.
+   * Omitted when absent (wire zero value).
+   */
+  publishedAt?: string;
+  /**
+   * Content language as the file prints it (a code or a name).
+   * Omitted when absent (wire zero value).
+   */
+  language?: string;
+  /** Genre labels in file order. */
+  genres: string[];
+  /** Free tags in file order. */
+  tags: string[];
+  /** Whether the edition is abridged; `unknown` when the file does not say. */
+  abridgement: Abridgement;
+  /** How the work is realised; `unspecified` when the file does not say. */
+  expressionKind: ExpressionKind;
+  /** External identifiers the file carries. */
+  identifiers: Identifier[];
+  /**
+   * Credited contributors in billing order, only in the roles `creditRoles`
+   * names.
+   */
+  credits: Credit[];
+  /**
+   * Credit roles the file states, each at most once. A role listed here
+   * with no credit means the file states nobody in that role; a role left
+   * out is unknown. Empty unless `present` holds `credits`.
+   */
+  creditRoles: CreditRole[];
+  /** Series the work belongs to. */
+  seriesEntries: SeriesEntry[];
+  /**
+   * Chapter layout in pre-order (see `MetadataChapter`); at most
+   * `maxMetadataFileChapters`, starts never decreasing.
+   */
+  chapters: MetadataChapter[];
+  /**
+   * Running time in milliseconds.
+   * Omitted when absent (wire zero value).
+   */
+  durationMs?: number;
+}
+
+/** Params of `MetadataFiles.parse`. */
+export interface MetadataFileParseParams {
+  /**
+   * Dialect id from the manifest's `[[metadata_files.dialects]]` that the
+   * host routed the file to.
+   */
+  dialect: string;
+  /** The file's name without any folder (`metadata.json`, `Book.opf`). */
+  fileName: string;
+  /** The whole file; at most `maxMetadataFileBytes`. */
+  bytes: Uint8Array;
+}
+
+/** Success payload of `MetadataFiles.parse`. */
+export interface MetadataFileParsed {
+  /** What the file says. */
+  record: MetadataFileRecord;
+}
+
+/**
+ * Result union of `MetadataFiles.parse`. A file the dialect cannot read is
+ * `invalid_params`, so the host records it as unreadable and moves on.
+ */
+export type MetadataFileParseReply =
+  | { kind: "ok"; value: MetadataFileParsed } // Success: the parsed record.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Params of `MetadataFiles.render`. */
+export interface MetadataFileRenderParams {
+  /** Dialect id from the manifest; one that declares `writes = true`. */
+  dialect: string;
+  /** Values to write. Only the fields in `fields` are read from it. */
+  record: MetadataFileRecord;
+  /**
+   * Fields to set, each at most once and all declared by the dialect. A
+   * listed field with an empty value removes it from the file.
+   */
+  fields: MetadataField[];
+  /**
+   * The file as it is now; empty when the host is creating it. Everything
+   * the dialect does not change (unknown keys, comments, other fields) is
+   * kept. At most `maxMetadataFileBytes`.
+   */
+  existing: Uint8Array;
+}
+
+/** Success payload of `MetadataFiles.render`. */
+export interface MetadataFileRendered {
+  /**
+   * The new file; at most `maxMetadataFileBytes`. Empty when the dialect has
+   * nothing left to write; the host decides whether to remove the file.
+   */
+  bytes: Uint8Array;
+}
+
+/** Result union of `MetadataFiles.render`. */
+export type MetadataFileRenderReply =
+  | { kind: "ok"; value: MetadataFileRendered } // Success: the new file.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
 /** One WebSocket message. */

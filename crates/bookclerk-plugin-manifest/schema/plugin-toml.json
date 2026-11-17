@@ -36,7 +36,7 @@
       "description": "Named capabilities this plugin exports from PluginWorker.open.",
       "items": {
         "type": "string",
-        "enum": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers"]
+        "enum": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles"]
       }
     },
     "media": {
@@ -58,6 +58,18 @@
           "type": "array",
           "description": "Edition carriers fetchTitle can deliver; a subset of lists. Storefronts only.",
           "items": { "type": "string", "enum": ["audio", "ebook", "print"] }
+        }
+      }
+    },
+    "metadata_files": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Metadata file dialects (sidecars such as metadata.json, OPF, NFO, CUE) the plugin reads and writes. Required, with at least one dialect, for a plugin exporting the metadataFiles entrypoint; forbidden for every other plugin.",
+      "properties": {
+        "dialects": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/MetadataFileDialect" }
         }
       }
     },
@@ -181,9 +193,53 @@
         }
       },
       "else": { "properties": { "media": false } }
+    },
+    {
+      "if": {
+        "properties": { "entrypoints": { "contains": { "const": "metadataFiles" } } },
+        "required": ["entrypoints"]
+      },
+      "then": { "required": ["metadata_files"] },
+      "else": { "properties": { "metadata_files": false } }
     }
   ],
   "$defs": {
+    "MetadataFileDialect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "fields"],
+      "description": "One metadata file format. The host routes a file by exact name first, then by the longest matching suffix, both compared without ASCII case.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "description": "Dialect id, unique within the plugin; passed back in parse and render."
+        },
+        "name": { "type": "string", "minLength": 1, "description": "Name shown in settings and on a book's files list." },
+        "file_names": {
+          "type": "array",
+          "description": "Exact file names the dialect reads (metadata.json).",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "suffixes": {
+          "type": "array",
+          "description": "File name endings the dialect reads (.opf, .metadata.json); each starts with a dot.",
+          "items": { "type": "string", "pattern": "^\\..+" }
+        },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Fields the format carries.",
+          "items": { "type": "string", "enum": ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration"] }
+        },
+        "credit_roles": {
+          "type": "array",
+          "description": "Credit roles the format carries; required exactly when fields names credits.",
+          "items": { "type": "string", "enum": ["author", "narrator", "translator", "editor", "illustrator", "publisher", "host", "cast", "adaptor"] }
+        },
+        "writes": { "type": "boolean", "description": "Whether the dialect also writes files (render). Defaults to false." }
+      }
+    },
     "Capabilities": {
       "type": "object",
       "additionalProperties": false,
