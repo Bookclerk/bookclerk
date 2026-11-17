@@ -310,6 +310,7 @@ impl CoverBackend for LiveBackend {
                     | MediaError::OutputMissing(_)
                     | MediaError::Mp4(_)
                     | MediaError::Native(_)
+                    | MediaError::Tags(_)
                     | MediaError::Io(_)
                     | MediaError::Other(_) => CoverFailure::Unavailable(err.to_string()),
                 }

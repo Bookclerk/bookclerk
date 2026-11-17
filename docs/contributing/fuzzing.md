@@ -35,6 +35,8 @@ boundary extends it.
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
 | `cover_token` | Cover tokens in `/api/covers` and `/api/images` paths, and Gravatar hashes in `/api/avatars` paths: which remote URL a route may fetch | `bookclerk-cover::token` |
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
+| `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items and chapter tracks, ID3v2 and ID3v1, FLAC metadata blocks, read by range in the tag worker | `bookclerk-tags::TagReader` |
+| `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
@@ -162,6 +164,20 @@ only that. The others check:
   An accepted frame re-encodes to exactly its own bytes, and an accepted
   reply carries only JPEG-signed images and a nonzero size. The shared
   oracle is `fuzz/oracles/cover_wire.rs`, replayed from `bookclerk-cover`.
+- **`tags_read`**: the input is a whole media file. The reader is driven
+  twice, supplying each round's spans in order and then reversed, and both
+  drives must give the same answer as reading with every byte available up
+  front, so the result never depends on how bytes arrive. Every span asked
+  for is non-empty and inside the file, within the round and span limits.
+  An accepted record passes the host's `TagRecord::validate` and survives
+  the worker's `Done` frame unchanged. The shared oracle is
+  `fuzz/oracles/tags_read.rs`, replayed from `bookclerk-tags`.
+- **`tags_wire`**: the first byte picks the request or the reply decoder.
+  An accepted request, `Need` or `Failed` frame re-encodes to exactly its
+  own bytes; a `Need` names one to 64 non-empty, non-overflowing spans; a
+  `Done` record re-encodes to a frame that decodes to the same record. The
+  shared oracle is `fuzz/oracles/tags_wire.rs`, replayed from
+  `bookclerk-tags`.
 - **`cache_headers`**: the first byte, modulo 4, picks a mode. A built
   `If-None-Match` list of well-formed tags matches exactly when one of
   them is the current tag, strong or weak. Any raw header that matches,

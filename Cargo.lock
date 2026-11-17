@@ -1844,6 +1844,7 @@ dependencies = [
  "bookclerk-cover",
  "bookclerk-mp4",
  "bookclerk-sandbox",
+ "bookclerk-tags",
  "fdk-aac",
  "id3",
  "mp3lame-encoder",
@@ -1864,6 +1865,8 @@ dependencies = [
  "bookclerk-cover",
  "bookclerk-media",
  "bookclerk-sandbox",
+ "bookclerk-tags",
+ "futures",
  "rayon",
  "serde_json",
  "tempfile",
@@ -2487,6 +2490,20 @@ dependencies = [
  "mime_guess",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "bookclerk-tags"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-tags",
+ "hex",
+ "id3",
+ "memchr",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
 ]
 
