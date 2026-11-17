@@ -416,6 +416,14 @@ MACOS_JOB = "macOS (sandbox, gateway, tray)"
 MACOS_JOB_ID = 126203811708
 
 
+def macos_ran() -> bytes:
+    """The stranded-macOS jobs listing, except that the macOS job got a runner and ran a step."""
+    doc = json.loads(seed("jobs__macos_stranded.json"))
+    job = next(j for j in doc["jobs"] if j["id"] == MACOS_JOB_ID)
+    job.update(runner_name="GitHub Actions 1000000001", steps=[{"name": "Set up job", "status": "completed", "conclusion": "success"}])
+    return json.dumps(doc).encode()
+
+
 def stranded_bodies(attempt: int = 2) -> dict[str, bytes]:
     """A pull request run whose CI Gate is deciding on attempt ``attempt``.
 
@@ -594,7 +602,7 @@ class StrandedJobTests(unittest.TestCase):
             "push to another branch": {f"{base}/actions/runs/{PR_RUN_ID}": edited("run__pr_gate_attempt2.json", event="push")},
             "main push, job ran": {
                 f"{base}/actions/runs/{PR_RUN_ID}": edited("run__pr_gate_attempt2.json", event="push", head_branch="main"),
-                f"{base}/actions/runs/{PR_RUN_ID}/attempts/2/jobs": seed("jobs__all_green.json"),
+                f"{base}/actions/runs/{PR_RUN_ID}/attempts/2/jobs": macos_ran(),
             },
             "main push, cancelled by hand": {
                 f"{base}/actions/runs/{PR_RUN_ID}": edited("run__pr_gate_attempt2.json", event="push", head_branch="main"),
