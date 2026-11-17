@@ -47,6 +47,23 @@ export function json(body: unknown, status = 200): Response {
 }
 
 /**
+ * The path and query of `url` when it is on the fake's origin, else `url`.
+ *
+ * @param url - The requested URL.
+ * @param baseUrl - The fake's base URL.
+ * @returns The path with query, as sent.
+ */
+function pathOf(url: string, baseUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  return parsed.origin === new URL(baseUrl).origin ? `${parsed.pathname}${parsed.search}` : url;
+}
+
+/**
  * A fake server answering from `routes` (first match wins; 404 otherwise).
  *
  * @param routes - `"METHOD /path"` (exact path, query included) or a matcher.
@@ -62,7 +79,7 @@ export function fakeServer(routes: Record<string, () => Response> | Route): Fake
     }
     const request: Seen = {
       method: init.method ?? "GET",
-      path: url.startsWith(baseUrl) ? url.slice(baseUrl.length) : url,
+      path: pathOf(url, baseUrl),
       headers,
       body: typeof init.body === "string" ? init.body : "",
       redirect: init.redirect,
