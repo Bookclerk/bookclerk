@@ -3,12 +3,12 @@
 //! A Python isolate takes seconds to start; started from a workerd snapshot
 //! taken after its imports, it takes a fraction of a second (see
 //! [`bookclerk_workerd::python_snapshot`]). The host keeps the snapshot in
-//! `plugin-state/<fs-id>/snapshot/<key>.bin`, where the key hashes the
+//! `plugin-state/<fs-id>/snapshot/<key>/snapshot.bin`, where the key hashes the
 //! pinned workerd release and every file of the installed plugin, so a new
 //! plugin version or a new workerd never loads a stale snapshot.
 //!
-//! The guest's jail may read only the stored file it starts from and write
-//! only a fresh staging directory. The launcher saves a new snapshot there
+//! The guest's jail may read only the key directory it starts from (workerd
+//! opens the snapshot's directory) and write only a fresh staging directory. The launcher saves a new snapshot there
 //! when there is none to load, or the stored one did not start, and marks it
 //! ready once the isolate answered. The host then promotes the ready file into
 //! the store (see [`SnapshotSlot::promote_when_ready`]) and drops older keys.
@@ -19,13 +19,18 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bookclerk_workerd::python_snapshot::{self as launcher, MAX_SNAPSHOT_BYTES, READY_FILE};
+use bookclerk_workerd::python_snapshot::{
+    self as launcher, LOADED_FILE, MAX_SNAPSHOT_BYTES, READY_FILE,
+};
 use sha2::{Digest, Sha256};
 
 use crate::DiscoveredPlugin;
 
 /// Directory under a plugin's state root that holds its snapshots.
 pub(crate) const SNAPSHOT_DIR: &str = "snapshot";
+
+/// The file name of a stored snapshot inside its key directory.
+const STORED_FILE: &str = "snapshot.bin";
 
 /// The most files a plugin install may hold for the host to key a snapshot
 /// on it; a larger install starts without one.
@@ -40,13 +45,18 @@ const MAX_KEYED_BYTES: u64 = 256 * 1024 * 1024;
 /// starts (30 s each) with room to spare.
 const READY_WAIT: Duration = Duration::from_secs(90);
 
+/// How old a staging directory must be before a later start removes it as
+/// left behind; well past [`READY_WAIT`].
+const STALE_STAGING: Duration = Duration::from_secs(600);
+
 /// How often the host looks for a ready snapshot while it waits.
 const READY_POLL: Duration = Duration::from_millis(250);
 
 /// The snapshot paths for one Python guest start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SnapshotSlot {
-    /// Where this plugin version's snapshot is stored.
+    /// Where this plugin version's snapshot is stored
+    /// (`<root>/<key>/snapshot.bin`).
     store: PathBuf,
     /// Whether [`Self::store`] holds a snapshot to start from.
     load: bool,
@@ -104,10 +114,13 @@ impl SnapshotSlot {
         }
     }
 
-    /// Creates the store directory and a staging directory for `key`.
+    /// Creates the store directory and a staging directory for `key`,
+    /// first removing staging directories older than [`STALE_STAGING`] that
+    /// a host which stopped mid-wait left behind.
     fn create(root: &Path, key: &str) -> std::io::Result<Self> {
         create_private_dir(root)?;
-        let store = root.join(format!("{key}.bin"));
+        sweep_stale_staging(root, STALE_STAGING);
+        let store = root.join(key).join(STORED_FILE);
         let load = std::fs::symlink_metadata(&store).is_ok_and(|meta| meta.file_type().is_file());
         let staging = root.join(format!("staging-{}", random_hex()));
         create_private_dir(&staging)?;
@@ -118,9 +131,15 @@ impl SnapshotSlot {
         })
     }
 
-    /// The stored snapshot the guest's jail may read, when there is one.
+    /// The directory of the stored snapshot the guest's jail may read, when
+    /// there is one. workerd opens the snapshot's directory, so the grant is
+    /// the key directory, which holds nothing else.
     pub(crate) fn read_path(&self) -> Option<&Path> {
-        self.load.then_some(self.store.as_path())
+        if self.load {
+            self.store.parent()
+        } else {
+            None
+        }
     }
 
     /// The staging directory the guest's jail may write.
@@ -145,7 +164,8 @@ impl SnapshotSlot {
         tokio::spawn(async move {
             let deadline = tokio::time::Instant::now() + READY_WAIT;
             while tokio::time::Instant::now() < deadline {
-                if self.staging.join(READY_FILE).exists() {
+                if self.staging.join(READY_FILE).exists() || self.staging.join(LOADED_FILE).exists()
+                {
                     break;
                 }
                 tokio::time::sleep(READY_POLL).await;
@@ -165,7 +185,12 @@ impl SnapshotSlot {
         let ready = self.staging.join(READY_FILE);
         let promoted = match std::fs::symlink_metadata(&ready) {
             Ok(meta) if meta.file_type().is_file() && meta.len() <= MAX_SNAPSHOT_BYTES => {
-                match std::fs::rename(&ready, &self.store) {
+                let stored = self
+                    .store
+                    .parent()
+                    .map_or(Ok(()), create_private_dir)
+                    .and_then(|()| std::fs::rename(&ready, &self.store));
+                match stored {
                     Ok(()) => {
                         self.drop_other_keys();
                         tracing::info!(
@@ -196,9 +221,13 @@ impl SnapshotSlot {
     }
 
     /// Removes snapshots stored under other keys (older plugin versions or
-    /// workerd releases).
+    /// workerd releases). Staging directories of other starts are left to
+    /// their own watchers.
     fn drop_other_keys(&self) {
-        let Some(root) = self.store.parent() else {
+        let Some(key_dir) = self.store.parent() else {
+            return;
+        };
+        let Some(root) = key_dir.parent() else {
             return;
         };
         let Ok(entries) = std::fs::read_dir(root) else {
@@ -206,9 +235,18 @@ impl SnapshotSlot {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let is_snapshot = path.extension().is_some_and(|ext| ext == "bin");
-            if is_snapshot && path != self.store {
-                let _ = std::fs::remove_file(&path);
+            let staging = entry.file_name().to_string_lossy().starts_with("staging-");
+            if staging || path == key_dir {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => {
+                    let _ = std::fs::remove_dir_all(&path);
+                }
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&path);
+                }
+                Err(_) => {}
             }
         }
     }
@@ -270,6 +308,28 @@ fn install_key(root: &Path) -> std::io::Result<Option<String>> {
         hasher.update(length.to_le_bytes());
     }
     Ok(Some(hex::encode(&hasher.finalize()[..16])))
+}
+
+/// Removes `staging-*` directories under `root` last modified more than
+/// `age` ago.
+fn sweep_stale_staging(root: &Path, age: Duration) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with("staging-") {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|elapsed| elapsed > age);
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 /// Creates `dir` (and its parents) and makes it owner-only on Unix.

@@ -155,7 +155,9 @@ callers await a promise, and long work is a durable job.
     memory after Pyodide loaded and the plugin imported its modules (a
     dedicated snapshot) and start later isolates from it: measured on the
     echo plugin with the Python SDK, about 0.6 s on one CPU (a snapshot of
-    Pyodide alone, without the plugin's imports, gave about 1.9 s). The
+    Pyodide alone, without the plugin's imports, gave about 1.9 s). Through
+    the whole host path (jail, launcher, handshake and first `describe`) the
+    echo plugin's start went from about 4.8 s to about 1.2 s on one CPU. The
     host keeps one dedicated snapshot per installed plugin version, keyed
     by the workerd release and the install's files, in host-owned plugin
     state. The guest's jail reads only that file and writes only a fresh

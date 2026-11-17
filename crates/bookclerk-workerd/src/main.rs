@@ -316,11 +316,12 @@ async fn run_isolate(
 
     // Python isolates try their snapshot starts in order; every other
     // isolate starts once, plainly.
-    let starts = if manifest.declares_python() {
-        python_snapshot::SnapshotPlan::from_env().starts()
+    let snapshot_plan = if manifest.declares_python() {
+        python_snapshot::SnapshotPlan::from_env()
     } else {
-        vec![SnapshotStart::Plain]
+        python_snapshot::SnapshotPlan::default()
     };
+    let starts = snapshot_plan.starts();
     let mut attempts = starts.into_iter().peekable();
     let (mut child, rpc_port) = loop {
         let Some(start) = attempts.next() else {
@@ -349,12 +350,21 @@ async fn run_isolate(
         .await;
         match ready {
             Ok(ready) => {
-                if let SnapshotStart::Save(staging) = &start {
-                    // The isolate answered, so the snapshot it saved at
-                    // start-up is whole; the host may promote it now.
-                    if let Err(err) = python_snapshot::mark_ready(staging) {
-                        warn!(error = %err, "workerd saved no Python snapshot");
+                match &start {
+                    SnapshotStart::Save(staging) => {
+                        // The isolate answered, so the snapshot it saved at
+                        // start-up is whole; the host may promote it now.
+                        if let Err(err) = python_snapshot::mark_ready(staging) {
+                            warn!(error = %err, "workerd saved no Python snapshot");
+                        }
                     }
+                    SnapshotStart::Load(_) => {
+                        // Nothing to save; tell the host to stop waiting.
+                        if let Some(staging) = &snapshot_plan.save {
+                            let _ = python_snapshot::mark_loaded(staging);
+                        }
+                    }
+                    SnapshotStart::Plain => {}
                 }
                 break ready;
             }

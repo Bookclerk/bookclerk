@@ -159,14 +159,14 @@ host-owned `…/plugin-state/<PluginKey fs-id>/snapshot/` directory:
 
 | Path | Access | Purpose |
 | --- | --- | --- |
-| `snapshot/<key>.bin` | read-only | The stored snapshot it starts from, when there is one |
+| `snapshot/<key>/` | read-only | The stored snapshot it starts from, when there is one (workerd opens its directory) |
 | `snapshot/staging-<32 hex>/` | read/write | A fresh, empty directory a new snapshot is saved into |
 
 The key hashes the pinned workerd release and every file of the install.
 The host promotes a saved snapshot only when the launcher marked it ready
 after the isolate answered, only when it is a regular file of at most
-512 MiB, and then removes the staging directory. A guest never writes the
-stored file, and a snapshot only ever loads into that plugin's own jail.
+512 MiB, and then removes the staging directory and the snapshots of older keys. A
+guest never writes the stored file, and a snapshot only ever loads into that plugin's own jail.
 
 The host-owned `session-<nonce>/` directory is **not** on that list. It is
 the gateway's `TMPDIR` / `BOOKCLERK_WORKERD_STATE_DIR` (granted sockets live

@@ -61,10 +61,13 @@ fn a_first_start_saves_and_the_ready_snapshot_is_promoted() {
     write(slot.write_path(), READY_FILE, b"snap");
     assert!(slot.promote());
     assert!(!slot.write_path().exists(), "staging removed");
-    assert_eq!(std::fs::read(root.join("k1.bin")).expect("stored"), b"snap");
+    assert_eq!(
+        std::fs::read(root.join("k1").join(STORED_FILE)).expect("stored"),
+        b"snap"
+    );
 
     let next = SnapshotSlot::create(&root, "k1").expect("slot");
-    assert_eq!(next.read_path(), Some(root.join("k1.bin").as_path()));
+    assert_eq!(next.read_path(), Some(root.join("k1").as_path()));
     let names: Vec<_> = next.env().into_iter().map(|(name, _)| name).collect();
     assert_eq!(names, vec![launcher::SAVE_ENV, launcher::LOAD_ENV]);
 }
@@ -81,8 +84,8 @@ fn a_new_key_drops_the_old_snapshot() {
     assert_eq!(new.read_path(), None);
     write(new.write_path(), READY_FILE, b"new");
     assert!(new.promote());
-    assert!(!root.join("old.bin").exists());
-    assert!(root.join("new.bin").exists());
+    assert!(!root.join("old").exists());
+    assert!(root.join("new").join(STORED_FILE).exists());
 }
 
 #[test]
@@ -92,7 +95,7 @@ fn an_unfinished_save_is_not_promoted() {
     let slot = SnapshotSlot::create(&root, "k").expect("slot");
     write(slot.write_path(), launcher::SAVED_FILE, b"half");
     assert!(!slot.promote());
-    assert!(!root.join("k.bin").exists());
+    assert!(!root.join("k").exists());
     assert!(!slot.write_path().exists(), "staging removed anyway");
 }
 
@@ -106,7 +109,7 @@ fn a_planted_link_is_not_promoted() {
     std::fs::write(&outside, b"host file").expect("write");
     std::os::unix::fs::symlink(&outside, slot.write_path().join(READY_FILE)).expect("link");
     assert!(!slot.promote());
-    assert!(!root.join("k.bin").exists());
+    assert!(!root.join("k").exists());
     assert_eq!(std::fs::read(&outside).expect("kept"), b"host file");
 }
 
@@ -121,4 +124,17 @@ fn the_store_is_private() {
         let mode = std::fs::metadata(dir).expect("meta").permissions().mode();
         assert_eq!(mode & 0o777, 0o700, "{}", dir.display());
     }
+}
+
+#[test]
+fn left_behind_staging_directories_are_swept() {
+    let state = tempfile::tempdir().expect("tempdir");
+    let root = state.path().join(SNAPSHOT_DIR);
+    let old = SnapshotSlot::create(&root, "k").expect("slot");
+    write(&root, "k/snapshot.bin", b"kept");
+    sweep_stale_staging(&root, Duration::from_secs(3600));
+    assert!(old.write_path().is_dir(), "a fresh staging directory stays");
+    sweep_stale_staging(&root, Duration::ZERO);
+    assert!(!old.write_path().exists(), "an old one is removed");
+    assert!(root.join("k").join(STORED_FILE).exists(), "the store stays");
 }

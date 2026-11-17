@@ -34,6 +34,10 @@ pub const SAVED_FILE: &str = "snapshot.bin";
 /// from answered, so the host never promotes a half-written file.
 pub const READY_FILE: &str = "snapshot.ready";
 
+/// The marker the launcher leaves in the staging directory when the isolate
+/// started from the stored snapshot, so the host stops waiting for a save.
+pub const LOADED_FILE: &str = "snapshot.loaded";
+
 /// The largest snapshot the host promotes, in bytes. A dedicated snapshot of
 /// a plugin with the Bookclerk SDK is about 45 MB; anything far past that is
 /// refused rather than stored.
@@ -138,6 +142,20 @@ pub fn mark_ready(staging: &Path) -> std::io::Result<()> {
     std::fs::rename(staging.join(SAVED_FILE), staging.join(READY_FILE))
 }
 
+/// Leaves the [`LOADED_FILE`] marker in `staging`: this start loaded the
+/// stored snapshot and saves nothing.
+///
+/// # Arguments
+///
+/// * `staging` - The staging directory the host gave this start.
+///
+/// # Errors
+///
+/// Returns the I/O error when the marker cannot be written.
+pub fn mark_loaded(staging: &Path) -> std::io::Result<()> {
+    std::fs::write(staging.join(LOADED_FILE), b"")
+}
+
 /// Reads `name` as an absolute path, or `None`.
 fn absolute_env(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
@@ -231,5 +249,12 @@ mod tests {
             std::fs::read(dir.path().join(READY_FILE)).expect("read"),
             b"snap"
         );
+    }
+
+    #[test]
+    fn a_loaded_start_leaves_a_marker() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        mark_loaded(dir.path()).expect("marker");
+        assert!(dir.path().join(LOADED_FILE).is_file());
     }
 }
