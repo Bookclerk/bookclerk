@@ -170,6 +170,9 @@ impl HostDestination {
 /// One title an acquire fetches here.
 #[derive(Debug, Clone)]
 pub struct HostTitle {
+    /// The owner's account holding of the title (`holdings.id` there): the
+    /// title this host's upload is granted and committed for.
+    pub holding_id: String,
     /// The owner's library row.
     pub book: BookRecord,
     /// The owner's row for the title's podcast parent, when it sent one;
@@ -1282,7 +1285,7 @@ async fn acquire_titles<G: HostGuests>(
             .collect::<anyhow::Result<Vec<_>>>()?;
         let fresh: Vec<AcquireTarget> = targets
             .into_iter()
-            .filter(|target| !attempted.contains(&target.book_uuid))
+            .filter(|target| !attempted.contains(&target.holding_id))
             .collect();
         if fresh.is_empty() {
             return Ok((acquired, failed));
@@ -1292,7 +1295,7 @@ async fn acquire_titles<G: HostGuests>(
             if ctx.is_cancelled() {
                 anyhow::bail!("cancelled");
             }
-            attempted.insert(target.book_uuid.clone());
+            attempted.insert(target.holding_id.clone());
             let library_id = target.library_id.clone();
             if target.plugin_key != bindings.plugin_key {
                 failed += 1;
@@ -1300,16 +1303,14 @@ async fn acquire_titles<G: HostGuests>(
             }
             let book: BookRecord =
                 serde_json::from_value(target.book).context("the owner's library row")?;
-            if book.uuid != target.book_uuid {
-                anyhow::bail!("the owner's library row is not the title it planned");
-            }
             let parent: Option<BookRecord> = target
                 .parent
                 .map(serde_json::from_value)
                 .transpose()
                 .context("the owner's podcast parent row")?;
-            let outbox = work_path(job_dir, &target.book_uuid)?;
+            let outbox = work_path(job_dir, &target.holding_id)?;
             let title = HostTitle {
+                holding_id: target.holding_id,
                 book,
                 parent,
                 library_id: target.library_id.map(String::from),
@@ -1695,7 +1696,7 @@ async fn upload_title<G: HostGuests>(
     let (files, paths): (Vec<UploadFile>, Vec<PathBuf>) = manifest.into_iter().unzip();
     let upload = with_retries(|| {
         host.grant_upload(
-            book_uuid,
+            &title.holding_id,
             &acquired.primary_key,
             acquired.pdf_key.as_deref(),
             files.clone(),

@@ -414,6 +414,31 @@ impl LibraryStore {
         self.acquire_titles_of(holdings).await
     }
 
+    /// The title of one account holding (`holdings.id`), as acquire reads
+    /// it.
+    ///
+    /// # Returns
+    ///
+    /// `None` when no account holding has that id (a node holding, a
+    /// holding withdrawn, or an id this library never had) or its listing
+    /// is gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn acquire_title_of_holding(&self, holding_id: &str) -> Result<Option<AcquireTitle>> {
+        let Some(holding) = super::holdings::find_holdings()
+            .filter(holdings::Column::Id.eq(holding_id))
+            .filter(holdings::Column::HolderKind.eq("account"))
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        Ok(self.acquire_titles_of(vec![holding]).await?.pop())
+    }
+
     /// The accounts that hold at least one title, as `(plugin_key,
     /// account_id)`: what an acquire of every title in its scope touches.
     ///

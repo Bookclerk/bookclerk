@@ -406,9 +406,9 @@ pub enum Body {
         job_id: String,
         /// Lease generation the host holds.
         fence: i64,
-        /// Library id of the title the files are for (one of the job's
-        /// targets).
-        book_uuid: String,
+        /// The account holding of the title the files are for
+        /// (`holdings.id` on the owner; one of the job's targets).
+        holding_id: String,
         /// Storage key of the title's primary audio file on the primary
         /// destination (one of `files`' copies there).
         primary_key: String,
@@ -417,7 +417,7 @@ pub enum Body {
         /// uploaded.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pdf_key: Option<String>,
-        /// Every file, in upload order. Empty, with an empty `book_uuid`,
+        /// Every file, in upload order. Empty, with an empty `holding_id`,
         /// for the job's closing upload, whose commit only completes the
         /// job.
         files: Vec<UploadFile>,
@@ -998,8 +998,9 @@ pub const MAX_DESTINATION_ID_BYTES: usize = 64;
 /// ([`Body::AcquireTargets`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcquireTarget {
-    /// Library id of the title.
-    pub book_uuid: String,
+    /// The owner's account holding of the title (`holdings.id`): the id the
+    /// host's upload of it names.
+    pub holding_id: String,
     /// Plugin key of the store that sells it.
     pub plugin_key: String,
     /// Store account that owns it.
@@ -1308,7 +1309,7 @@ mod tests {
     fn a_library_id_is_short_ascii_alphanumeric_or_the_frame_is_refused() {
         let target = |id: &str| {
             serde_json::json!({
-                "book_uuid": "b",
+                "holding_id": "b",
                 "plugin_key": "store",
                 "account_id": "a",
                 "book": {},
@@ -1339,7 +1340,7 @@ mod tests {
             );
         }
         let absent: AcquireTarget = serde_json::from_value(serde_json::json!({
-            "book_uuid": "b", "plugin_key": "store", "account_id": "a", "book": {},
+            "holding_id": "b", "plugin_key": "store", "account_id": "a", "book": {},
         }))
         .unwrap();
         assert_eq!(absent.library_id, None);
@@ -1691,7 +1692,7 @@ mod tests {
             (
                 Body::AcquireTargets {
                     targets: vec![AcquireTarget {
-                        book_uuid: "b".into(),
+                        holding_id: "b".into(),
                         plugin_key: "store".into(),
                         account_id: "a".into(),
                         book: serde_json::json!({}),
@@ -1710,7 +1711,7 @@ mod tests {
                 Body::UploadGrant {
                     job_id: job_id(),
                     fence: 2,
-                    book_uuid: "b".into(),
+                    holding_id: "b".into(),
                     primary_key: "A/B.m4b".into(),
                     pdf_key: None,
                     files: vec![UploadFile {

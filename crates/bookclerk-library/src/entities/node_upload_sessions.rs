@@ -22,8 +22,10 @@ pub struct Model {
     pub lease_generation: i64,
     /// Owner node that streams the files to its destinations.
     pub receiving_node_id: String,
-    /// Library id of the title.
-    pub book_uuid: String,
+    /// The title's holding (`holdings.id`): the account holding of a job
+    /// upload, or the node holding of a branch's catalog upload; empty for
+    /// a job's closing upload.
+    pub holding_id: String,
     /// Storage key of the title's primary audio file.
     pub primary_key: String,
     /// The declared files and PDF key (JSON object `{files, pdfKey}`, each

@@ -787,8 +787,9 @@ its edition that another account's acquire or upload wrote, and an acquire
 never writes a key another edition holds: the write is refused before it
 reaches storage. A book with
 no edition (a listing the resolver refused or has not resolved yet) is not
-acquired until a scan resolves it, and a host upload of it is refused
-(`unresolved_title`).
+acquired until a scan resolves it. A host upload names the title by its
+account holding, and one that resolves to no edition is refused
+(`unknown_title`).
 
 Every stored title is linked into its work, expression, edition,
 identifiers, listing and holding in one guarded batch (`linkListing`); a
