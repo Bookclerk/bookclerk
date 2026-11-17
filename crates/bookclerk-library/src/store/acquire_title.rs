@@ -231,6 +231,98 @@ impl LibraryStore {
         Ok(self.acquire_titles_of(vec![holding]).await?.pop())
     }
 
+    /// The titles accounts hold that `id` names, as acquire reads them, in
+    /// holding order: what an acquire job given one title visits.
+    ///
+    /// `id` matches, ignoring ASCII case, a listing's store product id, an
+    /// ASIN or ISBN of the listing's edition (every listing of that
+    /// edition), a holding id, or, while `books` exists, a flat row's UUID.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - Only this account's titles, when set.
+    /// * `id` - The product id, ASIN, ISBN, holding id or library UUID.
+    ///
+    /// # Returns
+    ///
+    /// Every matching account holding's title; empty when nothing matches.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn acquire_titles_named(
+        &self,
+        account_id: Option<&str>,
+        id: &str,
+    ) -> Result<Vec<AcquireTitle>> {
+        use super::library_model::{find_chunked, find_chunked_paged};
+        let id = bookclerk_resolve::stored_product_id(id);
+        if id.is_empty() {
+            return Ok(Vec::new());
+        }
+        let variants = super::book_lookup::case_variants(&id);
+        let mut edition_ids: Vec<String> = edition_identifiers::Entity::find()
+            .filter(edition_identifiers::Column::Scheme.is_in(["asin", "isbn"]))
+            .filter(edition_identifiers::Column::Value.is_in(variants.clone()))
+            .all(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(|m| m.edition_id)
+            .collect();
+        edition_ids = distinct(edition_ids.into_iter());
+        let mut listing_ids: Vec<String> = store_listings::Entity::find()
+            .filter(store_listings::Column::ProductId.is_in(variants.clone()))
+            .all(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        listing_ids.extend(
+            find_chunked::<store_listings::Entity, _>(self, &edition_ids, |part| {
+                store_listings::Entity::find()
+                    .filter(store_listings::Column::EditionId.is_in(part.to_vec()))
+            })
+            .await?
+            .into_iter()
+            .map(|m| m.id),
+        );
+        let listing_ids = distinct(listing_ids.into_iter());
+        let mut holding_ids = variants;
+        if let Some(title) = self.title_holding_of_book(&id).await? {
+            holding_ids.push(title.holding_id);
+        }
+        let account = |query: sea_orm::Select<holdings::Entity>| match account_id {
+            Some(account_id) => query.filter(holdings::Column::AccountId.eq(account_id)),
+            None => query,
+        };
+        // Every account's holding of a listing may be more rows than one
+        // read returns, so the holdings are read in pages.
+        let mut holdings = find_chunked_paged::<holdings::Entity, _>(self, &listing_ids, |part| {
+            account(
+                super::holdings::find_holdings()
+                    .filter(holdings::Column::HolderKind.eq("account"))
+                    .filter(holdings::Column::ListingId.is_in(part.to_vec()))
+                    .order_by_asc(holdings::Column::Id),
+            )
+        })
+        .await?;
+        holdings.extend(
+            account(
+                super::holdings::find_holdings()
+                    .filter(holdings::Column::HolderKind.eq("account"))
+                    .filter(holdings::Column::Id.is_in(holding_ids)),
+            )
+            .all(self.db())
+            .await
+            .map_err(LibraryError::Orm)?,
+        );
+        holdings.sort_by(|a, b| a.id.cmp(&b.id));
+        holdings.dedup_by(|a, b| a.id == b.id);
+        self.acquire_titles_of(holdings).await
+    }
+
     /// One page of the titles accounts hold, as acquire reads them, in
     /// holding order: what reconcile and storage matching walk.
     ///
@@ -543,6 +635,67 @@ mod tests {
         assert_eq!(parse_time(Some("  ")), None);
         assert_eq!(parse_time(Some("March")), None);
         assert_eq!(parse_time(None), None);
+    }
+
+    #[tokio::test]
+    async fn titles_are_named_by_any_id_under_every_profile() {
+        for profile in crate::test_support::Profile::ALL {
+            let kit = crate::test_support::sqlite::memory(profile).await;
+            let store = kit.store();
+            let name = profile.name();
+            for account in ["acct", "other"] {
+                store
+                    .upsert_account("audible", account, "us", None, true, "audible")
+                    .await
+                    .unwrap();
+                store
+                    .upsert_book(&NewBook::minimal("B0NAME001", account, "us", "Named"))
+                    .await
+                    .unwrap();
+            }
+            let mut isbn = NewBook::minimal("9780000000017", "acct", "us", "Printed");
+            isbn.isbn = Some("9780000000017".into());
+            let flat = store.upsert_book(&isbn).await.unwrap();
+            let accounts = |titles: Vec<AcquireTitle>| {
+                titles
+                    .into_iter()
+                    .map(|t| (t.account_id, t.product_id))
+                    .collect::<Vec<_>>()
+            };
+
+            let both = store.acquire_titles_named(None, "b0name001").await.unwrap();
+            assert_eq!(both.len(), 2, "{name}");
+            let mine = store
+                .acquire_titles_named(Some("other"), "B0NAME001")
+                .await
+                .unwrap();
+            assert_eq!(
+                accounts(mine.clone()),
+                vec![("other".to_string(), "B0NAME001".to_string())],
+                "{name}"
+            );
+            let by_holding = store
+                .acquire_titles_named(None, &mine[0].holding_id)
+                .await
+                .unwrap();
+            assert_eq!(accounts(by_holding), accounts(mine), "{name}");
+            let by_uuid = store.acquire_titles_named(None, &flat.uuid).await.unwrap();
+            assert_eq!(
+                accounts(by_uuid),
+                vec![("acct".to_string(), "9780000000017".to_string())],
+                "{name}"
+            );
+            assert!(store
+                .acquire_titles_named(None, "B0NOTHERE")
+                .await
+                .unwrap()
+                .is_empty());
+            assert!(store
+                .acquire_titles_named(None, "  ")
+                .await
+                .unwrap()
+                .is_empty());
+        }
     }
 
     #[tokio::test]

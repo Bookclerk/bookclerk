@@ -378,7 +378,10 @@ written in the same batch as the title's own status. A title of an edition
 another title already acquired takes that copy instead of fetching it again,
 and a sibling title that is queued, downloading or failed never hides files
 the edition already has. Only the title that acquired the edition, or any
-title once that one has left the library, can change its state. `book_acquired`
+title once that one has left the library, can change its state. An
+acquire job picks its titles from account holdings and their editions'
+state, not from `books`, so a title whose edition another account's title
+already acquired is not visited again. `book_acquired`
 names the edition (`editionId`), and a wishlist item records the edition
 that fulfilled it (`resolved_edition_id`).
 

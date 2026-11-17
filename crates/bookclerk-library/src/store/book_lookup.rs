@@ -82,7 +82,7 @@ struct KeyRow {
 /// uniformly cased in practice (ASINs upper, uuids lower, ISBN digits), so
 /// these three spellings find a row through its index where `lower(col)`
 /// would scan the table; callers still check the match case-insensitively.
-fn case_variants(value: &str) -> Vec<String> {
+pub(super) fn case_variants(value: &str) -> Vec<String> {
     let mut out = vec![value.to_string()];
     for variant in [value.to_ascii_lowercase(), value.to_ascii_uppercase()] {
         if !out.contains(&variant) {

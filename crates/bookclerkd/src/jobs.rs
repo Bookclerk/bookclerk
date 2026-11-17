@@ -7,8 +7,8 @@ use bookclerk_acquire::{acquire_book_indexed, AcquireRequest, MatchStorageOption
 use bookclerk_config::BadBookAction;
 use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::{
-    is_downloadable, AcquireStatus, BookRecord, EnqueueJobSpec, EnqueueOutcome, JobKind,
-    JobPayload, JobTrigger,
+    is_downloadable, AcquireStatus, AcquireTitle, BookRecord, EnqueueJobSpec, EnqueueOutcome,
+    JobKind, JobPayload, JobTrigger,
 };
 use bookclerk_source::ScanOptions;
 use tracing::{error, info, warn};
@@ -877,14 +877,14 @@ pub async fn run_acquire(
     )
     .await?;
 
-    let wanted = |b: &BookRecord| {
-        acquire_mode_includes(b, mode, options.download_pdf, cfg.library.download_episodes)
+    let wanted = |t: &AcquireTitle| {
+        acquire_mode_includes(t, mode, options.download_pdf, cfg.library.download_episodes)
     };
     let targets = acquire_candidates(&library, account, title, wanted).await?;
     // A pinned instance serves its own plugin's books only; the rest are
     // skipped, not failed.
-    let (targets, foreign): (Vec<_>, Vec<_>) = targets.into_iter().partition(|b| {
-        plugin_instance_id.is_none_or(|pin| registry.route(&b.plugin_key, Some(pin)).is_some())
+    let (targets, foreign): (Vec<_>, Vec<_>) = targets.into_iter().partition(|t| {
+        plugin_instance_id.is_none_or(|pin| registry.route(&t.plugin_key, Some(pin)).is_some())
     });
     if !foreign.is_empty() {
         info!(
@@ -938,8 +938,8 @@ pub async fn run_acquire(
             .require_routed(&book.plugin_key, plugin_instance_id)
             .map_err(|err| anyhow::anyhow!("{err} (title {})", book.asin_or_isbn()))?;
         let req = AcquireRequest {
-            asin: book.download_product_id().to_string(),
-            book_uuid: Some(book.uuid.clone()),
+            asin: book.product_id.clone(),
+            book_uuid: book.book_uuid.clone(),
             source: book.source.clone(),
             account_id: book.account_id.clone(),
             title: book.title.clone(),
@@ -1122,34 +1122,42 @@ pub async fn run_listen_sync(state: &AppState, ctx: Option<&JobExecCtx>) -> anyh
     Ok(detail)
 }
 
-/// Whether an acquire run in `mode` visits `book`.
+/// Whether an acquire run in `mode` visits `title`.
 ///
-/// A PDF-only run visits titles whose companion PDF is not acquired (every
-/// title when forced). A forced run visits every downloadable title,
-/// episodes only when `download_episodes` is on. Otherwise
-/// [`acquire_job_includes_book`] decides.
+/// A PDF-only run visits titles whose edition's companion PDF is not
+/// acquired (every title when forced). A forced run visits every
+/// downloadable title, episodes only when `download_episodes` is on.
+/// Otherwise [`acquire_job_includes_title`] decides.
 fn acquire_mode_includes(
-    book: &BookRecord,
+    title: &AcquireTitle,
     mode: AcquireMode,
     download_pdf: bool,
     download_episodes: bool,
 ) -> bool {
     if mode.pdf_only {
-        mode.force || book.pdf_status != AcquireStatus::Acquired
+        mode.force || title.pdf_status != AcquireStatus::Acquired
     } else if mode.force {
-        is_downloadable(&book.content_kind) && (download_episodes || book.content_kind != "episode")
+        downloadable_kind(title.content_kind, download_episodes)
     } else {
-        acquire_job_includes_book(book, download_pdf, download_episodes)
+        acquire_job_includes_title(title, download_pdf, download_episodes)
     }
 }
 
-/// The books [`run_acquire`] considers: those on `account` (every account
-/// when `None`) that match `title` (every title when `None`) and pass
-/// `wanted`, in title order.
+/// The titles [`run_acquire`] considers: those held on `account` (every
+/// account when `None`) that `title` names (every title when `None`) and
+/// that pass `wanted`, in title order.
 ///
-/// One title is an indexed lookup ([`bookclerk_library::LibraryStore::find_books_by_any_id`]);
-/// otherwise the library is read in keyset pages and only the books
-/// `wanted` keeps are held, so no read loads the whole catalog at once.
+/// Only titles with a flat `books` row are considered: the acquire status
+/// writes are still keyed by that row until `books` is retired (book model
+/// step 6, PR 4g), so a holding without one could not record what it
+/// acquired.
+///
+/// One title is a lookup by its ids
+/// ([`bookclerk_library::LibraryStore::acquire_titles_named`]); otherwise
+/// the holdings are read in keyset pages
+/// ([`bookclerk_library::LibraryStore::acquire_titles_page`]) and only the
+/// titles `wanted` keeps are held, so no read loads the whole library at
+/// once.
 ///
 /// # Errors
 ///
@@ -1158,58 +1166,103 @@ async fn acquire_candidates(
     library: &bookclerk_library::LibraryStore,
     account: Option<&str>,
     title: Option<&str>,
-    wanted: impl Fn(&BookRecord) -> bool,
-) -> bookclerk_library::Result<Vec<BookRecord>> {
-    if let Some(title) = title {
-        let mut found = library.find_books_by_any_id(account, title).await?;
-        found.retain(|b| wanted(b));
-        return Ok(found);
-    }
+    wanted: impl Fn(&AcquireTitle) -> bool,
+) -> bookclerk_library::Result<Vec<AcquireTitle>> {
     let mut targets = Vec::new();
-    let mut after_id = None;
-    loop {
-        let page = library.list_books_page(account, after_id, 64).await?;
-        // `list_books_page` fills a page unless the catalog ends.
-        let last_page = page.len() < 64;
-        after_id = page.last().map(|b| b.id);
-        targets.extend(page.into_iter().filter(|b| wanted(b)));
-        if last_page {
-            break;
+    if let Some(title) = title {
+        targets = library.acquire_titles_named(account, title).await?;
+        targets.retain(|t| t.book_uuid.is_some() && wanted(t));
+    } else {
+        let mut after = None;
+        loop {
+            let page = library
+                .acquire_titles_page(account, after.as_deref(), 64)
+                .await?;
+            targets.extend(
+                page.titles
+                    .into_iter()
+                    .filter(|t| t.book_uuid.is_some() && wanted(t)),
+            );
+            match page.next {
+                Some(next) => after = Some(next),
+                None => break,
+            }
         }
     }
     targets.sort_by(|a, b| a.title.cmp(&b.title));
     Ok(targets)
 }
 
-/// Whether [`run_acquire`] should visit this library row.
+/// True for a content kind an acquire downloads: never a podcast show, and
+/// an episode only when `download_episodes` is on.
+fn downloadable_kind(content_kind: &str, download_episodes: bool) -> bool {
+    is_downloadable(content_kind) && (download_episodes || content_kind != "episode")
+}
+
+/// The pending-work rule shared by [`acquire_job_includes_title`] and
+/// [`acquire_job_includes_book`].
 ///
-/// Already-acquired audio is still included when companion PDF download is
-/// enabled and the PDF is not stored, so a later job can resume the sidecar
+/// # Arguments
+///
+/// * `content_kind` - `book`, `podcast` or `episode`.
+/// * `audio` - The audio's acquire state.
+/// * `pdf` - The companion PDF's state and destination key.
+/// * `download_pdf` - Whether companion PDFs are downloaded.
+/// * `download_episodes` - Whether podcast episodes are downloaded.
+fn pending_work(
+    content_kind: &str,
+    audio: AcquireStatus,
+    pdf: (AcquireStatus, Option<&str>),
+    download_pdf: bool,
+    download_episodes: bool,
+) -> bool {
+    if !downloadable_kind(content_kind, download_episodes) {
+        return false;
+    }
+    if audio != AcquireStatus::Acquired {
+        return true;
+    }
+    // Acquired audio whose companion PDF is missing or incomplete.
+    let (pdf_status, pdf_key) = pdf;
+    download_pdf && (pdf_status != AcquireStatus::Acquired || pdf_key.is_none_or(str::is_empty))
+}
+
+/// Whether [`run_acquire`] should visit this title.
+///
+/// The edition's state decides: audio another account's title acquired is
+/// already in the library, so the title is not visited again. Acquired
+/// audio is still included when companion PDF download is enabled and the
+/// edition's PDF is not stored, so a later job can resume the sidecar
 /// through [`bookclerk_acquire::acquire_book_indexed`].
+pub(crate) fn acquire_job_includes_title(
+    title: &AcquireTitle,
+    download_pdf: bool,
+    download_episodes: bool,
+) -> bool {
+    pending_work(
+        title.content_kind,
+        title.status,
+        (title.pdf_status, title.pdf_storage_key.as_deref()),
+        download_pdf,
+        download_episodes,
+    )
+}
+
+/// [`acquire_job_includes_title`] for a flat library row: what a host's
+/// acquire plan still reads until the cluster readers move to the library
+/// model (book model step 6, PR 4e).
 pub(crate) fn acquire_job_includes_book(
     book: &BookRecord,
     download_pdf: bool,
     download_episodes: bool,
 ) -> bool {
-    if !is_downloadable(&book.content_kind) {
-        return false;
-    }
-    if !download_episodes && book.content_kind == "episode" {
-        return false;
-    }
-    if book.acquire_status != AcquireStatus::Acquired {
-        return true;
-    }
-    download_pdf && companion_pdf_needs_resume(book)
-}
-
-/// True when audio is acquired but the companion PDF is missing or incomplete.
-fn companion_pdf_needs_resume(book: &BookRecord) -> bool {
-    book.pdf_status != AcquireStatus::Acquired
-        || book
-            .pdf_storage_key
-            .as_deref()
-            .is_none_or(|key| key.is_empty())
+    pending_work(
+        &book.content_kind,
+        book.acquire_status,
+        (book.pdf_status, book.pdf_storage_key.as_deref()),
+        download_pdf,
+        download_episodes,
+    )
 }
 
 /// Log a handler failure and request a diagnostics upload.
@@ -1240,7 +1293,7 @@ mod tests {
         pdf: AcquireStatus,
         pdf_key: Option<&str>,
         content_kind: &str,
-    ) -> BookRecord {
+    ) -> AcquireTitle {
         store
             .upsert_account("audible", "user-1", "us", None, true, "audible")
             .await
@@ -1257,10 +1310,10 @@ mod tests {
             .await
             .unwrap();
         store
-            .get_book("B00TEST", "user-1")
+            .acquire_title("audible", "user-1", "us", "B00TEST")
             .await
             .unwrap()
-            .expect("book")
+            .expect("title")
     }
 
     #[tokio::test]
@@ -1276,13 +1329,95 @@ mod tests {
         )
         .await;
         assert!(
-            acquire_job_includes_book(&book, true, true),
+            acquire_job_includes_title(&book, true, true),
             "job path must visit acquired audio so companion PDF can resume"
         );
         assert!(
-            !acquire_job_includes_book(&book, false, true),
+            !acquire_job_includes_title(&book, false, true),
             "without download_pdf the acquired title stays skipped"
         );
+        // A host's plan reads the flat row by the same rule.
+        let row = store.get_book("B00TEST", "user-1").await.unwrap().unwrap();
+        assert!(acquire_job_includes_book(&row, true, true));
+        assert!(!acquire_job_includes_book(&row, false, true));
+    }
+
+    /// Audio another account's title acquired is already in the library:
+    /// the edition's state decides, so the sibling title is not visited.
+    #[tokio::test]
+    async fn acquire_job_skips_a_title_whose_edition_a_sibling_acquired() {
+        let store = test_store().await;
+        for account in ["user-1", "user-2"] {
+            store
+                .upsert_account("audible", account, "us", None, true, "audible")
+                .await
+                .unwrap();
+            store
+                .upsert_book(&NewBook::minimal("B00TEST", account, "us", "Test"))
+                .await
+                .unwrap();
+        }
+        store
+            .set_acquire_status(
+                "B00TEST",
+                "user-1",
+                AcquireStatus::Acquired,
+                Some("a.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        let sibling = store
+            .acquire_title("audible", "user-2", "us", "B00TEST")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!acquire_job_includes_title(&sibling, false, true));
+        let pending = acquire_candidates(&store, None, None, |t| {
+            acquire_job_includes_title(t, false, true)
+        })
+        .await
+        .unwrap();
+        assert!(pending.is_empty());
+    }
+
+    /// A holding without a flat row is not a candidate: its status could
+    /// not be recorded until `books` is retired.
+    #[tokio::test]
+    async fn acquire_candidates_skip_a_holding_without_a_books_row() {
+        use sea_orm::ConnectionTrait as _;
+        let store = test_store().await;
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        store
+            .upsert_book(&NewBook::minimal("B00TEST", "user-1", "us", "Test"))
+            .await
+            .unwrap();
+        assert_eq!(
+            acquire_candidates(&store, None, None, |_| true)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        store
+            .db()
+            .execute_unprepared("DELETE FROM books")
+            .await
+            .unwrap();
+        assert!(store
+            .acquire_title("audible", "user-1", "us", "B00TEST")
+            .await
+            .unwrap()
+            .is_some());
+        for title in [None, Some("B00TEST")] {
+            assert!(acquire_candidates(&store, None, title, |_| true)
+                .await
+                .unwrap()
+                .is_empty());
+        }
     }
 
     #[tokio::test]
@@ -1297,7 +1432,7 @@ mod tests {
             "book",
         )
         .await;
-        assert!(acquire_job_includes_book(&book, true, true));
+        assert!(acquire_job_includes_title(&book, true, true));
     }
 
     #[tokio::test]
@@ -1312,7 +1447,7 @@ mod tests {
             "book",
         )
         .await;
-        assert!(!acquire_job_includes_book(&book, true, true));
+        assert!(!acquire_job_includes_title(&book, true, true));
     }
 
     #[tokio::test]
@@ -1327,7 +1462,7 @@ mod tests {
             "book",
         )
         .await;
-        assert!(acquire_job_includes_book(&book, false, true));
+        assert!(acquire_job_includes_title(&book, false, true));
     }
 
     #[tokio::test]
@@ -1342,7 +1477,7 @@ mod tests {
             "podcast",
         )
         .await;
-        assert!(!acquire_job_includes_book(&book, true, true));
+        assert!(!acquire_job_includes_title(&book, true, true));
     }
 
     /// Each mode picks its titles: PDF-only by companion PDF state, forced
@@ -1380,7 +1515,7 @@ mod tests {
         assert!(acquire_mode_includes(&done, forced, true, true));
         assert!(!acquire_mode_includes(&done, plain, true, true));
         let mut episode = done.clone();
-        episode.content_kind = "episode".into();
+        episode.content_kind = "episode";
         assert!(!acquire_mode_includes(&episode, forced, true, false));
         assert!(acquire_mode_includes(&episode, forced, true, true));
         let mut pending_pdf = done.clone();
@@ -1408,7 +1543,7 @@ mod tests {
             store.upsert_book(&book).await.unwrap();
         }
         let titles =
-            |books: &[BookRecord]| books.iter().map(|b| b.title.clone()).collect::<Vec<_>>();
+            |books: &[AcquireTitle]| books.iter().map(|b| b.title.clone()).collect::<Vec<_>>();
 
         let all = acquire_candidates(&store, None, None, |_| true)
             .await
