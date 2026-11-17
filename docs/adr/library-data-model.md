@@ -1,6 +1,6 @@
 # ADR: Library data model (works, expressions, editions, holdings)
 
-- **Status:** Accepted; steps 1 to 4 implemented, and step 5's holdings and branch titles (file quality, moved to step 5, still to come); the naming discriminator replaced by a required `<library id>` tag (see [Status of the work](#status-of-the-work)). Amended 2026-11-13: the kind enums were reshaped for mixed media and every kind became required (decisions 1 and 5)
+- **Status:** Accepted; steps 1 to 4 implemented, and step 5's holdings and branch titles (file quality, moved to step 5, still to come); the naming discriminator replaced by a required `<library id>` tag (see [Status of the work](#status-of-the-work)). Amended 2026-11-13: the kind enums were reshaped for mixed media and every kind became required (decisions 1 and 5). A later record, [Metadata claims and file sync](metadata-claims-and-file-sync.md), decides to replace the work-level matcher of decision 4 with weighed evidence and to add a `catalog_id` slot; that work has not started
 - **Date:** 2026-11-04
 - **Related:** [Schema versioning](schema-versioning.md),
   [SQL database contract](sql-database-contract.md),
