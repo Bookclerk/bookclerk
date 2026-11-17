@@ -83,7 +83,14 @@ pub fn claim(state_dir: &Path) -> Result<StateDirOwner> {
 pub fn sweep_abandoned(plugin_root: &Path) -> Vec<PathBuf> {
     let base = workerd_state_base(plugin_root);
     let prefix = format!("w{}", plugin_root_prefix(plugin_root));
-    sweep_under(&base, &prefix, UNLOCKED_GRACE)
+    let removed = sweep_under(&base, &prefix, UNLOCKED_GRACE);
+    if !removed.is_empty() {
+        tracing::info!(
+            count = removed.len(),
+            "removed abandoned workerd state directories"
+        );
+    }
+    removed
 }
 
 /// [`sweep_abandoned`] over `base`, for directories named `prefix…`.
@@ -187,6 +194,21 @@ mod tests {
         std::os::unix::fs::symlink(target.path(), base.path().join("wabc0004")).expect("link");
         assert!(sweep_under(base.path(), "wabc", Duration::ZERO).is_empty());
         assert!(target.path().join("keep").is_file());
+    }
+
+    #[test]
+    fn a_dead_session_of_this_plugin_is_swept_from_the_state_base() {
+        // A root no other test or plugin shares, so its prefix is unique.
+        let root = tempfile::tempdir().expect("tempdir");
+        let live = crate::config::workerd_state_dir(root.path()).expect("state dir");
+        let _owner = claim(&live).expect("claim");
+        let dead = crate::config::workerd_state_dir(root.path()).expect("state dir");
+        drop(claim(&dead).expect("claim"));
+
+        assert_eq!(sweep_abandoned(root.path()), vec![dead.clone()]);
+        assert!(!dead.exists());
+        assert!(live.is_dir());
+        fs::remove_dir_all(&live).expect("cleanup");
     }
 
     #[test]

@@ -419,10 +419,7 @@ fn python_snapshot_slot(
     let state_root = crate::jail::plugin_state_root(config, plugin).ok()?;
     let slot = PythonSnapshotSlot::plan(&state_root, plugin)?;
     if let Start::Confined { spec, .. } = &mut jail.start {
-        if let Some(stored) = slot.read_path() {
-            spec.reads.push(stored.to_path_buf());
-        }
-        spec.writes.push(slot.write_path().to_path_buf());
+        slot.grant(&mut spec.reads, &mut spec.writes);
     }
     Some(slot)
 }

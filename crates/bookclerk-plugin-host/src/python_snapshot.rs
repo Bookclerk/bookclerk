@@ -143,8 +143,24 @@ impl SnapshotSlot {
     }
 
     /// The staging directory the guest's jail may write.
-    pub(crate) fn write_path(&self) -> &Path {
+    #[cfg(test)]
+    fn write_path(&self) -> &Path {
         &self.staging
+    }
+
+    /// Adds this start's snapshot paths to a jail's grants: read on the
+    /// stored snapshot's key directory, when there is one, and write on the
+    /// staging directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `reads` - The jail's read-only paths.
+    /// * `writes` - The jail's writable paths.
+    pub(crate) fn grant(&self, reads: &mut Vec<PathBuf>, writes: &mut Vec<PathBuf>) {
+        if let Some(stored) = self.read_path() {
+            reads.push(stored.to_path_buf());
+        }
+        writes.push(self.staging.clone());
     }
 
     /// The launcher environment for this start.
@@ -265,6 +281,25 @@ impl SnapshotSlot {
 ///
 /// Returns the I/O error when the install cannot be walked or read.
 fn install_key(root: &Path) -> std::io::Result<Option<String>> {
+    install_key_within(root, MAX_KEYED_FILES, MAX_KEYED_BYTES)
+}
+
+/// [`install_key`] with the file and byte limits given.
+///
+/// # Arguments
+///
+/// * `root` - The plugin install directory.
+/// * `max_files` - The most regular files the install may hold.
+/// * `max_bytes` - The most bytes those files may hold together.
+///
+/// # Errors
+///
+/// Returns the I/O error when the install cannot be walked or read.
+fn install_key_within(
+    root: &Path,
+    max_files: usize,
+    max_bytes: u64,
+) -> std::io::Result<Option<String>> {
     let mut files = Vec::new();
     let mut total = 0u64;
     let mut pending = vec![root.to_path_buf()];
@@ -278,7 +313,7 @@ fn install_key(root: &Path) -> std::io::Result<Option<String>> {
             } else if kind.is_file() {
                 total = total.saturating_add(entry.metadata()?.len());
                 files.push(path);
-                if files.len() > MAX_KEYED_FILES || total > MAX_KEYED_BYTES {
+                if files.len() > max_files || total > max_bytes {
                     return Ok(None);
                 }
             }

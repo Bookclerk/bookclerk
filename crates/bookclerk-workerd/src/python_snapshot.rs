@@ -17,7 +17,9 @@
 //! slow start: the launcher always falls back to starting without one.
 
 use std::ffi::OsString;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 /// Environment variable naming the stored snapshot file to start from.
 pub const LOAD_ENV: &str = "BOOKCLERK_PYTHON_SNAPSHOT_LOAD";
@@ -95,6 +97,78 @@ impl SnapshotPlan {
             None => SnapshotStart::Plain,
         });
         starts
+    }
+
+    /// Runs `start` for each of [`Self::starts`] until one becomes ready,
+    /// then records the outcome in the staging directory.
+    ///
+    /// A start that saved a snapshot marks it ready for the host to
+    /// promote; a start that loaded the stored one leaves the
+    /// [`LOADED_FILE`] marker so the host stops waiting. A failed start is
+    /// logged and the next one tried.
+    ///
+    /// # Arguments
+    ///
+    /// * `start` - Starts workerd one way and waits for it to answer.
+    ///
+    /// # Returns
+    ///
+    /// What the first ready start returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns the last start's error when every start failed.
+    pub async fn start_in_order<T, F, Fut>(&self, mut start: F) -> anyhow::Result<T>
+    where
+        F: FnMut(SnapshotStart) -> Fut,
+        Fut: Future<Output = anyhow::Result<T>>,
+    {
+        let mut starts = self.starts().into_iter().peekable();
+        while let Some(next) = starts.next() {
+            let started = Instant::now();
+            match start(next.clone()).await {
+                Ok(ready) => {
+                    tracing::info!(
+                        start = ?next,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "workerd isolate ready"
+                    );
+                    self.record(&next);
+                    return Ok(ready);
+                }
+                Err(err) if starts.peek().is_some() => {
+                    tracing::warn!(
+                        error = %format!("{err:#}"),
+                        start = ?next,
+                        "workerd did not start from the Python snapshot; trying the next start"
+                    );
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        anyhow::bail!("no workerd start to try")
+    }
+
+    /// Leaves the marker for a ready `start` in the staging directory.
+    fn record(&self, start: &SnapshotStart) {
+        match start {
+            SnapshotStart::Save(staging) => {
+                // The isolate answered, so the snapshot it saved at start-up
+                // is whole; the host may promote it now.
+                if let Err(err) = mark_ready(staging) {
+                    tracing::warn!(error = %err, "workerd saved no Python snapshot");
+                }
+            }
+            SnapshotStart::Load(_) => {
+                // Nothing to save; tell the host to stop waiting.
+                if let Some(staging) = &self.save {
+                    if let Err(err) = mark_loaded(staging) {
+                        tracing::warn!(error = %err, "could not mark the Python snapshot loaded");
+                    }
+                }
+            }
+            SnapshotStart::Plain => {}
+        }
     }
 }
 
@@ -249,6 +323,96 @@ mod tests {
             std::fs::read(dir.path().join(READY_FILE)).expect("read"),
             b"snap"
         );
+    }
+
+    #[tokio::test]
+    async fn a_failed_load_falls_back_to_saving_and_marks_it_ready() {
+        let store = tempfile::tempdir().expect("tempdir");
+        let staging = tempfile::tempdir().expect("tempdir");
+        let plan = SnapshotPlan {
+            load: Some(store.path().join("snapshot.bin")),
+            save: Some(staging.path().to_path_buf()),
+        };
+        let mut tried = Vec::new();
+        let ready = plan
+            .start_in_order(|start| {
+                tried.push(start.clone());
+                let staging = staging.path().to_path_buf();
+                async move {
+                    match start {
+                        SnapshotStart::Load(_) => anyhow::bail!("broken snapshot"),
+                        SnapshotStart::Save(_) => {
+                            std::fs::write(staging.join(SAVED_FILE), b"snap")?;
+                            Ok(7)
+                        }
+                        SnapshotStart::Plain => anyhow::bail!("not planned"),
+                    }
+                }
+            })
+            .await
+            .expect("ready");
+        assert_eq!(ready, 7);
+        assert_eq!(
+            tried,
+            vec![
+                SnapshotStart::Load(store.path().join("snapshot.bin")),
+                SnapshotStart::Save(staging.path().to_path_buf()),
+            ]
+        );
+        assert!(staging.path().join(READY_FILE).is_file());
+        assert!(!staging.path().join(LOADED_FILE).exists());
+    }
+
+    #[tokio::test]
+    async fn a_loaded_start_tells_the_host_to_stop_waiting() {
+        let staging = tempfile::tempdir().expect("tempdir");
+        let plan = SnapshotPlan {
+            load: Some(abs("store/snapshot.bin")),
+            save: Some(staging.path().to_path_buf()),
+        };
+        plan.start_in_order(|_| async { Ok(()) })
+            .await
+            .expect("ready");
+        assert!(staging.path().join(LOADED_FILE).is_file());
+        assert!(!staging.path().join(READY_FILE).exists());
+    }
+
+    #[tokio::test]
+    async fn a_save_without_a_file_or_a_plain_start_still_succeeds() {
+        let staging = tempfile::tempdir().expect("tempdir");
+        let plan = SnapshotPlan {
+            load: None,
+            save: Some(staging.path().to_path_buf()),
+        };
+        plan.start_in_order(|_| async { Ok(()) })
+            .await
+            .expect("ready even though nothing was saved");
+        assert!(!staging.path().join(READY_FILE).exists());
+        SnapshotPlan::default()
+            .start_in_order(|start| async move {
+                assert_eq!(start, SnapshotStart::Plain);
+                Ok(())
+            })
+            .await
+            .expect("plain");
+    }
+
+    #[tokio::test]
+    async fn the_last_failure_is_returned() {
+        let plan = SnapshotPlan {
+            load: Some(abs("store/snapshot.bin")),
+            save: None,
+        };
+        let mut calls = 0;
+        let err = plan
+            .start_in_order(|start| {
+                calls += 1;
+                async move { anyhow::bail!("{start:?} failed") as anyhow::Result<()> }
+            })
+            .await
+            .expect_err("every start failed");
+        assert_eq!(calls, 2);
+        assert!(err.to_string().contains("Plain"), "{err}");
     }
 
     #[test]

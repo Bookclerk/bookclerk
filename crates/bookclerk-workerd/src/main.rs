@@ -43,7 +43,7 @@ use bookclerk_workerd::ensure::ensure_workerd;
 use bookclerk_workerd::generate_bridge_token;
 use bookclerk_workerd::grant::OperatorGrantEnv;
 use bookclerk_workerd::pin::{binary_name, WORKERD_RELEASE_TAG};
-use bookclerk_workerd::python_snapshot::{self, SnapshotStart};
+use bookclerk_workerd::python_snapshot;
 use tokio::process::Child;
 
 /// Deletes a per-session workerd state directory when the isolate function returns.
@@ -298,13 +298,7 @@ async fn run_isolate(
 ) -> Result<()> {
     // A killed launcher never removes its state directory; clear the ones
     // this plugin's dead sessions left before allocating a new one.
-    let swept = bookclerk_workerd::state_sweep::sweep_abandoned(root);
-    if !swept.is_empty() {
-        info!(
-            count = swept.len(),
-            "removed abandoned workerd state directories"
-        );
-    }
+    bookclerk_workerd::state_sweep::sweep_abandoned(root);
     let state_dir = config::workerd_state_dir(root)?;
     let _state_cleanup = RemoveDirOnDrop(state_dir.clone());
     // Declared after the cleanup guard so the lock is released before the
@@ -333,69 +327,38 @@ async fn run_isolate(
     } else {
         python_snapshot::SnapshotPlan::default()
     };
-    let starts = snapshot_plan.starts();
-    let mut attempts = starts.into_iter().peekable();
-    let (mut child, rpc_port) = loop {
-        let Some(start) = attempts.next() else {
-            bail!("no workerd start to try");
-        };
-        let (listen, rpc_listener) = bridge_rpc_socket()?;
-        let generated = config::materialize(
-            root,
-            manifest,
-            egress,
-            limits,
-            listen,
-            Some(granted_addr.as_str()),
-            &bridge_token,
-            Some(state_dir.as_path()),
-        )?;
-        let (mut cmd, spawn_bin) = workerd_serve_command(workerd_bin, &generated, root)?;
-        cmd.args(start.serve_args());
-        let started = std::time::Instant::now();
-        let ready = start_isolate(
-            &mut cmd,
-            &spawn_bin,
-            &generated.listen,
-            rpc_listener,
-            &bridge_token,
-        )
-        .await;
-        match ready {
-            Ok(ready) => {
-                info!(
-                    start = ?start,
-                    elapsed_ms = started.elapsed().as_millis(),
-                    "workerd isolate ready"
-                );
-                match &start {
-                    SnapshotStart::Save(staging) => {
-                        // The isolate answered, so the snapshot it saved at
-                        // start-up is whole; the host may promote it now.
-                        if let Err(err) = python_snapshot::mark_ready(staging) {
-                            warn!(error = %err, "workerd saved no Python snapshot");
-                        }
-                    }
-                    SnapshotStart::Load(_) => {
-                        // Nothing to save; tell the host to stop waiting.
-                        if let Some(staging) = &snapshot_plan.save {
-                            let _ = python_snapshot::mark_loaded(staging);
-                        }
-                    }
-                    SnapshotStart::Plain => {}
-                }
-                break ready;
+    let (mut child, rpc_port) = snapshot_plan
+        .start_in_order(|start| {
+            let (granted_addr, bridge_token, state_dir) = (
+                granted_addr.as_str(),
+                bridge_token.as_str(),
+                state_dir.as_path(),
+            );
+            async move {
+                let (listen, rpc_listener) = bridge_rpc_socket()?;
+                let generated = config::materialize(
+                    root,
+                    manifest,
+                    egress,
+                    limits,
+                    listen,
+                    Some(granted_addr),
+                    bridge_token,
+                    Some(state_dir),
+                )?;
+                let (mut cmd, spawn_bin) = workerd_serve_command(workerd_bin, &generated, root)?;
+                cmd.args(start.serve_args());
+                start_isolate(
+                    &mut cmd,
+                    &spawn_bin,
+                    &generated.listen,
+                    rpc_listener,
+                    bridge_token,
+                )
+                .await
             }
-            Err(err) if attempts.peek().is_some() => {
-                warn!(
-                    error = %format!("{err:#}"),
-                    start = ?start,
-                    "workerd did not start from the Python snapshot; starting without it"
-                );
-            }
-            Err(err) => return Err(err),
-        }
-    };
+        })
+        .await?;
 
     let result = mediate_bridge(
         rpc_port,
