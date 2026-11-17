@@ -98,7 +98,7 @@ pub fn resolve_files_dir_with(
         }
     }
 
-    if let Some(proj) = ProjectDirs::from("com", "Bookclerk", "bookclerk") {
+    if let Some(proj) = ProjectDirs::from("app", "Bookclerk", "bookclerk") {
         return proj.data_dir().to_path_buf();
     }
 

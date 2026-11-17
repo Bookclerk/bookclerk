@@ -122,7 +122,7 @@ fn open_inner(identifier: &str) -> io::Result<OsLogInner> {
     }
     #[cfg(target_os = "macos")]
     {
-        let logger = oslog::OsLog::new("dev.bookclerk", identifier);
+        let logger = oslog::OsLog::new("app.bookclerk", identifier);
         Ok(OsLogInner::OsLog { logger })
     }
     #[cfg(windows)]
