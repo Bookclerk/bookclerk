@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<!--created on 2024-03-01 12:00:00 - Kodi 21.0-->
+<album>
+    <title>The Name of the Wind</title>
+    <musicbrainzalbumid></musicbrainzalbumid>
+    <artistdesc>Patrick Rothfuss</artistdesc>
+    <genre>Fantasy</genre>
+    <genre>Audiobook</genre>
+    <style />
+    <mood />
+    <compilation>false</compilation>
+    <review>Told in Kvothe&apos;s own voice, this is the tale of the magically gifted young man.
+
+Narrated by Nick Podehl.</review>
+    <type>album</type>
+    <releasedate>2009-04-07</releasedate>
+    <originalreleasedate />
+    <label>Brilliance Audio</label>
+    <thumb preview="" aspect="thumb">cover.jpg</thumb>
+    <path>/audiobooks/Rothfuss/The Name of the Wind/</path>
+    <rating max="10">0.000000</rating>
+    <year>2009</year>
+    <artist>Patrick Rothfuss</artist>
+    <albumArtistCredits>
+        <artist>Patrick Rothfuss</artist>
+        <musicBrainzArtistID></musicBrainzArtistID>
+    </albumArtistCredits>
+</album>

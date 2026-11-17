@@ -409,6 +409,77 @@ describe("opf", () => {
   });
 });
 
+describe("kodi_album_nfo", () => {
+  test("reads a Kodi album", () => {
+    const parsed = parseFile("kodi_album_nfo", seed("kodi_album_nfo/seed_00.nfo"));
+    assert.equal(parsed.title, "The Name of the Wind");
+    assert.equal(parsed.publisher, "Brilliance Audio");
+    assert.equal(parsed.publishedAt, "2009-04-07");
+    assert.deepEqual(parsed.genres, ["Fantasy", "Audiobook"]);
+    assert.deepEqual(parsed.creditRoles, ["author"]);
+    assert.deepEqual(
+      parsed.credits.map((c) => c.name),
+      ["Patrick Rothfuss"],
+    );
+    assert.match(parsed.description ?? "", /^Told in Kvothe's own voice.*\n\nNarrated by/s);
+    const short = parseFile("kodi_album_nfo", seed("kodi_album_nfo/seed_01.nfo"));
+    assert.equal(short.publishedAt, "1999");
+    assert.deepEqual(
+      short.credits.map((c) => c.name),
+      ["A", "B"],
+    );
+  });
+
+  test("refuses a file that is not an album", () => {
+    refuses(() => parseFile("kodi_album_nfo", utf8("<movie/>")), /not an album/);
+  });
+
+  test("writes the date and year, and replaces the album artists", () => {
+    const out = str(
+      renderFile(
+        "kodi_album_nfo",
+        seed("kodi_album_nfo/seed_00.nfo"),
+        record({
+          publishedAt: "2010-05",
+          credits: [{ name: "New Author", role: "author", level: "roleDefault" }],
+          creditRoles: ["author"],
+        }),
+        ["publishedAt", "credits"],
+      ),
+    );
+    assert.doesNotMatch(out, /albumArtistCredits|2009-04-07|<year>2009/);
+    assert.match(
+      out,
+      /<releasedate>2010-05<\/releasedate>\n {4}<year>2010<\/year>\n {4}<artist>New Author<\/artist>\n<\/album>/,
+    );
+    assert.match(out, /<label>Brilliance Audio<\/label>/);
+    const reread = parseFile("kodi_album_nfo", utf8(out));
+    assert.equal(reread.publishedAt, "2010-05");
+    assert.deepEqual(
+      reread.credits.map((c) => c.name),
+      ["New Author"],
+    );
+  });
+
+  test("leaves artists alone when the request states no author", () => {
+    const before = seed("kodi_album_nfo/seed_01.nfo");
+    const out = renderFile("kodi_album_nfo", before, record(), ["credits"]);
+    assert.equal(str(out), str(before));
+  });
+
+  test("creates a file", () => {
+    const out = renderFile("kodi_album_nfo", new Uint8Array(), record({ title: "T" }), ["title"]);
+    assert.equal(parseFile("kodi_album_nfo", out).title, "T");
+    const opened = renderFile(
+      "kodi_album_nfo",
+      seed("kodi_album_nfo/seed_02.nfo"),
+      record({ title: "T" }),
+      ["title"],
+    );
+    assert.equal(str(opened), "<album>\n  <title>T</title>\n</album>\n");
+  });
+});
+
 describe("credit roles", () => {
   test("a credit role cut off by the list cap stays unknown", () => {
     const authors = Array.from({ length: MAX_LIST_ENTRIES }, (_, i) => `A${i}`);

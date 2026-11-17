@@ -10,6 +10,7 @@ file's bytes.
 | Dialect | Files | Writes | Fields |
 | --- | --- | --- | --- |
 | `libation_json` | `*.metadata.json` | no | title, subtitle, description, publisher, date, language, genres, abridgement, ASIN and ISBN, authors and narrators, series, chapters, running time |
+| `kodi_album_nfo` | `album.nfo` | yes | title, description, publisher, date, genres, authors |
 | `opf` | `*.opf` | yes | title, description, publisher, date, language, genres, ISBN and ASIN, authors, narrators, translators, editors and illustrators, series |
 
 ## Libation's catalog record
@@ -53,6 +54,19 @@ appends new ones at the end of `<metadata>`, in Calibre's style; every
 other byte stays as it was. Credits change only for the roles the request
 states. With no file yet, it writes a new OPF 2 package.
 
+## Kodi album.nfo
+
+Kodi and Jellyfin read an `album.nfo` for a music album, and audiobook
+folders reuse it. The reader takes the `<album>` root's `title`, `review`
+(the description, as plain text), `label` (publisher), `releasedate` (else
+`year`), each `genre`, and each `artist` as an author.
+
+A write edits the file in place, like OPF. Writing the date also writes
+`year`, and writing authors also drops `albumArtistCredits` so Kodi does
+not show the old artists.
+
+## XML
+
 XML is scanned without expanding anything but XML's five entities and
 numeric references: a document type with an internal subset, nesting past
 64 levels or a file that is not well-formed is refused.
@@ -62,7 +76,8 @@ are dropped, labels stay on one line, text is cut to the ABI's byte caps
 on a character boundary, repeats and blanks are dropped, and dates must be
 real `YYYY`, `YYYY-MM` or `YYYY-MM-DD` dates. A file is refused only when
 its structure is unreadable: not a JSON object for Libation, not a
-well-formed package for OPF.
+well-formed package for OPF, not a well-formed `<album>` for
+`album.nfo`.
 
 ## Develop
 

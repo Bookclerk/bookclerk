@@ -54,6 +54,11 @@ name = "opf.js"
 path = "opf.js"
 type = "js"
 
+[[modules]]
+name = "album-nfo.js"
+path = "album-nfo.js"
+type = "js"
+
 [capabilities.network]
 # The host hands every file in and takes every file back, so the plugin
 # needs no network or file grant.
@@ -72,6 +77,14 @@ name = "OPF package document"
 suffixes = [".opf"]
 fields = ["title", "description", "publisher", "publishedAt", "language", "genres", "identifiers", "credits", "series"]
 credit_roles = ["author", "narrator", "translator", "editor", "illustrator"]
+writes = true
+
+[[metadata_files.dialects]]
+id = "kodi_album_nfo"
+name = "Kodi album.nfo"
+file_names = ["album.nfo"]
+fields = ["title", "description", "publisher", "publishedAt", "genres", "credits"]
+credit_roles = ["author"]
 writes = true
 
 [vars]

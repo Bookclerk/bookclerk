@@ -367,3 +367,56 @@ export function removal(source: string, element: XmlElement): Edit {
   if (source[start - 1] === "\r") start -= 1;
   return { start, end: element.end, text: "" };
 }
+
+/**
+ * The line break a document uses, so new lines match the old ones.
+ *
+ * @param source - The document.
+ * @returns `\r\n` when the file has any, else `\n`.
+ */
+export function lineBreak(source: string): string {
+  return source.includes("\r\n") ? "\r\n" : "\n";
+}
+
+/**
+ * The indentation at the start of an element's line.
+ *
+ * @param source - The document.
+ * @param element - The element.
+ * @returns Its leading spaces and tabs, or `undefined` when other text
+ *   shares the line.
+ */
+export function indentOf(source: string, element: XmlElement): string | undefined {
+  const lineStart = source.lastIndexOf("\n", element.start - 1) + 1;
+  const lead = source.slice(lineStart, element.start);
+  return /^[ \t]*$/.test(lead) ? lead : undefined;
+}
+
+/**
+ * The edit that appends new child elements, one per line, after an
+ * element's last content. Each new line takes the indentation of the
+ * first child (else the element's own plus two spaces) and the file's
+ * line breaks; an empty-element tag is opened up to hold them.
+ *
+ * @param source - The document.
+ * @param parent - The element that gets the children.
+ * @param added - The new children, as source text.
+ * @returns The insertion.
+ */
+export function appendChildren(source: string, parent: XmlElement, added: readonly string[]): Edit {
+  const nl = lineBreak(source);
+  const own = indentOf(source, parent) ?? "";
+  const first = parent.children[0];
+  const indent = (first && indentOf(source, first)) || `${own}  `;
+  const lines = added.map((e) => `${nl}${indent}${e}`).join("");
+  if (parent.selfClosing) {
+    return {
+      start: parent.end - 2,
+      end: parent.end,
+      text: `>${lines}${nl}${own}</${parent.name}>`,
+    };
+  }
+  let insert = parent.closeStart;
+  while (insert > parent.openEnd && /\s/.test(source[insert - 1] ?? "")) insert -= 1;
+  return { start: insert, end: insert, text: lines };
+}
