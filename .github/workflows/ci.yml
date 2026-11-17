@@ -391,6 +391,7 @@ jobs:
             ui/package-lock.json
             packages/plugin-sdk/package-lock.json
             crates/bookclerk-plugins/optional/metadata-audnexus/package-lock.json
+            crates/bookclerk-plugins/optional/metadata-files/package-lock.json
             crates/bookclerk-plugins/optional/metadata-openlibrary/package-lock.json
 
       # The Python SDK check and its API docs install from
