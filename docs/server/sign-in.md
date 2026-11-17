@@ -287,9 +287,15 @@ An install that is already an active branch or window of a library reads
 that library's books through its link, so a card for it is refused
 (409 `already_joined`). These routes are for the operator or an Owner.
 
-> [!NOTE]
-> The web app's sign-in wizard and Settings → Library → **Library cards**
-> come in a later change; the routes are in place now.
+In the web app this is Settings → Library → **Library cards**: **Sign in
+with a library card** reads the library, asks for the fingerprint and the
+name, and sends the browser to the library's sign-in page. The library
+sends it back to `/clerk/callback`, which posts the `code` and `state` to
+`POST /api/config/clerk/callback` and removes them from the address bar.
+Only a request that got no answer offers **Try again**; any answer ends
+the pending sign-in. Each card in the list has **Sign out** (**Remove** once
+the library ended it). See
+[Sign in with a library card](../guide/branches.md#sign-in-with-a-library-card).
 
 ## API endpoints
 
@@ -343,6 +349,7 @@ The web app keeps the address bar in step with the screen:
 | `/settings` | Settings |
 | `/invite` | Claim an invite (`?ticket=`) |
 | `/clerk/approve` | Give a clerk a library card (see [Library cards](#library-cards)) |
+| `/clerk/callback` | Finish this install's library card sign-in (see [Signing in with a library card](#signing-in-with-a-library-card)) |
 
 `bookclerkd` serves `index.html` for these paths, so a hard refresh on
 `/library` loads the app instead of a 404. Assets still come from

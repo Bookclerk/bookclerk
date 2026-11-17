@@ -7,6 +7,7 @@ import { ErrorStatePage } from "@/components/ErrorStatePage";
 import { BranchesPanel } from "@/components/BranchesPanel";
 import { canChangeBranchSharing } from "@/lib/join";
 import { SharedBranchesPanel } from "@/components/SharedBranchesPanel";
+import { ClerkCardsPanel } from "@/components/ClerkCardsPanel";
 import { ClusterConsentsPanel } from "@/components/ClusterConsentsPanel";
 import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
@@ -1529,10 +1530,13 @@ export function SettingsPage({
           ) : null}
 
           {activeTab === "clusters" && showLibrary ? (
-            <ClusterConsentsPanel
-              onSessionExpired={onSessionExpired}
-              sharingOnly={!showOperatorChrome}
-            />
+            <div className="space-y-10">
+              <ClusterConsentsPanel
+                onSessionExpired={onSessionExpired}
+                sharingOnly={!showOperatorChrome}
+              />
+              <ClerkCardsPanel onSessionExpired={onSessionExpired} />
+            </div>
           ) : null}
 
           {activeTab === "branches" && showSignInSettings ? (
