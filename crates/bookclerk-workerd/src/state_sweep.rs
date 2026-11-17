@@ -205,7 +205,12 @@ mod tests {
         let dead = crate::config::workerd_state_dir(root.path()).expect("state dir");
         drop(claim(&dead).expect("claim"));
 
-        assert_eq!(sweep_abandoned(root.path()), vec![dead.clone()]);
+        // The sweep names directories under the base as configured, which
+        // on Windows is spelled differently from the canonical paths
+        // `workerd_state_dir` returns, so compare by name.
+        let removed = sweep_abandoned(root.path());
+        let names: Vec<_> = removed.iter().filter_map(|dir| dir.file_name()).collect();
+        assert_eq!(names, vec![dead.file_name().expect("leaf")]);
         assert!(!dead.exists());
         assert!(live.is_dir());
         fs::remove_dir_all(&live).expect("cleanup");
