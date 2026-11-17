@@ -180,7 +180,44 @@ fn distinct(ids: impl Iterator<Item = String>) -> Vec<String> {
     ids
 }
 
+/// True when `holding` belongs to one of the accounts `named`
+/// (`(plugin key, account id)`).
+fn held_by(named: &BTreeSet<(String, String)>, holding: &holdings::Model) -> bool {
+    match (holding.plugin_key.as_ref(), holding.account_id.as_ref()) {
+        (Some(plugin_key), Some(account_id)) => {
+            named.contains(&(plugin_key.clone(), account_id.clone()))
+        }
+        _ => false,
+    }
+}
+
 impl LibraryStore {
+    /// The accounts an account filter names, as `(plugin_key,
+    /// account_id)`: every account whose id or label is `needle`, ignoring
+    /// ASCII case, the way the scan executor and the job trust checks
+    /// resolve a job's account. A library has few accounts, so they are
+    /// read in one query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    async fn accounts_matching(&self, needle: &str) -> Result<BTreeSet<(String, String)>> {
+        Ok(accounts::Entity::find()
+            .all(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .filter(|row| {
+                row.account_id.eq_ignore_ascii_case(needle)
+                    || row
+                        .label
+                        .as_deref()
+                        .is_some_and(|label| label.eq_ignore_ascii_case(needle))
+            })
+            .map(|row| (row.plugin_key, row.account_id))
+            .collect())
+    }
+
     /// The title `account_id` holds at a store, as acquire reads it.
     ///
     /// # Arguments
@@ -240,7 +277,8 @@ impl LibraryStore {
     ///
     /// # Arguments
     ///
-    /// * `account_id` - Only this account's titles, when set.
+    /// * `account_id` - Only the titles of the accounts this id or label
+    ///   names (ignoring ASCII case), when set.
     /// * `id` - The product id, ASIN, ISBN, holding id or library UUID.
     ///
     /// # Returns
@@ -260,6 +298,21 @@ impl LibraryStore {
         if id.is_empty() {
             return Ok(Vec::new());
         }
+        let named = match account_id {
+            Some(needle) => {
+                let named = self.accounts_matching(needle).await?;
+                if named.is_empty() {
+                    return Ok(Vec::new());
+                }
+                Some(named)
+            }
+            None => None,
+        };
+        let account_ids: Vec<String> = named
+            .iter()
+            .flatten()
+            .map(|(_, account)| account.clone())
+            .collect();
         let variants = super::book_lookup::case_variants(&id);
         let mut edition_ids: Vec<String> = edition_identifiers::Entity::find()
             .filter(edition_identifiers::Column::Scheme.is_in(["asin", "isbn"]))
@@ -293,8 +346,8 @@ impl LibraryStore {
         if let Some(title) = self.title_holding_of_book(&id).await? {
             holding_ids.push(title.holding_id);
         }
-        let account = |query: sea_orm::Select<holdings::Entity>| match account_id {
-            Some(account_id) => query.filter(holdings::Column::AccountId.eq(account_id)),
+        let account = |query: sea_orm::Select<holdings::Entity>| match named {
+            Some(_) => query.filter(holdings::Column::AccountId.is_in(account_ids.clone())),
             None => query,
         };
         // Every account's holding of a listing may be more rows than one
@@ -318,6 +371,10 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?,
         );
+        if let Some(named) = &named {
+            // The same id on another store is another account.
+            holdings.retain(|holding| held_by(named, holding));
+        }
         holdings.sort_by(|a, b| a.id.cmp(&b.id));
         holdings.dedup_by(|a, b| a.id == b.id);
         self.acquire_titles_of(holdings).await
@@ -328,7 +385,8 @@ impl LibraryStore {
     ///
     /// # Arguments
     ///
-    /// * `account_id` - Only accounts with this id, when set.
+    /// * `account_id` - Only the accounts this id or label names (ignoring
+    ///   ASCII case), when set.
     /// * `plugin_key` - Only accounts on this plugin, when set.
     ///
     /// # Errors
@@ -340,16 +398,22 @@ impl LibraryStore {
         plugin_key: Option<&str>,
     ) -> Result<BTreeSet<(String, String)>> {
         let mut query = accounts::Entity::find().order_by_asc(accounts::Column::Id);
-        if let Some(account_id) = account_id {
-            query = query.filter(accounts::Column::AccountId.eq(account_id));
-        }
         if let Some(plugin_key) = plugin_key {
             query = query.filter(accounts::Column::PluginKey.eq(plugin_key));
         }
+        let named = match account_id {
+            Some(needle) => Some(self.accounts_matching(needle).await?),
+            None => None,
+        };
         let mut out = BTreeSet::new();
         // One indexed existence read per account: a library has few
         // accounts, and each may hold more titles than one read returns.
         for account in query.all(self.db()).await.map_err(LibraryError::Orm)? {
+            if named.as_ref().is_some_and(|named| {
+                !named.contains(&(account.plugin_key.clone(), account.account_id.clone()))
+            }) {
+                continue;
+            }
             let held = super::holdings::find_holdings()
                 .filter(holdings::Column::HolderKind.eq("account"))
                 .filter(holdings::Column::PluginKey.eq(account.plugin_key.as_str()))
@@ -369,7 +433,8 @@ impl LibraryStore {
     ///
     /// # Arguments
     ///
-    /// * `account_id` - Only this account's titles, when set.
+    /// * `account_id` - Only the titles of the accounts this id or label
+    ///   names (ignoring ASCII case), when set.
     /// * `after` - The previous page's [`AcquireTitlePage::next`]; `None`
     ///   for the first page.
     /// * `limit` - Most holdings the page reads (1 to 64, and at most the
@@ -398,18 +463,34 @@ impl LibraryStore {
             .filter(holdings::Column::HolderKind.eq("account"))
             .order_by_asc(holdings::Column::Id)
             .limit(want);
-        if let Some(account_id) = account_id {
-            query = query.filter(holdings::Column::AccountId.eq(account_id));
-        }
+        let named = match account_id {
+            Some(needle) => {
+                let named = self.accounts_matching(needle).await?;
+                if named.is_empty() {
+                    return Ok(AcquireTitlePage {
+                        titles: Vec::new(),
+                        next: None,
+                    });
+                }
+                let ids: Vec<String> = named.iter().map(|(_, id)| id.clone()).collect();
+                query = query.filter(holdings::Column::AccountId.is_in(ids));
+                Some(named)
+            }
+            None => None,
+        };
         if let Some(after) = after {
             query = query.filter(holdings::Column::Id.gt(after));
         }
-        let holdings = query.all(self.db()).await.map_err(LibraryError::Orm)?;
+        let mut holdings = query.all(self.db()).await.map_err(LibraryError::Orm)?;
         let full = u64::try_from(holdings.len()).unwrap_or(u64::MAX) >= want;
         let next = holdings
             .last()
             .filter(|_| full)
             .map(|holding| holding.id.clone());
+        if let Some(named) = &named {
+            // The same id on another store is another account.
+            holdings.retain(|holding| held_by(named, holding));
+        }
         Ok(AcquireTitlePage {
             titles: self.acquire_titles_of(holdings).await?,
             next,
