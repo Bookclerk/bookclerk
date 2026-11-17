@@ -278,7 +278,7 @@ pub async fn apply_enrichment_to_edition(
                 categories: enrichment.categories.clone(),
                 cover_url: enrichment.cover_url.clone(),
                 language: enrichment.language.clone(),
-                source: String::from("audible"),
+                source: String::from(AUDIBLE_SOURCE),
                 confidence: matched.confidence,
             },
         )
@@ -368,6 +368,9 @@ async fn merge_into_book(
     Ok(())
 }
 
+/// The enrichment source an Audible catalog match records on an edition.
+const AUDIBLE_SOURCE: &str = "audible";
+
 /// Held editions read per page while matching.
 const ENRICH_PAGE: u64 = 100;
 
@@ -410,7 +413,10 @@ pub async fn enrich_editions_from_audible(
             .enrich_candidates_page(after.as_deref(), ENRICH_PAGE)
             .await?;
         for edition in &page.candidates {
-            if edition.asin.is_some() {
+            // An edition with an ASIN needs no match, and one an earlier
+            // match marked is not matched again, even when the ASIN it
+            // found stayed with another edition.
+            if edition.asin.is_some() || edition.enrich_source.as_deref() == Some(AUDIBLE_SOURCE) {
                 continue;
             }
             if edition.title.trim().is_empty() && edition.isbn.is_none() {
@@ -960,6 +966,7 @@ mod tests {
             ("9781111111111", "B00TEST001", None),
             ("9782222222222", "B00NONE001", None),
             ("9783333333333", "Already Matched", Some("B00EXIST01")),
+            ("9784444444444", "B00TEST001", None),
         ] {
             let mut book = NewBook::minimal(product, "acct", "us", title);
             book.plugin_key = "libro".into();
@@ -973,7 +980,7 @@ mod tests {
         let matched = enrich_editions_from_audible(&store, &providers, 0)
             .await
             .unwrap();
-        assert_eq!(matched, 1, "only the edition with a provider record");
+        assert_eq!(matched, 2, "only the editions with a provider record");
         let first = store.get_book_by_uuid(&uuids[0]).await.unwrap().unwrap();
         assert_eq!(first.asin.as_deref(), Some("B00TEST001"));
         assert_eq!(first.enrich_source.as_deref(), Some("audible"));
@@ -983,6 +990,21 @@ mod tests {
         assert_eq!(
             kept.enrich_source, None,
             "an edition with an ASIN is skipped"
+        );
+        // The last edition matched the same ASIN, which stays with the
+        // first; both are marked, so a later scan matches neither again.
+        let page = store.enrich_candidates_page(None, 10).await.unwrap();
+        let with_asin = page
+            .candidates
+            .iter()
+            .filter(|c| c.asin.as_deref() == Some("B00TEST001"))
+            .count();
+        assert_eq!(with_asin, 1, "the ASIN stays with one edition");
+        assert_eq!(
+            enrich_editions_from_audible(&store, &providers, 0)
+                .await
+                .unwrap(),
+            0
         );
     }
 
