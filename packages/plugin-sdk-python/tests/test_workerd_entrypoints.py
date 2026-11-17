@@ -404,6 +404,28 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(rendered, "Hi")
 
+        class JsParams:
+            """Stands in for a JsProxy whose ``to_py()`` nests a ``memoryview``."""
+
+            def to_py(self) -> dict:
+                return {
+                    "dialect": "txt",
+                    "fileName": "desc.txt",
+                    "bytes": memoryview(b"Nested"),
+                    "list": [memoryview(b"x")],
+                }
+
+        class Echo(MetadataFilesEntrypoint):
+            async def parse(self, params: dict) -> dict:
+                self.seen = params
+                return {"present": ["title"], "title": params["bytes"].decode()}
+
+        echo = Echo()
+        record = await echo.bookclerkInvoke({}, "parse", JsParams())
+        self.assertEqual(record, {"present": ["title"], "title": "Nested"})
+        self.assertEqual(echo.seen["list"], [b"x"])
+        self.assertIsInstance(echo.seen["bytes"], bytes)
+
     async def test_execute_streamed_unsupported_by_default(self) -> None:
         """A session that advertises no streamed budget keeps the default, which is unsupported."""
         session = AdapterDatabaseSession()

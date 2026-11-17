@@ -548,6 +548,17 @@ function isAsciiFileName(name: string): boolean {
  *   unknown fields, a repeated field or credit role, or credit roles that do
  *   not match `credits`.
  */
+/** Keys a `[[metadata_files.dialects]]` row may carry (the host's fields). */
+const DIALECT_KEYS: ReadonlySet<string> = new Set([
+  "id",
+  "name",
+  "file_names",
+  "suffixes",
+  "fields",
+  "credit_roles",
+  "writes",
+]);
+
 function validateMetadataFiles(m: Manifest): void {
   const exported = ((m.entrypoints ?? []) as readonly string[]).includes("metadataFiles");
   const table = m.metadata_files;
@@ -562,6 +573,12 @@ function validateMetadataFiles(m: Manifest): void {
   if (!exported) {
     throw new Error("plugin.toml: `[metadata_files]` needs the `metadataFiles` entrypoint");
   }
+  // The host parses these tables with `deny_unknown_fields`.
+  for (const key of Object.keys(table)) {
+    if (key !== "dialects") {
+      throw new Error(`plugin.toml: \`[metadata_files]\` has unknown key \`${key}\``);
+    }
+  }
   const dialects = table.dialects ?? [];
   if (dialects.length === 0) {
     throw new Error("plugin.toml: `[metadata_files].dialects` is empty");
@@ -570,6 +587,14 @@ function validateMetadataFiles(m: Manifest): void {
   const claimed = new Set<string>();
   dialects.forEach((dialect, i) => {
     const row = `plugin.toml: metadata_files.dialects[${i}]`;
+    for (const key of Object.keys(dialect)) {
+      if (!DIALECT_KEYS.has(key)) {
+        throw new Error(`${row} has unknown key \`${key}\``);
+      }
+    }
+    if (dialect.writes !== undefined && typeof dialect.writes !== "boolean") {
+      throw new Error(`${row}.writes must be a boolean`);
+    }
     const id = String(dialect.id ?? "");
     if (!DIALECT_ID.test(id)) {
       throw new Error(`${row}.id \`${id}\` is not an identifier ([a-z][a-z0-9_]{0,63})`);

@@ -177,11 +177,34 @@ def js(value: Any) -> Any:
     return JSON.parse(json.dumps(value))
 
 
+def _plain_bytes(value: Any) -> Any:
+    """Replace ``memoryview`` values with ``bytes`` at every nesting depth.
+
+    Pyodide's ``to_py()`` turns a ``Uint8Array`` into a ``memoryview``, also
+    inside converted objects and arrays, so a ``Data`` field such as
+    ``MetadataFileParseParams["bytes"]`` would otherwise reach a handler as a
+    ``memoryview`` rather than the declared ``bytes``.
+
+    Args:
+        value: A value ``to_py()`` returned.
+
+    Returns:
+        The same value with every ``memoryview`` copied into ``bytes``.
+    """
+    if isinstance(value, memoryview):
+        return bytes(value)
+    if isinstance(value, dict):
+        return {key: _plain_bytes(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain_bytes(item) for item in value]
+    return value
+
+
 def py(value: Any) -> Any:
     """Convert a JS value delivered over Workers RPC into plain Python.
 
     ``JsProxy`` objects are converted with ``to_py()`` (``Uint8Array`` →
-    ``bytes``); Python values pass through unchanged.
+    ``bytes`` at any depth); Python values pass through unchanged.
 
     Args:
         value: A JsProxy or Python value.
@@ -193,10 +216,7 @@ def py(value: Any) -> Any:
         return value
     to_py = getattr(value, "to_py", None)
     if callable(to_py):
-        converted = to_py()
-        if isinstance(converted, memoryview):
-            return bytes(converted)
-        return converted
+        return _plain_bytes(to_py())
     if isinstance(value, (bytearray, memoryview)):
         return bytes(value)
     return value

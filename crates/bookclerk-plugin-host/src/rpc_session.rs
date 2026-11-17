@@ -1419,8 +1419,9 @@ impl PluginSession {
     ///
     /// # Errors
     ///
-    /// Returns a plugin error when the vat thread is gone, the guest did not
-    /// export the entrypoint, or the method fails.
+    /// Returns a plugin error when the session's grant was revoked, the vat
+    /// thread is gone, the guest did not export the entrypoint, or the method
+    /// fails.
     async fn entrypoint_call<S, T, F, Fut>(
         &self,
         call: F,
@@ -1433,21 +1434,21 @@ impl PluginSession {
         Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
             + 'static,
     {
-        let (reply, rx) = oneshot::channel::<Result<T>>();
-        let erased: EntrypointCall<S> = Box::new(move |stub| {
-            Box::pin(async move {
-                let out = match stub {
-                    Ok(stub) => call(stub).await.map_err(map_abi),
-                    Err(err) => Err(map_abi(err)),
-                };
-                let _ = reply.send(out);
-            })
-        });
-        self.tx
-            .send(work(erased))
-            .map_err(|_| PluginError::unavailable("plugin vat thread closed"))?;
-        rx.await
-            .map_err(|_| PluginError::unavailable("plugin vat thread dropped reply"))?
+        // Goes through `call`, so a revoked grant is fenced before the work
+        // is sent and again after the reply, like every other method.
+        self.call(move |reply: oneshot::Sender<Result<T>>| {
+            let erased: EntrypointCall<S> = Box::new(move |stub| {
+                Box::pin(async move {
+                    let out = match stub {
+                        Ok(stub) => call(stub).await.map_err(map_abi),
+                        Err(err) => Err(map_abi(err)),
+                    };
+                    let _ = reply.send(out);
+                })
+            });
+            work(erased)
+        })
+        .await
     }
 
     /// One typed `remoteLibrary` method on the opened primary entrypoints.

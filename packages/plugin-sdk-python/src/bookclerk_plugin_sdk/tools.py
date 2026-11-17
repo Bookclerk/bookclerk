@@ -866,6 +866,12 @@ def _is_ascii_file_name(name: str) -> bool:
     )
 
 
+_DIALECT_KEYS = frozenset(
+    ("id", "name", "file_names", "suffixes", "fields", "credit_roles", "writes")
+)
+"""Keys a ``[[metadata_files.dialects]]`` row may carry (the host's fields)."""
+
+
 def _validate_metadata_files(m: dict[str, Any]) -> None:
     """Check ``[metadata_files]`` against the entrypoints with the host's rules and messages.
 
@@ -874,7 +880,8 @@ def _validate_metadata_files(m: dict[str, Any]) -> None:
 
     Raises:
         ValueError: If a ``metadataFiles`` plugin has no dialects or another
-            plugin has the table, or a dialect has a bad or repeated id, no
+            plugin has the table, a table or row has an unknown key, a
+            ``writes`` value is not a boolean, or a dialect has a bad or repeated id, no
             name, no file names or suffixes, a malformed or repeated name or
             suffix, no or unknown fields, a repeated field or credit role, or
             credit roles that do not match ``credits``.
@@ -890,6 +897,10 @@ def _validate_metadata_files(m: dict[str, Any]) -> None:
         return
     if not exported:
         raise ValueError("plugin.toml: `[metadata_files]` needs the `metadataFiles` entrypoint")
+    # The host parses these tables with `deny_unknown_fields`.
+    for key in table:
+        if key != "dialects":
+            raise ValueError(f"plugin.toml: `[metadata_files]` has unknown key `{key}`")
     dialects = list(table.get("dialects") or [])
     if not dialects:
         raise ValueError("plugin.toml: `[metadata_files].dialects` is empty")
@@ -897,6 +908,11 @@ def _validate_metadata_files(m: dict[str, Any]) -> None:
     claimed: set[str] = set()
     for i, dialect in enumerate(dialects):
         row = f"plugin.toml: metadata_files.dialects[{i}]"
+        for key in dialect:
+            if key not in _DIALECT_KEYS:
+                raise ValueError(f"{row} has unknown key `{key}`")
+        if "writes" in dialect and not isinstance(dialect["writes"], bool):
+            raise ValueError(f"{row}.writes must be a boolean")
         dialect_id = str(dialect.get("id", ""))
         if not _DIALECT_ID_RE.match(dialect_id):
             raise ValueError(

@@ -375,6 +375,29 @@ def test_validate_rejects_reserved_and_duplicate_queues():
         )
 
 
+def test_validate_metadata_files_rejects_unknown_keys_and_non_bool_writes():
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    dialect = {"id": "txt", "name": "Text", "file_names": ["desc.txt"], "fields": ["description"]}
+    base = {
+        "api_version": 3,
+        "id": "echo",
+        "runtime": "native",
+        "command": "./echo",
+        "entrypoints": ["metadataFiles"],
+        "capabilities": {"network": {"mode": "deny"}},
+    }
+    validate_manifest({**base, "metadata_files": {"dialects": [{**dialect, "writes": True}]}})
+    with pytest.raises(ValueError, match="has unknown key `wrties`"):
+        validate_manifest({**base, "metadata_files": {"dialects": [{**dialect, "wrties": True}]}})
+    with pytest.raises(ValueError, match="writes must be a boolean"):
+        validate_manifest(
+            {**base, "metadata_files": {"dialects": [{**dialect, "writes": "false"}]}}
+        )
+    with pytest.raises(ValueError, match="has unknown key `extra`"):
+        validate_manifest({**base, "metadata_files": {"dialects": [dialect], "extra": 1}})
+
+
 def test_calendar_date_rejects_unicode_digits_and_unquoted_toml_dates():
     import tomllib
 

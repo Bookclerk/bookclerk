@@ -311,6 +311,39 @@ function bindingMessage(manifest) {
   }
   return "";
 }
+// [metadata_files]: the host parses rows with deny_unknown_fields and a bool `writes`.
+{
+  const dialect = { id: "txt", name: "Text", file_names: ["desc.txt"], fields: ["description"] };
+  const files = (table) => ({
+    ...bindingBase,
+    entrypoints: ["metadataFiles"],
+    metadata_files: table,
+  });
+  const cases = [
+    [files({ dialects: [dialect] }), ""],
+    [files({ dialects: [{ ...dialect, writes: true }] }), ""],
+    [
+      files({ dialects: [{ ...dialect, wrties: true }] }),
+      "plugin.toml: metadata_files.dialects[0] has unknown key `wrties`",
+    ],
+    [
+      files({ dialects: [{ ...dialect, writes: "false" }] }),
+      "plugin.toml: metadata_files.dialects[0].writes must be a boolean",
+    ],
+    [
+      files({ dialects: [dialect], extra: 1 }),
+      "plugin.toml: `[metadata_files]` has unknown key `extra`",
+    ],
+  ];
+  for (const [manifest, want] of cases) {
+    const got = bindingMessage(manifest);
+    if (got !== want) {
+      console.error("FAIL metadata_files key check", JSON.stringify({ got, want }));
+      process.exit(1);
+    }
+  }
+  console.log("ok metadata_files rejects unknown keys and non-bool writes");
+}
 // [capabilities.network.own_user_agent]: outbound, 1-32 hosts that are not `*`,
 // and a one-line reason.
 {

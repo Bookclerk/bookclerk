@@ -64,6 +64,7 @@
     "metadata_files": {
       "type": "object",
       "additionalProperties": false,
+      "required": ["dialects"],
       "description": "Metadata file dialects (sidecars such as metadata.json, OPF, NFO, CUE) the plugin reads and writes. Required, with at least one dialect, for a plugin exporting the metadataFiles entrypoint; forbidden for every other plugin.",
       "properties": {
         "dialects": {
@@ -208,6 +209,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "name", "fields"],
+      "anyOf": [
+        { "required": ["file_names"], "properties": { "file_names": { "minItems": 1 } } },
+        { "required": ["suffixes"], "properties": { "suffixes": { "minItems": 1 } } }
+      ],
+      "if": { "required": ["fields"], "properties": { "fields": { "contains": { "const": "credits" } } } },
+      "then": { "required": ["credit_roles"], "properties": { "credit_roles": { "minItems": 1 } } },
+      "else": { "properties": { "credit_roles": { "maxItems": 0 } } },
       "description": "One metadata file format. The host routes a file by exact name first, then by the longest matching suffix, both compared without ASCII case.",
       "properties": {
         "id": {

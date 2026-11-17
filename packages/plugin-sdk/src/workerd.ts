@@ -183,6 +183,9 @@ export type {
   MetadataChapter,
   MetadataChapters,
   MetadataChaptersParams,
+  MetadataFileParseParams,
+  MetadataFileRecord,
+  MetadataFileRenderParams,
   MetadataLookupParams,
   MetadataRecord,
   MetadataSearchParams,
@@ -195,6 +198,7 @@ export type {
   ExpressionKind,
   IdentifierScheme,
   MediaKind,
+  MetadataField,
   WorkKind,
 } from "./abi.js";
 export {
