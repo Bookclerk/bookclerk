@@ -533,7 +533,10 @@ impl LibraryStore {
 
     /// The titles of `holdings` (account holdings), in their order, read in
     /// one chunked query per table.
-    async fn acquire_titles_of(&self, holdings: Vec<holdings::Model>) -> Result<Vec<AcquireTitle>> {
+    pub(crate) async fn acquire_titles_of(
+        &self,
+        holdings: Vec<holdings::Model>,
+    ) -> Result<Vec<AcquireTitle>> {
         if holdings.is_empty() {
             return Ok(Vec::new());
         }

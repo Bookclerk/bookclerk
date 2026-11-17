@@ -5,7 +5,7 @@
 
 use bookclerk_node_proto::{
     window_page_problem, Availability, CatalogMetadata, LookupEdition, LookupFormat,
-    LookupIdentifier, LookupScheme, WindowWork, MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS,
+    LookupIdentifier, LookupScheme, WindowCursor, WindowWork, MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS,
     MAX_WINDOW_WORKS,
 };
 use sea_orm::{ActiveModelTrait, ActiveValue::Set};
@@ -118,14 +118,14 @@ async fn hold(store: &LibraryStore, user: i64, account: &str, asins: &[String]) 
 /// Every page of `node`'s window books, checked against the frame rules
 /// and budget as it goes.
 async fn read_all(store: &LibraryStore, node: &str) -> Vec<WindowWork> {
-    let mut after = 0;
+    let mut after = WindowCursor::start();
     let mut works = Vec::new();
     for _ in 0..1000 {
-        let (page, next) = window_books_page(store, node, after)
+        let (page, next) = window_books_page(store, node, &after)
             .await
             .unwrap()
             .expect("a trusted branch is answered");
-        assert_eq!(window_page_problem(after, &page, next), None);
+        assert_eq!(window_page_problem(&after, &page, next.as_ref()), None);
         assert!(serde_json::to_vec(&page).unwrap().len() <= MAX_FRAME_BYTES / 2);
         works.extend(page);
         match next {
@@ -171,7 +171,12 @@ async fn the_library_lists_only_its_persons_books_to_a_trusted_branch() {
         .await
         .unwrap();
 
-    assert_eq!(window_books_page(&store, BRANCH, 0).await.unwrap(), None);
+    assert_eq!(
+        window_books_page(&store, BRANCH, &WindowCursor::start())
+            .await
+            .unwrap(),
+        None
+    );
     add_branch(&store, BRANCH, riley).await;
 
     let listed = read_all(&store, BRANCH).await;
@@ -224,14 +229,21 @@ async fn a_persons_page_lists_only_that_persons_books() {
         .await
         .unwrap();
 
-    let (page, next) = person_books_page(&store, riley, 0).await.unwrap();
-    assert_eq!(window_page_problem(0, &page, next), None);
+    let (page, next) = person_books_page(&store, riley, &WindowCursor::start())
+        .await
+        .unwrap();
+    assert_eq!(
+        window_page_problem(&WindowCursor::start(), &page, next.as_ref()),
+        None
+    );
     assert_eq!(next, None);
     assert_eq!(page.len(), 1, "only Riley's book: {page:?}");
     assert_eq!(page[0].work, works[0]);
     assert_eq!(page[0].editions[0].product_id, "B0RILEY001");
     assert_eq!(
-        person_books_page(&store, nobody, 0).await.unwrap(),
+        person_books_page(&store, nobody, &WindowCursor::start())
+            .await
+            .unwrap(),
         (Vec::new(), None),
         "a person with no store accounts has no books"
     );
@@ -954,13 +966,13 @@ impl sea_orm::ProxyDatabaseTrait for TextCapped {
     }
 }
 
-/// A book whose metadata together is wider than one database reply (each
-/// field fits a cell) does not stop the window: the page is read again a
-/// book at a time, that book is left out, and the books around it are
-/// listed. (The book is stored before the cap applies, since the host's
+/// A title whose listing metadata together is wider than one database
+/// reply (each field fits a cell) does not stop the window: the page's
+/// titles are read again one at a time, that title is left out, and the
+/// titles around it are listed. (The book is stored before the cap applies, since the host's
 /// own write reads a book back whole.)
 #[tokio::test]
-async fn a_book_wider_than_one_reply_is_left_out_of_the_window() {
+async fn a_title_wider_than_one_reply_is_left_out_of_the_window() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let conn = rusqlite::Connection::open(dir.path().join("library.db")).unwrap();
@@ -996,20 +1008,22 @@ async fn a_book_wider_than_one_reply_is_left_out_of_the_window() {
     add_branch(&store, BRANCH, riley).await;
     cap.store(4096, std::sync::atomic::Ordering::SeqCst);
 
-    let listed: Vec<String> = read_all(&store, BRANCH)
+    // Pages follow holding ids, which are random: compare as sets.
+    let mut listed: Vec<String> = read_all(&store, BRANCH)
         .await
         .into_iter()
         .flat_map(|work| work.editions)
         .map(|edition| edition.product_id)
         .collect();
+    listed.sort();
     assert_eq!(listed, vec!["B0NARROW01", "B0NARROW02"]);
 
-    // One book per read (the Minimum profile's `maxResultRows`): the page
-    // that only skips the wide book still moves the cursor past it.
-    let mut after = 0;
+    // One holding per read (the Minimum profile's `maxResultRows`): the
+    // page that only skips the wide title still moves the cursor past it.
+    let mut after = WindowCursor::start();
     let mut listed = Vec::new();
     loop {
-        let (page, next) = window_books_page_by(&store, BRANCH, after, 1)
+        let (page, next) = window_books_page_by(&store, BRANCH, &after, 1)
             .await
             .unwrap()
             .unwrap();
@@ -1023,6 +1037,7 @@ async fn a_book_wider_than_one_reply_is_left_out_of_the_window() {
             None => break,
         }
     }
+    listed.sort();
     assert_eq!(listed, vec!["B0NARROW01", "B0NARROW02"]);
 }
 
@@ -1095,15 +1110,17 @@ async fn a_title_a_scan_dropped_is_not_listed() {
     .await;
     add_branch(&store, BRANCH, riley).await;
     let listed = |works: Vec<WindowWork>| -> Vec<String> {
-        works
+        let mut products: Vec<String> = works
             .into_iter()
             .flat_map(|work| work.editions)
             .map(|edition| edition.product_id)
-            .collect()
+            .collect();
+        products.sort();
+        products
     };
     assert_eq!(
         listed(read_all(&store, BRANCH).await),
-        vec!["B0KEPT0001", "B0GONE0001"]
+        vec!["B0GONE0001", "B0KEPT0001"]
     );
 
     store

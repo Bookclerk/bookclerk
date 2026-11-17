@@ -195,12 +195,12 @@ impl WindowReader {
     async fn read_pages(&self, generation: u64) -> anyhow::Result<WindowRead> {
         let superseded = || self::generation(&self.cluster_id) != generation;
         let seen_at = window_read_stamp();
-        let mut after = 0;
+        let mut after = bookclerk_node_proto::WindowCursor::start();
         let mut stored = 0;
         for _ in 0..MAX_PAGES_PER_READ {
             let (works, next) = self
                 .handle
-                .window_books(after)
+                .window_books(&after)
                 .await
                 .map_err(|err| anyhow::anyhow!("window.books: {err:?}"))?;
             stored += record_window_page(&self.library, &self.cluster_id, &seen_at, &works).await?;

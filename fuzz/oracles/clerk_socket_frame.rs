@@ -15,8 +15,9 @@
 //!
 //! - A clerk frame parses exactly when it is at most 4 KiB, one object
 //!   with no repeated keys and exactly the keys `v` (the integer 1),
-//!   `type` (`books`) and `after` (an integer, not negative), and then it
-//!   is `books` with that `after`.
+//!   `type` (`books`) and `after` (a cursor: a string, empty or 1 to 64
+//!   ASCII letters, digits and `-`), and then it is `books` with that
+//!   `after`.
 //! - A library frame is refused when it is over 1 MiB, not one object, has
 //!   a repeated key, `v` is not the integer 1, its `type` is not `hello`,
 //!   `changed`, `books.page` or `error`, or it carries a field of another
@@ -25,10 +26,10 @@
 //!   digits, `_` and `.`, and then carry the names `library` and
 //!   `discover` among them and nothing else. `error` parses exactly when
 //!   `code` is `invalid` or `unavailable`. `books.page` parses exactly
-//!   when `after` is an integer that is not negative, `works` is an array
-//!   of at most 100 works with distinct `work` ids, each valid by the
-//!   window boundary's own rules, and `next`, when present, is an integer
-//!   past `after`.
+//!   when `after` is a cursor, `works` is an array of at most 100 works
+//!   with distinct `work` ids, each valid by the window boundary's own
+//!   rules, and `next`, when present, is a non-empty cursor sorting
+//!   byte-wise past `after`.
 //! - Every accepted frame encodes to text that parses back to the same
 //!   frame.
 
@@ -36,7 +37,7 @@ use std::collections::BTreeSet;
 
 use bookclerk_node_proto::{
     parse_clerk_frame, parse_library_frame, ClerkFrame, ClerkSocketError, ClerkTopic, LibraryFrame,
-    WindowWork, MAX_WINDOW_WORKS,
+    WindowCursor, WindowWork, MAX_WINDOW_WORKS,
 };
 use serde::de::{Deserializer as _, IgnoredAny, MapAccess, Visitor};
 use serde_json::{Map, Value};
@@ -103,14 +104,7 @@ fn check_clerk(frame: &[u8]) -> bool {
             {
                 return None;
             }
-            let after = fields.get("after")?;
-            if after.is_f64() {
-                return None;
-            }
-            after
-                .as_i64()
-                .filter(|after| *after >= 0)
-                .map(|after| ClerkFrame::Books { after })
+            cursor(fields.get("after")?).map(|after| ClerkFrame::Books { after })
         });
     assert_eq!(
         parsed,
@@ -118,10 +112,14 @@ fn check_clerk(frame: &[u8]) -> bool {
         "clerk frame {:?}",
         String::from_utf8_lossy(frame)
     );
+    let accepted = parsed.is_some();
     if let Some(frame) = parsed {
-        assert_eq!(parse_clerk_frame(frame.encode().as_bytes()), Some(frame));
+        assert_eq!(
+            parse_clerk_frame(frame.encode().as_bytes()),
+            Some(frame.clone())
+        );
     }
-    parsed.is_some()
+    accepted
 }
 
 /// The field `key` when it is present and not `null`.
@@ -234,9 +232,10 @@ fn check_library(frame: &[u8]) -> bool {
 }
 
 /// The `books.page` frame `frame` should parse as, worked out here rather
-/// than by `window_page_problem`: `after` an integer that is not negative,
-/// `works` an array of at most [`MAX_WINDOW_WORKS`] works with distinct
-/// `work` ids, and `next`, when present, an integer past `after`. Each
+/// than by `window_page_problem`: `after` a [`cursor`], `works` an array
+/// of at most [`MAX_WINDOW_WORKS`] works with distinct `work` ids, and
+/// `next`, when present, a non-empty cursor sorting byte-wise past
+/// `after`. Each
 /// work's own fields are the window boundary's rules
 /// ([`WindowWork::problem`]), which its own target checks.
 ///
@@ -253,12 +252,16 @@ fn expected_page(frame: &[u8], fields: &Map<String, Value>) -> Option<LibraryFra
         works: Vec<WindowWork>,
     }
 
-    let after = field(fields, "after")?
-        .as_i64()
-        .filter(|after| *after >= 0)?;
+    let after = cursor(field(fields, "after")?)?;
     let next = match field(fields, "next") {
         None => None,
-        Some(next) => Some(next.as_i64().filter(|next| *next > after)?),
+        Some(next) => {
+            let next = cursor(next)?;
+            if next.as_str().is_empty() || next.as_str().as_bytes() <= after.as_str().as_bytes() {
+                return None;
+            }
+            Some(next)
+        }
     };
     let works = serde_json::from_slice::<Works>(frame).ok()?.works;
     if works.len() > MAX_WINDOW_WORKS || works.iter().any(|work| work.problem().is_some()) {
@@ -269,6 +272,18 @@ fn expected_page(frame: &[u8], fields: &Map<String, Value>) -> Option<LibraryFra
         return None;
     }
     Some(LibraryFrame::BooksPage { after, works, next })
+}
+
+/// The cursor `value` is, read here: a JSON string, empty or 1 to 64
+/// ASCII letters, digits and `-`; `None` for anything else.
+fn cursor(value: &Value) -> Option<WindowCursor> {
+    let text = value.as_str()?;
+    if text.len() > 64 || !text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return None;
+    }
+    let parsed = WindowCursor::parse(text);
+    assert!(parsed.is_some(), "the cursor {text:?} was refused");
+    parsed
 }
 
 /// True when the top-level JSON object in `data` writes a key twice.
