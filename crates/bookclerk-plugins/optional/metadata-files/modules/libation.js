@@ -70,21 +70,50 @@ const ENTITIES = {
     ldquo: "“",
     rdquo: "”",
 };
+/** Closing tags that end a block and become a paragraph break. */
+const BLOCK_END = /^\/\s*(?:p|div|li|h[1-6])\s*$/i;
+/** A line break tag. */
+const LINE_BREAK = /^br\s*\/?\s*$/i;
 /**
- * Turns a store's HTML summary into plain text: paragraph and line breaks
- * become line breaks, other tags are dropped and entities are decoded. A
- * `<` left over after the tags are gone (an unclosed tag) is dropped too,
- * so the only `<` in the text is one the summary wrote as an entity.
+ * Drops a summary's tags in one pass: `<br>` becomes a line break, the end
+ * of a paragraph, `div`, list item or heading a paragraph break, and every
+ * other tag nothing. A `<` with no `>` after it is dropped on its own, so
+ * no `<` survives in the result.
+ *
+ * @param html - The summary.
+ * @returns The text between the tags, entities still encoded.
+ */
+function stripTags(html) {
+    let out = "";
+    let at = 0;
+    for (;;) {
+        const open = html.indexOf("<", at);
+        if (open === -1)
+            return out + html.slice(at);
+        out += html.slice(at, open);
+        const close = html.indexOf(">", open + 1);
+        if (close === -1) {
+            at = open + 1;
+            continue;
+        }
+        const tag = html.slice(open + 1, close).trim();
+        if (LINE_BREAK.test(tag))
+            out += "\n";
+        else if (BLOCK_END.test(tag))
+            out += "\n\n";
+        at = close + 1;
+    }
+}
+/**
+ * Turns a store's HTML summary into plain text: tags go (see `stripTags`),
+ * then entities are decoded, so the only `<` in the text is one the summary
+ * wrote as an entity.
  *
  * @param html - The summary.
  * @returns Plain text.
  */
 export function htmlToText(html) {
-    return html
-        .replace(/<\s*br\s*\/?\s*>/gi, "\n")
-        .replace(/<\s*\/\s*(?:p|div|li|h[1-6])\s*>/gi, "\n\n")
-        .replace(/<[^>]*>/g, "")
-        .replace(/</g, "")
+    return stripTags(html)
         .replace(/&(#x[0-9a-f]{1,6}|#[0-9]{1,7}|[a-z]{2,8});/gi, (whole, name) => {
         if (name.startsWith("#")) {
             const code = name[1] === "x" || name[1] === "X"
