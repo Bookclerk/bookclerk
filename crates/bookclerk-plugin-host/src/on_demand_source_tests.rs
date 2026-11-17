@@ -396,6 +396,21 @@ fn manifest(runtime: &str, entrypoints: &str, extra: &str) -> crate::PluginManif
 /// `[media]` for a storefront or metadata plugin.
 const MEDIA: &str = "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\n";
 
+/// `[workerd]` and a module for a Python isolate.
+const PYTHON: &str = "[workerd]\ncompatibility_date = \"2026-08-01\"\n\
+compatibility_flags = [\"python_workers\", \"disable_python_external_sdk\"]\n\
+main_module = \"plugin.py\"\n\n[[modules]]\nname = \"plugin.py\"\n\
+path = \"plugin.py\"\ntype = \"python\"\n";
+
+#[test]
+fn python_storefronts_sleep() {
+    assert!(storefront_activates_on_demand(&manifest(
+        "workerd",
+        "\"storefront\"",
+        &format!("{MEDIA}\n{PYTHON}")
+    )));
+}
+
 #[test]
 fn only_plain_storefronts_sleep() {
     assert!(storefront_activates_on_demand(&manifest(

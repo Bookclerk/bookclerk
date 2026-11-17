@@ -43,17 +43,16 @@ pub const STORAGE_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// True when a storage deployment of `manifest` may sleep while idle.
 ///
-/// The plugin must belong only to the storage family and must not be
-/// Python, whose guests take seconds to start. The deployment also requires
-/// a host-side backend (the first-party `s3` or `local` package); other
-/// storage guests stay running.
+/// The plugin must belong only to the storage family. The deployment also
+/// requires a host-side backend (the first-party `s3` or `local` package);
+/// other storage guests stay running.
 ///
 /// # Arguments
 ///
 /// * `manifest` - the installed manifest the deployment spawns.
 #[must_use]
 pub fn storage_activates_on_demand(manifest: &PluginManifest) -> bool {
-    manifest.families() == [PluginFamily::Output] && !manifest.declares_python()
+    manifest.families() == [PluginFamily::Output]
 }
 
 /// A running storage guest: its session and the backend that talks to it.

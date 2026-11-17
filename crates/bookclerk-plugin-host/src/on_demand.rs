@@ -10,12 +10,13 @@
 //! plugin's catalog changes while it sleeps.
 //!
 //! Only plugins that [`activates_on_demand`] accepts are wrapped: plugins
-//! whose only family is integration and whose runtime starts in tens of
-//! milliseconds (see the `cold_start` measurement in
+//! whose only family is integration. A native or JavaScript guest starts in
+//! tens of milliseconds and a Python guest, from its stored snapshot, in
+//! about a second (see the `cold_start` measurement in
 //! `bookclerk-plugin-e2e`). A remote library's new-user poll is scheduled
 //! by the proxy and wakes the guest (see [`crate::user_poll`]); a sign-in
 //! (`oidc`) call wakes it like any other call. Storefronts and storage have
-//! proxies of their own; Python guests stay resident.
+//! proxies of their own.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Weak};
@@ -47,9 +48,9 @@ pub const TRIGGER_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// True when a deployment of `manifest` may sleep while idle and start on
 /// the next call.
 ///
-/// The plugin must belong only to the integration family, and its runtime
-/// must not be Python, whose guests take seconds to start (15 s and more on
-/// a quarter CPU). Every integration entrypoint works through a wake: a
+/// The plugin must belong only to the integration family. A Python guest
+/// sleeps too: it starts from its stored start-up snapshot in about a
+/// second. Every integration entrypoint works through a wake: a
 /// `remoteLibrary` guest keeps what must outlive a sleep in its plugin
 /// database, and its new-user poll is scheduled by the host; a sign-in
 /// (`oidc`) call starts the guest the way a lookup does. A `cli`
@@ -60,7 +61,7 @@ pub const TRIGGER_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// * `manifest` - the installed manifest the deployment spawns.
 #[must_use]
 pub fn activates_on_demand(manifest: &PluginManifest) -> bool {
-    manifest.families() == [PluginFamily::Integration] && !manifest.declares_python()
+    manifest.families() == [PluginFamily::Integration]
 }
 
 /// True when a deployment that [`activates_on_demand`] accepts keeps what
