@@ -45,6 +45,16 @@ token (`bookclerk_plugin_host::SocketBroker`).
 cannot read gateway state. See [guest-jail.md](guest-jail.md) and
 the [Workers RPC ADR](../adr/plugin-workers-rpc-workerd.md).
 
+An isolate without a native sibling has no host session directory. Its
+launcher creates a fresh `w<plugin hash><nonce>/` state directory under the
+guest's own `TMPDIR` and removes it when it returns. The host stops a
+session, for example when a plugin goes to sleep, by killing the launcher,
+so that cleanup does not always run. Each launcher therefore holds an
+exclusive lock on `.owner.lock` inside its directory for as long as it
+lives, and before allocating a new one it removes this plugin's sibling
+directories whose lock it can take, plus any older than two minutes that
+never got a lock. Links are never followed.
+
 ## The bridge socket
 
 The bridge listens on an ephemeral loopback port that only the launcher

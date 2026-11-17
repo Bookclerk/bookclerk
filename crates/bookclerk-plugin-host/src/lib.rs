@@ -78,6 +78,7 @@ mod manifest;
 mod on_demand;
 mod on_demand_source;
 mod on_demand_storage;
+mod python_snapshot;
 mod queue_producer;
 mod registry;
 mod remote_consent;

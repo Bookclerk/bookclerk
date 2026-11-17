@@ -549,7 +549,7 @@ const PLUGIN_ROOT_PREFIX_HEX: usize = 8;
 const SESSION_NONCE_HEX: usize = 4;
 
 /// Short SHA-256 prefix that groups sessions for one plugin install root.
-fn plugin_root_prefix(plugin_root: &Path) -> String {
+pub(crate) fn plugin_root_prefix(plugin_root: &Path) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(plugin_root.to_string_lossy().as_bytes());
@@ -571,7 +571,7 @@ fn workerd_state_leaf(plugin_root: &Path, nonce_hex: &str) -> String {
 }
 
 /// Writable parent for isolate state (`$TMPDIR`, or `.bookclerk-state` beside the root).
-fn workerd_state_base(plugin_root: &Path) -> PathBuf {
+pub(crate) fn workerd_state_base(plugin_root: &Path) -> PathBuf {
     std::env::var_os("TMPDIR")
         .or_else(|| std::env::var_os("TEMP"))
         .or_else(|| std::env::var_os("TMP"))
