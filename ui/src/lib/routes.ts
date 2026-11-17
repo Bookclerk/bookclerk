@@ -9,6 +9,9 @@ export const CLERK_APPROVE_PATH = "/clerk/approve";
 /** Where a library sends the joining install's browser back. */
 export const JOIN_CALLBACK_PATH = "/join/callback";
 
+/** Where a library sends the browser back after a library card sign-in. */
+export const CLERK_CALLBACK_PATH = "/clerk/callback";
+
 /** Document paths the React app owns (served as `index.html` by bookclerkd). */
 const APP_PATHS = new Set([
   "/",
@@ -23,16 +26,19 @@ const APP_PATHS = new Set([
   // callback.
   JOIN_APPROVE_PATH,
   JOIN_CALLBACK_PATH,
-  // A clerk's sign-in: the library's consent page.
+  // A clerk's sign-in: the library's consent page, and this install's
+  // callback.
   CLERK_APPROVE_PATH,
+  CLERK_CALLBACK_PATH,
 ]);
 
 /**
  * A page that sign-in flows from other installs own: a branch's consent
- * (`approve`), a clerk's consent (`clerk-approve`), or the joining
- * install's callback (`callback`).
+ * (`approve`), a clerk's consent (`clerk-approve`), the joining install's
+ * callback (`callback`), or this install's library card callback
+ * (`clerk-callback`).
  */
-export type JoinPage = "approve" | "clerk-approve" | "callback";
+export type JoinPage = "approve" | "clerk-approve" | "callback" | "clerk-callback";
 
 /**
  * True for a consent page, which keeps its address across a sign-in.
@@ -48,7 +54,7 @@ export function isConsentPage(page: JoinPage | null): boolean {
  * Which Join a library page this document is, if any.
  *
  * @param pathname - Document pathname.
- * @returns `approve`, `clerk-approve`, `callback`, or `null`.
+ * @returns `approve`, `clerk-approve`, `callback`, `clerk-callback`, or `null`.
  */
 export function joinPage(pathname: string = window.location.pathname): JoinPage | null {
   switch (normalizePathname(pathname)) {
@@ -58,6 +64,8 @@ export function joinPage(pathname: string = window.location.pathname): JoinPage 
       return "clerk-approve";
     case JOIN_CALLBACK_PATH:
       return "callback";
+    case CLERK_CALLBACK_PATH:
+      return "clerk-callback";
     default:
       return null;
   }

@@ -68,6 +68,9 @@ const ClerkApprovePage = lazy(() =>
 const JoinCallbackPage = lazy(() =>
   import("@/components/JoinCallbackPage").then((m) => ({ default: m.JoinCallbackPage })),
 );
+const ClerkCallbackPage = lazy(() =>
+  import("@/components/ClerkCallbackPage").then((m) => ({ default: m.ClerkCallbackPage })),
+);
 const WelcomeScreen = lazy(() =>
   import("@/components/WelcomeScreen").then((m) => ({ default: m.WelcomeScreen })),
 );
@@ -363,6 +366,14 @@ export default function App() {
     return (
       <PageSuspense>
         <JoinCallbackPage onOpenLibrary={() => openSettings("clusters")} />
+      </PageSuspense>
+    );
+  }
+
+  if (join === "clerk-callback") {
+    return (
+      <PageSuspense>
+        <ClerkCallbackPage onOpenLibrary={() => openSettings("clusters")} />
       </PageSuspense>
     );
   }

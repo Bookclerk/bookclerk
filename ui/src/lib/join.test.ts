@@ -54,6 +54,12 @@ describe("join pages", () => {
     expect(isConsentPage("callback")).toBe(false);
     expect(isConsentPage(null)).toBe(false);
   });
+
+  it("include this install's library card callback", () => {
+    expect(isAppPath("/clerk/callback")).toBe(true);
+    expect(joinPage("/clerk/callback/")).toBe("clerk-callback");
+    expect(isConsentPage("clerk-callback")).toBe(false);
+  });
 });
 
 describe("approve return", () => {

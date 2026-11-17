@@ -143,6 +143,38 @@ until you turn downloading on.
 > [!NOTE]
 > Asking a library to send you one of these books isn't possible yet.
 
+## Sign in with a library card
+
+To see your books in a library without joining it as a branch, sign in to
+it with a library card. Your server is then a clerk of that library: it
+shows your books there and never takes its work.
+
+1. Open **Settings → Library → Library cards** and choose **Sign in with a
+   library card**.
+2. Enter the library's address, the one you open it with in a browser,
+   and choose **Continue**.
+3. If the library uses its own certificate, check that the fingerprint
+   matches the one on the library's **Settings → Branches** page, and tick
+   **It matches**.
+4. Name this computer. The library shows the name when it asks you to
+   approve the card.
+5. Choose **Sign in to** *library*, sign in on the library with your
+   account there, and approve the card.
+
+The library sends you back to your server, which says **Signed in to**
+*library*. Within a minute, **Library** shows your books there under **Your
+books in other libraries**, beside the books of any library your server is
+a window of.
+
+To stop, choose **Sign out** beside the library in the same list. Your
+server forgets the card and the books, and asks the library to end the
+card too. If the library can't be reached, end it later from your session
+list on the library. If the library ends the card first, the list says so
+and offers **Remove**; sign in again to get a new card.
+
+A server that is already a branch of a library shows your books there
+through that link, so it can't also hold a card for it.
+
 ## Leave a library
 
 On the branch, open **Settings → Library → Leave library**.

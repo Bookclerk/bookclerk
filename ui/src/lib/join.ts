@@ -26,6 +26,7 @@
  */
 
 import { ApiError, type ConfigNodeView } from "@/lib/api";
+import type { ClerkCardView } from "@/lib/clerk";
 
 /** What a library says about itself, read by this install's daemon. */
 export interface LibraryInfoView {
@@ -335,7 +336,7 @@ export class JoinApiError extends ApiError {
  * @param init - Method and optional JSON body.
  * @returns The parsed body.
  */
-async function request<T>(
+export async function request<T>(
   path: string,
   init: { method?: string; body?: unknown } = {},
 ): Promise<T> {
@@ -754,18 +755,45 @@ export interface WindowEntryView {
 export interface WindowBooks {
   /** The libraries this server is a window of. */
   clusters: BranchLinkView[];
+  /** The libraries this server holds an active library card for. */
+  cards: ClerkCardView[];
   /** Their books for this server's person, by title. */
   books: WindowEntryView[];
 }
 
 /**
  * The window view (the operator or an Owner): the books every library this
- * server is a window of holds for its person, merged by work.
+ * server is a window of, or holds a library card for, holds for its
+ * person, merged by work.
  *
  * @returns The libraries and their books.
  */
 export function fetchWindowBooks(): Promise<WindowBooks> {
   return request("/api/config/join/window");
+}
+
+/**
+ * The hosts of the libraries a window view reads, each once: the libraries
+ * this server is a window of, then those it holds a card for.
+ *
+ * @param view - The window view.
+ * @returns For example `["books.example.com", "other.example"]`.
+ */
+export function windowLibraries(view: Pick<WindowBooks, "clusters" | "cards">): string[] {
+  const hosts: string[] = [];
+  for (const origin of [
+    ...view.clusters.map((link) => link.owner_origin),
+    ...(view.cards ?? []).map((card) => card.origin),
+  ]) {
+    let host = origin;
+    try {
+      host = new URL(origin).host || origin;
+    } catch {
+      // keep the origin as given
+    }
+    if (!hosts.includes(host)) hosts.push(host);
+  }
+  return hosts;
 }
 
 /**
