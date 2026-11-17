@@ -58,7 +58,7 @@ use crate::entities::{
 use crate::error::{LibraryError, Result};
 use crate::models::{AcquireStatus, UserStatus};
 use crate::store::catalog_listings::{CatalogListing, ListingDetail};
-use crate::store::LibraryStore;
+use crate::store::{AcquireTitle, LibraryStore};
 
 /// How long a branch's answer stands: a question answered longer ago is
 /// asked again the next time [`ask_branches`] names its work.
@@ -1419,11 +1419,11 @@ struct Listers {
 }
 
 impl Listers {
-    /// Reads who holds the accounts of `books`.
-    async fn load(store: &LibraryStore, books: &[books::Model]) -> Result<Self> {
-        let account_ids: Vec<String> = books
+    /// Reads who holds the accounts of `titles`.
+    async fn load(store: &LibraryStore, titles: &[ListedTitle]) -> Result<Self> {
+        let account_ids: Vec<String> = titles
             .iter()
-            .map(|b| b.account_id.clone())
+            .map(|t| t.title.account_id.clone())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -1500,12 +1500,13 @@ impl Listers {
         })
     }
 
-    /// True when `book` may be listed: its account belongs to an Owner, or,
-    /// with `members` on, to an active member who has not opted out. A book
-    /// on an account linked to no one (a member disconnected it, or was
-    /// removed, and the books stayed) is never listed: nobody consented.
-    fn may_list(&self, book: &books::Model, members: bool) -> bool {
-        self.may_list_account(&book.plugin_key, &book.account_id, members)
+    /// True when `title` may be listed: its account belongs to an Owner,
+    /// or, with `members` on, to an active member who has not opted out. A
+    /// title on an account linked to no one (a member disconnected it, or
+    /// was removed, and the holdings stayed) is never listed: nobody
+    /// consented.
+    fn may_list(&self, title: &AcquireTitle, members: bool) -> bool {
+        self.may_list_account(&title.plugin_key, &title.account_id, members)
     }
 
     /// [`Self::may_list`] for the books of the store account
@@ -1587,6 +1588,55 @@ pub(crate) fn book_edition(book: &books::Model) -> Option<LookupEdition> {
     edition.problem().is_none().then_some(edition)
 }
 
+/// One title this library holds of a store listing, with the listing's
+/// text the answer frame carries beside the acquire view.
+#[derive(Debug, Clone)]
+pub(crate) struct ListedTitle {
+    /// The account's title, as acquire reads it.
+    pub(crate) title: AcquireTitle,
+    /// Language code as the store lists it.
+    pub(crate) language: Option<String>,
+    /// Publication date text as the store lists it, else the edition's.
+    pub(crate) published_at: Option<String>,
+}
+
+/// The answer edition for `listed`, when its store, product id and title
+/// pass the frame rules. The formats are the edition's: what this library
+/// holds of it, whichever account's acquire fetched it.
+pub(crate) fn title_edition(listed: &ListedTitle) -> Option<LookupEdition> {
+    let title = &listed.title;
+    let mut formats = Vec::new();
+    if title.status == AcquireStatus::Acquired {
+        formats.push(LookupFormat::Audio);
+    }
+    if title.pdf_status == AcquireStatus::Acquired {
+        formats.push(LookupFormat::Pdf);
+    }
+    let edition = LookupEdition {
+        store: title.source.trim().to_ascii_lowercase(),
+        marketplace: title.marketplace.trim().to_ascii_lowercase(),
+        product_id: title.product_id.clone(),
+        availability: Availability::Owned,
+        formats,
+        metadata: CatalogMetadata {
+            title: title.title.clone(),
+            subtitle: title.subtitle.clone(),
+            authors: title.authors.clone(),
+            narrators: title.narrators.clone(),
+            series: title.series.clone(),
+            series_index: title.series_index.clone(),
+            asin: title.asin.clone(),
+            isbn: title.isbn.clone(),
+            publisher: title.publisher.clone(),
+            length_minutes: title.length_minutes,
+            content_kind: Some(title.content_kind.to_string()),
+            language: listed.language.clone(),
+            published_at: listed.published_at.clone(),
+        },
+    };
+    edition.problem().is_none().then_some(edition)
+}
+
 /// Answers questions a library sent this branch from this branch's own
 /// library.
 ///
@@ -1617,13 +1667,13 @@ pub async fn answer_questions(
     let mut answers = Vec::new();
     let mut missing = Vec::new();
     for question in questions.iter().take(MAX_LOOKUP_WORKS) {
-        let held = listable_books(store, question, list_members_books).await?;
+        let held = listable_titles(store, question, list_members_books).await?;
         let mut editions: Vec<LookupEdition> = Vec::new();
-        for book in &held {
+        for listed in &held {
             if editions.len() >= MAX_LOOKUP_EDITIONS {
                 break;
             }
-            let Some(edition) = book_edition(book) else {
+            let Some(edition) = title_edition(listed) else {
                 continue;
             };
             let same = editions.iter().position(|e| {
@@ -1652,19 +1702,20 @@ pub async fn answer_questions(
     Ok((answers, missing))
 }
 
-/// The books of this library a branch may list for `question`: the books
-/// of the one work the question's identifiers reach (`work_for_question`)
-/// whose holder may be listed ([`Listers::may_list`]), in row order. Empty
-/// when the identifiers reach no work, or several.
+/// The titles of this library a branch may list for `question`: every
+/// account's holding of a store listing of the one work the question's
+/// identifiers reach (`work_for_question`) whose holder may be listed
+/// ([`Listers::may_list`]), in holding order. Empty when the identifiers
+/// reach no work, or several.
 ///
 /// # Errors
 ///
 /// Returns the read error.
-async fn listable_books(
+async fn listable_titles(
     store: &LibraryStore,
     question: &LookupWork,
     list_members_books: bool,
-) -> Result<Vec<books::Model>> {
+) -> Result<Vec<ListedTitle>> {
     let Some(work_id) = work_for_question(store, question).await? else {
         return Ok(Vec::new());
     };
@@ -1672,55 +1723,42 @@ async fn listable_books(
         .await?
         .into_keys()
         .collect();
-    let listings = read_chunked(store, &edition_ids, |part| {
-        store_listings::Entity::find().filter(store_listings::Column::EditionId.is_in(part))
-    })
-    .await?;
-    let keys: BTreeSet<(String, String, String)> = listings
-        .iter()
-        .map(|l| {
-            (
-                l.plugin_key.clone(),
-                l.marketplace.clone(),
-                l.product_id.clone(),
-            )
+    let listings: HashMap<String, store_listings::Model> =
+        read_chunked(store, &edition_ids, |part| {
+            store_listings::Entity::find().filter(store_listings::Column::EditionId.is_in(part))
+        })
+        .await?
+        .into_iter()
+        .map(|l| (l.id.clone(), l))
+        .collect();
+    let listing_ids: Vec<String> = listings.keys().cloned().collect();
+    let held: Vec<ListedTitle> = store
+        .acquire_titles_of_listings(&listing_ids)
+        .await?
+        .into_iter()
+        .map(|title| {
+            let listing = listings.get(&title.listing_id);
+            ListedTitle {
+                language: listing.and_then(|l| l.language.clone()),
+                published_at: listing.and_then(|l| l.published_at.clone()),
+                title,
+            }
         })
         .collect();
-    let products: Vec<String> = keys
-        .iter()
-        .map(|(_, _, p)| p.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let held: Vec<books::Model> = read_chunked(store, &products, |part| {
-        books::Entity::find()
-            .filter(books::Column::ProductId.is_in(part))
-            .order_by_asc(books::Column::Id)
-    })
-    .await?
-    .into_iter()
-    .filter(|b| {
-        keys.contains(&(
-            b.plugin_key.clone(),
-            b.marketplace.to_ascii_lowercase(),
-            b.product_id.clone(),
-        ))
-    })
-    .collect();
     let listers = Listers::load(store, &held).await?;
     Ok(held
         .into_iter()
-        .filter(|book| listers.may_list(book, list_members_books))
+        .filter(|listed| listers.may_list(&listed.title, list_members_books))
         .collect())
 }
 
-/// The book of this library that fulfils an interlibrary request: a book
-/// this branch would list for the request's work
+/// The title of this library that fulfils an interlibrary request: a
+/// title this branch would list for the request's work
 /// ([`answer_questions`]'s rules: the owner's always, members' only with
 /// `list_members_books` on and when they did not opt out) whose store,
-/// marketplace and product id are the request's. A copy already acquired
-/// wins, then the first row. `None` when this branch no longer lists that
-/// edition to the library.
+/// marketplace and product id are the request's. The first such holding
+/// wins. `None` when this branch no longer lists that edition to the
+/// library.
 ///
 /// # Arguments
 ///
@@ -1730,35 +1768,22 @@ async fn listable_books(
 /// # Errors
 ///
 /// Returns the read error.
-pub async fn book_for_request(
+pub async fn title_for_request(
     store: &LibraryStore,
     request: &BranchRequest,
     list_members_books: bool,
-) -> Result<Option<crate::models::BookRecord>> {
-    let held = listable_books(store, &request.work, list_members_books).await?;
-    let matching = held.into_iter().filter(|book| {
-        book_edition(book).is_some_and(|edition| {
-            edition.store == request.store
-                && edition.marketplace == request.marketplace
-                && edition.product_id == request.product_id
+) -> Result<Option<AcquireTitle>> {
+    let held = listable_titles(store, &request.work, list_members_books).await?;
+    Ok(held
+        .into_iter()
+        .find(|listed| {
+            title_edition(listed).is_some_and(|edition| {
+                edition.store == request.store
+                    && edition.marketplace == request.marketplace
+                    && edition.product_id == request.product_id
+            })
         })
-    });
-    let mut best: Option<books::Model> = None;
-    for book in matching {
-        let acquired = |b: &books::Model| {
-            AcquireStatus::parse(&b.acquire_status) == Some(AcquireStatus::Acquired)
-        };
-        if best
-            .as_ref()
-            .is_none_or(|kept| !acquired(kept) && acquired(&book))
-        {
-            best = Some(book);
-        }
-    }
-    match best {
-        Some(book) => store.get_book_by_uuid(&book.uuid).await,
-        None => Ok(None),
-    }
+        .map(|listed| listed.title))
 }
 
 #[cfg(test)]

@@ -94,7 +94,7 @@ fn audible_book(plugin: &str, account_id: &str) -> NewBook {
 async fn hold(store: &LibraryStore, user: Option<i64>, account_id: &str) -> String {
     let plugin = "path:file:///tmp/audible";
     store
-        .upsert_account(plugin, account_id, "us", None, true, "test")
+        .upsert_account(plugin, account_id, "us", None, true, "audible")
         .await
         .unwrap();
     if let Some(user) = user {

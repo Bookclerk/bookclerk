@@ -380,6 +380,40 @@ impl LibraryStore {
         self.acquire_titles_of(holdings).await
     }
 
+    /// The titles accounts hold of the store listings `listing_ids`, as
+    /// acquire reads them, in holding order: every account's copy of those
+    /// listings.
+    ///
+    /// # Arguments
+    ///
+    /// * `listing_ids` - `store_listings.id` values.
+    ///
+    /// # Returns
+    ///
+    /// One title per account holding of a listing; empty when none is held.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn acquire_titles_of_listings(
+        &self,
+        listing_ids: &[String],
+    ) -> Result<Vec<AcquireTitle>> {
+        use super::library_model::find_chunked_paged;
+        let listing_ids = distinct(listing_ids.iter().cloned());
+        // Every account's holding of a listing may be more rows than one
+        // read returns, so the holdings are read in pages.
+        let mut holdings = find_chunked_paged::<holdings::Entity, _>(self, &listing_ids, |part| {
+            super::holdings::find_holdings()
+                .filter(holdings::Column::HolderKind.eq("account"))
+                .filter(holdings::Column::ListingId.is_in(part.to_vec()))
+                .order_by_asc(holdings::Column::Id)
+        })
+        .await?;
+        holdings.sort_by(|a, b| a.id.cmp(&b.id));
+        self.acquire_titles_of(holdings).await
+    }
+
     /// The accounts that hold at least one title, as `(plugin_key,
     /// account_id)`: what an acquire of every title in its scope touches.
     ///

@@ -14,8 +14,8 @@ use bookclerk_library::control_plane::{
     REQUEST_ACCEPTED, REQUEST_NOT_LISTED,
 };
 use bookclerk_library::{
-    BookRecord, EnqueueJobSpec, EnqueueOutcome, JobKind, JobState, JobTrigger, LibraryStore,
-    NewBook, UserRole,
+    AcquireTitle, BookRecord, EnqueueJobSpec, EnqueueOutcome, JobKind, JobState, JobTrigger,
+    LibraryStore, NewBook, UserRole,
 };
 use bookclerk_node_client::{HostClient, HostClientConfig, HostClientHandle};
 use tokio::sync::watch;
@@ -44,16 +44,16 @@ impl JobTransport for NoJobs {
     }
 }
 
-/// Records the books it was asked to download.
+/// Records the titles it was asked to download, as `account/product`.
 #[derive(Clone, Default)]
 struct Recorder(Arc<Mutex<Vec<String>>>);
 
 impl RequestAcquirer for Recorder {
-    async fn acquire(&self, book: &BookRecord) -> anyhow::Result<()> {
+    async fn acquire(&self, title: &AcquireTitle) -> anyhow::Result<()> {
         self.0
             .lock()
             .map_err(|_| anyhow::anyhow!("poisoned"))?
-            .push(book.uuid.clone());
+            .push(format!("{}/{}", title.account_id, title.product_id));
         Ok(())
     }
 }
@@ -211,7 +211,10 @@ async fn a_branch_takes_its_librarys_request_for_a_members_book() {
     assert_eq!(done.state, JobState::Succeeded);
     assert_eq!(done.progress.as_deref(), Some(REQUEST_ACCEPTED));
     // B queued Sam's copy and records it as requested by A only.
-    assert_eq!(*recorder.0.lock().unwrap(), vec![sams.uuid.clone()]);
+    assert_eq!(
+        *recorder.0.lock().unwrap(),
+        vec![format!("sam-acct/{}", sams.product_id)]
+    );
     let requested = books_requested_by_link(&b, &link.owner_cluster_id)
         .await
         .unwrap();
