@@ -388,6 +388,13 @@ describe("opf", () => {
     assert.deepEqual(reread.seriesEntries, []);
   });
 
+  test("keeps a file's CRLF line breaks", () => {
+    const crlf = str(seed("opf/seed_00.opf")).replace(/\n/g, "\r\n");
+    const out = str(renderFile("opf", utf8(crlf), record({ title: "T" }), ["title"]));
+    assert.doesNotMatch(out, /[^\r]\n/);
+    assert.equal(parseFile("opf", utf8(out)).title, "T");
+  });
+
   test("creates a package, or the metadata element it lacks", () => {
     const fresh = renderFile("opf", new Uint8Array(), record({ language: "en" }), ["language"]);
     assert.equal(parseFile("opf", fresh).language, "en");

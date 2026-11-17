@@ -383,17 +383,19 @@ export function renderOpf(existing, record, fields) {
     for (const kid of removed)
         edits.push(removal(source, kid));
     const added = newElements(record, fields, dc, opf);
+    // New lines follow the file's own line breaks.
+    const nl = source.includes("\r\n") ? "\r\n" : "\n";
     const rootIndent = indentOf(source, root) ?? "";
     if (metadata === undefined) {
         const indent = `${rootIndent}  `;
-        const block = `\n${indent}<metadata xmlns:dc="${DC}" xmlns:opf="${OPF}">` +
-            added.map((e) => `\n${indent}  ${e}`).join("") +
-            `\n${indent}</metadata>`;
+        const block = `${nl}${indent}<metadata xmlns:dc="${DC}" xmlns:opf="${OPF}">` +
+            added.map((e) => `${nl}${indent}  ${e}`).join("") +
+            `${nl}${indent}</metadata>`;
         if (root.selfClosing) {
             edits.push({
                 start: root.end - 2,
                 end: root.end,
-                text: `>${block}\n${rootIndent}</${root.name}>`,
+                text: `>${block}${nl}${rootIndent}</${root.name}>`,
             });
         }
         else {
@@ -408,12 +410,12 @@ export function renderOpf(existing, record, fields) {
     const ownIndent = indentOf(source, metadata) ?? rootIndent;
     const firstKid = kids[0];
     const indent = (firstKid && indentOf(source, firstKid)) || `${ownIndent}  `;
-    const lines = added.map((e) => `\n${indent}${e}`).join("");
+    const lines = added.map((e) => `${nl}${indent}${e}`).join("");
     if (metadata.selfClosing) {
         edits.push({
             start: metadata.end - 2,
             end: metadata.end,
-            text: `>${lines}\n${ownIndent}</${metadata.name}>`,
+            text: `>${lines}${nl}${ownIndent}</${metadata.name}>`,
         });
     }
     else {
