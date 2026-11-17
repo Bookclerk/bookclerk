@@ -57,7 +57,7 @@ use super::uploads::{
     UploadDestination, UploadGrant, UploadGrantRequest, UploadSession,
 };
 use crate::entities::{
-    accounts, books, edition_files, editions, holdings, node_upload_sessions, nodes,
+    accounts, edition_acquisitions, edition_files, editions, holdings, node_upload_sessions, nodes,
     plugin_versions, store_listings, users,
 };
 use crate::error::{LibraryError, Result};
@@ -348,8 +348,41 @@ fn batch_problem(cursor: &str, titles: &[CatalogTitle]) -> Option<&'static str> 
     None
 }
 
-/// True when this library already holds `title` for `owned` (its own
-/// store rows of the branch's owner): the branch got it from here.
+/// One store listing's id, read alone.
+#[derive(Debug, FromQueryResult)]
+struct ListingIdRow {
+    /// `store_listings.id`.
+    id: String,
+}
+
+/// One store account's key, read alone.
+#[derive(Debug, FromQueryResult)]
+struct AccountKeyRow {
+    /// The plugin the account belongs to.
+    plugin_key: String,
+    /// The account id on that plugin.
+    account_id: String,
+}
+
+/// `pairs` (plugin key, account id) as one `OR` of exact matches on
+/// `plugin` and `account`.
+fn any_pair<C: ColumnTrait>(pairs: &[(String, String)], plugin: C, account: C) -> Condition {
+    pairs.iter().fold(Condition::any(), |any, (p, a)| {
+        any.add(
+            Condition::all()
+                .add(plugin.eq(p.as_str()))
+                .add(account.eq(a.as_str())),
+        )
+    })
+}
+
+/// True when this library already holds `title` for `owned` (the store
+/// accounts of the branch's owner): one of those accounts, on the store
+/// the title names (the account's alias), holds a listing with the
+/// title's product id. The branch got it from here.
+///
+/// Every read is narrow (ids or a count) and chunked within the database
+/// plugin's bind limit and result page.
 async fn held_here(
     store: &LibraryStore,
     owned: &BTreeSet<(String, String)>,
@@ -358,15 +391,83 @@ async fn held_here(
     if owned.is_empty() {
         return Ok(false);
     }
-    let rows = books::Entity::find()
-        .filter(books::Column::ProductId.eq(&title.product_id))
-        .filter(books::Column::Source.eq(&title.store))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok(rows
-        .iter()
-        .any(|row| owned.contains(&(row.plugin_key.clone(), row.account_id.clone()))))
+    // The product's listings (one per marketplace), a result page at a time.
+    let page = super::trust::result_page(store).max(1);
+    let mut listing_ids: Vec<String> = Vec::new();
+    loop {
+        let mut select = store_listings::Entity::find()
+            .select_only()
+            .column(store_listings::Column::Id)
+            .filter(store_listings::Column::ProductId.eq(&title.product_id))
+            .order_by_asc(store_listings::Column::Id)
+            .limit(page);
+        if let Some(last) = listing_ids.last() {
+            select = select.filter(store_listings::Column::Id.gt(last.as_str()));
+        }
+        let rows = select
+            .into_model::<ListingIdRow>()
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        let full = u64::try_from(rows.len()).unwrap_or(u64::MAX) >= page;
+        listing_ids.extend(rows.into_iter().map(|row| row.id));
+        if !full {
+            break;
+        }
+    }
+    if listing_ids.is_empty() {
+        return Ok(false);
+    }
+    // The owner's accounts on the title's store, a pair chunk at a time.
+    let owned: Vec<(String, String)> = owned.iter().cloned().collect();
+    let pairs_per_read = (super::catalog_lookup::in_chunk(store, 2) / 2).max(1);
+    let mut on_store: Vec<(String, String)> = Vec::new();
+    for part in owned.chunks(pairs_per_read) {
+        on_store.extend(
+            accounts::Entity::find()
+                .select_only()
+                .column(accounts::Column::PluginKey)
+                .column(accounts::Column::AccountId)
+                .filter(accounts::Column::Source.eq(&title.store))
+                .filter(any_pair(
+                    part,
+                    accounts::Column::PluginKey,
+                    accounts::Column::AccountId,
+                ))
+                .into_model::<AccountKeyRow>()
+                .all(store.db())
+                .await
+                .map_err(LibraryError::Orm)?
+                .into_iter()
+                .map(|row| (row.plugin_key, row.account_id)),
+        );
+    }
+    if on_store.is_empty() {
+        return Ok(false);
+    }
+    // Whether any of those accounts holds one of the listings.
+    let listings_per_read = (super::catalog_lookup::in_chunk(store, 4) / 2).max(1);
+    for listings in listing_ids.chunks(listings_per_read) {
+        let pairs_per_read =
+            (super::catalog_lookup::in_chunk(store, listings.len() + 2) / 2).max(1);
+        for pairs in on_store.chunks(pairs_per_read) {
+            let held = find_holdings()
+                .filter(holdings::Column::HolderKind.eq("account"))
+                .filter(holdings::Column::ListingId.is_in(listings.to_vec()))
+                .filter(any_pair(
+                    pairs,
+                    holdings::Column::PluginKey,
+                    holdings::Column::AccountId,
+                ))
+                .count(store.db())
+                .await
+                .map_err(LibraryError::Orm)?;
+            if held > 0 {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// The plugin key this library files `store`'s listings under: the plugin
@@ -1180,8 +1281,9 @@ fn catalog_uploads_of(node_id: &str) -> sea_orm::sea_query::SelectStatement {
 }
 
 /// True when one of `folders`, or a folder above one of them, directly
-/// holds the primary audio of another title in this library: one of its
-/// books (whatever its owner, in any state), or any file key `edition_files`
+/// holds the primary audio of another title in this library: an edition's
+/// acquired audio key (`edition_acquisitions`, whatever holds it, in any
+/// state), or any file key `edition_files`
 /// records there for another edition (one an acquire wrote, or another
 /// branch's delivered or granted title). A catalog upload writes into no
 /// folder another title lives in, nor below one, so no declared name,
@@ -1211,16 +1313,19 @@ async fn folders_of_another_title(
 ) -> Result<bool> {
     let probes: Vec<&str> = folder_probes(folders).into_iter().collect();
     for chunk in probes.chunks(FOLDER_PROBES_PER_READ) {
-        let books_here = chunk.iter().fold(Condition::any(), |any, folder| {
-            any.add(directly_in(books::Column::StorageKey, folder))
+        let acquired_here = chunk.iter().fold(Condition::any(), |any, folder| {
+            any.add(directly_in(
+                edition_acquisitions::Column::StorageKey,
+                folder,
+            ))
         });
-        let books = books::Entity::find()
-            .filter(books::Column::StorageKey.is_not_null())
-            .filter(books_here)
+        let acquired = edition_acquisitions::Entity::find()
+            .filter(edition_acquisitions::Column::StorageKey.is_not_null())
+            .filter(acquired_here)
             .count(store.db())
             .await
             .map_err(LibraryError::Orm)?;
-        if books > 0 {
+        if acquired > 0 {
             return Ok(true);
         }
         // Any file another live title wrote or was granted there holds the
@@ -1244,8 +1349,9 @@ async fn folders_of_another_title(
 }
 
 /// True when a catalog title's files would land on a key another title
-/// already uses in this library: one of this library's own books (its
-/// audio, its PDF, or a file beside its audio with the same stem), or
+/// already uses in this library: an edition's acquired audio or PDF key
+/// (`edition_acquisitions`, or a file beside that audio with the same
+/// stem), or
 /// another edition's recorded file (its audio or any other key, or a file
 /// beside the primary with the same stem). A branch's keys never
 /// overwrite what is already in the outputs.
@@ -1256,17 +1362,20 @@ async fn keys_in_use(
     keys: &[String],
 ) -> Result<bool> {
     let pattern = stem_pattern(primary);
-    let books = books::Entity::find()
+    let acquired = edition_acquisitions::Entity::find()
         .filter(
             Condition::any()
-                .add(books::Column::StorageKey.is_in(keys.iter().cloned()))
-                .add(books::Column::PdfStorageKey.is_in(keys.iter().cloned()))
-                .add(books::Column::StorageKey.like(LikeExpr::new(pattern.clone()).escape('\\'))),
+                .add(edition_acquisitions::Column::StorageKey.is_in(keys.iter().cloned()))
+                .add(edition_acquisitions::Column::PdfStorageKey.is_in(keys.iter().cloned()))
+                .add(
+                    edition_acquisitions::Column::StorageKey
+                        .like(LikeExpr::new(pattern.clone()).escape('\\')),
+                ),
         )
         .count(store.db())
         .await
         .map_err(LibraryError::Orm)?;
-    if books > 0 {
+    if acquired > 0 {
         return Ok(true);
     }
     let files = edition_files::Entity::find()
