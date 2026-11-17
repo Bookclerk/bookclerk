@@ -228,10 +228,12 @@ pub async fn fallback_move<B: StorageBackend + ?Sized>(
     })
 }
 
-/// True when two probes of one key provably describe the same stored object:
-/// equal etags when both have one, else equal size and a modification time
-/// both report and agree on. Probes that carry neither cannot prove it, so
-/// they count as different and the source is kept.
+/// True when two probes of one key describe the same stored object as far as
+/// the probes can tell: equal etags when both have one, else equal size and a
+/// modification time both report and agree on. The size-and-time branch is a
+/// heuristic (a same-size rewrite within the same millisecond passes it);
+/// backends that need a strict move declare `storage.move`. Probes that carry
+/// neither count as different, so the source is kept.
 fn same_object(before: &ObjectProbe, after: &ObjectProbe) -> bool {
     match (&before.etag, &after.etag) {
         (Some(a), Some(b)) => a == b,
