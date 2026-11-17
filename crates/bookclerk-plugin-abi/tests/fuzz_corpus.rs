@@ -1,5 +1,5 @@
 //! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
-//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch`, `event_read` and `socket_request` fuzz corpora in PR CI
+//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch`, `event_read`, `socket_request` and `storage_reply` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -1230,6 +1230,171 @@ fn socket_request_seeds_are_current() {
         ("message_bad_id.bin", capnp_socket_message(&bad_id)),
     ];
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/socket_request");
+    if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+        std::fs::create_dir_all(&dir).expect("corpus dir");
+    }
+    for (name, seed) in seeds {
+        let path = dir.join(name);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
+}
+
+#[path = "../../../fuzz/oracles/storage_reply.rs"]
+mod storage_reply_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/storage_reply.rs` with the shared oracle.
+// Test code: a failed read is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_storage_reply_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("storage_reply") {
+        storage_reply_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no storage_reply seed");
+}
+
+/// Seeds for `storage_reply`: replies each validator accepts and one
+/// breaking each rule. Byte 0 is `0` for a `moveMany` page, `1` for
+/// `deleteMany`, `2` for `headMany`, `3` for `changes` and `4` for a hinted
+/// `list` page. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O or encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn storage_reply_seeds_are_current() {
+    use bookclerk_plugin_abi::{
+        encode_storage_reply_bytes, ChangesPage, KeyOutcome, ListPage, MoveManyPage, ObjectChange,
+        ObjectChangeKind, ObjectInfo, ObjectMetadata, PluginError, StorageReply,
+    };
+
+    let seed = |selector: u8, reply: StorageReply| {
+        let mut out = vec![selector];
+        out.extend(encode_storage_reply_bytes(&reply).expect("encode seed"));
+        out
+    };
+    let page = |keys: &[&str], next: Option<&str>| MoveManyPage {
+        results: keys.iter().map(|k| KeyOutcome::ok(*k)).collect(),
+        next_cursor: next.map(str::to_string),
+        atomic: false,
+        objects_moved: u64::try_from(keys.len()).expect("small"),
+    };
+    let changes = |cursor: &str, more: bool, keys: &[&str]| ChangesPage {
+        changes: keys
+            .iter()
+            .map(|k| ObjectChange {
+                key: (*k).to_string(),
+                kind: ObjectChangeKind::Upserted,
+                info: Some(ObjectInfo {
+                    key: (*k).to_string(),
+                    size: 3,
+                    etag: Some("e1".into()),
+                    modified_at_ms: Some(1_762_855_200_000),
+                    version_id: None,
+                    signature: Some("sig".into()),
+                }),
+            })
+            .collect(),
+        cursor: cursor.to_string(),
+        more,
+        complete: true,
+    };
+    let meta = |key: &str| ObjectMetadata {
+        key: key.to_string(),
+        size: 3,
+        etag: Some("e1".into()),
+        version_id: Some("v1".into()),
+        ..ObjectMetadata::default()
+    };
+    let seeds: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "move_pairs.bin",
+            seed(
+                0,
+                StorageReply::MoveMany(page(&["a/1.m4b", "a/2.m4b"], None)),
+            ),
+        ),
+        (
+            "move_prefix_page.bin",
+            seed(0, StorageReply::MoveMany(page(&["a/1.m4b"], Some("c2")))),
+        ),
+        (
+            "move_prefix_stuck_cursor.bin",
+            seed(0, StorageReply::MoveMany(page(&["a/1.m4b"], Some("c1")))),
+        ),
+        (
+            "move_outside_prefix.bin",
+            seed(0, StorageReply::MoveMany(page(&["b/1.m4b"], None))),
+        ),
+        (
+            "delete_many.bin",
+            seed(
+                1,
+                StorageReply::DeleteMany(vec![
+                    KeyOutcome::ok("a/1.m4b"),
+                    KeyOutcome::failed("a/2.m4b", PluginError::conflict("busy")),
+                ]),
+            ),
+        ),
+        (
+            "delete_many_reordered.bin",
+            seed(
+                1,
+                StorageReply::DeleteMany(vec![
+                    KeyOutcome::ok("a/2.m4b"),
+                    KeyOutcome::ok("a/1.m4b"),
+                ]),
+            ),
+        ),
+        (
+            "head_many.bin",
+            seed(2, StorageReply::HeadMany(vec![Some(meta("a/1.m4b")), None])),
+        ),
+        (
+            "head_many_wrong_key.bin",
+            seed(2, StorageReply::HeadMany(vec![None, Some(meta("a/9.m4b"))])),
+        ),
+        (
+            "changes.bin",
+            seed(3, StorageReply::Changes(changes("c2", true, &["a/1.m4b"]))),
+        ),
+        (
+            "changes_stuck_cursor.bin",
+            seed(3, StorageReply::Changes(changes("c1", true, &[]))),
+        ),
+        (
+            "changes_empty_cursor.bin",
+            seed(3, StorageReply::Changes(changes("", false, &[]))),
+        ),
+        (
+            "list_hinted.bin",
+            seed(
+                4,
+                StorageReply::List(ListPage {
+                    objects: vec![ObjectInfo {
+                        key: "a/1.m4b".into(),
+                        size: 3,
+                        etag: Some("e1".into()),
+                        modified_at_ms: Some(1),
+                        version_id: Some("v1".into()),
+                        signature: Some("sig".into()),
+                    }],
+                    next_cursor: None,
+                    signatures_included: true,
+                    modified_since_applied: true,
+                }),
+            ),
+        ),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/storage_reply");
     if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
         std::fs::create_dir_all(&dir).expect("corpus dir");
     }

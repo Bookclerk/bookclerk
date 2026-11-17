@@ -100,6 +100,9 @@ def _write_object_metadata(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(1, v["contentType"])
     s.set_text(2, v["etag"])
     s.set_data(3, v["sha256"])
+    s.set_u64(1, v["modifiedAtMs"])
+    s.set_text(4, v["versionId"])
+    s.set_text(5, v["signature"])
 
 
 def _read_object_metadata(s: _StructReader, caps: _CapTable) -> Any:
@@ -109,33 +112,46 @@ def _read_object_metadata(s: _StructReader, caps: _CapTable) -> Any:
         "contentType": s.get_text(1),
         "etag": s.get_text(2),
         "sha256": s.get_data(3),
+        "modifiedAtMs": s.get_u64(1),
+        "versionId": s.get_text(4),
+        "signature": s.get_text(5),
     }
 
 
-_object_metadata_codec = _Codec(1, 4, _write_object_metadata, _read_object_metadata)
-"""Wire codec for ``ObjectMetadata`` (1 data words, 4 pointers)."""
+_object_metadata_codec = _Codec(2, 6, _write_object_metadata, _read_object_metadata)
+"""Wire codec for ``ObjectMetadata`` (2 data words, 6 pointers)."""
 
 
 def _write_object_info(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["key"])
     s.set_u64(0, v["size"])
+    s.set_text(1, v["etag"])
+    s.set_u64(1, v["modifiedAtMs"])
+    s.set_text(2, v["versionId"])
+    s.set_text(3, v["signature"])
 
 
 def _read_object_info(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "key": s.get_text(0),
         "size": s.get_u64(0),
+        "etag": s.get_text(1),
+        "modifiedAtMs": s.get_u64(1),
+        "versionId": s.get_text(2),
+        "signature": s.get_text(3),
     }
 
 
-_object_info_codec = _Codec(1, 1, _write_object_info, _read_object_info)
-"""Wire codec for ``ObjectInfo`` (1 data words, 1 pointers)."""
+_object_info_codec = _Codec(2, 4, _write_object_info, _read_object_info)
+"""Wire codec for ``ObjectInfo`` (2 data words, 4 pointers)."""
 
 
 def _write_list_options(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["prefix"])
     s.set_text(1, v["cursor"])
     s.set_u32(0, v["limit"])
+    s.set_bool(32, v["withSignatures"])
+    s.set_u64(1, v["modifiedSinceMs"])
 
 
 def _read_list_options(s: _StructReader, caps: _CapTable) -> Any:
@@ -143,29 +159,35 @@ def _read_list_options(s: _StructReader, caps: _CapTable) -> Any:
         "prefix": s.get_text(0),
         "cursor": s.get_text(1),
         "limit": s.get_u32(0),
+        "withSignatures": s.get_bool(32),
+        "modifiedSinceMs": s.get_u64(1),
     }
 
 
-_list_options_codec = _Codec(1, 2, _write_list_options, _read_list_options)
-"""Wire codec for ``ListOptions`` (1 data words, 2 pointers)."""
+_list_options_codec = _Codec(2, 2, _write_list_options, _read_list_options)
+"""Wire codec for ``ListOptions`` (2 data words, 2 pointers)."""
 
 
 def _write_list_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    items = s.init_struct_list(0, len(v["objects"]), 1, 1)
+    items = s.init_struct_list(0, len(v["objects"]), 2, 4)
     for item, elem in zip(items, v["objects"], strict=True):
         _object_info_codec.write(item, elem, caps)
     s.set_text(1, v["nextCursor"])
+    s.set_bool(0, v["signaturesIncluded"])
+    s.set_bool(1, v["modifiedSinceApplied"])
 
 
 def _read_list_page(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "objects": [_object_info_codec.read(item, caps) for item in s.get_struct_list(0, 1, 1)],
+        "objects": [_object_info_codec.read(item, caps) for item in s.get_struct_list(0, 2, 4)],
         "nextCursor": s.get_text(1),
+        "signaturesIncluded": s.get_bool(0),
+        "modifiedSinceApplied": s.get_bool(1),
     }
 
 
-_list_page_codec = _Codec(0, 2, _write_list_page, _read_list_page)
-"""Wire codec for ``ListPage`` (0 data words, 2 pointers)."""
+_list_page_codec = _Codec(1, 2, _write_list_page, _read_list_page)
+"""Wire codec for ``ListPage`` (1 data words, 2 pointers)."""
 
 
 def _write_byte_range(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -204,6 +226,8 @@ def _write_write_options(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_data(1, v["sha256"])
     s.set_text(2, v["commitToken"])
     s.set_bool(64, v["stageOnly"])
+    s.set_text(3, v["ifMatch"])
+    s.set_bool(65, v["ifNoneMatch"])
 
 
 def _read_write_options(s: _StructReader, caps: _CapTable) -> Any:
@@ -213,11 +237,13 @@ def _read_write_options(s: _StructReader, caps: _CapTable) -> Any:
         "sha256": s.get_data(1),
         "commitToken": s.get_text(2),
         "stageOnly": s.get_bool(64),
+        "ifMatch": s.get_text(3),
+        "ifNoneMatch": s.get_bool(65),
     }
 
 
-_write_options_codec = _Codec(2, 3, _write_write_options, _read_write_options)
-"""Wire codec for ``WriteOptions`` (2 data words, 3 pointers)."""
+_write_options_codec = _Codec(2, 4, _write_write_options, _read_write_options)
+"""Wire codec for ``WriteOptions`` (2 data words, 4 pointers)."""
 
 
 def _write_put_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -225,6 +251,9 @@ def _write_put_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_u64(0, v["bytesWritten"])
     s.set_text(1, v["etag"])
     s.set_data(2, v["sha256"])
+    s.set_u64(1, v["modifiedAtMs"])
+    s.set_text(3, v["versionId"])
+    s.set_text(4, v["signature"])
 
 
 def _read_put_result(s: _StructReader, caps: _CapTable) -> Any:
@@ -233,11 +262,14 @@ def _read_put_result(s: _StructReader, caps: _CapTable) -> Any:
         "bytesWritten": s.get_u64(0),
         "etag": s.get_text(1),
         "sha256": s.get_data(2),
+        "modifiedAtMs": s.get_u64(1),
+        "versionId": s.get_text(3),
+        "signature": s.get_text(4),
     }
 
 
-_put_result_codec = _Codec(1, 3, _write_put_result, _read_put_result)
-"""Wire codec for ``PutResult`` (1 data words, 3 pointers)."""
+_put_result_codec = _Codec(2, 5, _write_put_result, _read_put_result)
+"""Wire codec for ``PutResult`` (2 data words, 5 pointers)."""
 
 
 def _write_copy_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -252,6 +284,227 @@ def _read_copy_result(s: _StructReader, caps: _CapTable) -> Any:
 
 _copy_result_codec = _Codec(1, 0, _write_copy_result, _read_copy_result)
 """Wire codec for ``CopyResult`` (1 data words, 0 pointers)."""
+
+
+def _write_move_options(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_bool(0, v["noOverwrite"])
+    s.set_text(0, v["ifSourceMatch"])
+
+
+def _read_move_options(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "noOverwrite": s.get_bool(0),
+        "ifSourceMatch": s.get_text(0),
+    }
+
+
+_move_options_codec = _Codec(1, 1, _write_move_options, _read_move_options)
+"""Wire codec for ``MoveOptions`` (1 data words, 1 pointers)."""
+
+
+def _write_move_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_bool(0, v["atomic"])
+    s.set_bool(1, v["alreadyMoved"])
+
+
+def _read_move_result(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "atomic": s.get_bool(0),
+        "alreadyMoved": s.get_bool(1),
+    }
+
+
+_move_result_codec = _Codec(1, 0, _write_move_result, _read_move_result)
+"""Wire codec for ``MoveResult`` (1 data words, 0 pointers)."""
+
+
+def _write_key_pair(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["from"])
+    s.set_text(1, v["to"])
+
+
+def _read_key_pair(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "from": s.get_text(0),
+        "to": s.get_text(1),
+    }
+
+
+_key_pair_codec = _Codec(0, 2, _write_key_pair, _read_key_pair)
+"""Wire codec for ``KeyPair`` (0 data words, 2 pointers)."""
+
+
+def _write_move_many_target(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "pairs":
+        s.set_u16(0, 0)
+        items = s.init_struct_list(0, len(v["value"]), 0, 2)
+        for item, elem in zip(items, v["value"], strict=True):
+            _key_pair_codec.write(item, elem, caps)
+    elif kind == "prefix":
+        s.set_u16(0, 1)
+        _key_pair_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown MoveManyTarget union member: {kind}")
+
+
+def _read_move_many_target(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "pairs", "value": [_key_pair_codec.read(item, caps) for item in s.get_struct_list(0, 0, 2)]}
+    elif disc == 1:
+        return {"kind": "prefix", "value": _key_pair_codec.read(s.get_struct(0, 0, 2), caps)}
+    raise ValueError(f"unknown MoveManyTarget union member: {disc}")
+
+
+_move_many_target_codec = _Codec(1, 1, _write_move_many_target, _read_move_many_target)
+"""Wire codec for ``MoveManyTarget`` (1 data words, 1 pointers)."""
+
+
+def _write_move_many_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _move_many_target_codec.write(s.init_struct(0, 1, 1), v["target"], caps)
+    s.set_text(1, v["cursor"])
+    s.set_u32(0, v["limit"])
+    _move_options_codec.write(s.init_struct(2, 1, 1), v["options"], caps)
+
+
+def _read_move_many_request(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "target": _move_many_target_codec.read(s.get_struct(0, 1, 1), caps),
+        "cursor": s.get_text(1),
+        "limit": s.get_u32(0),
+        "options": _move_options_codec.read(s.get_struct(2, 1, 1), caps),
+    }
+
+
+_move_many_request_codec = _Codec(1, 3, _write_move_many_request, _read_move_many_request)
+"""Wire codec for ``MoveManyRequest`` (1 data words, 3 pointers)."""
+
+
+def _write_key_outcome(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["key"])
+    _plugin_error_codec.write(s.init_struct(1, 0, 3), v["error"], caps)
+
+
+def _read_key_outcome(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "key": s.get_text(0),
+        "error": _plugin_error_codec.read(s.get_struct(1, 0, 3), caps),
+    }
+
+
+_key_outcome_codec = _Codec(0, 2, _write_key_outcome, _read_key_outcome)
+"""Wire codec for ``KeyOutcome`` (0 data words, 2 pointers)."""
+
+
+def _write_move_many_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["results"]), 0, 2)
+    for item, elem in zip(items, v["results"], strict=True):
+        _key_outcome_codec.write(item, elem, caps)
+    s.set_text(1, v["nextCursor"])
+    s.set_bool(0, v["atomic"])
+    s.set_u64(1, v["objectsMoved"])
+
+
+def _read_move_many_page(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "results": [_key_outcome_codec.read(item, caps) for item in s.get_struct_list(0, 0, 2)],
+        "nextCursor": s.get_text(1),
+        "atomic": s.get_bool(0),
+        "objectsMoved": s.get_u64(1),
+    }
+
+
+_move_many_page_codec = _Codec(2, 2, _write_move_many_page, _read_move_many_page)
+"""Wire codec for ``MoveManyPage`` (2 data words, 2 pointers)."""
+
+
+def _write_delete_many_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["results"]), 0, 2)
+    for item, elem in zip(items, v["results"], strict=True):
+        _key_outcome_codec.write(item, elem, caps)
+
+
+def _read_delete_many_result(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "results": [_key_outcome_codec.read(item, caps) for item in s.get_struct_list(0, 0, 2)],
+    }
+
+
+_delete_many_result_codec = _Codec(0, 1, _write_delete_many_result, _read_delete_many_result)
+"""Wire codec for ``DeleteManyResult`` (0 data words, 1 pointers)."""
+
+
+def _write_head_many_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["objects"]), 1, 1)
+    for item, elem in zip(items, v["objects"], strict=True):
+        _head_ok_codec.write(item, elem, caps)
+
+
+def _read_head_many_result(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "objects": [_head_ok_codec.read(item, caps) for item in s.get_struct_list(0, 1, 1)],
+    }
+
+
+_head_many_result_codec = _Codec(0, 1, _write_head_many_result, _read_head_many_result)
+"""Wire codec for ``HeadManyResult`` (0 data words, 1 pointers)."""
+
+
+def _write_changes_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["cursor"])
+    s.set_u32(0, v["limit"])
+
+
+def _read_changes_request(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "cursor": s.get_text(0),
+        "limit": s.get_u32(0),
+    }
+
+
+_changes_request_codec = _Codec(1, 1, _write_changes_request, _read_changes_request)
+"""Wire codec for ``ChangesRequest`` (1 data words, 1 pointers)."""
+
+
+def _write_object_change(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["key"])
+    s.set_u16(0, _ord(A.OBJECT_CHANGE_KINDS, v["kind"], "ObjectChangeKind"))
+    _object_info_codec.write(s.init_struct(1, 2, 4), v["info"], caps)
+
+
+def _read_object_change(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "key": s.get_text(0),
+        "kind": _from_ord(A.OBJECT_CHANGE_KINDS, s.get_u16(0), "ObjectChangeKind"),
+        "info": _object_info_codec.read(s.get_struct(1, 2, 4), caps),
+    }
+
+
+_object_change_codec = _Codec(1, 2, _write_object_change, _read_object_change)
+"""Wire codec for ``ObjectChange`` (1 data words, 2 pointers)."""
+
+
+def _write_changes_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["changes"]), 1, 2)
+    for item, elem in zip(items, v["changes"], strict=True):
+        _object_change_codec.write(item, elem, caps)
+    s.set_text(1, v["cursor"])
+    s.set_bool(0, v["more"])
+    s.set_bool(1, v["complete"])
+
+
+def _read_changes_page(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "changes": [_object_change_codec.read(item, caps) for item in s.get_struct_list(0, 1, 2)],
+        "cursor": s.get_text(1),
+        "more": s.get_bool(0),
+        "complete": s.get_bool(1),
+    }
+
+
+_changes_page_codec = _Codec(1, 2, _write_changes_page, _read_changes_page)
+"""Wire codec for ``ChangesPage`` (1 data words, 2 pointers)."""
 
 
 def _write_plugin_describe(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -1029,13 +1282,13 @@ _job_controller_codec = _Codec(0, 5, _write_job_controller, _read_job_controller
 
 def _write_head_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_bool(0, v["found"])
-    _object_metadata_codec.write(s.init_struct(0, 1, 4), v["meta"], caps)
+    _object_metadata_codec.write(s.init_struct(0, 2, 6), v["meta"], caps)
 
 
 def _read_head_ok(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "found": s.get_bool(0),
-        "meta": _object_metadata_codec.read(s.get_struct(0, 1, 4), caps),
+        "meta": _object_metadata_codec.read(s.get_struct(0, 2, 6), caps),
     }
 
 
@@ -1072,7 +1325,7 @@ def _write_list_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _list_page_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _list_page_codec.write(s.init_struct(0, 1, 2), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -1083,7 +1336,7 @@ def _write_list_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_list_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _list_page_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "ok", "value": _list_page_codec.read(s.get_struct(0, 1, 2), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown ListReply union member: {disc}")
@@ -1094,7 +1347,7 @@ _list_reply_codec = _Codec(1, 1, _write_list_reply, _read_list_reply)
 
 
 def _write_get_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _object_metadata_codec.write(s.init_struct(0, 1, 4), v["meta"], caps)
+    _object_metadata_codec.write(s.init_struct(0, 2, 6), v["meta"], caps)
     if v.get("body") is not None:
         if v["body"] is not None:
             s.set_cap(1, caps.export_cap(v["body"]))
@@ -1102,7 +1355,7 @@ def _write_get_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 
 def _read_get_ok(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
-        "meta": _object_metadata_codec.read(s.get_struct(0, 1, 4), caps),
+        "meta": _object_metadata_codec.read(s.get_struct(0, 2, 6), caps),
     }
     body = caps.import_cap(s.get_cap_index(1))
     if not (body is None):
@@ -1143,7 +1396,7 @@ def _write_put_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _put_result_codec.write(s.init_struct(0, 1, 3), v["value"], caps)
+        _put_result_codec.write(s.init_struct(0, 2, 5), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -1154,7 +1407,7 @@ def _write_put_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_put_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _put_result_codec.read(s.get_struct(0, 1, 3), caps)}
+        return {"kind": "ok", "value": _put_result_codec.read(s.get_struct(0, 2, 5), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown PutReply union member: {disc}")
@@ -1187,6 +1440,131 @@ def _read_copy_reply(s: _StructReader, caps: _CapTable) -> Any:
 
 _copy_reply_codec = _Codec(1, 1, _write_copy_reply, _read_copy_reply)
 """Wire codec for ``CopyReply`` (1 data words, 1 pointers)."""
+
+
+def _write_move_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _move_result_codec.write(s.init_struct(0, 1, 0), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown MoveReply union member: {kind}")
+
+
+def _read_move_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _move_result_codec.read(s.get_struct(0, 1, 0), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown MoveReply union member: {disc}")
+
+
+_move_reply_codec = _Codec(1, 1, _write_move_reply, _read_move_reply)
+"""Wire codec for ``MoveReply`` (1 data words, 1 pointers)."""
+
+
+def _write_move_many_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _move_many_page_codec.write(s.init_struct(0, 2, 2), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown MoveManyReply union member: {kind}")
+
+
+def _read_move_many_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _move_many_page_codec.read(s.get_struct(0, 2, 2), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown MoveManyReply union member: {disc}")
+
+
+_move_many_reply_codec = _Codec(1, 1, _write_move_many_reply, _read_move_many_reply)
+"""Wire codec for ``MoveManyReply`` (1 data words, 1 pointers)."""
+
+
+def _write_delete_many_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _delete_many_result_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown DeleteManyReply union member: {kind}")
+
+
+def _read_delete_many_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _delete_many_result_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown DeleteManyReply union member: {disc}")
+
+
+_delete_many_reply_codec = _Codec(1, 1, _write_delete_many_reply, _read_delete_many_reply)
+"""Wire codec for ``DeleteManyReply`` (1 data words, 1 pointers)."""
+
+
+def _write_head_many_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _head_many_result_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown HeadManyReply union member: {kind}")
+
+
+def _read_head_many_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _head_many_result_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown HeadManyReply union member: {disc}")
+
+
+_head_many_reply_codec = _Codec(1, 1, _write_head_many_reply, _read_head_many_reply)
+"""Wire codec for ``HeadManyReply`` (1 data words, 1 pointers)."""
+
+
+def _write_changes_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _changes_page_codec.write(s.init_struct(0, 1, 2), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown ChangesReply union member: {kind}")
+
+
+def _read_changes_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _changes_page_codec.read(s.get_struct(0, 1, 2), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown ChangesReply union member: {disc}")
+
+
+_changes_reply_codec = _Codec(1, 1, _write_changes_reply, _read_changes_reply)
+"""Wire codec for ``ChangesReply`` (1 data words, 1 pointers)."""
 
 
 def _write_empty_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -1255,7 +1633,7 @@ _pull_reply_codec = _Codec(1, 1, _write_pull_reply, _read_pull_reply)
 
 
 def _write_open_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _object_metadata_codec.write(s.init_struct(0, 1, 4), v["meta"], caps)
+    _object_metadata_codec.write(s.init_struct(0, 2, 6), v["meta"], caps)
     if v.get("body") is not None:
         if v["body"] is not None:
             s.set_cap(1, caps.export_cap(v["body"]))
@@ -1263,7 +1641,7 @@ def _write_open_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 
 def _read_open_ok(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
-        "meta": _object_metadata_codec.read(s.get_struct(0, 1, 4), caps),
+        "meta": _object_metadata_codec.read(s.get_struct(0, 2, 6), caps),
     }
     body = caps.import_cap(s.get_cap_index(1))
     if not (body is None):
@@ -5592,12 +5970,12 @@ _destination_head_results_codec = _Codec(0, 1, _write_destination_head_results, 
 
 
 def _write_destination_list_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _list_options_codec.write(s.init_struct(0, 1, 2), v["options"], caps)
+    _list_options_codec.write(s.init_struct(0, 2, 2), v["options"], caps)
 
 
 def _read_destination_list_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "options": _list_options_codec.read(s.get_struct(0, 1, 2), caps),
+        "options": _list_options_codec.read(s.get_struct(0, 2, 2), caps),
     }
 
 
@@ -5654,13 +6032,13 @@ def _write_destination_put_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> N
     if v.get("body") is not None:
         if v["body"] is not None:
             s.set_cap(1, caps.export_cap(v["body"]))
-    _write_options_codec.write(s.init_struct(2, 2, 3), v["options"], caps)
+    _write_options_codec.write(s.init_struct(2, 2, 4), v["options"], caps)
 
 
 def _read_destination_put_params(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
         "key": s.get_text(0),
-        "options": _write_options_codec.read(s.get_struct(2, 2, 3), caps),
+        "options": _write_options_codec.read(s.get_struct(2, 2, 4), caps),
     }
     body = caps.import_cap(s.get_cap_index(1))
     if not (body is None):
@@ -5802,6 +6180,150 @@ def _read_destination_abort_stage_results(s: _StructReader, caps: _CapTable) -> 
 
 _destination_abort_stage_results_codec = _Codec(0, 1, _write_destination_abort_stage_results, _read_destination_abort_stage_results)
 """Wire codec for ``DestinationAbortStageResults`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_move_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["from"])
+    s.set_text(1, v["to"])
+    _move_options_codec.write(s.init_struct(2, 1, 1), v["options"], caps)
+
+
+def _read_destination_move_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "from": s.get_text(0),
+        "to": s.get_text(1),
+        "options": _move_options_codec.read(s.get_struct(2, 1, 1), caps),
+    }
+
+
+_destination_move_params_codec = _Codec(0, 3, _write_destination_move_params, _read_destination_move_params)
+"""Wire codec for ``DestinationMoveParams`` (0 data words, 3 pointers)."""
+
+
+def _write_destination_move_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _move_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_destination_move_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _move_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_destination_move_results_codec = _Codec(0, 1, _write_destination_move_results, _read_destination_move_results)
+"""Wire codec for ``DestinationMoveResults`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_move_many_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _move_many_request_codec.write(s.init_struct(0, 1, 3), v["request"], caps)
+
+
+def _read_destination_move_many_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "request": _move_many_request_codec.read(s.get_struct(0, 1, 3), caps),
+    }
+
+
+_destination_move_many_params_codec = _Codec(0, 1, _write_destination_move_many_params, _read_destination_move_many_params)
+"""Wire codec for ``DestinationMoveManyParams`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_move_many_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _move_many_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_destination_move_many_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _move_many_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_destination_move_many_results_codec = _Codec(0, 1, _write_destination_move_many_results, _read_destination_move_many_results)
+"""Wire codec for ``DestinationMoveManyResults`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_delete_many_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text_list(0, v["keys"])
+
+
+def _read_destination_delete_many_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "keys": s.get_text_list(0),
+    }
+
+
+_destination_delete_many_params_codec = _Codec(0, 1, _write_destination_delete_many_params, _read_destination_delete_many_params)
+"""Wire codec for ``DestinationDeleteManyParams`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_delete_many_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _delete_many_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_destination_delete_many_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _delete_many_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_destination_delete_many_results_codec = _Codec(0, 1, _write_destination_delete_many_results, _read_destination_delete_many_results)
+"""Wire codec for ``DestinationDeleteManyResults`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_head_many_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text_list(0, v["keys"])
+
+
+def _read_destination_head_many_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "keys": s.get_text_list(0),
+    }
+
+
+_destination_head_many_params_codec = _Codec(0, 1, _write_destination_head_many_params, _read_destination_head_many_params)
+"""Wire codec for ``DestinationHeadManyParams`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_head_many_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _head_many_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_destination_head_many_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _head_many_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_destination_head_many_results_codec = _Codec(0, 1, _write_destination_head_many_results, _read_destination_head_many_results)
+"""Wire codec for ``DestinationHeadManyResults`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_changes_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _changes_request_codec.write(s.init_struct(0, 1, 1), v["request"], caps)
+
+
+def _read_destination_changes_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "request": _changes_request_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_destination_changes_params_codec = _Codec(0, 1, _write_destination_changes_params, _read_destination_changes_params)
+"""Wire codec for ``DestinationChangesParams`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_changes_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _changes_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_destination_changes_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _changes_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_destination_changes_results_codec = _Codec(0, 1, _write_destination_changes_results, _read_destination_changes_results)
+"""Wire codec for ``DestinationChangesResults`` (0 data words, 1 pointers)."""
 
 
 def _write_source_open_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

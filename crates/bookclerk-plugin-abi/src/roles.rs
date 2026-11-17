@@ -87,6 +87,40 @@ pub trait Destination {
     async fn abort_stage(&self, _key: &str, _commit_token: &str) -> Result<()> {
         Err(PluginError::unsupported("abortStage"))
     }
+
+    /// Move one object (`storage.move`). Repeating a finished move succeeds
+    /// with [`crate::MoveResult::already_moved`].
+    async fn move_object(
+        &self,
+        _from: &str,
+        _to: &str,
+        _options: crate::MoveOptions,
+    ) -> Result<crate::MoveResult> {
+        Err(PluginError::unsupported("move"))
+    }
+
+    /// Move a set of objects or a whole prefix (`storage.moveMany`), one
+    /// page per call. Safe to repeat.
+    async fn move_many(&self, _request: crate::MoveManyRequest) -> Result<crate::MoveManyPage> {
+        Err(PluginError::unsupported("moveMany"))
+    }
+
+    /// Remove up to [`crate::MAX_BATCH_KEYS`] objects (`storage.deleteMany`),
+    /// one outcome per key in order. A missing key succeeds.
+    async fn delete_many(&self, _keys: Vec<String>) -> Result<Vec<crate::KeyOutcome>> {
+        Err(PluginError::unsupported("deleteMany"))
+    }
+
+    /// Probe up to [`crate::MAX_BATCH_KEYS`] objects (`storage.headMany`),
+    /// one entry per key in order; `None` when the key is missing.
+    async fn head_many(&self, _keys: Vec<String>) -> Result<Vec<Option<ObjectMetadata>>> {
+        Err(PluginError::unsupported("headMany"))
+    }
+
+    /// Keys changed since a cursor (`storage.changes`).
+    async fn changes(&self, _request: crate::ChangesRequest) -> Result<crate::ChangesPage> {
+        Err(PluginError::unsupported("changes"))
+    }
 }
 
 /// Source capability that can open a named object as a stream.

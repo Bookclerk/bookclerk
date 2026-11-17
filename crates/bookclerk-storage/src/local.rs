@@ -351,6 +351,7 @@ impl StorageBackend for LocalFsBackend {
                 content_length: Some(file_meta.len()),
                 ..Default::default()
             },
+            ..ObjectProbe::default()
         };
         // Cheap sidecar read — never opens the audio body.
         let meta_key = bookclerk_meta_sidecar_key(key);

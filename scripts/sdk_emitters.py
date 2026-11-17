@@ -788,6 +788,23 @@ def emit_py_abi(capnp_text: str) -> str:
                 lines.append("")
                 exported.extend(member_names)
                 exported.append(decl.name)
+            elif any(keyword.iskeyword(f.name) for f in decl.fields):
+                # A Python keyword (``from``) cannot be a class-body
+                # annotation, so such a struct uses the functional form.
+                lines.append(f'{decl.name} = TypedDict(')
+                lines.append(f'    "{decl.name}",')
+                lines.append("    {")
+                for f in decl.fields:
+                    fty = py_type(f.type, res)
+                    if field_is_optional(f):
+                        fty = f"NotRequired[{fty}]"
+                    lines.append(f'        "{f.name}": {fty},')
+                lines.append("    },")
+                lines.append(")")
+                lines.extend(_py_docstring(decl.doc, "", [(f.name, f.doc) for f in decl.fields]))
+                lines.append("")
+                lines.append("")
+                exported.append(decl.name)
             else:
                 lines.append(f"class {decl.name}(TypedDict):")
                 attr_docs = [

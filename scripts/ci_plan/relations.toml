@@ -85,6 +85,8 @@ paths = [
     "fuzz/oracles/event_read.rs",
     "fuzz/corpus/socket_request/**",
     "fuzz/oracles/socket_request.rs",
+    "fuzz/corpus/storage_reply/**",
+    "fuzz/oracles/storage_reply.rs",
 ]
 
 # The guest SQL authorizer oracle is shared by the fuzz target and the

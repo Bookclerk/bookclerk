@@ -18,6 +18,7 @@ from bookclerk_plugin_sdk.workerd import (
     MetadataEntrypoint,
     PluginError,
     ScheduledController,
+    StorageEntrypoint,
     StorefrontEntrypoint,
     cli_args,
     decode_extensible_config,
@@ -287,6 +288,31 @@ class NamedEntrypointTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PluginError) as ctx:
             await Cli().bookclerkInvoke({}, "not_a_method")
         self.assertEqual(ctx.exception.code, "unsupported")
+
+
+class StorageOperationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_intent_operations_dispatch_and_default_to_unsupported(self) -> None:
+        """A storage guest answers only the intent operations it overrides."""
+
+        class Storage(StorageEntrypoint):
+            async def deleteMany(self, keys):
+                return [{"key": k} for k in keys]
+
+        storage = Storage()
+        self.assertEqual(
+            await storage.bookclerkInvoke({}, "deleteMany", ["a", "b"]),
+            [{"key": "a"}, {"key": "b"}],
+        )
+        calls = {
+            "move": ("a", "b", {}),
+            "moveMany": ({"target": {"kind": "pairs", "value": []}},),
+            "headMany": (["a"],),
+            "changes": ({"cursor": ""},),
+        }
+        for method, args in calls.items():
+            with self.assertRaises(PluginError) as ctx:
+                await storage.bookclerkInvoke({}, method, *args)
+            self.assertEqual(ctx.exception.code, "unsupported", method)
 
 
 class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):

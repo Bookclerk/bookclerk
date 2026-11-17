@@ -596,13 +596,30 @@ impl JobOutcome {
 }
 
 /// Object listing entry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The signature fields are filled only when the listing was asked for them
+/// ([`ListOptions::with_signatures`]) and the backend has them
+/// ([`ListPage::signatures_included`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectInfo {
     /// Object key.
     pub key: String,
     /// Size in bytes.
     pub size: u64,
+    /// Opaque backend entity tag, when the backend has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
+    /// Last modification time in UTC unix milliseconds, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at_ms: Option<u64>,
+    /// Backend object version id (versioned buckets), when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_id: Option<String>,
+    /// Opaque change signature: an unchanged value means the object did not
+    /// change. Backend-defined; compare only values from the same backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 /// Metadata without a body.
@@ -626,6 +643,15 @@ pub struct ObjectMetadata {
         with = "crate::json_bytes::opt_b64"
     )]
     pub sha256: Option<Vec<u8>>,
+    /// Last modification time in UTC unix milliseconds, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at_ms: Option<u64>,
+    /// Backend object version id (versioned buckets), when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_id: Option<String>,
+    /// Opaque change signature, as [`ObjectInfo::signature`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 /// Paginated list request.
@@ -641,6 +667,15 @@ pub struct ListOptions {
     /// Requested page size (0 = default).
     #[serde(default)]
     pub limit: u32,
+    /// Hint: fill the signature fields of each [`ObjectInfo`]. The reply's
+    /// [`ListPage::signatures_included`] says whether the guest did.
+    #[serde(default)]
+    pub with_signatures: bool,
+    /// Hint: only objects modified at or after this UTC unix millisecond.
+    /// The reply's [`ListPage::modified_since_applied`] says whether the
+    /// guest filtered; when it did not, the page is unfiltered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_since_ms: Option<u64>,
 }
 
 /// One page of keys.
@@ -656,6 +691,14 @@ pub struct ListPage {
     /// Continuation token; `None` when this is the last page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    /// True when every entry carries the signature fields the backend has
+    /// ([`ListOptions::with_signatures`] honoured).
+    #[serde(default)]
+    pub signatures_included: bool,
+    /// True when the guest left out objects modified before
+    /// [`ListOptions::modified_since_ms`]; false means the page is unfiltered.
+    #[serde(default)]
+    pub modified_since_applied: bool,
 }
 
 /// Write options for `Destination.put`.
@@ -681,6 +724,16 @@ pub struct WriteOptions {
     /// When true, `put` stages remotely and does not publish until `commit`.
     #[serde(default)]
     pub stage_only: bool,
+    /// Conditional write: publish only while the stored object's etag equals
+    /// this value, else fail with `conflict`. Sent only to a guest that
+    /// declares `storage.conditionalWrite`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_match: Option<String>,
+    /// Conditional write: publish only when no object exists at the key,
+    /// else fail with `conflict`. Sent only to a guest that declares
+    /// `storage.conditionalWrite`.
+    #[serde(default)]
+    pub if_none_match: bool,
 }
 
 /// Result of a streamed put.
@@ -701,6 +754,17 @@ pub struct PutResult {
         with = "crate::json_bytes::opt_b64"
     )]
     pub sha256: Option<Vec<u8>>,
+    /// Modification time of the stored object in UTC unix milliseconds,
+    /// when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at_ms: Option<u64>,
+    /// Version id of the stored object, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_id: Option<String>,
+    /// Change signature of the stored object, so the host can recognise its
+    /// own write in a later listing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 /// Result of a server-side copy.

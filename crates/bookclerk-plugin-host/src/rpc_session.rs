@@ -25,8 +25,7 @@ use bookclerk_plugin_sdk::{
     FEATURE_STORAGE_COPY, FEATURE_STREAMS, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 use bookclerk_storage::{
-    ByteRange, ListPage, ObjectInfo, ObjectMeta, ObjectProbe, PutStreamResult, StorageBackend,
-    StorageError,
+    ByteRange, ListPage, ObjectMeta, ObjectProbe, PutStreamResult, StorageBackend, StorageError,
 };
 use bytes::Bytes;
 use serde_json::Value;
@@ -40,6 +39,7 @@ use crate::event_publisher::{
 use crate::kv_binding::KvNamespaces;
 use crate::queue_producer::QueueOutbox;
 use crate::spawn_plan::{GuestRuntimeKind, SpawnPlan, SpawnTransport};
+use crate::storage_intent::{StorageOp, StorageOpReply};
 use crate::PluginManifest;
 use crate::{PluginError, Result};
 
@@ -153,6 +153,13 @@ enum Work {
         key: String,
         /// Reply channel.
         reply: oneshot::Sender<Result<()>>,
+    },
+    /// An intent storage operation (`storage.*` features).
+    StorageOp {
+        /// The operation.
+        op: crate::storage_intent::StorageOp,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<crate::storage_intent::StorageOpReply>>,
     },
     /// `JobRunner.job` stream-copy vertical slice (one `open` per job).
     StreamCopy {
@@ -1055,6 +1062,27 @@ impl PluginSession {
     #[must_use]
     pub fn supports_server_copy(&self) -> bool {
         self.features.iter().any(|f| f == FEATURE_STORAGE_COPY)
+    }
+
+    /// The optional storage operations the guest accepted (`storage.*`).
+    #[must_use]
+    pub fn storage_capabilities(&self) -> bookclerk_storage::StorageCapabilities {
+        crate::storage_intent::capabilities_from_features(|name| {
+            self.features.iter().any(|f| f == name)
+        })
+    }
+
+    /// Runs one intent storage operation on the guest.
+    ///
+    /// # Errors
+    ///
+    /// Returns the guest's typed error, a reply validation error, or a
+    /// transport error.
+    pub(crate) async fn storage_op(
+        &self,
+        op: crate::storage_intent::StorageOp,
+    ) -> Result<crate::storage_intent::StorageOpReply> {
+        self.call(|reply| Work::StorageOp { op, reply }).await
     }
 
     /// Provenance-qualified PluginKey (canonical text).
@@ -2301,11 +2329,8 @@ fn negotiate_describe(
     )?;
     crate::validate_described_config_options(manifest, &desc.config_options)?;
     crate::validate_described_media(manifest, desc)?;
-    let features = negotiate_rpc_features(
-        &[FEATURE_SCALAR_LIMITS, FEATURE_STREAMS, FEATURE_STORAGE_COPY],
-        &desc.rpc_features,
-    )
-    .map_err(map_abi)?;
+    let features =
+        negotiate_rpc_features(&host_offered_features(), &desc.rpc_features).map_err(map_abi)?;
     if desc.has_entrypoint(crate::Entrypoint::Storage)
         && !features.iter().any(|f| f == FEATURE_STREAMS)
     {
@@ -3242,6 +3267,23 @@ fn vat_thread(
                             .await;
                             let _ = reply.send(out);
                         }
+                        Work::StorageOp { op, reply } => {
+                            let out = with_session(
+                                &session_cancel,
+                                &mut child,
+                                &mut guest,
+                                async {
+                                    match storage(&client, &account_id, &mut primary).await {
+                                        Ok(d) => crate::storage_intent::run_storage_op(d, op)
+                                            .await
+                                            .map_err(map_abi),
+                                        Err(err) => Err(err),
+                                    }
+                                },
+                            )
+                            .await;
+                            let _ = reply.send(out);
+                        }
                         Work::StreamCopy {
                             lease,
                             spec,
@@ -4079,6 +4121,14 @@ fn vat_thread(
     });
 }
 
+/// Features the host offers every guest: the scalar caps, streams, and each
+/// optional storage operation.
+fn host_offered_features() -> Vec<&'static str> {
+    let mut offered = vec![FEATURE_SCALAR_LIMITS, FEATURE_STREAMS, FEATURE_STORAGE_COPY];
+    offered.extend_from_slice(bookclerk_plugin_sdk::STORAGE_OPERATION_FEATURES);
+    offered
+}
+
 /// `storage` entrypoint of the primary open, failing closed when absent.
 async fn storage<'a>(
     client: &PluginClient,
@@ -4343,6 +4393,51 @@ impl PluginStorage {
         Self { session }
     }
 
+    /// Streamed write with optional `ifMatch` / `ifNoneMatch` conditions,
+    /// which are sent only to a guest that declared
+    /// `storage.conditionalWrite`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Conflict`] when the guest refused the
+    /// condition, and transport or guest errors otherwise.
+    async fn put_stream_with(
+        &self,
+        key: &str,
+        body: Pin<Box<dyn AsyncRead + Send>>,
+        meta: ObjectMeta,
+        if_match: Option<String>,
+        if_none_match: bool,
+    ) -> bookclerk_storage::Result<PutStreamResult> {
+        let sha256 = match meta.sha256_hex.as_deref() {
+            Some(hex) => Some(bookclerk_storage::parse_sha256_hex(hex)?.to_vec()),
+            None => None,
+        };
+        let put = self
+            .session
+            .call(|reply| Work::PutStream {
+                key: key.into(),
+                body,
+                options: WriteOptions {
+                    content_type: meta.content_type,
+                    content_length: meta.content_length,
+                    sha256,
+                    commit_token: meta.commit_token,
+                    stage_only: false,
+                    if_match,
+                    if_none_match,
+                },
+                reply,
+            })
+            .await
+            .map_err(Self::map_err)?;
+        Ok(PutStreamResult {
+            bytes_written: put.bytes_written,
+            etag: put.etag,
+            sha256_hex: bookclerk_storage::sha256_field_from_raw(put.sha256.as_deref())?,
+        })
+    }
+
     fn map_err(err: PluginError) -> StorageError {
         match err {
             PluginError::Abi { code, message } if code == "not_found" => {
@@ -4353,6 +4448,9 @@ impl PluginStorage {
             }
             PluginError::Abi { code, message } if code == "invalid_cursor" => {
                 StorageError::InvalidCursor(message)
+            }
+            PluginError::Abi { code, message } if code == "conflict" => {
+                StorageError::Conflict(message)
             }
             PluginError::Abi { message, .. } if message.starts_with("integrity:") => {
                 StorageError::Integrity(message)
@@ -4462,6 +4560,7 @@ impl StorageBackend for PluginStorage {
                     prefix: prefix.into(),
                     cursor: cursor.map(str::to_string),
                     limit,
+                    ..Default::default()
                 },
                 reply,
             })
@@ -4471,10 +4570,7 @@ impl StorageBackend for PluginStorage {
             objects: page
                 .objects
                 .into_iter()
-                .map(|o| ObjectInfo {
-                    key: o.key,
-                    size: o.size,
-                })
+                .map(crate::storage_intent::object_info)
                 .collect(),
             next_cursor: page.next_cursor,
         })
@@ -4510,31 +4606,202 @@ impl StorageBackend for PluginStorage {
         body: Pin<Box<dyn AsyncRead + Send>>,
         meta: ObjectMeta,
     ) -> bookclerk_storage::Result<PutStreamResult> {
-        let sha256 = match meta.sha256_hex.as_deref() {
-            Some(hex) => Some(bookclerk_storage::parse_sha256_hex(hex)?.to_vec()),
-            None => None,
+        self.put_stream_with(key, body, meta, None, false).await
+    }
+
+    fn capabilities(&self) -> bookclerk_storage::StorageCapabilities {
+        self.session.storage_capabilities()
+    }
+
+    async fn move_object(
+        &self,
+        from: &str,
+        to: &str,
+        options: &bookclerk_storage::MoveOptions,
+    ) -> bookclerk_storage::Result<bookclerk_storage::MoveResult> {
+        if !self.capabilities().move_object {
+            return bookclerk_storage::intent::fallback_move(self, from, to, options).await;
+        }
+        let op = StorageOp::Move {
+            from: from.into(),
+            to: to.into(),
+            options: options.clone(),
+        };
+        match self.session.storage_op(op).await.map_err(Self::map_err)? {
+            StorageOpReply::Move(moved) => Ok(moved),
+            other => Err(unexpected_reply("move", &other)),
+        }
+    }
+
+    async fn move_many(
+        &self,
+        pairs: &[(String, String)],
+        options: &bookclerk_storage::MoveOptions,
+    ) -> bookclerk_storage::Result<Vec<bookclerk_storage::KeyResult>> {
+        if !self.capabilities().move_many {
+            return Ok(bookclerk_storage::intent::fallback_move_many(self, pairs, options).await);
+        }
+        let mut out = Vec::with_capacity(pairs.len());
+        for batch in crate::storage_intent::batches(pairs) {
+            let op = StorageOp::MoveMany(crate::storage_intent::pairs_request(batch, options));
+            match self.session.storage_op(op).await.map_err(Self::map_err)? {
+                StorageOpReply::MoveMany(page) => {
+                    out.extend(crate::storage_intent::key_results(page.results));
+                }
+                other => return Err(unexpected_reply("moveMany", &other)),
+            }
+        }
+        Ok(out)
+    }
+
+    async fn move_prefix(
+        &self,
+        from_prefix: &str,
+        to_prefix: &str,
+        cursor: Option<&str>,
+        limit: u32,
+        options: &bookclerk_storage::MoveOptions,
+    ) -> bookclerk_storage::Result<bookclerk_storage::MovePrefixPage> {
+        bookclerk_storage::intent::require_disjoint_prefixes(from_prefix, to_prefix)?;
+        if !self.capabilities().move_many {
+            return bookclerk_storage::intent::fallback_move_prefix(
+                self,
+                from_prefix,
+                to_prefix,
+                cursor,
+                limit,
+                options,
+            )
+            .await;
+        }
+        let op = StorageOp::MoveMany(crate::storage_intent::prefix_request(
+            from_prefix,
+            to_prefix,
+            cursor,
+            limit,
+            options,
+        ));
+        match self.session.storage_op(op).await.map_err(Self::map_err)? {
+            StorageOpReply::MoveMany(page) => Ok(crate::storage_intent::prefix_page(page)),
+            other => Err(unexpected_reply("moveMany", &other)),
+        }
+    }
+
+    async fn delete_many(
+        &self,
+        keys: &[String],
+    ) -> bookclerk_storage::Result<Vec<bookclerk_storage::KeyResult>> {
+        if !self.capabilities().delete_many {
+            return Ok(bookclerk_storage::intent::fallback_delete_many(self, keys).await);
+        }
+        let mut out = Vec::with_capacity(keys.len());
+        for batch in crate::storage_intent::batches(keys) {
+            let op = StorageOp::DeleteMany(batch.to_vec());
+            match self.session.storage_op(op).await.map_err(Self::map_err)? {
+                StorageOpReply::DeleteMany(outcomes) => {
+                    out.extend(crate::storage_intent::key_results(outcomes));
+                }
+                other => return Err(unexpected_reply("deleteMany", &other)),
+            }
+        }
+        Ok(out)
+    }
+
+    async fn head_many(
+        &self,
+        keys: &[String],
+    ) -> bookclerk_storage::Result<Vec<Option<ObjectProbe>>> {
+        if !self.capabilities().head_many {
+            return bookclerk_storage::intent::fallback_head_many(self, keys).await;
+        }
+        let mut out = Vec::with_capacity(keys.len());
+        for batch in crate::storage_intent::batches(keys) {
+            let op = StorageOp::HeadMany(batch.to_vec());
+            match self.session.storage_op(op).await.map_err(Self::map_err)? {
+                StorageOpReply::HeadMany(objects) => {
+                    for meta in objects {
+                        out.push(meta.map(meta_to_probe).transpose()?);
+                    }
+                }
+                other => return Err(unexpected_reply("headMany", &other)),
+            }
+        }
+        Ok(out)
+    }
+
+    async fn put_stream_conditional(
+        &self,
+        key: &str,
+        body: Pin<Box<dyn AsyncRead + Send>>,
+        meta: ObjectMeta,
+        condition: &bookclerk_storage::WriteCondition,
+    ) -> bookclerk_storage::Result<bookclerk_storage::ConditionalPutResult> {
+        if !self.capabilities().conditional_write {
+            return bookclerk_storage::intent::fallback_put_conditional(
+                self, key, body, meta, condition,
+            )
+            .await;
+        }
+        let (if_match, if_none_match) = match condition {
+            bookclerk_storage::WriteCondition::IfMatch(tag) => (Some(tag.clone()), false),
+            bookclerk_storage::WriteCondition::IfNoneMatch => (None, true),
         };
         let put = self
+            .put_stream_with(key, body, meta, if_match, if_none_match)
+            .await?;
+        Ok(bookclerk_storage::ConditionalPutResult { put, atomic: true })
+    }
+
+    async fn list_hinted(
+        &self,
+        request: &bookclerk_storage::ListRequest,
+    ) -> bookclerk_storage::Result<bookclerk_storage::HintedListPage> {
+        let page = self
             .session
-            .call(|reply| Work::PutStream {
-                key: key.into(),
-                body,
-                options: WriteOptions {
-                    content_type: meta.content_type,
-                    content_length: meta.content_length,
-                    sha256,
-                    commit_token: meta.commit_token,
-                    stage_only: false,
+            .call(|reply| Work::List {
+                options: ListOptions {
+                    prefix: request.prefix.clone(),
+                    cursor: request.cursor.clone(),
+                    limit: request.limit,
+                    with_signatures: request.with_signatures,
+                    modified_since_ms: request.modified_since_ms,
                 },
                 reply,
             })
             .await
             .map_err(Self::map_err)?;
-        Ok(PutStreamResult {
-            bytes_written: put.bytes_written,
-            etag: put.etag,
-            sha256_hex: bookclerk_storage::sha256_field_from_raw(put.sha256.as_deref())?,
+        Ok(bookclerk_storage::HintedListPage {
+            signatures_included: page.signatures_included,
+            modified_since_applied: page.modified_since_applied,
+            page: ListPage {
+                objects: page
+                    .objects
+                    .into_iter()
+                    .map(crate::storage_intent::object_info)
+                    .collect(),
+                next_cursor: page.next_cursor,
+            },
         })
+    }
+
+    async fn changes(
+        &self,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> bookclerk_storage::Result<Option<bookclerk_storage::ChangeFeedPage>> {
+        if !self.capabilities().changes {
+            return Ok(None);
+        }
+        let op = StorageOp::Changes(bookclerk_plugin_sdk::ChangesRequest {
+            cursor: cursor.map(str::to_string),
+            limit,
+        });
+        match self.session.storage_op(op).await.map_err(Self::map_err)? {
+            StorageOpReply::Changes(page) => {
+                Ok(Some(crate::storage_intent::change_feed_page(page)))
+            }
+            other => Err(unexpected_reply("changes", &other)),
+        }
     }
 
     async fn head(&self, key: &str) -> bookclerk_storage::Result<Option<ObjectProbe>> {
@@ -4552,6 +4819,12 @@ impl StorageBackend for PluginStorage {
     fn supports_server_copy(&self) -> bool {
         self.session.supports_server_copy()
     }
+}
+
+/// The error for a guest reply of the wrong kind (a vat bug, not a guest
+/// choice: the vat answers each operation with its own reply).
+fn unexpected_reply(op: &str, _reply: &StorageOpReply) -> StorageError {
+    StorageError::Other(anyhow!("storage `{op}` got a reply for another operation"))
 }
 
 fn reject_opened_above_cap(opened: u64, limit: u64) -> bookclerk_storage::Result<()> {
@@ -4579,6 +4852,9 @@ fn meta_to_probe(meta: ObjectMetadata) -> bookclerk_storage::Result<ObjectProbe>
         size: meta.size,
         content_type: meta.content_type.clone(),
         etag: meta.etag.clone(),
+        modified_at_ms: meta.modified_at_ms,
+        version_id: meta.version_id.clone(),
+        signature: meta.signature.clone(),
         meta: ObjectMeta {
             content_type: meta.content_type,
             content_length: Some(meta.size),
@@ -5024,6 +5300,7 @@ mode = "deny"
                 bytes_written,
                 etag: None,
                 sha256: None,
+                ..Default::default()
             })
         }
 
@@ -5069,6 +5346,7 @@ mode = "deny"
                 bytes_written,
                 etag: None,
                 sha256: None,
+                ..Default::default()
             })
         }
 

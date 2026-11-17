@@ -87,8 +87,8 @@ use crate::roles::{
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, HealthOk, JobCheckpoint, JobInvocation, JobOutcome,
-    ListOptions, ListPage, ObjectInfo, ObjectMetadata, OidcClientTemplate, PluginDescribe,
-    PutResult, WriteOptions, MAX_CHECKPOINT_BYTES,
+    ListOptions, ListPage, ObjectMetadata, OidcClientTemplate, PluginDescribe, PutResult,
+    WriteOptions, MAX_CHECKPOINT_BYTES,
 };
 use crate::{
     capnp_u32_len, require_plugin_migration_registration, AuthenticateUserParams,
@@ -187,7 +187,49 @@ fn read_write_options(o: write_options::Reader<'_>) -> WriteOptions {
             }
         },
         stage_only: o.get_stage_only(),
+        if_match: o.get_if_match().ok().map(text_of).and_then(non_empty),
+        if_none_match: o.get_if_none_match(),
     }
+}
+
+/// `Some(text)` unless `text` is empty (the wire's "absent").
+pub(super) fn non_empty(text: String) -> Option<String> {
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// `Some(n)` unless `n` is zero (the wire's "absent").
+pub(super) fn non_zero(n: u64) -> Option<u64> {
+    if n == 0 {
+        None
+    } else {
+        Some(n)
+    }
+}
+
+/// Decodes a [`PutResult`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns [`PluginError`] when a text or data field cannot be read.
+fn read_put_result(r: crate::plugin_capnp::put_result::Reader<'_>) -> Result<PutResult> {
+    let sha = r.get_sha256().map_err(from_capnp)?;
+    Ok(PutResult {
+        key: text_of(r.get_key().map_err(from_capnp)?),
+        bytes_written: r.get_bytes_written(),
+        etag: non_empty(text_of(r.get_etag().map_err(from_capnp)?)),
+        sha256: if sha.is_empty() {
+            None
+        } else {
+            Some(sha.to_vec())
+        },
+        modified_at_ms: non_zero(r.get_modified_at_ms()),
+        version_id: non_empty(text_of(r.get_version_id().map_err(from_capnp)?)),
+        signature: non_empty(text_of(r.get_signature().map_err(from_capnp)?)),
+    })
 }
 
 fn fill_write_options(mut o: write_options::Builder<'_>, options: &WriteOptions) {
@@ -204,6 +246,10 @@ fn fill_write_options(mut o: write_options::Builder<'_>, options: &WriteOptions)
         o.set_commit_token(token);
     }
     o.set_stage_only(options.stage_only);
+    if let Some(tag) = &options.if_match {
+        o.set_if_match(tag);
+    }
+    o.set_if_none_match(options.if_none_match);
 }
 
 fn fill_put_result(mut out: crate::plugin_capnp::put_result::Builder<'_>, put: &PutResult) {
@@ -214,6 +260,13 @@ fn fill_put_result(mut out: crate::plugin_capnp::put_result::Builder<'_>, put: &
     }
     if let Some(sum) = &put.sha256 {
         out.set_sha256(sum);
+    }
+    out.set_modified_at_ms(put.modified_at_ms.unwrap_or(0));
+    if let Some(v) = &put.version_id {
+        out.set_version_id(v);
+    }
+    if let Some(sig) = &put.signature {
+        out.set_signature(sig);
     }
 }
 
@@ -229,7 +282,7 @@ pub(super) fn read_error(r: plugin_error::Reader<'_>) -> PluginError {
     err
 }
 
-fn fill_metadata(mut b: object_metadata::Builder<'_>, meta: &ObjectMetadata) {
+pub(crate) fn fill_metadata(mut b: object_metadata::Builder<'_>, meta: &ObjectMetadata) {
     b.set_key(&meta.key);
     b.set_size(meta.size);
     if let Some(ct) = &meta.content_type {
@@ -241,6 +294,13 @@ fn fill_metadata(mut b: object_metadata::Builder<'_>, meta: &ObjectMetadata) {
     if let Some(sum) = &meta.sha256 {
         b.set_sha256(sum);
     }
+    b.set_modified_at_ms(meta.modified_at_ms.unwrap_or(0));
+    if let Some(v) = &meta.version_id {
+        b.set_version_id(v);
+    }
+    if let Some(sig) = &meta.signature {
+        b.set_signature(sig);
+    }
 }
 
 /// Decode object metadata from a Cap'n Proto reader.
@@ -248,7 +308,7 @@ fn fill_metadata(mut b: object_metadata::Builder<'_>, meta: &ObjectMetadata) {
 /// # Errors
 ///
 /// Returns [`PluginError`] when a text or data field cannot be read.
-fn read_metadata(r: object_metadata::Reader<'_>) -> Result<ObjectMetadata> {
+pub(crate) fn read_metadata(r: object_metadata::Reader<'_>) -> Result<ObjectMetadata> {
     Ok(ObjectMetadata {
         key: text_of(r.get_key().map_err(from_capnp)?),
         size: r.get_size(),
@@ -276,6 +336,9 @@ fn read_metadata(r: object_metadata::Reader<'_>) -> Result<ObjectMetadata> {
                 Some(d.to_vec())
             }
         },
+        modified_at_ms: non_zero(r.get_modified_at_ms()),
+        version_id: non_empty(text_of(r.get_version_id().map_err(from_capnp)?)),
+        signature: non_empty(text_of(r.get_signature().map_err(from_capnp)?)),
     })
 }
 
@@ -883,7 +946,7 @@ fn read_execute_stream_reply(
 ///
 /// Returns [`PluginError`] when the page exceeds `max` or a nested object
 /// cannot be read.
-fn decode_list_page(
+pub(crate) fn decode_list_page(
     page: crate::plugin_capnp::list_page::Reader<'_>,
     max: u32,
 ) -> Result<ListPage> {
@@ -896,20 +959,39 @@ fn decode_list_page(
     }
     let mut objects = Vec::with_capacity(list.len() as usize);
     for item in list.iter() {
-        objects.push(ObjectInfo {
-            key: text_of(item.get_key().map_err(from_capnp)?),
-            size: item.get_size(),
-        });
+        objects.push(crate::storage_ops::read_object_info(item)?);
     }
     let cursor = text_of(page.get_next_cursor().map_err(from_capnp)?);
     Ok(ListPage {
         objects,
-        next_cursor: if cursor.is_empty() {
-            None
-        } else {
-            Some(cursor)
-        },
+        next_cursor: non_empty(cursor),
+        signatures_included: page.get_signatures_included(),
+        modified_since_applied: page.get_modified_since_applied(),
     })
+}
+
+/// Encodes a [`ListPage`].
+///
+/// # Errors
+///
+/// Returns `payload_too_large` when the object list cannot be encoded.
+pub(crate) fn fill_list_page(
+    mut out: crate::plugin_capnp::list_page::Builder<'_>,
+    page: &ListPage,
+) -> Result<()> {
+    if let Some(c) = &page.next_cursor {
+        out.set_next_cursor(c);
+    }
+    out.set_signatures_included(page.signatures_included);
+    out.set_modified_since_applied(page.modified_since_applied);
+    let mut list = out.init_objects(capnp_u32_len(page.objects.len(), "list page")?);
+    for (i, obj) in page.objects.iter().enumerate() {
+        crate::storage_ops::fill_object_info(
+            list.reborrow().get(capnp_u32_len(i, "list page")?),
+            obj,
+        );
+    }
+    Ok(())
 }
 
 /// Cap'n Proto server wrapping a [`Destination`] trait object.
@@ -969,20 +1051,15 @@ impl dest_iface::Server for DestinationServer {
                     }
                 },
                 limit: o.get_limit(),
+                with_signatures: o.get_with_signatures(),
+                modified_since_ms: non_zero(o.get_modified_since_ms()),
             }
         };
         let result = results.get().init_result();
         match self.inner.list(options).await {
             Ok(page) => {
-                let mut out = result.init_ok();
-                if let Some(c) = &page.next_cursor {
-                    out.set_next_cursor(c);
-                }
-                let mut list = out.init_objects(page.objects.len() as u32);
-                for (i, obj) in page.objects.iter().enumerate() {
-                    let mut item = list.reborrow().get(i as u32);
-                    item.set_key(&obj.key);
-                    item.set_size(obj.size);
+                if let Err(err) = fill_list_page(result.init_ok(), &page) {
+                    return Err(capnp::Error::failed(err.to_string()));
                 }
             }
             Err(err) => write_error(result.init_err(), &err),
@@ -1114,6 +1191,146 @@ impl dest_iface::Server for DestinationServer {
         }
         Ok(())
     }
+
+    async fn move_(
+        self: Rc<Self>,
+        params: dest_iface::MoveParams,
+        mut results: dest_iface::MoveResults,
+    ) -> capnp::Result<()> {
+        let p = params.get()?;
+        let from = p.get_from().ok().map(text_of).unwrap_or_default();
+        let to = p.get_to().ok().map(text_of).unwrap_or_default();
+        let options = p
+            .get_options()
+            .map(crate::storage_ops::read_move_options)
+            .unwrap_or_default();
+        let result = results.get().init_result();
+        match self.inner.move_object(&from, &to, options).await {
+            Ok(moved) => crate::storage_ops::fill_move_result(result.init_ok(), moved),
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
+    async fn move_many(
+        self: Rc<Self>,
+        params: dest_iface::MoveManyParams,
+        mut results: dest_iface::MoveManyResults,
+    ) -> capnp::Result<()> {
+        let request = crate::storage_ops::read_move_many_request(params.get()?.get_request()?);
+        let result = results.get().init_result();
+        let outcome = match request {
+            Ok(request) => self.inner.move_many(request).await,
+            Err(err) => Err(err),
+        };
+        match outcome {
+            Ok(page) => {
+                if let Err(err) = crate::storage_ops::fill_move_many_page(result.init_ok(), &page) {
+                    return Err(capnp::Error::failed(err.to_string()));
+                }
+            }
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
+    async fn delete_many(
+        self: Rc<Self>,
+        params: dest_iface::DeleteManyParams,
+        mut results: dest_iface::DeleteManyResults,
+    ) -> capnp::Result<()> {
+        let keys = read_key_list("deleteMany", params.get()?.get_keys()?);
+        let result = results.get().init_result();
+        let outcome = match keys {
+            Ok(keys) => self.inner.delete_many(keys).await,
+            Err(err) => Err(err),
+        };
+        match outcome {
+            Ok(outcomes) => {
+                if let Err(err) =
+                    crate::storage_ops::fill_delete_many_result(result.init_ok(), &outcomes)
+                {
+                    return Err(capnp::Error::failed(err.to_string()));
+                }
+            }
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
+    async fn head_many(
+        self: Rc<Self>,
+        params: dest_iface::HeadManyParams,
+        mut results: dest_iface::HeadManyResults,
+    ) -> capnp::Result<()> {
+        let keys = read_key_list("headMany", params.get()?.get_keys()?);
+        let result = results.get().init_result();
+        let outcome = match keys {
+            Ok(keys) => self.inner.head_many(keys).await,
+            Err(err) => Err(err),
+        };
+        match outcome {
+            Ok(objects) => {
+                if let Err(err) =
+                    crate::storage_ops::fill_head_many_result(result.init_ok(), &objects)
+                {
+                    return Err(capnp::Error::failed(err.to_string()));
+                }
+            }
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
+    async fn changes(
+        self: Rc<Self>,
+        params: dest_iface::ChangesParams,
+        mut results: dest_iface::ChangesResults,
+    ) -> capnp::Result<()> {
+        let request = crate::storage_ops::read_changes_request(params.get()?.get_request()?);
+        let result = results.get().init_result();
+        let outcome = match request {
+            Ok(request) => self.inner.changes(request).await,
+            Err(err) => Err(err),
+        };
+        match outcome {
+            Ok(page) => {
+                if let Err(err) = crate::storage_ops::fill_changes_page(result.init_ok(), &page) {
+                    return Err(capnp::Error::failed(err.to_string()));
+                }
+            }
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+}
+
+/// Reads a batch call's key list, bounded by [`crate::MAX_BATCH_KEYS`].
+///
+/// # Errors
+///
+/// Returns `invalid_params` for an empty list, `payload_too_large` above the
+/// cap, or [`PluginError`] when an entry cannot be read.
+fn read_key_list(what: &str, list: capnp::text_list::Reader<'_>) -> Result<Vec<String>> {
+    crate::storage_ops::require_batch_len(what, list.len() as usize)?;
+    let mut keys = Vec::with_capacity(list.len() as usize);
+    for key in list.iter() {
+        keys.push(text_of(key.map_err(from_capnp)?));
+    }
+    Ok(keys)
+}
+
+/// Writes a batch call's key list.
+///
+/// # Errors
+///
+/// Returns `payload_too_large` when the list cannot be encoded.
+fn fill_key_list(builder: capnp::text_list::Builder<'_>, keys: &[String]) -> Result<()> {
+    let mut list = builder;
+    for (i, key) in keys.iter().enumerate() {
+        list.set(capnp_u32_len(i, "key list")?, key);
+    }
+    Ok(())
 }
 
 /// Host-side [`Destination`] over a capnp destination stub.
@@ -1175,6 +1392,8 @@ impl Destination for DestinationClient {
                 o.set_cursor(c);
             }
             o.set_limit(options.limit);
+            o.set_with_signatures(options.with_signatures);
+            o.set_modified_since_ms(options.modified_since_ms.unwrap_or(0));
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -1239,29 +1458,7 @@ impl Destination for DestinationClient {
             .get_result()
             .map_err(from_capnp)?;
         match result.which().map_err(from_capnp)? {
-            put_reply::Ok(r) => {
-                let r = r.map_err(from_capnp)?;
-                Ok(PutResult {
-                    key: text_of(r.get_key().map_err(from_capnp)?),
-                    bytes_written: r.get_bytes_written(),
-                    etag: {
-                        let t = text_of(r.get_etag().map_err(from_capnp)?);
-                        if t.is_empty() {
-                            None
-                        } else {
-                            Some(t)
-                        }
-                    },
-                    sha256: {
-                        let d = r.get_sha256().map_err(from_capnp)?;
-                        if d.is_empty() {
-                            None
-                        } else {
-                            Some(d.to_vec())
-                        }
-                    },
-                })
-            }
+            put_reply::Ok(r) => read_put_result(r.map_err(from_capnp)?),
             put_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
         }
     }
@@ -1310,29 +1507,7 @@ impl Destination for DestinationClient {
             .get_result()
             .map_err(from_capnp)?;
         match result.which().map_err(from_capnp)? {
-            put_reply::Ok(r) => {
-                let r = r.map_err(from_capnp)?;
-                Ok(PutResult {
-                    key: text_of(r.get_key().map_err(from_capnp)?),
-                    bytes_written: r.get_bytes_written(),
-                    etag: {
-                        let t = text_of(r.get_etag().map_err(from_capnp)?);
-                        if t.is_empty() {
-                            None
-                        } else {
-                            Some(t)
-                        }
-                    },
-                    sha256: {
-                        let d = r.get_sha256().map_err(from_capnp)?;
-                        if d.is_empty() {
-                            None
-                        } else {
-                            Some(d.to_vec())
-                        }
-                    },
-                })
-            }
+            put_reply::Ok(r) => read_put_result(r.map_err(from_capnp)?),
             put_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
         }
     }
@@ -1351,6 +1526,128 @@ impl Destination for DestinationClient {
             empty_reply::Ok(()) => Ok(()),
             empty_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
         }
+    }
+
+    async fn move_object(
+        &self,
+        from: &str,
+        to: &str,
+        options: crate::MoveOptions,
+    ) -> Result<crate::MoveResult> {
+        let mut req = self.client.move_request();
+        req.get().set_from(from);
+        req.get().set_to(to);
+        crate::storage_ops::fill_move_options(
+            req.get().get_options().map_err(from_capnp)?,
+            &options,
+        );
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        match result.which().map_err(from_capnp)? {
+            crate::plugin_capnp::move_reply::Ok(r) => {
+                Ok(crate::storage_ops::read_move_result(r.map_err(from_capnp)?))
+            }
+            crate::plugin_capnp::move_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
+        }
+    }
+
+    async fn move_many(&self, request: crate::MoveManyRequest) -> Result<crate::MoveManyPage> {
+        if let crate::MoveManyTarget::Pairs(pairs) = &request.target {
+            crate::storage_ops::require_batch_len("moveMany", pairs.len())?;
+        }
+        let mut req = self.client.move_many_request();
+        crate::storage_ops::fill_move_many_request(req.get().init_request(), &request)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        let page = match result.which().map_err(from_capnp)? {
+            crate::plugin_capnp::move_many_reply::Ok(r) => {
+                crate::storage_ops::read_move_many_page(r.map_err(from_capnp)?)?
+            }
+            crate::plugin_capnp::move_many_reply::Err(err) => {
+                return Err(read_error(err.map_err(from_capnp)?))
+            }
+        };
+        crate::storage_ops::validate_move_many_page(&request, &page)?;
+        Ok(page)
+    }
+
+    async fn delete_many(&self, keys: Vec<String>) -> Result<Vec<crate::KeyOutcome>> {
+        crate::storage_ops::require_batch_len("deleteMany", keys.len())?;
+        let mut req = self.client.delete_many_request();
+        fill_key_list(
+            req.get().init_keys(capnp_u32_len(keys.len(), "key list")?),
+            &keys,
+        )?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        let outcomes = match result.which().map_err(from_capnp)? {
+            crate::plugin_capnp::delete_many_reply::Ok(r) => {
+                crate::storage_ops::read_delete_many_result(r.map_err(from_capnp)?)?
+            }
+            crate::plugin_capnp::delete_many_reply::Err(err) => {
+                return Err(read_error(err.map_err(from_capnp)?))
+            }
+        };
+        crate::storage_ops::validate_key_outcomes("deleteMany", &keys, &outcomes)?;
+        Ok(outcomes)
+    }
+
+    async fn head_many(&self, keys: Vec<String>) -> Result<Vec<Option<ObjectMetadata>>> {
+        crate::storage_ops::require_batch_len("headMany", keys.len())?;
+        let mut req = self.client.head_many_request();
+        fill_key_list(
+            req.get().init_keys(capnp_u32_len(keys.len(), "key list")?),
+            &keys,
+        )?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        let objects = match result.which().map_err(from_capnp)? {
+            crate::plugin_capnp::head_many_reply::Ok(r) => {
+                crate::storage_ops::read_head_many_result(r.map_err(from_capnp)?)?
+            }
+            crate::plugin_capnp::head_many_reply::Err(err) => {
+                return Err(read_error(err.map_err(from_capnp)?))
+            }
+        };
+        crate::storage_ops::validate_head_many(&keys, &objects)?;
+        Ok(objects)
+    }
+
+    async fn changes(&self, request: crate::ChangesRequest) -> Result<crate::ChangesPage> {
+        let mut req = self.client.changes_request();
+        crate::storage_ops::fill_changes_request(req.get().init_request(), &request);
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        let page = match result.which().map_err(from_capnp)? {
+            crate::plugin_capnp::changes_reply::Ok(r) => {
+                crate::storage_ops::read_changes_page(r.map_err(from_capnp)?)?
+            }
+            crate::plugin_capnp::changes_reply::Err(err) => {
+                return Err(read_error(err.map_err(from_capnp)?))
+            }
+        };
+        crate::storage_ops::validate_changes_page(request.cursor.as_deref(), &page)?;
+        Ok(page)
     }
 }
 
@@ -5379,9 +5676,10 @@ mod tests {
                     .map(|i| ObjectInfo {
                         key: format!("k{i}"),
                         size: 1,
+                        ..Default::default()
                     })
                     .collect(),
-                next_cursor: None,
+                ..ListPage::default()
             })
         }
 

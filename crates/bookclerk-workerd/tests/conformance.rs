@@ -2498,8 +2498,7 @@ mode = "deny"
                     .list(ListOptions {
                         prefix: "bulk/".into(),
                         cursor: cursor.clone(),
-                        limit: 256,
-                    })
+                        limit: 256, ..Default::default() })
                     .await
                     .expect("list page");
                 pages += 1;

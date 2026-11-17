@@ -100,6 +100,7 @@ mod sql_overflow;
 mod sql_proof;
 mod sql_text;
 pub mod sql_types;
+mod storage_ops;
 
 /// Generated Cap'n Proto RPC interfaces (`schema/plugin.capnp`).
 ///
@@ -244,8 +245,10 @@ pub use db_stream::{
     STREAM_FRAME_TARGET_BYTES,
 };
 pub use features::{
-    negotiate_rpc_features, RpcFeature, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY,
-    FEATURE_STREAMS,
+    negotiate_rpc_features, RpcFeature, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_CHANGES,
+    FEATURE_STORAGE_CONDITIONAL_WRITE, FEATURE_STORAGE_COPY, FEATURE_STORAGE_DELETE_MANY,
+    FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE, FEATURE_STORAGE_MOVE_MANY, FEATURE_STREAMS,
+    STORAGE_OPERATION_FEATURES,
 };
 pub use jobs::{read_all, stream_copy_keys, StreamCopyHandler, StreamCopySpec};
 pub use limits::{
@@ -296,6 +299,13 @@ pub use scan_page::{
 pub use settings_schema::{
     is_valid_setting_key, EffectiveConfig, SettingKind, SettingSpec, SettingValueSpec,
     SettingsSchema, MAX_SETTINGS, MAX_SETTING_STRING_BYTES, SETTINGS_SCHEMA_VERSION,
+};
+pub use storage_ops::{
+    decode_storage_reply_bytes, encode_storage_reply_bytes, require_batch_len,
+    validate_changes_page, validate_head_many, validate_key_outcomes, validate_move_many_page,
+    ChangesPage, ChangesRequest, KeyOutcome, KeyPair, MoveManyPage, MoveManyRequest,
+    MoveManyTarget, MoveOptions, MoveResult, ObjectChange, ObjectChangeKind, StorageReply,
+    StorageReplyKind, MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES, MAX_CHANGES_PAGE,
 };
 
 /// Embedded JSON Schema for install `plugin.toml` files (shared with language

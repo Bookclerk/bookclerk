@@ -142,6 +142,11 @@ const INTERFACES: &[InterfaceEntry] = &[
             "delete",
             "commit",
             "abortStage",
+            "move",
+            "moveMany",
+            "deleteMany",
+            "headMany",
+            "changes",
         ],
     },
     InterfaceEntry {

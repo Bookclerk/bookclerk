@@ -13,7 +13,7 @@
  */
 
 import type { CapTable } from "./db-capnp.js";
-import { MAX_SCALAR_BYTES } from "./abi.js";
+import { MAX_BATCH_KEYS, MAX_SCALAR_BYTES } from "./abi.js";
 import { PluginError } from "./errors.js";
 import type {
   AdapterDatabaseSession as WireAdapterDatabaseSession,
@@ -31,6 +31,7 @@ import type {
   ListeningProgress,
   CoverImage,
   MetadataRecord,
+  KeyOutcome as WireKeyOutcome,
   ObjectMetadata as WireObjectMetadata,
   OidcClientTemplate,
   PluginError as WirePluginError,
@@ -49,7 +50,12 @@ import type {
   GrantedContext,
   GrantedJobCapabilities,
   JobOutcomeRecord,
+  ChangesRequest,
+  KeyOutcome,
   ListOptions,
+  MoveManyPage,
+  MoveManyRequest,
+  MoveOptions,
   NamedStub,
   ObjectMetadata,
   PluginMigration,
@@ -378,6 +384,56 @@ function listOptions(
   };
 }
 
+function moveOptions(
+  options: Partial<W.DestinationMoveParams["options"]> | undefined,
+): MoveOptions {
+  return {
+    noOverwrite: options?.noOverwrite || undefined,
+    ifSourceMatch: options?.ifSourceMatch || undefined,
+  };
+}
+
+function moveManyRequest(
+  request: Partial<W.DestinationMoveManyParams["request"]> | undefined,
+): MoveManyRequest {
+  const target = request?.target ?? { kind: "pairs", value: [] };
+  if (target.kind === "pairs" && target.value.length > MAX_BATCH_KEYS) {
+    throw new PluginError("payload_too_large", `moveMany of ${target.value.length} pairs`);
+  }
+  return {
+    target,
+    cursor: request?.cursor || undefined,
+    limit: request?.limit || undefined,
+    options: moveOptions(request?.options),
+  };
+}
+
+// The host never sends more than `MAX_BATCH_KEYS`; refuse a larger list
+// before the author's handler sees it.
+function batchKeys(keys: string[] | undefined): string[] {
+  const list = keys ?? [];
+  if (list.length === 0) {
+    throw new PluginError("invalid_params", "a batch call needs at least one key");
+  }
+  if (list.length > MAX_BATCH_KEYS) {
+    throw new PluginError("payload_too_large", `batch of ${list.length} keys`);
+  }
+  return list.map(String);
+}
+
+// Author outcomes carry an optional `{ code, message }`; the wire carries a
+// `PluginError` whose empty code means success.
+function wireOutcomes(outcomes: KeyOutcome[]): WireKeyOutcome[] {
+  return outcomes.map((o) => ({
+    key: String(o.key ?? ""),
+    error: {
+      code: o.error ? String(o.error.code) : "",
+      message: o.error ? String(o.error.message ?? "") : "",
+      details: "",
+    },
+  }));
+}
+
 function sessionCall(method: string): AnySpec["call"] {
   return (s, p, cx) => {
     if (!cx.target) {
@@ -592,6 +648,67 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
           String(p.commitToken ?? ""),
         ]),
       ok: okEmpty,
+    }),
+    move: spec<W.DestinationMoveParams, W.DestinationMoveResults["result"]>({
+      params: W.DestinationMoveParamsCodec,
+      results: W.DestinationMoveResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) =>
+        named(s, cx.host.bindContext(cx.ctx), "move", [
+          String(p.from ?? ""),
+          String(p.to ?? ""),
+          moveOptions(p.options),
+        ]),
+      ok: okPass,
+    }),
+    moveMany: spec<W.DestinationMoveManyParams, W.DestinationMoveManyResults["result"]>({
+      params: W.DestinationMoveManyParamsCodec,
+      results: W.DestinationMoveManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) =>
+        named(s, cx.host.bindContext(cx.ctx), "moveMany", [moveManyRequest(p.request)]),
+      ok: (value) => {
+        const page = (value ?? { results: [] }) as MoveManyPage;
+        return okValue({
+          results: wireOutcomes(asList<KeyOutcome>(page.results)),
+          nextCursor: page.nextCursor ?? "",
+          atomic: page.atomic ?? false,
+          objectsMoved: page.objectsMoved ?? 0,
+        });
+      },
+    }),
+    deleteMany: spec<W.DestinationDeleteManyParams, W.DestinationDeleteManyResults["result"]>({
+      params: W.DestinationDeleteManyParamsCodec,
+      results: W.DestinationDeleteManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "deleteMany", [batchKeys(p.keys)]),
+      ok: (value) => okValue({ results: wireOutcomes(asList<KeyOutcome>(value)) }),
+    }),
+    headMany: spec<W.DestinationHeadManyParams, W.DestinationHeadManyResults["result"]>({
+      params: W.DestinationHeadManyParamsCodec,
+      results: W.DestinationHeadManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "headMany", [batchKeys(p.keys)]),
+      ok: (value) =>
+        okValue({
+          objects: asList<ObjectMetadata | null>(value).map((meta) => ({
+            found: meta != null,
+            meta: (meta ?? undefined) as unknown as WireObjectMetadata,
+          })),
+        }),
+    }),
+    changes: spec<W.DestinationChangesParams, W.DestinationChangesResults["result"]>({
+      params: W.DestinationChangesParamsCodec,
+      results: W.DestinationChangesResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) =>
+        named(s, cx.host.bindContext(cx.ctx), "changes", [
+          {
+            cursor: p.request?.cursor || undefined,
+            limit: p.request?.limit || undefined,
+          } satisfies ChangesRequest,
+        ]),
+      ok: okPass,
     }),
   },
   RemoteLibrary: {

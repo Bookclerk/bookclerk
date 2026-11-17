@@ -144,6 +144,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "storage_reply"
+path = "fuzz_targets/storage_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "socket_request"
 path = "fuzz_targets/socket_request.rs"
 test = false

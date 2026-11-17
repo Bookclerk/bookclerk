@@ -105,6 +105,8 @@ struct Identity {
     scan_placement: Option<String>,
     /// Whether copies stay inside the backend.
     supports_server_copy: bool,
+    /// The intent operations the guest does natively.
+    capabilities: bookclerk_storage::StorageCapabilities,
 }
 
 impl Identity {
@@ -115,6 +117,7 @@ impl Identity {
             instance_id: backend.instance_id(),
             scan_placement: backend.scan_placement(),
             supports_server_copy: backend.supports_server_copy(),
+            capabilities: backend.capabilities(),
         }
     }
 }
@@ -392,6 +395,94 @@ impl StorageBackend for OnDemandStorage {
 
     fn supports_server_copy(&self) -> bool {
         self.identity.supports_server_copy
+    }
+
+    fn capabilities(&self) -> bookclerk_storage::StorageCapabilities {
+        self.identity.capabilities
+    }
+
+    async fn move_object(
+        &self,
+        from: &str,
+        to: &str,
+        options: &bookclerk_storage::MoveOptions,
+    ) -> bookclerk_storage::Result<bookclerk_storage::MoveResult> {
+        let (guest, _busy) = self.awake().await?;
+        guest.backend().move_object(from, to, options).await
+    }
+
+    async fn move_many(
+        &self,
+        pairs: &[(String, String)],
+        options: &bookclerk_storage::MoveOptions,
+    ) -> bookclerk_storage::Result<Vec<bookclerk_storage::KeyResult>> {
+        let (guest, _busy) = self.awake().await?;
+        guest.backend().move_many(pairs, options).await
+    }
+
+    async fn move_prefix(
+        &self,
+        from_prefix: &str,
+        to_prefix: &str,
+        cursor: Option<&str>,
+        limit: u32,
+        options: &bookclerk_storage::MoveOptions,
+    ) -> bookclerk_storage::Result<bookclerk_storage::MovePrefixPage> {
+        let (guest, _busy) = self.awake().await?;
+        guest
+            .backend()
+            .move_prefix(from_prefix, to_prefix, cursor, limit, options)
+            .await
+    }
+
+    async fn delete_many(
+        &self,
+        keys: &[String],
+    ) -> bookclerk_storage::Result<Vec<bookclerk_storage::KeyResult>> {
+        let (guest, _busy) = self.awake().await?;
+        guest.backend().delete_many(keys).await
+    }
+
+    async fn head_many(
+        &self,
+        keys: &[String],
+    ) -> bookclerk_storage::Result<Vec<Option<ObjectProbe>>> {
+        let (guest, _busy) = self.awake().await?;
+        guest.backend().head_many(keys).await
+    }
+
+    async fn put_stream_conditional(
+        &self,
+        key: &str,
+        body: Pin<Box<dyn AsyncRead + Send>>,
+        meta: ObjectMeta,
+        condition: &bookclerk_storage::WriteCondition,
+    ) -> bookclerk_storage::Result<bookclerk_storage::ConditionalPutResult> {
+        let (guest, _busy) = self.awake().await?;
+        guest
+            .backend()
+            .put_stream_conditional(key, body, meta, condition)
+            .await
+    }
+
+    async fn list_hinted(
+        &self,
+        request: &bookclerk_storage::ListRequest,
+    ) -> bookclerk_storage::Result<bookclerk_storage::HintedListPage> {
+        let (guest, _busy) = self.awake().await?;
+        guest.backend().list_hinted(request).await
+    }
+
+    async fn changes(
+        &self,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> bookclerk_storage::Result<Option<bookclerk_storage::ChangeFeedPage>> {
+        if !self.identity.capabilities.changes {
+            return Ok(None);
+        }
+        let (guest, _busy) = self.awake().await?;
+        guest.backend().changes(cursor, limit).await
     }
 
     async fn touch_file(

@@ -1257,6 +1257,7 @@ where
                 sha256: None,
                 commit_token: None,
                 stage_only: false,
+                ..Default::default()
             },
             body_rx,
             resp: resp_tx,

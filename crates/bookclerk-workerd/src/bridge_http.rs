@@ -161,6 +161,7 @@ impl BridgeHttp {
             content_type: header(&headers, "x-bookclerk-content-type"),
             etag: header(&headers, "x-bookclerk-etag"),
             sha256: None,
+            ..Default::default()
         };
         let body = body_reader(stream, headers, rest);
         Ok((meta, body))
@@ -271,6 +272,7 @@ impl BridgeHttp {
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
             sha256: None,
+            ..Default::default()
         })
     }
 

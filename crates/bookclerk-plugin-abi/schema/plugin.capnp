@@ -42,6 +42,13 @@ const maxScalarBytes :UInt32 = 262144;
 const maxStreamWindowBytes :UInt32 = 1048576;
 # Maximum objects in one `Destination.list` page.
 const maxListPage :UInt32 = 256;
+# Maximum keys or key pairs in one `Destination.moveMany`, `deleteMany` or
+# `headMany` call, and maximum outcomes in one reply.
+const maxBatchKeys :UInt32 = 256;
+# Maximum changes in one `Destination.changes` page.
+const maxChangesPage :UInt32 = 256;
+# Maximum bytes of a `Destination.changes` cursor.
+const maxChangesCursorBytes :UInt32 = 4096;
 # Maximum job / event checkpoint payload size (bytes).
 const maxCheckpointBytes :UInt32 = 65536;
 # Maximum titles, and separately removed product ids, in one `ScanPage`.
@@ -115,6 +122,18 @@ const featureScalarLimits :Text = "rpc.scalarLimits";
 const featureStreams :Text = "rpc.streams";
 # Guest implements server-side `Destination.copy` (`storage.copy`).
 const featureStorageCopy :Text = "storage.copy";
+# Guest implements `Destination.move` (`storage.move`).
+const featureStorageMove :Text = "storage.move";
+# Guest implements `Destination.moveMany` (`storage.moveMany`).
+const featureStorageMoveMany :Text = "storage.moveMany";
+# Guest implements `Destination.deleteMany` (`storage.deleteMany`).
+const featureStorageDeleteMany :Text = "storage.deleteMany";
+# Guest implements `Destination.headMany` (`storage.headMany`).
+const featureStorageHeadMany :Text = "storage.headMany";
+# Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` (`storage.conditionalWrite`).
+const featureStorageConditionalWrite :Text = "storage.conditionalWrite";
+# Guest implements `Destination.changes` (`storage.changes`).
+const featureStorageChanges :Text = "storage.changes";
 
 # Guest-advertised caps for `rpc.scalarLimits`; never above the file constants.
 struct ScalarLimits {
@@ -151,6 +170,14 @@ struct ObjectMetadata {
   etag @3 :Text;
   # Raw SHA-256 digest (32 bytes) or empty when unknown.
   sha256 @4 :Data;
+  # Last modification time, UTC unix milliseconds; zero when unknown.
+  modifiedAtMs @5 :UInt64;
+  # Backend object version id (versioned buckets); empty when none.
+  versionId @6 :Text;
+  # Opaque change signature: an unchanged value means the object has not
+  # changed. Backend-defined (a local file's inode, size, mtime and ctime;
+  # an S3 ETag and version id). Empty when the backend has none.
+  signature @7 :Text;
 }
 
 # Compact object entry in a list page.
@@ -159,6 +186,17 @@ struct ObjectInfo {
   key @0 :Text;
   # Object size in bytes.
   size @1 :UInt64;
+  # Backend entity tag; empty when unsupported or not requested
+  # (`ListOptions.withSignatures`).
+  etag @2 :Text;
+  # Last modification time, UTC unix milliseconds; zero when unknown or not
+  # requested.
+  modifiedAtMs @3 :UInt64;
+  # Backend object version id; empty when none or not requested.
+  versionId @4 :Text;
+  # Opaque change signature, as `ObjectMetadata.signature`; empty when
+  # unsupported or not requested.
+  signature @5 :Text;
 }
 
 # Paging options for `Destination.list`.
@@ -169,6 +207,13 @@ struct ListOptions {
   cursor @1 :Text;
   # Requested page size; clamped to `maxListPage`. `0` means guest default.
   limit @2 :UInt32;
+  # Hint: fill `etag`, `modifiedAtMs`, `versionId` and `signature` on each
+  # entry. `ListPage.signaturesIncluded` says whether the guest did.
+  withSignatures @3 :Bool;
+  # Hint: only objects modified at or after this time (UTC unix
+  # milliseconds); zero lists everything. `ListPage.modifiedSinceApplied`
+  # says whether the guest filtered; when it did not, the page is unfiltered.
+  modifiedSinceMs @4 :UInt64;
 }
 
 # One page of `Destination.list` results.
@@ -177,6 +222,12 @@ struct ListPage {
   objects @0 :List(ObjectInfo);
   # Cursor for the next page; empty when exhausted.
   nextCursor @1 :Text;
+  # True when every entry carries the signature fields the backend has
+  # (`ListOptions.withSignatures` honoured).
+  signaturesIncluded @2 :Bool;
+  # True when the guest left out objects modified before
+  # `ListOptions.modifiedSinceMs`. False means the page is unfiltered.
+  modifiedSinceApplied @3 :Bool;
 }
 
 # Half-open byte window `[offset, offset + length)`.
@@ -205,6 +256,13 @@ struct WriteOptions {
   commitToken @3 :Text;
   # When true, `put` stages remotely and does not publish until `commit`.
   stageOnly @4 :Bool;
+  # Conditional write (`storage.conditionalWrite`): publish only while the
+  # stored object's `etag` equals this value, else fail with `conflict`.
+  # Empty means unconditional. A staged put checks it at `commit`.
+  ifMatch @5 :Text;
+  # Conditional write (`storage.conditionalWrite`): publish only when no
+  # object exists at the key, else fail with `conflict`.
+  ifNoneMatch @6 :Bool;
 }
 
 # Summary of a stored (or committed) object.
@@ -217,12 +275,153 @@ struct PutResult {
   etag @2 :Text;
   # Raw SHA-256 digest of the stored bytes; empty when not computed.
   sha256 @3 :Data;
+  # Modification time of the stored object, UTC unix milliseconds; zero when
+  # unknown.
+  modifiedAtMs @4 :UInt64;
+  # Version id of the stored object; empty when none.
+  versionId @5 :Text;
+  # Change signature of the stored object (`ObjectMetadata.signature`), so
+  # the host can recognise its own write in a later listing; empty when none.
+  signature @6 :Text;
 }
 
 # Summary of a server-side copy.
 struct CopyResult {
   # Bytes copied.
   bytesCopied @0 :UInt64;
+}
+
+# Options for `Destination.move` and `Destination.moveMany`. Fields are only
+# ever appended.
+struct MoveOptions {
+  # Fail with `conflict` instead of replacing an object at the target key.
+  noOverwrite @0 :Bool;
+  # `move` only: move only while the source's `etag` equals this value,
+  # else fail with `conflict`. Empty skips the check.
+  ifSourceMatch @1 :Text;
+}
+
+# Summary of `Destination.move`.
+struct MoveResult {
+  # True when the backend moved atomically (a rename): no reader saw the
+  # object at both keys or at neither.
+  atomic @0 :Bool;
+  # True when the source was already gone and the target present, as when
+  # a move is repeated after a restart. The move counts as done.
+  alreadyMoved @1 :Bool;
+}
+
+# One source and target key.
+struct KeyPair {
+  # Source object key (or source prefix).
+  from @0 :Text;
+  # Target object key (or target prefix).
+  to @1 :Text;
+}
+
+# What `Destination.moveMany` moves.
+struct MoveManyTarget {
+  union {
+    # Explicit moves, at most `maxBatchKeys`. Each is independent.
+    pairs @0 :List(KeyPair);
+    # Every object under `prefix.from` moves under `prefix.to`, keeping the
+    # rest of its key. Paged through `MoveManyRequest.cursor`.
+    prefix @1 :KeyPair;
+  }
+}
+
+# Argument of `Destination.moveMany`. Fields are only ever appended.
+struct MoveManyRequest {
+  # Explicit pairs or a prefix.
+  target @0 :MoveManyTarget;
+  # Prefix form: `MoveManyPage.nextCursor` from the previous call; empty
+  # starts. Ignored for `pairs`.
+  cursor @1 :Text;
+  # Prefix form: objects to move in this call, clamped to `maxBatchKeys`;
+  # zero means guest default.
+  limit @2 :UInt32;
+  # Overwrite rule applied to every move (`ifSourceMatch` is ignored).
+  options @3 :MoveOptions;
+}
+
+# Outcome for one key of a batch call.
+struct KeyOutcome {
+  # The key this outcome is for (the source key for moves).
+  key @0 :Text;
+  # Failure for this key; an empty `code` means it succeeded.
+  error @1 :PluginError;
+}
+
+# One page of `Destination.moveMany` progress.
+struct MoveManyPage {
+  # Outcomes in request order. A prefix move done in one step (a folder
+  # rename) may report a single outcome keyed by the source prefix.
+  results @0 :List(KeyOutcome);
+  # Prefix form: cursor for the next call; empty when every object moved.
+  nextCursor @1 :Text;
+  # True when every move in this page was atomic.
+  atomic @2 :Bool;
+  # Objects moved in this page (a folder rename counts what it carried
+  # when known, else the outcomes).
+  objectsMoved @3 :UInt64;
+}
+
+# Result of `Destination.deleteMany`.
+struct DeleteManyResult {
+  # One outcome per requested key, in request order. A missing key succeeds.
+  results @0 :List(KeyOutcome);
+}
+
+# Result of `Destination.headMany`.
+struct HeadManyResult {
+  # One probe per requested key, in request order.
+  objects @0 :List(HeadOk);
+}
+
+# Argument of `Destination.changes`. Fields are only ever appended.
+struct ChangesRequest {
+  # `ChangesPage.cursor` from the previous call. Empty asks for the current
+  # position: the page carries a cursor and no changes.
+  cursor @0 :Text;
+  # Requested changes per page, clamped to `maxChangesPage`; zero means
+  # guest default.
+  limit @1 :UInt32;
+}
+
+# What happened to an object in a change feed. Unknown codes are kept and
+# treated as `changed`.
+enum ObjectChangeKind {
+  # Something changed; probe the key to learn what.
+  changed @0;
+  # The object was created or rewritten.
+  upserted @1;
+  # The object was removed.
+  removed @2;
+}
+
+# One entry of a change feed.
+struct ObjectChange {
+  # Object key, relative to the destination root.
+  key @0 :Text;
+  # What happened to it.
+  kind @1 :ObjectChangeKind;
+  # Listing fields after the change when the feed carries them (signature
+  # fields may be empty); empty for `removed`.
+  info @2 :ObjectInfo;
+}
+
+# One page of `Destination.changes`.
+struct ChangesPage {
+  # Changes since the request's cursor, oldest first. A key may repeat.
+  changes @0 :List(ObjectChange);
+  # Cursor for the next call; never empty.
+  cursor @1 :Text;
+  # True when more changes are ready now; call again with `cursor`.
+  more @2 :Bool;
+  # False when the feed may have missed changes since the request's cursor
+  # (an overflowed watcher, expired queue retention, a restart): the host
+  # backs it with a full listing. True means these are all the changes.
+  complete @3 :Bool;
 }
 
 # Guest identity and negotiation surface returned by `describe()`.
@@ -728,6 +927,57 @@ struct CopyReply {
   }
 }
 
+# Result union of `Destination.move`.
+struct MoveReply {
+  union {
+    # Success: how the move was done.
+    ok @0 :MoveResult;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Result union of `Destination.moveMany`.
+struct MoveManyReply {
+  union {
+    # Success: per-key outcomes and the continuation.
+    ok @0 :MoveManyPage;
+    # Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Result union of `Destination.deleteMany`.
+struct DeleteManyReply {
+  union {
+    # Success: per-key outcomes.
+    ok @0 :DeleteManyResult;
+    # Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Result union of `Destination.headMany`.
+struct HeadManyReply {
+  union {
+    # Success: one probe per key.
+    ok @0 :HeadManyResult;
+    # Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Result union of `Destination.changes`.
+struct ChangesReply {
+  union {
+    # Success: one page of changes.
+    ok @0 :ChangesPage;
+    # Typed failure; `invalid_cursor` means the cursor expired and the host
+    # starts over with a full listing.
+    err @1 :PluginError;
+  }
+}
+
 # Result union of `methods without a success payload`.
 struct EmptyReply {
   union {
@@ -885,6 +1135,31 @@ interface Destination {
       key :Text,  # Object key that was staged.
       commitToken :Text  # Token from `WriteOptions.commitToken`.
   ) -> (result :EmptyReply);
+  # Move one object (requires `storage.move`). Repeating a finished move
+  # succeeds with `alreadyMoved`.
+  move @8 (
+      from :Text,  # Source object key.
+      to :Text,  # Target object key.
+      options :MoveOptions  # Overwrite and source preconditions.
+  ) -> (result :MoveReply);
+  # Move a set of objects or a whole prefix (requires `storage.moveMany`).
+  # Paged and safe to repeat.
+  moveMany @9 (
+      request :MoveManyRequest  # Pairs or prefix, cursor, and options.
+  ) -> (result :MoveManyReply);
+  # Remove up to `maxBatchKeys` objects (requires `storage.deleteMany`).
+  deleteMany @10 (
+      keys :List(Text)  # Object keys to remove.
+  ) -> (result :DeleteManyReply);
+  # Probe up to `maxBatchKeys` objects (requires `storage.headMany`).
+  headMany @11 (
+      keys :List(Text)  # Object keys to probe.
+  ) -> (result :HeadManyReply);
+  # Keys changed since a cursor (requires `storage.changes`). A hint for
+  # what to read; a scheduled listing stays the backstop.
+  changes @12 (
+      request :ChangesRequest  # Cursor and page size.
+  ) -> (result :ChangesReply);
 }
 
 # Read-only byte source for job inputs (not a storefront).

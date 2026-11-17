@@ -18,6 +18,17 @@ MAX_STREAM_WINDOW_BYTES: int = 1048576
 MAX_LIST_PAGE: int = 256
 """Maximum objects in one `Destination.list` page."""
 
+MAX_BATCH_KEYS: int = 256
+"""Maximum keys or key pairs in one `Destination.moveMany`, `deleteMany` or
+`headMany` call, and maximum outcomes in one reply.
+"""
+
+MAX_CHANGES_PAGE: int = 256
+"""Maximum changes in one `Destination.changes` page."""
+
+MAX_CHANGES_CURSOR_BYTES: int = 4096
+"""Maximum bytes of a `Destination.changes` cursor."""
+
 MAX_CHECKPOINT_BYTES: int = 65536
 """Maximum job / event checkpoint payload size (bytes)."""
 
@@ -110,6 +121,31 @@ FEATURE_STREAMS: str = "rpc.streams"
 
 FEATURE_STORAGE_COPY: str = "storage.copy"
 """Guest implements server-side `Destination.copy` (`storage.copy`)."""
+
+FEATURE_STORAGE_MOVE: str = "storage.move"
+"""Guest implements `Destination.move` (`storage.move`)."""
+
+FEATURE_STORAGE_MOVE_MANY: str = "storage.moveMany"
+"""Guest implements `Destination.moveMany` (`storage.moveMany`)."""
+
+FEATURE_STORAGE_DELETE_MANY: str = "storage.deleteMany"
+"""Guest implements `Destination.deleteMany` (`storage.deleteMany`)."""
+
+FEATURE_STORAGE_HEAD_MANY: str = "storage.headMany"
+"""Guest implements `Destination.headMany` (`storage.headMany`)."""
+
+FEATURE_STORAGE_CONDITIONAL_WRITE: str = "storage.conditionalWrite"
+"""Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` (`storage.conditionalWrite`)."""
+
+FEATURE_STORAGE_CHANGES: str = "storage.changes"
+"""Guest implements `Destination.changes` (`storage.changes`)."""
+
+OBJECT_CHANGE_KINDS: tuple[str, ...] = ("changed", "upserted", "removed")
+"""What happened to an object in a change feed. Unknown codes are kept and
+treated as `changed`.
+
+Ordinal-ordered ``ObjectChangeKind`` wire names (index = Cap'n Proto ordinal).
+"""
 
 PLUGIN_ERROR_CODES: tuple[str, ...] = ("invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited")
 """Stable `PluginError.code` strings. Unknown future codes are forwarded
@@ -252,6 +288,9 @@ __all__ = [
     "MAX_SCALAR_BYTES",
     "MAX_STREAM_WINDOW_BYTES",
     "MAX_LIST_PAGE",
+    "MAX_BATCH_KEYS",
+    "MAX_CHANGES_PAGE",
+    "MAX_CHANGES_CURSOR_BYTES",
     "MAX_CHECKPOINT_BYTES",
     "MAX_SCAN_PAGE_BOOKS",
     "MAX_SCAN_CURSOR_BYTES",
@@ -280,6 +319,13 @@ __all__ = [
     "FEATURE_SCALAR_LIMITS",
     "FEATURE_STREAMS",
     "FEATURE_STORAGE_COPY",
+    "FEATURE_STORAGE_MOVE",
+    "FEATURE_STORAGE_MOVE_MANY",
+    "FEATURE_STORAGE_DELETE_MANY",
+    "FEATURE_STORAGE_HEAD_MANY",
+    "FEATURE_STORAGE_CONDITIONAL_WRITE",
+    "FEATURE_STORAGE_CHANGES",
+    "OBJECT_CHANGE_KINDS",
     "PLUGIN_ERROR_CODES",
     "ENTRYPOINTS",
     "PORTAL_AUTH_MODES",
