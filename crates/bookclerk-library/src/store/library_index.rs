@@ -1567,6 +1567,9 @@ mod tests {
             cover_url: cover.then(|| format!("https://img.example/{id}.jpg")),
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
+            enrich_source: None,
+            enrich_confidence: None,
+            enrich_updated_at: None,
         }
     }
 

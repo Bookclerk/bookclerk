@@ -356,7 +356,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         duration_minutes INTEGER,
         cover_url TEXT,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        enrich_source TEXT,
+        enrich_confidence REAL,
+        enrich_updated_at TEXT
     )",
     ),
     MigrationOp::Schema(

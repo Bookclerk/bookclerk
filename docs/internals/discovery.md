@@ -329,24 +329,31 @@ picks that import up.
 ## Metadata gap-fill (Open Library compliance)
 
 `discover enrich-metadata` (and `discover recommend`) fill **low-volume
-metadata gaps** on owned rows (subjects / description / cover / language)
-from the deployed metadata-provider plugins, such as `openlibrary`. It is
-never a bulk catalog backend.
+metadata gaps** on held editions (subjects / description / cover /
+language) from the deployed metadata-provider plugins, such as
+`openlibrary`. It walks editions that some account or branch holds, a page
+at a time by edition id, and writes what it finds to the edition's work
+(description and subjects), its expression (language) and the edition
+itself (cover). It is never a bulk catalog backend.
 
 Per [Open Library API guidelines](https://openlibrary.org/developers/api):
 
 - The `openlibrary` plugin identifies itself with its `contact_email`
   setting ([integrations](../server/integrations.md#open-library-and-audnexus))
-- The host spaces rows about 400 ms apart and stops after 25 rows per run.
+- The host spaces editions about 400 ms apart and stops after 25 per run.
   It reads the library a page at a time and stops reading once the run's
   requests are spent
-- A row with an ISBN is looked up by ISBN; one without is searched by title
+- An edition with an ISBN is looked up by ISBN; one without is searched by title
   and author, and only a result with the same title (ignoring case and
   punctuation) is used. The first record that fills a gap wins, and the
-  title's work only takes the fields it lacks
-- Rows already enriched are skipped (`enrich_source` `metadata:<provider>`,
-  or the legacy `openlibrary`) — provenance cache. The work record is written
-  before the row is marked, so a failure leaves the row to retry
+  work only takes the fields it lacks
+- Editions already enriched are skipped (the edition's `enrich_source`
+  `metadata:<provider>`, or the legacy `openlibrary`) — provenance cache.
+  Until the `books` table is retired, the edition's `books` rows are
+  written first, each taking only the fields it lacks; then the work,
+  expression and cover; and the edition is marked last. A failure before
+  the mark keeps whatever was already written and leaves the edition
+  unmarked, so a later run asks again while any of its gaps is still open
 - For bulk data, use [monthly dumps](https://openlibrary.org/data), not the API
 
 WorldCat remains reserved (API key + ToS).

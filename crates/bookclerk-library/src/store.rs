@@ -7876,6 +7876,7 @@ impl LibraryStore {
 pub(crate) mod acquire_title;
 pub(crate) mod catalog_listings;
 pub(crate) mod discover;
+pub(crate) mod edition_enrichment;
 pub(crate) mod edition_files;
 pub(crate) mod event_outbox;
 pub(crate) mod holdings;
@@ -7903,6 +7904,7 @@ pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
     StoredFeed,
 };
+pub use edition_enrichment::{EditionEnrichment, EnrichCandidate, EnrichCandidatePage};
 pub use edition_files::{
     EditionAcquisition, EditionFile, FileOwner, FileRole, TitleHolding, ACQUIRE_WRITER,
 };
