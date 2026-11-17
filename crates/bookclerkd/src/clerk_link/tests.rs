@@ -570,17 +570,22 @@ async fn say_raw(socket: &mut FakeSocket, text: &str) {
 }
 
 /// The cursor of the next `books` frame the clerk sends.
-async fn asked(socket: &mut FakeSocket) -> Option<i64> {
+async fn asked(socket: &mut FakeSocket) -> Option<String> {
     use futures::StreamExt as _;
     while let Some(Ok(message)) = socket.next().await {
         if let tokio_tungstenite::tungstenite::Message::Text(text) = message {
             let frame = bookclerk_node_proto::parse_clerk_frame(text.as_bytes())
                 .expect("the clerk sends frames the library reads");
             let bookclerk_node_proto::ClerkFrame::Books { after } = frame;
-            return Some(after);
+            return Some(after.as_str().to_owned());
         }
     }
     None
+}
+
+/// The cursor `text`.
+fn cursor(text: &str) -> bookclerk_node_proto::WindowCursor {
+    bookclerk_node_proto::WindowCursor::parse(text).expect("a cursor")
 }
 
 /// Closes the socket with `code`.
@@ -647,21 +652,21 @@ async fn a_read_pages_through_and_a_lost_socket_keeps_the_books() {
             },
         )
         .await;
-        assert_eq!(asked(&mut socket).await, Some(0));
+        assert_eq!(asked(&mut socket).await.as_deref(), Some(""));
         say(
             &mut socket,
             LibraryFrame::BooksPage {
-                after: 0,
+                after: cursor(""),
                 works: vec![work("B0PAGE0001")],
-                next: Some(5),
+                next: Some(cursor("p5")),
             },
         )
         .await;
-        assert_eq!(asked(&mut socket).await, Some(5));
+        assert_eq!(asked(&mut socket).await.as_deref(), Some("p5"));
         say(
             &mut socket,
             LibraryFrame::BooksPage {
-                after: 5,
+                after: cursor("p5"),
                 works: vec![work("B0PAGE0002")],
                 next: None,
             },
@@ -729,14 +734,14 @@ async fn a_misbehaving_library_ends_the_session_with_an_error() {
     for (what, which) in scripts {
         let origin = fake_library(Upgrade::Accept, move |mut socket| async move {
             use futures::SinkExt as _;
-            assert_eq!(asked(&mut socket).await, Some(0));
+            assert_eq!(asked(&mut socket).await.as_deref(), Some(""));
             match which {
                 0 => say_raw(&mut socket, "{\"v\":1,\"type\":\"nope\"}").await,
                 1 => {
                     say(
                         &mut socket,
                         LibraryFrame::BooksPage {
-                            after: 9,
+                            after: cursor("p9"),
                             works: Vec::new(),
                             next: None,
                         },
@@ -747,9 +752,9 @@ async fn a_misbehaving_library_ends_the_session_with_an_error() {
                     say(
                         &mut socket,
                         LibraryFrame::BooksPage {
-                            after: 0,
+                            after: cursor(""),
                             works: Vec::new(),
-                            next: Some(0),
+                            next: Some(cursor("")),
                         },
                     )
                     .await;
@@ -774,7 +779,7 @@ async fn a_misbehaving_library_ends_the_session_with_an_error() {
                     say(
                         &mut socket,
                         LibraryFrame::BooksPage {
-                            after: 0,
+                            after: cursor(""),
                             works: Vec::new(),
                             next: None,
                         },
@@ -804,7 +809,7 @@ async fn the_supervisor_starts_and_stops_readers_and_shutdown_ends_a_session() {
             say(
                 &mut socket,
                 LibraryFrame::BooksPage {
-                    after,
+                    after: cursor(&after),
                     works: vec![work("B0SUPER001")],
                     next: None,
                 },

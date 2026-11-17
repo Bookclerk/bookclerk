@@ -40,7 +40,7 @@ use bookclerk_library::control_plane::{
 use bookclerk_library::LibraryStore;
 use bookclerk_node_client::{DialError, OwnerEndpoint, OwnerSocket, SocketMessage as Message};
 use bookclerk_node_proto::{
-    parse_library_frame, ClerkFrame, ClerkTopic, LibraryFrame, MAX_FRAME_BYTES,
+    parse_library_frame, ClerkFrame, ClerkTopic, LibraryFrame, WindowCursor, MAX_FRAME_BYTES,
 };
 use futures::{SinkExt as _, StreamExt as _};
 use tokio::sync::watch;
@@ -195,7 +195,7 @@ struct Read {
     /// The read's stamp ([`window_read_stamp`]).
     seen_at: String,
     /// The cursor the outstanding `books` frame asked with.
-    after: i64,
+    after: WindowCursor,
     /// Pages taken so far.
     pages: usize,
     /// Editions stored so far.
@@ -296,7 +296,10 @@ impl ClerkReader {
             if read.is_none() && want_read {
                 want_read = false;
                 next_read = tokio::time::Instant::now() + READ_POLL;
-                read = Some(self.start_read(&mut socket, window_read_stamp(), 0).await?);
+                read = Some(
+                    self.start_read(&mut socket, window_read_stamp(), WindowCursor::start())
+                        .await?,
+                );
             }
             let deadline = read.as_ref().map_or(next_read, |read| read.deadline);
             let message = tokio::select! {
@@ -367,18 +370,17 @@ impl ClerkReader {
                         return Ok(SessionEnd::Inactive);
                     }
                     match next {
-                        Some(next) if next > after => {
+                        // The frame's parser refuses a `next` that does
+                        // not sort after `after`, so every read ends.
+                        Some(next) => {
                             if current.pages >= MAX_PAGES_PER_READ {
                                 anyhow::bail!("the library kept paging");
                             }
-                            current.after = next;
+                            current.after = next.clone();
                             current.pages += 1;
                             current.deadline = tokio::time::Instant::now() + PAGE_TIMEOUT;
                             send(&mut socket, ClerkFrame::Books { after: next }).await?;
                             read = Some(current);
-                        }
-                        Some(_) => {
-                            anyhow::bail!("the library's cursor did not move forward");
                         }
                         None => self.finish(current).await?,
                     }
@@ -401,9 +403,15 @@ impl ClerkReader {
         &self,
         socket: &mut OwnerSocket,
         seen_at: String,
-        after: i64,
+        after: WindowCursor,
     ) -> anyhow::Result<Read> {
-        send(socket, ClerkFrame::Books { after }).await?;
+        send(
+            socket,
+            ClerkFrame::Books {
+                after: after.clone(),
+            },
+        )
+        .await?;
         Ok(Read {
             seen_at,
             after,
