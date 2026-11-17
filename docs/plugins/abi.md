@@ -1471,8 +1471,12 @@ unchanged. The host uses it to skip re-reading files it already knows.
 `modifiedAtMs` and `versionId` ride alongside it.
 
 The host's own `move` fallback copies, probes the source again, and deletes
-it only when it is still the object it copied; a source rewritten during
-the copy is kept and the move fails with `conflict`. With `noOverwrite`,
+it only when the probe proves it is still the object it copied (same etag,
+else same size and modification time); a source rewritten during the copy,
+or one the probe cannot prove, is kept and the move fails with `conflict`.
+The ABI has no delete conditioned on an etag, so a rewrite between that
+probe and the delete can still be lost; a guest that declares
+`storage.move` avoids the window. With `noOverwrite`,
 the fallback writes the target with `ifNoneMatch` when the guest declares
 `storage.conditionalWrite`, and otherwise checks for the target just before
 the copy (so `atomic` is false).
