@@ -7904,7 +7904,9 @@ pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
     StoredFeed,
 };
-pub use edition_enrichment::{EditionEnrichment, EnrichCandidate, EnrichCandidatePage};
+pub use edition_enrichment::{
+    EditionAsin, EditionEnrichment, EnrichCandidate, EnrichCandidatePage,
+};
 pub use edition_files::{
     EditionAcquisition, EditionFile, FileOwner, FileRole, TitleHolding, ACQUIRE_WRITER,
 };

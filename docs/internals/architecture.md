@@ -27,8 +27,8 @@ flowchart TB
 ```
 
 1. **Scan** — each enabled source upserts owned titles into `library.db`.
-2. **Enrich** (optional) — non-Audible rows may gain an Audible ASIN via public
-   catalog search (`library.enrich_from_audible`).
+2. **Enrich** (optional) — held editions without an ASIN may gain one via
+   public catalog search (`library.enrich_from_audible`).
 3. **Acquire** — fetch Plain → package/encode → name → write every enabled
    destination. Decode, encode, and packaging do not run in the host: they are
    dispatched to a bounded pool of `bookclerk-media-worker` processes, each

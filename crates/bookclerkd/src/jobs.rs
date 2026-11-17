@@ -790,7 +790,7 @@ pub async fn run_scan(
     }
     if cfg.library.enrich_from_audible {
         let providers = state.integrations.read().await.clone();
-        if let Err(err) = bookclerk_enrich::enrich_books_from_audible(
+        if let Err(err) = bookclerk_enrich::enrich_editions_from_audible(
             &library,
             &providers,
             cfg.library.enrich_min_confidence,

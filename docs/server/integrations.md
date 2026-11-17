@@ -193,7 +193,7 @@ change your library on their own.
 
 Bookclerk asks every deployed metadata provider, in turn, when it:
 
-- matches non-Audible books to an Audible ASIN during a scan
+- matches held editions without an ASIN to an Audible ASIN during a scan
   (`library.enrich_from_audible`), looking each Audible catalog
   candidate up by ASIN;
 - fills in title details in Discover;

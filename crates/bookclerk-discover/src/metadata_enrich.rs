@@ -326,6 +326,7 @@ async fn apply_record(
                 language,
                 source: format!("{METADATA_ENRICH_SOURCE_PREFIX}{}", matched.provider),
                 confidence: PROVIDER_CONFIDENCE,
+                ..EditionEnrichment::default()
             },
         )
         .await?;
@@ -635,6 +636,7 @@ mod tests {
                     subjects: Some("s".into()),
                     source: "audible".into(),
                     confidence: 0.9,
+                    ..EditionEnrichment::default()
                 },
             )
             .await
