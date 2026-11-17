@@ -1724,8 +1724,10 @@ async fn listable_titles(
         .into_keys()
         .collect();
     let listings: HashMap<String, store_listings::Model> =
-        read_chunked(store, &edition_ids, |part| {
-            store_listings::Entity::find().filter(store_listings::Column::EditionId.is_in(part))
+        read_chunked_all(store, &edition_ids, |part| {
+            store_listings::Entity::find()
+                .filter(store_listings::Column::EditionId.is_in(part))
+                .order_by_asc(store_listings::Column::Id)
         })
         .await?
         .into_iter()
