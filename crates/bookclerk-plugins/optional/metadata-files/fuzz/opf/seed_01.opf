@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- An EPUB 3 package with roles and the series in refinements. -->
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id" prefix="calibre: https://calibre-ebook.com">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="pub-id">urn:isbn:9781250313195</dc:identifier>
+    <dc:title id="t1">Project Hail Mary</dc:title>
+    <dc:creator id="c1">Andy Weir</dc:creator>
+    <meta refines="#c1" property="role" scheme="marc:relators">aut</meta>
+    <dc:contributor id="c2">Ray Porter</dc:contributor>
+    <meta refines="#c2" property="role" scheme="marc:relators">nrt</meta>
+    <dc:contributor id="c3">Some Translator</dc:contributor>
+    <meta refines="#c3" property="role" scheme="marc:relators">trl</meta>
+    <dc:date opf:event="modification" xmlns:opf="http://www.idpf.org/2007/opf">2021-06-01</dc:date>
+    <dc:date>2021-05</dc:date>
+    <dc:language>en</dc:language>
+    <dc:description><![CDATA[Ryland Grace is the sole survivor<br/>on a desperate mission.]]></dc:description>
+    <meta property="belongs-to-collection" id="s1">Standalone</meta>
+    <meta refines="#s1" property="collection-type">series</meta>
+    <meta refines="#s1" property="group-position">3</meta>
+    <meta property="dcterms:modified">2021-06-01T00:00:00Z</meta>
+  </metadata>
+  <manifest/>
+</package>
