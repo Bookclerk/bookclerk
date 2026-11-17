@@ -1,0 +1,31 @@
+[package]
+name = "bookclerk-tags"
+description = "Sans-IO readers for metadata embedded in audiobook files (MP4, ID3, FLAC) and the tag worker's frames"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# ID3v2 frame bodies (text encodings, unsynchronisation, CHAP/CTOC, bounded
+# zlib frames). The reader hands it the tag's bytes only, never a file.
+id3 = "1.17"
+# Finds an ID3 picture's bytes inside the raw tag, to report where it lies.
+memchr = "2"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+
+[features]
+# `fixtures`: tagged M4B, MP3 and FLAC builders for tests and fuzz seeds.
+fixtures = []
+
+[dev-dependencies]
+bookclerk-tags = { path = ".", features = ["fixtures"] }
+
+[lints]
+workspace = true

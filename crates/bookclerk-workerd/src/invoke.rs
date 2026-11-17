@@ -173,6 +173,11 @@ const INTERFACES: &[InterfaceEntry] = &[
         methods: &["health", "fetchCovers"],
     },
     InterfaceEntry {
+        id: <plugin_capnp::metadata_files::Client as HasTypeId>::TYPE_ID,
+        name: "MetadataFiles",
+        methods: &["health", "parse", "render"],
+    },
+    InterfaceEntry {
         id: <plugin_capnp::event_consumer::Client as HasTypeId>::TYPE_ID,
         name: "EventConsumer",
         methods: &["event"],

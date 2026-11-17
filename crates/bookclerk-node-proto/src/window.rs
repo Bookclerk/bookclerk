@@ -8,7 +8,7 @@
 //! store accounts linked to that person.
 //!
 //! 1. window → library: [`crate::Body::WindowBooks`] with the cursor of the
-//!    previous page (0 for the first).
+//!    previous page ([`WindowCursor`]; empty for the first).
 //! 2. library → window: [`crate::Body::WindowPage`] with at most
 //!    [`MAX_WINDOW_WORKS`] works and the cursor of the next page, or none
 //!    when this was the last page.
@@ -29,6 +29,68 @@ use crate::lookup::{
 
 /// Most works one [`crate::Body::WindowPage`] may carry.
 pub const MAX_WINDOW_WORKS: usize = 100;
+
+/// Where a page of the person's books starts: an opaque key the library
+/// handed out as the previous page's `next`, or empty for the first page.
+///
+/// A cursor is empty or, like a grouping key ([`is_work_ref`]), at most
+/// [`crate::lookup::MAX_WORK_REF_BYTES`] bytes of ASCII letters, digits and `-`. Cursors
+/// order as strings, and each page's `next` sorts after the cursor it
+/// answers, so paging always moves forward. On the wire it is a JSON
+/// string; anything else is refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct WindowCursor(String);
+
+impl WindowCursor {
+    /// The cursor of the first page.
+    #[must_use]
+    pub fn start() -> Self {
+        Self(String::new())
+    }
+
+    /// Reads a cursor: `None` unless `text` is empty or a well-formed key.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        (text.is_empty() || is_work_ref(text)).then(|| Self(text.to_owned()))
+    }
+
+    /// True for the first page's cursor.
+    #[must_use]
+    pub fn is_start(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The cursor's text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for WindowCursor {
+    type Error = &'static str;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        if text.is_empty() || is_work_ref(&text) {
+            Ok(Self(text))
+        } else {
+            Err("invalid_cursor")
+        }
+    }
+}
+
+impl From<WindowCursor> for String {
+    fn from(cursor: WindowCursor) -> Self {
+        cursor.0
+    }
+}
+
+impl std::fmt::Display for WindowCursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// One work the library holds for the window's person.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,9 +157,9 @@ impl WindowWork {
 /// asked with), so paging always moves forward.
 #[must_use]
 pub fn window_page_problem(
-    after: i64,
+    after: &WindowCursor,
     works: &[WindowWork],
-    next: Option<i64>,
+    next: Option<&WindowCursor>,
 ) -> Option<&'static str> {
     if works.len() > MAX_WINDOW_WORKS {
         return Some("too_many_works");
@@ -121,6 +183,7 @@ pub fn window_page_problem(
 mod tests {
     use super::*;
     use crate::catalog::CatalogMetadata;
+    use crate::lookup::MAX_WORK_REF_BYTES;
     use crate::lookup::{LookupFormat, LookupScheme};
 
     fn edition(product_id: &str) -> LookupEdition {
@@ -197,25 +260,52 @@ mod tests {
     #[test]
     fn pages_are_validated() {
         let ok = work();
+        let start = WindowCursor::start();
+        let at = |text: &str| WindowCursor::parse(text).unwrap();
         assert_eq!(
-            window_page_problem(0, std::slice::from_ref(&ok), Some(5)),
+            window_page_problem(&start, std::slice::from_ref(&ok), Some(&at("5"))),
             None
         );
-        assert_eq!(window_page_problem(0, &[], None), None);
+        assert_eq!(window_page_problem(&start, &[], None), None);
         assert_eq!(
-            window_page_problem(0, &[ok.clone(), ok.clone()], None),
+            window_page_problem(&start, &[ok.clone(), ok.clone()], None),
             Some("duplicate_work")
         );
-        assert_eq!(
-            window_page_problem(5, std::slice::from_ref(&ok), Some(5)),
-            Some("invalid_cursor")
-        );
+        for next in ["5", "4", ""] {
+            assert_eq!(
+                window_page_problem(&at("5"), std::slice::from_ref(&ok), Some(&at(next))),
+                Some("invalid_cursor"),
+                "{next:?}"
+            );
+        }
         let many: Vec<WindowWork> = (0..=MAX_WINDOW_WORKS)
             .map(|i| WindowWork {
                 work: format!("w{i}"),
                 ..work()
             })
             .collect();
-        assert_eq!(window_page_problem(0, &many, None), Some("too_many_works"));
+        assert_eq!(
+            window_page_problem(&start, &many, None),
+            Some("too_many_works")
+        );
+    }
+
+    #[test]
+    fn cursors_are_empty_or_keys() {
+        assert!(WindowCursor::start().is_start());
+        assert_eq!(WindowCursor::parse(""), Some(WindowCursor::start()));
+        let id = "0b5c2e6a-9f1d-4c3b-8a7e-2d4f6b8c0e1a";
+        assert_eq!(
+            WindowCursor::parse(id).map(|c| c.to_string()),
+            Some(id.into())
+        );
+        for bad in ["a b", "x/y", "é", &"a".repeat(MAX_WORK_REF_BYTES + 1)] {
+            assert_eq!(WindowCursor::parse(bad), None, "{bad:?}");
+        }
+        let json: WindowCursor = serde_json::from_str(&format!("\"{id}\"")).unwrap();
+        assert_eq!(json.as_str(), id);
+        assert_eq!(serde_json::to_string(&json).unwrap(), format!("\"{id}\""));
+        assert!(serde_json::from_str::<WindowCursor>("5").is_err());
+        assert!(serde_json::from_str::<WindowCursor>("\"a b\"").is_err());
     }
 }

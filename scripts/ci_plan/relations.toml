@@ -81,6 +81,8 @@ paths = [
     "fuzz/oracles/scan_page.rs",
     "fuzz/corpus/plain_fetch/**",
     "fuzz/oracles/plain_fetch.rs",
+    "fuzz/corpus/metadata_file_record/**",
+    "fuzz/oracles/metadata_file_record.rs",
     "fuzz/corpus/event_read/**",
     "fuzz/oracles/event_read.rs",
     "fuzz/corpus/socket_request/**",
@@ -180,6 +182,16 @@ paths = [
 ]
 
 [[test_input]]
+package = "bookclerk-tags"
+# The tag oracles are shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/tags_read/**",
+    "fuzz/oracles/tags_read.rs",
+    "fuzz/corpus/tags_wire/**",
+    "fuzz/oracles/tags_wire.rs",
+]
+
+[[test_input]]
 package = "bookclerk-resolve"
 paths = ["fuzz/corpus/library_resolve/**"]
 
@@ -220,6 +232,14 @@ package = "bookclerk-node-proto"
 paths = [
   "fuzz/corpus/clerk_token_request/**",
   "fuzz/oracles/clerk_token_request.rs",
+]
+
+[[test_input]]
+package = "bookclerk-node-proto"
+# The library card answer oracle is shared with the replay test through `#[path]`.
+paths = [
+  "fuzz/corpus/clerk_token_answer/**",
+  "fuzz/oracles/clerk_token_answer.rs",
 ]
 
 [[test_input]]

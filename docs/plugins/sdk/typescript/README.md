@@ -47,6 +47,7 @@ extending its base:
 | `entrypoints = ["oidc"]` | `Oidc` | `OidcEntrypoint` |
 | `entrypoints = ["metadata"]` | `Metadata` | `MetadataEntrypoint` |
 | `entrypoints = ["covers"]` | `Covers` | `CoverEntrypoint` |
+| `entrypoints = ["metadataFiles"]` | `MetadataFiles` | `MetadataFilesEntrypoint` |
 
 ```ts
 import {

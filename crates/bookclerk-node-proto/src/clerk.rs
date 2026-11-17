@@ -38,6 +38,10 @@ pub const CLERK_SCOPE: &str = "library:member";
 /// `POST`: redeem an approved clerk sign-in for a session token.
 pub const CLERK_TOKEN_PATH: &str = "/api/clerk/v1/token";
 
+/// The clerk's own web app page a clerk sign-in's redirect comes back to
+/// (`<clerk origin>/clerk/callback?code=…&state=…`).
+pub const CLERK_CALLBACK_PATH: &str = "/clerk/callback";
+
 /// The `Authorization` scheme a clerk sends its session token under.
 pub const CLERK_AUTH_SCHEME: &str = "Bookclerk-Clerk";
 
@@ -290,6 +294,38 @@ mod tests {
     }
 
     #[test]
+    fn a_token_answer_is_checked_before_it_is_kept() {
+        let good = format!(
+            r#"{{"token":"{TOKEN}","cluster_id":"c-1","user":{{"id":7,"display_name":"Riley"}},"idle_secs":7776000,"later":true}}"#
+        );
+        let answer = parse_clerk_token_answer(good.as_bytes()).expect("a good answer");
+        assert_eq!(answer.token, TOKEN);
+        assert_eq!(answer.cluster_id, "c-1");
+        assert_eq!(answer.user.id, 7);
+        assert_eq!(answer.user.display_name.as_deref(), Some("Riley"));
+        let bad = [
+            format!(r#"[{TOKEN:?}]"#),
+            r#"{"token":"short","cluster_id":"c-1","user":{"id":7},"idle_secs":1}"#.to_string(),
+            format!(r#"{{"token":"{TOKEN}","cluster_id":"","user":{{"id":7}},"idle_secs":1}}"#),
+            format!(r#"{{"token":"{TOKEN}","cluster_id":"c-1","user":{{"id":0}},"idle_secs":1}}"#),
+            format!(r#"{{"token":"{TOKEN}","cluster_id":"c-1","user":{{"id":7}},"idle_secs":0}}"#),
+            format!(
+                r#"{{"token":"{TOKEN}","cluster_id":"c-1","user":{{"id":7,"display_name":"a\nb"}},"idle_secs":1}}"#
+            ),
+            format!(
+                r#"{{"token":"{TOKEN}","token":"{TOKEN}","cluster_id":"c-1","user":{{"id":7}},"idle_secs":1}}"#
+            ),
+            format!(
+                r#"{{"token":"{TOKEN}","cluster_id":"c-1","user":{{"id":7}},"idle_secs":1{}}}"#,
+                " ".repeat(MAX_CLERK_ANSWER_BYTES)
+            ),
+        ];
+        for body in bad {
+            assert_eq!(parse_clerk_token_answer(body.as_bytes()), None, "{body}");
+        }
+    }
+
+    #[test]
     fn a_token_parses_under_its_scheme_only() {
         assert_eq!(TOKEN.len(), CLERK_TOKEN_LEN);
         let header = format!("Bookclerk-Clerk {TOKEN}");
@@ -355,6 +391,59 @@ pub fn parse_clerk_token_request(body: &[u8]) -> Option<ClerkTokenRequest> {
         return None;
     }
     serde_json::from_slice(body).ok()
+}
+
+/// Largest `POST /api/clerk/v1/token` answer a clerk reads.
+pub const MAX_CLERK_ANSWER_BYTES: usize = 8 * 1024;
+
+/// Longest display name a clerk keeps from a token answer.
+pub const MAX_CLERK_DISPLAY_NAME_BYTES: usize = 128;
+
+/// Longest idle period a clerk accepts from a token answer: a year.
+const MAX_CLERK_IDLE_SECS: i64 = 366 * 24 * 60 * 60;
+
+/// Reads the library's `POST /api/clerk/v1/token` answer on the clerk.
+///
+/// The answer comes from another machine, so it is checked before any of
+/// it is kept: at most [`MAX_CLERK_ANSWER_BYTES`] of UTF-8 (all of it,
+/// unknown keys included), one JSON object with no known key written twice, `token` a session token ([`is_clerk_token`]),
+/// `cluster_id` a cluster id ([`crate::is_cluster_id`]), `user.id` a
+/// positive integer, `user.display_name` (optional) at most
+/// [`MAX_CLERK_DISPLAY_NAME_BYTES`] bytes with no control characters, and
+/// `idle_secs` from 1 second to a year. Keys it does not know are ignored,
+/// so a newer library can add to the answer.
+///
+/// # Arguments
+///
+/// * `body` - The answer body bytes.
+///
+/// # Returns
+///
+/// The answer, or `None` when it breaks any rule.
+#[must_use]
+pub fn parse_clerk_token_answer(body: &[u8]) -> Option<ClerkTokenAnswer> {
+    if body.len() > MAX_CLERK_ANSWER_BYTES {
+        return None;
+    }
+    // serde skips the strings of unknown keys without checking them, so
+    // the whole body is checked here.
+    let text = std::str::from_utf8(body).ok()?;
+    if !text
+        .trim_start_matches([' ', '\t', '\n', '\r'])
+        .starts_with('{')
+    {
+        return None;
+    }
+    let answer: ClerkTokenAnswer = serde_json::from_str(text).ok()?;
+    let name_ok = answer.user.display_name.as_deref().is_none_or(|name| {
+        name.len() <= MAX_CLERK_DISPLAY_NAME_BYTES && !name.chars().any(char::is_control)
+    });
+    (is_clerk_token(&answer.token)
+        && crate::is_cluster_id(&answer.cluster_id)
+        && answer.user.id > 0
+        && name_ok
+        && (1..=MAX_CLERK_IDLE_SECS).contains(&answer.idle_secs))
+    .then_some(answer)
 }
 
 /// What the library stored with an approved code, as the token exchange

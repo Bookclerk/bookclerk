@@ -116,10 +116,12 @@ pub use catalog::{
 };
 pub use clerk::{
     clerk_exchange_matches, clerk_request_problem, is_clerk_name, is_clerk_token,
-    is_s256_challenge, parse_clerk_authorization, parse_clerk_query, parse_clerk_token_request,
-    ClerkAuthorizeParams, ClerkTokenAnswer, ClerkTokenRequest, ClerkUser, StoredClerkCode,
-    CLERK_AUTH_SCHEME, CLERK_CLIENT_ID, CLERK_CODE_TTL_SECS, CLERK_IDLE_DAYS, CLERK_SCOPE,
-    CLERK_TOKEN_LEN, CLERK_TOKEN_PATH, MAX_CLERK_NAME_BYTES, MAX_CLERK_STATE_BYTES,
+    is_s256_challenge, parse_clerk_authorization, parse_clerk_query, parse_clerk_token_answer,
+    parse_clerk_token_request, ClerkAuthorizeParams, ClerkTokenAnswer, ClerkTokenRequest,
+    ClerkUser, StoredClerkCode, CLERK_AUTH_SCHEME, CLERK_CALLBACK_PATH, CLERK_CLIENT_ID,
+    CLERK_CODE_TTL_SECS, CLERK_IDLE_DAYS, CLERK_SCOPE, CLERK_TOKEN_LEN, CLERK_TOKEN_PATH,
+    MAX_CLERK_ANSWER_BYTES, MAX_CLERK_DISPLAY_NAME_BYTES, MAX_CLERK_NAME_BYTES,
+    MAX_CLERK_STATE_BYTES,
 };
 pub use clerk_socket::{
     is_topic_name, parse_clerk_frame, parse_library_frame, ClerkFrame, ClerkSocketError,
@@ -175,7 +177,7 @@ pub use signature::{
     verify_auth, ArtifactRequest, AuthContext, AuthError, ARTIFACT_AUTH_SCHEME, ARTIFACT_DOMAIN,
     ARTIFACT_REQUEST_MAX_SKEW_SECS, AUTH_DOMAIN, NONCE_LEN,
 };
-pub use window::{window_page_problem, WindowWork, MAX_WINDOW_WORKS};
+pub use window::{window_page_problem, WindowCursor, WindowWork, MAX_WINDOW_WORKS};
 
 /// Path prefix of the owner's artifact endpoint: `GET
 /// /api/node/v1/artifacts/<archive_sha256>` with a signed `Authorization`

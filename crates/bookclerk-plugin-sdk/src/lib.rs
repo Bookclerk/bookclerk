@@ -116,7 +116,9 @@ pub use bookclerk_plugin_abi::{
     JobCheckpoint, JobController, JobInvocation, JobInvocationLease, JobOutcome, JobRunner,
     JobRunnerClient, KeyOutcome, KeyPair, KvDeleteOk, KvGetOk, KvListKey, KvListOk, KvListOptions,
     KvNamespace, KvNamespaceClient, KvPutOk, KvPutOptions, LimitExceeded, ListOptions, ListPage,
-    MetadataChapter, MetadataChapters, MetadataChaptersParams, MetadataLookupParams,
+    MetadataChapter, MetadataChapters, MetadataChaptersParams, MetadataField,
+    MetadataFileParseParams, MetadataFileParsed, MetadataFileRecord, MetadataFileRenderParams,
+    MetadataFileRendered, MetadataFiles, MetadataFilesClient, MetadataLookupParams,
     MetadataProvider, MetadataProviderClient, MetadataRecord, MetadataSearchParams, MoveManyPage,
     MoveManyRequest, MoveManyTarget, MoveOptions, MoveResult, NamedKvBinding, NamedQueueBinding,
     NeverCancel, ObjectChange, ObjectChangeKind, ObjectInfo, ObjectMetadata, Oidc, OidcClient,
@@ -131,10 +133,11 @@ pub use bookclerk_plugin_abi::{
     FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE, FEATURE_STORAGE_MOVE_MANY, FEATURE_STREAMS,
     MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES, MAX_CHANGES_PAGE, MAX_EVENT_CURSOR_BYTES,
     MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE,
-    MAX_PLUGIN_MIGRATION_OPS, MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
-    MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES,
-    MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
-    SQL_CONTRACT_VERSION, STORAGE_OPERATION_FEATURES,
+    MAX_METADATA_FILE_BYTES, MAX_METADATA_FILE_CHAPTERS, MAX_METADATA_FILE_DESCRIPTION_BYTES,
+    MAX_METADATA_FILE_LIST_ENTRIES, MAX_METADATA_FILE_TEXT_BYTES, MAX_PLUGIN_MIGRATION_OPS,
+    MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS,
+    MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
+    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION, SQL_CONTRACT_VERSION, STORAGE_OPERATION_FEATURES,
 };
 
 /// Serves a [`PluginWorker`] on stdin/stdout (Cap'n Proto RPC).

@@ -35,10 +35,13 @@ boundary extends it.
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
 | `cover_token` | Cover tokens in `/api/covers` and `/api/images` paths, and Gravatar hashes in `/api/avatars` paths: which remote URL a route may fetch | `bookclerk-cover::token` |
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
+| `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items and chapter tracks, ID3v2 and ID3v1, FLAC metadata blocks, read by range in the tag worker | `bookclerk-tags::TagReader` |
+| `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
 | `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
+| `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
 | `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany` and `changes` pages and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL, headers, subprotocols, heartbeat pairs and attachment, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
@@ -56,6 +59,7 @@ boundary extends it.
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
 | `clerk_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_clerk_query`, `clerk_request_problem` |
 | `clerk_token_request` | A library card's token exchange, the body of `POST /api/clerk/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_clerk_token_request`, `clerk_exchange_matches` |
+| `clerk_token_answer` | A library's answer to a clerk's token exchange, read on the clerk before it seals the library card and records the library | `bookclerk-node-proto::parse_clerk_token_answer` |
 | `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics and pages of the person's books) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
@@ -163,6 +167,20 @@ only that. The others check:
   An accepted frame re-encodes to exactly its own bytes, and an accepted
   reply carries only JPEG-signed images and a nonzero size. The shared
   oracle is `fuzz/oracles/cover_wire.rs`, replayed from `bookclerk-cover`.
+- **`tags_read`**: the input is a whole media file. The reader is driven
+  twice, supplying each round's spans in order and then reversed, and both
+  drives must give the same answer as reading with every byte available up
+  front, so the result never depends on how bytes arrive. Every span asked
+  for is non-empty and inside the file, within the round and span limits.
+  An accepted record passes the host's `TagRecord::validate` and survives
+  the worker's `Done` frame unchanged. The shared oracle is
+  `fuzz/oracles/tags_read.rs`, replayed from `bookclerk-tags`.
+- **`tags_wire`**: the first byte picks the request or the reply decoder.
+  An accepted request, `Need` or `Failed` frame re-encodes to exactly its
+  own bytes; a `Need` names one to 64 non-empty, non-overflowing spans; a
+  `Done` record re-encodes to a frame that decodes to the same record. The
+  shared oracle is `fuzz/oracles/tags_wire.rs`, replayed from
+  `bookclerk-tags`.
 - **`cache_headers`**: the first byte, modulo 4, picks a mode. A built
   `If-None-Match` list of well-formed tags matches exactly when one of
   them is the current tag, strong or weak. Any raw header that matches,
@@ -197,6 +215,17 @@ only that. The others check:
   reply round-trips through the codec and is accepted again. The shared
   oracle is `fuzz/oracles/plain_fetch.rs`, replayed from
   `bookclerk-plugin-abi`.
+- **`metadata_file_record`**: the input is a `MetadataFileRecord` message.
+  The host accepts it exactly when an independent restatement of every
+  rule agrees: no field or credit role listed twice, a value only for a
+  field in `present`, each credit's role in `creditRoles`, labels on one
+  non-blank line within their caps, a partial ISO date, list and chapter
+  caps, and chapters in start order with no depth jump. An accepted
+  record is then checked against a fixed `abs_metadata_json` dialect,
+  and passes exactly when it states only that dialect's fields and roles.
+  An accepted record round-trips through the codec and is accepted again.
+  The shared oracle is `fuzz/oracles/metadata_file_record.rs`, replayed
+  from `bookclerk-plugin-abi`.
 - **`event_read`**: byte 0 modulo 4 picks a `/events/read` JSON body (0),
   a bare cursor (1), or a Cap'n Proto `EventReadRequest` (2) or
   `EventReadPage` (3). The body parser accepts exactly the JSON objects whose
@@ -291,7 +320,8 @@ only that. The others check:
   and a positive generation. A
   `window.page` that passes its validator carries at most 100 works, each
   once, with plain identifiers, 1 to 8 distinct owned editions with a
-  title, and a next cursor past the one asked with. A `scan.removed` or
+  title, and a plain next cursor (up to 64 letters, digits and `-`)
+  sorting past the one asked with. A `scan.removed` or
   `scan.pass_end` that passes its validator names an account and carries
   at most 500 product ids, each non-blank, at most 512 bytes and free of
   control characters, or a sync token of at most 4096 bytes with no
@@ -346,12 +376,21 @@ only that. The others check:
   against RFC 7636's example pair). The shared oracle is
   `fuzz/oracles/clerk_token_request.rs`, replayed from
   `bookclerk-node-proto`.
+- **`clerk_token_answer`**: the input is the answer body, checked
+  against the body read as an untyped JSON value. It parses exactly when
+  it is at most 8 KiB and one object, no field it reads is written twice,
+  `token` is 43 base64url characters, `cluster_id` is a cluster id,
+  `user.id` is a positive integer, `user.display_name` (optional) is at
+  most 128 bytes with no control characters, and `idle_secs` is from 1
+  second to a year; other keys are ignored, and each field is the value
+  sent. The shared oracle is `fuzz/oracles/clerk_token_answer.rs`,
+  replayed from `bookclerk-node-proto`.
 - **`clerk_socket_frame`**: the first byte picks the direction (even:
   clerk to library; odd: library to clerk) and the rest is the frame,
   checked against the frame read as an untyped JSON value. A clerk frame
   parses exactly when it is at most 4 KiB and one object with no repeated
-  keys and exactly `v` (the integer 1), `type` (`books`) and `after` (an
-  integer, not negative). A library frame is refused when it is not one
+  keys and exactly `v` (the integer 1), `type` (`books`) and `after` (a
+  cursor string: empty, or up to 64 letters, digits and `-`). A library frame is refused when it is not one
   object, repeats a key, has another `v` or an unknown `type`, or carries
   another type's field; `hello` and `changed` parse exactly when `topics`
   holds at most 16 well-formed names, and keep only the ones the clerk

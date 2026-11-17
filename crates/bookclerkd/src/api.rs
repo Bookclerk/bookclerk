@@ -1281,6 +1281,13 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         // The window view on a branch (operator or Owner; the handler
         // checks).
         .routes(routes!(crate::cluster_link::join::get_join_window))
+        // Library cards: signing in to a library as a clerk (operator or
+        // Owner; the handlers check).
+        .routes(routes!(crate::clerk_link::api::get_clerk_cards))
+        .routes(routes!(crate::clerk_link::api::post_clerk_inspect))
+        .routes(routes!(crate::clerk_link::api::post_clerk_start))
+        .routes(routes!(crate::clerk_link::api::post_clerk_callback))
+        .routes(routes!(crate::clerk_link::api::post_clerk_sign_out))
         // Store connections across linked libraries: the branch's person
         // only (the handler checks).
         .routes(routes!(
@@ -1726,6 +1733,12 @@ fn api_timeout_for_path(path: &str) -> Duration {
         // Their own bounded waits add up to 29 s; the rest is margin for the
         // database round trips around them.
         "/api/config/join/callback" | "/api/config/join/invite" => Duration::from_secs(45),
+        // Signing in with a library card reads the library, or redeems the
+        // code with it (connect and request timeouts in
+        // `bookclerk_node_client::endpoint`).
+        "/api/config/clerk/inspect" | "/api/config/clerk/start" | "/api/config/clerk/callback" => {
+            Duration::from_secs(45)
+        }
         // Reading a library dials it (connect and request timeouts in
         // `bookclerk_node_client::endpoint`), so an unreachable one is
         // answered as `unreachable` rather than cut off.

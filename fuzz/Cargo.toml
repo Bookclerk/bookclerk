@@ -28,6 +28,7 @@ bookclerk-plugin-sdk = { path = "../crates/bookclerk-plugin-sdk" }
 bookclerk-resolve = { path = "../crates/bookclerk-resolve" }
 bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
+bookclerk-tags = { path = "../crates/bookclerk-tags" }
 bookclerk-config = { path = "../crates/bookclerk-config" }
 bookclerk-plugin-source-libro = { path = "../crates/bookclerk-plugins/optional/source-libro" }
 bookclerk-plugin-source-graphicaudio = { path = "../crates/bookclerk-plugins/optional/source-graphicaudio" }
@@ -134,6 +135,13 @@ bench = false
 [[bin]]
 name = "plain_fetch"
 path = "fuzz_targets/plain_fetch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "metadata_file_record"
+path = "fuzz_targets/metadata_file_record.rs"
 test = false
 doc = false
 bench = false
@@ -258,6 +266,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "tags_read"
+path = "fuzz_targets/tags_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tags_wire"
+path = "fuzz_targets/tags_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "branch_request"
 path = "fuzz_targets/branch_request.rs"
 test = false
@@ -281,6 +303,13 @@ bench = false
 [[bin]]
 name = "clerk_token_request"
 path = "fuzz_targets/clerk_token_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clerk_token_answer"
+path = "fuzz_targets/clerk_token_answer.rs"
 test = false
 doc = false
 bench = false

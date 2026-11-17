@@ -110,6 +110,9 @@ import type {
   CoverImage,
   MetadataChapters,
   MetadataChaptersParams,
+  MetadataFileParseParams,
+  MetadataFileRecord,
+  MetadataFileRenderParams,
   MetadataLookupParams,
   MetadataRecord,
   MetadataSearchParams,
@@ -183,6 +186,12 @@ export type {
   MetadataChapter,
   MetadataChapters,
   MetadataChaptersParams,
+  MetadataField,
+  MetadataFileParseParams,
+  MetadataFileParsed,
+  MetadataFileRecord,
+  MetadataFileRenderParams,
+  MetadataFileRendered,
   MetadataLookupParams,
   MetadataRecord,
   MetadataSearchParams,
@@ -2859,6 +2868,52 @@ export class CoverEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends Na
   }
 }
 
+/**
+ * `metadataFiles` entrypoint (`MetadataFiles`): reads and writes metadata
+ * files (sidecars such as `metadata.json`, OPF, NFO or CUE) for the host. The
+ * host reads every file, chooses every path and writes every result, so the
+ * entrypoint only converts bytes. Each dialect is a
+ * `[[metadata_files.dialects]]` row in `plugin.toml`; `params.dialect` names
+ * the row. Export it as `export class MetadataFiles extends MetadataFilesEntrypoint`.
+ */
+export class MetadataFilesEntrypoint<
+  Env extends BookclerkEnv = BookclerkEnv,
+> extends NamedEntrypoint<Env> {
+  static override bookclerkMethods = Object.freeze(["health", "parse", "render"]);
+
+  /**
+   * Reports whether the dialects can answer.
+   *
+   * @returns Health flag plus detail.
+   */
+  health(): Promise<HealthOk> {
+    return Promise.resolve({ ok: true, detail: "" });
+  }
+  /**
+   * What one file says about its edition. List every field the file states
+   * in `present`, including ones it states as empty; leave out fields it
+   * does not mention. Throw `invalid_params` for a file the dialect cannot
+   * read.
+   *
+   * @param _params - Dialect id, file name and the whole file.
+   * @returns The parsed record.
+   */
+  parse(_params: MetadataFileParseParams): Promise<MetadataFileRecord> {
+    return Promise.reject(unsupported("parse"));
+  }
+  /**
+   * The new file: `params.existing` with each field in `params.fields` set to
+   * the record's value (removed when the value is empty), everything else
+   * kept as it was. `existing` is empty when the host creates the file.
+   *
+   * @param _params - Dialect id, values, fields to set and the current file.
+   * @returns The new file's bytes; a string is written as UTF-8.
+   */
+  render(_params: MetadataFileRenderParams): Promise<Uint8Array | string> {
+    return Promise.reject(unsupported("render"));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Adapter isolate (trusted; owns GRANTED / BRIDGE_TOKEN / PLUGIN_DESCRIBE)
 // ---------------------------------------------------------------------------
@@ -2872,7 +2927,8 @@ export type EntrypointName =
   | "cli"
   | "oidc"
   | "metadata"
-  | "covers";
+  | "covers"
+  | "metadataFiles";
 
 /** Adapter binding name for each named entrypoint. */
 export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Object.freeze({
@@ -2884,6 +2940,7 @@ export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Obj
   oidc: "PLUGIN_OIDC",
   metadata: "PLUGIN_METADATA",
   covers: "PLUGIN_COVERS",
+  metadataFiles: "PLUGIN_METADATA_FILES",
 });
 
 /** Exported class name the launcher binds for each named entrypoint. */
@@ -2896,6 +2953,7 @@ export const ENTRYPOINT_CLASSES: Readonly<Record<EntrypointName, string>> = Obje
   oidc: "Oidc",
   metadata: "Metadata",
   covers: "Covers",
+  metadataFiles: "MetadataFiles",
 });
 
 /** Reverse-channel fetcher bound as `GRANTED` on the adapter isolate. */

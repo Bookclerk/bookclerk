@@ -10,7 +10,8 @@ use crate::generated::{
     CliSchema, CoverFetchParams, CoverImage, DatabaseAdapterConfig, ExpandCandidatesParams,
     ExternalUser, FetchTitleParams, Invocation, ListDealsParams, ListeningProgress,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MetadataChapters,
-    MetadataChaptersParams, MetadataLookupParams, MetadataRecord, MetadataSearchParams, PlainFetch,
+    MetadataChaptersParams, MetadataFileParseParams, MetadataFileParsed, MetadataFileRenderParams,
+    MetadataFileRendered, MetadataLookupParams, MetadataRecord, MetadataSearchParams, PlainFetch,
     PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintsParams,
     RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams,
     SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo, SocketMessage, SocketMessageOk,
@@ -580,6 +581,36 @@ pub trait CoverFetcher {
     }
 }
 
+/// `metadataFiles` entrypoint: converts metadata files (sidecars) next to an
+/// edition's media to and from [`crate::MetadataFileRecord`]s.
+///
+/// The plugin only converts bytes; the host reads and writes every file and
+/// checks every record it returns (see [`crate::metadata_files`]). Methods a
+/// plugin does not serve keep the default, which returns typed
+/// `unsupported`.
+#[async_trait::async_trait(?Send)]
+pub trait MetadataFiles {
+    /// Liveness / readiness probe.
+    async fn health(&self) -> Result<crate::rpc_types::HealthOk> {
+        Ok(crate::rpc_types::HealthOk {
+            ok: true,
+            detail: String::new(),
+        })
+    }
+
+    /// What the file in `params.bytes` says, read as `params.dialect`. A file
+    /// the dialect cannot read is an `invalid_params` error.
+    async fn parse(&self, _params: MetadataFileParseParams) -> Result<MetadataFileParsed> {
+        Err(PluginError::unsupported("parse"))
+    }
+
+    /// `params.existing` with the fields in `params.fields` set to the
+    /// record's values, everything else kept.
+    async fn render(&self, _params: MetadataFileRenderParams) -> Result<MetadataFileRendered> {
+        Err(PluginError::unsupported("render"))
+    }
+}
+
 /// `cli` entrypoint: guest commands under `bookclerk plugins <id> <command>`.
 #[async_trait::async_trait(?Send)]
 pub trait PluginCli {
@@ -892,6 +923,8 @@ pub struct Entrypoints {
     pub covers: Option<Box<dyn CoverFetcher>>,
     /// `[sockets]` handler.
     pub socket_handler: Option<Box<dyn SocketHandler>>,
+    /// `metadataFiles` entrypoint.
+    pub metadata_files: Option<Box<dyn MetadataFiles>>,
 }
 
 /// Root `PluginWorker` capability (`describe` / `open` / `shutdown`).

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Every entrypoint in declaration order (mirrors the Cap'n Proto enum).
-pub const ALL_ENTRYPOINTS: [Entrypoint; 8] = [
+pub const ALL_ENTRYPOINTS: [Entrypoint; 9] = [
     Entrypoint::Storefront,
     Entrypoint::Storage,
     Entrypoint::DatabaseAdapter,
@@ -23,6 +23,7 @@ pub const ALL_ENTRYPOINTS: [Entrypoint; 8] = [
     Entrypoint::Oidc,
     Entrypoint::Metadata,
     Entrypoint::Covers,
+    Entrypoint::MetadataFiles,
 ];
 
 /// Entrypoints the host loads into their own registry (sources,
@@ -52,7 +53,8 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
         | Entrypoint::Cli
         | Entrypoint::Oidc
         | Entrypoint::Metadata
-        | Entrypoint::Covers => PluginFamily::Integration,
+        | Entrypoint::Covers
+        | Entrypoint::MetadataFiles => PluginFamily::Integration,
     }
 }
 
@@ -68,7 +70,7 @@ pub enum PluginFamily {
     /// Storefront / library source (`Storefront` entrypoint).
     Source,
     /// Event consumer, job runner, remote library, CLI, OIDC bridge,
-    /// metadata provider, or cover fetcher.
+    /// metadata provider, cover fetcher, or metadata file dialects.
     Integration,
     /// Destination / output backend (`Storage` entrypoint).
     Output,
@@ -200,6 +202,75 @@ impl MediaManifest {
             fetches: self.fetches.clone(),
         }
     }
+}
+
+/// `[metadata_files]`: the metadata file dialects a `metadataFiles` plugin
+/// implements. Required for that entrypoint and forbidden without it.
+///
+/// The host routes a file to a dialect from this table alone, so a
+/// sleeping plugin is started only when a file it reads turns up.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetadataFilesManifest {
+    /// One row per dialect (`[[metadata_files.dialects]]`); never empty.
+    #[serde(default)]
+    pub dialects: Vec<MetadataFileDialectManifest>,
+}
+
+/// One `[[metadata_files.dialects]]` row: a file format the plugin reads,
+/// and writes when `writes` is true.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetadataFileDialectManifest {
+    /// Dialect id (`[a-z][a-z0-9_]{0,63}`), unique within the plugin; the
+    /// host passes it back in `parse` and `render`.
+    pub id: String,
+    /// Name shown in settings and on a book's files list.
+    pub name: String,
+    /// Exact file names the dialect reads (`metadata.json`), compared
+    /// without ASCII case. An exact name wins over a suffix.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_names: Vec<String>,
+    /// File name endings the dialect reads (`.opf`, `.metadata.json`),
+    /// compared without ASCII case. Each starts with `.`; the longest match
+    /// wins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suffixes: Vec<String>,
+    /// Fields the format carries (wire names such as `title`,
+    /// `publishedAt`); never empty.
+    #[serde(default)]
+    pub fields: Vec<bookclerk_plugin_abi::MetadataField>,
+    /// Credit roles the format carries; required exactly when `fields`
+    /// names `credits`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credit_roles: Vec<bookclerk_plugin_abi::CreditRole>,
+    /// Whether the dialect also writes files (`render`). Read-only formats,
+    /// such as a store's catalog JSON, leave it false.
+    #[serde(default)]
+    pub writes: bool,
+}
+
+impl MetadataFileDialectManifest {
+    /// The row as the host's record checks take it.
+    ///
+    /// # Returns
+    ///
+    /// The dialect's id, fields, credit roles and write flag.
+    #[must_use]
+    pub fn to_dialect(&self) -> bookclerk_plugin_abi::MetadataFileDialect {
+        bookclerk_plugin_abi::MetadataFileDialect {
+            id: self.id.clone(),
+            fields: self.fields.clone(),
+            credit_roles: self.credit_roles.clone(),
+            writes: self.writes,
+        }
+    }
+}
+
+/// Whether `name` is printable ASCII naming one file with no folder.
+fn is_ascii_file_name(name: &str) -> bool {
+    name.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
+        && bookclerk_plugin_abi::metadata_files::is_plain_file_name(name)
 }
 
 /// Network mode declared in `[capabilities.network]`.
@@ -1101,6 +1172,11 @@ pub struct PluginManifest {
     /// [`MediaManifest`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaManifest>,
+    /// Metadata file dialects (`[metadata_files]`): required for plugins
+    /// that export the `metadataFiles` entrypoint and forbidden for every
+    /// other plugin; see [`MetadataFilesManifest`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_files: Option<MetadataFilesManifest>,
     /// Declared network capability (consent has no Wrangler analogue).
     pub capabilities: CapabilitiesManifest,
     /// Optional CLI schema advertised to `bookclerk plugins <id>` (from
@@ -1451,7 +1527,7 @@ impl PluginManifest {
     /// A plugin joins the `Source` / `Output` / `Database` families through
     /// the matching named entrypoint and the `Integration` family through
     /// event consumers, queue consumers, crons, `RemoteLibrary`, `Cli`,
-    /// `Oidc`, `Metadata`, or `Covers`.
+    /// `Oidc`, `Metadata`, `Covers`, or `MetadataFiles`.
     ///
     /// Job triggers make a plugin an integration only when it has no
     /// `storefront`, `storage` or `databaseAdapter` entrypoint. Beside one of
@@ -1480,6 +1556,7 @@ impl PluginManifest {
                         || self.has_entrypoint(Entrypoint::Oidc)
                         || self.has_entrypoint(Entrypoint::Metadata)
                         || self.has_entrypoint(Entrypoint::Covers)
+                        || self.has_entrypoint(Entrypoint::MetadataFiles)
                         || (self.has_entrypoint(Entrypoint::Cli) && !self.has_registry_entrypoint())
                 }
             };
@@ -1768,6 +1845,123 @@ impl PluginManifest {
             .map_err(|err| Error::message(format!("plugin.toml: `[media]`: {err}")))
     }
 
+    /// Checks the `[metadata_files]` table against the plugin's entrypoints.
+    ///
+    /// The same rules, with the same messages, run in the TypeScript and
+    /// Python author tools (`manifest-cases.json`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Message`] when a `metadataFiles` plugin has no
+    /// dialects or another plugin has the table, or when a dialect has a bad
+    /// or repeated id, no name, no file names or suffixes, a malformed or
+    /// repeated name or suffix, no fields, a repeated field or credit role,
+    /// or credit roles without `credits` (or `credits` without roles).
+    fn validate_metadata_files(&self) -> Result<()> {
+        let exported = self.has_entrypoint(Entrypoint::MetadataFiles);
+        let Some(table) = &self.metadata_files else {
+            if exported {
+                return Err(Error::message(
+                    "plugin.toml: `[metadata_files]` is required for a plugin with the \
+                     `metadataFiles` entrypoint (declare at least one dialect)",
+                ));
+            }
+            return Ok(());
+        };
+        if !exported {
+            return Err(Error::message(
+                "plugin.toml: `[metadata_files]` needs the `metadataFiles` entrypoint",
+            ));
+        }
+        if table.dialects.is_empty() {
+            return Err(Error::message(
+                "plugin.toml: `[metadata_files].dialects` is empty",
+            ));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        let mut claimed = std::collections::BTreeSet::new();
+        for (i, dialect) in table.dialects.iter().enumerate() {
+            let row = format!("plugin.toml: metadata_files.dialects[{i}]");
+            if !bookclerk_plugin_abi::metadata_files::is_dialect_id(&dialect.id) {
+                return Err(Error::message(format!(
+                    "{row}.id `{}` is not an identifier ([a-z][a-z0-9_]{{0,63}})",
+                    dialect.id
+                )));
+            }
+            if !ids.insert(dialect.id.as_str()) {
+                return Err(Error::message(format!(
+                    "plugin.toml: metadata_files dialect id `{}` is declared twice",
+                    dialect.id
+                )));
+            }
+            if dialect.name.trim().is_empty() {
+                return Err(Error::message(format!("{row}.name is required")));
+            }
+            if dialect.file_names.is_empty() && dialect.suffixes.is_empty() {
+                return Err(Error::message(format!(
+                    "{row} declares no `file_names` or `suffixes`"
+                )));
+            }
+            for name in &dialect.file_names {
+                if !is_ascii_file_name(name) {
+                    return Err(Error::message(format!(
+                        "{row}.file_names entry `{name}` is not a plain ASCII file name"
+                    )));
+                }
+            }
+            for suffix in &dialect.suffixes {
+                if suffix.len() < 2 || !suffix.starts_with('.') || !is_ascii_file_name(suffix) {
+                    return Err(Error::message(format!(
+                        "{row}.suffixes entry `{suffix}` must start with `.` and be a plain \
+                         ASCII file name"
+                    )));
+                }
+            }
+            for name in dialect.file_names.iter().chain(&dialect.suffixes) {
+                if !claimed.insert(name.to_ascii_lowercase()) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: metadata_files `{name}` is claimed twice"
+                    )));
+                }
+            }
+            if dialect.fields.is_empty() {
+                return Err(Error::message(format!("{row}.fields is empty")));
+            }
+            let mut fields = std::collections::BTreeSet::new();
+            for field in &dialect.fields {
+                if !fields.insert(field.wire_name()) {
+                    return Err(Error::message(format!(
+                        "{row}.fields names `{}` twice",
+                        field.wire_name()
+                    )));
+                }
+            }
+            let mut roles = std::collections::BTreeSet::new();
+            for role in &dialect.credit_roles {
+                if !roles.insert(role.wire_name()) {
+                    return Err(Error::message(format!(
+                        "{row}.credit_roles names `{}` twice",
+                        role.wire_name()
+                    )));
+                }
+            }
+            let credits = dialect
+                .fields
+                .contains(&bookclerk_plugin_abi::MetadataField::Credits);
+            if credits && dialect.credit_roles.is_empty() {
+                return Err(Error::message(format!(
+                    "{row}.credit_roles is empty but `fields` names `credits`"
+                )));
+            }
+            if !credits && !dialect.credit_roles.is_empty() {
+                return Err(Error::message(format!(
+                    "{row}.credit_roles needs `credits` in `fields`"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Checks id grammar, `api_version`, logo, runtime-specific required
     /// fields, and network domain rules (native forbid / workerd outbound
     /// require / IDNA).
@@ -1796,6 +1990,7 @@ impl PluginManifest {
             let _ = crate::validate_logo(logo)?;
         }
         self.validate_media()?;
+        self.validate_metadata_files()?;
         if self.credentials.is_some() && !self.has_entrypoint(Entrypoint::Storefront) {
             return Err(Error::message(
                 "plugin.toml: `credentials` needs the `storefront` entrypoint (only storefronts connect store accounts)",
@@ -2293,6 +2488,7 @@ mod tests {
                 PluginFamily::Source,
                 PluginFamily::Output,
                 PluginFamily::Database,
+                PluginFamily::Integration,
                 PluginFamily::Integration,
                 PluginFamily::Integration,
                 PluginFamily::Integration,

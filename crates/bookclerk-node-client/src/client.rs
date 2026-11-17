@@ -74,9 +74,10 @@ use bookclerk_node_proto::{
     AuthContext, Body, BranchRequest, CarriedAccount, CatalogRef, CatalogTitle, ClaimFilter,
     ClaimScope, Frame, HeldFence, KeeperOutcome, LookupAnswer, LookupWork, PlanDestination,
     RequestOutcome, SealError, SecretEntry, SecretRef, SecretValue, SigningKey, UploadAnswer,
-    UploadCommitRequest, UploadFile, WindowWork, ACCOUNT_BUNDLE_VERSION, ARTIFACTS_PATH,
-    CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS,
-    ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
+    UploadCommitRequest, UploadFile, WindowCursor, WindowWork, ACCOUNT_BUNDLE_VERSION,
+    ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS,
+    IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH,
+    UPLOAD_AUTH_SCHEME,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -1351,7 +1352,7 @@ impl HostClientHandle {
     }
 
     /// `window.books`: one page of the books the library holds for this
-    /// window's person, from cursor `after` (0 for the first page).
+    /// window's person, from cursor `after` (empty for the first page).
     ///
     /// # Returns
     ///
@@ -1365,11 +1366,16 @@ impl HostClientHandle {
     /// count this node as a branch.
     pub async fn window_books(
         &self,
-        after: i64,
-    ) -> Result<(Vec<WindowWork>, Option<i64>), OwnerCallError> {
-        match self.catalog_call(Body::WindowBooks { after }).await? {
+        after: &WindowCursor,
+    ) -> Result<(Vec<WindowWork>, Option<WindowCursor>), OwnerCallError> {
+        match self
+            .catalog_call(Body::WindowBooks {
+                after: after.clone(),
+            })
+            .await?
+        {
             Body::WindowPage { works, next }
-                if window_page_problem(after, &works, next).is_none() =>
+                if window_page_problem(after, &works, next.as_ref()).is_none() =>
             {
                 Ok((works, next))
             }

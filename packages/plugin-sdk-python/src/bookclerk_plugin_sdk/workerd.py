@@ -9,7 +9,7 @@ The default export is a module-level ``Default`` class extending
 :class:`BookclerkEntrypoint` with optional ``event(batch)`` / ``job(job)``
 triggers. Named entrypoints from ``plugin.toml`` ``entrypoints`` are module-level
 classes named after the wire name (``Storefront``, ``Storage``, ``RemoteLibrary``,
-``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``, ``Covers``) extending the matching ``*Entrypoint``
+``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``, ``Covers``, ``MetadataFiles``) extending the matching ``*Entrypoint``
 base. The launcher's adapter isolate reaches them only through the
 ``bookclerk*`` dispatch methods; authors neither call nor override those.
 
@@ -137,6 +137,7 @@ __all__ = [
     "JobController",
     "KvNamespace",
     "CoverEntrypoint",
+    "MetadataFilesEntrypoint",
     "MetadataEntrypoint",
     "NamedEntrypoint",
     "OidcEntrypoint",
@@ -194,11 +195,34 @@ def js(value: Any) -> Any:
     return JSON.parse(json.dumps(value))
 
 
+def _plain_bytes(value: Any) -> Any:
+    """Replace ``memoryview`` values with ``bytes`` at every nesting depth.
+
+    Pyodide's ``to_py()`` turns a ``Uint8Array`` into a ``memoryview``, also
+    inside converted objects and arrays, so a ``Data`` field such as
+    ``MetadataFileParseParams["bytes"]`` would otherwise reach a handler as a
+    ``memoryview`` rather than the declared ``bytes``.
+
+    Args:
+        value: A value ``to_py()`` returned.
+
+    Returns:
+        The same value with every ``memoryview`` copied into ``bytes``.
+    """
+    if isinstance(value, memoryview):
+        return bytes(value)
+    if isinstance(value, dict):
+        return {key: _plain_bytes(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain_bytes(item) for item in value]
+    return value
+
+
 def py(value: Any) -> Any:
     """Convert a JS value delivered over Workers RPC into plain Python.
 
     ``JsProxy`` objects are converted with ``to_py()`` (``Uint8Array`` →
-    ``bytes``); Python values pass through unchanged.
+    ``bytes`` at any depth); Python values pass through unchanged.
 
     Args:
         value: A JsProxy or Python value.
@@ -210,10 +234,7 @@ def py(value: Any) -> Any:
         return value
     to_py = getattr(value, "to_py", None)
     if callable(to_py):
-        converted = to_py()
-        if isinstance(converted, memoryview):
-            return bytes(converted)
-        return converted
+        return _plain_bytes(to_py())
     if isinstance(value, (bytearray, memoryview)):
         return bytes(value)
     return value
@@ -2263,6 +2284,38 @@ class CoverEntrypoint(NamedEntrypoint):
     async def fetchCovers(self, _params: abi.CoverFetchParams, _sink: Any) -> list[abi.CoverImage]:
         """Fetch each URL into ``_sink`` under its index (list of ``CoverImage``)."""
         raise _unsupported("fetchCovers")
+
+
+class MetadataFilesEntrypoint(NamedEntrypoint):
+    """``metadataFiles`` entrypoint: reads and writes metadata files for the host.
+
+    The host reads every file, chooses every path and writes every result, so
+    the entrypoint only converts bytes. Each dialect is a
+    ``[[metadata_files.dialects]]`` row in ``plugin.toml``; ``params["dialect"]``
+    names the row.
+    """
+
+    bookclerk_methods = ("health", "parse", "render")
+
+    async def health(self) -> abi.HealthOk:
+        """Liveness / readiness probe (``HealthOk``)."""
+        return {"ok": True, "detail": ""}
+
+    async def parse(self, _params: abi.MetadataFileParseParams) -> abi.MetadataFileRecord:
+        """What one file says (``MetadataFileRecord``).
+
+        List every field the file states in ``present``, including ones it
+        states as empty. Raise ``invalid_params`` for a file the dialect cannot
+        read.
+        """
+        raise _unsupported("parse")
+
+    async def render(self, _params: abi.MetadataFileRenderParams) -> bytes | str:
+        """The new file: ``existing`` with ``fields`` set from ``record``.
+
+        Everything else in the file is kept; a ``str`` is written as UTF-8.
+        """
+        raise _unsupported("render")
 
 
 # ---------------------------------------------------------------------------

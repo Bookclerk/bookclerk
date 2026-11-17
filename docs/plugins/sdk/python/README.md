@@ -40,8 +40,8 @@ entrypoint in `entrypoints = [...]` is a module-level class with the
 matching name extending its base: `Storefront(StorefrontEntrypoint)`,
 `Storage(StorageEntrypoint)`, `RemoteLibrary(RemoteLibraryEntrypoint)`,
 `DatabaseAdapter(DatabaseAdapterEntrypoint)`, `Cli(CliEntrypoint)`,
-`Oidc(OidcEntrypoint)`, `Metadata(MetadataEntrypoint)` and
-`Covers(CoverEntrypoint)`.
+`Oidc(OidcEntrypoint)`, `Metadata(MetadataEntrypoint)`,
+`Covers(CoverEntrypoint)` and `MetadataFiles(MetadataFilesEntrypoint)`.
 
 ```python
 from bookclerk_plugin_sdk.workerd import (

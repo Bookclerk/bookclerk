@@ -1,5 +1,5 @@
 //! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
-//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch`, `event_read`, `socket_request` and `storage_reply` fuzz corpora in PR CI
+//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch`, `metadata_file_record`, `event_read`, `socket_request` and `storage_reply` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -1111,6 +1111,204 @@ fn plain_fetch_seeds_are_current() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/plain_fetch");
     for (name, fetch) in seeds {
         let seed = encode_plain_fetch_bytes(&fetch).expect("encode");
+        let path = dir.join(name);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::create_dir_all(&dir).expect("corpus dir");
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
+}
+
+#[path = "../../../fuzz/oracles/metadata_file_record.rs"]
+mod metadata_file_record_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/metadata_file_record.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_metadata_file_record_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("metadata_file_record") {
+        metadata_file_record_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no metadata_file_record seed");
+}
+
+/// Seeds for `metadata_file_record`: a full record inside the dialect, an
+/// empty one, one that states a field the dialect does not carry, and one
+/// breaking each record rule. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O or encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn metadata_file_record_seeds_are_current() {
+    use bookclerk_plugin_abi::{
+        encode_metadata_file_record_bytes, Abridgement, Credit, CreditRole, ExpressionKind,
+        Identifier, IdentifierScheme, MetadataChapter, MetadataField, MetadataFileRecord,
+        SeriesEntry,
+    };
+
+    let full = MetadataFileRecord {
+        present: vec![
+            MetadataField::Title,
+            MetadataField::Subtitle,
+            MetadataField::Description,
+            MetadataField::Publisher,
+            MetadataField::PublishedAt,
+            MetadataField::Language,
+            MetadataField::Genres,
+            MetadataField::Tags,
+            MetadataField::Abridgement,
+            MetadataField::Identifiers,
+            MetadataField::Credits,
+            MetadataField::Series,
+            MetadataField::Chapters,
+        ],
+        title: Some("The Final Empire".into()),
+        subtitle: Some("Mistborn, Book 1".into()),
+        description: Some("A world of ash.\n\nA heist.".into()),
+        publisher: Some("Macmillan Audio".into()),
+        published_at: Some("2009-02-28".into()),
+        language: Some("English".into()),
+        genres: vec!["Fantasy".into(), "Epic".into()],
+        tags: vec!["heist".into()],
+        abridgement: Abridgement::Unabridged,
+        identifiers: vec![
+            Identifier {
+                scheme: IdentifierScheme::Asin,
+                value: "B002UZMLXM".into(),
+                marketplace: Some("us".into()),
+            },
+            Identifier {
+                scheme: IdentifierScheme::Isbn,
+                value: "9781427205391".into(),
+                marketplace: None,
+            },
+        ],
+        credits: vec![
+            Credit {
+                name: "Brandon Sanderson".into(),
+                role: CreditRole::Author,
+                ..Credit::default()
+            },
+            Credit {
+                name: "Michael Kramer".into(),
+                role: CreditRole::Narrator,
+                ..Credit::default()
+            },
+        ],
+        credit_roles: vec![CreditRole::Author, CreditRole::Narrator],
+        series_entries: vec![SeriesEntry {
+            name: "Mistborn".into(),
+            position: Some("1".into()),
+            store_series_id: None,
+        }],
+        chapters: vec![
+            MetadataChapter {
+                title: "Prologue".into(),
+                start_ms: 0,
+                depth: 0,
+                ..MetadataChapter::default()
+            },
+            MetadataChapter {
+                title: "Part One".into(),
+                start_ms: 61_000,
+                depth: 0,
+                ..MetadataChapter::default()
+            },
+            MetadataChapter {
+                title: "Chapter 1".into(),
+                start_ms: 61_000,
+                length_ms: Some(1_200_000),
+                depth: 1,
+            },
+        ],
+        ..MetadataFileRecord::default()
+    };
+    let seeds: Vec<(&str, MetadataFileRecord)> = vec![
+        ("full.bin", full.clone()),
+        ("empty.bin", MetadataFileRecord::default()),
+        (
+            "stated_empty.bin",
+            MetadataFileRecord {
+                present: vec![MetadataField::Genres, MetadataField::Credits],
+                credit_roles: vec![CreditRole::Narrator],
+                ..MetadataFileRecord::default()
+            },
+        ),
+        (
+            "outside_dialect.bin",
+            MetadataFileRecord {
+                present: vec![MetadataField::ExpressionKind, MetadataField::Duration],
+                expression_kind: ExpressionKind::Dramatisation,
+                duration_ms: Some(3_600_000),
+                ..MetadataFileRecord::default()
+            },
+        ),
+        (
+            "value_not_present.bin",
+            MetadataFileRecord {
+                present: Vec::new(),
+                ..full.clone()
+            },
+        ),
+        (
+            "role_not_stated.bin",
+            MetadataFileRecord {
+                credit_roles: vec![CreditRole::Author],
+                ..full.clone()
+            },
+        ),
+        (
+            "bad_date.bin",
+            MetadataFileRecord {
+                published_at: Some("2023-02-29".into()),
+                ..full.clone()
+            },
+        ),
+        (
+            "multiline_title.bin",
+            MetadataFileRecord {
+                title: Some("The\nFinal Empire".into()),
+                ..full.clone()
+            },
+        ),
+        (
+            "chapters_out_of_order.bin",
+            MetadataFileRecord {
+                chapters: vec![
+                    MetadataChapter {
+                        title: "Late".into(),
+                        start_ms: 10,
+                        ..MetadataChapter::default()
+                    },
+                    MetadataChapter {
+                        title: "Early".into(),
+                        start_ms: 5,
+                        ..MetadataChapter::default()
+                    },
+                ],
+                ..full.clone()
+            },
+        ),
+        (
+            "duplicate_field.bin",
+            MetadataFileRecord {
+                present: vec![MetadataField::Title, MetadataField::Title],
+                title: Some("Twice".into()),
+                ..MetadataFileRecord::default()
+            },
+        ),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/metadata_file_record");
+    for (name, record) in seeds {
+        let seed = encode_metadata_file_record_bytes(&record).expect("encode");
         let path = dir.join(name);
         if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
             std::fs::create_dir_all(&dir).expect("corpus dir");

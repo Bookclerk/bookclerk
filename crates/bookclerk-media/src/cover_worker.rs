@@ -287,7 +287,7 @@ fn spawn(launch: &WorkerLaunch, confinement: Confinement, threads: usize) -> Res
         .env(WORKER_ENFORCEMENT_ENV, confinement.as_env_value())
         .env(COVER_THREADS_ENV, threads.to_string());
     if launch.jail.is_some() {
-        let spec = cover_spec(confinement);
+        let spec = pathless_spec("media-worker:covers", confinement);
         command.env(
             SPEC_ENV,
             serde_json::to_string(&spec)
@@ -380,16 +380,21 @@ async fn read_reply(
     wire::decode_reply(&body).map_err(|err| format!("malformed worker reply: {err}"))
 }
 
-/// The jail spec for the cover worker on spawn-confined platforms: no paths,
-/// no network.
-fn cover_spec(confinement: Confinement) -> Spec {
+/// The jail spec on spawn-confined platforms for a long-lived worker that
+/// gets all its input on stdin (covers, tags): no paths, no network.
+///
+/// # Arguments
+///
+/// * `label` - The jail's label in logs, such as `media-worker:covers`.
+/// * `confinement` - Required, best-effort or off.
+pub(crate) fn pathless_spec(label: &str, confinement: Confinement) -> Spec {
     let enforcement = match confinement {
         Confinement::Required => Enforcement::Required,
         Confinement::BestEffort => Enforcement::BestEffort,
         Confinement::Off => Enforcement::Disabled,
     };
     Spec {
-        label: "media-worker:covers".into(),
+        label: label.into(),
         reads: Vec::new(),
         writes: Vec::new(),
         net: NetPolicy::Deny,
@@ -496,12 +501,12 @@ mod tests {
 
     #[test]
     fn the_jail_spec_grants_nothing() {
-        let spec = cover_spec(Confinement::Required);
+        let spec = pathless_spec("media-worker:covers", Confinement::Required);
         assert!(spec.reads.is_empty() && spec.writes.is_empty());
         assert_eq!(spec.net, NetPolicy::Deny);
         assert_eq!(spec.enforcement, Enforcement::Required);
         assert_eq!(
-            cover_spec(Confinement::Off).enforcement,
+            pathless_spec("media-worker:covers", Confinement::Off).enforcement,
             Enforcement::Disabled
         );
     }

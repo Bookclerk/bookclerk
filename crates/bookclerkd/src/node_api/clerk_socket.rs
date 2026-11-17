@@ -222,7 +222,7 @@ async fn answer(state: &AppState, token: &str, person: i64, frame: &[u8]) -> Opt
         }
         CardLookup::Person(_) | CardLookup::SignedOut | CardLookup::Refused(_) => return None,
     }
-    Some(match person_books_page(&library, person, after).await {
+    Some(match person_books_page(&library, person, &after).await {
         Ok((works, next)) => LibraryFrame::BooksPage { after, works, next },
         Err(err) => {
             tracing::warn!(error = %err, "clerk socket could not read a page of books");

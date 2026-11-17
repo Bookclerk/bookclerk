@@ -34,6 +34,7 @@ use tokio::sync::Semaphore;
 use crate::cover_worker::{CoverRunner, CoverWorker};
 use crate::error::{MediaError, Result};
 use crate::job::{MediaJob, MediaJobOutput, MediaJobReply};
+use crate::tag_worker::{RangeSource, TagRunner, TagWorker};
 
 /// Environment variable naming the worker binary explicitly.
 pub const WORKER_BIN_ENV: &str = "BOOKCLERK_MEDIA_WORKER";
@@ -164,6 +165,9 @@ pub struct MediaPool {
     /// The long-lived worker that processes cover images, sharing the job
     /// runner's isolation and sized to the same worker count.
     covers: Box<CoverWorker>,
+    /// The long-lived worker that reads embedded tags, sharing the job
+    /// runner's isolation.
+    tags: Box<TagWorker>,
 }
 
 impl Drop for MediaPool {
@@ -211,9 +215,18 @@ impl MediaPool {
             Runner::InProcess => CoverRunner::InProcess,
             Runner::Refuse(detail) => CoverRunner::Refuse(detail.clone()),
         };
+        let tag_runner = match &runner {
+            Runner::Worker(launch) => TagRunner::Worker {
+                launch: WorkerLaunch::clone(launch),
+                confinement: config.confinement,
+            },
+            Runner::InProcess => TagRunner::InProcess,
+            Runner::Refuse(detail) => TagRunner::Refuse(detail.clone()),
+        };
         Self {
             permits: Arc::new(Semaphore::new(config.workers)),
             covers: Box::new(CoverWorker::new(cover_runner, config.workers)),
+            tags: Box::new(TagWorker::new(tag_runner)),
             config,
             runner,
         }
@@ -308,6 +321,38 @@ impl MediaPool {
     /// started or dies.
     pub async fn process_cover(&self, cover: Vec<u8>) -> Result<bookclerk_cover::CoverSet> {
         self.covers.process(cover).await
+    }
+
+    /// Reads the metadata embedded in one untrusted media file (`tags.read`):
+    /// text tags, chapters, running time, where the cover lies, and a digest
+    /// of the metadata region.
+    ///
+    /// Tag reads do not take a job slot: they run on one long-lived worker,
+    /// jailed to no path and no network, that asks for the byte ranges it
+    /// needs, which this call fetches from `source`. Only the metadata region
+    /// and a few headers are fetched, never the audio. Read a page of files
+    /// by awaiting several calls at once; up to 16 files are read at a time.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The file's size in bytes.
+    /// * `source` - Where its bytes come from (a local file, a storage
+    ///   plugin's ranged read).
+    ///
+    /// # Errors
+    ///
+    /// [`MediaError::Tags`] when the file is not an MP4, MP3 or FLAC file or
+    /// is malformed, [`MediaError::Io`] when `source` fails,
+    /// [`MediaError::NotIsolated`] when isolation is required but no worker
+    /// was found, and [`MediaError::Worker`] when the worker cannot be
+    /// started, dies, stalls for 30 s, or answers outside the reader's
+    /// limits (the worker is then restarted).
+    pub async fn read_tags<S: RangeSource>(
+        &self,
+        size: u64,
+        source: &S,
+    ) -> Result<bookclerk_tags::TagRecord> {
+        self.tags.read(size, source).await
     }
 
     /// Run `job`, waiting for a free slot first.

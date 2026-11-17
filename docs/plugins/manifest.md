@@ -75,7 +75,7 @@ version = "0.1.0"               # required semver; pins the [[settings]] schema
 # logo = "https://example.com/icon.png"   # or "assets/logo.png" (host-served)
 runtime = "native"
 command = "./bookclerk-plugin-echo-native-rust"
-entrypoints = ["cli"]           # storefront | storage | remoteLibrary | databaseAdapter | cli | oidc | metadata | covers
+entrypoints = ["cli"]           # storefront | storage | remoteLibrary | databaseAdapter | cli | oidc | metadata | covers | metadataFiles
 
 [capabilities.network]
 mode = "deny"
@@ -221,6 +221,53 @@ fetches = ["audio"]           # what fetchTitle can deliver
 
 `describe()` returns the same declaration, and the host refuses records
 outside it. See [Declaring media](abi.md#declaring-media) for the rules.
+
+### `[metadata_files]` (metadata file dialects)
+
+A plugin with the `metadataFiles` entrypoint lists the file formats it
+reads, one `[[metadata_files.dialects]]` row each. The table is required
+for that entrypoint, with at least one dialect, and every other plugin
+must leave it out.
+
+```toml
+entrypoints = ["metadataFiles"]
+
+[[metadata_files.dialects]]
+id = "abs_metadata_json"
+name = "Audiobookshelf metadata.json"
+file_names = ["metadata.json"]
+fields = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "identifiers", "credits", "series", "chapters"]
+credit_roles = ["author", "narrator"]
+writes = true
+
+[[metadata_files.dialects]]
+id = "opf"
+name = "OPF package"
+suffixes = [".opf"]
+fields = ["title", "description", "credits"]
+credit_roles = ["author", "narrator"]
+```
+
+- `id`: `[a-z][a-z0-9_]{0,63}`, unique within the plugin. The host passes
+  it back to `parse` and `render`.
+- `name`: shown in settings and on a book's file list.
+- `file_names` and `suffixes`: the files the dialect claims. Each is a
+  plain ASCII file name; a suffix starts with `.`. Both compare without
+  ASCII case, an exact name wins over a suffix and the longest suffix
+  wins. A name or suffix may be claimed once per plugin, and a row needs
+  at least one of them.
+- `fields`: what the format carries, by wire name (`title`, `subtitle`,
+  `description`, `publisher`, `publishedAt`, `language`, `genres`,
+  `tags`, `abridgement`, `expressionKind`, `identifiers`, `credits`,
+  `series`, `chapters`, `duration`). Never empty, no repeats.
+- `credit_roles`: the roles the format carries. Required exactly when
+  `fields` names `credits`.
+- `writes`: whether `render` can write the format. Defaults to false, for
+  read-only formats such as a store's own catalog JSON.
+
+The host refuses a parsed record that states anything outside its row.
+See [Metadata file dialects](abi.md#metadata-file-dialects) for the
+methods and limits.
 
 ### `command` (native)
 

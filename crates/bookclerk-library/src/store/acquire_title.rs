@@ -7,7 +7,7 @@
 //! `books` row. While `books` still exists the view also names the flat
 //! row's UUID, which the status writes are still keyed by.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
@@ -533,7 +533,10 @@ impl LibraryStore {
 
     /// The titles of `holdings` (account holdings), in their order, read in
     /// one chunked query per table.
-    async fn acquire_titles_of(&self, holdings: Vec<holdings::Model>) -> Result<Vec<AcquireTitle>> {
+    pub(crate) async fn acquire_titles_of(
+        &self,
+        holdings: Vec<holdings::Model>,
+    ) -> Result<Vec<AcquireTitle>> {
         if holdings.is_empty() {
             return Ok(Vec::new());
         }
@@ -616,25 +619,44 @@ impl LibraryStore {
         .into_iter()
         .map(|m| m.id)
         .collect();
-        let product_ids = distinct(rows.listings.values().map(|l| l.product_id.clone()));
-        rows.books = find_chunked_paged::<books::Entity, _>(self, &product_ids, |part| {
-            books::Entity::find()
-                .filter(books::Column::ProductId.is_in(part.to_vec()))
-                .order_by_asc(books::Column::Id)
-        })
-        .await?
-        .into_iter()
-        .map(|m| {
-            (
-                (
-                    m.plugin_key.clone(),
-                    m.account_id.clone(),
-                    m.product_id.clone(),
-                ),
-                m,
-            )
-        })
-        .collect();
+        // Legacy book rows (until `books` is dropped) are read per account,
+        // for that account's own products only: another account's row for
+        // the same product is never needed, and one too wide to read must
+        // not keep this account's titles out.
+        let mut products_of: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+        for holding in holdings {
+            if let (Some(plugin), Some(account), Some(listing)) = (
+                &holding.plugin_key,
+                &holding.account_id,
+                rows.listings.get(&holding.listing_id),
+            ) {
+                products_of
+                    .entry((plugin.clone(), account.clone()))
+                    .or_default()
+                    .insert(listing.product_id.clone());
+            }
+        }
+        for ((plugin, account), products) in products_of {
+            let products: Vec<String> = products.into_iter().collect();
+            for m in find_chunked_paged::<books::Entity, _>(self, &products, |part| {
+                books::Entity::find()
+                    .filter(books::Column::PluginKey.eq(plugin.as_str()))
+                    .filter(books::Column::AccountId.eq(account.as_str()))
+                    .filter(books::Column::ProductId.is_in(part.to_vec()))
+                    .order_by_asc(books::Column::Id)
+            })
+            .await?
+            {
+                rows.books.insert(
+                    (
+                        m.plugin_key.clone(),
+                        m.account_id.clone(),
+                        m.product_id.clone(),
+                    ),
+                    m,
+                );
+            }
+        }
         let account_ids = distinct(holdings.iter().filter_map(|h| h.account_id.clone()));
         rows.sources = find_chunked_paged::<accounts::Entity, _>(self, &account_ids, |part| {
             accounts::Entity::find()

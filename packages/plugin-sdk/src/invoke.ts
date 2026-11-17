@@ -30,6 +30,7 @@ import type {
   JobOutcome,
   ListeningProgress,
   CoverImage,
+  MetadataFileRecord,
   MetadataRecord,
   KeyOutcome as WireKeyOutcome,
   ObjectMetadata as WireObjectMetadata,
@@ -257,6 +258,48 @@ const okCoverImages = (value: unknown) => {
     throw PluginError.fromWire("internal", "cover fetcher must return a CoverImage[]");
   }
   return okValue({ images: value as CoverImage[] });
+};
+/**
+ * Wraps a metadata-file dialect's `parse` return as `MetadataFileParsed`. The
+ * Rust client checks the record against the ABI caps.
+ *
+ * @param value - The author method's return value.
+ * @returns The `ok` arm carrying the record.
+ * @throws {PluginError} `internal` when `value` is not an object with a
+ *   `present` list.
+ */
+const okFileRecord = (value: unknown) => {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    !Array.isArray((value as { present?: unknown }).present)
+  ) {
+    throw PluginError.fromWire(
+      "internal",
+      "metadata file dialect must return a MetadataFileRecord",
+    );
+  }
+  return okValue({ record: value as MetadataFileRecord });
+};
+/**
+ * Wraps a metadata-file dialect's `render` return as `MetadataFileRendered`;
+ * a string becomes its UTF-8 bytes.
+ *
+ * @param value - The author method's return value.
+ * @returns The `ok` arm carrying the bytes.
+ * @throws {PluginError} `internal` when `value` is neither bytes nor a string.
+ */
+const okFileBytes = (value: unknown) => {
+  if (typeof value === "string") {
+    return okValue({ bytes: new TextEncoder().encode(value) });
+  }
+  if (!(value instanceof Uint8Array)) {
+    throw PluginError.fromWire(
+      "internal",
+      "metadata file dialect must render a Uint8Array or string",
+    );
+  }
+  return okValue({ bytes: value });
 };
 const okLines = (value: unknown) =>
   okValue({ lines: asList<unknown>(value).map((l) => String(l)) });
@@ -966,6 +1009,29 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       },
       ok: okCoverImages,
     }),
+  },
+  MetadataFiles: {
+    health: withoutParams(
+      "metadataFiles",
+      "health",
+      W.MetadataFilesHealthParamsCodec,
+      W.MetadataFilesHealthResultsCodec,
+      okHealth,
+    ),
+    parse: withParams(
+      "metadataFiles",
+      "parse",
+      W.MetadataFilesParseParamsCodec,
+      W.MetadataFilesParseResultsCodec,
+      okFileRecord,
+    ),
+    render: withParams(
+      "metadataFiles",
+      "render",
+      W.MetadataFilesRenderParamsCodec,
+      W.MetadataFilesRenderResultsCodec,
+      okFileBytes,
+    ),
   },
   Database: {
     openSession: spec<W.DatabaseOpenSessionParams, W.DatabaseOpenSessionResults["result"]>({

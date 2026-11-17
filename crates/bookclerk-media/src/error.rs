@@ -53,6 +53,11 @@ pub enum MediaError {
     #[error("cover image refused: {0}")]
     Cover(String),
 
+    /// A file's embedded tags could not be read: not an MP4, MP3 or FLAC
+    /// file, or a malformed one. The message comes from the tag reader.
+    #[error("embedded tags unreadable: {0}")]
+    Tags(String),
+
     /// Local filesystem I/O failure.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

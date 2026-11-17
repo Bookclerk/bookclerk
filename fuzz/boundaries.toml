@@ -126,6 +126,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.metadata_file_record]
+crate = "bookclerk-plugin-abi"
+boundary = "A metadata-file dialect's parse reply: what a sidecar says, its field list, credit roles, text and list caps, dates and chapter order, against the dialect's declared fields"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.event_read]
 crate = "bookclerk-plugin-abi"
 boundary = "A guest's EVENTS.read request: the /events/read JSON body, its opaque cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds"
@@ -196,6 +203,20 @@ input_from = "media worker"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.tags_read]
+crate = "bookclerk-tags"
+boundary = "Embedded tags of media files on storage (MP4 ilst and chapter tracks, ID3v2/ID3v1, FLAC metadata), read in the tag worker"
+input_from = "storage"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.tags_wire]
+crate = "bookclerk-tags"
+boundary = "Tag worker frames (requests the worker reads, replies the host reads)"
+input_from = "media worker"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.guest_sql_authz]
 crate = "bookclerk-plugin-abi"
 boundary = "Guest SQL authorization under every host-issued policy shape"
@@ -248,6 +269,13 @@ artifacts = ["bookclerk"]
 [targets.clerk_token_request]
 crate = "bookclerk-node-proto"
 boundary = "A library card's token exchange, the POST /api/clerk/v1/token body and its match against the stored code"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.clerk_token_answer]
+crate = "bookclerk-node-proto"
+boundary = "A library's answer to a clerk's token exchange, read on the clerk before the card is sealed"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]

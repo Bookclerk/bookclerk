@@ -39,6 +39,7 @@ const {
   MetadataEntrypoint,
   CoverEntrypoint,
   MAX_BATCH_KEYS,
+  MetadataFilesEntrypoint,
   PluginError,
   StorageEntrypoint,
   StorefrontEntrypoint,
@@ -386,6 +387,25 @@ class Covers extends CoverEntrypoint {
   }
 }
 
+class MetadataFiles extends MetadataFilesEntrypoint {
+  async parse(params) {
+    const text = new TextDecoder().decode(params.bytes);
+    // Not a record: no `present` list.
+    if (text === "bare") return { title: "x" };
+    return {
+      present: ["title", "credits"],
+      title: `${params.dialect}:${params.fileName}:${text}`,
+      credits: [{ name: "Ada", role: "narrator" }],
+      creditRoles: ["narrator"],
+    };
+  }
+  async render(params) {
+    if (params.dialect === "bytes") return new TextEncoder().encode("raw");
+    if (params.dialect === "number") return 7;
+    return `${params.fields.join(",")}=${params.record.title ?? ""}|${params.existing.length}`;
+  }
+}
+
 // --- Granted database errors across the adapter → author RPC boundary -----
 
 // The canonical `limit_exceeded` the fake channel answers with `413`.
@@ -666,6 +686,7 @@ const env = {
   PLUGIN_CLI: new Cli({}, {}),
   PLUGIN_METADATA: new Metadata({}, {}),
   PLUGIN_COVERS: new Covers({}, {}),
+  PLUGIN_METADATA_FILES: new MetadataFiles({}, {}),
   GRANTED: granted,
   BRIDGE_TOKEN: "t",
 };
@@ -1776,6 +1797,57 @@ const jobParams = (commandType) => ({
     W.MetadataProviderChaptersResultsCodec,
   );
   assert.equal(missing.value.found, false);
+}
+
+// --- MetadataFiles --------------------------------------------------------
+
+{
+  const health = decodeReply(
+    await invoke("MetadataFiles", "health", W.MetadataFilesHealthParamsCodec, {}),
+    W.MetadataFilesHealthResultsCodec,
+  );
+  assert.deepEqual(health, { kind: "ok", value: { ok: true, detail: "" } });
+
+  const parsed = decodeReply(
+    await invoke("MetadataFiles", "parse", W.MetadataFilesParseParamsCodec, {
+      params: { dialect: "txt", fileName: "desc.txt", bytes: new TextEncoder().encode("hi") },
+    }),
+    W.MetadataFilesParseResultsCodec,
+  );
+  assert.equal(parsed.kind, "ok");
+  assert.deepEqual(parsed.value.record.present, ["title", "credits"]);
+  assert.equal(parsed.value.record.title, "txt:desc.txt:hi");
+  assert.deepEqual(parsed.value.record.creditRoles, ["narrator"]);
+
+  const bare = decodeReply(
+    await invoke("MetadataFiles", "parse", W.MetadataFilesParseParamsCodec, {
+      params: { dialect: "txt", fileName: "desc.txt", bytes: new TextEncoder().encode("bare") },
+    }),
+    W.MetadataFilesParseResultsCodec,
+  );
+  assert.equal(bare.kind, "err", "a return without `present` is not a record");
+  assert.equal(bare.value.code, "internal");
+
+  const render = async (dialect) =>
+    decodeReply(
+      await invoke("MetadataFiles", "render", W.MetadataFilesRenderParamsCodec, {
+        params: {
+          dialect,
+          record: { present: ["title"], title: "Dune" },
+          fields: ["title"],
+          existing: new TextEncoder().encode("old"),
+        },
+      }),
+      W.MetadataFilesRenderResultsCodec,
+    );
+  const text = await render("txt");
+  assert.equal(text.kind, "ok");
+  assert.equal(new TextDecoder().decode(text.value.bytes), "title=Dune|3", "a string is UTF-8");
+  const bytes = await render("bytes");
+  assert.equal(new TextDecoder().decode(bytes.value.bytes), "raw");
+  const number = await render("number");
+  assert.equal(number.kind, "err", "only bytes or a string render");
+  assert.equal(number.value.code, "internal");
 }
 
 // --- CoverFetcher --------------------------------------------------------

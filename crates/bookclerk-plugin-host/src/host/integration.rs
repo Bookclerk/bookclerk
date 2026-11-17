@@ -229,6 +229,16 @@ impl ExternalIntegration {
                 .await?;
             health_result(ok)?;
         }
+        if self
+            .session
+            .has_entrypoint(crate::Entrypoint::MetadataFiles)
+        {
+            let ok = self
+                .session
+                .metadata_files(|files| async move { files.health().await })
+                .await?;
+            health_result(ok)?;
+        }
         Ok(())
     }
 
@@ -545,6 +555,16 @@ impl Integration for ExternalIntegration {
                     .await?,
             );
         }
+        if self
+            .session
+            .has_entrypoint(crate::Entrypoint::MetadataFiles)
+        {
+            reports.push(
+                self.session
+                    .metadata_files(|files| async move { files.health().await })
+                    .await?,
+            );
+        }
         let (ok, detail) = combine_health(reports);
         Ok(IntegrationHealth {
             id: self.id().to_string(),
@@ -602,11 +622,18 @@ impl Integration for ExternalIntegration {
     }
 
     async fn diagnose(&self) -> bookclerk_integrations::Result<Vec<String>> {
-        let lines = self
-            .int_call(|stub| async move { stub.diagnose().await })
-            .await?;
-        if !lines.is_empty() {
-            return Ok(lines);
+        // Only a remote library answers `diagnose`; a plugin with just
+        // metadata, covers or metadata files falls through to health.
+        if self
+            .session
+            .has_entrypoint(crate::Entrypoint::RemoteLibrary)
+        {
+            let lines = self
+                .int_call(|stub| async move { stub.diagnose().await })
+                .await?;
+            if !lines.is_empty() {
+                return Ok(lines);
+            }
         }
         let h = self.health().await?;
         Ok(vec![format!(

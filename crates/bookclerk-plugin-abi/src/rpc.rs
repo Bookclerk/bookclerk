@@ -68,22 +68,22 @@ use crate::plugin_capnp::{
     event_read_request, event_result as event_result_capnp, execute_stream_reply, get_reply,
     guest_database as guest_database_capnp, handle_reply, head_reply, health_reply, job_invocation,
     job_outcome, job_runner as job_runner_capnp, kv_namespace as kv_namespace_capnp, list_reply,
-    metadata_provider as metadata_provider_capnp, object_metadata, oidc as oidc_capnp,
-    oidc_client_template, oidc_clients_reply, open_reply, plugin_cli as plugin_cli_capnp,
-    plugin_describe, plugin_error, plugin_migration, plugin_migration_op, plugin_migrations_ok,
-    plugin_migrations_reply, plugin_worker, progress_sink, pull_reply, put_reply,
-    queue_consumer as queue_consumer_capnp, queue_producer as queue_producer_capnp,
-    remote_library as remote_library_capnp, scheduled_handler as scheduled_handler_capnp,
-    source as source_capnp, write_options,
+    metadata_files as metadata_files_capnp, metadata_provider as metadata_provider_capnp,
+    object_metadata, oidc as oidc_capnp, oidc_client_template, oidc_clients_reply, open_reply,
+    plugin_cli as plugin_cli_capnp, plugin_describe, plugin_error, plugin_migration,
+    plugin_migration_op, plugin_migrations_ok, plugin_migrations_reply, plugin_worker,
+    progress_sink, pull_reply, put_reply, queue_consumer as queue_consumer_capnp,
+    queue_producer as queue_producer_capnp, remote_library as remote_library_capnp,
+    scheduled_handler as scheduled_handler_capnp, source as source_capnp, write_options,
 };
 #[cfg(feature = "host")]
 use crate::plugin_host_capnp::host_adapter_database_session as host_adapter_database_session_capnp;
 use crate::roles::{
     AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
     CoverFetcher, Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
-    JobController, JobRunner, KvNamespace, MetadataProvider, NamedKvBinding, NamedQueueBinding,
-    NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer,
-    ReadResult, RemoteLibrary, ScheduledHandler, Source,
+    JobController, JobRunner, KvNamespace, MetadataFiles, MetadataProvider, NamedKvBinding,
+    NamedQueueBinding, NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer,
+    QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler, Source,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, HealthOk, JobCheckpoint, JobInvocation, JobOutcome,
@@ -2060,6 +2060,11 @@ fn fill_entrypoints(mut b: entrypoints::Builder<'_>, eps: Entrypoints, window: u
             inner: Arc::from(x),
         }));
     }
+    if let Some(x) = eps.metadata_files {
+        b.set_metadata_files(capnp_rpc::new_client(MetadataFilesServer {
+            inner: Arc::from(x),
+        }));
+    }
 }
 
 /// Encode plugin OIDC client templates into a Cap'n Proto `oidcClients` ok payload.
@@ -2985,6 +2990,45 @@ impl metadata_provider_capnp::Server for MetadataProviderServer {
         let params = read_metadata_chapters_params(params.get()?.get_params()?)?;
         let outcome = self.inner.chapters(params).await;
         write_metadata_chapters_reply(results.get().init_result(), &outcome)
+    }
+}
+
+/// Serves a guest's [`MetadataFiles`] as the Cap'n Proto `MetadataFiles`.
+struct MetadataFilesServer {
+    /// The guest implementation every method forwards to.
+    inner: Arc<dyn MetadataFiles>,
+}
+
+impl metadata_files_capnp::Server for MetadataFilesServer {
+    async fn health(
+        self: Rc<Self>,
+        _params: metadata_files_capnp::HealthParams,
+        mut results: metadata_files_capnp::HealthResults,
+    ) -> capnp::Result<()> {
+        write_health_reply(results.get().init_result(), self.inner.health().await);
+        Ok(())
+    }
+
+    async fn parse(
+        self: Rc<Self>,
+        params: metadata_files_capnp::ParseParams,
+        mut results: metadata_files_capnp::ParseResults,
+    ) -> capnp::Result<()> {
+        let params =
+            crate::generated::read_metadata_file_parse_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.parse(params).await;
+        crate::generated::write_metadata_file_parse_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn render(
+        self: Rc<Self>,
+        params: metadata_files_capnp::RenderParams,
+        mut results: metadata_files_capnp::RenderResults,
+    ) -> capnp::Result<()> {
+        let params =
+            crate::generated::read_metadata_file_render_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.render(params).await;
+        crate::generated::write_metadata_file_render_reply(results.get().init_result(), &outcome)
     }
 }
 
@@ -3935,6 +3979,8 @@ pub struct OpenedEntrypoints {
     pub covers: Option<CoverFetcherClient>,
     /// `[sockets]` handler.
     pub socket_handler: Option<SocketHandlerClient>,
+    /// `metadataFiles` entrypoint.
+    pub metadata_files: Option<MetadataFilesClient>,
 }
 
 /// Host bootstrap client for a plugin vat.
@@ -4182,6 +4228,11 @@ impl PluginClient {
             },
             socket_handler: if eps.has_socket_handler() {
                 Some(SocketHandlerClient::new(eps.get_socket_handler()?))
+            } else {
+                None
+            },
+            metadata_files: if eps.has_metadata_files() {
+                Some(MetadataFilesClient::new(eps.get_metadata_files()?))
             } else {
                 None
             },
@@ -4490,6 +4541,83 @@ impl MetadataProvider for MetadataProviderClient {
         write_metadata_chapters_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
         read_metadata_chapters_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+}
+
+/// Cap'n Proto client for [`MetadataFiles`].
+///
+/// The client checks each request before it leaves
+/// ([`crate::check_parse_params`], [`crate::check_render_params`]) and each
+/// reply before the caller sees it: a parsed record must pass
+/// [`crate::validate_metadata_file_record`] and rendered bytes
+/// [`crate::check_rendered`]. A reply that fails is an `internal` error, so
+/// a misbehaving dialect never hands the host a record outside the caps.
+/// Checks against the dialect's manifest declaration are the caller's
+/// ([`crate::check_record_against_dialect`]), since only it knows the
+/// manifest.
+#[derive(Clone)]
+pub struct MetadataFilesClient {
+    /// The guest's `MetadataFiles` capability.
+    client: metadata_files_capnp::Client,
+}
+
+impl MetadataFilesClient {
+    /// Wraps a `MetadataFiles` capability client (any transport that yields
+    /// one, including the bookclerk-workerd `/invoke` hook).
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - The guest's `MetadataFiles` capability.
+    ///
+    /// # Returns
+    ///
+    /// The typed client.
+    #[must_use]
+    pub fn new(client: metadata_files_capnp::Client) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl MetadataFiles for MetadataFilesClient {
+    async fn health(&self) -> Result<HealthOk> {
+        let req = self.client.health_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_health_reply(reply_result!(reply))
+    }
+
+    async fn parse(
+        &self,
+        params: crate::MetadataFileParseParams,
+    ) -> Result<crate::MetadataFileParsed> {
+        crate::check_parse_params(&params)
+            .map_err(|err| PluginError::invalid_params(err.to_string()))?;
+        let mut req = self.client.parse_request();
+        crate::generated::write_metadata_file_parse_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let parsed = crate::generated::read_metadata_file_parse_reply(reply_result!(reply))
+            .map_err(from_capnp)??;
+        crate::validate_metadata_file_record(&parsed.record)
+            .map_err(|err| PluginError::internal(format!("parse {}: {err}", params.dialect)))?;
+        Ok(parsed)
+    }
+
+    async fn render(
+        &self,
+        params: crate::MetadataFileRenderParams,
+    ) -> Result<crate::MetadataFileRendered> {
+        crate::check_render_params(&params)
+            .map_err(|err| PluginError::invalid_params(err.to_string()))?;
+        let mut req = self.client.render_request();
+        crate::generated::write_metadata_file_render_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let rendered = crate::generated::read_metadata_file_render_reply(reply_result!(reply))
+            .map_err(from_capnp)??;
+        crate::check_rendered(&rendered)
+            .map_err(|err| PluginError::internal(format!("render {}: {err}", params.dialect)))?;
+        Ok(rendered)
     }
 }
 
@@ -5818,6 +5946,7 @@ mod tests {
                         Entrypoint::Oidc,
                         Entrypoint::Metadata,
                         Entrypoint::Covers,
+                        Entrypoint::MetadataFiles,
                     ],
                     ..PluginCapabilities::default()
                 },
@@ -5834,6 +5963,7 @@ mod tests {
                 oidc: Some(Box::new(TestOidc)),
                 metadata: Some(Box::new(TestMetadata)),
                 covers: Some(Box::new(TestCovers)),
+                metadata_files: Some(Box::new(TestFiles)),
                 ..Entrypoints::default()
             })
         }
@@ -7671,6 +7801,125 @@ mod tests {
         assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
     }
 
+    /// Dialect plugin that echoes the file name as the title, and answers
+    /// `bad` with a record the host must refuse.
+    struct TestFiles;
+
+    #[async_trait::async_trait(?Send)]
+    impl MetadataFiles for TestFiles {
+        async fn parse(
+            &self,
+            params: crate::MetadataFileParseParams,
+        ) -> Result<crate::MetadataFileParsed> {
+            let title = if params.dialect == "bad" {
+                "two\nlines".to_string()
+            } else {
+                format!("{}:{}", params.file_name, params.bytes.len())
+            };
+            Ok(crate::MetadataFileParsed {
+                record: crate::MetadataFileRecord {
+                    present: vec![crate::MetadataField::Title],
+                    title: Some(title),
+                    ..crate::MetadataFileRecord::default()
+                },
+            })
+        }
+
+        async fn render(
+            &self,
+            params: crate::MetadataFileRenderParams,
+        ) -> Result<crate::MetadataFileRendered> {
+            if params.dialect == "bad" {
+                return Ok(crate::MetadataFileRendered {
+                    bytes: vec![
+                        b' ';
+                        usize::try_from(crate::MAX_METADATA_FILE_BYTES).expect("cap") + 1
+                    ],
+                });
+            }
+            let mut bytes = params.existing;
+            bytes.extend_from_slice(params.record.title.unwrap_or_default().as_bytes());
+            Ok(crate::MetadataFileRendered { bytes })
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn metadata_files_roundtrip_and_checks() {
+        let client = MetadataFilesClient::new(capnp_rpc::new_client(MetadataFilesServer {
+            inner: Arc::new(TestFiles),
+        }));
+        assert!(client.health().await.expect("health").ok);
+        let parse = |dialect: &str, file_name: &str| crate::MetadataFileParseParams {
+            dialect: dialect.into(),
+            file_name: file_name.into(),
+            bytes: b"{}".to_vec(),
+        };
+        let parsed = client
+            .parse(parse("abs_metadata_json", "metadata.json"))
+            .await
+            .expect("parse");
+        assert_eq!(parsed.record.title.as_deref(), Some("metadata.json:2"));
+        let err = client
+            .parse(parse("bad", "metadata.json"))
+            .await
+            .expect_err("a record outside the rules");
+        assert_eq!(err.code, crate::PluginErrorCode::Internal);
+        let err = client
+            .parse(parse("abs_metadata_json", "../metadata.json"))
+            .await
+            .expect_err("a path is not a file name");
+        assert_eq!(err.code, crate::PluginErrorCode::InvalidParams);
+
+        let render = |dialect: &str| crate::MetadataFileRenderParams {
+            dialect: dialect.into(),
+            record: crate::MetadataFileRecord {
+                present: vec![crate::MetadataField::Title],
+                title: Some("Dune".into()),
+                ..crate::MetadataFileRecord::default()
+            },
+            fields: vec![crate::MetadataField::Title],
+            existing: b"old:".to_vec(),
+        };
+        let rendered = client.render(render("opf")).await.expect("render");
+        assert_eq!(rendered.bytes, b"old:Dune");
+        let err = client
+            .render(render("bad"))
+            .await
+            .expect_err("a file over the cap");
+        assert_eq!(err.code, crate::PluginErrorCode::Internal);
+        let mut twice = render("opf");
+        twice.fields.push(crate::MetadataField::Title);
+        let err = client.render(twice).await.expect_err("a field twice");
+        assert_eq!(err.code, crate::PluginErrorCode::InvalidParams);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn metadata_files_defaults_are_unsupported() {
+        struct Bare;
+        impl MetadataFiles for Bare {}
+        let client = MetadataFilesClient::new(capnp_rpc::new_client(MetadataFilesServer {
+            inner: Arc::new(Bare),
+        }));
+        assert!(client.health().await.expect("health").ok);
+        let err = client
+            .parse(crate::MetadataFileParseParams {
+                dialect: "opf".into(),
+                file_name: "a.opf".into(),
+                bytes: Vec::new(),
+            })
+            .await
+            .expect_err("parse");
+        assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
+        let err = client
+            .render(crate::MetadataFileRenderParams {
+                dialect: "opf".into(),
+                ..crate::MetadataFileRenderParams::default()
+            })
+            .await
+            .expect_err("render");
+        assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
+    }
+
     /// Cover fetcher that stores each URL's own text as its body, except
     /// URLs containing `missing`, which fail.
     struct TestCovers;
@@ -7732,6 +7981,16 @@ mod tests {
                 let opened = open_default(&client).await;
                 let covers = opened.covers.expect("covers exported");
                 assert!(covers.health().await.expect("health").ok);
+                let files = opened.metadata_files.expect("metadataFiles exported");
+                let parsed = files
+                    .parse(crate::MetadataFileParseParams {
+                        dialect: "opf".into(),
+                        file_name: "book.opf".into(),
+                        bytes: b"<package/>".to_vec(),
+                    })
+                    .await
+                    .expect("parse over the plugin connection");
+                assert_eq!(parsed.record.title.as_deref(), Some("book.opf:10"));
 
                 let sink = Arc::new(MemDest {
                     store: Mutex::new(HashMap::new()),

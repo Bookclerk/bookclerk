@@ -3,7 +3,7 @@
  *
  * Spawns the pinned `workerd` binary against a materialised Cap'n Proto config
  * and exercises the bridge `/health`, `describe()`, and (for `storefront`,
- * `remoteLibrary`, `metadata` and `covers` entrypoints) the entrypoint `health` method over
+ * `remoteLibrary`, `metadata`, `covers` and `metadataFiles` entrypoints) the entrypoint `health` method over
  * `POST /invoke`.
  */
 
@@ -18,6 +18,8 @@ import {
   ContentSourceHealthResultsCodec,
   CoverFetcherHealthParamsCodec,
   CoverFetcherHealthResultsCodec,
+  MetadataFilesHealthParamsCodec,
+  MetadataFilesHealthResultsCodec,
   MetadataProviderHealthParamsCodec,
   MetadataProviderHealthResultsCodec,
   RemoteLibraryHealthParamsCodec,
@@ -40,7 +42,7 @@ import {
 
 /** Cap'n interfaces whose `health` method the smoke probes. */
 export type HealthInterface =
-  "ContentSource" | "RemoteLibrary" | "MetadataProvider" | "CoverFetcher";
+  "ContentSource" | "RemoteLibrary" | "MetadataProvider" | "CoverFetcher" | "MetadataFiles";
 
 /** `health` params / results codecs per probed interface. */
 const HEALTH_CODECS: Readonly<
@@ -67,6 +69,10 @@ const HEALTH_CODECS: Readonly<
   CoverFetcher: {
     params: CoverFetcherHealthParamsCodec,
     results: CoverFetcherHealthResultsCodec,
+  },
+  MetadataFiles: {
+    params: MetadataFilesHealthParamsCodec,
+    results: MetadataFilesHealthResultsCodec,
   },
 });
 
@@ -139,6 +145,7 @@ const HEALTH_ENTRYPOINTS: readonly (readonly [string, HealthInterface])[] = [
   ["remoteLibrary", "RemoteLibrary"],
   ["metadata", "MetadataProvider"],
   ["covers", "CoverFetcher"],
+  ["metadataFiles", "MetadataFiles"],
 ];
 
 /**
@@ -300,8 +307,8 @@ export async function runSmoke(pluginDir: string): Promise<string> {
   try {
     await waitForHealth(base, bridgeToken);
     const describe = await postJson(`${base}/describe`, {}, bridgeToken);
-    // `health` is a method of the storefront, remoteLibrary, metadata and
-    // covers entrypoints; the default entrypoint (event/job triggers) has no health
+    // `health` is a method of the storefront, remoteLibrary, metadata,
+    // covers and metadataFiles entrypoints; the default entrypoint (event/job triggers) has no health
     // probe.
     const health: Partial<Record<HealthInterface, HealthOk>> = {};
     for (const iface of healthInterfaces(manifest.entrypoints ?? [])) {
