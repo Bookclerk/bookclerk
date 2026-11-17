@@ -653,6 +653,24 @@ mod tests {
         assert_eq!(b.get("b").await.unwrap(), Bytes::from_static(b"1"));
     }
 
+    #[tokio::test]
+    async fn an_overlapping_prefix_move_changes_nothing() {
+        let (_dir, b) = backend().await;
+        put(&b, "a/0", b"zero").await;
+        put(&b, "a/b/0", b"nested").await;
+        for (from, to) in [("a/", "a\\b/"), ("a/b/", "a/"), ("a\\b\\", "a/")] {
+            let err = fallback_move_prefix(&b, from, to, None, 10, &MoveOptions::default())
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, StorageError::InvalidKey(_)),
+                "{from} -> {to}: {err}"
+            );
+        }
+        assert_eq!(b.get("a/0").await.unwrap(), Bytes::from_static(b"zero"));
+        assert_eq!(b.get("a/b/0").await.unwrap(), Bytes::from_static(b"nested"));
+    }
+
     #[test]
     fn same_object_prefers_etags_then_size_and_time() {
         let probe = |etag: Option<&str>, size: u64, at: u64| ObjectProbe {
