@@ -296,8 +296,20 @@ async fn run_isolate(
     egress: &EgressProxy,
     limits: bookclerk_plugin_manifest::EffectiveWorkerdLimits,
 ) -> Result<()> {
+    // A killed launcher never removes its state directory; clear the ones
+    // this plugin's dead sessions left before allocating a new one.
+    let swept = bookclerk_workerd::state_sweep::sweep_abandoned(root);
+    if !swept.is_empty() {
+        info!(
+            count = swept.len(),
+            "removed abandoned workerd state directories"
+        );
+    }
     let state_dir = config::workerd_state_dir(root)?;
     let _state_cleanup = RemoveDirOnDrop(state_dir.clone());
+    // Declared after the cleanup guard so the lock is released before the
+    // directory is removed (Windows refuses to delete an open file).
+    let _state_owner = bookclerk_workerd::state_sweep::claim(&state_dir)?;
     let bridge_token = generate_bridge_token();
 
     #[cfg(unix)]
@@ -340,6 +352,7 @@ async fn run_isolate(
         )?;
         let (mut cmd, spawn_bin) = workerd_serve_command(workerd_bin, &generated, root)?;
         cmd.args(start.serve_args());
+        let started = std::time::Instant::now();
         let ready = start_isolate(
             &mut cmd,
             &spawn_bin,
@@ -350,6 +363,11 @@ async fn run_isolate(
         .await;
         match ready {
             Ok(ready) => {
+                info!(
+                    start = ?start,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "workerd isolate ready"
+                );
                 match &start {
                     SnapshotStart::Save(staging) => {
                         // The isolate answered, so the snapshot it saved at

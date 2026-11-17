@@ -33,6 +33,7 @@ pub mod python_snapshot;
 pub mod socket_broker;
 pub mod socket_proxy;
 pub mod socket_table;
+pub mod state_sweep;
 #[cfg(unix)]
 pub mod unix_bind;
 
