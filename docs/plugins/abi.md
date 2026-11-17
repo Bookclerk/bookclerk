@@ -1411,8 +1411,11 @@ host would otherwise build from `head`, `list`, `copy`, `get`, `put` and
 `delete`. The host says what it wants and the guest chooses how. Each
 operation is optional: the guest declares it by accepting its feature in
 `rpcFeatures`, and the host runs its own fallback for every operation the
-guest did not declare. The fallback is always correct, but it may be slower
-(a copy and a delete instead of a rename) or not atomic.
+guest did not declare. The fallback gives the same result when nothing else
+writes the same keys at the same time, but it may be slower (a copy and a
+delete instead of a rename) and it is not atomic: a concurrent writer can
+slip in between its steps. Where that matters, the guest declares the
+operation, or `storage.conditionalWrite`, and enforces it natively.
 
 | Feature | Method | What the guest does |
 | --- | --- | --- |

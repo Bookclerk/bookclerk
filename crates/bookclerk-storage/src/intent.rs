@@ -17,9 +17,12 @@ pub use bookclerk_plugin_sdk::{MoveOptions, MoveResult, ObjectChangeKind};
 
 /// Which intent operations a backend does natively.
 ///
-/// A `false` field means the host runs its fallback for that operation, which
-/// is always correct but may be slower (a copy and a delete instead of a
-/// rename) or not atomic (a conditional write checked before writing).
+/// A `false` field means the host runs its fallback for that operation. The
+/// fallback gives the same result when no one else writes the same keys
+/// meanwhile, but it may be slower (a copy and a delete instead of a rename)
+/// and is not atomic: a concurrent writer can slip in between its steps (a
+/// conditional write checked before writing, a `no_overwrite` target created
+/// after the check).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageCapabilities {
