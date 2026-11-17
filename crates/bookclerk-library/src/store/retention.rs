@@ -318,7 +318,7 @@ mod tests {
             // recently expired one stay.
             format!(
                 "INSERT INTO node_upload_sessions (upload_id, token_hash, node_id, job_id, \
-                 lease_generation, receiving_node_id, book_uuid, primary_key, manifest_json, \
+                 lease_generation, receiving_node_id, holding_id, primary_key, manifest_json, \
                  state, created_at, expires_at) VALUES \
                  ('u-committed', 'uh1', 'n1', 'j', 1, 'n0', 'b', 'k', '{{}}', 'committed', '{t}', '{old}'), \
                  ('u-aborted', 'uh2', 'n1', 'j', 1, 'n0', 'b', 'k', '{{}}', 'aborted', '{t}', '{old}'), \
