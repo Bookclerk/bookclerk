@@ -22,6 +22,7 @@ not_shipped = [
   { path = "crates/bookclerk-plugins/optional/covers/package-lock.json", why = "the guest's type-check and test tooling (TypeScript, Node types, the SDK's types); its shipped modules/ import nothing from npm" },
   { path = "crates/bookclerk-plugins/optional/integration-audiobookshelf/package-lock.json", why = "the guest's type-check and test tooling (TypeScript, Node types, the SDK's types); its shipped modules/ import nothing from npm" },
   { path = "crates/bookclerk-plugins/optional/metadata-audnexus/package-lock.json", why = "the guest's type-check and test tooling (TypeScript, Node types, the SDK's types); its shipped modules/ import nothing from npm" },
+  { path = "crates/bookclerk-plugins/optional/metadata-files/package-lock.json", why = "the guest's type-check and test tooling (TypeScript, Node types, the SDK's types); its shipped modules/ import nothing from npm" },
   { path = "crates/bookclerk-plugins/optional/metadata-openlibrary/package-lock.json", why = "the guest's type-check and test tooling (TypeScript, Node types, the SDK's types); its shipped modules/ import nothing from npm" },
   { path = "examples/plugins-echo-native-python/requirements-dev.txt", why = "reference example, dev tooling" },
   { path = "scripts/tests/requirements.txt", why = "CI test tooling" },

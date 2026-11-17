@@ -312,8 +312,25 @@ checks that only need to know which destination is which do not wake it.
 
 > [!NOTE]
 > Other storage plugins, plugins that belong to more than one family, and
-> Python plugins stay running for now. Python guests take several seconds
-> to start.
+> Python plugins stay running for now.
+
+A Python plugin's first start takes several seconds while Python loads and
+the plugin imports its modules. The host keeps a snapshot of the plugin
+taken right after those imports, one per installed plugin version, and
+later starts begin from it instead. On one CPU that takes a start from
+about 5 seconds to about 1 second.
+
+1. The first start of a new plugin version runs normally and saves the
+   snapshot.
+2. Once that start answered, the host stores the snapshot in
+   `plugin-state/<PluginKey fs-id>/snapshot/`, about 45 MB per plugin
+   version, and removes the one for the previous version.
+3. Later starts load it. If a stored snapshot fails to start, the guest
+   starts normally and saves a fresh one.
+
+The snapshot is taken before the plugin receives its settings or
+secrets, so it holds only code. The plugin can read its own snapshot but
+never write the stored copy.
 
 ### How a node hears about a change
 
@@ -617,6 +634,7 @@ $FILES_DIR/
   plugin-state/<PluginKey fs-id>/data
   plugin-state/<PluginKey fs-id>/tmp
   plugin-state/<PluginKey fs-id>/session-<nonce>/  # host-owned; native-behind only
+  plugin-state/<PluginKey fs-id>/snapshot/<key>/  # host-owned; Python start-up snapshot
   plugin-state/link-<32 hex>/<PluginKey fs-id>/      # on a branch: one subtree per library it joined
   plugin-grants.json             # consent for host-local trees (installed versions carry their own)
   install-ledger.json            # trust anchor for host-local installs only

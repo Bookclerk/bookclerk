@@ -13,7 +13,7 @@
  */
 
 import type { CapTable } from "./db-capnp.js";
-import { MAX_SCALAR_BYTES } from "./abi.js";
+import { MAX_BATCH_KEYS, MAX_SCALAR_BYTES } from "./abi.js";
 import { PluginError } from "./errors.js";
 import type {
   AdapterDatabaseSession as WireAdapterDatabaseSession,
@@ -32,6 +32,7 @@ import type {
   CoverImage,
   MetadataFileRecord,
   MetadataRecord,
+  KeyOutcome as WireKeyOutcome,
   ObjectMetadata as WireObjectMetadata,
   OidcClientTemplate,
   PluginError as WirePluginError,
@@ -50,7 +51,12 @@ import type {
   GrantedContext,
   GrantedJobCapabilities,
   JobOutcomeRecord,
+  ChangesRequest,
+  KeyOutcome,
   ListOptions,
+  MoveManyPage,
+  MoveManyRequest,
+  MoveOptions,
   NamedStub,
   ObjectMetadata,
   PluginMigration,
@@ -411,6 +417,13 @@ function wireMigration(migration: PluginMigration): WirePluginMigration {
   };
 }
 
+/**
+ * Maps wire listing options to the author's, turning each zero value (the
+ * wire's "absent") into `undefined`, hints included.
+ *
+ * @param options - Decoded wire options, or `undefined` when none were sent.
+ * @returns The options handed to `Destination.list`.
+ */
 function listOptions(
   options: Partial<W.DestinationListParams["options"]> | undefined,
 ): ListOptions {
@@ -418,7 +431,91 @@ function listOptions(
     prefix: options?.prefix || undefined,
     cursor: options?.cursor || undefined,
     limit: options?.limit || undefined,
+    withSignatures: options?.withSignatures || undefined,
+    modifiedSinceMs: options?.modifiedSinceMs || undefined,
   };
+}
+
+/**
+ * Maps wire move options to the author's; `false` and empty text become
+ * `undefined`.
+ *
+ * @param options - Decoded wire options, or `undefined` when none were sent.
+ * @returns The options handed to `move` and `moveMany`.
+ */
+function moveOptions(
+  options: Partial<W.DestinationMoveParams["options"]> | undefined,
+): MoveOptions {
+  return {
+    noOverwrite: options?.noOverwrite || undefined,
+    ifSourceMatch: options?.ifSourceMatch || undefined,
+  };
+}
+
+/**
+ * Maps a wire `moveMany` request to the author's, refusing more than
+ * `MAX_BATCH_KEYS` explicit pairs. A prefix target is not counted: its page
+ * size is the author's `limit`.
+ *
+ * @param request - Decoded wire request, or `undefined` when none was sent.
+ * @returns The request handed to `moveMany`.
+ * @throws PluginError `payload_too_large` above the pair cap.
+ */
+function moveManyRequest(
+  request: Partial<W.DestinationMoveManyParams["request"]> | undefined,
+): MoveManyRequest {
+  const target = request?.target ?? { kind: "pairs", value: [] };
+  if (target.kind === "pairs" && target.value.length > MAX_BATCH_KEYS) {
+    throw new PluginError("payload_too_large", `moveMany of ${target.value.length} pairs`);
+  }
+  return {
+    target,
+    cursor: request?.cursor || undefined,
+    limit: request?.limit || undefined,
+    options: moveOptions(request?.options),
+  };
+}
+
+/**
+ * Checks a batch call's key list before the author's handler sees it. The
+ * host never sends an empty list or more than `MAX_BATCH_KEYS` keys.
+ *
+ * @param keys - Decoded wire keys, or `undefined` when none were sent.
+ * @returns The keys as strings, in the order sent.
+ * @throws PluginError `invalid_params` for no keys, `payload_too_large`
+ *   above the cap.
+ */
+function batchKeys(keys: string[] | undefined): string[] {
+  const list = keys ?? [];
+  if (list.length === 0) {
+    throw new PluginError("invalid_params", "a batch call needs at least one key");
+  }
+  if (list.length > MAX_BATCH_KEYS) {
+    throw new PluginError("payload_too_large", `batch of ${list.length} keys`);
+  }
+  return list.map(String);
+}
+
+/**
+ * Maps the author's per-key outcomes to the wire's.
+ *
+ * An author outcome without `error` is a success and goes out with an empty
+ * wire code, which is how the wire spells success. An author outcome with
+ * `error` is a failure even when its code is empty, so an empty code goes
+ * out as `internal` rather than as success.
+ *
+ * @param outcomes - The author's outcomes, one per key.
+ * @returns Wire outcomes in the same order.
+ */
+function wireOutcomes(outcomes: KeyOutcome[]): WireKeyOutcome[] {
+  return outcomes.map((o) => ({
+    key: String(o.key ?? ""),
+    error: {
+      code: o.error ? String(o.error.code ?? "") || "internal" : "",
+      message: o.error ? String(o.error.message ?? "") : "",
+      details: "",
+    },
+  }));
 }
 
 function sessionCall(method: string): AnySpec["call"] {
@@ -635,6 +732,67 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
           String(p.commitToken ?? ""),
         ]),
       ok: okEmpty,
+    }),
+    move: spec<W.DestinationMoveParams, W.DestinationMoveResults["result"]>({
+      params: W.DestinationMoveParamsCodec,
+      results: W.DestinationMoveResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) =>
+        named(s, cx.host.bindContext(cx.ctx), "move", [
+          String(p.from ?? ""),
+          String(p.to ?? ""),
+          moveOptions(p.options),
+        ]),
+      ok: okPass,
+    }),
+    moveMany: spec<W.DestinationMoveManyParams, W.DestinationMoveManyResults["result"]>({
+      params: W.DestinationMoveManyParamsCodec,
+      results: W.DestinationMoveManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) =>
+        named(s, cx.host.bindContext(cx.ctx), "moveMany", [moveManyRequest(p.request)]),
+      ok: (value) => {
+        const page = (value ?? { results: [] }) as MoveManyPage;
+        return okValue({
+          results: wireOutcomes(asList<KeyOutcome>(page.results)),
+          nextCursor: page.nextCursor ?? "",
+          atomic: page.atomic ?? false,
+          objectsMoved: page.objectsMoved ?? 0,
+        });
+      },
+    }),
+    deleteMany: spec<W.DestinationDeleteManyParams, W.DestinationDeleteManyResults["result"]>({
+      params: W.DestinationDeleteManyParamsCodec,
+      results: W.DestinationDeleteManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "deleteMany", [batchKeys(p.keys)]),
+      ok: (value) => okValue({ results: wireOutcomes(asList<KeyOutcome>(value)) }),
+    }),
+    headMany: spec<W.DestinationHeadManyParams, W.DestinationHeadManyResults["result"]>({
+      params: W.DestinationHeadManyParamsCodec,
+      results: W.DestinationHeadManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "headMany", [batchKeys(p.keys)]),
+      ok: (value) =>
+        okValue({
+          objects: asList<ObjectMetadata | null>(value).map((meta) => ({
+            found: meta != null,
+            meta: (meta ?? undefined) as unknown as WireObjectMetadata,
+          })),
+        }),
+    }),
+    changes: spec<W.DestinationChangesParams, W.DestinationChangesResults["result"]>({
+      params: W.DestinationChangesParamsCodec,
+      results: W.DestinationChangesResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) =>
+        named(s, cx.host.bindContext(cx.ctx), "changes", [
+          {
+            cursor: p.request?.cursor || undefined,
+            limit: p.request?.limit || undefined,
+          } satisfies ChangesRequest,
+        ]),
+      ok: okPass,
     }),
   },
   RemoteLibrary: {

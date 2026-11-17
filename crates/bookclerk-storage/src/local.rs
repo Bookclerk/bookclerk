@@ -221,6 +221,17 @@ impl LocalFsBackend {
     }
 }
 
+/// A file's modification time in milliseconds since the Unix epoch, when the
+/// platform reports one at or after the epoch.
+fn modified_ms(meta: &std::fs::Metadata) -> Option<u64> {
+    let since = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    u64::try_from(since.as_millis()).ok()
+}
+
 /// Rejects empty keys, absolute keys, and any `ParentDir` segment.
 fn validate_key(key: &str) -> Result<()> {
     if key.is_empty() || key.starts_with('/') {
@@ -351,6 +362,8 @@ impl StorageBackend for LocalFsBackend {
                 content_length: Some(file_meta.len()),
                 ..Default::default()
             },
+            modified_at_ms: modified_ms(&file_meta),
+            ..ObjectProbe::default()
         };
         // Cheap sidecar read — never opens the audio body.
         let meta_key = bookclerk_meta_sidecar_key(key);

@@ -935,6 +935,7 @@ impl StorageBackend for S3Backend {
             content_type: meta.content_type.clone(),
             meta,
             etag: out.e_tag().map(str::to_string),
+            ..Default::default()
         })
     }
 
@@ -1037,6 +1038,7 @@ impl StorageBackend for S3Backend {
                 objects.push(ObjectInfo {
                     key,
                     size: obj.size().unwrap_or(0) as u64,
+                    ..Default::default()
                 });
             }
             let truncated = resp.is_truncated().unwrap_or(false);

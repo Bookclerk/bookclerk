@@ -1675,8 +1675,9 @@ pub struct WindowBooks {
 }
 
 /// `GET /api/config/join/window`: the window view for the operator or an
-/// Owner: the books every library this install is a window of holds for
-/// this install's person, merged by work (`{clusters, books}`).
+/// Owner: the books every library this install is a window of, or holds
+/// a library card for, holds for this install's person, merged by work
+/// (`{clusters, cards, books}`).
 #[utoipa::path(
     get,
     path = "/api/config/join/window",

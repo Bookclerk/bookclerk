@@ -1560,8 +1560,10 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 // joining install's callback.
                 "/join/approve",
                 "/join/callback",
-                // A clerk sign-in's consent page on the library.
+                // A clerk sign-in: the consent page on the library, and
+                // this install's callback.
                 "/clerk/approve",
+                "/clerk/callback",
             ];
             let spa_index = axum::routing::get_service(ServeFile::new(index.clone()))
                 .layer(middleware::from_fn(spa_document_csp));

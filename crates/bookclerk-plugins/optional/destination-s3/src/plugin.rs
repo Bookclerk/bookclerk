@@ -148,6 +148,9 @@ fn meta_from_probe(probe: bookclerk_storage::ObjectProbe) -> ObjectMetadata {
         content_type: probe.content_type.or(probe.meta.content_type),
         etag: probe.etag,
         sha256,
+        modified_at_ms: probe.modified_at_ms,
+        version_id: probe.version_id,
+        signature: probe.signature,
     }
 }
 
@@ -213,9 +216,11 @@ impl Destination for S3Destination {
                 .map(|obj| ObjectInfo {
                     key: obj.key,
                     size: obj.size,
+                    ..Default::default()
                 })
                 .collect(),
             next_cursor: page.next_cursor,
+            ..ListPage::default()
         })
     }
 
@@ -256,6 +261,7 @@ impl Destination for S3Destination {
             bytes_written: written.bytes_written,
             etag: options.commit_token.clone().or(written.etag),
             sha256: put_sha(written.sha256_hex.as_deref()),
+            ..Default::default()
         })
     }
 
@@ -282,6 +288,7 @@ impl Destination for S3Destination {
                     bytes_written: probe.size,
                     etag: Some(commit_token.into()),
                     sha256: put_sha(probe.meta.sha256_hex.as_deref()),
+                    ..Default::default()
                 })
             }
             Err(StorageError::NotFound(_)) => {
@@ -296,6 +303,7 @@ impl Destination for S3Destination {
                     bytes_written: probe.size,
                     etag: Some(commit_token.into()),
                     sha256: put_sha(probe.meta.sha256_hex.as_deref()),
+                    ..Default::default()
                 })
             }
             Err(err) => Err(map_storage(err)),

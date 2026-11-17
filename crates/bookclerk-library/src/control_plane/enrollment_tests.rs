@@ -977,6 +977,22 @@ async fn library_contents_counts_what_an_install_holds() {
     assert!(!held.is_empty());
     assert_eq!(held.users, 2);
     assert_eq!(held.reasons(), ["2 users"]);
+    store
+        .upsert_account("audible", "acct", "us", None, true, "audible")
+        .await
+        .unwrap();
+    store
+        .upsert_book(&crate::store::NewBook::minimal(
+            "B0HELD0001",
+            "acct",
+            "us",
+            "Held",
+        ))
+        .await
+        .unwrap();
+    let held = library_contents(&store).await.unwrap();
+    assert_eq!((held.accounts, held.books), (1, 1));
+    assert_eq!(held.reasons(), ["2 users", "1 store account", "1 book"]);
 }
 
 /// Parsing a link registers its secret for redaction, so a joining host

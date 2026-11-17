@@ -72,6 +72,7 @@ pub async fn stream_copy_keys(
         sha256: read.meta.sha256.clone(),
         commit_token: Some(token.clone()),
         stage_only: true,
+        ..WriteOptions::default()
     };
     if options.content_length == Some(0) {
         options.content_length = None;
@@ -289,6 +290,7 @@ mod tests {
             Ok(ListPage {
                 objects: Vec::new(),
                 next_cursor: None,
+                ..Default::default()
             })
         }
         async fn get(&self, _key: &str, _range: Option<ByteRange>) -> Result<ReadResult> {

@@ -140,6 +140,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.storage_reply]
+crate = "bookclerk-plugin-abi"
+boundary = "A storage guest's replies to intent operations: moveMany, deleteMany, headMany and changes pages and the hinted list page, checked against the request that asked for them"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.socket_request]
 crate = "bookclerk-plugin-abi"
 boundary = "A guest's host-brokered socket request: the Sockets.connect URL, headers, subprotocols, heartbeat pairs and attachment, and the SocketMessage the host delivers to a SocketHandler"

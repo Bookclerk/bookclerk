@@ -9,6 +9,38 @@ pub const FEATURE_STREAMS: &str = crate::plugin_capnp::FEATURE_STREAMS;
 /// Guest implements server-side [`super::Destination::copy`].
 pub const FEATURE_STORAGE_COPY: &str = crate::plugin_capnp::FEATURE_STORAGE_COPY;
 
+/// Guest implements [`super::Destination::move_object`].
+pub const FEATURE_STORAGE_MOVE: &str = crate::plugin_capnp::FEATURE_STORAGE_MOVE;
+
+/// Guest implements [`super::Destination::move_many`].
+pub const FEATURE_STORAGE_MOVE_MANY: &str = crate::plugin_capnp::FEATURE_STORAGE_MOVE_MANY;
+
+/// Guest implements [`super::Destination::delete_many`].
+pub const FEATURE_STORAGE_DELETE_MANY: &str = crate::plugin_capnp::FEATURE_STORAGE_DELETE_MANY;
+
+/// Guest implements [`super::Destination::head_many`].
+pub const FEATURE_STORAGE_HEAD_MANY: &str = crate::plugin_capnp::FEATURE_STORAGE_HEAD_MANY;
+
+/// Guest enforces [`super::WriteOptions::if_match`] and
+/// [`super::WriteOptions::if_none_match`].
+pub const FEATURE_STORAGE_CONDITIONAL_WRITE: &str =
+    crate::plugin_capnp::FEATURE_STORAGE_CONDITIONAL_WRITE;
+
+/// Guest implements [`super::Destination::changes`].
+pub const FEATURE_STORAGE_CHANGES: &str = crate::plugin_capnp::FEATURE_STORAGE_CHANGES;
+
+/// Every optional storage operation a host offers a storage guest, beside
+/// [`FEATURE_STORAGE_COPY`]. Each one the guest accepts replaces the host's
+/// fallback for that operation.
+pub const STORAGE_OPERATION_FEATURES: &[&str] = &[
+    FEATURE_STORAGE_MOVE,
+    FEATURE_STORAGE_MOVE_MANY,
+    FEATURE_STORAGE_DELETE_MANY,
+    FEATURE_STORAGE_HEAD_MANY,
+    FEATURE_STORAGE_CONDITIONAL_WRITE,
+    FEATURE_STORAGE_CHANGES,
+];
+
 /// Known RPC feature names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RpcFeature {

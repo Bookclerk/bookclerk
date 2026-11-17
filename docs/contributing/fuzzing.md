@@ -43,6 +43,7 @@ boundary extends it.
 | `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
+| `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany` and `changes` pages and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL, headers, subprotocols, heartbeat pairs and attachment, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
 | `socket_route` | A workerd plugin's `env.SOCKETS` calls on the granted reverse channel: the `POST /sockets/<op>` JSON body for `connect`, `send`, `close`, `attachment` and `list` | `bookclerk-workerd::granted_sockets` |
@@ -237,6 +238,16 @@ only that. The others check:
   survives `write` then `read` unchanged and stays inside the cursor and
   list bounds. The shared oracle is `fuzz/oracles/event_read.rs`, replayed
   from `bookclerk-plugin-abi`.
+- **`storage_reply`**: byte 0 modulo 5 picks a Cap'n Proto `moveMany`
+  page (0), `deleteMany` result (1), `headMany` result (2), `changes` page
+  (3) or hinted `list` page (4). A decoded reply survives encode then
+  decode unchanged, and each validator accepts the reply, against a fixed
+  request, exactly when an independent restatement of its rules does: one
+  outcome per sent key in order, prefix pages under the prefix with a
+  cursor that advances, change pages within the page and cursor bounds. A
+  per-key error whose code is unreadable decodes as an `unknown` failure,
+  never as success. The shared oracle is `fuzz/oracles/storage_reply.rs`,
+  replayed from `bookclerk-plugin-abi`.
 - **`socket_request`**: byte 0 modulo 3 picks a socket URL (0), a Cap'n
   Proto `SocketConnectRequest` (1) or a `SocketMessage` (2). Every URL the
   parser accepts is one a WHATWG URL parser (the `url` crate) reads as the
@@ -1147,6 +1158,31 @@ pick another run.
   exactly when it is at most 1024 bytes of tab, space and `VCHAR`. A
   condition outside that is refused, and a response header outside it is
   dropped from the answer.
+
+### Metadata file dialect guest
+
+The `metadata_files` guest reads sidecar files from storage the host does
+not control. Its `test/fuzz.test.ts` replays one corpus per dialect under
+`fuzz/<dialect id>/` and runs seeded byte and text mutations, spliced
+across every corpus, in `npm test` (the `workerd_guests` check);
+`FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
+
+- **Parsing** (`parseFile` in
+  `crates/bookclerk-plugins/optional/metadata-files/src/dialects.ts`, for
+  `libation_json`). Oracle, written from the ABI's record rules
+  (`validate_metadata_file_record` and `check_record_against_dialect`)
+  and the dialect's manifest row: a file is refused only with
+  `invalid_params`. Otherwise the record passes every rule the host
+  applies, states only the row's fields and credit roles, and is the same
+  on a second parse.
+- **Rendering** (`renderFile`), for every row with `writes = true`, over
+  every mutated file as the existing file, with a random record and field
+  list. No dialect in this plugin writes yet, so this part runs once one
+  does. Oracle: a refusal only for a file `parse` also refuses or an
+  answer that would pass the size cap. Otherwise the answer is within
+  `MAX_METADATA_FILE_BYTES`, and a re-parse passes the same rules, reads
+  back each field it was asked to write, and reads every other field (and
+  every credit role the request does not state) as the existing file did.
 
 ### Egress bridge User-Agent rule
 

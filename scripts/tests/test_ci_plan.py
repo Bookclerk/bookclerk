@@ -1072,6 +1072,7 @@ class CoverageCommandTests(unittest.TestCase):
         self.assertIn("crates/bookclerk-plugins/optional/integration-audiobookshelf", dirs)
         self.assertTrue(execute._declares_database(REPO / "crates/bookclerk-plugins/optional/integration-audiobookshelf"))
         self.assertFalse(execute._declares_database(REPO / "crates/bookclerk-plugins/optional/covers"))
+        self.assertIn("crates/bookclerk-plugins/optional/metadata-files", dirs)
         self.assertNotIn("crates/bookclerk-plugins/optional/source-libro", dirs)
 
     def test_rust_report_needs_instrumentation(self) -> None:

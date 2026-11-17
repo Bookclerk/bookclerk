@@ -785,7 +785,11 @@ fn read_page(path: &Path, cursor: Option<&str>, limit: usize) -> Result<ListPage
                 ));
             }
         }
-        objects.push(ObjectInfo { key, size });
+        objects.push(ObjectInfo {
+            key,
+            size,
+            ..Default::default()
+        });
         next_index += 1;
     }
     let next_cursor = if objects.len() > limit {

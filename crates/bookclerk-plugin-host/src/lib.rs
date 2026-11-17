@@ -78,6 +78,7 @@ mod manifest;
 mod on_demand;
 mod on_demand_source;
 mod on_demand_storage;
+mod python_snapshot;
 mod queue_producer;
 mod registry;
 mod remote_consent;
@@ -86,6 +87,7 @@ mod rpc_session;
 mod socket_broker;
 mod spawn_plan;
 mod spawn_stdio;
+mod storage_intent;
 mod user_poll;
 
 pub use bookclerk_plugin_sdk::protocol;

@@ -39,6 +39,7 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use crate::consent::{inject_workerd_grant_env, spawn_config_for_grant, spawn_grant, PluginGrant};
 use crate::discover::DiscoveredPlugin;
 use crate::jail::{GuestJail, Start};
+use crate::python_snapshot::SnapshotSlot as PythonSnapshotSlot;
 use crate::spawn_plan::{SpawnPlan, WORKERD_BIN_ENV};
 use crate::{PluginError, Result};
 
@@ -272,6 +273,13 @@ pub(crate) async fn spawn_stdio_guest(
     // only moves fields, so `mut` is unused there.
     #[cfg_attr(windows, allow(unused_mut))]
     let mut jail = GuestJail::plan_with_local_root(config, plugin, plan, local_output_root)?;
+    // A Python isolate starts from its stored snapshot, or saves one.
+    let snapshot = python_snapshot_slot(config, plugin, plan, &mut jail);
+    let mut snapshot_env: Vec<(&str, OsString)> = extra_env.to_vec();
+    if let Some(slot) = &snapshot {
+        snapshot_env.extend(slot.env());
+    }
+    let extra_env = snapshot_env.as_slice();
     note_spawn_stage(&format!("spawn planned plugin={id}"));
     let mut session_guard = SessionDirGuard(jail.session_dir.clone());
     let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
@@ -314,6 +322,12 @@ pub(crate) async fn spawn_stdio_guest(
         )
         .await
     };
+
+    if let Some(slot) = snapshot {
+        // Promotes a snapshot this start saved, and removes the staging
+        // directory either way.
+        slot.promote_when_ready();
+    }
 
     let parts = match spawned {
         Ok(parts) => parts,
@@ -384,6 +398,30 @@ pub(crate) async fn spawn_stdio_guest(
         stderr_tail,
         files_dir: config.paths().files_dir.clone(),
     })
+}
+
+/// Plans the Python snapshot for a workerd isolate and lets its jail read
+/// the stored snapshot and write the staging directory.
+///
+/// # Returns
+///
+/// `None` when the guest is not a Python isolate or no snapshot can be
+/// planned; the guest then starts without one.
+fn python_snapshot_slot(
+    config: &Config,
+    plugin: &DiscoveredPlugin,
+    plan: &SpawnPlan,
+    jail: &mut GuestJail,
+) -> Option<PythonSnapshotSlot> {
+    if plan.runtime != crate::GuestRuntimeKind::Workerd {
+        return None;
+    }
+    let state_root = crate::jail::plugin_state_root(config, plugin).ok()?;
+    let slot = PythonSnapshotSlot::plan(&state_root, plugin)?;
+    if let Start::Confined { spec, .. } = &mut jail.start {
+        slot.grant(&mut spec.reads, &mut spec.writes);
+    }
+    Some(slot)
 }
 
 /// Single-child spawn (workerd isolate or diagnostic direct native).

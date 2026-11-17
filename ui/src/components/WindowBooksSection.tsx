@@ -10,6 +10,7 @@ import {
   filterWindowBooks,
   windowEntryFormats,
   windowEntryLibraries,
+  windowLibraries,
   type WindowBooks,
   type WindowEntryView,
 } from "@/lib/join";
@@ -61,9 +62,10 @@ function WindowRow({ entry }: { entry: WindowEntryView }) {
 
 /**
  * Library on a window: the books each library this server is a window of
- * ("Use this computer to download" off) holds for its person, merged by
- * work, narrowed by the Library search. Renders nothing when this server
- * is a window of no library, or the caller may not read the view (only the
+ * ("Use this computer to download" off) or holds a library card for holds
+ * for its person, merged by work, narrowed by the Library search. Renders
+ * nothing when this server reads no other library, or the caller may not
+ * read the view (only the
  * operator or an Owner may). A refresh that fails for another reason keeps
  * the list it has and offers to try again.
  */
@@ -101,15 +103,10 @@ export function WindowBooksSection({ query = "" }: { query?: string }) {
   // WebSocket forwarding), so books the window reader stores still show.
   useLiveRefresh(["clusters"], load, { pollMs: 60_000, openPollMs: 300_000 });
 
-  if (!view || view.clusters.length === 0) return null;
+  if (!view) return null;
+  const libraries = windowLibraries(view);
+  if (libraries.length === 0) return null;
   const shown = filterWindowBooks(view.books, query);
-  const libraries = view.clusters.map((link) => {
-    try {
-      return new URL(link.owner_origin).host || link.owner_origin;
-    } catch {
-      return link.owner_origin;
-    }
-  });
   return (
     <section aria-labelledby="window-books-heading" className="bg-card">
       <div className="border-b border-ink/10 px-3 py-3 sm:px-4">
@@ -117,8 +114,13 @@ export function WindowBooksSection({ query = "" }: { query?: string }) {
           Your books in other libraries
         </h2>
         <p className="text-xs text-ink/55">
-          Held for you in {libraries.join(", ")}. This server doesn&apos;t download them; turn on
-          &ldquo;Use this computer to download&rdquo; in Settings to keep copies here.
+          Held for you in {libraries.join(", ")}. This server doesn&apos;t download them
+          {view.clusters.length > 0 ? (
+            <>
+              ; turn on &ldquo;Use this computer to download&rdquo; in Settings to keep copies here
+            </>
+          ) : null}
+          .
         </p>
       </div>
       {stale ? (

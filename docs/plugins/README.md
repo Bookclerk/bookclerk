@@ -357,11 +357,11 @@ Audible, Libro.fm, Chirp, GraphicAudio and Audiobookshelf ship as
   (fail closed).
 
 The Audiobookshelf integration, the Open Library and Audnexus metadata
-providers and the `covers` fetcher are first-party **workerd TypeScript**
-guests in the same tree
+providers, the `covers` fetcher and the `metadata_files` reader are
+first-party **workerd TypeScript** guests in the same tree
 (`crates/bookclerk-plugins/optional/integration-audiobookshelf`,
-`metadata-openlibrary`, `metadata-audnexus` and `covers`). They have no
-Cargo package:
+`metadata-openlibrary`, `metadata-audnexus`, `covers` and
+`metadata-files`). They have no Cargo package:
 
 - Their source is in `src/`. `npm run build` compiles it with TypeScript
   into the `modules/` that ships, and both are committed. CI's

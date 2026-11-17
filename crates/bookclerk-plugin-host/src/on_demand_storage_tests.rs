@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bookclerk_storage::{LocalFsBackend, ObjectMeta, StorageBackend};
+use bookclerk_storage::{
+    ListRequest, LocalFsBackend, MoveOptions, ObjectMeta, StorageBackend, WriteCondition,
+};
 use bytes::Bytes;
 use tokio::io::AsyncReadExt;
 
@@ -241,6 +243,80 @@ async fn every_storage_call_wakes_a_sleeping_guest_and_reaches_it() {
             }),
         ),
         (
+            "move_object",
+            Box::pin(async {
+                let moved = proxy
+                    .move_object("a/one.txt", "c/one.txt", &MoveOptions::default())
+                    .await
+                    .expect("move_object");
+                assert!(!moved.already_moved);
+            }),
+        ),
+        (
+            "move_many",
+            Box::pin(async {
+                let pairs = [("c/one.txt".to_string(), "c/two.txt".to_string())];
+                let results = proxy
+                    .move_many(&pairs, &MoveOptions::default())
+                    .await
+                    .expect("move_many");
+                assert!(results[0].error.is_none());
+            }),
+        ),
+        (
+            "move_prefix",
+            Box::pin(async {
+                let page = proxy
+                    .move_prefix("c/", "d/", None, 10, &MoveOptions::default())
+                    .await
+                    .expect("move_prefix");
+                assert_eq!(page.results.len(), 1);
+            }),
+        ),
+        (
+            "head_many",
+            Box::pin(async {
+                let keys = ["d/two.txt".to_string(), "d/missing.txt".to_string()];
+                let probes = proxy.head_many(&keys).await.expect("head_many");
+                assert!(probes[0].is_some() && probes[1].is_none());
+            }),
+        ),
+        (
+            "put_stream_conditional",
+            Box::pin(async {
+                let body = Box::pin(std::io::Cursor::new(b"new".to_vec()));
+                proxy
+                    .put_stream_conditional("e/new.txt", body, meta(), &WriteCondition::IfNoneMatch)
+                    .await
+                    .expect("put_stream_conditional");
+            }),
+        ),
+        (
+            "list_hinted",
+            Box::pin(async {
+                let page = proxy
+                    .list_hinted(&ListRequest {
+                        prefix: "d/".into(),
+                        limit: 10,
+                        with_signatures: true,
+                        ..ListRequest::default()
+                    })
+                    .await
+                    .expect("list_hinted");
+                assert_eq!(page.page.objects.len(), 1);
+            }),
+        ),
+        (
+            "delete_many",
+            Box::pin(async {
+                let results = proxy
+                    .delete_many(&["e/new.txt".to_string()])
+                    .await
+                    .expect("delete_many");
+                assert!(results[0].error.is_none());
+            }),
+        ),
+        (
             "delete",
             Box::pin(async {
                 proxy.delete("a/three.txt").await.expect("delete");
@@ -258,6 +334,16 @@ async fn every_storage_call_wakes_a_sleeping_guest_and_reaches_it() {
         started.lock().expect("started").len(),
         expected_wakes as usize
     );
+}
+
+#[tokio::test]
+async fn a_change_feed_read_never_wakes_a_guest_without_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (proxy, _first, started) = proxy(&dir, Duration::from_millis(30));
+    wait_asleep(&proxy).await;
+    assert!(!proxy.capabilities().changes);
+    assert!(proxy.changes(None, 10).await.expect("changes").is_none());
+    assert!(started.lock().expect("started").is_empty());
 }
 
 #[tokio::test]

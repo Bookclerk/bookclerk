@@ -28,6 +28,7 @@ examples/plugins-echo-workerd-ts/modules/
 crates/bookclerk-plugins/optional/covers/modules/
 crates/bookclerk-plugins/optional/integration-audiobookshelf/modules/
 crates/bookclerk-plugins/optional/metadata-audnexus/modules/
+crates/bookclerk-plugins/optional/metadata-files/modules/
 crates/bookclerk-plugins/optional/metadata-openlibrary/modules/
 packages/plugin-sdk/src/generated.ts
 packages/plugin-sdk/src/generated-wire.ts

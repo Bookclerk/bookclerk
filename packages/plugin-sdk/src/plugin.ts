@@ -78,7 +78,9 @@ import {
   type SocketsTransport,
   type SocketTransportReply,
 } from "./sockets.js";
+import type { ObjectChangeKind } from "./abi.js";
 import type {
+  MoveManyTarget,
   AuthenticateUserParams,
   CatalogDetailParams,
   AdapterExecuteRequest,
@@ -143,8 +145,17 @@ export { PluginError } from "./errors.js";
 // `schema/plugin.capnp` — re-exported here for guest convenience.
 export {
   FEATURE_SCALAR_LIMITS,
+  FEATURE_STORAGE_CHANGES,
+  FEATURE_STORAGE_CONDITIONAL_WRITE,
   FEATURE_STORAGE_COPY,
+  FEATURE_STORAGE_DELETE_MANY,
+  FEATURE_STORAGE_HEAD_MANY,
+  FEATURE_STORAGE_MOVE,
+  FEATURE_STORAGE_MOVE_MANY,
   FEATURE_STREAMS,
+  MAX_BATCH_KEYS,
+  MAX_CHANGES_CURSOR_BYTES,
+  MAX_CHANGES_PAGE,
   MAX_CHECKPOINT_BYTES,
   MAX_EVENT_PAYLOAD_BYTES,
   MAX_LIST_PAGE,
@@ -252,10 +263,21 @@ export function dataMigrationOp(sql: string): { data: string } {
 // Storage / stream shapes (author-ergonomic projections of the ABI structs)
 // ---------------------------------------------------------------------------
 
-/** Object listing entry. */
+/**
+ * Object listing entry. The signature fields are set only when the listing
+ * was asked for them ({@link ListOptions.withSignatures}).
+ */
 export interface ObjectInfo {
   key: string;
   size: number;
+  /** Opaque backend entity tag. */
+  etag?: string;
+  /** Last modification time, UTC unix milliseconds. */
+  modifiedAtMs?: number;
+  /** Backend object version id (versioned buckets). */
+  versionId?: string;
+  /** Opaque change signature: unchanged means the object did not change. */
+  signature?: string;
 }
 
 /** Metadata without a body. */
@@ -265,6 +287,12 @@ export interface ObjectMetadata {
   contentType?: string;
   etag?: string;
   sha256?: Uint8Array;
+  /** Last modification time, UTC unix milliseconds. */
+  modifiedAtMs?: number;
+  /** Backend object version id (versioned buckets). */
+  versionId?: string;
+  /** Opaque change signature, as {@link ObjectInfo.signature}. */
+  signature?: string;
 }
 
 /** Paginated list request. */
@@ -272,12 +300,26 @@ export interface ListOptions {
   prefix?: string;
   cursor?: string;
   limit?: number;
+  /**
+   * Hint: fill the signature fields of each entry. Say whether you did in
+   * {@link ListPage.signaturesIncluded}.
+   */
+  withSignatures?: boolean;
+  /**
+   * Hint: only objects modified at or after this UTC unix millisecond. Say
+   * whether you filtered in {@link ListPage.modifiedSinceApplied}.
+   */
+  modifiedSinceMs?: number;
 }
 
 /** One page of keys. */
 export interface ListPage {
   objects: ObjectInfo[];
   nextCursor?: string;
+  /** True when every entry carries the signature fields the backend has. */
+  signaturesIncluded?: boolean;
+  /** True when objects modified before `modifiedSinceMs` were left out. */
+  modifiedSinceApplied?: boolean;
 }
 
 /** Optional byte range for a streamed read. */
@@ -298,6 +340,16 @@ export interface WriteOptions {
   sha256?: Uint8Array;
   commitToken?: string;
   stageOnly?: boolean;
+  /**
+   * Conditional write (`storage.conditionalWrite`): publish only while the
+   * stored object's etag equals this value, else reject with `conflict`.
+   */
+  ifMatch?: string;
+  /**
+   * Conditional write (`storage.conditionalWrite`): publish only when no
+   * object exists at the key, else reject with `conflict`.
+   */
+  ifNoneMatch?: boolean;
 }
 
 /** Streamed read result. `body` is a transferred ReadableStream. */
@@ -312,11 +364,93 @@ export interface PutResult {
   bytesWritten: number;
   etag?: string;
   sha256?: Uint8Array;
+  /** Modification time of the stored object, UTC unix milliseconds. */
+  modifiedAtMs?: number;
+  /** Version id of the stored object. */
+  versionId?: string;
+  /** Change signature of the stored object. */
+  signature?: string;
 }
 
 /** Result of a server-side copy. */
 export interface CopyResult {
   bytesCopied: number;
+}
+
+/** Options for {@link StorageEntrypoint.move} and {@link StorageEntrypoint.moveMany}. */
+export interface MoveOptions {
+  /** Reject with `conflict` instead of replacing an object at the target. */
+  noOverwrite?: boolean;
+  /** `move` only: move only while the source's etag equals this value. */
+  ifSourceMatch?: string;
+}
+
+/** How a single move was done. */
+export interface MoveResult {
+  /** True when the move was atomic (a rename). */
+  atomic: boolean;
+  /** True when the source was already gone and the target present. */
+  alreadyMoved?: boolean;
+}
+
+/** Argument of {@link StorageEntrypoint.moveMany}. */
+export interface MoveManyRequest {
+  /** Explicit pairs, or every object under a prefix. */
+  target: MoveManyTarget;
+  /** Prefix form: the previous page's `nextCursor`; absent starts. */
+  cursor?: string;
+  /** Prefix form: objects to move in this call (at most `MAX_BATCH_KEYS`). */
+  limit?: number;
+  /** Overwrite rule applied to every move. */
+  options?: MoveOptions;
+}
+
+/** Outcome for one key of a batch call; `error` is absent on success. */
+export interface KeyOutcome {
+  key: string;
+  error?: { code: string; message: string };
+}
+
+/** One page of {@link StorageEntrypoint.moveMany} progress. */
+export interface MoveManyPage {
+  /** Outcomes in request order (one per pair for the pairs form). */
+  results: KeyOutcome[];
+  /** Prefix form: cursor for the next call; absent when done. */
+  nextCursor?: string;
+  /** True when every move in this page was atomic. */
+  atomic?: boolean;
+  /** Objects moved in this page. */
+  objectsMoved?: number;
+}
+
+/** Argument of {@link StorageEntrypoint.changes}. */
+export interface ChangesRequest {
+  /** The previous page's `cursor`; absent asks for the current position. */
+  cursor?: string;
+  /** Requested changes per page (at most `MAX_CHANGES_PAGE`). */
+  limit?: number;
+}
+
+/** One entry of a change feed. */
+export interface ObjectChange {
+  key: string;
+  kind: ObjectChangeKind;
+  /** Listing fields after the change, when the feed carries them. */
+  info?: ObjectInfo;
+}
+
+/** One page of {@link StorageEntrypoint.changes}. */
+export interface ChangesPage {
+  changes: ObjectChange[];
+  /** Cursor for the next call; never empty. */
+  cursor: string;
+  /** True when more changes are ready now. */
+  more?: boolean;
+  /**
+   * False when the feed may have missed changes (overflow, expired
+   * retention); the host then backs it with a full listing.
+   */
+  complete: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -417,6 +551,60 @@ export class Destination extends RpcTarget {
    */
   abortStage(_key: string, _commitToken: string): Promise<void> {
     return Promise.reject(unsupported("abortStage"));
+  }
+
+  /**
+   * Move one object (declare `storage.move`). Repeating a finished move
+   * resolves with `alreadyMoved`.
+   *
+   * @param _from - Source key.
+   * @param _to - Target key.
+   * @param _options - Overwrite and source preconditions.
+   * @returns How the move was done.
+   */
+  move(_from: string, _to: string, _options: MoveOptions): Promise<MoveResult> {
+    return Promise.reject(unsupported("move"));
+  }
+
+  /**
+   * Move a set of objects or a whole prefix, one page per call (declare
+   * `storage.moveMany`). Safe to repeat.
+   *
+   * @param _request - Pairs or prefix, cursor, and options.
+   * @returns Per-key outcomes and the continuation.
+   */
+  moveMany(_request: MoveManyRequest): Promise<MoveManyPage> {
+    return Promise.reject(unsupported("moveMany"));
+  }
+
+  /**
+   * Remove up to `MAX_BATCH_KEYS` objects (declare `storage.deleteMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One outcome per key, in order; a missing key succeeds.
+   */
+  deleteMany(_keys: string[]): Promise<KeyOutcome[]> {
+    return Promise.reject(unsupported("deleteMany"));
+  }
+
+  /**
+   * Probe up to `MAX_BATCH_KEYS` objects (declare `storage.headMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One entry per key, in order; `null` when missing.
+   */
+  headMany(_keys: string[]): Promise<(ObjectMetadata | null)[]> {
+    return Promise.reject(unsupported("headMany"));
+  }
+
+  /**
+   * Keys changed since a cursor (declare `storage.changes`).
+   *
+   * @param _request - Cursor and page size.
+   * @returns One page of changes.
+   */
+  changes(_request: ChangesRequest): Promise<ChangesPage> {
+    return Promise.reject(unsupported("changes"));
   }
 }
 
@@ -2192,6 +2380,11 @@ const STORAGE_METHODS = Object.freeze([
   "delete",
   "commit",
   "abortStage",
+  "move",
+  "moveMany",
+  "deleteMany",
+  "headMany",
+  "changes",
 ]);
 
 /**
@@ -2285,6 +2478,60 @@ export class StorageEntrypoint<
    */
   abortStage(_key: string, _commitToken: string): Promise<void> {
     return Promise.reject(unsupported("abortStage"));
+  }
+
+  /**
+   * Move one object (declare `storage.move`). Repeating a finished move
+   * resolves with `alreadyMoved`.
+   *
+   * @param _from - Source key.
+   * @param _to - Target key.
+   * @param _options - Overwrite and source preconditions.
+   * @returns How the move was done.
+   */
+  move(_from: string, _to: string, _options: MoveOptions): Promise<MoveResult> {
+    return Promise.reject(unsupported("move"));
+  }
+
+  /**
+   * Move a set of objects or a whole prefix, one page per call (declare
+   * `storage.moveMany`). Safe to repeat.
+   *
+   * @param _request - Pairs or prefix, cursor, and options.
+   * @returns Per-key outcomes and the continuation.
+   */
+  moveMany(_request: MoveManyRequest): Promise<MoveManyPage> {
+    return Promise.reject(unsupported("moveMany"));
+  }
+
+  /**
+   * Remove up to `MAX_BATCH_KEYS` objects (declare `storage.deleteMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One outcome per key, in order; a missing key succeeds.
+   */
+  deleteMany(_keys: string[]): Promise<KeyOutcome[]> {
+    return Promise.reject(unsupported("deleteMany"));
+  }
+
+  /**
+   * Probe up to `MAX_BATCH_KEYS` objects (declare `storage.headMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One entry per key, in order; `null` when missing.
+   */
+  headMany(_keys: string[]): Promise<(ObjectMetadata | null)[]> {
+    return Promise.reject(unsupported("headMany"));
+  }
+
+  /**
+   * Keys changed since a cursor (declare `storage.changes`).
+   *
+   * @param _request - Cursor and page size.
+   * @returns One page of changes.
+   */
+  changes(_request: ChangesRequest): Promise<ChangesPage> {
+    return Promise.reject(unsupported("changes"));
   }
 }
 
@@ -2849,6 +3096,14 @@ class GrantedDestination extends Destination {
     body: ReadableStream<Uint8Array>,
     options?: WriteOptions,
   ): Promise<PutResult> {
+    // The granted channel carries no preconditions yet; refuse a conditional
+    // write rather than silently overwrite.
+    if (options?.ifMatch || options?.ifNoneMatch) {
+      throw PluginError.fromWire(
+        "unsupported",
+        "conditional writes are not supported on granted destinations",
+      );
+    }
     const headers: Record<string, string> = { ...this.#auth };
     if (options?.contentType) headers["content-type"] = options.contentType;
     if (options?.contentLength != null) {
