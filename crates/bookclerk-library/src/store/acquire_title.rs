@@ -255,7 +255,7 @@ impl LibraryStore {
         account_id: Option<&str>,
         id: &str,
     ) -> Result<Vec<AcquireTitle>> {
-        use super::library_model::find_chunked;
+        use super::library_model::{find_chunked, find_chunked_paged};
         let id = bookclerk_resolve::stored_product_id(id);
         if id.is_empty() {
             return Ok(Vec::new());
@@ -297,11 +297,14 @@ impl LibraryStore {
             Some(account_id) => query.filter(holdings::Column::AccountId.eq(account_id)),
             None => query,
         };
-        let mut holdings = find_chunked::<holdings::Entity, _>(self, &listing_ids, |part| {
+        // Every account's holding of a listing may be more rows than one
+        // read returns, so the holdings are read in pages.
+        let mut holdings = find_chunked_paged::<holdings::Entity, _>(self, &listing_ids, |part| {
             account(
                 super::holdings::find_holdings()
                     .filter(holdings::Column::HolderKind.eq("account"))
-                    .filter(holdings::Column::ListingId.is_in(part.to_vec())),
+                    .filter(holdings::Column::ListingId.is_in(part.to_vec()))
+                    .order_by_asc(holdings::Column::Id),
             )
         })
         .await?;

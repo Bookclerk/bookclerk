@@ -1147,6 +1147,11 @@ fn acquire_mode_includes(
 /// account when `None`) that `title` names (every title when `None`) and
 /// that pass `wanted`, in title order.
 ///
+/// Only titles with a flat `books` row are considered: the acquire status
+/// writes are still keyed by that row until `books` is retired (book model
+/// step 6, PR 4g), so a holding without one could not record what it
+/// acquired.
+///
 /// One title is a lookup by its ids
 /// ([`bookclerk_library::LibraryStore::acquire_titles_named`]); otherwise
 /// the holdings are read in keyset pages
@@ -1166,14 +1171,18 @@ async fn acquire_candidates(
     let mut targets = Vec::new();
     if let Some(title) = title {
         targets = library.acquire_titles_named(account, title).await?;
-        targets.retain(|t| wanted(t));
+        targets.retain(|t| t.book_uuid.is_some() && wanted(t));
     } else {
         let mut after = None;
         loop {
             let page = library
                 .acquire_titles_page(account, after.as_deref(), 64)
                 .await?;
-            targets.extend(page.titles.into_iter().filter(|t| wanted(t)));
+            targets.extend(
+                page.titles
+                    .into_iter()
+                    .filter(|t| t.book_uuid.is_some() && wanted(t)),
+            );
             match page.next {
                 Some(next) => after = Some(next),
                 None => break,
@@ -1370,6 +1379,45 @@ mod tests {
         .await
         .unwrap();
         assert!(pending.is_empty());
+    }
+
+    /// A holding without a flat row is not a candidate: its status could
+    /// not be recorded until `books` is retired.
+    #[tokio::test]
+    async fn acquire_candidates_skip_a_holding_without_a_books_row() {
+        use sea_orm::ConnectionTrait as _;
+        let store = test_store().await;
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        store
+            .upsert_book(&NewBook::minimal("B00TEST", "user-1", "us", "Test"))
+            .await
+            .unwrap();
+        assert_eq!(
+            acquire_candidates(&store, None, None, |_| true)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        store
+            .db()
+            .execute_unprepared("DELETE FROM books")
+            .await
+            .unwrap();
+        assert!(store
+            .acquire_title("audible", "user-1", "us", "B00TEST")
+            .await
+            .unwrap()
+            .is_some());
+        for title in [None, Some("B00TEST")] {
+            assert!(acquire_candidates(&store, None, title, |_| true)
+                .await
+                .unwrap()
+                .is_empty());
+        }
     }
 
     #[tokio::test]
