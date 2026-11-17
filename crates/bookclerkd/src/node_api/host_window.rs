@@ -10,7 +10,7 @@
 
 use bookclerk_library::control_plane::window_books_page;
 use bookclerk_library::LibraryStore;
-use bookclerk_node_proto::{Body, Frame};
+use bookclerk_node_proto::{Body, Frame, WindowCursor};
 
 use super::work::{error, HostContext};
 
@@ -19,12 +19,9 @@ pub(super) async fn books(
     library: &LibraryStore,
     host: &HostContext,
     id: String,
-    after: i64,
+    after: WindowCursor,
 ) -> bookclerk_library::Result<Frame> {
-    if after < 0 {
-        return Ok(error(id, "invalid", "negative_cursor"));
-    }
-    match window_books_page(library, &host.node_id, after).await? {
+    match window_books_page(library, &host.node_id, &after).await? {
         Some((works, next)) => Ok(Frame::new(id, Body::WindowPage { works, next })),
         None => Ok(error(id, "refused", "not_a_branch")),
     }

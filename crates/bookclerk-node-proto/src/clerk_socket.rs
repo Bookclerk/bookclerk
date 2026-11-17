@@ -13,7 +13,7 @@
 //! |---|---|---|---|
 //! | library → clerk | `hello` | `topics` | once, after the upgrade: the topics this card hears about |
 //! | library → clerk | `changed` | `topics` | those topics changed; read again |
-//! | clerk → library | `books` | `after` | the page of the person's books after this cursor (0 for the first) |
+//! | clerk → library | `books` | `after` | the page of the person's books after this cursor ([`WindowCursor`]; empty for the first) |
 //! | library → clerk | `books.page` | `after`, `works`, `next?` | that page ([`WindowWork`]); no `next` on the last page |
 //! | library → clerk | `error` | `code` | a `books` frame was not answered ([`ClerkSocketError`]) |
 //!
@@ -33,7 +33,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{window_page_problem, WindowWork, MAX_FRAME_BYTES};
+use crate::{window_page_problem, WindowCursor, WindowWork, MAX_FRAME_BYTES};
 
 /// Path of the clerk socket.
 pub const CLERK_CONNECT_PATH: &str = "/api/clerk/v1/connect";
@@ -45,7 +45,7 @@ pub const CLERK_SUBPROTOCOL: &str = "bookclerk-clerk.v1";
 pub const CLERK_SOCKET_VERSION: u8 = 1;
 
 /// Largest frame a library accepts from a clerk, in bytes; a `books` frame
-/// is under 50.
+/// is under 120.
 pub const MAX_CLERK_FRAME_BYTES: usize = 4 * 1024;
 
 /// Most topic names one `hello` or `changed` frame may carry, known or not.
@@ -108,13 +108,13 @@ pub enum ClerkSocketError {
 }
 
 /// A frame from a clerk to a library.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClerkFrame {
-    /// `books`: the page of the person's books after `after` (0 for the
-    /// first page; never negative).
+    /// `books`: the page of the person's books after `after` (empty for
+    /// the first page).
     Books {
         /// The cursor of the previous page.
-        after: i64,
+        after: WindowCursor,
     },
 }
 
@@ -134,11 +134,11 @@ pub enum LibraryFrame {
     /// `books.page`: one page of the person's books.
     BooksPage {
         /// The cursor the clerk asked with.
-        after: i64,
+        after: WindowCursor,
         /// At most [`crate::MAX_WINDOW_WORKS`] works.
         works: Vec<WindowWork>,
         /// The cursor of the next page; `None` on the last page.
-        next: Option<i64>,
+        next: Option<WindowCursor>,
     },
     /// `error`: a `books` frame was not answered.
     Error {
@@ -158,7 +158,7 @@ struct ClerkWire {
     #[serde(rename = "type")]
     kind: String,
     /// The cursor of the previous page.
-    after: i64,
+    after: WindowCursor,
 }
 
 /// A library frame as written; every field is checked by
@@ -176,13 +176,13 @@ struct LibraryWire {
     topics: Option<Vec<String>>,
     /// `books.page`: the cursor the clerk asked with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    after: Option<i64>,
+    after: Option<WindowCursor>,
     /// `books.page`: the works.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     works: Option<Vec<WindowWork>>,
     /// `books.page`: the next cursor, absent on the last page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    next: Option<i64>,
+    next: Option<WindowCursor>,
     /// `error`: why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     code: Option<ClerkSocketError>,
@@ -192,14 +192,14 @@ impl ClerkFrame {
     /// The frame's JSON text, as a clerk sends it.
     #[must_use]
     pub fn encode(&self) -> String {
-        let wire = match *self {
+        let wire = match self {
             Self::Books { after } => ClerkWire {
                 v: CLERK_SOCKET_VERSION,
                 kind: "books".into(),
-                after,
+                after: after.clone(),
             },
         };
-        // A struct of a string and two integers always serializes.
+        // A struct of an integer and two strings always serializes.
         serde_json::to_string(&wire).unwrap_or_default()
     }
 }
@@ -231,9 +231,9 @@ impl LibraryFrame {
             }
             Self::BooksPage { after, works, next } => {
                 wire.kind = "books.page".into();
-                wire.after = Some(*after);
+                wire.after = Some(after.clone());
                 wire.works = Some(works.clone());
-                wire.next = *next;
+                wire.next = next.clone();
             }
             Self::Error { code } => {
                 wire.kind = "error".into();
@@ -246,8 +246,8 @@ impl LibraryFrame {
 }
 
 /// Reads a frame a clerk sent: at most [`MAX_CLERK_FRAME_BYTES`], one JSON
-/// object with exactly `v` (1), `type` (`books`) and `after` (an integer,
-/// not negative), each once.
+/// object with exactly `v` (1), `type` (`books`) and `after` (a string
+/// [`WindowCursor`]), each once.
 ///
 /// # Arguments
 ///
@@ -262,7 +262,7 @@ pub fn parse_clerk_frame(text: &[u8]) -> Option<ClerkFrame> {
         return None;
     }
     let wire: ClerkWire = serde_json::from_slice(text).ok()?;
-    if wire.v != CLERK_SOCKET_VERSION || wire.kind != "books" || wire.after < 0 {
+    if wire.v != CLERK_SOCKET_VERSION || wire.kind != "books" {
         return None;
     }
     Some(ClerkFrame::Books { after: wire.after })
@@ -274,7 +274,7 @@ pub fn parse_clerk_frame(text: &[u8]) -> Option<ClerkFrame> {
 ///
 /// - `hello` and `changed`: `topics`, at most [`MAX_CLERK_TOPICS`] names,
 ///   each [`is_topic_name`]; names this version does not know are dropped.
-/// - `books.page`: `after` (not negative), `works`, and `next` unless it is
+/// - `books.page`: `after` (a [`WindowCursor`]), `works`, and `next` unless it is
 ///   the last page, passing [`crate::window_page_problem`].
 /// - `error`: a [`ClerkSocketError`] `code`.
 ///
@@ -320,7 +320,7 @@ pub fn parse_library_frame(text: &[u8]) -> Option<LibraryFrame> {
                 return None;
             }
             let (after, works) = (after?, works?);
-            if after < 0 || window_page_problem(after, &works, next).is_some() {
+            if window_page_problem(&after, &works, next.as_ref()).is_some() {
                 return None;
             }
             Some(LibraryFrame::BooksPage { after, works, next })
@@ -363,6 +363,10 @@ mod tests {
     use crate::catalog::CatalogMetadata;
     use crate::lookup::{Availability, LookupEdition, LookupFormat};
 
+    fn at(text: &str) -> WindowCursor {
+        WindowCursor::parse(text).unwrap()
+    }
+
     fn work() -> WindowWork {
         WindowWork {
             work: "w-1".into(),
@@ -383,25 +387,32 @@ mod tests {
 
     #[test]
     fn a_books_frame_round_trips_and_nothing_else_is_read() {
-        let frame = ClerkFrame::Books { after: 41 };
-        assert_eq!(frame.encode(), r#"{"v":1,"type":"books","after":41}"#);
+        let frame = ClerkFrame::Books { after: at("h-41") };
+        assert_eq!(frame.encode(), r#"{"v":1,"type":"books","after":"h-41"}"#);
         assert_eq!(parse_clerk_frame(frame.encode().as_bytes()), Some(frame));
+        assert_eq!(
+            parse_clerk_frame(br#"{"v":1,"type":"books","after":""}"#),
+            Some(ClerkFrame::Books {
+                after: WindowCursor::start()
+            })
+        );
         for refused in [
-            r#"{"v":1,"type":"books","after":-1}"#,
-            r#"{"v":2,"type":"books","after":0}"#,
-            r#"{"v":1,"type":"claim","after":0}"#,
+            r#"{"v":1,"type":"books","after":0}"#,
+            r#"{"v":1,"type":"books","after":"a b"}"#,
+            r#"{"v":2,"type":"books","after":""}"#,
+            r#"{"v":1,"type":"claim","after":""}"#,
             r#"{"v":1,"type":"books"}"#,
-            r#"{"v":1,"type":"books","after":0,"user":7}"#,
-            r#"{"v":1,"type":"books","after":0,"after":1}"#,
-            r#"{"v":1,"type":"books","after":1.5}"#,
-            r#"[1,"books",0]"#,
-            r#" [1,"books",0]"#,
+            r#"{"v":1,"type":"books","after":"","user":7}"#,
+            r#"{"v":1,"type":"books","after":"","after":"a"}"#,
+            r#"{"v":1,"type":"books","after":null}"#,
+            r#"[1,"books",""]"#,
+            r#" [1,"books",""]"#,
             "",
         ] {
             assert_eq!(parse_clerk_frame(refused.as_bytes()), None, "{refused}");
         }
         let padded = format!(
-            r#"{{"v":1,"type":"books","after":0}}{}"#,
+            r#"{{"v":1,"type":"books","after":""}}{}"#,
             " ".repeat(MAX_CLERK_FRAME_BYTES)
         );
         assert_eq!(parse_clerk_frame(padded.as_bytes()), None);
@@ -417,12 +428,12 @@ mod tests {
                 topics: BTreeSet::from([ClerkTopic::Library]),
             },
             LibraryFrame::BooksPage {
-                after: 0,
+                after: WindowCursor::start(),
                 works: vec![work()],
-                next: Some(9),
+                next: Some(at("9")),
             },
             LibraryFrame::BooksPage {
-                after: 9,
+                after: at("9"),
                 works: Vec::new(),
                 next: None,
             },
@@ -451,10 +462,10 @@ mod tests {
                 topics: BTreeSet::from([ClerkTopic::Library]),
             })
         );
-        let page = |after: i64, next: &str| {
+        let page = |after: &str, next: &str| {
             format!(r#"{{"v":1,"type":"books.page","after":{after},"works":[]{next}}}"#)
         };
-        assert!(parse_library_frame(page(3, "").as_bytes()).is_some());
+        assert!(parse_library_frame(page(r#""3""#, "").as_bytes()).is_some());
         for refused in [
             r#"{"v":1,"type":"changed","topics":["Library"]}"#.to_owned(),
             r#"{"v":1,"type":"changed"}"#.to_owned(),
@@ -462,8 +473,11 @@ mod tests {
             r#"{"v":1,"type":"error","code":"later"}"#.to_owned(),
             r#"{"v":1,"type":"work","topics":[]}"#.to_owned(),
             r#"{"v":2,"type":"hello","topics":[]}"#.to_owned(),
-            page(3, r#","next":3"#),
-            page(-1, ""),
+            page(r#""3""#, r#","next":"3""#),
+            page(r#""3""#, r#","next":"2""#),
+            page(r#""3""#, r#","next":4"#),
+            page("3", ""),
+            page(r#""a/b""#, ""),
             format!(
                 r#"{{"v":1,"type":"hello","topics":[{}]}}"#,
                 vec![r#""a""#; MAX_CLERK_TOPICS + 1].join(",")
@@ -478,7 +492,7 @@ mod tests {
         let mut bad = work();
         bad.editions[0].availability = Availability::Reachable;
         let frame = LibraryFrame::BooksPage {
-            after: 0,
+            after: WindowCursor::start(),
             works: vec![bad],
             next: None,
         };

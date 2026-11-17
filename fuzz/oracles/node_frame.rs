@@ -38,7 +38,8 @@
 //!   finds nothing for the cursor it asked with) carries at most 100 works,
 //!   each once, with plain grouping keys, plain identifiers (a marketplace
 //!   exactly on an ASIN), 1 to 8 distinct owned editions with a non-blank
-//!   title, and a next cursor past the one asked with, so a window's paging
+//!   title, and a plain next cursor (1 to 64 letters, digits or `-`)
+//!   sorting byte-wise past the one asked with, so a window's paging
 //!   always moves forward. Checked byte by byte here, since the window
 //!   stores them.
 //! - a `scan.removed` or `scan.pass_end` frame the owner would accept
@@ -54,7 +55,7 @@ use std::collections::BTreeSet;
 use bookclerk_node_proto::{
     claimed_problem, finish_problem, found_problem, questions_problem, scan_pass_end_problem,
     scan_removed_problem, window_page_problem, Availability, Body, Frame, LookupScheme, LookupWork,
-    FRAME_VERSION, MAX_FRAME_BYTES, MAX_LIBRARY_ID_BYTES,
+    WindowCursor, FRAME_VERSION, MAX_FRAME_BYTES, MAX_LIBRARY_ID_BYTES,
 };
 use serde_json::Value;
 
@@ -335,15 +336,21 @@ fn check_window(body: &Body) {
     let Body::WindowPage { works, next } = body else {
         return;
     };
-    let afters = [0, next.map_or(0, |n| n.saturating_sub(1))];
-    for after in afters {
-        if window_page_problem(after, works, *next).is_some() {
+    // The first page's cursor, and the next cursor less its last byte,
+    // which sorts just before it.
+    let before_next = next
+        .as_ref()
+        .and_then(|n| WindowCursor::parse(&n.as_str()[..n.as_str().len().saturating_sub(1)]))
+        .unwrap_or_default();
+    for after in [WindowCursor::start(), before_next] {
+        if window_page_problem(&after, works, next.as_ref()).is_some() {
             continue;
         }
         assert!(works.len() <= 100, "too many window works accepted");
         if let Some(next) = next {
+            assert!(plain(next.as_str(), 64), "next cursor {next:?} accepted");
             assert!(
-                *next > after,
+                next.as_str().as_bytes() > after.as_str().as_bytes(),
                 "a cursor that does not move forward accepted"
             );
         }
