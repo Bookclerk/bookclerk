@@ -277,6 +277,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "clerk_token_answer"
+path = "fuzz_targets/clerk_token_answer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "clerk_socket_frame"
 path = "fuzz_targets/clerk_socket_frame.rs"
 test = false

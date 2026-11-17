@@ -44,6 +44,7 @@ use super::catalog_lookup::{
     read_chunked_all, read_paged, read_paged_by, result_page, run_batches, stamp,
     work_for_question, works_of_editions, PAGED_FIXED_BINDS,
 };
+use super::clerk_links::list_clerk_links;
 use super::cluster_links::list_cluster_links;
 use crate::entities::{
     account_links, books, holdings, nodes, portal_identities, store_listings, window_book_parts,
@@ -1113,7 +1114,8 @@ fn merge_keys(row: &window_books::Model, identifiers: &[LookupIdentifier]) -> Ve
 /// The merged view of every library this install is a window of: the books
 /// each holds for the person, one entry per work, sorted by title.
 ///
-/// Only active links with "Use this computer to download" off count. Rows
+/// Only active links with "Use this computer to download" off count, and
+/// every active library card ([`crate::control_plane::list_clerk_links`]). Rows
 /// are the same work when they reach the same work of this library, share
 /// a strong identifier (not an ISBN), or carry the same grouping key from
 /// one library. A row whose stored edition is missing or no longer parses
@@ -1123,12 +1125,23 @@ fn merge_keys(row: &window_books::Model, identifiers: &[LookupIdentifier]) -> Ve
 ///
 /// Returns the read error.
 pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
-    let windows: BTreeMap<String, String> = list_cluster_links(store)
+    let mut windows: BTreeMap<String, String> = list_cluster_links(store)
         .await?
         .into_iter()
         .filter(|link| link.is_active() && !link.download)
         .map(|link| (link.owner_cluster_id, link.owner_origin))
         .collect();
+    // Libraries this install holds a library card for (as a clerk) read
+    // into the same rows. A clerk link is refused while a cluster link to
+    // that library is active, so the two never share a library; should
+    // both be found, the window link's origin is kept.
+    for link in list_clerk_links(store).await? {
+        if link.is_active() {
+            windows
+                .entry(link.library_cluster_id)
+                .or_insert(link.origin);
+        }
+    }
     if windows.is_empty() {
         return Ok(Vec::new());
     }

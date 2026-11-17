@@ -15145,6 +15145,962 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
+    "/api/config/clerk": {
+      "get": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`GET /api/config/clerk`.",
+        "operationId": "get_clerk_cards",
+        "responses": {
+          "200": {
+            "description": "The libraries this install holds a library card for.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClerkCards"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user is not an active Owner, or the session has no user account. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorAnswer"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "forbidden"
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library database could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/config/clerk/inspect": {
+      "post": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`POST /api/config/clerk/inspect`.",
+        "operationId": "post_clerk_inspect",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClerkInspectBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What the library says about itself.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InspectedLibraryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The address is not a library (`invalid_address`), or is plain HTTP off this machine (`transport_insecure`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "not an enrollment link: no host",
+                  "error": "invalid_address"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user is not an active Owner, or the session has no user account. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorAnswer"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "forbidden"
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The library's address is not the one given (`origin_mismatch`, with the address to use in `origin`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinConflict"
+                },
+                "example": {
+                  "detail": "this library's address is https://books.example.com; join with that address",
+                  "error": "origin_mismatch",
+                  "origin": "https://books.example.com"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `address` at line 1 column 2"
+              }
+            }
+          },
+          "502": {
+            "description": "The library could not be reached (`unreachable`), or answered with an error (`library_error`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "owner unreachable: Connection refused (os error 111)",
+                  "error": "unreachable"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/config/clerk/start": {
+      "post": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`POST /api/config/clerk/start`.",
+        "operationId": "post_clerk_start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClerkStartBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The library's sign-in URL to open.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClerkStarted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The address is not a library, is plain HTTP off this machine, or the name or this install's address cannot sign in (`invalid_address`, `transport_insecure`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "this computer's name must be 1 to 64 characters",
+                  "error": "invalid_address"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user is not an active Owner, or the session has no user account. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorAnswer"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "forbidden"
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The library's fingerprint is not confirmed (`fingerprint_unconfirmed`), this install already joined that library as a branch (`already_joined`), or the library's address is not the one given (`origin_mismatch`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinConflict"
+                },
+                "examples": {
+                  "already_joined": {
+                    "summary": "This install is already a branch of that library.",
+                    "value": {
+                      "detail": "this install already joined that library; its books are read through that link",
+                      "error": "already_joined"
+                    }
+                  },
+                  "fingerprint_unconfirmed": {
+                    "summary": "A self-signed library's fingerprint was not confirmed.",
+                    "value": {
+                      "detail": "confirm the library's fingerprint first; it must match the one on its Settings → Branches page",
+                      "error": "fingerprint_unconfirmed"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `address` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The library database could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The library could not be reached (`unreachable`), or answered with an error (`library_error`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "owner unreachable: Connection refused (os error 111)",
+                  "error": "unreachable"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/config/clerk/callback": {
+      "post": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`POST /api/config/clerk/callback`: redeems the library's code with the\nsign-in's verifier, seals the card and starts reading the person's\nbooks. The pending sign-in is ended whatever the outcome; a failed one\nis started again.",
+        "operationId": "post_clerk_callback",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClerkCallbackBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "This install holds a library card for the library now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClerkSignedIn"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The callback carries no code (`invalid_request`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "no code",
+                  "error": "invalid_request"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The library's user did not approve (`denied`), the library refused the code (`refused`), or the user is not an active Owner (`forbidden`). A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorAnswer"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "denied": {
+                    "summary": "The library's user did not approve.",
+                    "value": {
+                      "detail": "the library's user did not let this computer show their books",
+                      "error": "denied"
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "refused": {
+                    "summary": "The library refused the code.",
+                    "value": {
+                      "detail": "the library refused the sign-in: it was already used or took too long; start again",
+                      "error": "refused"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This install joined that library as a branch meanwhile (`already_joined`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "this install already joined that library; its books are read through that link",
+                  "error": "already_joined"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The sign-in is unknown, already used, or older than ten minutes; start again (`join_expired`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "this sign-in is unknown, already used, or took longer than 10 minutes; start again",
+                  "error": "join_expired"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: code: invalid type: integer `1`, expected a string at line 1 column 9"
+              }
+            }
+          },
+          "502": {
+            "description": "The library could not be reached (`unreachable`), answered with an error (`library_error`), its answer did not parse (`join_failed`), or the card could not be saved here (`join_unsaved`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "owner unreachable: Connection refused (os error 111)",
+                  "error": "unreachable"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/config/clerk/sign-out": {
+      "post": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`POST /api/config/clerk/sign-out`: ends a library card at the library\nwhen it can be reached, then drops the card, the books read with it,\nand the library from the list here whatever the library answered.",
+        "operationId": "post_clerk_sign_out",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClerkSignOutBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The card and its books are gone here; `library_signed_out` says whether the library ended its session too.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClerkSignedOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user is not an active Owner, or the session has no user account. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorAnswer"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "forbidden"
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This install holds no card for that library (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "no such library card",
+                  "error": "not_found"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `cluster_id` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The library database could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
     "/api/config/join/connections": {
       "post": {
         "tags": [
@@ -31258,6 +32214,53 @@
           }
         }
       },
+      "ClerkCallbackBody": {
+        "type": "object",
+        "description": "`POST /api/config/clerk/callback` body.",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The code from the library.",
+            "example": "BhD5jGe21A8WEIm7SrdBZ-KXhs5B9HkeUSEc58grX94"
+          },
+          "state": {
+            "type": "string",
+            "description": "The `state` it came back with.",
+            "example": "c3RhdGUtOGY2ZTJkMWE"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The library's `error` (`access_denied`), when it sent one.",
+            "example": "access_denied"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ClerkCards": {
+        "type": "object",
+        "description": "JSON body for `GET /api/config/clerk`.",
+        "required": [
+          "cards",
+          "default_clerk_name"
+        ],
+        "properties": {
+          "cards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClerkLinkView"
+            },
+            "description": "The libraries this install holds (or held) a card for, oldest\nsign-in first."
+          },
+          "default_clerk_name": {
+            "type": "string",
+            "description": "The name this install signs in as unless another is given.",
+            "example": "study-mini"
+          }
+        }
+      },
       "ClerkConsentBody": {
         "allOf": [
           {
@@ -31308,6 +32311,191 @@
           "user": {
             "$ref": "#/components/schemas/ConsentingUser",
             "description": "The signed-in user the clerk would sign in as."
+          }
+        }
+      },
+      "ClerkInspectBody": {
+        "type": "object",
+        "description": "`POST /api/config/clerk/inspect` body.",
+        "required": [
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "The library's address (`https://books.example.com`, `books.lan:8443`).",
+            "example": "https://books.example.com"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ClerkLinkView": {
+        "type": "object",
+        "description": "A library this install holds (or held) a library card for, without the\ncard.",
+        "required": [
+          "cluster_id",
+          "origin",
+          "library_name",
+          "pinned",
+          "clerk_name",
+          "state",
+          "signed_in_at"
+        ],
+        "properties": {
+          "cluster_id": {
+            "type": "string",
+            "description": "The library's cluster id.",
+            "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+          },
+          "origin": {
+            "type": "string",
+            "description": "The library's canonical origin.",
+            "example": "https://books.example.com"
+          },
+          "library_name": {
+            "type": "string",
+            "description": "The library's name at sign-in.",
+            "example": "books.example.com"
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "Whether the card's connection pins the library's self-signed\ncertificate.",
+            "example": false
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The person's display name on the library, when it has one.",
+            "example": "Riley"
+          },
+          "clerk_name": {
+            "type": "string",
+            "description": "The name this install signed in as.",
+            "example": "Riley's laptop"
+          },
+          "state": {
+            "type": "string",
+            "description": "`active`, or `signed_out` once the library ended the card.",
+            "example": "active"
+          },
+          "signed_in_at": {
+            "type": "string",
+            "description": "RFC 3339 sign-in time.",
+            "example": "2026-11-17T09:02:41Z"
+          }
+        }
+      },
+      "ClerkSignOutBody": {
+        "type": "object",
+        "description": "`POST /api/config/clerk/sign-out` body.",
+        "required": [
+          "cluster_id"
+        ],
+        "properties": {
+          "cluster_id": {
+            "type": "string",
+            "description": "The library's cluster id.",
+            "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ClerkSignedIn": {
+        "type": "object",
+        "description": "JSON body for `POST /api/config/clerk/callback`.",
+        "required": [
+          "card"
+        ],
+        "properties": {
+          "card": {
+            "$ref": "#/components/schemas/ClerkLinkView",
+            "description": "The library this install now holds a card for."
+          }
+        }
+      },
+      "ClerkSignedOut": {
+        "type": "object",
+        "description": "JSON body for `POST /api/config/clerk/sign-out`.",
+        "required": [
+          "cluster_id",
+          "library_signed_out"
+        ],
+        "properties": {
+          "cluster_id": {
+            "type": "string",
+            "description": "The library's cluster id.",
+            "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+          },
+          "library_signed_out": {
+            "type": "boolean",
+            "description": "Whether the library ended the card's session too. False when it\ncould not be reached (or the card had already ended): the session\nthen stays in the person's session list there until it idles out\nor they revoke it.",
+            "example": true
+          }
+        }
+      },
+      "ClerkStartBody": {
+        "type": "object",
+        "description": "`POST /api/config/clerk/start` body.",
+        "required": [
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "The library's address.",
+            "example": "https://books.example.com"
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The fingerprint the person confirmed (self-signed libraries).",
+            "example": "kQ3nUj9Z2vY4xW8pT6rS1aB5cD7eF0gH2iJ4kL6mN8o"
+          },
+          "clerk_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name to sign in as (default: this machine's name).",
+            "example": "Riley's laptop"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ClerkStarted": {
+        "type": "object",
+        "description": "JSON body for `POST /api/config/clerk/start`.",
+        "required": [
+          "authorize_url",
+          "library",
+          "clerk_name",
+          "expires_in_secs"
+        ],
+        "properties": {
+          "authorize_url": {
+            "type": "string",
+            "description": "The library's sign-in URL to open in the browser.",
+            "example": "https://books.example.com/oidc/authorize?client_id=bookclerk-clerk&redirect_uri=…"
+          },
+          "library": {
+            "$ref": "#/components/schemas/InspectedLibraryView",
+            "description": "What the library said about itself."
+          },
+          "clerk_name": {
+            "type": "string",
+            "description": "The name this install signs in as.",
+            "example": "Riley's laptop"
+          },
+          "expires_in_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds the pending sign-in stays valid.",
+            "example": 600,
+            "minimum": 0
           }
         }
       },
@@ -43653,6 +44841,7 @@
         "description": "JSON body for `GET /api/config/join/window`.",
         "required": [
           "clusters",
+          "cards",
           "books"
         ],
         "properties": {
@@ -43662,6 +44851,13 @@
               "$ref": "#/components/schemas/ClusterLinkView"
             },
             "description": "The libraries this install is a window of (active links with \"Use\nthis computer to download\" off)."
+          },
+          "cards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClerkLinkView"
+            },
+            "description": "The libraries this install holds an active library card for."
           },
           "books": {
             "type": "array",

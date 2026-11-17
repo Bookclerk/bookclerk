@@ -20,6 +20,7 @@ mod branch_requests;
 mod cache_jobs;
 mod cache_policy;
 mod catalog_lookup;
+mod clerk_link;
 mod clerk_token;
 mod cluster_link;
 mod config_authority;
@@ -443,6 +444,8 @@ async fn assemble_host(
     heartbeat::spawn_heartbeat(state.clone());
     // This install as a host node of the owner clusters it enrolled into.
     cluster_link::spawn_cluster_links(state.clone());
+    // The libraries this install holds a library card for (as a clerk).
+    clerk_link::spawn_clerk_links(state.clone());
     placement::spawn_placement_scheduler(state.clone());
     maintenance::spawn_maintenance(state.clone());
     cron_worker::spawn_cron_worker(state.clone());

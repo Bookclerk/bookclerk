@@ -1,6 +1,6 @@
 //! Replays the checked-in `node_frame`, `node_account_bundle`,
-//! `clerk_authorization`, `clerk_authorize`, `clerk_token_request` and
-//! `clerk_socket_frame` fuzz corpora in PR CI (no libFuzzer required), through the same oracles the
+//! `clerk_authorization`, `clerk_authorize`, `clerk_token_request`,
+//! `clerk_token_answer` and `clerk_socket_frame` fuzz corpora in PR CI (no libFuzzer required), through the same oracles the
 //! targets use, so an input that once broke a parsing invariant stays fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -28,6 +28,10 @@ mod clerk_authorize_oracle;
 /// The `clerk_token_request` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/clerk_token_request.rs"]
 mod clerk_token_oracle;
+
+/// The `clerk_token_answer` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/clerk_token_answer.rs"]
+mod clerk_answer_oracle;
 
 /// The `clerk_socket_frame` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/clerk_socket_frame.rs"]
@@ -153,6 +157,27 @@ fn fuzz_corpus_clerk_token_request_replays() {
     }
     assert!(accepted > 0, "no clerk_token_request seed was accepted");
     assert!(refused > 0, "every clerk_token_request seed was accepted");
+}
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_clerk_token_answer_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("clerk_token_answer") {
+        let data = std::fs::read(&path).expect("read");
+        let ok = clerk_answer_oracle::check(&data);
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // Seeds say which side they are on in their name.
+        assert_eq!(ok, name.starts_with("accepted"), "seed {name}");
+        if ok {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    assert!(accepted > 0, "no clerk_token_answer seed was accepted");
+    assert!(refused > 0, "every clerk_token_answer seed was accepted");
 }
 
 #[test]

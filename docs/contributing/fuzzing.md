@@ -55,6 +55,7 @@ boundary extends it.
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
 | `clerk_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_clerk_query`, `clerk_request_problem` |
 | `clerk_token_request` | A library card's token exchange, the body of `POST /api/clerk/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_clerk_token_request`, `clerk_exchange_matches` |
+| `clerk_token_answer` | A library's answer to a clerk's token exchange, read on the clerk before it seals the library card and records the library | `bookclerk-node-proto::parse_clerk_token_answer` |
 | `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics and pages of the person's books) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
@@ -335,6 +336,15 @@ only that. The others check:
   against RFC 7636's example pair). The shared oracle is
   `fuzz/oracles/clerk_token_request.rs`, replayed from
   `bookclerk-node-proto`.
+- **`clerk_token_answer`**: the input is the answer body, checked
+  against the body read as an untyped JSON value. It parses exactly when
+  it is at most 8 KiB and one object, no field it reads is written twice,
+  `token` is 43 base64url characters, `cluster_id` is a cluster id,
+  `user.id` is a positive integer, `user.display_name` (optional) is at
+  most 128 bytes with no control characters, and `idle_secs` is from 1
+  second to a year; other keys are ignored, and each field is the value
+  sent. The shared oracle is `fuzz/oracles/clerk_token_answer.rs`,
+  replayed from `bookclerk-node-proto`.
 - **`clerk_socket_frame`**: the first byte picks the direction (even:
   clerk to library; odd: library to clerk) and the rest is the frame,
   checked against the frame read as an untyped JSON value. A clerk frame

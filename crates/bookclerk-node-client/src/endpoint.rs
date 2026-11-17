@@ -20,7 +20,10 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bookclerk_node_proto::{canonical_origin, MAX_FRAME_BYTES, SUBPROTOCOL};
+use bookclerk_node_proto::{
+    canonical_origin, CLERK_AUTH_SCHEME, CLERK_CONNECT_PATH, CLERK_SUBPROTOCOL, MAX_FRAME_BYTES,
+    SUBPROTOCOL,
+};
 use sha2::Digest as _;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::TcpStream;
@@ -38,6 +41,7 @@ use tokio_rustls::rustls::{
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::WebSocketStream;
+use zeroize::Zeroizing;
 
 /// Path of the node socket.
 pub const CONNECT_PATH: &str = "/api/node/v1/connect";
@@ -46,6 +50,9 @@ pub const CONNECT_PATH: &str = "/api/node/v1/connect";
 pub const ENROLL_PATH: &str = "/api/node/v1/enroll";
 
 pub use bookclerk_node_proto::{ENROLL_OAUTH_PATH, INFO_PATH};
+
+/// A message on an [`OwnerSocket`] (text, binary, ping, pong or close).
+pub use tokio_tungstenite::tungstenite::Message as SocketMessage;
 
 /// Seconds allowed for the TCP connect and for the TLS handshake.
 const CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -290,18 +297,67 @@ impl OwnerEndpoint {
     ///
     /// Returns [`DialError`] when the connection or the upgrade fails.
     pub async fn connect_socket(&self) -> Result<OwnerSocket, DialError> {
+        self.upgrade(CONNECT_PATH, SUBPROTOCOL, None, MAX_FRAME_BYTES)
+            .await
+    }
+
+    /// Dials a library's clerk socket ([`CLERK_CONNECT_PATH`]) with a
+    /// library card, offering [`CLERK_SUBPROTOCOL`] and requiring the
+    /// library to select it. The card is written straight to the stream and
+    /// never logged.
+    ///
+    /// # Arguments
+    ///
+    /// * `card` - The library card (the token alone, without the scheme).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DialError`] when the connection or the upgrade fails;
+    /// [`DialError::Refused`] carries the library's status (401 when the
+    /// card was ended).
+    pub async fn connect_clerk_socket(&self, card: &str) -> Result<OwnerSocket, DialError> {
+        let authorization = Zeroizing::new(format!("{CLERK_AUTH_SCHEME} {card}"));
+        self.upgrade(
+            CLERK_CONNECT_PATH,
+            CLERK_SUBPROTOCOL,
+            Some(&authorization),
+            MAX_FRAME_BYTES,
+        )
+        .await
+    }
+
+    /// Upgrades `path` to a WebSocket offering `subprotocol`, with an
+    /// optional `Authorization` header, and requires the peer to select it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DialError`] when the connection or the upgrade fails.
+    async fn upgrade(
+        &self,
+        path: &str,
+        subprotocol: &'static str,
+        authorization: Option<&str>,
+        max_message: usize,
+    ) -> Result<OwnerSocket, DialError> {
         let io = self.connect().await?;
         let scheme = if self.tls { "wss" } else { "ws" };
-        let mut request = format!("{scheme}://{}{CONNECT_PATH}", self.authority())
+        let mut request = format!("{scheme}://{}{path}", self.authority())
             .into_client_request()
             .map_err(|err| DialError::Invalid(err.to_string()))?;
         request.headers_mut().insert(
             "sec-websocket-protocol",
-            tokio_tungstenite::tungstenite::http::HeaderValue::from_static(SUBPROTOCOL),
+            tokio_tungstenite::tungstenite::http::HeaderValue::from_static(subprotocol),
         );
+        if let Some(authorization) = authorization {
+            let mut value =
+                tokio_tungstenite::tungstenite::http::HeaderValue::from_str(authorization)
+                    .map_err(|_| DialError::Invalid("malformed authorization".into()))?;
+            value.set_sensitive(true);
+            request.headers_mut().insert("authorization", value);
+        }
         let config = WebSocketConfig::default()
-            .max_message_size(Some(MAX_FRAME_BYTES))
-            .max_frame_size(Some(MAX_FRAME_BYTES));
+            .max_message_size(Some(max_message))
+            .max_frame_size(Some(max_message));
         let upgrade = tokio_tungstenite::client_async_with_config(request, io, Some(config));
         let (socket, response) =
             tokio::time::timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS), upgrade)
@@ -317,10 +373,10 @@ impl OwnerEndpoint {
             .headers()
             .get("sec-websocket-protocol")
             .and_then(|value| value.to_str().ok());
-        if selected != Some(SUBPROTOCOL) {
-            return Err(DialError::Handshake(
-                "owner did not select the node subprotocol".into(),
-            ));
+        if selected != Some(subprotocol) {
+            return Err(DialError::Handshake(format!(
+                "the peer did not select the {subprotocol} subprotocol"
+            )));
         }
         Ok(socket)
     }
