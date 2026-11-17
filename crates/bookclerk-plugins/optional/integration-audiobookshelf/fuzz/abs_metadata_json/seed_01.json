@@ -1,0 +1,13 @@
+{
+  "tags": [],
+  "chapters": [],
+  "metadata": {
+    "title": "Legacy Title",
+    "authors": ["Old Author"],
+    "series": ["Old Series"],
+    "publishedYear": "1999",
+    "abridged": "true"
+  },
+  "title": "Overridden Title",
+  "customKey": { "kept": [1, 2, 3] }
+}

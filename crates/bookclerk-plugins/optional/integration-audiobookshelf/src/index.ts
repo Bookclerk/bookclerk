@@ -1,15 +1,17 @@
 /**
  * Audiobookshelf integration (workerd guest).
  *
- * Exports the `remoteLibrary` and `oidc` entrypoints `plugin.toml`
- * declares, plus the default entrypoint's `book_acquired` consumer, the
+ * Exports the `remoteLibrary`, `oidc` and `metadataFiles` entrypoints
+ * `plugin.toml` declares, plus the default entrypoint's `book_acquired` consumer, the
  * `[sockets]` handler and the database migrations. The work happens in
  * `guest.ts`; this module reads the bindings and turns typed failures into
- * `PluginError`s.
+ * `PluginError`s. The sidecar formats (`metadata.json`, `.nfo`,
+ * `desc.txt`, `reader.txt`) live behind `dialects.ts`.
  */
 
 import {
   BookclerkEntrypoint,
+  MetadataFilesEntrypoint,
   OidcEntrypoint,
   PluginError,
   RemoteLibraryEntrypoint,
@@ -19,6 +21,9 @@ import {
   type HealthOk,
   type HostWebSocket,
   type ListeningProgress,
+  type MetadataFileParseParams,
+  type MetadataFileRecord,
+  type MetadataFileRenderParams,
   type OidcClientTemplate,
   type PluginDescribe,
   type PluginMigration,
@@ -28,9 +33,11 @@ import {
 } from "@bookclerk/plugin-sdk/workerd";
 import type { Env } from "../bookclerk-configuration.js";
 import { AbsFailure } from "./client.ts";
+import { parseFile, renderFile } from "./dialects.ts";
 import * as guest from "./guest.ts";
 import { migrationsFor } from "./listening.ts";
 import { PROVIDER, readSettings } from "./settings.ts";
+import { DialectFailure } from "./text.ts";
 
 /** Brand shown on connect-portal buttons. */
 export const BRAND = {
@@ -69,6 +76,24 @@ export async function guarded<T>(call: () => Promise<T>): Promise<T> {
   } catch (err) {
     if (err instanceof AbsFailure) throw PluginError.fromWire(err.code, err.message);
     throw err;
+  }
+}
+
+/**
+ * Runs a dialect call, turning its refusal into a `PluginError`.
+ *
+ * @param work - The call.
+ * @returns What the call returned.
+ * @throws {PluginError} With the refusal's code.
+ */
+export function dialectGuarded<T>(work: () => T): Promise<T> {
+  try {
+    return Promise.resolve(work());
+  } catch (err) {
+    if (err instanceof DialectFailure) {
+      return Promise.reject(PluginError.fromWire(err.code, err.message));
+    }
+    return Promise.reject(err);
   }
 }
 
@@ -165,6 +190,48 @@ export class Oidc extends OidcEntrypoint<Env> {
   override authenticateUser(params: AuthenticateUserParams): Promise<ExternalUser> {
     return guarded(() =>
       guest.authenticateUser(contextOf(this.env), params.username, params.password),
+    );
+  }
+}
+
+/**
+ * `metadataFiles` entrypoint: reads and writes Audiobookshelf's sidecar
+ * files. The host hands every file in and takes every file back, so this
+ * needs no binding.
+ */
+export class MetadataFiles extends MetadataFilesEntrypoint<Env> {
+  /**
+   * Reports ready; the formats need nothing outside the request.
+   *
+   * @returns Always ready.
+   */
+  override health(): Promise<HealthOk> {
+    return Promise.resolve({ ok: true, detail: "" });
+  }
+
+  /**
+   * Reads one file.
+   *
+   * @param params - Dialect id, file name and the whole file.
+   * @returns What the file states.
+   * @throws {PluginError} `invalid_params` for an unknown dialect or a file
+   *   the dialect cannot read.
+   */
+  override parse(params: MetadataFileParseParams): Promise<MetadataFileRecord> {
+    return dialectGuarded(() => parseFile(params.dialect, params.bytes));
+  }
+
+  /**
+   * Writes one file.
+   *
+   * @param params - Dialect id, values, fields to set and the current file.
+   * @returns The new file's bytes.
+   * @throws {PluginError} `invalid_params` for an unknown dialect, an
+   *   existing file the dialect cannot read, or a result over the size cap.
+   */
+  override render(params: MetadataFileRenderParams): Promise<Uint8Array> {
+    return dialectGuarded(() =>
+      renderFile(params.dialect, params.existing, params.record, params.fields),
     );
   }
 }

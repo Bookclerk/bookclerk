@@ -41,7 +41,7 @@ it is not a JSON object.
 regenerates `modules/`, and CI fails when the committed copy differs. The
 unit tests read the seeds under `fuzz/`, and `test/fuzz.test.ts` mutates
 them against an oracle written from the ABI's record rules (see
-[Fuzzing](../../../../docs/contributing/fuzzing.md#metadata-file-dialect-guest)).
+[Fuzzing](../../../../docs/contributing/fuzzing.md#metadata-file-dialect-guests)).
 
 ```sh
 cd packages/plugin-sdk && npm ci && npm run build

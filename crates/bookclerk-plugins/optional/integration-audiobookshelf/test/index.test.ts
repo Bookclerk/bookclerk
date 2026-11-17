@@ -6,6 +6,7 @@
 
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
+import type { MetadataFileRecord } from "@bookclerk/plugin-sdk/workerd";
 
 /** Stand-in for the SDK's `PluginError`. */
 class PluginError extends Error {
@@ -54,6 +55,7 @@ class Entrypoint {
 mock.module("@bookclerk/plugin-sdk/workerd", {
   namedExports: {
     BookclerkEntrypoint: Entrypoint,
+    MetadataFilesEntrypoint: Entrypoint,
     OidcEntrypoint: Entrypoint,
     RemoteLibraryEntrypoint: Entrypoint,
     PluginError,
@@ -61,6 +63,7 @@ mock.module("@bookclerk/plugin-sdk/workerd", {
 });
 const { AbsFailure } = await import("../src/client.ts");
 const {
+  MetadataFiles,
   Oidc,
   OIDC_CLIENT,
   RemoteLibrary,
@@ -190,4 +193,90 @@ test("oidc offers the Audiobookshelf client and signs people in", async () => {
     displayName: "bob",
     accessToken: "t",
   });
+});
+
+/** The `metadataFiles` entrypoint; it reads no bindings. */
+const files = new MetadataFiles({} as never, {} as never);
+
+/**
+ * Encodes text as UTF-8.
+ *
+ * @param text - Text.
+ * @returns Its bytes.
+ */
+const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
+
+/**
+ * A render request's record with nothing in it.
+ *
+ * @returns The record.
+ */
+function empty(): MetadataFileRecord {
+  return {
+    present: [],
+    genres: [],
+    tags: [],
+    abridgement: "unknown",
+    expressionKind: "unspecified",
+    identifiers: [],
+    credits: [],
+    creditRoles: [],
+    seriesEntries: [],
+    chapters: [],
+  };
+}
+
+/**
+ * Asserts a rejection with `invalid_params`.
+ *
+ * @param call - The pending call.
+ * @param message - Pattern the message must match.
+ */
+async function invalidParams(call: Promise<unknown>, message: RegExp): Promise<void> {
+  await assert.rejects(call, (err: unknown) => {
+    assert.ok(err instanceof PluginError);
+    assert.equal(err.code, "invalid_params");
+    assert.match(err.message, message);
+    return true;
+  });
+}
+
+test("metadataFiles is always ready", async () => {
+  assert.deepEqual(await files.health(), { ok: true, detail: "" });
+});
+
+test("metadataFiles parse and render route to the dialect", async () => {
+  const record = await files.parse({
+    dialect: "desc_txt",
+    fileName: "desc.txt",
+    bytes: utf8("Hi"),
+  });
+  assert.equal(record.description, "Hi");
+  const bytes = await files.render({
+    dialect: "desc_txt",
+    record: { ...empty(), present: ["description"], description: "New" },
+    fields: ["description"],
+    existing: utf8("Old"),
+  });
+  assert.equal(new TextDecoder().decode(bytes), "New\n");
+});
+
+test("a refused file or request becomes invalid_params", async () => {
+  await invalidParams(
+    files.parse({ dialect: "abs_metadata_json", fileName: "metadata.json", bytes: utf8("[") }),
+    /not valid JSON/,
+  );
+  await invalidParams(
+    files.render({ dialect: "opf", record: empty(), fields: [], existing: utf8("") }),
+    /unknown dialect/,
+  );
+});
+
+test("other errors pass through a dialect call unchanged", async () => {
+  const sneaky = {
+    get dialect(): never {
+      throw new RangeError("unexpected");
+    },
+  };
+  await assert.rejects(files.parse(sneaky as never), RangeError);
 });

@@ -1159,30 +1159,33 @@ pick another run.
   condition outside that is refused, and a response header outside it is
   dropped from the answer.
 
-### Metadata file dialect guest
+### Metadata file dialect guests
 
-The `metadata_files` guest reads sidecar files from storage the host does
-not control. Its `test/fuzz.test.ts` replays one corpus per dialect under
+Two guests read sidecar files from storage the host does not control: the
+shared `metadata_files` guest (`libation_json`) and the Audiobookshelf
+plugin (`abs_metadata_json`, `abs_nfo`, `desc_txt` and `reader_txt`).
+Each one's `test/fuzz.test.ts` replays one corpus per dialect under
 `fuzz/<dialect id>/` and runs seeded byte and text mutations, spliced
 across every corpus, in `npm test` (the `workerd_guests` check);
 `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
 
-- **Parsing** (`parseFile` in
-  `crates/bookclerk-plugins/optional/metadata-files/src/dialects.ts`, for
-  `libation_json`). Oracle, written from the ABI's record rules
-  (`validate_metadata_file_record` and `check_record_against_dialect`)
-  and the dialect's manifest row: a file is refused only with
-  `invalid_params`. Otherwise the record passes every rule the host
-  applies, states only the row's fields and credit roles, and is the same
-  on a second parse.
-- **Rendering** (`renderFile`), for every row with `writes = true`, over
-  every mutated file as the existing file, with a random record and field
-  list. No dialect in this plugin writes yet, so this part runs once one
-  does. Oracle: a refusal only for a file `parse` also refuses or an
-  answer that would pass the size cap. Otherwise the answer is within
-  `MAX_METADATA_FILE_BYTES`, and a re-parse passes the same rules, reads
-  back each field it was asked to write, and reads every other field (and
-  every credit role the request does not state) as the existing file did.
+- **Parsing** (`parseFile` in each guest's `src/dialects.ts`, under
+  `crates/bookclerk-plugins/optional/metadata-files` and
+  `integration-audiobookshelf`). Oracle, written from the ABI's record
+  rules (`validate_metadata_file_record` and
+  `check_record_against_dialect`) and the dialect's manifest row: a file
+  is refused only with `invalid_params`. Otherwise the record passes every
+  rule the host applies, states only the row's fields and credit roles,
+  and is the same on a second parse.
+- **Rendering** (`renderFile`), for every row with `writes = true` (all
+  four Audiobookshelf dialects), over every mutated file as the existing
+  file, with a random record and field list. Oracle: a refusal only for a
+  file `parse` also refuses, an answer that would pass the size cap, or a
+  `metadata.json` number whose exact value a double cannot keep.
+  Otherwise the answer is within `MAX_METADATA_FILE_BYTES`, and a re-parse
+  passes the same rules, reads back each field it was asked to write, and
+  reads every other field (and every credit role the request does not
+  state) as the existing file did.
 
 ### Egress bridge User-Agent rule
 
