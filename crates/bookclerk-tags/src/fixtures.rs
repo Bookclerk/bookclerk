@@ -16,6 +16,10 @@ const VORBIS_COMMENT: u8 = 4;
 const PICTURE: u8 = 6;
 
 /// A box of `kind` around `body`.
+///
+/// # Panics
+///
+/// Never: the fixed sizes all fit their fields.
 pub fn mp4_box(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
     let mut out = (u32::try_from(body.len() + 8).expect("len"))
         .to_be_bytes()
@@ -52,6 +56,10 @@ fn text_sample(title: &str) -> Vec<u8> {
 
 /// An M4B: ftyp, an mdat with fake audio and two chapter samples, then
 /// moov with an audio track, a text chapter track, chpl and ilst.
+///
+/// # Panics
+///
+/// Never: the fixed sizes all fit their fields.
 pub fn tagged_m4b() -> Vec<u8> {
     let ftyp = mp4_box(b"ftyp", b"M4B \0\0\0\0M4B mp42isom");
     let samples = [text_sample("Opening"), text_sample("Chapter One")];
@@ -153,6 +161,10 @@ pub fn tagged_m4b() -> Vec<u8> {
 }
 
 /// A tagged MP3: an ID3v2.4 tag and a few silent frames.
+///
+/// # Panics
+///
+/// Never: the fixed tag always encodes.
 pub fn tagged_mp3() -> Vec<u8> {
     let mut tag = id3::Tag::new();
     tag.set_title("The Book");
@@ -215,6 +227,10 @@ fn comments(items: &[&str]) -> Vec<u8> {
 }
 
 /// A FLAC file: 10 s at 44.1 kHz, three comments, two chapters, a cover.
+///
+/// # Panics
+///
+/// Never: the fixed sizes all fit their fields.
 pub fn tagged_flac() -> Vec<u8> {
     let mut streaminfo = vec![0u8; 34];
     let packed: u64 = (44_100u64 << 44) | (1u64 << 41) | (15u64 << 36) | 441_000;
