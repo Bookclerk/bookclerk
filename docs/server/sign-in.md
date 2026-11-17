@@ -242,6 +242,55 @@ leaves silent for 60 seconds is closed, as is one that has not taken a
 frame within 10 seconds, and a library serves at most 512 clerk sockets at
 once (more get 503 `clerk_sockets_busy`).
 
+### Signing in with a library card
+
+On the clerk, the operator or an Owner signs this install in to a
+library. The daemon, never the browser, talks to the library:
+
+1. `POST /api/config/clerk/inspect` `{ address }` reads the library's
+   `GET /api/node/v1/info` under the node API transport policy. A
+   self-signed library's fingerprint comes back to confirm.
+2. `POST /api/config/clerk/start` `{ address, fingerprint?, clerk_name? }`
+   reads the library again, checks the confirmed fingerprint, and answers
+   the authorize URL to open. The name defaults to this machine's name.
+   The verifier and `state` stay in the daemon's memory for 10 minutes;
+   a restart forgets them. The redirect comes back to this install's
+   `/clerk/callback`.
+3. `POST /api/config/clerk/callback` `{ code, state }` redeems the code
+   with the verifier, checks the answer is for the library that was
+   inspected, and seals the card into the database (`encrypted_secrets`,
+   kind `clerk_card`). A sign-in is used once, whatever the outcome.
+
+Then the daemon keeps the library's clerk socket open with the card:
+
+- It reads every page of the person's books on each connection, whenever
+  the library sends `changed` for `library`, and every 30 minutes. Once the
+  last page is in, it drops the books the read no longer named. A read cut
+  short drops nothing.
+- The books show in **Your books in other libraries**
+  (`GET /api/config/join/window`, which lists the libraries in `cards`),
+  merged with the books of any library this install is a window of.
+- A lost connection is dialed again after 5 seconds, doubling up to 5
+  minutes.
+- When the library ends the card (close 4401, or 401 on connecting), the
+  card and its books are dropped here, and the library stays listed as
+  `signed_out` so the person can sign in again.
+
+`GET /api/config/clerk` lists the cards. `POST /api/config/clerk/sign-out`
+`{ cluster_id }` ends the card at the library (`POST /api/auth/logout`
+with the card) when it can be reached, then drops the card, its books
+and the library from the list. The answer's `library_signed_out` says
+whether the library ended its session too; when it is `false`, the
+person can revoke the session from their session list there.
+
+An install that is already an active branch or window of a library reads
+that library's books through its link, so a card for it is refused
+(409 `already_joined`). These routes are for the operator or an Owner.
+
+> [!NOTE]
+> The web app's sign-in wizard and Settings → Library → **Library cards**
+> come in a later change; the routes are in place now.
+
 ## API endpoints
 
 | Area | Endpoints |
@@ -260,6 +309,7 @@ once (more get 503 `clerk_sockets_busy`).
 | Preferences | `GET`/`PATCH /api/preferences`: `default_view`, `disabled_shelves`, `theme` (subject `user:{id}`, `portal:{identity_id}` or `operator`) |
 | Portal | `/api/portal/*` (Accounts, invite claims) |
 | Library cards | `GET`/`POST /api/auth/clerk-consent` (the consent page, any signed-in user), `POST /api/clerk/v1/token` (the clerk redeems its code), `GET /api/clerk/v1/connect` (the clerk socket) |
+| Library cards (clerk side) | `GET /api/config/clerk`, `POST /api/config/clerk/inspect`, `/start`, `/callback`, `/sign-out` (operator or Owner) |
 
 `GET /api/auth/me` returns
 `{ authenticated, role, default_view, can_acquire, elevated, impersonating?, portal?, user?, second_factor? }`:

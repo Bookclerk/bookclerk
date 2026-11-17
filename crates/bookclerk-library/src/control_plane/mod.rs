@@ -15,6 +15,7 @@ mod branch_requests;
 mod cache;
 mod carried_accounts;
 mod catalog_lookup;
+mod clerk_links;
 mod cluster_links;
 pub(crate) use cluster_links::from_object;
 mod connections_request;
@@ -96,6 +97,10 @@ pub use catalog_lookup::{
     record_answers, set_catalog_listing_opt_out, title_for_request, trusted_branches,
     works_of_interest, works_of_listings, AnswerReport, AnswersRecorded, AskReport, BranchListing,
     BranchOffer, BRANCH_LISTING_PREFIX, BRANCH_LISTING_TTL, LOOKUP_ANSWER_TTL, LOOKUP_RESEND,
+};
+pub use clerk_links::{
+    forget_clerk_link, list_clerk_links, load_clerk_card, load_clerk_link, record_clerk_link,
+    sign_out_clerk_link, ClerkLink, ClerkLinkState, LibraryCard, NewClerkLink, CLERK_CARD_NAME,
 };
 pub use cluster_links::{
     decode_spki_pin, join_cycle, join_overflows_ancestry, leave_cluster_link, library_ancestry,

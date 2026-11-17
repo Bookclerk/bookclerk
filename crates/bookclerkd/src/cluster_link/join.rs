@@ -49,8 +49,9 @@
 //! a branch's redeem checks it again before the code is spent.
 //!
 //! - `GET /api/config/join/window`: the libraries this install is a window
-//!   of (active links with "Use this computer to download" off) and the
-//!   books they hold for this install's person, merged by work.
+//!   of (active links with "Use this computer to download" off), those it
+//!   holds an active library card for (`crate::clerk_link`), and the books
+//!   they hold for this install's person, merged by work.
 //!
 //! The sharing and window routes are for the operator or an Owner (the stored role is
 //! read on every call; anyone else gets 403); all the others are
@@ -89,7 +90,7 @@ use crate::node_api::branch::require_branch_admin;
 /// typed, so the operator's host-only session cookie is sent on return),
 /// else this daemon's public origin. The shared origin helper rewrites a
 /// loopback IP to `localhost`, a different site for cookies.
-fn callback_origin(cfg: &bookclerk_config::Config, headers: &HeaderMap) -> String {
+pub(crate) fn callback_origin(cfg: &bookclerk_config::Config, headers: &HeaderMap) -> String {
     let loopback_browser = crate::origin::request_origin(headers).filter(|origin| {
         url::Url::parse(origin).is_ok_and(|url| {
             url.scheme() == "http"
@@ -108,7 +109,7 @@ fn callback_origin(cfg: &bookclerk_config::Config, headers: &HeaderMap) -> Strin
 }
 
 /// A JSON error answer.
-pub(super) fn join_error(status: StatusCode, error: &str, detail: &str) -> Response {
+pub(crate) fn join_error(status: StatusCode, error: &str, detail: &str) -> Response {
     (
         status,
         Json(crate::http_error::ErrorDetail::new(error, detail)),
@@ -407,7 +408,7 @@ impl utoipa::ToSchema for JoinConflict {
 }
 
 /// The answer for a failed join step. Never echoes a link or code.
-fn join_failed(err: &JoinError) -> Response {
+pub(crate) fn join_failed(err: &JoinError) -> Response {
     match err {
         JoinError::Link(detail) => join_error(StatusCode::BAD_REQUEST, "invalid_address", detail),
         JoinError::OriginMismatch { origin } => (
@@ -462,7 +463,7 @@ fn join_failed(err: &JoinError) -> Response {
 }
 
 /// JSON for what a library said about itself.
-fn library_json(library: &InspectedLibrary) -> InspectedLibraryView {
+pub(crate) fn library_json(library: &InspectedLibrary) -> InspectedLibraryView {
     InspectedLibraryView {
         cluster_id: library.info.cluster_id.clone(),
         library_name: library.info.library_name.clone(),
@@ -475,7 +476,7 @@ fn library_json(library: &InspectedLibrary) -> InspectedLibraryView {
 }
 
 /// This machine's name, as a default branch name.
-fn default_branch_name() -> String {
+pub(crate) fn default_branch_name() -> String {
     let from_env = std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .ok();
@@ -1667,6 +1668,8 @@ pub struct WindowBooks {
     /// The libraries this install is a window of (active links with "Use
     /// this computer to download" off).
     pub clusters: Vec<super::api::ClusterLinkView>,
+    /// The libraries this install holds an active library card for.
+    pub cards: Vec<crate::clerk_link::api::ClerkLinkView>,
     /// Their books for this install's person, one entry per work, by title.
     pub books: Vec<WindowEntryView>,
 }
@@ -1698,6 +1701,10 @@ pub async fn get_join_window(
     let store = state.library_snapshot().await;
     let links = match list_cluster_links(&store).await {
         Ok(links) => links,
+        Err(err) => return crate::config_authority::events_error(err),
+    };
+    let cards = match bookclerk_library::control_plane::list_clerk_links(&store).await {
+        Ok(cards) => cards,
         Err(err) => return crate::config_authority::events_error(err),
     };
     let entries = match bookclerk_library::control_plane::window_view(&store).await {
@@ -1746,6 +1753,11 @@ pub async fn get_join_window(
             .iter()
             .filter(|link| link.is_active() && !link.download)
             .map(link_json)
+            .collect(),
+        cards: cards
+            .iter()
+            .filter(|card| card.is_active())
+            .map(crate::clerk_link::api::clerk_link_json)
             .collect(),
         books,
     })

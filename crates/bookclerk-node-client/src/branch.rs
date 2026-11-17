@@ -156,7 +156,7 @@ impl std::fmt::Debug for BranchAuthorization {
 }
 
 /// 32 random bytes as base64url without padding (43 characters).
-fn random_token() -> Zeroizing<String> {
+pub(crate) fn random_token() -> Zeroizing<String> {
     let mut raw = Zeroizing::new([0u8; 32]);
     rand::rngs::OsRng.fill_bytes(raw.as_mut_slice());
     Zeroizing::new(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw.as_slice()))
@@ -255,7 +255,7 @@ pub struct BranchRedeem<'a> {
 }
 
 /// The answer's `error` code, as a [`JoinError`].
-fn http_error(status: u16, body: &[u8]) -> JoinError {
+pub(crate) fn http_error(status: u16, body: &[u8]) -> JoinError {
     let error = serde_json::from_slice::<serde_json::Value>(body)
         .ok()
         .and_then(|value| value.get("error")?.as_str().map(str::to_string))

@@ -1726,15 +1726,36 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         created_at TEXT NOT NULL
     )",
     ),
-    // On a window (a link with "Use this computer to download" off): the
-    // books each library holds for this install's person, one row per
-    // edition (`control_plane::window_books`). `work_ref` is the library's
+    // On a clerk: the libraries this install holds a library card for
+    // (`control_plane::clerk_links`). The card itself is sealed in
+    // `encrypted_secrets` (`kind = clerk_card`); `state` turns
+    // `signed_out` once the library ends the card.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS clerk_links (
+        library_cluster_id TEXT PRIMARY KEY NOT NULL,
+        origin TEXT NOT NULL,
+        spki_pin TEXT,
+        library_name TEXT NOT NULL,
+        remote_user_id INTEGER NOT NULL,
+        display_name TEXT,
+        clerk_name TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('active', 'signed_out')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    ),
+    // On a window (a link with "Use this computer to download" off) or a
+    // clerk (a library card): the books each library holds for this
+    // install's person, one row per edition (`control_plane::window_books`),
+    // keyed by the library's cluster id. Rows are dropped by code when the
+    // link or card goes, not by a foreign key, since either kind of link
+    // can own them. `work_ref` is the library's
     // own grouping key, `local_work_id` the work of this library the
     // identifiers reach (if any); `seen_at` is the stamp of the read that
     // last named the row, and a finished read drops rows it did not name.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS window_books (
-        owner_cluster_id TEXT NOT NULL REFERENCES cluster_links(owner_cluster_id) ON DELETE CASCADE,
+        owner_cluster_id TEXT NOT NULL,
         store TEXT NOT NULL,
         marketplace TEXT NOT NULL,
         product_id TEXT NOT NULL,
@@ -1755,7 +1776,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // and pieces no row names are dropped when a read finishes.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS window_book_parts (
-        owner_cluster_id TEXT NOT NULL REFERENCES cluster_links(owner_cluster_id) ON DELETE CASCADE,
+        owner_cluster_id TEXT NOT NULL,
         store TEXT NOT NULL,
         marketplace TEXT NOT NULL,
         product_id TEXT NOT NULL,

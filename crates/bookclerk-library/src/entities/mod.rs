@@ -18,6 +18,7 @@ pub mod books;
 pub mod catalog_listing_optouts;
 pub mod catalog_lookups;
 pub mod claim_tickets;
+pub mod clerk_links;
 pub mod cluster_identity;
 pub mod cluster_leases;
 pub mod cluster_links;

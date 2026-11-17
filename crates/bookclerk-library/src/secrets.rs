@@ -86,6 +86,10 @@ pub mod secret_kind {
     /// the pending join's state hash). Deleted when the join completes or
     /// expires.
     pub const CLUSTER_JOIN: &str = "cluster_join";
+    /// On a clerk: the library card of one library (`provider` = the
+    /// library's cluster id, `account_id` = the same). Deleted when the card
+    /// is signed out.
+    pub const CLERK_CARD: &str = "clerk_card";
 }
 
 /// Ownership namespace for `encrypted_secrets.account_type`.

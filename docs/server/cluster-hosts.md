@@ -1050,8 +1050,11 @@ never compared,
 because work ids differ between libraries. Each entry shows which
 libraries hold it, from which stores, and in which formats.
 
-The route is `GET /api/config/join/window` (→ `{clusters, books}`), for
-B's operator or an Owner of B.
+The list also has the books of every library B holds a library card for
+(see [Signing in with a library card](sign-in.md#signing-in-with-a-library-card)).
+
+The route is `GET /api/config/join/window` (→ `{clusters, cards, books}`),
+for B's operator or an Owner of B.
 
 > [!NOTE]
 > Asking a library to send a book to a window isn't built yet. It arrives

@@ -266,6 +266,13 @@ input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.clerk_token_answer]
+crate = "bookclerk-node-proto"
+boundary = "A library's answer to a clerk's token exchange, read on the clerk before the card is sealed"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.clerk_socket_frame]
 crate = "bookclerk-node-proto"
 boundary = "The clerk socket's frames, GET /api/clerk/v1/connect: what a library reads from a clerk and what a clerk reads back"
