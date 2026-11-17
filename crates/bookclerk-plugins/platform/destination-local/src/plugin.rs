@@ -86,7 +86,9 @@ fn meta_from_probe(probe: bookclerk_storage::ObjectProbe) -> ObjectMetadata {
         content_type: probe.content_type.or(probe.meta.content_type),
         etag: probe.etag,
         sha256,
-        ..Default::default()
+        modified_at_ms: probe.modified_at_ms,
+        version_id: probe.version_id,
+        signature: probe.signature,
     }
 }
 

@@ -485,6 +485,7 @@ dependencies = [
  "bookclerk-storefront",
  "bookclerk-window-policy",
  "bookclerk-workerd",
+ "capnp",
  "chrono",
  "hmac",
  "http",

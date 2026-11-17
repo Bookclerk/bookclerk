@@ -38,6 +38,8 @@ bookclerk-storefront = { path = "../crates/bookclerk-storefront" }
 # window_policy drives the desktop window's custom-scheme policy.
 bookclerk-window-policy = { path = "../crates/bookclerk-window-policy" }
 http = "1"
+# The storage_reply oracle reads per-key outcomes straight from the message.
+capnp = "0.27"
 # Independent re-signing oracle for cover_token.
 base64 = "0.23"
 hmac = "0.13"

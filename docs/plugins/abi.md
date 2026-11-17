@@ -1454,7 +1454,7 @@ The rules every operation follows:
   channel cannot carry them yet.
 - **Prefix moves need disjoint prefixes.** The source and target of a
   prefix `moveMany` may not contain each other, after `.` and empty path
-  segments are dropped, because a nested object could overwrite one that
+  segments are dropped and `\` is read as `/`, because a nested object could overwrite one that
   has not moved yet.
 
 The host checks every reply against the request before acting on it: the

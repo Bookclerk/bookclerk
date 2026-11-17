@@ -10,7 +10,10 @@
 //! - decoding and validation never panic;
 //! - a decoded reply survives encode then decode unchanged;
 //! - each validator accepts the reply, against a fixed request, exactly
-//!   when the independent restatement below does.
+//!   when the independent restatement below does;
+//! - a per-key outcome whose wire error code is anything but readable, empty
+//!   text decodes as a failure, read straight from the message below, so a
+//!   failure can never turn into a success (which a round trip cannot see).
 
 use bookclerk_plugin_abi::{
     decode_storage_reply_bytes, encode_storage_reply_bytes, validate_changes_page,
@@ -19,6 +22,40 @@ use bookclerk_plugin_abi::{
     StorageReply, StorageReplyKind, MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES, MAX_CHANGES_PAGE,
     MAX_LIST_PAGE, MAX_SCALAR_BYTES,
 };
+
+/// For each per-key outcome in a `moveMany` or `deleteMany` reply, read
+/// from the raw message: true when the guest sent a failure, that is an
+/// error whose code is not readable, empty text. `None` when the message
+/// does not parse this far.
+fn raw_failures(kind: StorageReplyKind, bytes: &[u8]) -> Option<Vec<bool>> {
+    use bookclerk_plugin_abi::plugin_capnp::{delete_many_result, key_outcome, move_many_page};
+
+    let mut opts = capnp::message::ReaderOptions::new();
+    opts.traversal_limit_in_words(Some((bytes.len() / 8).saturating_add(16)));
+    opts.nesting_limit(32);
+    let message = capnp::serialize::read_message(&mut std::io::Cursor::new(bytes), opts).ok()?;
+    let failed = |o: key_outcome::Reader<'_>| -> Option<bool> {
+        if !o.has_error() {
+            return Some(false);
+        }
+        let code = o.get_error().ok()?.get_code();
+        Some(!matches!(code, Ok(t) if t.as_bytes().is_empty()))
+    };
+    let list = match kind {
+        StorageReplyKind::MoveMany => message
+            .get_root::<move_many_page::Reader<'_>>()
+            .ok()?
+            .get_results()
+            .ok()?,
+        StorageReplyKind::DeleteMany => message
+            .get_root::<delete_many_result::Reader<'_>>()
+            .ok()?
+            .get_results()
+            .ok()?,
+        _ => return None,
+    };
+    list.iter().map(failed).collect()
+}
 
 /// Largest input worth decoding; a real reply page is well under 1 MiB.
 pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
@@ -103,6 +140,26 @@ pub fn check(data: &[u8]) {
     let Ok(reply) = decode_storage_reply_bytes(kind, bytes) else {
         return;
     };
+    let decoded_failures = match &reply {
+        StorageReply::MoveMany(page) => Some(&page.results),
+        StorageReply::DeleteMany(results) => Some(results),
+        _ => None,
+    };
+    if let (Some(results), Some(raw)) = (decoded_failures, raw_failures(kind, bytes)) {
+        assert_eq!(
+            results.len(),
+            raw.len(),
+            "outcome count changed in decoding"
+        );
+        for (outcome, failed) in results.iter().zip(raw) {
+            assert_eq!(
+                outcome.error.is_some(),
+                failed,
+                "outcome for {:?} decoded with the wrong success/failure",
+                outcome.key
+            );
+        }
+    }
     let encoded = encode_storage_reply_bytes(&reply).expect("re-encode a decoded reply");
     let again = decode_storage_reply_bytes(kind, &encoded).expect("decode a re-encoded reply");
     assert_eq!(again, reply, "storage reply does not round-trip");

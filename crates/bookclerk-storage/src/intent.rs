@@ -161,8 +161,11 @@ pub struct ChangeFeedPage {
 ///   target after the probe is never replaced. Elsewhere the check runs
 ///   just before the copy, and the result's `atomic: false` says so.
 /// - The source is probed again after the copy and deleted only when it is
-///   still the object that was copied (same etag). A source replaced during
-///   the copy is kept and the move fails with `Conflict`.
+///   provably still the object that was copied (same etag, else same size
+///   and modification time). A source replaced during the copy, or one whose
+///   probes cannot prove it, is kept and the move fails with `Conflict`. The
+///   ABI has no conditional delete, so a rewrite between that probe and the
+///   delete can still be lost.
 ///
 /// # Errors
 ///
@@ -225,12 +228,18 @@ pub async fn fallback_move<B: StorageBackend + ?Sized>(
     })
 }
 
-/// True when two probes of one key describe the same stored object: equal
-/// etags when both have one, else equal size and modification time.
+/// True when two probes of one key provably describe the same stored object:
+/// equal etags when both have one, else equal size and a modification time
+/// both report and agree on. Probes that carry neither cannot prove it, so
+/// they count as different and the source is kept.
 fn same_object(before: &ObjectProbe, after: &ObjectProbe) -> bool {
     match (&before.etag, &after.etag) {
         (Some(a), Some(b)) => a == b,
-        _ => before.size == after.size && before.modified_at_ms == after.modified_at_ms,
+        _ => {
+            before.size == after.size
+                && before.modified_at_ms.is_some()
+                && before.modified_at_ms == after.modified_at_ms
+        }
     }
 }
 
@@ -287,8 +296,8 @@ pub async fn fallback_move_many<B: StorageBackend + ?Sized>(
 /// A target inside the source would move objects it just moved; a source
 /// inside the target lets one moved object overwrite another that has not
 /// moved yet (`a/b/` to `a/` sends `a/b/b/x` onto `a/b/x`). Prefixes are
-/// compared after dropping `.` and empty path segments, so `./a/sub/` and
-/// `a//sub/` count as `a/sub/`.
+/// compared after dropping `.` and empty path segments, with `\` read as
+/// `/`, so `./a/sub/`, `a//sub/` and `a\sub/` count as `a/sub/`.
 ///
 /// # Errors
 ///
@@ -310,15 +319,17 @@ pub fn require_disjoint_prefixes(from_prefix: &str, to_prefix: &str) -> Result<(
     Ok(())
 }
 
-/// `prefix` with `.` and empty segments removed. A trailing `/` is kept, so
-/// `a/` and `ab` stay disjoint while `a` and `ab` overlap as raw prefixes do.
+/// `prefix` with `.` and empty segments removed. A trailing separator is kept,
+/// so `a/` and `ab` stay disjoint while `a` and `ab` overlap as raw prefixes
+/// do. `\` counts as a separator too, because the local backend treats it as
+/// one on Windows; elsewhere that only refuses a few moves that were safe.
 fn normalized_prefix(prefix: &str) -> String {
     let parts: Vec<&str> = prefix
-        .split('/')
+        .split(['/', '\\'])
         .filter(|p| !p.is_empty() && *p != ".")
         .collect();
     let mut out = parts.join("/");
-    if prefix.ends_with('/') && !out.is_empty() {
+    if prefix.ends_with(['/', '\\']) && !out.is_empty() {
         out.push('/');
     }
     out
@@ -551,9 +562,95 @@ mod tests {
         assert!(require_disjoint_prefixes("a/b/", "a/").is_err());
         assert!(require_disjoint_prefixes("a/", "./a/sub/").is_err());
         assert!(require_disjoint_prefixes("a//b/", "a/b/c/").is_err());
+        assert!(require_disjoint_prefixes("a/", "a\\b/").is_err());
+        assert!(require_disjoint_prefixes("a\\b\\", "a/").is_err());
         assert!(require_disjoint_prefixes("./", "x/").is_err());
         assert!(require_disjoint_prefixes("a/", "b/").is_ok());
         assert!(require_disjoint_prefixes("a/", "ab/").is_ok());
+    }
+
+    /// A local backend where another writer rewrites `a` while it is being
+    /// copied (right after the streamed write lands).
+    #[derive(Clone)]
+    struct RewritesSourceDuringCopy(LocalFsBackend);
+
+    #[async_trait::async_trait]
+    impl StorageBackend for RewritesSourceDuringCopy {
+        fn name(&self) -> &'static str {
+            "racing"
+        }
+        fn clone_box(&self) -> Box<dyn StorageBackend> {
+            Box::new(self.clone())
+        }
+        async fn put(&self, key: &str, data: Bytes, meta: crate::ObjectMeta) -> Result<()> {
+            self.0.put(key, data, meta).await
+        }
+        async fn get(&self, key: &str) -> Result<Bytes> {
+            self.0.get(key).await
+        }
+        async fn exists(&self, key: &str) -> Result<bool> {
+            self.0.exists(key).await
+        }
+        async fn probe(&self, key: &str) -> Result<ObjectProbe> {
+            self.0.probe(key).await
+        }
+        async fn copy(&self, from: &str, to: &str) -> Result<()> {
+            self.0.copy(from, to).await
+        }
+        async fn delete(&self, key: &str) -> Result<()> {
+            self.0.delete(key).await
+        }
+        async fn list_page(
+            &self,
+            prefix: &str,
+            cursor: Option<&str>,
+            limit: u32,
+        ) -> Result<ListPage> {
+            self.0.list_page(prefix, cursor, limit).await
+        }
+        async fn get_stream(
+            &self,
+            key: &str,
+            range: Option<crate::ByteRange>,
+        ) -> Result<(
+            ObjectProbe,
+            std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        )> {
+            self.0.get_stream(key, range).await
+        }
+        async fn put_stream(
+            &self,
+            key: &str,
+            body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+            meta: crate::ObjectMeta,
+        ) -> Result<PutStreamResult> {
+            let put = self.0.put_stream(key, body, meta).await?;
+            self.0
+                .put(
+                    "a",
+                    Bytes::from_static(b"rewritten"),
+                    crate::ObjectMeta::default(),
+                )
+                .await?;
+            Ok(put)
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_move_keeps_a_source_rewritten_during_the_copy() {
+        let (_dir, local) = backend().await;
+        put(&local, "a", b"1").await;
+        let b = RewritesSourceDuringCopy(local);
+        assert!(
+            !b.supports_server_copy(),
+            "the test needs the streamed copy"
+        );
+        let err = fallback_move(&b, "a", "b", &MoveOptions::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Conflict(_)), "{err}");
+        assert_eq!(b.get("a").await.unwrap(), Bytes::from_static(b"rewritten"));
+        assert_eq!(b.get("b").await.unwrap(), Bytes::from_static(b"1"));
     }
 
     #[test]
@@ -578,6 +675,14 @@ mod tests {
         ));
         assert!(same_object(&probe(None, 1, 1), &probe(None, 1, 1)));
         assert!(!same_object(&probe(None, 1, 1), &probe(Some("e"), 1, 2)));
+        let blind = ObjectProbe {
+            modified_at_ms: None,
+            ..probe(None, 1, 1)
+        };
+        assert!(
+            !same_object(&blind, &blind.clone()),
+            "probes with no etag and no time cannot prove identity"
+        );
     }
 
     #[tokio::test]
