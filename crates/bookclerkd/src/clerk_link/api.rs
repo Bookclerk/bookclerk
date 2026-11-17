@@ -64,7 +64,7 @@ pub const PENDING_CLERK_TTL: Duration = Duration::from_secs(600);
 const LOGOUT_PATH: &str = "/api/auth/logout";
 
 /// Most sign-ins pending at once; starting another drops the oldest.
-const MAX_PENDING_CLERKS: usize = 16;
+pub(crate) const MAX_PENDING_CLERKS: usize = 16;
 
 /// A sign-in waiting for the browser to come back. Kept in memory only: a
 /// restart forgets it, and the person starts again.
