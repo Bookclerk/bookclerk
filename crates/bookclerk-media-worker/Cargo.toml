@@ -16,12 +16,14 @@ path = "src/main.rs"
 bookclerk-cover.workspace = true
 bookclerk-media.workspace = true
 bookclerk-sandbox.workspace = true
+bookclerk-tags.workspace = true
 serde_json.workspace = true
 # Cover mode only: one bounded pool decodes several covers at once.
 rayon = "1"
 
 [dev-dependencies]
 bookclerk-sandbox.workspace = true
+futures.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 

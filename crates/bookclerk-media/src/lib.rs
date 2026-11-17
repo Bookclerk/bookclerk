@@ -46,6 +46,7 @@ mod mux_aac;
 mod native;
 mod package_m4b;
 mod pool;
+mod tag_worker;
 
 pub use bookclerk_cover::{CoverSet, CoverSize};
 pub use bookclerk_mp4::{
@@ -57,6 +58,7 @@ pub use bookclerk_mp4::{
 pub use bookclerk_mp4::{
     extract_mp4a_config, parse_mp4, track_duration_ms, Mp4aConfig, SampleEntryKind, TrimRange,
 };
+pub use bookclerk_tags::{ByteSpan, TagRecord};
 pub use chapter_align::{align_chapter_starts, scale_chapters_to_duration, ChapterAlignOptions};
 pub use cover_worker::{COVER_THREADS_ENV, COVER_WORKER_ARG};
 pub use error::{MediaError, Result};
@@ -68,6 +70,7 @@ pub use pool::{
     init_pool, init_pool_from_config, pool, replace_pool, Confinement, MediaPool, MediaPoolConfig,
     JAIL_BIN_ENV, JAIL_BIN_NAME, WORKER_BIN_ENV, WORKER_BIN_NAME, WORKER_ENFORCEMENT_ENV,
 };
+pub use tag_worker::{RangeSource, TAG_WORKER_ARG};
 
 use std::path::{Path, PathBuf};
 

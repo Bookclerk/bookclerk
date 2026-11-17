@@ -13,6 +13,8 @@ anyhow.workspace = true
 bookclerk-config.workspace = true
 # Cover pipeline types and the frames the cover worker speaks.
 bookclerk-cover.workspace = true
+# Embedded tag reader and the frames the tag worker speaks.
+bookclerk-tags.workspace = true
 # Capability probe only: the pool reports at startup whether this platform can
 # confine a worker at all, instead of letting the first acquire discover it.
 bookclerk-sandbox.workspace = true

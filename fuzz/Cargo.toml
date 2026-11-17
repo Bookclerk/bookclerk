@@ -28,6 +28,7 @@ bookclerk-plugin-sdk = { path = "../crates/bookclerk-plugin-sdk" }
 bookclerk-resolve = { path = "../crates/bookclerk-resolve" }
 bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
+bookclerk-tags = { path = "../crates/bookclerk-tags" }
 bookclerk-config = { path = "../crates/bookclerk-config" }
 bookclerk-plugin-source-libro = { path = "../crates/bookclerk-plugins/optional/source-libro" }
 bookclerk-plugin-source-graphicaudio = { path = "../crates/bookclerk-plugins/optional/source-graphicaudio" }
@@ -244,6 +245,20 @@ bench = false
 [[bin]]
 name = "cover_wire"
 path = "fuzz_targets/cover_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tags_read"
+path = "fuzz_targets/tags_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tags_wire"
+path = "fuzz_targets/tags_wire.rs"
 test = false
 doc = false
 bench = false

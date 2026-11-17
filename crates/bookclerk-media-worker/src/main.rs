@@ -1,5 +1,7 @@
-//! Runs exactly one media job inside a jail derived from that job, or, as
-//! `bookclerk-media-worker covers`, serves cover images (see the `covers` module).
+//! Runs exactly one media job inside a jail derived from that job; as
+//! `bookclerk-media-worker covers`, serves cover images (see the `covers`
+//! module); as `bookclerk-media-worker tags`, reads embedded tags (see the
+//! `tags` module).
 //!
 //! The process reads a JSON [`MediaJob`] on stdin, confines itself to the paths
 //! the job declared, runs it, and writes a JSON [`MediaJobReply`] to stdout.
@@ -28,6 +30,7 @@
 )]
 
 mod covers;
+mod tags;
 
 use std::io::{Read, Write};
 use std::process::ExitCode;
@@ -41,6 +44,12 @@ fn main() -> ExitCode {
         .is_some_and(|arg| arg == covers::ARG)
     {
         return covers::main();
+    }
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == tags::ARG)
+    {
+        return tags::main();
     }
     let job = match read_job() {
         Ok(job) => job,

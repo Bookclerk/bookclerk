@@ -472,3 +472,139 @@ async fn pool_processes_covers_concurrently_on_one_worker() {
     );
     pool.process_cover(PNG.to_vec()).await.expect("still up");
 }
+
+/// A file on local disk, read by range the way a storage plugin would be.
+struct LocalFile(PathBuf);
+
+impl bookclerk_media::RangeSource for LocalFile {
+    async fn read_range(&self, span: bookclerk_media::ByteSpan) -> std::io::Result<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(&self.0)?;
+        file.seek(SeekFrom::Start(span.offset))?;
+        let mut bytes = vec![0; usize::try_from(span.len).expect("span fits")];
+        file.read_exact(&mut bytes)?;
+        Ok(bytes)
+    }
+}
+
+/// Tags written by the fix-up job come back through the tag worker: the
+/// worker opens no file, so every byte it parses is one this test's
+/// `LocalFile` handed over by range.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pool_reads_back_the_tags_fixup_wrote() {
+    let _serial = begin_windows_confined_pool_test().await;
+    let cache = tempfile::tempdir().expect("tempdir");
+    let out = tempfile::tempdir().expect("tempdir");
+    let input = cache.path().join("book.m4b");
+    make_audiobook(&input, 3);
+
+    let pool = confined_pool(2, supported_confinement());
+    assert!(pool.is_isolated(), "pool should have found the worker");
+
+    let mut outputs = Vec::new();
+    let m4b = out.path().join("tagged.m4b");
+    let mp3 = out.path().join("encoded.mp3");
+    pool.run(MediaJob::EncodeMp3 {
+        input: input.clone(),
+        output: mp3.clone(),
+        lame: Box::default(),
+        max_sample_rate: None,
+        max_output_bytes: None,
+    })
+    .await
+    .expect("encode");
+    for (source, output) in [(input.clone(), m4b), (mp3, out.path().join("tagged.mp3"))] {
+        pool.run(MediaJob::Fixup {
+            request: Box::new(bookclerk_media::FixupRequest {
+                input: source,
+                output: output.clone(),
+                title: "The Book".into(),
+                author: Some("An Author".into()),
+                narrator: Some("A Narrator".into()),
+                cover: None,
+                chapters: vec![("One".into(), 0), ("Two".into(), 1_500)],
+                replace_chapters: true,
+                subtitle: None,
+                publisher: None,
+                year: Some("2011".into()),
+                genre: None,
+                series: None,
+                series_index: None,
+                asin: Some("B000000001".into()),
+                isbn: None,
+                description: None,
+                language: None,
+                tool: None,
+            }),
+        })
+        .await
+        .expect("fixup");
+        outputs.push(output);
+    }
+
+    let records = futures::future::join_all(outputs.iter().map(|path| {
+        let pool = &pool;
+        async move {
+            let size = std::fs::metadata(path).expect("size").len();
+            pool.read_tags(size, &LocalFile(path.clone())).await
+        }
+    }))
+    .await;
+
+    for (path, record) in outputs.iter().zip(records) {
+        let record = record.unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        let has = |field: bookclerk_tags::TagField, value: &str| {
+            record
+                .entries
+                .iter()
+                .any(|entry| entry.field == field && entry.value == value)
+        };
+        assert!(
+            has(bookclerk_tags::TagField::Title, "The Book"),
+            "{record:?}"
+        );
+        assert!(
+            has(bookclerk_tags::TagField::Artist, "An Author"),
+            "{record:?}"
+        );
+        assert!(
+            has(bookclerk_tags::TagField::Composer, "A Narrator"),
+            "{record:?}"
+        );
+        let titles: Vec<&str> = record.chapters.iter().map(|c| c.title.as_str()).collect();
+        if record.container == bookclerk_tags::Container::Mp4 {
+            assert_eq!(titles, ["One", "Two"], "{record:?}");
+            assert_eq!(record.chapters[1].start_ms, 1_500);
+        }
+        let duration = record.duration.expect("duration");
+        if record.container == bookclerk_tags::Container::Mp4 {
+            assert!((2_800..3_300).contains(&duration.ms), "{duration:?}");
+        } else {
+            // The whole short MP3 fits the first window, so every frame is
+            // counted rather than estimated.
+            assert_eq!(duration.precision, bookclerk_tags::DurationPrecision::Exact);
+            assert!(duration.ms > 1_000, "{duration:?}");
+        }
+        assert_eq!(record.region.version, bookclerk_tags::REGION_HASH_VERSION);
+    }
+
+    // Garbage is refused as a tag error, and the worker keeps serving.
+    let junk = out.path().join("junk.bin");
+    std::fs::write(&junk, b"not audio at all").expect("write");
+    let err = pool
+        .read_tags(16, &LocalFile(junk))
+        .await
+        .expect_err("refused");
+    assert!(
+        matches!(err, bookclerk_media::MediaError::Tags(_)),
+        "{err:?}"
+    );
+    let again = pool
+        .read_tags(
+            std::fs::metadata(&outputs[0]).expect("size").len(),
+            &LocalFile(outputs[0].clone()),
+        )
+        .await
+        .expect("worker still serving");
+    assert_eq!(again.container, bookclerk_tags::Container::Mp4);
+}

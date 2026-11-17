@@ -189,6 +189,20 @@ input_from = "media worker"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.tags_read]
+crate = "bookclerk-tags"
+boundary = "Embedded tags of media files on storage (MP4 ilst and chapter tracks, ID3v2/ID3v1, FLAC metadata), read in the tag worker"
+input_from = "storage"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.tags_wire]
+crate = "bookclerk-tags"
+boundary = "Tag worker frames (requests the worker reads, replies the host reads)"
+input_from = "media worker"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.guest_sql_authz]
 crate = "bookclerk-plugin-abi"
 boundary = "Guest SQL authorization under every host-issued policy shape"
