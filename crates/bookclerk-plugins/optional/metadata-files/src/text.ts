@@ -444,22 +444,32 @@ export class RecordBuilder {
   }
 
   /**
-   * States one credit role and adds its contributors.
+   * States one credit role and adds its contributors. A role whose names
+   * all fall past the list cap stays unstated (unknown).
    *
    * @param role - The role the file states.
    * @param names - Contributor names in billing order, cleaned here.
    * @returns This builder.
    */
   credits(role: CreditRole, names: unknown): this {
-    this.state("credits");
-    if (!this.record.creditRoles.includes(role)) this.record.creditRoles.push(role);
     const credits = this.record.credits;
-    for (const name of labels(names)) {
+    const wanted = labels(names);
+    // A role with names is stated only when at least one of them fits under
+    // the list cap; otherwise it would read as "nobody in this role".
+    let kept = wanted.length === 0;
+    for (const name of wanted) {
+      if (credits.some((c) => c.role === role && c.name === name)) {
+        kept = true;
+        continue;
+      }
       if (credits.length === MAX_LIST_ENTRIES) break;
-      if (credits.some((c) => c.role === role && c.name === name)) continue;
       const credit: Credit = { name, role, level: "roleDefault" };
       credits.push(credit);
+      kept = true;
     }
+    if (!kept) return this;
+    this.state("credits");
+    if (!this.record.creditRoles.includes(role)) this.record.creditRoles.push(role);
     return this;
   }
 

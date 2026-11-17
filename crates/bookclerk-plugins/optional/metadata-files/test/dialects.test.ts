@@ -528,3 +528,103 @@ describe("desc_txt and reader_txt", () => {
     assert.equal(str(renderFile("reader_txt", utf8("A\n"), unknown, ["credits"])), "A\n");
   });
 });
+
+describe("values a format cannot hold", () => {
+  test("a credit role cut off by the list cap stays unknown", () => {
+    const authors = Array.from({ length: MAX_LIST_ENTRIES }, (_, i) => `A${i}`);
+    const parsed = new RecordBuilder()
+      .credits("author", authors)
+      .credits("narrator", ["N"])
+      .build();
+    assert.equal(parsed.credits.length, MAX_LIST_ENTRIES);
+    assert.deepEqual(parsed.creditRoles, ["author"]);
+    const again = new RecordBuilder().credits("author", ["A"]).credits("author", ["A"]).build();
+    assert.deepEqual(again.credits.length, 1);
+    const empty = new RecordBuilder().credits("narrator", []).build();
+    assert.deepEqual(empty.creditRoles, ["narrator"]);
+    assert.deepEqual(empty.present, ["credits"]);
+  });
+
+  test("metadata.json refuses series that would not read back", () => {
+    const write = (name: string, position?: string): Uint8Array =>
+      renderFile(
+        "abs_metadata_json",
+        new Uint8Array(),
+        record({ seriesEntries: [{ name, ...(position === undefined ? {} : { position }) }] }),
+        ["series"],
+      );
+    assert.deepEqual(JSON.parse(str(write("S", "2.5")))["series"], ["S #2.5"]);
+    assert.deepEqual(JSON.parse(str(write("S #1", "2")))["series"], ["S #1 #2"]);
+    refuses(() => write("S", "Part 2"), /cannot be written to metadata.json/);
+    refuses(() => write("S", "#2"), /cannot be written/);
+    refuses(() => write("Book #1"), /cannot be written/);
+  });
+
+  test("metadata.json refuses a number a re-write would change", () => {
+    const render = (text: string): Uint8Array =>
+      renderFile("abs_metadata_json", utf8(text), record({ title: "T" }), ["title"]);
+    refuses(() => render('{"id": 9007199254740993}'), /9007199254740993, which cannot be kept/);
+    refuses(() => render('{"x": [1e400]}'), /cannot be kept exactly/);
+    const kept = render(
+      '{"n": -12, "f": 1.5e3, "s": "9007199254740993 \\" 1e400", "big": 9007199254740991}',
+    );
+    assert.deepEqual(JSON.parse(str(kept)), {
+      n: -12,
+      f: 1500,
+      s: '9007199254740993 " 1e400',
+      big: 9007199254740991,
+      title: "T",
+    });
+  });
+
+  test("a compact file can render past the size cap", () => {
+    const existing = utf8(`{"x":"${"a".repeat(MAX_FILE_BYTES - 16)}","y":[1]}`);
+    assert.ok(existing.length <= MAX_FILE_BYTES);
+    assert.equal(parseFile("abs_metadata_json", existing).present.length, 0);
+    refuses(() => renderFile("abs_metadata_json", existing, record(), []), /rendered file is/);
+  });
+
+  test("an NFO refuses list entries with commas and titles with colons", () => {
+    const authors = record({
+      credits: [{ name: "King, Jr.", role: "author", level: "roleDefault" }],
+      creditRoles: ["author"],
+    });
+    refuses(() => renderFile("abs_nfo", new Uint8Array(), authors, ["credits"]), /holds a comma/);
+    refuses(
+      () => renderFile("abs_nfo", new Uint8Array(), record({ genres: ["a,b"] }), ["genres"]),
+      /holds a comma/,
+    );
+    refuses(
+      () => renderFile("abs_nfo", new Uint8Array(), record({ title: "A: B" }), ["title"]),
+      /holds a colon/,
+    );
+    // A kept title is the file's own line, colon and all.
+    const out = renderFile("abs_nfo", utf8("Title: A: B\n"), record({ subtitle: "C" }), [
+      "subtitle",
+    ]);
+    assert.equal(str(out), "Title: A: C\n");
+  });
+
+  test("an NFO keeps lone CR line endings", () => {
+    const out = renderFile(
+      "abs_nfo",
+      utf8("Title: Old\rCustom: Keep\r"),
+      record({ title: "New" }),
+      ["title"],
+    );
+    assert.equal(str(out), "Title: New\rCustom: Keep\r");
+  });
+
+  test("reader.txt refuses names it would split", () => {
+    for (const name of ["Doe, Jane", "A & B", "Tom and Jerry", "X;Y", "and"]) {
+      const narrators = record({
+        credits: [{ name, role: "narrator", level: "roleDefault" }],
+        creditRoles: ["narrator"],
+      });
+      refuses(
+        () => renderFile("reader_txt", utf8(""), narrators, ["credits"]),
+        /holds a separator/,
+      );
+    }
+  });
+});

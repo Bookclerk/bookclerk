@@ -24,7 +24,7 @@
  * field is added after the last `Key: value` line, and a removed field
  * loses all its lines. Every other line, and the file's line endings, stay.
  */
-import { RecordBuilder, decodeText, encodeFile, firstId, namesIn } from "./text.js";
+import { RecordBuilder, decodeText, encodeFile, firstId, invalid, namesIn } from "./text.js";
 /** `Title`: title and subtitle. */
 const TITLE = { canonical: "Title", keys: ["title"] };
 /** `Author`: author credits. */
@@ -72,7 +72,11 @@ const KEY_LINE = /^([^:]*):(\s*)(.*)$/;
  * @returns Its parts.
  */
 function split(text) {
-    const eol = text.includes("\r\n") ? "\r\n" : "\n";
+    const eol = text.includes("\r\n")
+        ? "\r\n"
+        : text.includes("\n") || !text.includes("\r")
+            ? "\n"
+            : "\r";
     const lines = text === "" ? [] : text.split(/\r\n|\n|\r/);
     if (lines.at(-1) === "")
         lines.pop();
@@ -265,6 +269,10 @@ function setGroup(head, group, value, keepKey = true) {
  * @returns The joined value.
  */
 function joinList(values) {
+    const comma = values.find((value) => value.includes(","));
+    if (comma !== undefined) {
+        throw invalid(`\`${comma}\` holds a comma, so an NFO list would read it as several entries`);
+    }
     return values.length === 0 ? undefined : values.join(", ");
 }
 /**
@@ -285,6 +293,9 @@ export function renderNfo(existing, record, fields) {
         const parts = current === undefined ? undefined : splitTitle(current);
         const title = wants("title") ? record.title : parts?.title;
         const subtitle = wants("subtitle") ? record.subtitle : parts?.subtitle;
+        if (wants("title") && title?.includes(":") === true) {
+            throw invalid(`title \`${title}\` holds a colon, so an NFO would read part of it as the subtitle`);
+        }
         const value = title === undefined || title === ""
             ? undefined
             : subtitle === undefined || subtitle === ""

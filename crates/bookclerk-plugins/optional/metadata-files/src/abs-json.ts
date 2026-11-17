@@ -193,7 +193,51 @@ function put(file: JsonObject, key: string, value: unknown): void {
  * @returns `"Name #position"` or `"Name"`.
  */
 function seriesText(name: string, position: string | undefined): string {
-  return position === undefined ? name : `${name} #${position}`;
+  const text = position === undefined ? name : `${name} #${position}`;
+  const match = SERIES_POSITION.exec(text);
+  const read = match === null ? [text, undefined] : [text.slice(0, match.index), match[1]];
+  if (read[0] !== name || read[1] !== position) {
+    throw invalid(`series \`${text}\` cannot be written to metadata.json so it reads back`);
+  }
+  return text;
+}
+
+/** A JSON number literal, matched at a given index. */
+const JSON_NUMBER = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+
+/**
+ * Checks that every number in a JSON text survives a parse and re-write: an
+ * integer beyond 2^53 or a number out of the double range would be changed
+ * in keys this dialect does not own.
+ *
+ * @param text - The file's text.
+ * @throws {DialectFailure} For a number that cannot be kept exactly.
+ */
+function checkNumbersKept(text: string): void {
+  let inString = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (inString) {
+      if (char === "\\") i += 1;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char !== "-" && (char === undefined || char < "0" || char > "9")) continue;
+    JSON_NUMBER.lastIndex = i;
+    const token = JSON_NUMBER.exec(text)?.[0] ?? char;
+    const value = Number(token);
+    const integer = !/[.eE]/.test(token);
+    if (!Number.isFinite(value) || (integer && !Number.isSafeInteger(value))) {
+      throw invalid(
+        `metadata.json holds the number ${token.slice(0, 40)}, which cannot be kept exactly`,
+      );
+    }
+    i += token.length - 1;
+  }
 }
 
 /**
@@ -229,6 +273,7 @@ export function renderAbsJson(
   fields: readonly MetadataField[],
 ): Uint8Array {
   const file: JsonObject = existing.length === 0 ? {} : parseObject(existing, "metadata.json");
+  if (existing.length > 0) checkNumbersKept(decodeUtf8(existing));
   for (const field of fields) {
     switch (field) {
       case "title":

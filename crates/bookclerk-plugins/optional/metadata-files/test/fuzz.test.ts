@@ -25,7 +25,7 @@ import { test } from "node:test";
 
 import type { CreditRole, MetadataField, MetadataFileRecord } from "@bookclerk/plugin-sdk/workerd";
 import { DIALECTS, parseFile, renderFile } from "../src/dialects.ts";
-import { DialectFailure } from "../src/text.ts";
+import { DialectFailure, decodeText } from "../src/text.ts";
 
 /** PRNG seed for this run. */
 const SEED = Number(process.env["FUZZ_SEED"] ?? 0x5eed);
@@ -504,10 +504,12 @@ function check(row: Row, bytes: Uint8Array, rand: () => number): void {
   const fields = row.fields.filter(() => rand() < 0.6);
   const rendered = attempt(() => renderFile(row.id, bytes, record, fields));
   if ("refused" in rendered) {
-    assert.ok(
-      "refused" in parsed,
-      `render refused a file parse reads: ${rendered.refused.message}`,
-    );
+    // A file parse reads may still be refused when the answer would pass
+    // the size cap, or when it holds a JSON number a re-write would change.
+    const allowed =
+      "refused" in parsed ||
+      /^rendered file is|cannot be kept exactly/.test(rendered.refused.message);
+    assert.ok(allowed, `render refused a file parse reads: ${rendered.refused.message}`);
     return;
   }
   assert.ok(rendered.ok.length <= CAP.file, "rendered file over the cap");
@@ -526,6 +528,33 @@ function check(row: Row, bytes: Uint8Array, rand: () => number): void {
       project(record, field, row, roles),
       `field ${field} did not round-trip`,
     );
+  }
+  if (!("ok" in parsed)) return;
+  // Fields the request left out read back as the existing file stated them.
+  for (const field of row.fields) {
+    if (fields.includes(field)) continue;
+    // An NFO's subtitle shares the title's line, which a removed title takes.
+    if (field === "subtitle" && row.id === "abs_nfo" && fields.includes("title")) continue;
+    assert.deepEqual(
+      project(reread, field, row, row.roles),
+      project(parsed.ok, field, row, row.roles),
+      `unselected field ${field} changed`,
+    );
+  }
+  // A credit role the request does not state is unknown, so it stays.
+  if (fields.includes("credits")) {
+    const unstated = row.roles.filter((role) => !record.creditRoles.includes(role));
+    assert.deepEqual(
+      project(reread, "credits", row, unstated),
+      project(parsed.ok, "credits", row, unstated),
+      "an unstated credit role changed",
+    );
+  }
+  // reader.txt keeps every line after the first as it was.
+  if (row.id === "reader_txt" && rendered.ok.length > 0) {
+    const tail = (text: string): string => text.slice(Math.max(0, text.search(/\r\n|\n|\r/)));
+    const before = decodeText(bytes);
+    if (/\r\n|\n|\r/.test(before)) assert.equal(tail(decodeText(rendered.ok)), tail(before));
   }
 }
 

@@ -1158,9 +1158,13 @@ run.
   on a second parse.
 - **Rendering** (`renderFile`) over every mutated file as the existing
   file, with a random record and field list. Oracle: a refusal only for a
-  file `parse` also refuses, an answer within `MAX_METADATA_FILE_BYTES`,
-  and a re-parse that passes the same rules and reads back each field it
-  was asked to write, as far as the format carries it.
+  file `parse` also refuses, an answer that would pass the size cap, or a
+  `metadata.json` number a re-write would change. Otherwise the answer is
+  within `MAX_METADATA_FILE_BYTES`, and a re-parse passes the same rules,
+  reads back each field it was asked to write as far as the format carries
+  it, and reads every other field (and every credit role the request does
+  not state) as the existing file did. `reader.txt` keeps its lines after
+  the first.
 
 ### Egress bridge User-Agent rule
 

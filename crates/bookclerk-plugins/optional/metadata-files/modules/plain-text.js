@@ -8,7 +8,7 @@
  * present file always states its field, so an empty `reader.txt` states
  * that nobody narrates.
  */
-import { RecordBuilder, decodeText, encodeFile, namesIn } from "./text.js";
+import { RecordBuilder, decodeText, encodeFile, invalid, namesIn } from "./text.js";
 /** Separators between narrator names on `reader.txt`'s first line. */
 const NAME_SEPARATOR = /\s*(?:[,;&]|\band\b)\s*/i;
 /**
@@ -70,7 +70,12 @@ export function renderReaderTxt(existing, record, fields) {
     const text = decodeText(existing);
     const breakAt = text.search(/\r?\n|\r/);
     const rest = breakAt === -1 ? "" : text.slice(breakAt);
-    const first = namesIn(record, "narrator").join(", ");
+    const names = namesIn(record, "narrator");
+    const split = names.find((name) => splitNames(name).join("\u0000") !== name);
+    if (split !== undefined) {
+        throw invalid(`narrator \`${split}\` holds a separator, so reader.txt would read it as several names`);
+    }
+    const first = names.join(", ");
     if (first === "" && rest.trim() === "")
         return encodeFile("");
     return encodeFile(rest === "" ? `${first}\n` : `${first}${rest}`);

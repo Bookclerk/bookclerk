@@ -58,9 +58,16 @@ else in the file:
 - An NFO rewrites a field's first line (keeping its key and spacing),
   drops the field's other lines, adds a new field after the last
   `Key: value` line, and keeps every other line and the file's line
-  endings. A removed date also drops the copyright lines it would
-  otherwise be read from.
+  endings (CRLF, LF or CR). A removed date also drops the copyright lines
+  it would otherwise be read from.
 - `reader.txt` replaces its first line and keeps the rest.
+
+A value the format cannot hold so that it reads back the same is refused
+with `invalid_params` rather than written changed: a series position with
+a space or `#` in `metadata.json`, a list entry with a comma or a title
+with a colon in an NFO, a narrator name holding a separator in
+`reader.txt`. So is a `metadata.json` holding a number that a re-write
+would change (an integer beyond 2^53, or one out of range).
 
 An answer with nothing left in it is empty, and the host decides whether
 to remove the file. Formats keep one value where the record can hold

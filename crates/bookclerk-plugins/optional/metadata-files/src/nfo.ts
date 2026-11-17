@@ -26,7 +26,7 @@
  */
 
 import type { MetadataField, MetadataFileRecord } from "@bookclerk/plugin-sdk/workerd";
-import { RecordBuilder, decodeText, encodeFile, firstId, namesIn } from "./text.ts";
+import { RecordBuilder, decodeText, encodeFile, firstId, invalid, namesIn } from "./text.ts";
 
 /** One group of keys that together hold a value. */
 interface KeyGroup {
@@ -99,7 +99,11 @@ interface NfoFile {
  * @returns Its parts.
  */
 function split(text: string): NfoFile {
-  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  const eol = text.includes("\r\n")
+    ? "\r\n"
+    : text.includes("\n") || !text.includes("\r")
+      ? "\n"
+      : "\r";
   const lines = text === "" ? [] : text.split(/\r\n|\n|\r/);
   if (lines.at(-1) === "") lines.pop();
   const start = lines.findIndex((l) => DESCRIPTION_HEADER.test(l));
@@ -280,6 +284,10 @@ function setGroup(
  * @returns The joined value.
  */
 function joinList(values: readonly string[]): string | undefined {
+  const comma = values.find((value) => value.includes(","));
+  if (comma !== undefined) {
+    throw invalid(`\`${comma}\` holds a comma, so an NFO list would read it as several entries`);
+  }
   return values.length === 0 ? undefined : values.join(", ");
 }
 
@@ -305,6 +313,11 @@ export function renderNfo(
     const parts = current === undefined ? undefined : splitTitle(current);
     const title = wants("title") ? record.title : parts?.title;
     const subtitle = wants("subtitle") ? record.subtitle : parts?.subtitle;
+    if (wants("title") && title?.includes(":") === true) {
+      throw invalid(
+        `title \`${title}\` holds a colon, so an NFO would read part of it as the subtitle`,
+      );
+    }
     const value =
       title === undefined || title === ""
         ? undefined
