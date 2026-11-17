@@ -18,7 +18,7 @@ use serde::Serialize;
 
 pub use bookclerk_plugin_abi::{
     SocketAutoResponse, SocketClosed, SocketConnectRequest, SocketFrame, SocketHandler,
-    SocketHeader, SocketInfo, SocketMessage, Sockets, MAX_SOCKETS_PER_INSTANCE,
+    SocketHeader, SocketInfo, SocketMessage, SocketMessageOk, Sockets, MAX_SOCKETS_PER_INSTANCE,
     MAX_SOCKET_ATTACHMENT_BYTES, MAX_SOCKET_AUTO_RESPONSES, MAX_SOCKET_AUTO_RESPONSE_BYTES,
     MAX_SOCKET_FRAME_BYTES, MAX_SOCKET_HEADERS, MAX_SOCKET_URL_BYTES,
 };

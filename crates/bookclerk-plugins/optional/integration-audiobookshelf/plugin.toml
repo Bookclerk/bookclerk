@@ -13,6 +13,10 @@ mode = "outbound"
 # as TCP + loopback/private CIDRs. Extra hostnames can be added here or by the
 # operator. Nested jail denies ambient AF_INET; HTTP uses the SDK client.
 
+# Audiobookshelf pushes new users over Socket.io; the host holds the socket
+# while the plugin sleeps and answers its pings (see `src/push.rs`).
+[sockets]
+
 [vars]
 
 [[settings]]

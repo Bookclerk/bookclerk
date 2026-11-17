@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use bookclerk_plugin_abi::{
     connect_socket_broker, Result, SocketAutoResponse, SocketClosed, SocketConnectRequest,
-    SocketFrame, SocketHandler, SocketMessage, Sockets,
+    SocketFrame, SocketHandler, SocketMessage, SocketMessageOk, Sockets,
 };
 use bookclerk_plugin_manifest::{EgressPolicy, NetworkMode};
 use bookclerk_workerd::grant::GRANT_POLICY_ENV;
@@ -35,14 +35,14 @@ struct Host {
 
 #[async_trait::async_trait(?Send)]
 impl SocketHandler for Host {
-    async fn message(&self, event: SocketMessage) -> Result<()> {
+    async fn message(&self, event: SocketMessage) -> Result<SocketMessageOk> {
         self.seen.lock().unwrap().push(format!(
             "message {:?} {}",
             event.frame,
             event.attachment.len()
         ));
         self.notify.notify_one();
-        Ok(())
+        Ok(SocketMessageOk::default())
     }
 
     async fn closed(&self, event: SocketClosed) -> Result<()> {

@@ -13,10 +13,10 @@ use super::{empty_reply, from_capnp, read_error, text_of, write_error};
 use crate::generated::RoundTripFailure;
 use crate::generated::{
     read_socket_closed, read_socket_connect_reply, read_socket_connect_request, read_socket_frame,
-    read_socket_list_reply, read_socket_message, write_socket_closed, write_socket_connect_reply,
-    write_socket_connect_request, write_socket_frame, write_socket_list_reply,
-    write_socket_message, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo, SocketList,
-    SocketMessage,
+    read_socket_list_reply, read_socket_message, read_socket_message_reply, write_socket_closed,
+    write_socket_connect_reply, write_socket_connect_request, write_socket_frame,
+    write_socket_list_reply, write_socket_message, write_socket_message_reply, SocketClosed,
+    SocketConnectRequest, SocketFrame, SocketInfo, SocketList, SocketMessage, SocketMessageOk,
 };
 use crate::plugin_capnp::{socket_handler as socket_handler_capnp, sockets as sockets_capnp};
 use crate::sockets::{
@@ -236,8 +236,7 @@ impl socket_handler_capnp::Server for SocketHandlerServer {
             Ok(()) => self.inner.message(event).await,
             Err(err) => Err(err),
         };
-        write_unit(results.get().init_result(), outcome);
-        Ok(())
+        write_socket_message_reply(results.get().init_result(), &outcome)
     }
 
     async fn closed(
@@ -272,12 +271,12 @@ impl SocketHandlerClient {
 
 #[async_trait::async_trait(?Send)]
 impl SocketHandler for SocketHandlerClient {
-    async fn message(&self, event: SocketMessage) -> Result<()> {
+    async fn message(&self, event: SocketMessage) -> Result<SocketMessageOk> {
         check_delivery(&event.socket, Some(&event.frame), &event.attachment)?;
         let mut req = self.client.message_request();
         write_socket_message(req.get().init_event(), &event).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_unit(reply_result!(reply))
+        read_socket_message_reply(reply_result!(reply)).map_err(from_capnp)?
     }
 
     async fn closed(&self, event: SocketClosed) -> Result<()> {

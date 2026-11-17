@@ -37,6 +37,7 @@ import type {
   PluginMigration as WirePluginMigration,
   PurchaseHint,
   QueueResult,
+  SocketMessageOk,
   SourceAccount,
 } from "./generated.js";
 import * as W from "./generated-wire.js";
@@ -689,7 +690,10 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       stub: "author",
       call: (s, p, cx) =>
         (s as AuthorStub).bookclerkSocketMessage(cx.host.bindContext(cx.ctx), p.event ?? {}),
-      ok: okEmpty,
+      ok: (value) =>
+        okValue({
+          pollEvents: (value as Partial<SocketMessageOk> | undefined)?.pollEvents === true,
+        }),
     }),
     closed: spec<W.SocketHandlerClosedParams, W.SocketHandlerClosedResults["result"]>({
       params: W.SocketHandlerClosedParamsCodec,

@@ -168,10 +168,18 @@ impl super::ExternalUserPoll for FakeGuest {
 impl crate::SocketSink for FakeGuest {
     async fn deliver_socket_event(
         &self,
-        _event: crate::SocketEvent,
-    ) -> std::result::Result<(), String> {
+        event: crate::SocketEvent,
+    ) -> std::result::Result<bookclerk_plugin_abi::SocketMessageOk, String> {
         self.delivered.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+        // A `poll` text frame stands for a message announcing a new user.
+        let poll_events = matches!(
+            event,
+            crate::SocketEvent::Message(bookclerk_plugin_abi::SocketMessage {
+                frame: bookclerk_plugin_abi::SocketFrame::Text(ref text),
+                ..
+            }) if text == "poll"
+        );
+        Ok(bookclerk_plugin_abi::SocketMessageOk { poll_events })
     }
 }
 
@@ -774,6 +782,83 @@ async fn the_proxy_polls_a_sleeping_remote_library_through_a_wake() {
         seen.lock().expect("seen").clone(),
         ["user-0", "user-0"],
         "each wake polls a fresh guest"
+    );
+}
+
+#[tokio::test]
+async fn a_pushed_new_user_is_polled_at_once() {
+    use crate::SocketSink as _;
+    // A poll interval far past the test, so only the guest's ask polls.
+    let (proxy, first, started) =
+        library_proxy(Duration::from_millis(40), Duration::from_secs(3600));
+    let (ctx, seen) = hooked_context();
+    proxy.start(ctx).await.expect("start");
+    wait_asleep(&proxy, &first).await;
+    let message = |text: &str| {
+        crate::SocketEvent::Message(bookclerk_plugin_abi::SocketMessage {
+            socket: "s1".into(),
+            frame: bookclerk_plugin_abi::SocketFrame::Text(text.into()),
+            attachment: Vec::new(),
+        })
+    };
+    let quiet = proxy
+        .deliver_socket_event(message("42"))
+        .await
+        .expect("delivered");
+    assert!(!quiet.poll_events);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        seen.lock().expect("seen").is_empty(),
+        "an ordinary message polls nothing"
+    );
+    let asks = proxy
+        .deliver_socket_event(message("poll"))
+        .await
+        .expect("delivered");
+    assert!(asks.poll_events);
+    wait_for("the asked-for poll", || {
+        seen.lock().expect("seen").len() == 1
+    })
+    .await;
+    // Each message woke a guest (the first slept again in between); the
+    // poll used the guest the asking message woke, starting no other.
+    let guests = started.lock().expect("started").clone();
+    assert_eq!(guests.len(), 2, "the poll started no guest of its own");
+    assert_eq!(guests[0].polls.load(Ordering::SeqCst), 0);
+    assert_eq!(guests[1].polls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn an_ask_with_no_poll_running_is_dropped() {
+    let generations = crate::user_poll::PollGeneration::default();
+    generations.poll_now();
+    let polls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&polls);
+    crate::user_poll::spawn(
+        &generations,
+        Duration::from_secs(3600),
+        "fake".into(),
+        Arc::new(|_| {}),
+        move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            async { Some(Ok(Vec::new())) }
+        },
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        polls.load(Ordering::SeqCst),
+        0,
+        "the earlier ask left nothing behind"
+    );
+    generations.poll_now();
+    wait_for("the asked-for poll", || polls.load(Ordering::SeqCst) == 1).await;
+    generations.end();
+    generations.poll_now();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        polls.load(Ordering::SeqCst),
+        1,
+        "an ended loop is not asked"
     );
 }
 

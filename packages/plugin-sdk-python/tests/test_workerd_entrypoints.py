@@ -688,6 +688,29 @@ class QueueDispatchTests(unittest.IsolatedAsyncioTestCase):
             stub.calls[-1], ("close", {"socket": "g1_a", "code": 1000, "reason": "bye"})
         )
 
+    async def test_a_socket_message_can_ask_for_a_poll(self) -> None:
+        class Asks(BookclerkEntrypoint):
+            async def web_socket_message(self, ws, message):
+                if message == "user":
+                    return {"poll_events": True}
+                if message == "camel":
+                    return {"pollEvents": True}
+                if message == "truthy":
+                    return {"poll_events": 1}
+                return None
+
+        wire = lambda text: {"socket": "g1_a", "frame": {"kind": "text", "value": text}}  # noqa: E731
+        self.assertEqual(
+            await Asks().bookclerkSocketMessage({}, wire("user")), {"pollEvents": True}
+        )
+        self.assertEqual(
+            await Asks().bookclerkSocketMessage({}, wire("camel")), {"pollEvents": True}
+        )
+        self.assertEqual(
+            await Asks().bookclerkSocketMessage({}, wire("truthy")), {"pollEvents": False}
+        )
+        self.assertEqual(await Asks().bookclerkSocketMessage({}, wire("42")), {"pollEvents": False})
+
     async def test_socket_dispatch_without_handlers_or_grant(self) -> None:
         class Bare(BookclerkEntrypoint):
             pass

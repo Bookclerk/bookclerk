@@ -2043,14 +2043,14 @@ class Sockets(Protocol):
 class SocketHandler(Protocol):
     """Guest handler for host-brokered sockets (`Entrypoints.socketHandler`)."""
 
-    async def message(self, event: SocketMessage) -> EmptyReply:
+    async def message(self, event: SocketMessage) -> SocketMessageReply:
         """One message arrived on an open socket.
 
         Args:
             event: Socket, frame, and attachment.
 
         Returns:
-            ``EmptyReply``
+            ``SocketMessageReply``
         """
         ...
 
@@ -5086,6 +5086,54 @@ SocketListReply = Union[
 """Result union of `Sockets.list`."""
 
 
+class SocketMessageReplyOk(TypedDict):
+    """``SocketMessageReply`` member ``ok``.
+
+    Success: what the guest asks of the host after the message.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: what the guest asks of the host after the message.
+    """
+
+    kind: Literal["ok"]
+    value: SocketMessageOk
+
+
+class SocketMessageReplyErr(TypedDict):
+    """``SocketMessageReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+SocketMessageReply = Union[
+    SocketMessageReplyOk,
+    SocketMessageReplyErr,
+]
+"""Reply of `SocketHandler.message`."""
+
+
+class SocketMessageOk(TypedDict):
+    """What a guest asks of the host after handling one pushed message.
+
+    Attributes:
+        pollEvents: True asks the host to call `Integration.pollEvents` now, while the
+            guest is awake, instead of at the next scheduled poll: the message announced
+            something the poll hands over (a new user). The host ignores it for a plugin
+            whose host schedules no poll.
+    """
+
+    pollEvents: bool
+
+
 class SocketMessage(TypedDict):
     """Argument of `SocketHandler.message`.
 
@@ -6777,6 +6825,10 @@ __all__ = [
     "SocketListReplyOk",
     "SocketListReplyErr",
     "SocketListReply",
+    "SocketMessageReplyOk",
+    "SocketMessageReplyErr",
+    "SocketMessageReply",
+    "SocketMessageOk",
     "SocketMessage",
     "SocketClosed",
     "DbValueNull",

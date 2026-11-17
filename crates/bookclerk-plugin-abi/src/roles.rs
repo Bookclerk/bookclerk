@@ -13,7 +13,8 @@ use crate::generated::{
     MetadataChaptersParams, MetadataLookupParams, MetadataRecord, MetadataSearchParams, PlainFetch,
     PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintsParams,
     RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams,
-    SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo, SocketMessage, SourceAccount,
+    SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo, SocketMessage, SocketMessageOk,
+    SourceAccount,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
@@ -271,7 +272,11 @@ pub trait Sockets {
 #[async_trait::async_trait(?Send)]
 pub trait SocketHandler {
     /// One message arrived on an open socket.
-    async fn message(&self, _event: SocketMessage) -> Result<()> {
+    ///
+    /// The reply may ask the host to poll the plugin's events now
+    /// ([`SocketMessageOk::poll_events`]), when the message announced
+    /// something the poll hands over.
+    async fn message(&self, _event: SocketMessage) -> Result<SocketMessageOk> {
         Err(PluginError::unsupported("message"))
     }
 

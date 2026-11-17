@@ -12618,7 +12618,7 @@
           "discriminantValue": null,
           "type": {
             "kind": "struct",
-            "name": "EmptyReply"
+            "name": "SocketMessageReply"
           },
           "offset": 0
         }
@@ -12786,6 +12786,55 @@
             "kind": "data"
           },
           "offset": 2
+        }
+      ]
+    },
+    "SocketMessageOk": {
+      "name": "SocketMessageOk",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "pollEvents",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketMessageReply": {
+      "name": "SocketMessageReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "SocketMessageOk"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
         }
       ]
     },

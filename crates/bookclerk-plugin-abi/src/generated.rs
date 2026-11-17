@@ -2868,6 +2868,18 @@ pub struct SocketList {
     pub sockets: Vec<SocketInfo>,
 }
 
+/// What a guest asks of the host after handling one pushed message.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocketMessageOk {
+    /// True asks the host to call `Integration.pollEvents` now, while the
+    /// guest is awake, instead of at the next scheduled poll: the message
+    /// announced something the poll hands over (a new user). The host ignores
+    /// it for a plugin whose host schedules no poll.
+    #[serde(default)]
+    pub poll_events: bool,
+}
+
 /// Argument of `SocketHandler.message`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -7238,6 +7250,64 @@ pub fn read_socket_list_reply(
     }
 }
 
+/// Encode a `SocketMessageReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_socket_message_reply(
+    b: plugin_capnp::socket_message_reply::Builder<'_>,
+    v: &Result<SocketMessageOk, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_socket_message_ok(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `SocketMessageReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_socket_message_reply(
+    r: plugin_capnp::socket_message_reply::Reader<'_>,
+) -> capnp::Result<Result<SocketMessageOk, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::socket_message_reply::Ok(ok) => Ok(Ok(read_socket_message_ok(ok?)?)),
+        plugin_capnp::socket_message_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`SocketMessageOk`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_socket_message_ok(
+    mut b: plugin_capnp::socket_message_ok::Builder<'_>,
+    v: &SocketMessageOk,
+) -> capnp::Result<()> {
+    b.set_poll_events(v.poll_events);
+    Ok(())
+}
+
+/// Decode a [`SocketMessageOk`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_socket_message_ok(
+    r: plugin_capnp::socket_message_ok::Reader<'_>,
+) -> capnp::Result<SocketMessageOk> {
+    Ok(SocketMessageOk {
+        poll_events: r.get_poll_events(),
+    })
+}
+
 /// Encode a [`SocketMessage`] onto a Cap'n Proto builder.
 ///
 /// # Errors
@@ -7306,7 +7376,7 @@ pub fn read_socket_closed(
 
 /// Number of root structs [`read_any_message`] can decode; selectors are
 /// `0..READ_ANY_COUNT` in schema order.
-pub const READ_ANY_COUNT: u8 = 116;
+pub const READ_ANY_COUNT: u8 = 118;
 
 /// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
 /// root is the struct `selector` names, through that struct's `read_*`
@@ -7830,11 +7900,21 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
             )?;
         }
         114 => {
+            let _ = read_socket_message_reply(
+                reader.get_root::<plugin_capnp::socket_message_reply::Reader<'_>>()?,
+            )?;
+        }
+        115 => {
+            let _ = read_socket_message_ok(
+                reader.get_root::<plugin_capnp::socket_message_ok::Reader<'_>>()?,
+            )?;
+        }
+        116 => {
             let _ = read_socket_message(
                 reader.get_root::<plugin_capnp::socket_message::Reader<'_>>()?,
             )?;
         }
-        115 => {
+        117 => {
             let _ =
                 read_socket_closed(reader.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)?;
         }
@@ -12733,6 +12813,94 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             }
         }
         114 => {
+            let first = read_socket_message_reply(
+                reader.get_root::<plugin_capnp::socket_message_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_socket_message_reply(
+                message.init_root::<plugin_capnp::socket_message_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_socket_message_reply(
+                    again.get_root::<plugin_capnp::socket_message_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_socket_message_reply(
+                    message.init_root::<plugin_capnp::socket_message_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SocketMessageReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        115 => {
+            let first = read_socket_message_ok(
+                reader.get_root::<plugin_capnp::socket_message_ok::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_socket_message_ok(
+                message.init_root::<plugin_capnp::socket_message_ok::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_socket_message_ok(
+                    again.get_root::<plugin_capnp::socket_message_ok::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_socket_message_ok(
+                    message.init_root::<plugin_capnp::socket_message_ok::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SocketMessageOk value".to_string(),
+                    ));
+                }
+            }
+        }
+        116 => {
             let first = read_socket_message(
                 reader.get_root::<plugin_capnp::socket_message::Reader<'_>>()?,
             )?;
@@ -12774,7 +12942,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        115 => {
+        117 => {
             let first =
                 read_socket_closed(reader.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();

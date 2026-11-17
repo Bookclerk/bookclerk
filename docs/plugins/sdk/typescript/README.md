@@ -172,6 +172,10 @@ handler doesn't depend on memory a restart would lose. Without a
 `webSocketMessage` handler the host is told the plugin has none; without
 `webSocketClose`, closes are ignored.
 
+A remote library whose message announced a new user returns
+`{ pollEvents: true }` from `webSocketMessage`, and the host calls
+`pollEvents` right away instead of at its next scheduled poll.
+
 ## Testing database code
 
 `createTestDatabase()` from `@bookclerk/plugin-sdk/testkit` gives a

@@ -1,6 +1,6 @@
 # ADR: Event delivery follows the Workers model
 
-- **Status:** Accepted (decisions 1 to 9); later phases proposed
+- **Status:** Accepted (decisions 1 to 10); later phases proposed
 - **Date:** 2026-11-11
 
 ## Context
@@ -139,8 +139,17 @@ callers await a promise, and long work is a durable job.
    declares a `[[databases]]` binding and its grant holds every one;
    otherwise it stays resident. A sign-in call wakes the guest like a
    lookup, and the guest's first successful `oidcClients` answer is kept
-   per proxy, since a changed package or config replaces the proxy. Pushed socket messages (decision
-   8) will bring new users without waiting for the poll.
+   per proxy, since a changed package or config replaces the proxy.
+10. **Pushed new users.** A remote library may also learn of new users
+    from a pushed socket (decision 8). Its `SocketHandler.message` reply
+    (`SocketMessageOk`) carries `pollEvents`; when the guest sets it, the
+    host runs the user poll at once, on the guest the message already
+    woke, instead of waiting out the interval. Only the plugin can tell
+    which of a service's messages announce a user (Audiobookshelf pushes
+    many unrelated events to admins), so the plugin decides, and the
+    scheduled poll stays as the fallback that catches anything a closed
+    socket missed. Asks that arrive while a poll runs fold into one more
+    poll; an ask with no poll running is dropped.
 
 The following phases are proposed and get their own pull requests and
 updates to this record:

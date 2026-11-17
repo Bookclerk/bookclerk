@@ -1069,7 +1069,7 @@ interface SocketHandler {
   # One message arrived on an open socket.
   message @0 (
       event :SocketMessage  # Socket, frame, and attachment.
-  ) -> (result :EmptyReply);
+  ) -> (result :SocketMessageReply);
   # A socket closed, by the remote side, the network, or the host.
   closed @1 (
       event :SocketClosed  # Socket, close code, and attachment.
@@ -2971,6 +2971,25 @@ struct SocketListReply {
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }
+}
+
+# Reply of `SocketHandler.message`.
+struct SocketMessageReply {
+  union {
+    # Success: what the guest asks of the host after the message.
+    ok @0 :SocketMessageOk;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# What a guest asks of the host after handling one pushed message.
+struct SocketMessageOk {
+  # True asks the host to call `Integration.pollEvents` now, while the
+  # guest is awake, instead of at the next scheduled poll: the message
+  # announced something the poll hands over (a new user). The host ignores
+  # it for a plugin whose host schedules no poll.
+  pollEvents @0 :Bool;
 }
 
 # Argument of `SocketHandler.message`.

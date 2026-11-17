@@ -4473,6 +4473,45 @@ _socket_list_reply_codec = _Codec(1, 1, _write_socket_list_reply, _read_socket_l
 """Wire codec for ``SocketListReply`` (1 data words, 1 pointers)."""
 
 
+def _write_socket_message_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _socket_message_ok_codec.write(s.init_struct(0, 1, 0), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown SocketMessageReply union member: {kind}")
+
+
+def _read_socket_message_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _socket_message_ok_codec.read(s.get_struct(0, 1, 0), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown SocketMessageReply union member: {disc}")
+
+
+_socket_message_reply_codec = _Codec(1, 1, _write_socket_message_reply, _read_socket_message_reply)
+"""Wire codec for ``SocketMessageReply`` (1 data words, 1 pointers)."""
+
+
+def _write_socket_message_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_bool(0, v["pollEvents"])
+
+
+def _read_socket_message_ok(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "pollEvents": s.get_bool(0),
+    }
+
+
+_socket_message_ok_codec = _Codec(1, 0, _write_socket_message_ok, _read_socket_message_ok)
+"""Wire codec for ``SocketMessageOk`` (1 data words, 0 pointers)."""
+
+
 def _write_socket_message(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["socket"])
     _socket_frame_codec.write(s.init_struct(1, 1, 1), v["frame"], caps)
@@ -6354,12 +6393,12 @@ _socket_handler_message_params_codec = _Codec(0, 1, _write_socket_handler_messag
 
 
 def _write_socket_handler_message_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    _socket_message_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_socket_handler_message_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
+        "result": _socket_message_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 

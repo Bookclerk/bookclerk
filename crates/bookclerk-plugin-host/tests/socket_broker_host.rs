@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bookclerk_config::{Config, Paths};
-use bookclerk_plugin_abi::{SocketConnectRequest, SocketFrame, Sockets as _};
+use bookclerk_plugin_abi::{SocketConnectRequest, SocketFrame, SocketMessageOk, Sockets as _};
 use bookclerk_plugin_host::{
     consent_request, discover_plugins, fence_plugin_key, BrokerSockets, DiscoveredPlugin,
     PluginGrantStore, SocketBroker, SocketEvent, SocketSink,
@@ -36,7 +36,7 @@ struct Recorder {
 
 #[async_trait]
 impl SocketSink for Recorder {
-    async fn deliver_socket_event(&self, event: SocketEvent) -> Result<(), String> {
+    async fn deliver_socket_event(&self, event: SocketEvent) -> Result<SocketMessageOk, String> {
         let line = match event {
             SocketEvent::Message(message) => format!(
                 "message {:?} {}",
@@ -51,7 +51,7 @@ impl SocketSink for Recorder {
         };
         self.seen.lock().unwrap().push(line);
         self.notify.notify_one();
-        Ok(())
+        Ok(SocketMessageOk::default())
     }
 }
 

@@ -32,7 +32,7 @@ use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_plugin_abi::{
     PluginError as AbiError, Result as AbiResult, SocketClosed, SocketConnectRequest, SocketFrame,
-    SocketHandler, SocketInfo, SocketMessage, Sockets,
+    SocketHandler, SocketInfo, SocketMessage, SocketMessageOk, Sockets,
 };
 use bookclerk_workerd::socket_broker::SOCKET_BROKER_ENV;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -58,11 +58,21 @@ pub enum SocketEvent {
 pub trait SocketSink: Send + Sync {
     /// Hands one event to the guest, starting it if it sleeps.
     ///
+    /// A sink that schedules the guest's event poll acts on the guest's
+    /// [`SocketMessageOk::poll_events`] itself, polling at once.
+    ///
+    /// # Returns
+    ///
+    /// The guest's reply to a message; the default for a close.
+    ///
     /// # Errors
     ///
     /// Returns the wake or delivery failure as text. The broker logs it and
     /// carries on: a socket is not closed because one delivery failed.
-    async fn deliver_socket_event(&self, event: SocketEvent) -> std::result::Result<(), String>;
+    async fn deliver_socket_event(
+        &self,
+        event: SocketEvent,
+    ) -> std::result::Result<SocketMessageOk, String>;
 }
 
 /// One request for the broker thread.
@@ -543,17 +553,19 @@ struct HostHandler {
 
 #[async_trait::async_trait(?Send)]
 impl SocketHandler for HostHandler {
-    async fn message(&self, event: SocketMessage) -> AbiResult<()> {
+    async fn message(&self, event: SocketMessage) -> AbiResult<SocketMessageOk> {
         {
             let Some(inner) = self.inner.upgrade() else {
-                return Ok(());
+                return Ok(SocketMessageOk::default());
             };
             inner.record_attachment(self.generation, &event.socket, &event.attachment);
         }
         let mut event = event;
         event.socket = guest_socket(self.generation, &event.socket);
         deliver(&self.inner, SocketEvent::Message(event)).await;
-        Ok(())
+        // The broker has no events to poll; the guest's own ask travels on
+        // the host's delivery to it (see `SocketSink`).
+        Ok(SocketMessageOk::default())
     }
 
     async fn closed(&self, event: SocketClosed) -> AbiResult<()> {
