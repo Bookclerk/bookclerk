@@ -4194,7 +4194,10 @@ async fn an_upload_job_naming_its_account_by_label_covers_its_titles() {
         let job = w.store.get_job(&job_id).await.unwrap().unwrap();
         let titles = job_titles(&w.store, HOST, &job).await.unwrap().unwrap();
         assert_eq!(
-            titles.iter().map(|b| b.uuid.as_str()).collect::<Vec<_>>(),
+            titles
+                .iter()
+                .filter_map(|t| t.book_uuid.as_deref())
+                .collect::<Vec<_>>(),
             vec![book_uuid.as_str()],
             "{selector}"
         );

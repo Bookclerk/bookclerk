@@ -36,7 +36,6 @@ use bookclerk_node_proto::{
     seal_upload_token, AcquireTarget, Body, Frame, LibraryId, PlanDestination, MAX_FRAME_BYTES,
     MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
 };
-use bookclerk_storage::StorageBackend;
 use rand::RngCore as _;
 use zeroize::Zeroize as _;
 
@@ -256,50 +255,34 @@ pub(super) async fn acquire_plan(
     };
     let download_episodes = host.state.config.read().await.library.download_episodes;
     // The same scope the closing commit checks before it completes the job.
-    let Some(books) = job_titles(library, &host.node_id, &job).await? else {
+    let Some(titles) = job_titles(library, &host.node_id, &job).await? else {
         return Ok(lost(id, job_id, fence));
     };
     let mut targets = Vec::new();
-    for book in books {
+    for title in titles {
         if targets.len() >= MAX_PLAN_TARGETS {
             break;
         }
-        // Only titles whose audio is not acquired, exactly what the closing
-        // commit waits for. A title whose audio is acquired but whose
-        // companion PDF is missing is left to an acquire on a node holding
-        // the library: a host would fetch and upload the audio again, and
-        // a missing PDF is a soft failure that never keeps a job open.
-        if !crate::jobs::acquire_job_includes_book(&book, false, download_episodes) {
+        // Only titles whose audio is not acquired on their edition, exactly
+        // what the closing commit waits for and what a local acquire
+        // visits: an edition another account's title acquired is already
+        // in the library, so no host is sent to fetch it again. A title
+        // whose audio is acquired but whose companion PDF is missing is left
+        // to an acquire on a node holding the library: a host would fetch
+        // and upload the audio again, and a missing PDF is a soft failure
+        // that never keeps a job open.
+        if !crate::jobs::acquire_job_includes_title(&title, false, download_episodes) {
             continue;
         }
-        // Another account's copy of the edition is already here: this title
-        // shares its files, as a local acquire would, rather than send the
-        // host to fetch keys that title holds.
-        let backends: Vec<(&str, &dyn StorageBackend)> = destinations
-            .iter()
-            .map(|destination| (destination.id.as_str(), destination.backend.as_ref()))
-            .collect();
-        // The host's upload names the title by its account holding; a book
-        // with no holding is not one this node can grant an upload for.
-        let Some(title) = library
-            .acquire_title(
-                &book.plugin_key,
-                &book.account_id,
-                &book.marketplace,
-                &book.product_id,
-            )
-            .await?
-        else {
+        // The host still names and seeds from the flat row while `books`
+        // exists (book model step 6); `job_titles` keeps only titles with
+        // one.
+        let Some(book_uuid) = title.book_uuid.as_deref() else {
             continue;
         };
-        let shared = bookclerk_acquire::share_acquired_sibling(library, &backends, &title).await;
-        match shared {
-            Ok(Some(_)) => continue,
-            Ok(None) => {}
-            Err(err) => {
-                tracing::warn!(error = %err, book = %book.uuid, "could not share an acquired copy of the edition");
-            }
-        }
+        let Some(book) = library.get_book_by_uuid(book_uuid).await? else {
+            continue;
+        };
         let parent = podcast_parent(library, &book).await?;
         // The host names with this library's edition ids, so it plans the
         // same keys this node grants; a failed read fails the plan rather
@@ -311,8 +294,8 @@ pub(super) async fn acquire_plan(
         };
         targets.push(AcquireTarget {
             holding_id: title.holding_id.clone(),
-            plugin_key: book.plugin_key.clone(),
-            account_id: book.account_id.clone(),
+            plugin_key: title.plugin_key.clone(),
+            account_id: title.account_id.clone(),
             book: serde_json::to_value(&book).unwrap_or_default(),
             parent: parent.map(|parent| serde_json::to_value(&parent).unwrap_or_default()),
             library_id,
@@ -421,19 +404,13 @@ pub(super) async fn upload_grant(
     let scoped = if request.holding_id.is_empty() {
         Vec::new()
     } else {
-        let book = match library.acquire_title_of_holding(request.holding_id).await? {
-            Some(title) => match title.book_uuid {
-                Some(book_uuid) => library.get_book_by_uuid(&book_uuid).await?,
-                None => None,
-            },
-            None => None,
-        };
+        let title = library.acquire_title_of_holding(request.holding_id).await?;
         // Only a title `acquire.plan` would hand out now: one whose audio
-        // is already acquired, or that the plan leaves out otherwise, is
-        // never uploaded again, whatever the host asks.
-        if let Some(book) = &book {
+        // is already acquired on its edition, or that the plan leaves out
+        // otherwise, is never uploaded again, whatever the host asks.
+        if let Some(title) = &title {
             let download_episodes = host.state.config.read().await.library.download_episodes;
-            if !crate::jobs::acquire_job_includes_book(book, false, download_episodes) {
+            if !crate::jobs::acquire_job_includes_title(title, false, download_episodes) {
                 if live_remote_job(library, &host.node_id, &job_id, fence)
                     .await?
                     .is_none()
@@ -443,6 +420,11 @@ pub(super) async fn upload_grant(
                 return Ok(error(id, "refused", "title_not_planned"));
             }
         }
+        // The keys are scoped from the flat row while `books` exists.
+        let book = match title.and_then(|title| title.book_uuid) {
+            Some(book_uuid) => library.get_book_by_uuid(&book_uuid).await?,
+            None => None,
+        };
         let destinations = match super::uploads::owner_destinations(&host.state).await {
             Ok(destinations) if !destinations.is_empty() => destinations,
             _ => return Ok(error(id, "unavailable", "no_destination")),
