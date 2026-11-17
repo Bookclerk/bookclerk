@@ -225,6 +225,9 @@ Every host applies a new revision at its next configuration wakeup. See
 
 If a sidecar file fails, Bookclerk logs it and still keeps the audio.
 
+With `fixup_metadata` on, an M4B also records which Bookclerk version
+tagged it, in the freeform item `----:app.bookclerk:TOOL`.
+
 Audible's own options (Widevine, xHE-AAC, brand trim) are on the
 [Stores](stores.md#audible) page.
 

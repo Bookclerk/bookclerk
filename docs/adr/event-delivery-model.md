@@ -1,6 +1,6 @@
 # ADR: Event delivery follows the Workers model
 
-- **Status:** Accepted (decisions 1 to 11); later phases proposed
+- **Status:** Accepted (decisions 1 to 12); later phases proposed
 - **Date:** 2026-11-11
 
 ## Context
@@ -164,15 +164,23 @@ callers await a promise, and long work is a durable job.
     staging directory; the launcher saves there when there is nothing to
     load or the stored snapshot fails to start, and marks the file ready
     once the isolate answered, and the host promotes only a ready regular
-    file. A missing or broken snapshot costs only the slow start. Python
-    guests still stay resident until a later change lets them sleep.
+    file. A missing or broken snapshot costs only the slow start.
+12. **Python guests sleep.** With a snapshot, a Python guest starts in
+    about 1.2 s on one CPU through the whole host path, against about
+    0.1 s for a native or JavaScript guest. That is slower, but a sleeping
+    plugin's start happens once per burst of work and its idle timeout
+    keeps it up through the burst, so Python integrations, storefronts and
+    the storage destinations sleep under the same rules as the others
+    (decisions 5 to 9, which this lifts the Python exclusion from). A
+    `remoteLibrary` guest still sleeps only when its databases are granted.
+    The first start of a new plugin version still takes the slow path
+    while it saves the snapshot.
 
 The following phases are proposed and get their own pull requests and
 updates to this record:
 
 - **On-demand activation for the rest.** The remaining storage guests
-  sleep too, with an idle timeout per family, and Python guests sleep
-  now that they start from a snapshot (decision 11).
+  sleep too, with an idle timeout per family.
 - **Batched delivery.** `event(batch)` and `queue(batch)` receive up to
   `max_batch_size` messages per call.
 - **Richer host-side filters.** Envelope selectors and per-instance
