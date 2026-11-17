@@ -6,10 +6,12 @@
  * exactly for the rows with `writes = true`.
  */
 import { parseLibationJson } from "./libation.js";
+import { parseOpf, renderOpf } from "./opf.js";
 import { MAX_FILE_BYTES, invalid } from "./text.js";
 /** Every dialect, by id. */
 export const DIALECTS = new Map([
     ["libation_json", { parse: parseLibationJson }],
+    ["opf", { parse: parseOpf, render: renderOpf }],
 ]);
 /**
  * Finds a dialect.
