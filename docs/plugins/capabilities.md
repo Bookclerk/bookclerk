@@ -52,7 +52,8 @@ tcp = [{ host = "api.example.com", ports = [443] }]
   including a public name that resolves to one. It is a fetch grant
   only; a TCP `host` can't be `*`. Consent screens show it as "Any public
   website". Use it only when the hosts can't be known in advance, as for
-  cover art.
+  cover art or a self-hosted server such as Audiobookshelf. A server on a
+  private address still needs the operator to add its host and CIDR.
 - The operator may add extra fetch hosts, TCP targets and CIDRs. The
   guest's `describe()` can't.
 - The default address-space policy is the public Internet only. Loopback,

@@ -27,7 +27,7 @@ fn idle_broker(files: &std::path::Path) -> SocketBroker {
         .into_iter()
         .find(|found| found.manifest.id == "sockets")
         .expect("sockets plugin");
-    SocketBroker::new(plugin, config, None)
+    SocketBroker::new(plugin, config)
 }
 
 #[tokio::test]

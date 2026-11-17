@@ -100,8 +100,7 @@ For example:
 `command`.
 
 First-party external plugins (`bookclerk-plugin-source-audible`,
-`bookclerk-plugin-source-libro`,
-`bookclerk-plugin-integration-audiobookshelf`, …) keep `publish = false`
+`bookclerk-plugin-source-libro`, …) keep `publish = false`
 until they are deliberately released; they are built and staged in CI
 only. The Echo example stays unpublished too, as a template. Workspace
 hosts may still `register()` the same adapters in-process for Rust

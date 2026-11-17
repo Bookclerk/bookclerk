@@ -488,8 +488,8 @@ impl ExecutorIdentity {
 
     /// Folds overlay-relevant host config into [`Self::configuration_revision`].
     ///
-    /// Changing a Postgres URL / D1 API origin / S3 endpoint / Audiobookshelf
-    /// URL must not reuse a session that was spawned under the old overlay.
+    /// Changing a Postgres URL / D1 API origin / S3 endpoint must not reuse a
+    /// session that was spawned under the old overlay.
     #[must_use]
     pub fn with_overlay_config(mut self, config: &Config) -> Self {
         let digest = crate::consent::host_overlay_config_digest(config);
@@ -584,7 +584,7 @@ pub struct SessionServices {
     /// jail write grant. `None` grants no output directory.
     pub local_output_root: Option<std::path::PathBuf>,
     /// Network authority from the deployed instance document: the S3
-    /// `endpoint` or the Audiobookshelf `base_url`.
+    /// `endpoint`.
     ///
     /// `Some(Some(url))` grants that host in addition to the manifest's fixed
     /// TCP list; `Some(None)` records that the document names none; `None`

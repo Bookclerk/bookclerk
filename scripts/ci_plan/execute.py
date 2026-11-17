@@ -710,6 +710,22 @@ _MODULES_DRIFT = (
 )
 
 
+def _declares_database(guest: Path) -> bool:
+    """Whether ``guest``'s ``plugin.toml`` declares a plugin database.
+
+    Args:
+        guest: The guest's directory.
+
+    Returns:
+        ``True`` when it has a ``[[databases]]`` table.
+    """
+    try:
+        manifest = tomllib.loads((guest / "plugin.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    return bool(manifest.get("databases"))
+
+
 def _workerd_guest_commands(ctx: "Context") -> list[Command]:
     """Type-check, rebuild and test every first-party workerd guest.
 
@@ -717,7 +733,11 @@ def _workerd_guest_commands(ctx: "Context") -> list[Command]:
     Each guest's shipped ``modules/`` is emitted from ``src/`` by its build;
     a committed tree that differs from a fresh build is drift. The unit tests
     of all guests run in one ``node --test`` from the repository root, so one
-    LCOV report covers them.
+    LCOV report covers them. A guest with a plugin database
+    (``[[databases]]`` in its ``plugin.toml``) tests it under every profile
+    through the SDK's ``createTestDatabase``, which spawns
+    ``bookclerk-db-testkit``, so the kit is built first when any guest has
+    one.
 
     Args:
         ctx: Paths and platform facts.
@@ -742,6 +762,10 @@ def _workerd_guest_commands(ctx: "Context") -> list[Command]:
         ]
     if not dirs:
         return cmds
+    kit_env: dict[str, str] = {}
+    if any(_declares_database(guest) for guest in dirs):
+        kit_build, kit_env = _db_testkit(ctx)
+        cmds.append(kit_build)
     report = _coverage_report("workerd-guests")
     reporters = ["--test-reporter=spec", "--test-reporter-destination=stdout"]
     if report:
@@ -765,6 +789,7 @@ def _workerd_guest_commands(ctx: "Context") -> list[Command]:
                 *tests,
             ],
             cwd=str(ctx.workspace),
+            env=kit_env,
         )
     )
     return cmds

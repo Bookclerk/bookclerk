@@ -456,9 +456,10 @@ override for them (`BOOKCLERK_SOURCE_<ID>_ENABLED`, `BOOKCLERK_OUTPUT_*`,
 `[[settings]]` of the `local` / `s3` plugins; `bookclerk config
 s3-credentials` and the `kind = s3` operator secret row are gone. The host's
 in-process `LocalFsBackend` / `S3Backend` fallbacks are gone with them. A
-network host the document names (an S3 `endpoint`, the Audiobookshelf
-`base_url`) is granted to the guest as a deployed endpoint derived from the
-document, not from TOML. Store passwords reach a guest only as the sealed
+network host the document names (an S3 `endpoint`) is granted to the
+guest as a deployed endpoint derived from the document, not from TOML.
+(Audiobookshelf's `base_url` was granted the same way until the plugin
+moved to TypeScript; it now reaches its server through its consent grant.) Store passwords reach a guest only as the sealed
 secret stored when the account is connected.
 
 Bootstrap stays in TOML and env: `[database]`, `master.key`,

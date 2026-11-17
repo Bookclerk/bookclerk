@@ -126,7 +126,7 @@ async fn the_host_broker_holds_a_socket_and_stops_when_it_closes() {
 
     let files = tempfile::tempdir().expect("files");
     let (config, plugin) = install(files.path(), port, true);
-    let broker = SocketBroker::new(plugin, config, None);
+    let broker = SocketBroker::new(plugin, config);
     let recorder = Arc::new(Recorder::default());
     let sink: Arc<dyn SocketSink> = recorder.clone();
     broker.set_sink(Arc::downgrade(&sink));
@@ -211,7 +211,7 @@ async fn a_grant_change_stops_the_broker_and_reports_its_sockets_lost() {
     let files = tempfile::tempdir().expect("files");
     let (config, plugin) = install(files.path(), port, true);
     let key = plugin.plugin_key().canonical().to_string();
-    let broker = SocketBroker::new(plugin, config, None);
+    let broker = SocketBroker::new(plugin, config);
     let recorder = Arc::new(Recorder::default());
     let sink: Arc<dyn SocketSink> = recorder.clone();
     broker.set_sink(Arc::downgrade(&sink));
@@ -281,7 +281,7 @@ async fn a_plugin_without_sockets_gets_no_broker() {
     let files = tempfile::tempdir().expect("files");
     let (config, mut plugin) = install(files.path(), 1, true);
     plugin.manifest.sockets = None;
-    let broker = SocketBroker::new(plugin, config, None);
+    let broker = SocketBroker::new(plugin, config);
     let err = broker
         .connect(SocketConnectRequest {
             url: "ws://127.0.0.1:1/".into(),
@@ -296,7 +296,7 @@ async fn a_plugin_without_sockets_gets_no_broker() {
 async fn a_grant_without_the_sockets_token_starts_no_broker() {
     let files = tempfile::tempdir().expect("files");
     let (config, plugin) = install(files.path(), 1, false);
-    let broker = SocketBroker::new(plugin, config, None);
+    let broker = SocketBroker::new(plugin, config);
     let err = broker
         .connect(SocketConnectRequest {
             url: "ws://127.0.0.1:1/".into(),
