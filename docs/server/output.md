@@ -41,6 +41,19 @@ bookclerk plugins config set local root /data/Audiobooks
 bookclerk plugins config get local
 ```
 
+Bookclerk moves, renames and checks files in this folder directly:
+
+- A move is a rename, so a reader never sees a half-moved file. The
+  `.bookclerk-meta.json` sidecar moves with its file.
+- A move that must not replace a file links it to the new name first,
+  which fails if a file is already there. On a file system without hard
+  links (FAT or exFAT, for example) it checks for the file just before the
+  copy instead.
+- A write that must not replace a file uses the same link step. A write
+  that must replace only the file Bookclerk last read checks it just before
+  the rename. Bookclerk's own writes cannot slip into that moment, but a
+  program outside Bookclerk writing the same file at that instant can.
+
 ## S3 and MinIO
 
 The `s3` plugin writes to an S3 bucket or any S3-compatible service.

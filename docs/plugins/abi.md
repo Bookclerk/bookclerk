@@ -1527,6 +1527,12 @@ The rules every operation follows:
   segments are dropped and `\` is read as `/`, because a nested object could overwrite one that
   has not moved yet.
 
+The platform `local` destination declares every operation except
+`storage.changes`: moves are renames, `noOverwrite` and `ifNoneMatch`
+publish through a hard link that fails when the target exists, and
+`ifMatch` is checked just before the rename (see
+[Local filesystem](../server/output.md#local-filesystem)).
+
 The host checks every reply against the request before acting on it: the
 outcomes must name the keys it sent, in order, a prefix page may only name
 keys under the prefix and must advance its cursor, and a `changes` page
