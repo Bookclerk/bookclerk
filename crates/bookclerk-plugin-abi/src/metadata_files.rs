@@ -188,9 +188,12 @@ pub fn is_plain_file_name(name: &str) -> bool {
             .any(|c| c == '/' || c == '\\' || c.is_control())
 }
 
-/// Checks one text value: non-empty when `required`, within `max` bytes,
-/// and free of control characters other than tab and line breaks when
-/// `multiline`.
+/// Checks one text value: within `max` bytes and free of control
+/// characters, except tab and line breaks when `multiline`.
+///
+/// # Errors
+///
+/// [`MetadataFileError::BadText`] naming `what` when the value breaks a rule.
 fn check_text(
     value: &str,
     max: usize,
@@ -206,6 +209,11 @@ fn check_text(
 
 /// Checks a list of labels: at most the list cap, each non-blank and a
 /// single line within the text cap.
+///
+/// # Errors
+///
+/// [`MetadataFileError::TooMany`] for a long list, or
+/// [`MetadataFileError::BadText`] for a bad entry.
 fn check_labels(values: &[String], what: &'static str) -> Result<(), MetadataFileError> {
     if values.len() > cap(MAX_METADATA_FILE_LIST_ENTRIES) {
         return Err(MetadataFileError::TooMany(what));
@@ -217,6 +225,10 @@ fn check_labels(values: &[String], what: &'static str) -> Result<(), MetadataFil
 }
 
 /// Checks a value that must be a non-blank single line within the text cap.
+///
+/// # Errors
+///
+/// [`MetadataFileError::BadText`] naming `what` when the value breaks a rule.
 fn check_required(value: &str, what: &'static str) -> Result<(), MetadataFileError> {
     if value.trim().is_empty() {
         return Err(MetadataFileError::BadText(what));
@@ -224,7 +236,12 @@ fn check_required(value: &str, what: &'static str) -> Result<(), MetadataFileErr
     check_text(value, cap(MAX_METADATA_FILE_TEXT_BYTES), false, what)
 }
 
-/// Checks an optional single-line value within the text cap.
+/// Checks an optional single-line value within the text cap; `None` passes.
+///
+/// # Errors
+///
+/// [`MetadataFileError::BadText`] naming `what` when a present value breaks
+/// a rule.
 fn check_optional(value: Option<&String>, what: &'static str) -> Result<(), MetadataFileError> {
     value.map_or(Ok(()), |v| check_required(v, what))
 }
@@ -268,6 +285,10 @@ pub fn is_partial_date(date: &str) -> bool {
 }
 
 /// Checks that a field list names each field at most once.
+///
+/// # Errors
+///
+/// [`MetadataFileError::DuplicateField`] with the first repeated field.
 fn check_unique_fields(fields: &[MetadataField]) -> Result<(), MetadataFileError> {
     let mut seen = HashSet::new();
     for field in fields {
