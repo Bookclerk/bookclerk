@@ -7,10 +7,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 
-import type { MetadataField, MetadataFileRecord } from "@bookclerk/plugin-sdk/workerd";
+import type { MetadataFileRecord } from "@bookclerk/plugin-sdk/workerd";
 import { htmlToText } from "../src/libation.ts";
-import { DIALECTS, parseFile, renderFile } from "../src/dialects.ts";
-import { splitNames } from "../src/plain-text.ts";
+import { DIALECTS, parseFile, renderFile, type Dialect } from "../src/dialects.ts";
 import {
   DialectFailure,
   MAX_DESCRIPTION_BYTES,
@@ -20,6 +19,7 @@ import {
   RecordBuilder,
   cutBytes,
   decodeText,
+  encodeFile,
   isPartialDate,
   labels,
   line,
@@ -92,6 +92,17 @@ describe("manifest", () => {
   });
 });
 
+/** A stand-in writable dialect, for the routing that no shipped dialect uses yet. */
+const ECHO: ReadonlyMap<string, Dialect> = new Map<string, Dialect>([
+  [
+    "echo",
+    {
+      parse: () => record(),
+      render: (_existing, r, fields) => encodeFile(`${r.title ?? ""} ${fields.join(",")}`),
+    },
+  ],
+]);
+
 describe("requests", () => {
   test("refuse an unknown dialect", () => {
     refuses(() => parseFile("opf", utf8("")), /unknown dialect `opf`/);
@@ -104,13 +115,16 @@ describe("requests", () => {
 
   test("refuse files over the cap", () => {
     const big = new Uint8Array(MAX_FILE_BYTES + 1);
-    refuses(() => parseFile("desc_txt", big), /over the 262144 byte cap/);
-    refuses(() => renderFile("desc_txt", big, record(), []), /existing file is over/);
-    const description = "x".repeat(MAX_FILE_BYTES);
-    refuses(
-      () => renderFile("desc_txt", utf8(""), record({ description }), ["description"]),
-      /rendered file is 262145 bytes/,
-    );
+    refuses(() => parseFile("libation_json", big), /over the 262144 byte cap/);
+    refuses(() => renderFile("echo", big, record(), [], ECHO), /existing file is over/);
+    refuses(() => encodeFile("x".repeat(MAX_FILE_BYTES + 1)), /rendered file is 262145 bytes/);
+    assert.equal(encodeFile("é").length, 2);
+  });
+
+  test("route a render to the dialect's writer", () => {
+    const out = renderFile("echo", utf8("old"), record({ title: "T" }), ["title"], ECHO);
+    assert.equal(str(out), "T title");
+    assert.deepEqual(parseFile("echo", utf8("x"), ECHO).present, []);
   });
 });
 
@@ -192,146 +206,6 @@ describe("cleaning", () => {
   });
 });
 
-describe("abs_metadata_json", () => {
-  test("reads a file Audiobookshelf wrote", () => {
-    const parsed = parseFile("abs_metadata_json", seed("abs_metadata_json/seed_00.json"));
-    assert.equal(parsed.title, "The Way of Kings");
-    assert.equal(parsed.subtitle, "Book One of the Stormlight Archive");
-    assert.equal(parsed.publishedAt, "2010-08-31");
-    assert.equal(parsed.abridgement, "unabridged");
-    assert.deepEqual(parsed.seriesEntries, [
-      { name: "The Stormlight Archive", position: "1" },
-      { name: "Cosmere", position: "2.5" },
-    ]);
-    assert.deepEqual(
-      parsed.credits.map((c) => `${c.role}:${c.name}`),
-      ["author:Brandon Sanderson", "narrator:Michael Kramer", "narrator:Kate Reading"],
-    );
-    assert.deepEqual(parsed.identifiers, [
-      { scheme: "isbn", value: "9781427209221" },
-      { scheme: "asin", value: "B003P2WO5E" },
-    ]);
-    assert.deepEqual(parsed.chapters[1], {
-      title: "Chapter 1: The Boy Who Lived",
-      startMs: 1210500,
-      lengthMs: 1810750,
-      depth: 0,
-    });
-  });
-
-  test("lets a legacy nested value win, as Audiobookshelf does", () => {
-    const parsed = parseFile("abs_metadata_json", seed("abs_metadata_json/seed_01.json"));
-    assert.equal(parsed.title, "Legacy Title");
-    assert.equal(parsed.abridgement, "abridged");
-    assert.equal(parsed.publishedAt, "1999");
-  });
-
-  test("states null and empty keys without values", () => {
-    const parsed = parseFile("abs_metadata_json", seed("abs_metadata_json/seed_02.json"));
-    assert.ok(parsed.present.includes("subtitle"));
-    assert.equal(parsed.subtitle, undefined);
-    assert.deepEqual(parsed.creditRoles, ["author", "narrator"]);
-    assert.deepEqual(parsed.credits, []);
-    assert.ok(!parsed.present.includes("chapters"));
-  });
-
-  test("refuses a file that is not a JSON object", () => {
-    refuses(() => parseFile("abs_metadata_json", utf8("[1]")), /not a JSON object/);
-    refuses(() => parseFile("abs_metadata_json", utf8("{")), /not valid JSON/);
-    refuses(
-      () => renderFile("abs_metadata_json", utf8("null"), record(), ["title"]),
-      /not a JSON object/,
-    );
-  });
-
-  test("renders into the existing file and keeps unknown keys", () => {
-    const fields: MetadataField[] = [
-      "title",
-      "subtitle",
-      "publishedAt",
-      "credits",
-      "series",
-      "abridgement",
-      "identifiers",
-      "genres",
-      "chapters",
-    ];
-    const out = renderFile(
-      "abs_metadata_json",
-      seed("abs_metadata_json/seed_01.json"),
-      record({
-        title: "New",
-        publishedAt: "2001-02",
-        credits: [{ name: "N", role: "narrator", level: "roleDefault" }],
-        creditRoles: ["narrator"],
-        seriesEntries: [{ name: "S", position: "3" }, { name: "T" }],
-        abridgement: "unabridged",
-        identifiers: [
-          { scheme: "openLibraryEdition", value: "OL1M" },
-          { scheme: "asin", value: "B1" },
-        ],
-        chapters: [
-          { title: "One", startMs: 0, depth: 0 },
-          { title: "Two", startMs: 1500, lengthMs: 500, depth: 0 },
-        ],
-      }),
-      fields,
-    );
-    const file = JSON.parse(str(out)) as Record<string, unknown>;
-    assert.equal(file["title"], "New");
-    assert.ok(!("subtitle" in file));
-    assert.equal(file["publishedYear"], "2001");
-    assert.equal(file["publishedDate"], "2001-02");
-    assert.deepEqual(file["narrators"], ["N"]);
-    assert.deepEqual(file["series"], ["S #3", "T"]);
-    assert.equal(file["abridged"], false);
-    assert.equal(file["asin"], "B1");
-    assert.ok(!("isbn" in file));
-    assert.ok(!("genres" in file));
-    assert.deepEqual(file["chapters"], [
-      { id: 0, start: 0, end: 1.5, title: "One" },
-      { id: 1, start: 1.5, end: 2, title: "Two" },
-    ]);
-    assert.deepEqual(file["customKey"], { kept: [1, 2, 3] });
-    // The nested values the new ones replace are gone; the author role was
-    // not stated, so the nested authors stay.
-    assert.deepEqual(file["metadata"], { authors: ["Old Author"] });
-    assert.ok(str(out).endsWith("}\n"));
-    assert.ok(str(out).startsWith('{\n  "tags"'));
-
-    const reread = parseFile("abs_metadata_json", out);
-    assert.equal(reread.title, "New");
-    assert.equal(reread.publishedAt, "2001-02");
-    assert.equal(reread.abridgement, "unabridged");
-  });
-
-  test("creates a file and removes values", () => {
-    const created = renderFile(
-      "abs_metadata_json",
-      new Uint8Array(),
-      record({ title: "T", publishedAt: "1999", abridgement: "abridged" }),
-      ["title", "publishedAt", "abridgement", "tags"],
-    );
-    assert.deepEqual(JSON.parse(str(created)), {
-      title: "T",
-      publishedYear: "1999",
-      abridged: true,
-    });
-    const removed = renderFile("abs_metadata_json", created, record(), [
-      "title",
-      "publishedAt",
-      "abridgement",
-    ]);
-    assert.equal(str(removed), "{}\n");
-    // Fields the format does not carry change nothing.
-    const untouched = renderFile("abs_metadata_json", created, record({ durationMs: 5 }), [
-      "duration",
-      "expressionKind",
-    ]);
-    assert.deepEqual(JSON.parse(str(untouched)), JSON.parse(str(created)));
-  });
-});
-
 describe("libation_json", () => {
   test("reads the store's catalog record", () => {
     const parsed = parseFile("libation_json", seed("libation_json/seed_00.json"));
@@ -375,6 +249,11 @@ describe("libation_json", () => {
     assert.equal(parsed.abridgement, "unknown");
   });
 
+  test("refuses a file that is not a JSON object", () => {
+    refuses(() => parseFile("libation_json", utf8("[1]")), /not a JSON object/);
+    refuses(() => parseFile("libation_json", utf8("{")), /not valid JSON/);
+  });
+
   test("turns summary HTML into text", () => {
     assert.equal(htmlToText("a<br>b<BR />c</p>d"), "a\nb\nc\n\nd");
     assert.equal(htmlToText("&#65;&#x42;&#0;&#xD800;&amp;&unknown;"), "AB��&&unknown;");
@@ -382,154 +261,7 @@ describe("libation_json", () => {
   });
 });
 
-describe("abs_nfo", () => {
-  test("reads a release NFO", () => {
-    const parsed = parseFile("abs_nfo", seed("abs_nfo/seed_00.nfo"));
-    assert.equal(parsed.title, "The Hobbit");
-    assert.equal(parsed.subtitle, "Or There and Back Again");
-    assert.equal(parsed.publishedAt, "2020-09-20");
-    assert.deepEqual(parsed.seriesEntries, [{ name: "Middle-earth", position: "0" }]);
-    assert.deepEqual(parsed.genres, ["Fantasy", "Classics"]);
-    assert.equal(parsed.abridgement, "unabridged");
-    assert.equal(
-      parsed.description,
-      "In a hole in the ground there lived a hobbit.\n\nNot a nasty, dirty, wet hole.",
-    );
-  });
-
-  test("reads copyright years and Windows line endings", () => {
-    const parsed = parseFile("abs_nfo", seed("abs_nfo/seed_01.nfo"));
-    assert.equal(parsed.title, "Alone");
-    assert.ok(parsed.present.includes("subtitle"));
-    assert.equal(parsed.publishedAt, "2001");
-    assert.equal(parsed.abridgement, "unabridged");
-    assert.deepEqual(parsed.identifiers, [{ scheme: "isbn", value: "9780000000002" }]);
-    assert.deepEqual(parsed.tags, ["one", "two"]);
-  });
-
-  test("reads the abridgement answers Audiobookshelf reads", () => {
-    const abridged = (text: string): string => parseFile("abs_nfo", utf8(text)).abridgement;
-    assert.equal(abridged("Unabridged: No"), "abridged");
-    assert.equal(abridged("Abridged: Yes"), "abridged");
-    assert.equal(abridged("Abridged: no"), "unabridged");
-    assert.equal(abridged("Unabridged:"), "unknown");
-  });
-
-  test("states nothing for a file without keys or an empty value", () => {
-    assert.deepEqual(parseFile("abs_nfo", seed("abs_nfo/seed_02.nfo")).present, []);
-    assert.deepEqual(parseFile("abs_nfo", utf8("Author:\nBook Description\n===\n")).present, []);
-  });
-
-  test("edits lines in place and keeps everything else", () => {
-    const out = renderFile(
-      "abs_nfo",
-      seed("abs_nfo/seed_00.nfo"),
-      record({
-        subtitle: "There and Back",
-        publisher: "New House",
-        credits: [{ name: "A", role: "author", level: "roleDefault" }],
-        creditRoles: ["author"],
-        tags: ["t1", "t2"],
-        description: "Short.",
-      }),
-      ["subtitle", "publisher", "language", "credits", "tags", "description", "publishedAt"],
-    );
-    const text = str(out);
-    assert.match(text, /^ Title: {18}The Hobbit: There and Back$/m);
-    assert.match(text, /^ Publisher: {14}New House$/m);
-    assert.match(text, /^ Author: {17}A$/m);
-    // The narrator role was not stated, so its line stays.
-    assert.match(text, /^ Read By: {16}Andy Serkis$/m);
-    assert.doesNotMatch(text, /Language/);
-    assert.doesNotMatch(text, /Copyright|Audible\.com Release/);
-    assert.match(text, / Bitrate: {16}64 kbps\nTags: t1, t2\n\nBook Description\n=+\nShort\.\n$/);
-  });
-
-  test("creates a file, keeps line endings and removes sections", () => {
-    const created = renderFile(
-      "abs_nfo",
-      new Uint8Array(),
-      record({ title: "T", abridgement: "abridged", description: "D" }),
-      ["title", "abridgement", "description"],
-    );
-    assert.equal(
-      str(created),
-      "Title: T\nUnabridged: No\n\nBook Description\n================\nD\n",
-    );
-    const crlf = renderFile(
-      "abs_nfo",
-      seed("abs_nfo/seed_01.nfo"),
-      record({ seriesEntries: [{ name: "S" }], abridgement: "unabridged" }),
-      ["series", "abridgement", "title", "subtitle"],
-    );
-    assert.equal(
-      str(crlf),
-      "Narrator: Jane Doe, John Roe\r\nBook Copyright: (c) 2001 Someone\r\nUnabridged: Yes\r\n" +
-        "ISBN-13: 9780000000002\r\nTags: one,two, ,two\r\nSeries Name: S\r\n",
-    );
-    const emptied = renderFile("abs_nfo", created, record(), [
-      "title",
-      "abridgement",
-      "description",
-    ]);
-    assert.equal(emptied.length, 0);
-  });
-
-  test("puts new keys after the last key line, or after the text", () => {
-    const out = renderFile("abs_nfo", utf8("Intro text\n\n"), record({ language: "en" }), [
-      "language",
-    ]);
-    assert.equal(str(out), "Intro text\nLanguage: en\n\n");
-  });
-});
-
-describe("desc_txt and reader_txt", () => {
-  test("read and write a description", () => {
-    const parsed = parseFile("desc_txt", seed("desc_txt/seed_00.txt"));
-    assert.equal(parsed.description, "A boy discovers he is a wizard.\n\nHe goes to school.");
-    assert.deepEqual(parseFile("desc_txt", seed("desc_txt/seed_01.txt")).present, ["description"]);
-    const out = renderFile("desc_txt", utf8("old"), record({ description: "new" }), [
-      "description",
-    ]);
-    assert.equal(str(out), "new\n");
-    assert.equal(renderFile("desc_txt", utf8("old"), record(), ["description"]).length, 0);
-    assert.equal(str(renderFile("desc_txt", utf8("old"), record(), [])), "old");
-  });
-
-  test("read narrators from the first line", () => {
-    assert.deepEqual(splitNames("A & B; C and D,E"), ["A", "B", "C", "D", "E"]);
-    assert.deepEqual(splitNames("Sandy Anderson"), ["Sandy Anderson"]);
-    const parsed = parseFile("reader_txt", seed("reader_txt/seed_00.txt"));
-    assert.deepEqual(
-      parsed.credits.map((c) => c.name),
-      ["Jim Dale", "Stephen Fry"],
-    );
-    const latin1 = parseFile("reader_txt", seed("reader_txt/seed_02.txt"));
-    assert.equal(latin1.credits[0]?.name, "étienne Café");
-    assert.deepEqual(parseFile("reader_txt", utf8("")).creditRoles, ["narrator"]);
-  });
-
-  test("write narrators over the first line only", () => {
-    const narrators = record({
-      credits: [
-        { name: "X", role: "narrator", level: "roleDefault" },
-        { name: "Y", role: "author", level: "roleDefault" },
-        { name: "Z", role: "narrator", level: "roleDefault" },
-      ],
-      creditRoles: ["narrator", "author"],
-    });
-    const out = renderFile("reader_txt", seed("reader_txt/seed_00.txt"), narrators, ["credits"]);
-    assert.equal(str(out), "X, Z\nsecond line kept\n");
-    assert.equal(str(renderFile("reader_txt", utf8(""), narrators, ["credits"])), "X, Z\n");
-    const nobody = record({ creditRoles: ["narrator"] });
-    assert.equal(renderFile("reader_txt", utf8("A\n"), nobody, ["credits"]).length, 0);
-    assert.equal(str(renderFile("reader_txt", utf8("A\nB"), nobody, ["credits"])), "\nB");
-    const unknown = record({ creditRoles: ["author"] });
-    assert.equal(str(renderFile("reader_txt", utf8("A\n"), unknown, ["credits"])), "A\n");
-  });
-});
-
-describe("values a format cannot hold", () => {
+describe("credit roles", () => {
   test("a credit role cut off by the list cap stays unknown", () => {
     const authors = Array.from({ length: MAX_LIST_ENTRIES }, (_, i) => `A${i}`);
     const parsed = new RecordBuilder()
@@ -543,88 +275,5 @@ describe("values a format cannot hold", () => {
     const empty = new RecordBuilder().credits("narrator", []).build();
     assert.deepEqual(empty.creditRoles, ["narrator"]);
     assert.deepEqual(empty.present, ["credits"]);
-  });
-
-  test("metadata.json refuses series that would not read back", () => {
-    const write = (name: string, position?: string): Uint8Array =>
-      renderFile(
-        "abs_metadata_json",
-        new Uint8Array(),
-        record({ seriesEntries: [{ name, ...(position === undefined ? {} : { position }) }] }),
-        ["series"],
-      );
-    assert.deepEqual(JSON.parse(str(write("S", "2.5")))["series"], ["S #2.5"]);
-    assert.deepEqual(JSON.parse(str(write("S #1", "2")))["series"], ["S #1 #2"]);
-    refuses(() => write("S", "Part 2"), /cannot be written to metadata.json/);
-    refuses(() => write("S", "#2"), /cannot be written/);
-    refuses(() => write("Book #1"), /cannot be written/);
-  });
-
-  test("metadata.json refuses a number a re-write would change", () => {
-    const render = (text: string): Uint8Array =>
-      renderFile("abs_metadata_json", utf8(text), record({ title: "T" }), ["title"]);
-    refuses(() => render('{"id": 9007199254740993}'), /9007199254740993, which cannot be kept/);
-    refuses(() => render('{"x": [1e400]}'), /cannot be kept exactly/);
-    const kept = render(
-      '{"n": -12, "f": 1.5e3, "s": "9007199254740993 \\" 1e400", "big": 9007199254740991}',
-    );
-    assert.deepEqual(JSON.parse(str(kept)), {
-      n: -12,
-      f: 1500,
-      s: '9007199254740993 " 1e400',
-      big: 9007199254740991,
-      title: "T",
-    });
-  });
-
-  test("a compact file can render past the size cap", () => {
-    const existing = utf8(`{"x":"${"a".repeat(MAX_FILE_BYTES - 16)}","y":[1]}`);
-    assert.ok(existing.length <= MAX_FILE_BYTES);
-    assert.equal(parseFile("abs_metadata_json", existing).present.length, 0);
-    refuses(() => renderFile("abs_metadata_json", existing, record(), []), /rendered file is/);
-  });
-
-  test("an NFO refuses list entries with commas and titles with colons", () => {
-    const authors = record({
-      credits: [{ name: "King, Jr.", role: "author", level: "roleDefault" }],
-      creditRoles: ["author"],
-    });
-    refuses(() => renderFile("abs_nfo", new Uint8Array(), authors, ["credits"]), /holds a comma/);
-    refuses(
-      () => renderFile("abs_nfo", new Uint8Array(), record({ genres: ["a,b"] }), ["genres"]),
-      /holds a comma/,
-    );
-    refuses(
-      () => renderFile("abs_nfo", new Uint8Array(), record({ title: "A: B" }), ["title"]),
-      /holds a colon/,
-    );
-    // A kept title is the file's own line, colon and all.
-    const out = renderFile("abs_nfo", utf8("Title: A: B\n"), record({ subtitle: "C" }), [
-      "subtitle",
-    ]);
-    assert.equal(str(out), "Title: A: C\n");
-  });
-
-  test("an NFO keeps lone CR line endings", () => {
-    const out = renderFile(
-      "abs_nfo",
-      utf8("Title: Old\rCustom: Keep\r"),
-      record({ title: "New" }),
-      ["title"],
-    );
-    assert.equal(str(out), "Title: New\rCustom: Keep\r");
-  });
-
-  test("reader.txt refuses names it would split", () => {
-    for (const name of ["Doe, Jane", "A & B", "Tom and Jerry", "X;Y", "and"]) {
-      const narrators = record({
-        credits: [{ name, role: "narrator", level: "roleDefault" }],
-        creditRoles: ["narrator"],
-      });
-      refuses(
-        () => renderFile("reader_txt", utf8(""), narrators, ["credits"]),
-        /holds a separator/,
-      );
-    }
   });
 });

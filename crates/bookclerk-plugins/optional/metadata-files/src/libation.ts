@@ -16,8 +16,7 @@
  */
 
 import type { MetadataChapter, MetadataFileRecord } from "@bookclerk/plugin-sdk/workerd";
-import { parseObject } from "./abs-json.ts";
-import { MAX_CHAPTERS, RecordBuilder, chapterTitle, wholeMs } from "./text.ts";
+import { MAX_CHAPTERS, RecordBuilder, chapterTitle, decodeUtf8, invalid, wholeMs } from "./text.ts";
 
 /** A parsed JSON object. */
 type JsonObject = Record<string, unknown>;
@@ -33,6 +32,24 @@ const MAX_DEPTH = 8;
  */
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Parses the file into its top-level object.
+ *
+ * @param bytes - The whole file.
+ * @returns The object.
+ * @throws {DialectFailure} When the file is not a JSON object.
+ */
+function parseObject(bytes: Uint8Array): JsonObject {
+  let value: unknown;
+  try {
+    value = JSON.parse(decodeUtf8(bytes));
+  } catch {
+    throw invalid("Libation metadata is not valid JSON");
+  }
+  if (!isObject(value)) throw invalid("Libation metadata is not a JSON object");
+  return value;
 }
 
 /**
@@ -120,7 +137,7 @@ function walkChapters(list: unknown, depth: number, out: MetadataChapter[]): voi
  * @throws {DialectFailure} When the file is not a JSON object.
  */
 export function parseLibationJson(bytes: Uint8Array): MetadataFileRecord {
-  const file = parseObject(bytes, "Libation metadata");
+  const file = parseObject(bytes);
   const wrapped = isObject(file["product"]) ? file["product"] : file["item"];
   const item = isObject(wrapped) ? wrapped : file;
   const has = (key: string): boolean => Object.hasOwn(item, key);

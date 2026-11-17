@@ -532,25 +532,3 @@ export class RecordBuilder {
     return this.record;
   }
 }
-
-/**
- * Names credited in one role, in billing order.
- *
- * @param record - The record a render request carries.
- * @param role - The role.
- * @returns The names.
- */
-export function namesIn(record: MetadataFileRecord, role: CreditRole): string[] {
-  return record.credits.filter((credit) => credit.role === role).map((credit) => credit.name);
-}
-
-/**
- * The first identifier of one scheme.
- *
- * @param record - The record a render request carries.
- * @param scheme - `isbn` or `asin`.
- * @returns Its value, or `undefined`.
- */
-export function firstId(record: MetadataFileRecord, scheme: "isbn" | "asin"): string | undefined {
-  return record.identifiers.find((id) => id.scheme === scheme)?.value;
-}

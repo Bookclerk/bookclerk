@@ -1141,30 +1141,27 @@ pick another run.
 ### Metadata file dialect guest
 
 The `metadata_files` guest reads sidecar files from storage the host does
-not control, and rewrites them in place. Its `test/fuzz.test.ts` replays
-one corpus per dialect under `fuzz/<dialect id>/` and runs seeded byte and
-text mutations, spliced across every corpus, in `npm test` (the
-`workerd_guests` check); `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another
-run.
+not control. Its `test/fuzz.test.ts` replays one corpus per dialect under
+`fuzz/<dialect id>/` and runs seeded byte and text mutations, spliced
+across every corpus, in `npm test` (the `workerd_guests` check);
+`FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
 
 - **Parsing** (`parseFile` in
   `crates/bookclerk-plugins/optional/metadata-files/src/dialects.ts`, for
-  `abs_metadata_json`, `libation_json`, `abs_nfo`, `desc_txt` and
-  `reader_txt`). Oracle, written from the ABI's record rules
+  `libation_json`). Oracle, written from the ABI's record rules
   (`validate_metadata_file_record` and `check_record_against_dialect`)
   and the dialect's manifest row: a file is refused only with
-  `invalid_params`, and otherwise the record passes every rule the host
+  `invalid_params`. Otherwise the record passes every rule the host
   applies, states only the row's fields and credit roles, and is the same
   on a second parse.
-- **Rendering** (`renderFile`) over every mutated file as the existing
-  file, with a random record and field list. Oracle: a refusal only for a
-  file `parse` also refuses, an answer that would pass the size cap, or a
-  `metadata.json` number a re-write would change. Otherwise the answer is
-  within `MAX_METADATA_FILE_BYTES`, and a re-parse passes the same rules,
-  reads back each field it was asked to write as far as the format carries
-  it, and reads every other field (and every credit role the request does
-  not state) as the existing file did. `reader.txt` keeps its lines after
-  the first.
+- **Rendering** (`renderFile`), for every row with `writes = true`, over
+  every mutated file as the existing file, with a random record and field
+  list. No dialect in this plugin writes yet, so this part runs once one
+  does. Oracle: a refusal only for a file `parse` also refuses or an
+  answer that would pass the size cap. Otherwise the answer is within
+  `MAX_METADATA_FILE_BYTES`, and a re-parse passes the same rules, reads
+  back each field it was asked to write, and reads every other field (and
+  every credit role the request does not state) as the existing file did.
 
 ### Egress bridge User-Agent rule
 

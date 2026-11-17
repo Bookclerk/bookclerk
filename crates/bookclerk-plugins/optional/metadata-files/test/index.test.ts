@@ -114,26 +114,16 @@ test("health is always ready", async () => {
 
 test("parse routes to the dialect", async () => {
   const record = await files.parse({
-    dialect: "desc_txt",
-    fileName: "desc.txt",
-    bytes: utf8("Hi"),
+    dialect: "libation_json",
+    fileName: "Book.metadata.json",
+    bytes: utf8('{"title":"Hi"}'),
   });
-  assert.equal(record.description, "Hi");
-});
-
-test("render routes to the dialect", async () => {
-  const bytes = await files.render({
-    dialect: "desc_txt",
-    record: { ...empty(), present: ["description"], description: "New" },
-    fields: ["description"],
-    existing: utf8("Old"),
-  });
-  assert.equal(new TextDecoder().decode(bytes), "New\n");
+  assert.equal(record.title, "Hi");
 });
 
 test("a refused file or request becomes invalid_params", async () => {
   await invalidParams(
-    files.parse({ dialect: "abs_metadata_json", fileName: "metadata.json", bytes: utf8("[") }),
+    files.parse({ dialect: "libation_json", fileName: "a.metadata.json", bytes: utf8("[") }),
     /not valid JSON/,
   );
   await invalidParams(

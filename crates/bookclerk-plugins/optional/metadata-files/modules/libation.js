@@ -14,8 +14,7 @@
  *
  * The format is read-only: it is the store's record, not the library's.
  */
-import { parseObject } from "./abs-json.js";
-import { MAX_CHAPTERS, RecordBuilder, chapterTitle, wholeMs } from "./text.js";
+import { MAX_CHAPTERS, RecordBuilder, chapterTitle, decodeUtf8, invalid, wholeMs } from "./text.js";
 /** Deepest chapter nesting followed; deeper chapters are left out. */
 const MAX_DEPTH = 8;
 /**
@@ -26,6 +25,25 @@ const MAX_DEPTH = 8;
  */
 function isObject(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+/**
+ * Parses the file into its top-level object.
+ *
+ * @param bytes - The whole file.
+ * @returns The object.
+ * @throws {DialectFailure} When the file is not a JSON object.
+ */
+function parseObject(bytes) {
+    let value;
+    try {
+        value = JSON.parse(decodeUtf8(bytes));
+    }
+    catch {
+        throw invalid("Libation metadata is not valid JSON");
+    }
+    if (!isObject(value))
+        throw invalid("Libation metadata is not a JSON object");
+    return value;
 }
 /**
  * The entries of a JSON array that are objects.
@@ -110,7 +128,7 @@ function walkChapters(list, depth, out) {
  * @throws {DialectFailure} When the file is not a JSON object.
  */
 export function parseLibationJson(bytes) {
-    const file = parseObject(bytes, "Libation metadata");
+    const file = parseObject(bytes);
     const wrapped = isObject(file["product"]) ? file["product"] : file["item"];
     const item = isObject(wrapped) ? wrapped : file;
     const has = (key) => Object.hasOwn(item, key);

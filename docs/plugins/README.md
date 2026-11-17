@@ -357,7 +357,7 @@ Audible, Libro.fm, Chirp, GraphicAudio and Audiobookshelf ship as
   (fail closed).
 
 The Open Library and Audnexus metadata providers, the `covers`
-fetcher and the `metadata_files` dialects are first-party **workerd
+fetcher and the `metadata_files` reader are first-party **workerd
 TypeScript** guests in the same tree
 (`crates/bookclerk-plugins/optional/metadata-openlibrary`,
 `metadata-audnexus`, `covers` and `metadata-files`). They have no Cargo package:
