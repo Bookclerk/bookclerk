@@ -1,6 +1,6 @@
 # ADR: Event delivery follows the Workers model
 
-- **Status:** Accepted (decisions 1 to 10); later phases proposed
+- **Status:** Accepted (decisions 1 to 11); later phases proposed
 - **Date:** 2026-11-11
 
 ## Context
@@ -150,13 +150,27 @@ callers await a promise, and long work is a durable job.
     scheduled poll stays as the fallback that catches anything a closed
     socket missed. Asks that arrive while a poll runs fold into one more
     poll; an ask with no poll running is dropped.
+11. **Python start-up snapshots.** A Python isolate took about 4 s to
+    start on one CPU, too slow to sleep. workerd can save the isolate's
+    memory after Pyodide loaded and the plugin imported its modules (a
+    dedicated snapshot) and start later isolates from it: measured on the
+    echo plugin with the Python SDK, about 0.6 s on one CPU (a snapshot of
+    Pyodide alone, without the plugin's imports, gave about 1.9 s). The
+    host keeps one dedicated snapshot per installed plugin version, keyed
+    by the workerd release and the install's files, in host-owned plugin
+    state. The guest's jail reads only that file and writes only a fresh
+    staging directory; the launcher saves there when there is nothing to
+    load or the stored snapshot fails to start, and marks the file ready
+    once the isolate answered, and the host promotes only a ready regular
+    file. A missing or broken snapshot costs only the slow start. Python
+    guests still stay resident until a later change lets them sleep.
 
 The following phases are proposed and get their own pull requests and
 updates to this record:
 
 - **On-demand activation for the rest.** The remaining storage guests
-  sleep too, with an idle timeout per family. Python guests need a
-  faster start (snapshots or prewarming) before they can.
+  sleep too, with an idle timeout per family, and Python guests sleep
+  now that they start from a snapshot (decision 11).
 - **Batched delivery.** `event(batch)` and `queue(batch)` receive up to
   `max_batch_size` messages per call.
 - **Richer host-side filters.** Envelope selectors and per-instance

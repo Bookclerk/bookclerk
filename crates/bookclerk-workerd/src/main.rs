@@ -43,6 +43,7 @@ use bookclerk_workerd::ensure::ensure_workerd;
 use bookclerk_workerd::generate_bridge_token;
 use bookclerk_workerd::grant::OperatorGrantEnv;
 use bookclerk_workerd::pin::{binary_name, WORKERD_RELEASE_TAG};
+use bookclerk_workerd::python_snapshot::{self, SnapshotStart};
 use tokio::process::Child;
 
 /// Deletes a per-session workerd state directory when the isolate function returns.
@@ -299,8 +300,6 @@ async fn run_isolate(
     let _state_cleanup = RemoveDirOnDrop(state_dir.clone());
     let bridge_token = generate_bridge_token();
 
-    let (listen, rpc_listener) = bridge_rpc_socket()?;
-
     #[cfg(unix)]
     let (granted_addr, granted_unix) = {
         let (addr, listener) = bookclerk_workerd::unix_bind::bind_granted(&state_dir)
@@ -315,24 +314,60 @@ async fn run_isolate(
         (format!("127.0.0.1:{port}"), Some(listener))
     };
 
-    let generated = config::materialize(
-        root,
-        manifest,
-        egress,
-        limits,
-        listen,
-        Some(granted_addr.as_str()),
-        &bridge_token,
-        Some(state_dir.as_path()),
-    )?;
-
-    let (mut cmd, spawn_bin) = workerd_serve_command(workerd_bin, &generated, root)?;
-    let (mut child, rpc_port) =
-        spawn_and_find_bridge(&mut cmd, &spawn_bin, &generated.listen, rpc_listener).await?;
-
-    wait_for_bridge(rpc_port, &bridge_token)
-        .await
-        .context("workerd bridge /health did not become ready")?;
+    // Python isolates try their snapshot starts in order; every other
+    // isolate starts once, plainly.
+    let starts = if manifest.declares_python() {
+        python_snapshot::SnapshotPlan::from_env().starts()
+    } else {
+        vec![SnapshotStart::Plain]
+    };
+    let mut attempts = starts.into_iter().peekable();
+    let (mut child, rpc_port) = loop {
+        let Some(start) = attempts.next() else {
+            bail!("no workerd start to try");
+        };
+        let (listen, rpc_listener) = bridge_rpc_socket()?;
+        let generated = config::materialize(
+            root,
+            manifest,
+            egress,
+            limits,
+            listen,
+            Some(granted_addr.as_str()),
+            &bridge_token,
+            Some(state_dir.as_path()),
+        )?;
+        let (mut cmd, spawn_bin) = workerd_serve_command(workerd_bin, &generated, root)?;
+        cmd.args(start.serve_args());
+        let ready = start_isolate(
+            &mut cmd,
+            &spawn_bin,
+            &generated.listen,
+            rpc_listener,
+            &bridge_token,
+        )
+        .await;
+        match ready {
+            Ok(ready) => {
+                if let SnapshotStart::Save(staging) = &start {
+                    // The isolate answered, so the snapshot it saved at
+                    // start-up is whole; the host may promote it now.
+                    if let Err(err) = python_snapshot::mark_ready(staging) {
+                        warn!(error = %err, "workerd saved no Python snapshot");
+                    }
+                }
+                break ready;
+            }
+            Err(err) if attempts.peek().is_some() => {
+                warn!(
+                    error = %format!("{err:#}"),
+                    start = ?start,
+                    "workerd did not start from the Python snapshot; starting without it"
+                );
+            }
+            Err(err) => return Err(err),
+        }
+    };
 
     let result = mediate_bridge(
         rpc_port,
@@ -725,6 +760,35 @@ async fn spawn_and_find_bridge(
     control::forward_lines(child.stderr.take());
     let port = control::bridge_port(listen, child.stdout.take(), BRIDGE_READY_TIMEOUT).await?;
     Ok((child, port))
+}
+
+/// Spawns workerd and waits until its bridge answers `/health`.
+///
+/// # Returns
+///
+/// The running child and the bridge RPC port.
+///
+/// # Errors
+///
+/// Returns an error when workerd cannot be spawned, reports no bridge port,
+/// or its bridge never becomes healthy; the child is killed first.
+async fn start_isolate(
+    cmd: &mut tokio::process::Command,
+    spawn_bin: &Path,
+    listen: &ListenSpec,
+    rpc_listener: Option<std::net::TcpListener>,
+    bridge_token: &str,
+) -> Result<(Child, u16)> {
+    let (mut child, rpc_port) = spawn_and_find_bridge(cmd, spawn_bin, listen, rpc_listener).await?;
+    if let Err(err) = wait_for_bridge(rpc_port, bridge_token)
+        .await
+        .context("workerd bridge /health did not become ready")
+    {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        return Err(err);
+    }
+    Ok((child, rpc_port))
 }
 
 /// Polls bridge `/health` for up to [`BRIDGE_READY_TIMEOUT`] before mediating RPC.
