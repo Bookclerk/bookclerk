@@ -381,6 +381,8 @@ function listOptions(
     prefix: options?.prefix || undefined,
     cursor: options?.cursor || undefined,
     limit: options?.limit || undefined,
+    withSignatures: options?.withSignatures || undefined,
+    modifiedSinceMs: options?.modifiedSinceMs || undefined,
   };
 }
 
@@ -422,12 +424,13 @@ function batchKeys(keys: string[] | undefined): string[] {
 }
 
 // Author outcomes carry an optional `{ code, message }`; the wire carries a
-// `PluginError` whose empty code means success.
+// `PluginError` whose empty code means success, so a failure with an empty
+// code goes out as `internal` rather than as success.
 function wireOutcomes(outcomes: KeyOutcome[]): WireKeyOutcome[] {
   return outcomes.map((o) => ({
     key: String(o.key ?? ""),
     error: {
-      code: o.error ? String(o.error.code) : "",
+      code: o.error ? String(o.error.code ?? "") || "internal" : "",
       message: o.error ? String(o.error.message ?? "") : "",
       details: "",
     },

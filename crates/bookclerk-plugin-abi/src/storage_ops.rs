@@ -22,7 +22,7 @@ use crate::plugin_capnp::{
     move_many_page, move_many_request, move_many_target, move_options, move_result, object_change,
     object_info, plugin_error, ObjectChangeKind as WireChangeKind,
 };
-use crate::rpc::{non_empty, non_zero, read_error, text_of, write_error};
+use crate::rpc::{non_empty, non_zero, read_error, strict_text, write_error};
 use crate::rpc_types::{ObjectInfo, ObjectMetadata};
 use crate::{PluginError, Result};
 
@@ -393,12 +393,12 @@ pub(crate) fn fill_object_info(mut b: object_info::Builder<'_>, info: &ObjectInf
 /// Returns [`PluginError`] when a text field cannot be read.
 pub(crate) fn read_object_info(r: object_info::Reader<'_>) -> Result<ObjectInfo> {
     Ok(ObjectInfo {
-        key: text_of(r.get_key().map_err(from_capnp)?),
+        key: strict_text(r.get_key())?,
         size: r.get_size(),
-        etag: non_empty(text_of(r.get_etag().map_err(from_capnp)?)),
+        etag: non_empty(strict_text(r.get_etag())?),
         modified_at_ms: non_zero(r.get_modified_at_ms()),
-        version_id: non_empty(text_of(r.get_version_id().map_err(from_capnp)?)),
-        signature: non_empty(text_of(r.get_signature().map_err(from_capnp)?)),
+        version_id: non_empty(strict_text(r.get_version_id())?),
+        signature: non_empty(strict_text(r.get_signature())?),
     })
 }
 
@@ -415,16 +415,17 @@ pub(crate) fn fill_move_options(mut b: move_options::Builder<'_>, options: &Move
     }
 }
 
-/// Decodes [`MoveOptions`]; unreadable fields read as absent.
-pub(crate) fn read_move_options(r: move_options::Reader<'_>) -> MoveOptions {
-    MoveOptions {
+/// Decodes [`MoveOptions`].
+///
+/// # Errors
+///
+/// Returns [`PluginError`] when `ifSourceMatch` cannot be read, so a
+/// precondition is never silently dropped.
+pub(crate) fn read_move_options(r: move_options::Reader<'_>) -> Result<MoveOptions> {
+    Ok(MoveOptions {
         no_overwrite: r.get_no_overwrite(),
-        if_source_match: r
-            .get_if_source_match()
-            .ok()
-            .map(text_of)
-            .and_then(non_empty),
-    }
+        if_source_match: non_empty(strict_text(r.get_if_source_match())?),
+    })
 }
 
 /// Encodes a [`MoveResult`].
@@ -454,8 +455,8 @@ fn fill_key_pair(mut b: key_pair::Builder<'_>, pair: &KeyPair) {
 /// Returns [`PluginError`] when a text field cannot be read.
 fn read_key_pair(r: key_pair::Reader<'_>) -> Result<KeyPair> {
     Ok(KeyPair {
-        from: text_of(r.get_from().map_err(from_capnp)?),
-        to: text_of(r.get_to().map_err(from_capnp)?),
+        from: strict_text(r.get_from())?,
+        to: strict_text(r.get_to())?,
     })
 }
 
@@ -521,9 +522,9 @@ pub(crate) fn read_move_many_request(r: move_many_request::Reader<'_>) -> Result
     };
     Ok(MoveManyRequest {
         target,
-        cursor: non_empty(text_of(r.get_cursor().map_err(from_capnp)?)),
+        cursor: non_empty(strict_text(r.get_cursor())?),
         limit: r.get_limit(),
-        options: r.get_options().map(read_move_options).unwrap_or_default(),
+        options: read_move_options(r.get_options().map_err(from_capnp)?)?,
     })
 }
 
@@ -542,13 +543,13 @@ fn fill_key_outcome(mut b: key_outcome::Builder<'_>, outcome: &KeyOutcome) {
 ///
 /// Returns [`PluginError`] when the key cannot be read.
 fn read_key_outcome(r: key_outcome::Reader<'_>) -> Result<KeyOutcome> {
-    let key = text_of(r.get_key().map_err(from_capnp)?);
+    let key = strict_text(r.get_key())?;
     let error = if r.has_error() {
         let e: plugin_error::Reader<'_> = r.get_error().map_err(from_capnp)?;
-        // Judge the raw bytes, so a code that is not valid UTF-8 is still a
-        // failure (reported as `unknown`), never a silent success.
-        let raw_code_len = e.get_code().map(|t| t.as_bytes().len()).unwrap_or(0);
-        if raw_code_len == 0 {
+        // Only a readable, empty code is success. A code that is not text or
+        // not UTF-8 is a failure (reported as `unknown`), never a success.
+        let code_is_empty = matches!(e.get_code(), Ok(t) if t.as_bytes().is_empty());
+        if code_is_empty {
             None
         } else {
             let mut err = read_error(e);
@@ -629,7 +630,7 @@ pub(crate) fn fill_move_many_page(
 pub(crate) fn read_move_many_page(r: move_many_page::Reader<'_>) -> Result<MoveManyPage> {
     Ok(MoveManyPage {
         results: read_outcomes(r.get_results().map_err(from_capnp)?)?,
-        next_cursor: non_empty(text_of(r.get_next_cursor().map_err(from_capnp)?)),
+        next_cursor: non_empty(strict_text(r.get_next_cursor())?),
         atomic: r.get_atomic(),
         objects_moved: r.get_objects_moved(),
     })
@@ -722,7 +723,7 @@ pub(crate) fn fill_changes_request(mut b: changes_request::Builder<'_>, request:
 /// Returns [`PluginError`] when the cursor cannot be read or is longer than
 /// [`MAX_CHANGES_CURSOR_BYTES`].
 pub(crate) fn read_changes_request(r: changes_request::Reader<'_>) -> Result<ChangesRequest> {
-    let cursor = non_empty(text_of(r.get_cursor().map_err(from_capnp)?));
+    let cursor = non_empty(strict_text(r.get_cursor())?);
     if cursor
         .as_ref()
         .is_some_and(|c| c.len() > MAX_CHANGES_CURSOR_BYTES as usize)
@@ -798,14 +799,14 @@ pub(crate) fn read_changes_page(r: changes_page::Reader<'_>) -> Result<ChangesPa
             None
         };
         changes.push(ObjectChange {
-            key: text_of(item.get_key().map_err(from_capnp)?),
+            key: strict_text(item.get_key())?,
             kind,
             info,
         });
     }
     Ok(ChangesPage {
         changes,
-        cursor: text_of(r.get_cursor().map_err(from_capnp)?),
+        cursor: strict_text(r.get_cursor())?,
         more: r.get_more(),
         complete: r.get_complete(),
     })
@@ -904,7 +905,7 @@ pub fn encode_storage_reply_bytes(reply: &StorageReply) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
-#[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
+#[allow(clippy::missing_panics_doc, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -920,6 +921,64 @@ mod tests {
         let swapped = vec![KeyOutcome::ok("b"), KeyOutcome::ok("a")];
         assert!(validate_key_outcomes("deleteMany", &sent, &swapped).is_err());
         assert!(validate_key_outcomes("deleteMany", &sent, &good[..1]).is_err());
+    }
+
+    /// A `PluginError` whose `code` pointer is a struct, not text.
+    fn outcome_with_struct_code() -> capnp::message::Builder<capnp::message::HeapAllocator> {
+        // `MoveManyRequest` has a struct at pointer 0, where `PluginError`
+        // keeps its `code` text: read as a `PluginError`, the code is unreadable.
+        let mut fake = capnp::message::Builder::new_default();
+        fake.init_root::<move_many_request::Builder<'_>>()
+            .init_target()
+            .init_pairs(0);
+        let fake_error = fake
+            .get_root_as_reader::<plugin_error::Reader<'_>>()
+            .expect("struct root");
+        let mut msg = capnp::message::Builder::new_default();
+        let mut outcome = msg.init_root::<key_outcome::Builder<'_>>();
+        outcome.set_key("a");
+        outcome.set_error(fake_error).expect("copy");
+        msg
+    }
+
+    #[test]
+    fn an_unreadable_error_code_is_a_failure_never_success() {
+        let msg = outcome_with_struct_code();
+        let reader = msg
+            .get_root_as_reader::<key_outcome::Reader<'_>>()
+            .expect("root");
+        let outcome = read_key_outcome(reader).expect("key reads");
+        let err = outcome.error.expect("an unreadable code is a failure");
+        assert_eq!(err.wire_str(), "unknown");
+    }
+
+    #[test]
+    fn invalid_utf8_in_a_cursor_or_precondition_is_refused() {
+        let mut msg = capnp::message::Builder::new_default();
+        let mut page = msg.init_root::<move_many_page::Builder<'_>>();
+        page.reborrow().init_results(0);
+        page.reborrow()
+            .init_next_cursor(2)
+            .as_bytes_mut()
+            .copy_from_slice(&[0xff, 0xfe]);
+        let reader = msg
+            .get_root_as_reader::<move_many_page::Reader<'_>>()
+            .expect("root");
+        assert!(
+            read_move_many_page(reader).is_err(),
+            "an undecodable continuation must not read as a finished move"
+        );
+
+        let mut msg = capnp::message::Builder::new_default();
+        let mut opts = msg.init_root::<move_options::Builder<'_>>();
+        opts.reborrow()
+            .init_if_source_match(1)
+            .as_bytes_mut()
+            .copy_from_slice(&[0xff]);
+        let reader = msg
+            .get_root_as_reader::<move_options::Reader<'_>>()
+            .expect("root");
+        assert!(read_move_options(reader).is_err());
     }
 
     #[test]

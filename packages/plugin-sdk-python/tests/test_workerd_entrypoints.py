@@ -314,6 +314,24 @@ class StorageOperationTests(unittest.IsolatedAsyncioTestCase):
                 await storage.bookclerkInvoke({}, method, *args)
             self.assertEqual(ctx.exception.code, "unsupported", method)
 
+    def test_change_records_round_trip_without_info_and_with_new_kinds(self) -> None:
+        """A change may omit `info`, and a kind newer than this SDK reads as `changed`."""
+        from bookclerk_plugin_sdk import _wire
+
+        codec = _wire._object_change_codec
+        removed = _wire._decode_message(
+            codec, _wire._encode_message(codec, {"key": "a/2", "kind": "removed"})
+        )
+        self.assertEqual((removed["key"], removed["kind"]), ("a/2", "removed"))
+
+        def write_future(s, _v, _caps) -> None:
+            s.set_text(0, "k")
+            s.set_u16(0, 3)
+
+        future_codec = _wire._Codec(codec.data_words, codec.pointer_count, write_future, codec.read)
+        future = _wire._decode_message(codec, _wire._encode_message(future_codec, {}))
+        self.assertEqual((future["key"], future["kind"]), ("k", "changed"))
+
 
 class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_session_then_session_calls_by_id(self) -> None:

@@ -151,25 +151,29 @@ pub struct ChangeFeedPage {
 /// A repeated move whose source is gone and whose target exists succeeds
 /// with `already_moved`.
 ///
+/// Concurrent writers are handled as far as the primitives allow:
+///
+/// - With `no_overwrite` on a backend that enforces conditional writes, the
+///   target is written with `IfNoneMatch`, so an object created at the
+///   target after the probe is never replaced. Elsewhere the check runs
+///   just before the copy, and the result's `atomic: false` says so.
+/// - The source is probed again after the copy and deleted only when it is
+///   still the object that was copied (same etag). A source replaced during
+///   the copy is kept and the move fails with `Conflict`.
+///
 /// # Errors
 ///
 /// Returns [`StorageError::NotFound`] when neither key exists,
-/// [`StorageError::Conflict`] when a precondition in `options` fails, and
-/// backend errors otherwise.
+/// [`StorageError::Conflict`] when a precondition in `options` fails or the
+/// source changed during the copy, and backend errors otherwise.
 pub async fn fallback_move<B: StorageBackend + ?Sized>(
     backend: &B,
     from: &str,
     to: &str,
     options: &MoveOptions,
 ) -> Result<MoveResult> {
-    if from == to {
-        return Ok(MoveResult {
-            atomic: true,
-            already_moved: false,
-        });
-    }
     let Some(source) = backend.head(from).await? else {
-        if backend.head(to).await?.is_some() {
+        if from != to && backend.head(to).await?.is_some() {
             return Ok(MoveResult {
                 atomic: false,
                 already_moved: true,
@@ -184,22 +188,51 @@ pub async fn fallback_move<B: StorageBackend + ?Sized>(
             )));
         }
     }
-    if options.no_overwrite && backend.head(to).await?.is_some() {
-        return Err(StorageError::Conflict(format!("{to} already exists")));
+    if from == to {
+        return Ok(MoveResult {
+            atomic: true,
+            already_moved: false,
+        });
     }
-    if backend.supports_server_copy() {
-        backend.copy(from, to).await?;
+    if options.no_overwrite && backend.capabilities().conditional_write {
+        copy_streamed(backend, &source, to, Some(&WriteCondition::IfNoneMatch)).await?;
     } else {
-        copy_streamed(backend, &source, to).await?;
+        if options.no_overwrite && backend.head(to).await?.is_some() {
+            return Err(StorageError::Conflict(format!("{to} already exists")));
+        }
+        if backend.supports_server_copy() {
+            backend.copy(from, to).await?;
+        } else {
+            copy_streamed(backend, &source, to, None).await?;
+        }
     }
-    backend.delete(from).await?;
+    match backend.head(from).await? {
+        // Someone else already removed the source; the copy stands.
+        None => {}
+        Some(now) if same_object(&source, &now) => backend.delete(from).await?,
+        Some(_) => {
+            return Err(StorageError::Conflict(format!(
+                "{from} changed while it was copied to {to}; the source was kept"
+            )));
+        }
+    }
     Ok(MoveResult {
         atomic: false,
         already_moved: false,
     })
 }
 
-/// Copies `source` to `to` through a streamed read and write.
+/// True when two probes of one key describe the same stored object: equal
+/// etags when both have one, else equal size and modification time.
+fn same_object(before: &ObjectProbe, after: &ObjectProbe) -> bool {
+    match (&before.etag, &after.etag) {
+        (Some(a), Some(b)) => a == b,
+        _ => before.size == after.size && before.modified_at_ms == after.modified_at_ms,
+    }
+}
+
+/// Copies `source` to `to` through a streamed read and write, under
+/// `condition` when one is given.
 ///
 /// # Errors
 ///
@@ -208,12 +241,22 @@ async fn copy_streamed<B: StorageBackend + ?Sized>(
     backend: &B,
     source: &ObjectProbe,
     to: &str,
+    condition: Option<&WriteCondition>,
 ) -> Result<()> {
     let (opened, body) = backend.get_stream(&source.key, None).await?;
     let mut meta = opened.meta.clone();
     meta.content_length = Some(opened.size);
     meta.commit_token = None;
-    backend.put_stream(to, body, meta).await?;
+    match condition {
+        Some(condition) => {
+            backend
+                .put_stream_conditional(to, body, meta, condition)
+                .await?;
+        }
+        None => {
+            backend.put_stream(to, body, meta).await?;
+        }
+    }
     Ok(())
 }
 
@@ -236,25 +279,46 @@ pub async fn fallback_move_many<B: StorageBackend + ?Sized>(
     out
 }
 
-/// Rejects a prefix move whose target lies inside its source (it would move
-/// objects it just moved).
+/// Rejects a prefix move whose namespaces overlap.
+///
+/// A target inside the source would move objects it just moved; a source
+/// inside the target lets one moved object overwrite another that has not
+/// moved yet (`a/b/` to `a/` sends `a/b/b/x` onto `a/b/x`). Prefixes are
+/// compared after dropping `.` and empty path segments, so `./a/sub/` and
+/// `a//sub/` count as `a/sub/`.
 ///
 /// # Errors
 ///
-/// Returns [`StorageError::InvalidKey`] for an empty source prefix or a
-/// target under the source.
+/// Returns [`StorageError::InvalidKey`] for an empty source prefix or
+/// overlapping prefixes.
 pub fn require_disjoint_prefixes(from_prefix: &str, to_prefix: &str) -> Result<()> {
-    if from_prefix.is_empty() {
+    let from = normalized_prefix(from_prefix);
+    let to = normalized_prefix(to_prefix);
+    if from.is_empty() {
         return Err(StorageError::InvalidKey(
             "a prefix move needs a non-empty source prefix".into(),
         ));
     }
-    if to_prefix.starts_with(from_prefix) {
+    if to.starts_with(&from) || from.starts_with(&to) {
         return Err(StorageError::InvalidKey(format!(
-            "target prefix {to_prefix} lies inside source prefix {from_prefix}"
+            "target prefix {to_prefix} overlaps source prefix {from_prefix}"
         )));
     }
     Ok(())
+}
+
+/// `prefix` with `.` and empty segments removed. A trailing `/` is kept, so
+/// `a/` and `ab` stay disjoint while `a` and `ab` overlap as raw prefixes do.
+fn normalized_prefix(prefix: &str) -> String {
+    let parts: Vec<&str> = prefix
+        .split('/')
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect();
+    let mut out = parts.join("/");
+    if prefix.ends_with('/') && !out.is_empty() {
+        out.push('/');
+    }
+    out
 }
 
 /// Moves one listing page under `from_prefix` to `to_prefix`.
@@ -481,7 +545,36 @@ mod tests {
     fn prefixes_must_not_nest() {
         assert!(require_disjoint_prefixes("", "x/").is_err());
         assert!(require_disjoint_prefixes("a/", "a/b/").is_err());
+        assert!(require_disjoint_prefixes("a/b/", "a/").is_err());
+        assert!(require_disjoint_prefixes("a/", "./a/sub/").is_err());
+        assert!(require_disjoint_prefixes("a//b/", "a/b/c/").is_err());
+        assert!(require_disjoint_prefixes("./", "x/").is_err());
         assert!(require_disjoint_prefixes("a/", "b/").is_ok());
+        assert!(require_disjoint_prefixes("a/", "ab/").is_ok());
+    }
+
+    #[test]
+    fn same_object_prefers_etags_then_size_and_time() {
+        let probe = |etag: Option<&str>, size: u64, at: u64| ObjectProbe {
+            key: "k".into(),
+            size,
+            content_type: None,
+            meta: crate::ObjectMeta::default(),
+            etag: etag.map(str::to_string),
+            modified_at_ms: Some(at),
+            version_id: None,
+            signature: None,
+        };
+        assert!(same_object(
+            &probe(Some("e"), 1, 1),
+            &probe(Some("e"), 2, 2)
+        ));
+        assert!(!same_object(
+            &probe(Some("e"), 1, 1),
+            &probe(Some("f"), 1, 1)
+        ));
+        assert!(same_object(&probe(None, 1, 1), &probe(None, 1, 1)));
+        assert!(!same_object(&probe(None, 1, 1), &probe(Some("e"), 1, 2)));
     }
 
     #[tokio::test]
@@ -536,6 +629,12 @@ mod tests {
         };
         let err = fallback_move(&b, "a", "b", &stale).await.unwrap_err();
         assert!(matches!(err, StorageError::Conflict(_)), "{err}");
+        let err = fallback_move(&b, "a", "a", &stale).await.unwrap_err();
+        assert!(matches!(err, StorageError::Conflict(_)), "{err}");
+        let err = fallback_move(&b, "gone", "gone", &MoveOptions::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::NotFound(_)), "{err}");
         assert!(b.exists("a").await.unwrap());
     }
 

@@ -1444,6 +1444,15 @@ The rules every operation follows:
 - **Options only grow.** `MoveOptions`, `ListOptions` and `WriteOptions`
   gain fields at new ordinals, and a zero value always means the old
   behaviour.
+- **Preconditions are never dropped.** A request whose `ifMatch`,
+  `ifSourceMatch` or cursor cannot be read is refused rather than run
+  without it, and a granted destination (a `put` through a capability
+  handed to another plugin) refuses `ifMatch` / `ifNoneMatch` because that
+  channel cannot carry them yet.
+- **Prefix moves need disjoint prefixes.** The source and target of a
+  prefix `moveMany` may not contain each other, after `.` and empty path
+  segments are dropped, because a nested object could overwrite one that
+  has not moved yet.
 
 The host checks every reply against the request before acting on it: the
 outcomes must name the keys it sent, in order, a prefix page may only name
@@ -1458,11 +1467,18 @@ or an S3 ETag and version id) that stays the same while the object is
 unchanged. The host uses it to skip re-reading files it already knows.
 `modifiedAtMs` and `versionId` ride alongside it.
 
+The host's own `move` fallback copies, probes the source again, and deletes
+it only when it is still the object it copied; a source rewritten during
+the copy is kept and the move fails with `conflict`. With `noOverwrite`,
+the fallback writes the target with `ifNoneMatch` when the guest declares
+`storage.conditionalWrite`, and otherwise checks for the target just before
+the copy (so `atomic` is false).
+
 `changes` is a hint, not a ledger. The first call, with an empty cursor,
 returns the current position and no changes. A page with `complete` false
 means the guest may have missed changes since the cursor (a watcher
 restarted, a queue dropped messages), and the host backs it with a full
-listing. A scheduled listing stays the backstop either way.
+listing. A change kind added after an SDK was built reads as `changed`. A scheduled listing stays the backstop either way.
 
 First-party S3 ships as `bookclerk-plugin-destination-s3`
 (`api_version = 3`). Its bucket, region, endpoint, prefix, naming

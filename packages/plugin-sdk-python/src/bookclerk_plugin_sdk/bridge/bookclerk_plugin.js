@@ -886,6 +886,9 @@ function fromOrd(table, ordinal, enumName) {
   }
   return v;
 }
+function fromOrdOr(table, ordinal, fallback) {
+  return table[ordinal] ?? fallback;
+}
 function unknownUnion(struct, member) {
   return new Error(`unknown ${struct} union member: ${String(member)}`);
 }
@@ -1258,7 +1261,7 @@ var ObjectChangeCodec = {
   read(s, caps) {
     return {
       key: s.getText(0),
-      kind: fromOrd(OBJECT_CHANGE_KINDS, s.getUint16(0), "ObjectChangeKind"),
+      kind: fromOrdOr(OBJECT_CHANGE_KINDS, s.getUint16(0), "changed"),
       info: ObjectInfoCodec.read(s.getStruct(1, 2, 4), caps)
     };
   }
@@ -9739,7 +9742,9 @@ function listOptions(options) {
   return {
     prefix: options?.prefix || void 0,
     cursor: options?.cursor || void 0,
-    limit: options?.limit || void 0
+    limit: options?.limit || void 0,
+    withSignatures: options?.withSignatures || void 0,
+    modifiedSinceMs: options?.modifiedSinceMs || void 0
   };
 }
 function moveOptions(options) {
@@ -9774,7 +9779,7 @@ function wireOutcomes(outcomes) {
   return outcomes.map((o) => ({
     key: String(o.key ?? ""),
     error: {
-      code: o.error ? String(o.error.code) : "",
+      code: o.error ? String(o.error.code ?? "") || "internal" : "",
       message: o.error ? String(o.error.message ?? "") : "",
       details: ""
     }
@@ -12151,6 +12156,9 @@ var GrantedDestination = class extends Destination {
     this.#signal = signal;
   }
   async put(key, body, options) {
+    if (options?.ifMatch || options?.ifNoneMatch) {
+      throw PluginError.fromWire("unsupported", "conditional writes are not supported on granted destinations");
+    }
     const headers = { ...this.#auth };
     if (options?.contentType)
       headers["content-type"] = options.contentType;

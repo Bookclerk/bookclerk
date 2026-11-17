@@ -1263,6 +1263,60 @@ fn fuzz_corpus_storage_reply_holds_invariants() {
     assert!(checked > 0, "no storage_reply seed");
 }
 
+/// A `deleteMany` reply (selector `1`) whose first outcome carries an error
+/// with a struct where its `code` text belongs, built by hand because no
+/// encoder writes one. The second outcome succeeds.
+// Test code: a failed build is the test failing.
+#[allow(clippy::expect_used)]
+fn delete_many_struct_code_seed() -> Vec<u8> {
+    use bookclerk_plugin_abi::plugin_capnp::{delete_many_result, move_many_request, plugin_error};
+
+    // `MoveManyRequest` keeps a struct at pointer 0, where `PluginError`
+    // keeps `code`: copied in as a `PluginError`, its code is unreadable.
+    let mut fake = capnp::message::Builder::new_default();
+    fake.init_root::<move_many_request::Builder<'_>>()
+        .init_target()
+        .init_pairs(0);
+    let fake_error = fake
+        .get_root_as_reader::<plugin_error::Reader<'_>>()
+        .expect("struct root");
+    let mut msg = capnp::message::Builder::new_default();
+    let mut results = msg
+        .init_root::<delete_many_result::Builder<'_>>()
+        .init_results(2);
+    let mut first = results.reborrow().get(0);
+    first.set_key("a/1.m4b");
+    first.set_error(fake_error).expect("copy error");
+    results.reborrow().get(1).set_key("a/2.m4b");
+    let mut out = vec![1];
+    out.extend(capnp::serialize::write_message_to_words(&msg));
+    out
+}
+
+/// The hand-built seed's failure survives decoding: a round trip cannot
+/// catch a failure read as success, because the wrong reading round-trips.
+// Test code: a failed decode is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn an_unreadable_error_code_never_decodes_as_success() {
+    use bookclerk_plugin_abi::{decode_storage_reply_bytes, StorageReply, StorageReplyKind};
+
+    let seed = delete_many_struct_code_seed();
+    let reply =
+        decode_storage_reply_bytes(StorageReplyKind::DeleteMany, &seed[1..]).expect("decodes");
+    let StorageReply::DeleteMany(results) = reply else {
+        panic!("a deleteMany reply");
+    };
+    assert_eq!(
+        results[0]
+            .error
+            .as_ref()
+            .map(bookclerk_plugin_abi::PluginError::wire_str),
+        Some("unknown")
+    );
+    assert!(results[1].error.is_none());
+}
+
 /// Seeds for `storage_reply`: replies each validator accepts and one
 /// breaking each rule. Byte 0 is `0` for a `moveMany` page, `1` for
 /// `deleteMany`, `2` for `headMany`, `3` for `changes` and `4` for a hinted
@@ -1353,6 +1407,10 @@ fn storage_reply_seeds_are_current() {
                     KeyOutcome::ok("a/1.m4b"),
                 ]),
             ),
+        ),
+        (
+            "delete_many_struct_code.bin",
+            delete_many_struct_code_seed(),
         ),
         (
             "head_many.bin",

@@ -83,6 +83,11 @@ function fromOrd<S extends string>(table: readonly S[], ordinal: number, enumNam
   return v;
 }
 
+// An open enum: an ordinal newer than this SDK reads as `fallback`.
+function fromOrdOr<S extends string>(table: readonly S[], ordinal: number, fallback: S): S {
+  return table[ordinal] ?? fallback;
+}
+
 function unknownUnion(struct: string, member: string | number): Error {
   return new Error(`unknown ${struct} union member: ${String(member)}`);
 }
@@ -2256,7 +2261,7 @@ export const ObjectChangeCodec: StructCodec<T.ObjectChange> = {
   read(s, caps) {
     return {
       key: s.getText(0),
-      kind: fromOrd(A.OBJECT_CHANGE_KINDS, s.getUint16(0), "ObjectChangeKind"),
+      kind: fromOrdOr(A.OBJECT_CHANGE_KINDS, s.getUint16(0), "changed"),
       info: ObjectInfoCodec.read(s.getStruct(1, 2, 4), caps),
     };
   },

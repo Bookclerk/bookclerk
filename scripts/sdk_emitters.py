@@ -507,6 +507,10 @@ def py_type(ty: cs.TypeRef, res: Resolver) -> str:
 # optional and the codecs map the zero value both ways.
 OPTIONAL_ANNOTATION = "optional"
 
+# Open enums: the schema says an unknown ordinal (one added after this SDK
+# was built) reads as the named member instead of failing the whole reply.
+OPEN_ENUMS: dict[str, str] = {"ObjectChangeKind": "changed"}
+
 # Scalar kinds that may carry `$optional` (bool, enum, struct, list, and
 # interface fields have no zero-means-absent convention).
 _OPTIONAL_KINDS = frozenset(
@@ -1019,6 +1023,9 @@ def _ts_read_expr(ctx: _Ctx, ty: dict[str, Any], off: int) -> str:
     if kind == "data":
         return f"s.getData({off})"
     if kind == "enum":
+        fallback = OPEN_ENUMS.get(ty["name"])
+        if fallback is not None:
+            return f'fromOrdOr(A.{ctx.enum_table(ty["name"])}, s.getUint16({off}), "{fallback}")'
         return f'fromOrd(A.{ctx.enum_table(ty["name"])}, s.getUint16({off}), "{ty["name"]}")'
     if kind == "struct":
         dw, pc = ctx.struct_dims(ty["name"])
@@ -1322,6 +1329,11 @@ def emit_ts_wire(capnp_text: str, layout: Layout) -> str:
         "  return v;",
         "}",
         "",
+        "// An open enum: an ordinal newer than this SDK reads as `fallback`.",
+        "function fromOrdOr<S extends string>(table: readonly S[], ordinal: number, fallback: S): S {",
+        "  return table[ordinal] ?? fallback;",
+        "}",
+        "",
         "function unknownUnion(struct: string, member: string | number): Error {",
         "  return new Error(`unknown ${struct} union member: ${String(member)}`);",
         "}",
@@ -1405,6 +1417,9 @@ def _py_read_expr(ctx: _Ctx, ty: dict[str, Any], off: int) -> str:
     if kind == "data":
         return f"s.get_data({off})"
     if kind == "enum":
+        fallback = OPEN_ENUMS.get(ty["name"])
+        if fallback is not None:
+            return f'_from_ord_or(A.{ctx.enum_table(ty["name"])}, s.get_u16({off}), "{fallback}")'
         return f'_from_ord(A.{ctx.enum_table(ty["name"])}, s.get_u16({off}), "{ty["name"]}")'
     if kind == "struct":
         dw, pc = ctx.struct_dims(ty["name"])
@@ -1464,7 +1479,9 @@ def _py_struct_codec(ctx: _Ctx, layout_name: str) -> list[str]:
     else:
         body: list[str] = []
         for f in plain:
-            if ctx.omit_when_null(layout_name, f):
+            # A struct field may be left out, as the TypeScript writer allows;
+            # it then stays a null pointer.
+            if ctx.omit_when_null(layout_name, f) or f["type"]["kind"] == "struct":
                 body.append(f'    if v.get("{f["name"]}") is not None:')
                 body.extend(
                     _py_write_expr(ctx, f["type"], f["offset"], f'v["{f["name"]}"]', "        ")
@@ -1581,6 +1598,11 @@ def emit_py_wire(capnp_text: str, layout: Layout) -> str:
         "    if ordinal < 0 or ordinal >= len(table):",
         '        raise ValueError(f"unknown {enum_name} ordinal: {ordinal}")',
         "    return table[ordinal]",
+        "",
+        "",
+        "def _from_ord_or(table: tuple[str, ...], ordinal: int, fallback: str) -> str:",
+        '    """Reads an open enum: an ordinal newer than this SDK reads as `fallback`."""',
+        "    return table[ordinal] if 0 <= ordinal < len(table) else fallback",
         "",
         "",
     ]

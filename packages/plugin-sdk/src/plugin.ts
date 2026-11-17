@@ -3038,6 +3038,14 @@ class GrantedDestination extends Destination {
     body: ReadableStream<Uint8Array>,
     options?: WriteOptions,
   ): Promise<PutResult> {
+    // The granted channel carries no preconditions yet; refuse a conditional
+    // write rather than silently overwrite.
+    if (options?.ifMatch || options?.ifNoneMatch) {
+      throw PluginError.fromWire(
+        "unsupported",
+        "conditional writes are not supported on granted destinations",
+      );
+    }
     const headers: Record<string, string> = { ...this.#auth };
     if (options?.contentType) headers["content-type"] = options.contentType;
     if (options?.contentLength != null) {

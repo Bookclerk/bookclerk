@@ -252,7 +252,11 @@ class Storage extends StorageEntrypoint {
   }
   async deleteMany(keys) {
     return keys.map((key) =>
-      key === "bad" ? { key, error: { code: "not_found", message: "nope" } } : { key },
+      key === "bad"
+        ? { key, error: { code: "not_found", message: "nope" } }
+        : key === "blank"
+          ? { key, error: { code: "", message: "refused" } }
+          : { key },
     );
   }
   async headMany(keys) {
@@ -357,6 +361,14 @@ class Covers extends CoverEntrypoint {
   async fetchCovers(params, sink) {
     // The wire envelope is not a valid return value.
     if (params.urls[0] === "https://wrapped.example/") return { images: [] };
+    // A granted sink cannot carry preconditions, so it refuses them.
+    if (params.urls[0] === "https://conditional.example/") {
+      const body = new Blob([new Uint8Array(1)]).stream();
+      for (const options of [{ ifNoneMatch: true }, { ifMatch: "e1" }]) {
+        await assert.rejects(sink.put("0", body, options), (err) => err.code === "unsupported");
+      }
+      return [{ url: params.urls[0], stored: false, error: "refused" }];
+    }
     const images = [];
     for (const [i, url] of params.urls.entries()) {
       if (url.endsWith("/missing.jpg")) {
@@ -842,7 +854,13 @@ function decodeReply(reply, resultsCodec, caps) {
   );
   assert.deepEqual(
     calls.list,
-    { prefix: undefined, cursor: undefined, limit: undefined },
+    {
+      prefix: undefined,
+      cursor: undefined,
+      limit: undefined,
+      withSignatures: undefined,
+      modifiedSinceMs: undefined,
+    },
     "zero values → omitted",
   );
   assert.deepEqual(page, {
@@ -855,9 +873,15 @@ function decodeReply(reply, resultsCodec, caps) {
     },
   });
   await invoke("Destination", "list", W.DestinationListParamsCodec, {
-    options: { prefix: "a/", cursor: "c", limit: 5 },
+    options: { prefix: "a/", cursor: "c", limit: 5, withSignatures: true, modifiedSinceMs: 1234 },
   });
-  assert.deepEqual(calls.list, { prefix: "a/", cursor: "c", limit: 5 });
+  assert.deepEqual(calls.list, {
+    prefix: "a/",
+    cursor: "c",
+    limit: 5,
+    withSignatures: true,
+    modifiedSinceMs: 1234,
+  });
 }
 
 {
@@ -986,7 +1010,7 @@ function decodeReply(reply, resultsCodec, caps) {
 
   const del = decodeReply(
     await invoke("Destination", "deleteMany", W.DestinationDeleteManyParamsCodec, {
-      keys: ["ok", "bad"],
+      keys: ["ok", "bad", "blank"],
     }),
     W.DestinationDeleteManyResultsCodec,
   );
@@ -995,6 +1019,8 @@ function decodeReply(reply, resultsCodec, caps) {
     [
       ["ok", "", ""],
       ["bad", "not_found", "nope"],
+      // A failure with an empty code must never read as success.
+      ["blank", "internal", "refused"],
     ],
   );
   const empty = decodeReply(
@@ -1031,6 +1057,19 @@ function decodeReply(reply, resultsCodec, caps) {
       ["a/2", "removed", ""],
     ],
   );
+
+  // A change kind newer than this SDK reads as `changed`, not as an error.
+  const futureKind = {
+    dataWords: 1,
+    pointerCount: 2,
+    write(st) {
+      st.setText(0, "k");
+      st.setUint16(0, 3);
+    },
+  };
+  const future = W.decodeMessage(W.ObjectChangeCodec, W.encodeMessage(futureKind, {}));
+  assert.equal(future.kind, "changed");
+  assert.equal(future.key, "k");
 }
 
 // --- EventConsumer: one author call per batch -----------------------------
@@ -1800,6 +1839,25 @@ const jobParams = (commandType) => ({
   assert.equal(wrapped.kind, "err");
   assert.equal(wrapped.value.code, "internal");
   assert.match(wrapped.value.message, /CoverImage\[\]/);
+
+  granted.requests.length = 0;
+  const conditional = decodeReply(
+    await invoke(
+      "CoverFetcher",
+      "fetchCovers",
+      W.CoverFetcherFetchCoversParamsCodec,
+      { params: { urls: ["https://conditional.example/"], maxBytes: 1 }, sink: "sink" },
+      { caps: [{ kind: "destination", token: "tok-sink" }] },
+    ),
+    W.CoverFetcherFetchCoversResultsCodec,
+  );
+  assert.equal(conditional.kind, "ok");
+  assert.equal(conditional.value.images[0].error, "refused");
+  assert.equal(
+    granted.requests.filter((r) => r.path === "/put").length,
+    0,
+    "a conditional write never reaches the granted channel",
+  );
 
   const noSink = decodeReply(
     await invoke("CoverFetcher", "fetchCovers", W.CoverFetcherFetchCoversParamsCodec, {

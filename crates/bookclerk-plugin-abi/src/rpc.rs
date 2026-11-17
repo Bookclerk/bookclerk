@@ -110,6 +110,23 @@ pub(super) fn text_of(r: capnp::text::Reader<'_>) -> String {
     r.to_string().unwrap_or_default()
 }
 
+/// Reads a text field that must decode exactly, unlike [`text_of`].
+///
+/// Used where losing the value would change meaning: keys, cursors and
+/// preconditions. A text field that is lossily read as empty could turn a
+/// conditional write into an unconditional one, or a partial page into a
+/// finished one.
+///
+/// # Errors
+///
+/// Returns `unavailable` when the pointer is not text and `invalid_params`
+/// when the bytes are not UTF-8.
+pub(crate) fn strict_text(r: capnp::Result<capnp::text::Reader<'_>>) -> Result<String> {
+    r.map_err(from_capnp)?
+        .to_string()
+        .map_err(|_| PluginError::invalid_params("a text field is not valid UTF-8"))
+}
+
 pub(super) fn read_extensible_config(
     r: crate::plugin_capnp::extensible_config::Reader<'_>,
 ) -> crate::ExtensibleConfig {
@@ -151,8 +168,14 @@ pub(super) fn read_error_details(text: &str) -> Option<serde_json::Map<String, s
     }
 }
 
-fn read_write_options(o: write_options::Reader<'_>) -> WriteOptions {
-    WriteOptions {
+/// Decodes [`WriteOptions`]; hints read leniently, preconditions strictly.
+///
+/// # Errors
+///
+/// Returns [`PluginError`] when `ifMatch` cannot be read, so a precondition
+/// is never silently dropped.
+fn read_write_options(o: write_options::Reader<'_>) -> Result<WriteOptions> {
+    Ok(WriteOptions {
         content_type: {
             let t = o.get_content_type().ok().map(text_of).unwrap_or_default();
             if t.is_empty() {
@@ -187,9 +210,9 @@ fn read_write_options(o: write_options::Reader<'_>) -> WriteOptions {
             }
         },
         stage_only: o.get_stage_only(),
-        if_match: o.get_if_match().ok().map(text_of).and_then(non_empty),
+        if_match: non_empty(strict_text(o.get_if_match())?),
         if_none_match: o.get_if_none_match(),
-    }
+    })
 }
 
 /// `Some(text)` unless `text` is empty (the wire's "absent").
@@ -1107,11 +1130,17 @@ impl dest_iface::Server for DestinationServer {
         let p = params.get()?;
         let key = p.get_key().ok().map(text_of).unwrap_or_default();
         let body = p.get_body().ok();
-        let options = p
+        let options = match p
             .get_options()
-            .ok()
-            .map(read_write_options)
-            .unwrap_or_default();
+            .map_err(from_capnp)
+            .and_then(read_write_options)
+        {
+            Ok(options) => options,
+            Err(err) => {
+                write_error(results.get().init_result().init_err(), &err);
+                return Ok(());
+            }
+        };
         let result = results.get().init_result();
         let Some(body) = body else {
             write_error(
@@ -1198,14 +1227,19 @@ impl dest_iface::Server for DestinationServer {
         mut results: dest_iface::MoveResults,
     ) -> capnp::Result<()> {
         let p = params.get()?;
-        let from = p.get_from().ok().map(text_of).unwrap_or_default();
-        let to = p.get_to().ok().map(text_of).unwrap_or_default();
-        let options = p
-            .get_options()
-            .map(crate::storage_ops::read_move_options)
-            .unwrap_or_default();
+        let decoded = (|| -> Result<_> {
+            Ok((
+                strict_text(p.get_from())?,
+                strict_text(p.get_to())?,
+                crate::storage_ops::read_move_options(p.get_options().map_err(from_capnp)?)?,
+            ))
+        })();
         let result = results.get().init_result();
-        match self.inner.move_object(&from, &to, options).await {
+        let outcome = match decoded {
+            Ok((from, to, options)) => self.inner.move_object(&from, &to, options).await,
+            Err(err) => Err(err),
+        };
+        match outcome {
             Ok(moved) => crate::storage_ops::fill_move_result(result.init_ok(), moved),
             Err(err) => write_error(result.init_err(), &err),
         }
@@ -1315,7 +1349,7 @@ fn read_key_list(what: &str, list: capnp::text_list::Reader<'_>) -> Result<Vec<S
     crate::storage_ops::require_batch_len(what, list.len() as usize)?;
     let mut keys = Vec::with_capacity(list.len() as usize);
     for key in list.iter() {
-        keys.push(text_of(key.map_err(from_capnp)?));
+        keys.push(strict_text(key)?);
     }
     Ok(keys)
 }
