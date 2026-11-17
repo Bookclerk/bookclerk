@@ -7,7 +7,7 @@
 //! `books` row. While `books` still exists the view also names the flat
 //! row's UUID, which the status writes are still keyed by.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
@@ -321,6 +321,47 @@ impl LibraryStore {
         holdings.sort_by(|a, b| a.id.cmp(&b.id));
         holdings.dedup_by(|a, b| a.id == b.id);
         self.acquire_titles_of(holdings).await
+    }
+
+    /// The accounts that hold at least one title, as `(plugin_key,
+    /// account_id)`: what an acquire of every title in its scope touches.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - Only accounts with this id, when set.
+    /// * `plugin_key` - Only accounts on this plugin, when set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn accounts_holding_titles(
+        &self,
+        account_id: Option<&str>,
+        plugin_key: Option<&str>,
+    ) -> Result<BTreeSet<(String, String)>> {
+        let mut query = accounts::Entity::find().order_by_asc(accounts::Column::Id);
+        if let Some(account_id) = account_id {
+            query = query.filter(accounts::Column::AccountId.eq(account_id));
+        }
+        if let Some(plugin_key) = plugin_key {
+            query = query.filter(accounts::Column::PluginKey.eq(plugin_key));
+        }
+        let mut out = BTreeSet::new();
+        // One indexed existence read per account: a library has few
+        // accounts, and each may hold more titles than one read returns.
+        for account in query.all(self.db()).await.map_err(LibraryError::Orm)? {
+            let held = super::holdings::find_holdings()
+                .filter(holdings::Column::HolderKind.eq("account"))
+                .filter(holdings::Column::PluginKey.eq(account.plugin_key.as_str()))
+                .filter(holdings::Column::AccountId.eq(account.account_id.as_str()))
+                .one(self.db())
+                .await
+                .map_err(LibraryError::Orm)?;
+            if held.is_some() {
+                out.insert((account.plugin_key, account.account_id));
+            }
+        }
+        Ok(out)
     }
 
     /// One page of the titles accounts hold, as acquire reads them, in

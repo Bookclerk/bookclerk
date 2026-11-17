@@ -286,11 +286,12 @@ pub fn claimant_may_run(claimant: Claimant, job: &JobRecord) -> bool {
 /// - A scan that names an account touches every `accounts` row with that
 ///   id (within the pinned instance's plugin). A scan of every account is
 ///   `None`: what it touches is not known until it runs.
-/// - An acquire touches the named account's rows, plus the account of every
-///   library row its filters match (title id, account, pinned plugin),
-///   whatever the row's acquire status. That is a superset of the titles it
-///   will fetch, so a node must be trusted with at least everything it
-///   fetches.
+/// - An acquire touches the named account's rows, plus every account
+///   holding a title its filters match (the title id as
+///   [`LibraryStore::acquire_titles_named`] matches it, the account and the
+///   pinned plugin), whatever the edition's acquire status. That is a
+///   superset of the titles it will fetch, so a node must be trusted with
+///   at least everything it fetches.
 /// - Anything else, and a job pinned to an unknown instance, is `None`.
 ///
 /// # Errors
@@ -312,36 +313,29 @@ pub async fn job_item_accounts(
         JobKind::Scan => Ok(account.map(|_| items)),
         JobKind::Acquire => {
             let title = job.payload.title.as_deref().filter(|t| !t.is_empty());
-            for book in store.list_books(account).await? {
-                if plugin_key
-                    .as_deref()
-                    .is_some_and(|key| key != book.plugin_key)
-                    || title.is_some_and(|t| !book_matches_title(&book, t))
-                {
-                    continue;
+            match title {
+                // The accounts holding a title the filter names, read from
+                // the holdings the job visits.
+                Some(title) => {
+                    for held in store.acquire_titles_named(account, title).await? {
+                        if plugin_key
+                            .as_deref()
+                            .is_none_or(|key| key == held.plugin_key)
+                        {
+                            items.insert((held.plugin_key, held.account_id));
+                        }
+                    }
                 }
-                items.insert((book.plugin_key, book.account_id));
+                None => items.extend(
+                    store
+                        .accounts_holding_titles(account, plugin_key.as_deref())
+                        .await?,
+                ),
             }
             Ok(Some(items))
         }
         _ => Ok(None),
     }
-}
-
-/// True when `id` names `book` (uuid, product id, ISBN or ASIN, any case),
-/// as an acquire's title filter matches.
-#[must_use]
-pub fn book_matches_title(book: &BookRecord, id: &str) -> bool {
-    id.eq_ignore_ascii_case(&book.uuid)
-        || id.eq_ignore_ascii_case(&book.product_id)
-        || book
-            .isbn
-            .as_deref()
-            .is_some_and(|i| id.eq_ignore_ascii_case(i))
-        || book
-            .asin
-            .as_deref()
-            .is_some_and(|x| id.eq_ignore_ascii_case(x))
 }
 
 /// What `node_id` is trusted with for a claim of `scope`.
@@ -956,7 +950,6 @@ pub async fn plan_acquire(
     };
     let account = resolved.as_deref();
     if !titles.is_empty() {
-        let books = store.list_books(account).await?;
         let not_yours = || {
             LibraryError::Forbidden(
                 "that title is not in a store account linked to this user".into(),
@@ -964,15 +957,16 @@ pub async fn plan_acquire(
         };
         let mut out = Vec::new();
         for title in &titles {
-            let touched: BTreeSet<AccountKey> = books
-                .iter()
-                .filter(|book| {
+            let touched: BTreeSet<AccountKey> = store
+                .acquire_titles_named(account, title)
+                .await?
+                .into_iter()
+                .filter(|held| {
                     plugin_key
                         .as_deref()
-                        .is_none_or(|key| key == book.plugin_key)
-                        && book_matches_title(book, title)
+                        .is_none_or(|key| key == held.plugin_key)
                 })
-                .map(|book| (book.plugin_key.clone(), book.account_id.clone()))
+                .map(|held| (held.plugin_key, held.account_id))
                 .collect();
             if !wholly_owned(&touched) {
                 return Err(not_yours());
