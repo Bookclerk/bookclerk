@@ -20,7 +20,7 @@ use super::batch;
 use super::cluster_links::CLUSTER_LINK_LEFT;
 use super::enrollment::EnrollmentActor;
 use super::identity::{list_nodes, load_node, NodeKind, NodeRecord};
-use crate::entities::{accounts, books, cluster_links, users};
+use crate::entities::{accounts, cluster_links, editions, users};
 use crate::error::{LibraryError, Result};
 use crate::models::{UserRole, UserStatus};
 use crate::store::LibraryStore;
@@ -32,7 +32,8 @@ pub struct LibraryContents {
     pub users: u64,
     /// Store accounts.
     pub accounts: u64,
-    /// Books.
+    /// Books: editions in the library model, held or not, so any book
+    /// data the install holds counts.
     pub books: u64,
     /// Libraries this install is a branch of (not left).
     pub libraries_joined: u64,
@@ -81,7 +82,7 @@ pub async fn library_contents(store: &LibraryStore) -> Result<LibraryContents> {
             .count(db)
             .await
             .map_err(LibraryError::Orm)?,
-        books: books::Entity::find()
+        books: editions::Entity::find()
             .count(db)
             .await
             .map_err(LibraryError::Orm)?,
