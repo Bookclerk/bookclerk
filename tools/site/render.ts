@@ -221,6 +221,7 @@ export const NAV: NavSpec[] = [
       "adr/event-delivery-model",
       "adr/library-catalog-network",
       "adr/metadata-claims-and-file-sync",
+      "adr/patron-scopes",
     ],
   },
 ];

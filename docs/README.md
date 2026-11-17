@@ -104,3 +104,4 @@ Build and agent conventions for this repository live in
 - [Event delivery model](adr/event-delivery-model.md): events fan out to every subscriber, jobs have one handler, subscriptions follow deployments
 - [Library catalog network](adr/library-catalog-network.md): a branch of several libraries, what each library owns, and how libraries list and lend books
 - [Metadata claims and file sync](adr/metadata-claims-and-file-sync.md): every value is a claim with its source, one resolver, evidence-based works, and two-way sync with tags and sidecar files
+- [Patron scopes and linked sign-in](adr/patron-scopes.md): which part of the library a Member sees, and how a linked server's permissions follow one authority
