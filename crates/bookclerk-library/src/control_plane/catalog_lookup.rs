@@ -1580,6 +1580,11 @@ struct ListingText {
 /// `titles` with their listings' language and publication text, read in
 /// one narrow column read per chunk of listings.
 ///
+/// Storefronts set that text, so a chunk's rows can pass the plugin's
+/// `maxResultBytes`; the chunk is then read a listing at a time, and a
+/// listing still too wide to read is listed without its text (and
+/// logged) instead of failing the page.
+///
 /// # Errors
 ///
 /// Returns the read error.
@@ -1593,19 +1598,42 @@ pub(crate) async fn listed_titles(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let mut text: HashMap<String, ListingText> = HashMap::new();
-    for part in listing_ids.chunks(in_chunk(store, READ_FIXED_BINDS).max(1)) {
-        for row in store_listings::Entity::find()
+    let read = |part: Vec<String>| {
+        store_listings::Entity::find()
             .select_only()
             .column(store_listings::Column::Id)
             .column(store_listings::Column::Language)
             .column(store_listings::Column::PublishedAt)
-            .filter(store_listings::Column::Id.is_in(part.to_vec()))
+            .filter(store_listings::Column::Id.is_in(part))
             .into_model::<ListingText>()
             .all(store.db())
-            .await
-            .map_err(LibraryError::Orm)?
-        {
+    };
+    let mut text: HashMap<String, ListingText> = HashMap::new();
+    for part in listing_ids.chunks(in_chunk(store, READ_FIXED_BINDS).max(1)) {
+        let rows = match read(part.to_vec()).await.map_err(LibraryError::Orm) {
+            Ok(rows) => rows,
+            Err(err) if is_result_bytes_limit(&err) => {
+                // The store's text together passes one reply: read each
+                // listing alone, and list one still too wide without it.
+                let mut rows = Vec::with_capacity(part.len());
+                for id in part {
+                    match read(vec![id.clone()]).await.map_err(LibraryError::Orm) {
+                        Ok(one) => rows.extend(one),
+                        Err(err) if is_result_bytes_limit(&err) => {
+                            tracing::warn!(
+                                listing_id = %id,
+                                error = %err,
+                                "listing language and date left out: wider than one database reply"
+                            );
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+                rows
+            }
+            Err(err) => return Err(err),
+        };
+        for row in rows {
             text.insert(row.id.clone(), row);
         }
     }

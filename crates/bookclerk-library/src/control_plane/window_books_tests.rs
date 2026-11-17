@@ -975,22 +975,7 @@ impl sea_orm::ProxyDatabaseTrait for TextCapped {
 async fn a_title_wider_than_one_reply_is_left_out_of_the_window() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
-    let conn = rusqlite::Connection::open(dir.path().join("library.db")).unwrap();
-    let cap = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let engine = TextCapped {
-        inner: bookclerk_plugin_database_sqlite::sqlite::SqliteProxy::new(conn).unwrap(),
-        cap: std::sync::Arc::clone(&cap),
-        max_binds: 0,
-    };
-    let db = sea_orm::Database::connect_proxy(
-        sea_orm::DbBackend::Sqlite,
-        std::sync::Arc::new(Box::new(engine)),
-    )
-    .await
-    .unwrap();
-    crate::apply_host_schema(&db).await.unwrap();
-    crate::configure_master_key(dir.path()).unwrap();
-    let store = LibraryStore::from_connection(db);
+    let (store, cap) = capped_store(dir.path()).await;
     let riley = store
         .create_user(UserRole::Member, Some("Riley"), None)
         .await
@@ -1039,6 +1024,154 @@ async fn a_title_wider_than_one_reply_is_left_out_of_the_window() {
     }
     listed.sort();
     assert_eq!(listed, vec!["B0NARROW01", "B0NARROW02"]);
+}
+
+/// A library over [`TextCapped`] with no cap yet, and the cap to set once
+/// the fixture is stored.
+async fn capped_store(
+    dir: &std::path::Path,
+) -> (LibraryStore, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let conn = rusqlite::Connection::open(dir.join("library.db")).unwrap();
+    let cap = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let engine = TextCapped {
+        inner: bookclerk_plugin_database_sqlite::sqlite::SqliteProxy::new(conn).unwrap(),
+        cap: std::sync::Arc::clone(&cap),
+        max_binds: 0,
+    };
+    let db = sea_orm::Database::connect_proxy(
+        sea_orm::DbBackend::Sqlite,
+        std::sync::Arc::new(Box::new(engine)),
+    )
+    .await
+    .unwrap();
+    crate::apply_host_schema(&db).await.unwrap();
+    crate::configure_master_key(dir).unwrap();
+    (LibraryStore::from_connection(db), cap)
+}
+
+/// Runs `sql` on the library as is, for a fixture the host's writes would
+/// not produce.
+async fn raw(store: &LibraryStore, sql: &str) {
+    use sea_orm::ConnectionTrait;
+    store.db().execute_unprepared(sql).await.unwrap();
+}
+
+/// Listing text that fits one listing at a time but not a chunk of them
+/// is read a listing at a time: every title is listed with its language.
+#[tokio::test]
+async fn listing_text_wider_than_one_reply_together_is_read_per_listing() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, cap) = capped_store(dir.path()).await;
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    hold(
+        &store,
+        riley,
+        "riley-acct",
+        &["B0LANG0001".into(), "B0LANG0002".into()],
+    )
+    .await;
+    add_branch(&store, BRANCH, riley).await;
+    let language = "l".repeat(2500);
+    raw(
+        &store,
+        &format!("UPDATE store_listings SET language = '{language}'"),
+    )
+    .await;
+    cap.store(4096, std::sync::atomic::Ordering::SeqCst);
+
+    let titles = listed_titles(
+        &store,
+        titles_within_bytes(&store, find_holdings().all(store.db()).await.unwrap())
+            .await
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(titles.len(), 2);
+    assert!(titles
+        .iter()
+        .all(|t| t.language.as_deref() == Some(language.as_str())));
+}
+
+/// Another account's legacy book row for the same product, too wide to
+/// read, does not keep this person's title out of the window.
+#[tokio::test]
+async fn another_accounts_wide_book_row_does_not_hide_a_title() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, cap) = capped_store(dir.path()).await;
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    let sam = store
+        .create_user(UserRole::Member, Some("Sam"), None)
+        .await
+        .unwrap()
+        .id;
+    hold(&store, riley, "riley-acct", &["B0SHARED01".into()]).await;
+    hold(&store, sam, "sam-acct", &["B0SHARED01".into()]).await;
+    add_branch(&store, BRANCH, riley).await;
+    let wide = "W".repeat(5000);
+    raw(
+        &store,
+        &format!("UPDATE books SET title = '{wide}' WHERE account_id = 'sam-acct'"),
+    )
+    .await;
+    cap.store(4096, std::sync::atomic::Ordering::SeqCst);
+
+    let listed: Vec<String> = read_all(&store, BRANCH)
+        .await
+        .into_iter()
+        .flat_map(|work| work.editions)
+        .map(|edition| edition.product_id)
+        .collect();
+    assert_eq!(listed, vec!["B0SHARED01"]);
+}
+
+/// A holdings read refused for its bytes is read again with fewer rows per
+/// read, and every title is still listed once.
+#[tokio::test]
+async fn a_holdings_read_wider_than_one_reply_reads_fewer_rows() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, cap) = capped_store(dir.path()).await;
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    let asins: Vec<String> = (0..60).map(|n| format!("B0MANY{n:04}")).collect();
+    hold(&store, riley, "riley-acct", &asins).await;
+    add_branch(&store, BRANCH, riley).await;
+    let one_read: usize = find_holdings()
+        .all(store.db())
+        .await
+        .unwrap()
+        .iter()
+        .map(|h| {
+            h.id.len()
+                + h.listing_id.len()
+                + h.plugin_key.as_ref().map_or(0, String::len)
+                + h.account_id.as_ref().map_or(0, String::len)
+        })
+        .sum();
+    cap.store(one_read / 3, std::sync::atomic::Ordering::SeqCst);
+
+    let mut listed: Vec<String> = read_all(&store, BRANCH)
+        .await
+        .into_iter()
+        .flat_map(|work| work.editions)
+        .map(|edition| edition.product_id)
+        .collect();
+    listed.sort();
+    assert_eq!(listed, asins);
 }
 
 /// A page repeating many editions stored earlier in the same read reads

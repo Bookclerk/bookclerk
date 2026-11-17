@@ -248,6 +248,44 @@ pub async fn person_books_page(
     person_books_page_by(store, user_id, after, page).await
 }
 
+/// The account holdings of `account_ids` after cursor `after`, at most
+/// `limit` per chunk of `width` accounts, and the page boundary: the lowest
+/// last row of a chunk that filled (holdings past it may be unread).
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn held_after(
+    store: &LibraryStore,
+    account_ids: &[String],
+    width: usize,
+    after: &WindowCursor,
+    limit: u64,
+) -> Result<(Vec<holdings::Model>, Option<String>)> {
+    let mut read: Vec<holdings::Model> = Vec::new();
+    let mut boundary: Option<String> = None;
+    for part in account_ids.chunks(width.max(1)) {
+        let mut select = find_holdings()
+            .filter(holdings::Column::HolderKind.eq("account"))
+            .filter(holdings::Column::AccountId.is_in(part.to_vec()))
+            .order_by_asc(holdings::Column::Id)
+            .limit(limit);
+        if !after.is_start() {
+            select = select.filter(holdings::Column::Id.gt(after.as_str()));
+        }
+        let rows = select.all(store.db()).await.map_err(LibraryError::Orm)?;
+        if u64::try_from(rows.len()).unwrap_or(u64::MAX) >= limit {
+            if let Some(last) = rows.last() {
+                if boundary.as_ref().is_none_or(|b| last.id < *b) {
+                    boundary = Some(last.id.clone());
+                }
+            }
+        }
+        read.extend(rows);
+    }
+    Ok((read, boundary))
+}
+
 /// [`person_books_page`] reading at most `page` books per database read
 /// (at least 1; never more than [`WINDOW_BOOKS_READ`]).
 ///
@@ -276,28 +314,17 @@ async fn person_books_page_by(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let limit = WINDOW_BOOKS_READ.min(page.max(1));
-    let mut read: Vec<holdings::Model> = Vec::new();
-    let mut boundary: Option<String> = None;
-    for part in account_ids.chunks(width.max(1)) {
-        let mut select = find_holdings()
-            .filter(holdings::Column::HolderKind.eq("account"))
-            .filter(holdings::Column::AccountId.is_in(part.to_vec()))
-            .order_by_asc(holdings::Column::Id)
-            .limit(limit);
-        if !after.is_start() {
-            select = select.filter(holdings::Column::Id.gt(after.as_str()));
+    let mut limit = WINDOW_BOOKS_READ.min(page.max(1));
+    // Holding rows are narrow, but a plugin may advertise a small
+    // `maxResultBytes`: when a read is refused for its bytes, the page is
+    // read again with half as many rows per read.
+    let (mut read, boundary) = loop {
+        match held_after(store, &account_ids, width, after, limit).await {
+            Ok(found) => break found,
+            Err(err) if limit > 1 && is_result_bytes_limit(&err) => limit /= 2,
+            Err(err) => return Err(err),
         }
-        let rows = select.all(store.db()).await.map_err(LibraryError::Orm)?;
-        if u64::try_from(rows.len()).unwrap_or(u64::MAX) >= limit {
-            if let Some(last) = rows.last() {
-                if boundary.as_ref().is_none_or(|b| last.id < *b) {
-                    boundary = Some(last.id.clone());
-                }
-            }
-        }
-        read.extend(rows);
-    }
+    };
     read.sort_by(|a, b| a.id.cmp(&b.id));
     read.dedup_by(|a, b| a.id == b.id);
     if let Some(boundary) = &boundary {
