@@ -49,9 +49,8 @@ pub const TRIGGER_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// the next call.
 ///
 /// The plugin must belong only to the integration family. A Python guest
-/// sleeps too: it starts from its stored start-up snapshot (see
-/// [`crate::python_snapshot`]) in about a second. Every integration
-/// entrypoint works through a wake: a
+/// sleeps too: it starts from its stored start-up snapshot in about a
+/// second. Every integration entrypoint works through a wake: a
 /// `remoteLibrary` guest keeps what must outlive a sleep in its plugin
 /// database, and its new-user poll is scheduled by the host; a sign-in
 /// (`oidc`) call starts the guest the way a lookup does. A `cli`
