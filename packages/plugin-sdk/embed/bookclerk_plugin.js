@@ -16,6 +16,9 @@ var PRODUCT_API_VERSION = 3;
 var MAX_SCALAR_BYTES = 262144;
 var MAX_STREAM_WINDOW_BYTES = 1048576;
 var MAX_LIST_PAGE = 256;
+var MAX_BATCH_KEYS = 256;
+var MAX_CHANGES_PAGE = 256;
+var MAX_CHANGES_CURSOR_BYTES = 4096;
 var MAX_CHECKPOINT_BYTES = 65536;
 var MAX_SCAN_PAGE_BOOKS = 500;
 var MAX_SCAN_CURSOR_BYTES = 4096;
@@ -31,6 +34,13 @@ var MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES = 262144;
 var FEATURE_SCALAR_LIMITS = "rpc.scalarLimits";
 var FEATURE_STREAMS = "rpc.streams";
 var FEATURE_STORAGE_COPY = "storage.copy";
+var FEATURE_STORAGE_MOVE = "storage.move";
+var FEATURE_STORAGE_MOVE_MANY = "storage.moveMany";
+var FEATURE_STORAGE_DELETE_MANY = "storage.deleteMany";
+var FEATURE_STORAGE_HEAD_MANY = "storage.headMany";
+var FEATURE_STORAGE_CONDITIONAL_WRITE = "storage.conditionalWrite";
+var FEATURE_STORAGE_CHANGES = "storage.changes";
+var OBJECT_CHANGE_KINDS = ["changed", "upserted", "removed"];
 var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited"];
 var CLI_ARG_KINDS = ["string", "bool", "int", "path"];
 var WORK_KINDS = ["unspecified", "book", "podcast"];
@@ -877,6 +887,9 @@ function fromOrd(table, ordinal, enumName) {
   }
   return v;
 }
+function fromOrdOr(table, ordinal, fallback) {
+  return table[ordinal] ?? fallback;
+}
 function unknownUnion(struct, member) {
   return new Error(`unknown ${struct} union member: ${String(member)}`);
 }
@@ -900,8 +913,8 @@ var PluginErrorCodec = {
   }
 };
 var ObjectMetadataCodec = {
-  dataWords: 1,
-  pointerCount: 4,
+  dataWords: 2,
+  pointerCount: 6,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.key ?? "");
@@ -909,6 +922,9 @@ var ObjectMetadataCodec = {
     s.setText(1, v.contentType ?? "");
     s.setText(2, v.etag ?? "");
     s.setData(3, v.sha256 ?? EMPTY_BYTES);
+    s.setUint64(1, BigInt(v.modifiedAtMs ?? 0));
+    s.setText(4, v.versionId ?? "");
+    s.setText(5, v.signature ?? "");
   },
   read(s, caps) {
     void caps;
@@ -917,73 +933,95 @@ var ObjectMetadataCodec = {
       size: Number(s.getUint64(0)),
       contentType: s.getText(1),
       etag: s.getText(2),
-      sha256: s.getData(3)
+      sha256: s.getData(3),
+      modifiedAtMs: Number(s.getUint64(1)),
+      versionId: s.getText(4),
+      signature: s.getText(5)
     };
   }
 };
 var ObjectInfoCodec = {
-  dataWords: 1,
-  pointerCount: 1,
+  dataWords: 2,
+  pointerCount: 4,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.key ?? "");
     s.setUint64(0, BigInt(v.size ?? 0));
+    s.setText(1, v.etag ?? "");
+    s.setUint64(1, BigInt(v.modifiedAtMs ?? 0));
+    s.setText(2, v.versionId ?? "");
+    s.setText(3, v.signature ?? "");
   },
   read(s, caps) {
     void caps;
     return {
       key: s.getText(0),
-      size: Number(s.getUint64(0))
+      size: Number(s.getUint64(0)),
+      etag: s.getText(1),
+      modifiedAtMs: Number(s.getUint64(1)),
+      versionId: s.getText(2),
+      signature: s.getText(3)
     };
   }
 };
 var ListOptionsCodec = {
-  dataWords: 1,
+  dataWords: 2,
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.prefix ?? "");
     s.setText(1, v.cursor ?? "");
     s.setUint32(0, v.limit ?? 0);
+    s.setBool(32, v.withSignatures ?? false);
+    s.setUint64(1, BigInt(v.modifiedSinceMs ?? 0));
   },
   read(s, caps) {
     void caps;
     return {
       prefix: s.getText(0),
       cursor: s.getText(1),
-      limit: s.getUint32(0)
+      limit: s.getUint32(0),
+      withSignatures: s.getBool(32),
+      modifiedSinceMs: Number(s.getUint64(1))
     };
   }
 };
 var ListPageCodec = {
-  dataWords: 0,
+  dataWords: 1,
   pointerCount: 2,
   write(s, v, caps) {
     {
       const list = v.objects ?? [];
-      const items = s.initStructList(0, list.length, 1, 1);
+      const items = s.initStructList(0, list.length, 2, 4);
       for (let i = 0; i < items.length; i++) {
         ObjectInfoCodec.write(items[i], list[i], caps);
       }
     }
     s.setText(1, v.nextCursor ?? "");
+    s.setBool(0, v.signaturesIncluded ?? false);
+    s.setBool(1, v.modifiedSinceApplied ?? false);
   },
   read(s, caps) {
     return {
-      objects: s.getStructList(0, 1, 1).map((item) => ObjectInfoCodec.read(item, caps)),
-      nextCursor: s.getText(1)
+      objects: s.getStructList(0, 2, 4).map((item) => ObjectInfoCodec.read(item, caps)),
+      nextCursor: s.getText(1),
+      signaturesIncluded: s.getBool(0),
+      modifiedSinceApplied: s.getBool(1)
     };
   }
 };
 var PutResultCodec = {
-  dataWords: 1,
-  pointerCount: 3,
+  dataWords: 2,
+  pointerCount: 5,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.key ?? "");
     s.setUint64(0, BigInt(v.bytesWritten ?? 0));
     s.setText(1, v.etag ?? "");
     s.setData(2, v.sha256 ?? EMPTY_BYTES);
+    s.setUint64(1, BigInt(v.modifiedAtMs ?? 0));
+    s.setText(3, v.versionId ?? "");
+    s.setText(4, v.signature ?? "");
   },
   read(s, caps) {
     void caps;
@@ -991,7 +1029,10 @@ var PutResultCodec = {
       key: s.getText(0),
       bytesWritten: Number(s.getUint64(0)),
       etag: s.getText(1),
-      sha256: s.getData(2)
+      sha256: s.getData(2),
+      modifiedAtMs: Number(s.getUint64(1)),
+      versionId: s.getText(3),
+      signature: s.getText(4)
     };
   }
 };
@@ -1006,6 +1047,247 @@ var CopyResultCodec = {
     void caps;
     return {
       bytesCopied: Number(s.getUint64(0))
+    };
+  }
+};
+var MoveOptionsCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.noOverwrite ?? false);
+    s.setText(0, v.ifSourceMatch ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      noOverwrite: s.getBool(0),
+      ifSourceMatch: s.getText(0)
+    };
+  }
+};
+var MoveResultCodec = {
+  dataWords: 1,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.atomic ?? false);
+    s.setBool(1, v.alreadyMoved ?? false);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      atomic: s.getBool(0),
+      alreadyMoved: s.getBool(1)
+    };
+  }
+};
+var KeyPairCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.from ?? "");
+    s.setText(1, v.to ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      from: s.getText(0),
+      to: s.getText(1)
+    };
+  }
+};
+var MoveManyTargetCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "pairs":
+        s.setUint16(0, 0);
+        {
+          const list = v.value ?? [];
+          const items = s.initStructList(0, list.length, 0, 2);
+          for (let i = 0; i < items.length; i++) {
+            KeyPairCodec.write(items[i], list[i], caps);
+          }
+        }
+        break;
+      case "prefix":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          KeyPairCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MoveManyTarget", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "pairs", value: s.getStructList(0, 0, 2).map((item) => KeyPairCodec.read(item, caps)) };
+      case 1:
+        return { kind: "prefix", value: KeyPairCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("MoveManyTarget", disc);
+    }
+  }
+};
+var MoveManyRequestCodec = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    if (v.target != null) {
+      MoveManyTargetCodec.write(s.initStruct(0, 1, 1), v.target, caps);
+    }
+    s.setText(1, v.cursor ?? "");
+    s.setUint32(0, v.limit ?? 0);
+    if (v.options != null) {
+      MoveOptionsCodec.write(s.initStruct(2, 1, 1), v.options, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      target: MoveManyTargetCodec.read(s.getStruct(0, 1, 1), caps),
+      cursor: s.getText(1),
+      limit: s.getUint32(0),
+      options: MoveOptionsCodec.read(s.getStruct(2, 1, 1), caps)
+    };
+  }
+};
+var KeyOutcomeCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    s.setText(0, v.key ?? "");
+    if (v.error != null) {
+      PluginErrorCodec.write(s.initStruct(1, 0, 3), v.error, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      key: s.getText(0),
+      error: PluginErrorCodec.read(s.getStruct(1, 0, 3), caps)
+    };
+  }
+};
+var MoveManyPageCodec = {
+  dataWords: 2,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.results ?? [];
+      const items = s.initStructList(0, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        KeyOutcomeCodec.write(items[i], list[i], caps);
+      }
+    }
+    s.setText(1, v.nextCursor ?? "");
+    s.setBool(0, v.atomic ?? false);
+    s.setUint64(1, BigInt(v.objectsMoved ?? 0));
+  },
+  read(s, caps) {
+    return {
+      results: s.getStructList(0, 0, 2).map((item) => KeyOutcomeCodec.read(item, caps)),
+      nextCursor: s.getText(1),
+      atomic: s.getBool(0),
+      objectsMoved: Number(s.getUint64(1))
+    };
+  }
+};
+var DeleteManyResultCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.results ?? [];
+      const items = s.initStructList(0, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        KeyOutcomeCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      results: s.getStructList(0, 0, 2).map((item) => KeyOutcomeCodec.read(item, caps))
+    };
+  }
+};
+var HeadManyResultCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.objects ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        HeadOkCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      objects: s.getStructList(0, 1, 1).map((item) => HeadOkCodec.read(item, caps))
+    };
+  }
+};
+var ChangesRequestCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.cursor ?? "");
+    s.setUint32(0, v.limit ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      cursor: s.getText(0),
+      limit: s.getUint32(0)
+    };
+  }
+};
+var ObjectChangeCodec = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    s.setText(0, v.key ?? "");
+    s.setUint16(0, ord(OBJECT_CHANGE_KINDS, v.kind ?? OBJECT_CHANGE_KINDS[0], "ObjectChangeKind"));
+    if (v.info != null) {
+      ObjectInfoCodec.write(s.initStruct(1, 2, 4), v.info, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      key: s.getText(0),
+      kind: fromOrdOr(OBJECT_CHANGE_KINDS, s.getUint16(0), "changed"),
+      info: ObjectInfoCodec.read(s.getStruct(1, 2, 4), caps)
+    };
+  }
+};
+var ChangesPageCodec = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.changes ?? [];
+      const items = s.initStructList(0, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        ObjectChangeCodec.write(items[i], list[i], caps);
+      }
+    }
+    s.setText(1, v.cursor ?? "");
+    s.setBool(0, v.more ?? false);
+    s.setBool(1, v.complete ?? false);
+  },
+  read(s, caps) {
+    return {
+      changes: s.getStructList(0, 1, 2).map((item) => ObjectChangeCodec.read(item, caps)),
+      cursor: s.getText(1),
+      more: s.getBool(0),
+      complete: s.getBool(1)
     };
   }
 };
@@ -1561,13 +1843,13 @@ var HeadOkCodec = {
   write(s, v, caps) {
     s.setBool(0, v.found ?? false);
     if (v.meta != null) {
-      ObjectMetadataCodec.write(s.initStruct(0, 1, 4), v.meta, caps);
+      ObjectMetadataCodec.write(s.initStruct(0, 2, 6), v.meta, caps);
     }
   },
   read(s, caps) {
     return {
       found: s.getBool(0),
-      meta: ObjectMetadataCodec.read(s.getStruct(0, 1, 4), caps)
+      meta: ObjectMetadataCodec.read(s.getStruct(0, 2, 6), caps)
     };
   }
 };
@@ -1612,7 +1894,7 @@ var ListReplyCodec = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          ListPageCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          ListPageCodec.write(s.initStruct(0, 1, 2), v.value, caps);
         }
         break;
       case "err":
@@ -1629,7 +1911,7 @@ var ListReplyCodec = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: ListPageCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "ok", value: ListPageCodec.read(s.getStruct(0, 1, 2), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -1645,7 +1927,7 @@ var PutReplyCodec = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          PutResultCodec.write(s.initStruct(0, 1, 3), v.value, caps);
+          PutResultCodec.write(s.initStruct(0, 2, 5), v.value, caps);
         }
         break;
       case "err":
@@ -1662,7 +1944,7 @@ var PutReplyCodec = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: PutResultCodec.read(s.getStruct(0, 1, 3), caps) };
+        return { kind: "ok", value: PutResultCodec.read(s.getStruct(0, 2, 5), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -1700,6 +1982,171 @@ var CopyReplyCodec = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CopyReply", disc);
+    }
+  }
+};
+var MoveReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          MoveResultCodec.write(s.initStruct(0, 1, 0), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MoveReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: MoveResultCodec.read(s.getStruct(0, 1, 0), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("MoveReply", disc);
+    }
+  }
+};
+var MoveManyReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          MoveManyPageCodec.write(s.initStruct(0, 2, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MoveManyReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: MoveManyPageCodec.read(s.getStruct(0, 2, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("MoveManyReply", disc);
+    }
+  }
+};
+var DeleteManyReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          DeleteManyResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("DeleteManyReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: DeleteManyResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("DeleteManyReply", disc);
+    }
+  }
+};
+var HeadManyReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          HeadManyResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("HeadManyReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: HeadManyResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("HeadManyReply", disc);
+    }
+  }
+};
+var ChangesReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          ChangesPageCodec.write(s.initStruct(0, 1, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("ChangesReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: ChangesPageCodec.read(s.getStruct(0, 1, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("ChangesReply", disc);
     }
   }
 };
@@ -6059,12 +6506,12 @@ var DestinationListParamsCodec = {
   pointerCount: 1,
   write(s, v, caps) {
     if (v.options != null) {
-      ListOptionsCodec.write(s.initStruct(0, 1, 2), v.options, caps);
+      ListOptionsCodec.write(s.initStruct(0, 2, 2), v.options, caps);
     }
   },
   read(s, caps) {
     return {
-      options: ListOptionsCodec.read(s.getStruct(0, 1, 2), caps)
+      options: ListOptionsCodec.read(s.getStruct(0, 2, 2), caps)
     };
   }
 };
@@ -6197,6 +6644,150 @@ var DestinationAbortStageResultsCodec = {
   read(s, caps) {
     return {
       result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var DestinationMoveParamsCodec = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    s.setText(0, v.from ?? "");
+    s.setText(1, v.to ?? "");
+    if (v.options != null) {
+      MoveOptionsCodec.write(s.initStruct(2, 1, 1), v.options, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      from: s.getText(0),
+      to: s.getText(1),
+      options: MoveOptionsCodec.read(s.getStruct(2, 1, 1), caps)
+    };
+  }
+};
+var DestinationMoveResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MoveReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MoveReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var DestinationMoveManyParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      MoveManyRequestCodec.write(s.initStruct(0, 1, 3), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: MoveManyRequestCodec.read(s.getStruct(0, 1, 3), caps)
+    };
+  }
+};
+var DestinationMoveManyResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MoveManyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MoveManyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var DestinationDeleteManyParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.keys ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      keys: s.getTextList(0)
+    };
+  }
+};
+var DestinationDeleteManyResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      DeleteManyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: DeleteManyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var DestinationHeadManyParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.keys ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      keys: s.getTextList(0)
+    };
+  }
+};
+var DestinationHeadManyResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      HeadManyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: HeadManyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var DestinationChangesParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      ChangesRequestCodec.write(s.initStruct(0, 1, 1), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: ChangesRequestCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var DestinationChangesResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      ChangesReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: ChangesReplyCodec.read(s.getStruct(0, 1, 1), caps)
     };
   }
 };
@@ -9487,8 +10078,48 @@ function listOptions(options) {
   return {
     prefix: options?.prefix || void 0,
     cursor: options?.cursor || void 0,
-    limit: options?.limit || void 0
+    limit: options?.limit || void 0,
+    withSignatures: options?.withSignatures || void 0,
+    modifiedSinceMs: options?.modifiedSinceMs || void 0
   };
+}
+function moveOptions(options) {
+  return {
+    noOverwrite: options?.noOverwrite || void 0,
+    ifSourceMatch: options?.ifSourceMatch || void 0
+  };
+}
+function moveManyRequest(request) {
+  const target = request?.target ?? { kind: "pairs", value: [] };
+  if (target.kind === "pairs" && target.value.length > MAX_BATCH_KEYS) {
+    throw new PluginError("payload_too_large", `moveMany of ${target.value.length} pairs`);
+  }
+  return {
+    target,
+    cursor: request?.cursor || void 0,
+    limit: request?.limit || void 0,
+    options: moveOptions(request?.options)
+  };
+}
+function batchKeys(keys) {
+  const list = keys ?? [];
+  if (list.length === 0) {
+    throw new PluginError("invalid_params", "a batch call needs at least one key");
+  }
+  if (list.length > MAX_BATCH_KEYS) {
+    throw new PluginError("payload_too_large", `batch of ${list.length} keys`);
+  }
+  return list.map(String);
+}
+function wireOutcomes(outcomes) {
+  return outcomes.map((o) => ({
+    key: String(o.key ?? ""),
+    error: {
+      code: o.error ? String(o.error.code ?? "") || "internal" : "",
+      message: o.error ? String(o.error.message ?? "") : "",
+      details: ""
+    }
+  }));
 }
 function sessionCall(method) {
   return (s, p, cx) => {
@@ -9589,6 +10220,63 @@ var METHODS = {
         String(p.commitToken ?? "")
       ]),
       ok: okEmpty
+    }),
+    move: spec({
+      params: DestinationMoveParamsCodec,
+      results: DestinationMoveResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "move", [
+        String(p.from ?? ""),
+        String(p.to ?? ""),
+        moveOptions(p.options)
+      ]),
+      ok: okPass
+    }),
+    moveMany: spec({
+      params: DestinationMoveManyParamsCodec,
+      results: DestinationMoveManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "moveMany", [moveManyRequest(p.request)]),
+      ok: (value) => {
+        const page = value ?? { results: [] };
+        return okValue({
+          results: wireOutcomes(asList(page.results)),
+          nextCursor: page.nextCursor ?? "",
+          atomic: page.atomic ?? false,
+          objectsMoved: page.objectsMoved ?? 0
+        });
+      }
+    }),
+    deleteMany: spec({
+      params: DestinationDeleteManyParamsCodec,
+      results: DestinationDeleteManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "deleteMany", [batchKeys(p.keys)]),
+      ok: (value) => okValue({ results: wireOutcomes(asList(value)) })
+    }),
+    headMany: spec({
+      params: DestinationHeadManyParamsCodec,
+      results: DestinationHeadManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "headMany", [batchKeys(p.keys)]),
+      ok: (value) => okValue({
+        objects: asList(value).map((meta) => ({
+          found: meta != null,
+          meta: meta ?? void 0
+        }))
+      })
+    }),
+    changes: spec({
+      params: DestinationChangesParamsCodec,
+      results: DestinationChangesResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "changes", [
+        {
+          cursor: p.request?.cursor || void 0,
+          limit: p.request?.limit || void 0
+        }
+      ]),
+      ok: okPass
     })
   },
   RemoteLibrary: {
@@ -10182,6 +10870,55 @@ var Destination = class extends RpcTarget {
    */
   abortStage(_key, _commitToken) {
     return Promise.reject(unsupported("abortStage"));
+  }
+  /**
+   * Move one object (declare `storage.move`). Repeating a finished move
+   * resolves with `alreadyMoved`.
+   *
+   * @param _from - Source key.
+   * @param _to - Target key.
+   * @param _options - Overwrite and source preconditions.
+   * @returns How the move was done.
+   */
+  move(_from, _to, _options) {
+    return Promise.reject(unsupported("move"));
+  }
+  /**
+   * Move a set of objects or a whole prefix, one page per call (declare
+   * `storage.moveMany`). Safe to repeat.
+   *
+   * @param _request - Pairs or prefix, cursor, and options.
+   * @returns Per-key outcomes and the continuation.
+   */
+  moveMany(_request) {
+    return Promise.reject(unsupported("moveMany"));
+  }
+  /**
+   * Remove up to `MAX_BATCH_KEYS` objects (declare `storage.deleteMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One outcome per key, in order; a missing key succeeds.
+   */
+  deleteMany(_keys) {
+    return Promise.reject(unsupported("deleteMany"));
+  }
+  /**
+   * Probe up to `MAX_BATCH_KEYS` objects (declare `storage.headMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One entry per key, in order; `null` when missing.
+   */
+  headMany(_keys) {
+    return Promise.reject(unsupported("headMany"));
+  }
+  /**
+   * Keys changed since a cursor (declare `storage.changes`).
+   *
+   * @param _request - Cursor and page size.
+   * @returns One page of changes.
+   */
+  changes(_request) {
+    return Promise.reject(unsupported("changes"));
   }
 };
 var Source = class extends RpcTarget {
@@ -11268,7 +12005,12 @@ var STORAGE_METHODS = Object.freeze([
   "copy",
   "delete",
   "commit",
-  "abortStage"
+  "abortStage",
+  "move",
+  "moveMany",
+  "deleteMany",
+  "headMany",
+  "changes"
 ]);
 var StorageEntrypoint = class extends NamedEntrypoint {
   static bookclerkMethods = STORAGE_METHODS;
@@ -11349,6 +12091,55 @@ var StorageEntrypoint = class extends NamedEntrypoint {
    */
   abortStage(_key, _commitToken) {
     return Promise.reject(unsupported("abortStage"));
+  }
+  /**
+   * Move one object (declare `storage.move`). Repeating a finished move
+   * resolves with `alreadyMoved`.
+   *
+   * @param _from - Source key.
+   * @param _to - Target key.
+   * @param _options - Overwrite and source preconditions.
+   * @returns How the move was done.
+   */
+  move(_from, _to, _options) {
+    return Promise.reject(unsupported("move"));
+  }
+  /**
+   * Move a set of objects or a whole prefix, one page per call (declare
+   * `storage.moveMany`). Safe to repeat.
+   *
+   * @param _request - Pairs or prefix, cursor, and options.
+   * @returns Per-key outcomes and the continuation.
+   */
+  moveMany(_request) {
+    return Promise.reject(unsupported("moveMany"));
+  }
+  /**
+   * Remove up to `MAX_BATCH_KEYS` objects (declare `storage.deleteMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One outcome per key, in order; a missing key succeeds.
+   */
+  deleteMany(_keys) {
+    return Promise.reject(unsupported("deleteMany"));
+  }
+  /**
+   * Probe up to `MAX_BATCH_KEYS` objects (declare `storage.headMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One entry per key, in order; `null` when missing.
+   */
+  headMany(_keys) {
+    return Promise.reject(unsupported("headMany"));
+  }
+  /**
+   * Keys changed since a cursor (declare `storage.changes`).
+   *
+   * @param _request - Cursor and page size.
+   * @returns One page of changes.
+   */
+  changes(_request) {
+    return Promise.reject(unsupported("changes"));
   }
 };
 var REMOTE_LIBRARY_METHODS = Object.freeze([
@@ -11742,6 +12533,9 @@ var GrantedDestination = class extends Destination {
     this.#signal = signal;
   }
   async put(key, body, options) {
+    if (options?.ifMatch || options?.ifNoneMatch) {
+      throw PluginError.fromWire("unsupported", "conditional writes are not supported on granted destinations");
+    }
     const headers = { ...this.#auth };
     if (options?.contentType)
       headers["content-type"] = options.contentType;
@@ -13092,7 +13886,13 @@ export {
   EventMessage,
   ExecuteStreamDecoder,
   FEATURE_SCALAR_LIMITS,
+  FEATURE_STORAGE_CHANGES,
+  FEATURE_STORAGE_CONDITIONAL_WRITE,
   FEATURE_STORAGE_COPY,
+  FEATURE_STORAGE_DELETE_MANY,
+  FEATURE_STORAGE_HEAD_MANY,
+  FEATURE_STORAGE_MOVE,
+  FEATURE_STORAGE_MOVE_MANY,
   FEATURE_STREAMS,
   GUEST_READ_ONLY_REPLAY_PAYLOAD,
   GUEST_RECEIPT_CLAIM_LOST,
@@ -13102,6 +13902,9 @@ export {
   GUEST_REPLAY_PAYLOAD_MAX_BYTES,
   InvokeError,
   JobController,
+  MAX_BATCH_KEYS,
+  MAX_CHANGES_CURSOR_BYTES,
+  MAX_CHANGES_PAGE,
   MAX_CHECKPOINT_BYTES,
   MAX_EVENT_PAYLOAD_BYTES,
   MAX_LIST_PAGE,

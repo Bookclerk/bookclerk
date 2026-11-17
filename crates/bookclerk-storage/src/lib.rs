@@ -20,6 +20,9 @@ mod bounded;
 /// Error types returned by destination storage backends.
 mod error;
 mod fanout;
+/// Intent operations (moves, batches, conditional writes, change feeds) and
+/// their fallbacks.
+pub mod intent;
 /// On-disk local list index (external sort, O(page) reads).
 mod list_index;
 mod local;
@@ -39,6 +42,11 @@ pub use bounded::{
 };
 pub use error::{Result, StorageError};
 pub use fanout::FanoutBackend;
+pub use intent::{
+    ChangeFeedPage, ConditionalPutResult, HintedListPage, KeyResult, ListRequest, MoveOptions,
+    MovePrefixPage, MoveResult, ObjectChange, ObjectChangeKind, StorageCapabilities,
+    WriteCondition,
+};
 pub use local::LocalFsBackend;
 pub use placement::node_placement_id;
 #[cfg(feature = "s3")]

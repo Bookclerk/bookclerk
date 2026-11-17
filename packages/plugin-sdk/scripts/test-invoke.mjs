@@ -38,6 +38,7 @@ const {
   DatabaseAdapterEntrypoint,
   MetadataEntrypoint,
   CoverEntrypoint,
+  MAX_BATCH_KEYS,
   MetadataFilesEntrypoint,
   PluginError,
   StorageEntrypoint,
@@ -231,6 +232,49 @@ class Storage extends StorageEntrypoint {
   async abortStage() {
     throw PluginError.fromWire("not_found", "no such stage");
   }
+  async move(from, to, options) {
+    calls.move = { from, to, options };
+    return { atomic: true, alreadyMoved: from === "gone" };
+  }
+  async moveMany(request) {
+    calls.moveMany = request;
+    if (request.target.kind === "prefix") {
+      return { results: [{ key: "a/1" }], nextCursor: "page2" };
+    }
+    return {
+      results: request.target.value.map((p) =>
+        p.from === "taken"
+          ? { key: p.from, error: { code: "conflict", message: "exists" } }
+          : { key: p.from },
+      ),
+      atomic: true,
+      objectsMoved: 1,
+    };
+  }
+  async deleteMany(keys) {
+    return keys.map((key) =>
+      key === "bad"
+        ? { key, error: { code: "not_found", message: "nope" } }
+        : key === "blank"
+          ? { key, error: { code: "", message: "refused" } }
+          : { key },
+    );
+  }
+  async headMany(keys) {
+    return keys.map((key) => (key === "present" ? { key, size: 3, versionId: "v1" } : null));
+  }
+  async changes(request) {
+    calls.changes = request;
+    return {
+      changes: [
+        { key: "a/1", kind: "upserted", info: { key: "a/1", size: 3, etag: "e1" } },
+        { key: "a/2", kind: "removed" },
+      ],
+      cursor: "c2",
+      more: false,
+      complete: true,
+    };
+  }
 }
 
 class Session extends AdapterDatabaseSession {
@@ -318,6 +362,14 @@ class Covers extends CoverEntrypoint {
   async fetchCovers(params, sink) {
     // The wire envelope is not a valid return value.
     if (params.urls[0] === "https://wrapped.example/") return { images: [] };
+    // A granted sink cannot carry preconditions, so it refuses them.
+    if (params.urls[0] === "https://conditional.example/") {
+      const body = new Blob([new Uint8Array(1)]).stream();
+      for (const options of [{ ifNoneMatch: true }, { ifMatch: "e1" }]) {
+        await assert.rejects(sink.put("0", body, options), (err) => err.code === "unsupported");
+      }
+      return [{ url: params.urls[0], stored: false, error: "refused" }];
+    }
     const images = [];
     for (const [i, url] of params.urls.entries()) {
       if (url.endsWith("/missing.jpg")) {
@@ -823,17 +875,34 @@ function decodeReply(reply, resultsCodec, caps) {
   );
   assert.deepEqual(
     calls.list,
-    { prefix: undefined, cursor: undefined, limit: undefined },
+    {
+      prefix: undefined,
+      cursor: undefined,
+      limit: undefined,
+      withSignatures: undefined,
+      modifiedSinceMs: undefined,
+    },
     "zero values → omitted",
   );
   assert.deepEqual(page, {
     kind: "ok",
-    value: { objects: [{ key: "a/1", size: 3 }], nextCursor: "next" },
+    value: {
+      objects: [{ key: "a/1", size: 3, etag: "", modifiedAtMs: 0, versionId: "", signature: "" }],
+      nextCursor: "next",
+      signaturesIncluded: false,
+      modifiedSinceApplied: false,
+    },
   });
   await invoke("Destination", "list", W.DestinationListParamsCodec, {
-    options: { prefix: "a/", cursor: "c", limit: 5 },
+    options: { prefix: "a/", cursor: "c", limit: 5, withSignatures: true, modifiedSinceMs: 1234 },
   });
-  assert.deepEqual(calls.list, { prefix: "a/", cursor: "c", limit: 5 });
+  assert.deepEqual(calls.list, {
+    prefix: "a/",
+    cursor: "c",
+    limit: 5,
+    withSignatures: true,
+    modifiedSinceMs: 1234,
+  });
 }
 
 {
@@ -868,6 +937,160 @@ function decodeReply(reply, resultsCodec, caps) {
     kind: "err",
     value: { code: "not_found", message: "no such stage", details: "" },
   });
+}
+
+{
+  const opts = { noOverwrite: false, ifSourceMatch: "" };
+  const move = decodeReply(
+    await invoke("Destination", "move", W.DestinationMoveParamsCodec, {
+      from: "a",
+      to: "b",
+      options: { noOverwrite: true, ifSourceMatch: "e1" },
+    }),
+    W.DestinationMoveResultsCodec,
+  );
+  assert.deepEqual(move, { kind: "ok", value: { atomic: true, alreadyMoved: false } });
+  assert.deepEqual(calls.move, {
+    from: "a",
+    to: "b",
+    options: { noOverwrite: true, ifSourceMatch: "e1" },
+  });
+  await invoke("Destination", "move", W.DestinationMoveParamsCodec, {
+    from: "a",
+    to: "b",
+    options: opts,
+  });
+  assert.deepEqual(
+    calls.move.options,
+    { noOverwrite: undefined, ifSourceMatch: undefined },
+    "zero values → omitted",
+  );
+
+  const pairs = decodeReply(
+    await invoke("Destination", "moveMany", W.DestinationMoveManyParamsCodec, {
+      request: {
+        target: {
+          kind: "pairs",
+          value: [
+            { from: "x", to: "y" },
+            { from: "taken", to: "z" },
+          ],
+        },
+        cursor: "",
+        limit: 0,
+        options: opts,
+      },
+    }),
+    W.DestinationMoveManyResultsCodec,
+  );
+  assert.equal(pairs.kind, "ok");
+  assert.equal(pairs.value.atomic, true);
+  assert.equal(pairs.value.objectsMoved, 1);
+  assert.equal(pairs.value.nextCursor, "");
+  assert.deepEqual(
+    pairs.value.results.map((r) => [r.key, r.error.code]),
+    [
+      ["x", ""],
+      ["taken", "conflict"],
+    ],
+  );
+  const prefix = decodeReply(
+    await invoke("Destination", "moveMany", W.DestinationMoveManyParamsCodec, {
+      request: {
+        target: { kind: "prefix", value: { from: "a/", to: "b/" } },
+        cursor: "page1",
+        limit: 10,
+        options: opts,
+      },
+    }),
+    W.DestinationMoveManyResultsCodec,
+  );
+  assert.equal(calls.moveMany.cursor, "page1");
+  assert.equal(calls.moveMany.limit, 10);
+  assert.equal(prefix.value.nextCursor, "page2");
+  assert.equal(prefix.value.atomic, false);
+  const tooMany = decodeReply(
+    await invoke("Destination", "moveMany", W.DestinationMoveManyParamsCodec, {
+      request: {
+        target: {
+          kind: "pairs",
+          value: Array.from({ length: MAX_BATCH_KEYS + 1 }, (_, i) => ({
+            from: `f${i}`,
+            to: `t${i}`,
+          })),
+        },
+        cursor: "",
+        limit: 0,
+        options: opts,
+      },
+    }),
+    W.DestinationMoveManyResultsCodec,
+  );
+  assert.equal(tooMany.kind, "err");
+  assert.equal(tooMany.value.code, "payload_too_large");
+
+  const del = decodeReply(
+    await invoke("Destination", "deleteMany", W.DestinationDeleteManyParamsCodec, {
+      keys: ["ok", "bad", "blank"],
+    }),
+    W.DestinationDeleteManyResultsCodec,
+  );
+  assert.deepEqual(
+    del.value.results.map((r) => [r.key, r.error.code, r.error.message]),
+    [
+      ["ok", "", ""],
+      ["bad", "not_found", "nope"],
+      // A failure with an empty code must never read as success.
+      ["blank", "internal", "refused"],
+    ],
+  );
+  const empty = decodeReply(
+    await invoke("Destination", "deleteMany", W.DestinationDeleteManyParamsCodec, { keys: [] }),
+    W.DestinationDeleteManyResultsCodec,
+  );
+  assert.equal(empty.kind, "err");
+  assert.equal(empty.value.code, "invalid_params");
+
+  const heads = decodeReply(
+    await invoke("Destination", "headMany", W.DestinationHeadManyParamsCodec, {
+      keys: ["present", "absent"],
+    }),
+    W.DestinationHeadManyResultsCodec,
+  );
+  assert.equal(heads.value.objects.length, 2);
+  assert.equal(heads.value.objects[0].found, true);
+  assert.equal(heads.value.objects[0].meta.versionId, "v1");
+  assert.equal(heads.value.objects[1].found, false);
+
+  const feed = decodeReply(
+    await invoke("Destination", "changes", W.DestinationChangesParamsCodec, {
+      request: { cursor: "", limit: 0 },
+    }),
+    W.DestinationChangesResultsCodec,
+  );
+  assert.deepEqual(calls.changes, { cursor: undefined, limit: undefined });
+  assert.equal(feed.value.cursor, "c2");
+  assert.equal(feed.value.complete, true);
+  assert.deepEqual(
+    feed.value.changes.map((c) => [c.key, c.kind, c.info.etag]),
+    [
+      ["a/1", "upserted", "e1"],
+      ["a/2", "removed", ""],
+    ],
+  );
+
+  // A change kind newer than this SDK reads as `changed`, not as an error.
+  const futureKind = {
+    dataWords: 1,
+    pointerCount: 2,
+    write(st) {
+      st.setText(0, "k");
+      st.setUint16(0, 3);
+    },
+  };
+  const future = W.decodeMessage(W.ObjectChangeCodec, W.encodeMessage(futureKind, {}));
+  assert.equal(future.kind, "changed");
+  assert.equal(future.key, "k");
 }
 
 // --- EventConsumer: one author call per batch -----------------------------
@@ -1688,6 +1911,25 @@ const jobParams = (commandType) => ({
   assert.equal(wrapped.kind, "err");
   assert.equal(wrapped.value.code, "internal");
   assert.match(wrapped.value.message, /CoverImage\[\]/);
+
+  granted.requests.length = 0;
+  const conditional = decodeReply(
+    await invoke(
+      "CoverFetcher",
+      "fetchCovers",
+      W.CoverFetcherFetchCoversParamsCodec,
+      { params: { urls: ["https://conditional.example/"], maxBytes: 1 }, sink: "sink" },
+      { caps: [{ kind: "destination", token: "tok-sink" }] },
+    ),
+    W.CoverFetcherFetchCoversResultsCodec,
+  );
+  assert.equal(conditional.kind, "ok");
+  assert.equal(conditional.value.images[0].error, "refused");
+  assert.equal(
+    granted.requests.filter((r) => r.path === "/put").length,
+    0,
+    "a conditional write never reaches the granted channel",
+  );
 
   const noSink = decodeReply(
     await invoke("CoverFetcher", "fetchCovers", W.CoverFetcherFetchCoversParamsCodec, {

@@ -30,6 +30,11 @@ pub enum StorageError {
     #[error("integrity check failed: {0}")]
     Integrity(String),
 
+    /// A precondition failed: the target exists, or the object changed
+    /// since it was read.
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     /// List cursor is missing, stale, or not from this backend.
     #[error("invalid cursor: {0}")]
     InvalidCursor(String),

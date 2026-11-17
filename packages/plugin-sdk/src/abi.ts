@@ -17,6 +17,18 @@ export const MAX_STREAM_WINDOW_BYTES = 1048576 as const;
 /** Maximum objects in one `Destination.list` page. */
 export const MAX_LIST_PAGE = 256 as const;
 
+/**
+ * Maximum keys or key pairs in one `Destination.moveMany`, `deleteMany` or
+ * `headMany` call, and maximum outcomes in one reply.
+ */
+export const MAX_BATCH_KEYS = 256 as const;
+
+/** Maximum changes in one `Destination.changes` page. */
+export const MAX_CHANGES_PAGE = 256 as const;
+
+/** Maximum bytes of a `Destination.changes` cursor. */
+export const MAX_CHANGES_CURSOR_BYTES = 4096 as const;
+
 /** Maximum job / event checkpoint payload size (bytes). */
 export const MAX_CHECKPOINT_BYTES = 65536 as const;
 
@@ -139,6 +151,35 @@ export const FEATURE_STREAMS = "rpc.streams" as const;
 
 /** Guest implements server-side `Destination.copy` (`storage.copy`). */
 export const FEATURE_STORAGE_COPY = "storage.copy" as const;
+
+/** Guest implements `Destination.move` (`storage.move`). */
+export const FEATURE_STORAGE_MOVE = "storage.move" as const;
+
+/** Guest implements `Destination.moveMany` (`storage.moveMany`). */
+export const FEATURE_STORAGE_MOVE_MANY = "storage.moveMany" as const;
+
+/** Guest implements `Destination.deleteMany` (`storage.deleteMany`). */
+export const FEATURE_STORAGE_DELETE_MANY = "storage.deleteMany" as const;
+
+/** Guest implements `Destination.headMany` (`storage.headMany`). */
+export const FEATURE_STORAGE_HEAD_MANY = "storage.headMany" as const;
+
+/** Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` (`storage.conditionalWrite`). */
+export const FEATURE_STORAGE_CONDITIONAL_WRITE = "storage.conditionalWrite" as const;
+
+/** Guest implements `Destination.changes` (`storage.changes`). */
+export const FEATURE_STORAGE_CHANGES = "storage.changes" as const;
+
+/**
+ * What happened to an object in a change feed. Unknown codes are kept and
+ * treated as `changed`.
+ *
+ * Ordinal-ordered `ObjectChangeKind` wire names (index = Cap'n Proto ordinal).
+ */
+export const OBJECT_CHANGE_KINDS = ["changed", "upserted", "removed"] as const;
+
+/** Union of `OBJECT_CHANGE_KINDS` wire names. */
+export type ObjectChangeKind = (typeof OBJECT_CHANGE_KINDS)[number];
 
 /**
  * Stable `PluginError.code` strings. Unknown future codes are forwarded

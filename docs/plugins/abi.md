@@ -175,7 +175,9 @@ Native plugins must be rebuilt against this SDK.
 - Integrity metadata (etag, sha256) rides on `PutResult` and
   `ReadResult`.
 - Optional facilities *within* the ABI are feature flags (`rpc.streams`,
-  `rpc.scalarLimits`, `storage.copy`), not a substitute for `apiVersion`.
+  `rpc.scalarLimits`, `storage.copy`, and the storage
+  [intent operations](#intent-operations)), not a substitute for
+  `apiVersion`.
 
 Spawn **negotiates**:
 
@@ -1460,7 +1462,8 @@ the metadata file sync work.
 Export `storage` (there is no `kind = "output"`). Guests implement
 [`Destination`](../../packages/plugin-sdk/src/plugin.ts) and
 `StorageEntrypoint`: `head`, `list` (paginated), streamed `get`, streamed
-`put`, and optional `copy`.
+`put`, optional `copy`, and the optional
+[intent operations](#intent-operations).
 
 - The host never reassembles a large object into `Bytes`, and never writes
   the full object to guest scratch and then `put_file`. S3 guests feed the
@@ -1470,6 +1473,90 @@ Export `storage` (there is no `kind = "output"`). Guests implement
   Destinations transfer media through `ByteSource` streams. Range,
   multipart and checkpoint work in issue #120 builds on this contract,
   without another public ABI redesign.
+
+#### Intent operations
+
+Beyond the required methods, a storage guest can take over operations the
+host would otherwise build from `head`, `list`, `copy`, `get`, `put` and
+`delete`. The host says what it wants and the guest chooses how. Each
+operation is optional: the guest declares it by accepting its feature in
+`rpcFeatures`, and the host runs its own fallback for every operation the
+guest did not declare. The fallback gives the same result when nothing else
+writes the same keys at the same time, but it may be slower (a copy and a
+delete instead of a rename) and it is not atomic: a concurrent writer can
+slip in between its steps. Where that matters, the guest declares the
+operation, or `storage.conditionalWrite`, and enforces it natively.
+
+| Feature | Method | What the guest does |
+| --- | --- | --- |
+| `storage.move` | `move(from, to, options)` | Moves one object. |
+| `storage.moveMany` | `moveMany(request)` | Moves explicit pairs, or one page of every object under a prefix. |
+| `storage.deleteMany` | `deleteMany(keys)` | Removes up to `maxBatchKeys` (256) objects. |
+| `storage.headMany` | `headMany(keys)` | Probes up to `maxBatchKeys` objects. |
+| `storage.conditionalWrite` | `put` with `ifMatch` / `ifNoneMatch` | Publishes only while the precondition holds, else fails with `conflict`. |
+| `storage.changes` | `changes(request)` | Returns keys changed since a cursor. |
+
+The rules every operation follows:
+
+- **Replies say what was honoured.** `MoveResult.atomic` and
+  `MoveManyPage.atomic` say whether the move was a rename no reader could
+  observe half done. A `list` page sets `signaturesIncluded` when it filled
+  in the signature fields `ListOptions.withSignatures` asked for, and
+  `modifiedSinceApplied` when it left out objects older than
+  `ListOptions.modifiedSinceMs`; a guest that ignores a hint returns the
+  unfiltered page and leaves the flag false.
+- **Long operations are paged and safe to repeat.** A prefix `moveMany`
+  returns at most `maxBatchKeys` outcomes and a `nextCursor`, and repeating
+  a page after a restart moves nothing twice. A `move` whose source is gone
+  and whose target exists succeeds with `alreadyMoved`.
+- **Batches answer per key.** `moveMany` with pairs and `deleteMany` return
+  one outcome per key, in the order sent; an outcome with an error code is
+  that key's failure, and the rest of the batch still counts. Deleting a
+  missing object is a success. `headMany` returns one probe per key, empty
+  for a missing object.
+- **Options only grow.** `MoveOptions`, `ListOptions` and `WriteOptions`
+  gain fields at new ordinals, and a zero value always means the old
+  behaviour.
+- **Preconditions are never dropped.** A request whose `ifMatch`,
+  `ifSourceMatch` or cursor cannot be read is refused rather than run
+  without it, and a granted destination (a `put` through a capability
+  handed to another plugin) refuses `ifMatch` / `ifNoneMatch` because that
+  channel cannot carry them yet.
+- **Prefix moves need disjoint prefixes.** The source and target of a
+  prefix `moveMany` may not contain each other, after `.` and empty path
+  segments are dropped and `\` is read as `/`, because a nested object could overwrite one that
+  has not moved yet.
+
+The host checks every reply against the request before acting on it: the
+outcomes must name the keys it sent, in order, a prefix page may only name
+keys under the prefix and must advance its cursor, and a `changes` page
+stays within `maxChangesPage` (256) entries and a cursor of at most
+`maxChangesCursorBytes` (4 KiB). A reply that breaks a rule fails the
+operation with `internal`.
+
+Listing entries and probes can carry a change **signature**: an opaque
+backend-defined value (for example a local file's inode, size and times,
+or an S3 ETag and version id) that stays the same while the object is
+unchanged. The host uses it to skip re-reading files it already knows.
+`modifiedAtMs` and `versionId` ride alongside it.
+
+The host's own `move` fallback copies, probes the source again, and deletes
+it only when the probe shows it is still the object it copied (same etag,
+else same size and modification time); a source rewritten during the copy,
+or one the probe cannot vouch for, is kept and the move fails with
+`conflict`. Without etags the check is a heuristic: a rewrite of the same
+size within the same millisecond passes it. The ABI has no delete
+conditioned on an etag, so a rewrite between that probe and the delete can
+still be lost too. A guest that declares `storage.move` avoids both gaps. With `noOverwrite`,
+the fallback writes the target with `ifNoneMatch` when the guest declares
+`storage.conditionalWrite`, and otherwise checks for the target just before
+the copy (so `atomic` is false).
+
+`changes` is a hint, not a ledger. The first call, with an empty cursor,
+returns the current position and no changes. A page with `complete` false
+means the guest may have missed changes since the cursor (a watcher
+restarted, a queue dropped messages), and the host backs it with a full
+listing. A change kind added after an SDK was built reads as `changed`. A scheduled listing stays the backstop either way.
 
 First-party S3 ships as `bookclerk-plugin-destination-s3`
 (`api_version = 3`). Its bucket, region, endpoint, prefix, naming

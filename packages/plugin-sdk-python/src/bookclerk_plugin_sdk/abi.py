@@ -12,6 +12,11 @@ from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, Protocol, TypedDict, Union
 
+ObjectChangeKind = Literal["changed", "upserted", "removed"]
+"""What happened to an object in a change feed. Unknown codes are kept and
+treated as `changed`.
+"""
+
 PluginErrorCode = Literal[
     "invalid_params",
     "unauthorized",
@@ -202,6 +207,11 @@ class ObjectMetadata(TypedDict):
         contentType: MIME type; empty when unknown.
         etag: Backend entity tag; empty when unsupported.
         sha256: Raw SHA-256 digest (32 bytes) or empty when unknown.
+        modifiedAtMs: Last modification time, UTC unix milliseconds; zero when unknown.
+        versionId: Backend object version id (versioned buckets); empty when none.
+        signature: Opaque change signature: an unchanged value means the object has not
+            changed. Backend-defined (a local file's inode, size, mtime and ctime; an S3
+            ETag and version id). Empty when the backend has none.
     """
 
     key: str
@@ -209,6 +219,9 @@ class ObjectMetadata(TypedDict):
     contentType: str
     etag: str
     sha256: bytes
+    modifiedAtMs: int
+    versionId: str
+    signature: str
 
 
 class ObjectInfo(TypedDict):
@@ -217,10 +230,21 @@ class ObjectInfo(TypedDict):
     Attributes:
         key: Object key.
         size: Object size in bytes.
+        etag: Backend entity tag; empty when unsupported or not requested
+            (`ListOptions.withSignatures`).
+        modifiedAtMs: Last modification time, UTC unix milliseconds; zero when unknown
+            or not requested.
+        versionId: Backend object version id; empty when none or not requested.
+        signature: Opaque change signature, as `ObjectMetadata.signature`; empty when
+            unsupported or not requested.
     """
 
     key: str
     size: int
+    etag: str
+    modifiedAtMs: int
+    versionId: str
+    signature: str
 
 
 class ListOptions(TypedDict):
@@ -230,11 +254,18 @@ class ListOptions(TypedDict):
         prefix: Only keys starting with this prefix; empty lists everything.
         cursor: Opaque cursor from a previous `ListPage.nextCursor`; empty starts over.
         limit: Requested page size; clamped to `maxListPage`. `0` means guest default.
+        withSignatures: Hint: fill `etag`, `modifiedAtMs`, `versionId` and `signature`
+            on each entry. `ListPage.signaturesIncluded` says whether the guest did.
+        modifiedSinceMs: Hint: only objects modified at or after this time (UTC unix
+            milliseconds); zero lists everything. `ListPage.modifiedSinceApplied` says
+            whether the guest filtered; when it did not, the page is unfiltered.
     """
 
     prefix: str
     cursor: str
     limit: int
+    withSignatures: bool
+    modifiedSinceMs: int
 
 
 class ListPage(TypedDict):
@@ -243,10 +274,16 @@ class ListPage(TypedDict):
     Attributes:
         objects: Objects in this page, in backend order.
         nextCursor: Cursor for the next page; empty when exhausted.
+        signaturesIncluded: True when every entry carries the signature fields the
+            backend has (`ListOptions.withSignatures` honoured).
+        modifiedSinceApplied: True when the guest left out objects modified before
+            `ListOptions.modifiedSinceMs`. False means the page is unfiltered.
     """
 
     objects: list[ObjectInfo]
     nextCursor: str
+    signaturesIncluded: bool
+    modifiedSinceApplied: bool
 
 
 class ByteRange(TypedDict):
@@ -280,6 +317,11 @@ class WriteOptions(TypedDict):
         sha256: Expected raw SHA-256 digest; empty skips verification.
         commitToken: Destination-side stage-and-publish. Empty means a one-shot put.
         stageOnly: When true, `put` stages remotely and does not publish until `commit`.
+        ifMatch: Conditional write (`storage.conditionalWrite`): publish only while the
+            stored object's `etag` equals this value, else fail with `conflict`. Empty
+            means unconditional. A staged put checks it at `commit`.
+        ifNoneMatch: Conditional write (`storage.conditionalWrite`): publish only when
+            no object exists at the key, else fail with `conflict`.
     """
 
     contentType: str
@@ -287,6 +329,8 @@ class WriteOptions(TypedDict):
     sha256: bytes
     commitToken: str
     stageOnly: bool
+    ifMatch: str
+    ifNoneMatch: bool
 
 
 class PutResult(TypedDict):
@@ -297,12 +341,20 @@ class PutResult(TypedDict):
         bytesWritten: Bytes persisted.
         etag: Backend entity tag; empty when unsupported.
         sha256: Raw SHA-256 digest of the stored bytes; empty when not computed.
+        modifiedAtMs: Modification time of the stored object, UTC unix milliseconds;
+            zero when unknown.
+        versionId: Version id of the stored object; empty when none.
+        signature: Change signature of the stored object (`ObjectMetadata.signature`),
+            so the host can recognise its own write in a later listing; empty when none.
     """
 
     key: str
     bytesWritten: int
     etag: str
     sha256: bytes
+    modifiedAtMs: int
+    versionId: str
+    signature: str
 
 
 class CopyResult(TypedDict):
@@ -313,6 +365,204 @@ class CopyResult(TypedDict):
     """
 
     bytesCopied: int
+
+
+class MoveOptions(TypedDict):
+    """Options for `Destination.move` and `Destination.moveMany`. Fields are only
+    ever appended.
+
+    Attributes:
+        noOverwrite: Fail with `conflict` instead of replacing an object at the target
+            key.
+        ifSourceMatch: `move` only: move only while the source's `etag` equals this
+            value, else fail with `conflict`. Empty skips the check.
+    """
+
+    noOverwrite: bool
+    ifSourceMatch: str
+
+
+class MoveResult(TypedDict):
+    """Summary of `Destination.move`.
+
+    Attributes:
+        atomic: True when the backend moved atomically (a rename): no reader saw the
+            object at both keys or at neither.
+        alreadyMoved: True when the source was already gone and the target present, as
+            when a move is repeated after a restart. The move counts as done.
+    """
+
+    atomic: bool
+    alreadyMoved: bool
+
+
+KeyPair = TypedDict(
+    "KeyPair",
+    {
+        "from": str,
+        "to": str,
+    },
+)
+"""One source and target key.
+
+Attributes:
+    from: Source object key (or source prefix).
+    to: Target object key (or target prefix).
+"""
+
+
+class MoveManyTargetPairs(TypedDict):
+    """``MoveManyTarget`` member ``pairs``.
+
+    Explicit moves, at most `maxBatchKeys`. Each is independent.
+
+    Attributes:
+        kind: Always ``"pairs"``.
+        value: Explicit moves, at most `maxBatchKeys`. Each is independent.
+    """
+
+    kind: Literal["pairs"]
+    value: list[KeyPair]
+
+
+class MoveManyTargetPrefix(TypedDict):
+    """``MoveManyTarget`` member ``prefix``.
+
+    Every object under `prefix.from` moves under `prefix.to`, keeping the
+    rest of its key. Paged through `MoveManyRequest.cursor`.
+
+    Attributes:
+        kind: Always ``"prefix"``.
+        value: Every object under `prefix.from` moves under `prefix.to`, keeping the
+            rest of its key. Paged through `MoveManyRequest.cursor`.
+    """
+
+    kind: Literal["prefix"]
+    value: KeyPair
+
+
+MoveManyTarget = Union[
+    MoveManyTargetPairs,
+    MoveManyTargetPrefix,
+]
+"""What `Destination.moveMany` moves."""
+
+
+class MoveManyRequest(TypedDict):
+    """Argument of `Destination.moveMany`. Fields are only ever appended.
+
+    Attributes:
+        target: Explicit pairs or a prefix.
+        cursor: Prefix form: `MoveManyPage.nextCursor` from the previous call; empty
+            starts. Ignored for `pairs`.
+        limit: Prefix form: objects to move in this call, clamped to `maxBatchKeys`;
+            zero means guest default.
+        options: Overwrite rule applied to every move (`ifSourceMatch` is ignored).
+    """
+
+    target: MoveManyTarget
+    cursor: str
+    limit: int
+    options: MoveOptions
+
+
+class KeyOutcome(TypedDict):
+    """Outcome for one key of a batch call.
+
+    Attributes:
+        key: The key this outcome is for (the source key for moves).
+        error: Failure for this key; an empty `code` means it succeeded.
+    """
+
+    key: str
+    error: PluginError
+
+
+class MoveManyPage(TypedDict):
+    """One page of `Destination.moveMany` progress.
+
+    Attributes:
+        results: Outcomes in request order. A prefix move done in one step (a folder
+            rename) may report a single outcome keyed by the source prefix.
+        nextCursor: Prefix form: cursor for the next call; empty when every object
+            moved.
+        atomic: True when every move in this page was atomic.
+        objectsMoved: Objects moved in this page (a folder rename counts what it carried
+            when known, else the outcomes).
+    """
+
+    results: list[KeyOutcome]
+    nextCursor: str
+    atomic: bool
+    objectsMoved: int
+
+
+class DeleteManyResult(TypedDict):
+    """Result of `Destination.deleteMany`.
+
+    Attributes:
+        results: One outcome per requested key, in request order. A missing key
+            succeeds.
+    """
+
+    results: list[KeyOutcome]
+
+
+class HeadManyResult(TypedDict):
+    """Result of `Destination.headMany`.
+
+    Attributes:
+        objects: One probe per requested key, in request order.
+    """
+
+    objects: list[HeadOk]
+
+
+class ChangesRequest(TypedDict):
+    """Argument of `Destination.changes`. Fields are only ever appended.
+
+    Attributes:
+        cursor: `ChangesPage.cursor` from the previous call. Empty asks for the current
+            position: the page carries a cursor and no changes.
+        limit: Requested changes per page, clamped to `maxChangesPage`; zero means guest
+            default.
+    """
+
+    cursor: str
+    limit: int
+
+
+class ObjectChange(TypedDict):
+    """One entry of a change feed.
+
+    Attributes:
+        key: Object key, relative to the destination root.
+        kind: What happened to it.
+        info: Listing fields after the change when the feed carries them (signature
+            fields may be empty); empty for `removed`.
+    """
+
+    key: str
+    kind: ObjectChangeKind
+    info: ObjectInfo
+
+
+class ChangesPage(TypedDict):
+    """One page of `Destination.changes`.
+
+    Attributes:
+        changes: Changes since the request's cursor, oldest first. A key may repeat.
+        cursor: Cursor for the next call; never empty.
+        more: True when more changes are ready now; call again with `cursor`.
+        complete: False when the feed may have missed changes since the request's cursor
+            (an overflowed watcher, expired queue retention, a restart): the host backs
+            it with a full listing. True means these are all the changes.
+    """
+
+    changes: list[ObjectChange]
+    cursor: str
+    more: bool
+    complete: bool
 
 
 class PluginDescribe(TypedDict):
@@ -1294,6 +1544,186 @@ CopyReply = Union[
 """Result union of `Destination.copy`."""
 
 
+class MoveReplyOk(TypedDict):
+    """``MoveReply`` member ``ok``.
+
+    Success: how the move was done.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: how the move was done.
+    """
+
+    kind: Literal["ok"]
+    value: MoveResult
+
+
+class MoveReplyErr(TypedDict):
+    """``MoveReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+MoveReply = Union[
+    MoveReplyOk,
+    MoveReplyErr,
+]
+"""Result union of `Destination.move`."""
+
+
+class MoveManyReplyOk(TypedDict):
+    """``MoveManyReply`` member ``ok``.
+
+    Success: per-key outcomes and the continuation.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: per-key outcomes and the continuation.
+    """
+
+    kind: Literal["ok"]
+    value: MoveManyPage
+
+
+class MoveManyReplyErr(TypedDict):
+    """``MoveManyReply`` member ``err``.
+
+    Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure of the whole call; `code` is a `PluginErrorCode` wire
+            string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+MoveManyReply = Union[
+    MoveManyReplyOk,
+    MoveManyReplyErr,
+]
+"""Result union of `Destination.moveMany`."""
+
+
+class DeleteManyReplyOk(TypedDict):
+    """``DeleteManyReply`` member ``ok``.
+
+    Success: per-key outcomes.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: per-key outcomes.
+    """
+
+    kind: Literal["ok"]
+    value: DeleteManyResult
+
+
+class DeleteManyReplyErr(TypedDict):
+    """``DeleteManyReply`` member ``err``.
+
+    Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure of the whole call; `code` is a `PluginErrorCode` wire
+            string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+DeleteManyReply = Union[
+    DeleteManyReplyOk,
+    DeleteManyReplyErr,
+]
+"""Result union of `Destination.deleteMany`."""
+
+
+class HeadManyReplyOk(TypedDict):
+    """``HeadManyReply`` member ``ok``.
+
+    Success: one probe per key.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: one probe per key.
+    """
+
+    kind: Literal["ok"]
+    value: HeadManyResult
+
+
+class HeadManyReplyErr(TypedDict):
+    """``HeadManyReply`` member ``err``.
+
+    Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure of the whole call; `code` is a `PluginErrorCode` wire
+            string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+HeadManyReply = Union[
+    HeadManyReplyOk,
+    HeadManyReplyErr,
+]
+"""Result union of `Destination.headMany`."""
+
+
+class ChangesReplyOk(TypedDict):
+    """``ChangesReply`` member ``ok``.
+
+    Success: one page of changes.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: one page of changes.
+    """
+
+    kind: Literal["ok"]
+    value: ChangesPage
+
+
+class ChangesReplyErr(TypedDict):
+    """``ChangesReply`` member ``err``.
+
+    Typed failure; `invalid_cursor` means the cursor expired and the host
+    starts over with a full listing.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `invalid_cursor` means the cursor expired and the host
+            starts over with a full listing.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+ChangesReply = Union[
+    ChangesReplyOk,
+    ChangesReplyErr,
+]
+"""Result union of `Destination.changes`."""
+
+
 class EmptyReplyOk(TypedDict):
     """``EmptyReply`` member ``ok``.
 
@@ -1725,6 +2155,66 @@ class Destination(Protocol):
 
         Returns:
             ``EmptyReply``
+        """
+        ...
+
+    async def move(self, from_: str, to: str, options: MoveOptions) -> MoveReply:
+        """Move one object (requires `storage.move`). Repeating a finished move
+        succeeds with `alreadyMoved`.
+
+        Args:
+            from_: Source object key.
+            to: Target object key.
+            options: Overwrite and source preconditions.
+
+        Returns:
+            ``MoveReply``
+        """
+        ...
+
+    async def move_many(self, request: MoveManyRequest) -> MoveManyReply:
+        """Move a set of objects or a whole prefix (requires `storage.moveMany`).
+        Paged and safe to repeat.
+
+        Args:
+            request: Pairs or prefix, cursor, and options.
+
+        Returns:
+            ``MoveManyReply``
+        """
+        ...
+
+    async def delete_many(self, keys: list[str]) -> DeleteManyReply:
+        """Remove up to `maxBatchKeys` objects (requires `storage.deleteMany`).
+
+        Args:
+            keys: Object keys to remove.
+
+        Returns:
+            ``DeleteManyReply``
+        """
+        ...
+
+    async def head_many(self, keys: list[str]) -> HeadManyReply:
+        """Probe up to `maxBatchKeys` objects (requires `storage.headMany`).
+
+        Args:
+            keys: Object keys to probe.
+
+        Returns:
+            ``HeadManyReply``
+        """
+        ...
+
+    async def changes(self, request: ChangesRequest) -> ChangesReply:
+        """Keys changed since a cursor (requires `storage.changes`). A hint for
+        what to read; a scheduled listing stays the backstop.
+
+        Args:
+            request: Cursor and page size.
+
+        Returns:
+            ``ChangesReply``
         """
         ...
 
@@ -6761,6 +7251,7 @@ class PluginWorker(Protocol):
 
 
 __all__ = [
+    "ObjectChangeKind",
     "PluginErrorCode",
     "Entrypoint",
     "PortalAuthMode",
@@ -6793,6 +7284,20 @@ __all__ = [
     "WriteOptions",
     "PutResult",
     "CopyResult",
+    "MoveOptions",
+    "MoveResult",
+    "KeyPair",
+    "MoveManyTargetPairs",
+    "MoveManyTargetPrefix",
+    "MoveManyTarget",
+    "MoveManyRequest",
+    "KeyOutcome",
+    "MoveManyPage",
+    "DeleteManyResult",
+    "HeadManyResult",
+    "ChangesRequest",
+    "ObjectChange",
+    "ChangesPage",
     "PluginDescribe",
     "OidcClientTemplate",
     "OidcClientsOk",
@@ -6856,6 +7361,21 @@ __all__ = [
     "CopyReplyOk",
     "CopyReplyErr",
     "CopyReply",
+    "MoveReplyOk",
+    "MoveReplyErr",
+    "MoveReply",
+    "MoveManyReplyOk",
+    "MoveManyReplyErr",
+    "MoveManyReply",
+    "DeleteManyReplyOk",
+    "DeleteManyReplyErr",
+    "DeleteManyReply",
+    "HeadManyReplyOk",
+    "HeadManyReplyErr",
+    "HeadManyReply",
+    "ChangesReplyOk",
+    "ChangesReplyErr",
+    "ChangesReply",
     "EmptyReplyOk",
     "EmptyReplyErr",
     "EmptyReply",

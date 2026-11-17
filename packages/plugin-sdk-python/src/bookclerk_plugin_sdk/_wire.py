@@ -58,6 +58,11 @@ def _from_ord(table: tuple[str, ...], ordinal: int, enum_name: str) -> str:
     return table[ordinal]
 
 
+def _from_ord_or(table: tuple[str, ...], ordinal: int, fallback: str) -> str:
+    """Reads an open enum: an ordinal newer than this SDK reads as `fallback`."""
+    return table[ordinal] if 0 <= ordinal < len(table) else fallback
+
+
 def _write_scalar_limits(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_u32(0, v["maxScalarBytes"])
     s.set_u32(1, v["maxStreamWindowBytes"])
@@ -100,6 +105,9 @@ def _write_object_metadata(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(1, v["contentType"])
     s.set_text(2, v["etag"])
     s.set_data(3, v["sha256"])
+    s.set_u64(1, v["modifiedAtMs"])
+    s.set_text(4, v["versionId"])
+    s.set_text(5, v["signature"])
 
 
 def _read_object_metadata(s: _StructReader, caps: _CapTable) -> Any:
@@ -109,33 +117,46 @@ def _read_object_metadata(s: _StructReader, caps: _CapTable) -> Any:
         "contentType": s.get_text(1),
         "etag": s.get_text(2),
         "sha256": s.get_data(3),
+        "modifiedAtMs": s.get_u64(1),
+        "versionId": s.get_text(4),
+        "signature": s.get_text(5),
     }
 
 
-_object_metadata_codec = _Codec(1, 4, _write_object_metadata, _read_object_metadata)
-"""Wire codec for ``ObjectMetadata`` (1 data words, 4 pointers)."""
+_object_metadata_codec = _Codec(2, 6, _write_object_metadata, _read_object_metadata)
+"""Wire codec for ``ObjectMetadata`` (2 data words, 6 pointers)."""
 
 
 def _write_object_info(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["key"])
     s.set_u64(0, v["size"])
+    s.set_text(1, v["etag"])
+    s.set_u64(1, v["modifiedAtMs"])
+    s.set_text(2, v["versionId"])
+    s.set_text(3, v["signature"])
 
 
 def _read_object_info(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "key": s.get_text(0),
         "size": s.get_u64(0),
+        "etag": s.get_text(1),
+        "modifiedAtMs": s.get_u64(1),
+        "versionId": s.get_text(2),
+        "signature": s.get_text(3),
     }
 
 
-_object_info_codec = _Codec(1, 1, _write_object_info, _read_object_info)
-"""Wire codec for ``ObjectInfo`` (1 data words, 1 pointers)."""
+_object_info_codec = _Codec(2, 4, _write_object_info, _read_object_info)
+"""Wire codec for ``ObjectInfo`` (2 data words, 4 pointers)."""
 
 
 def _write_list_options(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["prefix"])
     s.set_text(1, v["cursor"])
     s.set_u32(0, v["limit"])
+    s.set_bool(32, v["withSignatures"])
+    s.set_u64(1, v["modifiedSinceMs"])
 
 
 def _read_list_options(s: _StructReader, caps: _CapTable) -> Any:
@@ -143,29 +164,35 @@ def _read_list_options(s: _StructReader, caps: _CapTable) -> Any:
         "prefix": s.get_text(0),
         "cursor": s.get_text(1),
         "limit": s.get_u32(0),
+        "withSignatures": s.get_bool(32),
+        "modifiedSinceMs": s.get_u64(1),
     }
 
 
-_list_options_codec = _Codec(1, 2, _write_list_options, _read_list_options)
-"""Wire codec for ``ListOptions`` (1 data words, 2 pointers)."""
+_list_options_codec = _Codec(2, 2, _write_list_options, _read_list_options)
+"""Wire codec for ``ListOptions`` (2 data words, 2 pointers)."""
 
 
 def _write_list_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    items = s.init_struct_list(0, len(v["objects"]), 1, 1)
+    items = s.init_struct_list(0, len(v["objects"]), 2, 4)
     for item, elem in zip(items, v["objects"], strict=True):
         _object_info_codec.write(item, elem, caps)
     s.set_text(1, v["nextCursor"])
+    s.set_bool(0, v["signaturesIncluded"])
+    s.set_bool(1, v["modifiedSinceApplied"])
 
 
 def _read_list_page(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "objects": [_object_info_codec.read(item, caps) for item in s.get_struct_list(0, 1, 1)],
+        "objects": [_object_info_codec.read(item, caps) for item in s.get_struct_list(0, 2, 4)],
         "nextCursor": s.get_text(1),
+        "signaturesIncluded": s.get_bool(0),
+        "modifiedSinceApplied": s.get_bool(1),
     }
 
 
-_list_page_codec = _Codec(0, 2, _write_list_page, _read_list_page)
-"""Wire codec for ``ListPage`` (0 data words, 2 pointers)."""
+_list_page_codec = _Codec(1, 2, _write_list_page, _read_list_page)
+"""Wire codec for ``ListPage`` (1 data words, 2 pointers)."""
 
 
 def _write_byte_range(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -185,7 +212,8 @@ _byte_range_codec = _Codec(2, 0, _write_byte_range, _read_byte_range)
 
 
 def _write_read_options(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _byte_range_codec.write(s.init_struct(0, 2, 0), v["range"], caps)
+    if v.get("range") is not None:
+        _byte_range_codec.write(s.init_struct(0, 2, 0), v["range"], caps)
 
 
 def _read_read_options(s: _StructReader, caps: _CapTable) -> Any:
@@ -204,6 +232,8 @@ def _write_write_options(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_data(1, v["sha256"])
     s.set_text(2, v["commitToken"])
     s.set_bool(64, v["stageOnly"])
+    s.set_text(3, v["ifMatch"])
+    s.set_bool(65, v["ifNoneMatch"])
 
 
 def _read_write_options(s: _StructReader, caps: _CapTable) -> Any:
@@ -213,11 +243,13 @@ def _read_write_options(s: _StructReader, caps: _CapTable) -> Any:
         "sha256": s.get_data(1),
         "commitToken": s.get_text(2),
         "stageOnly": s.get_bool(64),
+        "ifMatch": s.get_text(3),
+        "ifNoneMatch": s.get_bool(65),
     }
 
 
-_write_options_codec = _Codec(2, 3, _write_write_options, _read_write_options)
-"""Wire codec for ``WriteOptions`` (2 data words, 3 pointers)."""
+_write_options_codec = _Codec(2, 4, _write_write_options, _read_write_options)
+"""Wire codec for ``WriteOptions`` (2 data words, 4 pointers)."""
 
 
 def _write_put_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -225,6 +257,9 @@ def _write_put_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_u64(0, v["bytesWritten"])
     s.set_text(1, v["etag"])
     s.set_data(2, v["sha256"])
+    s.set_u64(1, v["modifiedAtMs"])
+    s.set_text(3, v["versionId"])
+    s.set_text(4, v["signature"])
 
 
 def _read_put_result(s: _StructReader, caps: _CapTable) -> Any:
@@ -233,11 +268,14 @@ def _read_put_result(s: _StructReader, caps: _CapTable) -> Any:
         "bytesWritten": s.get_u64(0),
         "etag": s.get_text(1),
         "sha256": s.get_data(2),
+        "modifiedAtMs": s.get_u64(1),
+        "versionId": s.get_text(3),
+        "signature": s.get_text(4),
     }
 
 
-_put_result_codec = _Codec(1, 3, _write_put_result, _read_put_result)
-"""Wire codec for ``PutResult`` (1 data words, 3 pointers)."""
+_put_result_codec = _Codec(2, 5, _write_put_result, _read_put_result)
+"""Wire codec for ``PutResult`` (2 data words, 5 pointers)."""
 
 
 def _write_copy_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -254,25 +292,256 @@ _copy_result_codec = _Codec(1, 0, _write_copy_result, _read_copy_result)
 """Wire codec for ``CopyResult`` (1 data words, 0 pointers)."""
 
 
+def _write_move_options(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_bool(0, v["noOverwrite"])
+    s.set_text(0, v["ifSourceMatch"])
+
+
+def _read_move_options(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "noOverwrite": s.get_bool(0),
+        "ifSourceMatch": s.get_text(0),
+    }
+
+
+_move_options_codec = _Codec(1, 1, _write_move_options, _read_move_options)
+"""Wire codec for ``MoveOptions`` (1 data words, 1 pointers)."""
+
+
+def _write_move_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_bool(0, v["atomic"])
+    s.set_bool(1, v["alreadyMoved"])
+
+
+def _read_move_result(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "atomic": s.get_bool(0),
+        "alreadyMoved": s.get_bool(1),
+    }
+
+
+_move_result_codec = _Codec(1, 0, _write_move_result, _read_move_result)
+"""Wire codec for ``MoveResult`` (1 data words, 0 pointers)."""
+
+
+def _write_key_pair(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["from"])
+    s.set_text(1, v["to"])
+
+
+def _read_key_pair(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "from": s.get_text(0),
+        "to": s.get_text(1),
+    }
+
+
+_key_pair_codec = _Codec(0, 2, _write_key_pair, _read_key_pair)
+"""Wire codec for ``KeyPair`` (0 data words, 2 pointers)."""
+
+
+def _write_move_many_target(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "pairs":
+        s.set_u16(0, 0)
+        items = s.init_struct_list(0, len(v["value"]), 0, 2)
+        for item, elem in zip(items, v["value"], strict=True):
+            _key_pair_codec.write(item, elem, caps)
+    elif kind == "prefix":
+        s.set_u16(0, 1)
+        _key_pair_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown MoveManyTarget union member: {kind}")
+
+
+def _read_move_many_target(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "pairs", "value": [_key_pair_codec.read(item, caps) for item in s.get_struct_list(0, 0, 2)]}
+    elif disc == 1:
+        return {"kind": "prefix", "value": _key_pair_codec.read(s.get_struct(0, 0, 2), caps)}
+    raise ValueError(f"unknown MoveManyTarget union member: {disc}")
+
+
+_move_many_target_codec = _Codec(1, 1, _write_move_many_target, _read_move_many_target)
+"""Wire codec for ``MoveManyTarget`` (1 data words, 1 pointers)."""
+
+
+def _write_move_many_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("target") is not None:
+        _move_many_target_codec.write(s.init_struct(0, 1, 1), v["target"], caps)
+    s.set_text(1, v["cursor"])
+    s.set_u32(0, v["limit"])
+    if v.get("options") is not None:
+        _move_options_codec.write(s.init_struct(2, 1, 1), v["options"], caps)
+
+
+def _read_move_many_request(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "target": _move_many_target_codec.read(s.get_struct(0, 1, 1), caps),
+        "cursor": s.get_text(1),
+        "limit": s.get_u32(0),
+        "options": _move_options_codec.read(s.get_struct(2, 1, 1), caps),
+    }
+
+
+_move_many_request_codec = _Codec(1, 3, _write_move_many_request, _read_move_many_request)
+"""Wire codec for ``MoveManyRequest`` (1 data words, 3 pointers)."""
+
+
+def _write_key_outcome(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["key"])
+    if v.get("error") is not None:
+        _plugin_error_codec.write(s.init_struct(1, 0, 3), v["error"], caps)
+
+
+def _read_key_outcome(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "key": s.get_text(0),
+        "error": _plugin_error_codec.read(s.get_struct(1, 0, 3), caps),
+    }
+
+
+_key_outcome_codec = _Codec(0, 2, _write_key_outcome, _read_key_outcome)
+"""Wire codec for ``KeyOutcome`` (0 data words, 2 pointers)."""
+
+
+def _write_move_many_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["results"]), 0, 2)
+    for item, elem in zip(items, v["results"], strict=True):
+        _key_outcome_codec.write(item, elem, caps)
+    s.set_text(1, v["nextCursor"])
+    s.set_bool(0, v["atomic"])
+    s.set_u64(1, v["objectsMoved"])
+
+
+def _read_move_many_page(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "results": [_key_outcome_codec.read(item, caps) for item in s.get_struct_list(0, 0, 2)],
+        "nextCursor": s.get_text(1),
+        "atomic": s.get_bool(0),
+        "objectsMoved": s.get_u64(1),
+    }
+
+
+_move_many_page_codec = _Codec(2, 2, _write_move_many_page, _read_move_many_page)
+"""Wire codec for ``MoveManyPage`` (2 data words, 2 pointers)."""
+
+
+def _write_delete_many_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["results"]), 0, 2)
+    for item, elem in zip(items, v["results"], strict=True):
+        _key_outcome_codec.write(item, elem, caps)
+
+
+def _read_delete_many_result(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "results": [_key_outcome_codec.read(item, caps) for item in s.get_struct_list(0, 0, 2)],
+    }
+
+
+_delete_many_result_codec = _Codec(0, 1, _write_delete_many_result, _read_delete_many_result)
+"""Wire codec for ``DeleteManyResult`` (0 data words, 1 pointers)."""
+
+
+def _write_head_many_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["objects"]), 1, 1)
+    for item, elem in zip(items, v["objects"], strict=True):
+        _head_ok_codec.write(item, elem, caps)
+
+
+def _read_head_many_result(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "objects": [_head_ok_codec.read(item, caps) for item in s.get_struct_list(0, 1, 1)],
+    }
+
+
+_head_many_result_codec = _Codec(0, 1, _write_head_many_result, _read_head_many_result)
+"""Wire codec for ``HeadManyResult`` (0 data words, 1 pointers)."""
+
+
+def _write_changes_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["cursor"])
+    s.set_u32(0, v["limit"])
+
+
+def _read_changes_request(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "cursor": s.get_text(0),
+        "limit": s.get_u32(0),
+    }
+
+
+_changes_request_codec = _Codec(1, 1, _write_changes_request, _read_changes_request)
+"""Wire codec for ``ChangesRequest`` (1 data words, 1 pointers)."""
+
+
+def _write_object_change(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["key"])
+    s.set_u16(0, _ord(A.OBJECT_CHANGE_KINDS, v["kind"], "ObjectChangeKind"))
+    if v.get("info") is not None:
+        _object_info_codec.write(s.init_struct(1, 2, 4), v["info"], caps)
+
+
+def _read_object_change(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "key": s.get_text(0),
+        "kind": _from_ord_or(A.OBJECT_CHANGE_KINDS, s.get_u16(0), "changed"),
+        "info": _object_info_codec.read(s.get_struct(1, 2, 4), caps),
+    }
+
+
+_object_change_codec = _Codec(1, 2, _write_object_change, _read_object_change)
+"""Wire codec for ``ObjectChange`` (1 data words, 2 pointers)."""
+
+
+def _write_changes_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["changes"]), 1, 2)
+    for item, elem in zip(items, v["changes"], strict=True):
+        _object_change_codec.write(item, elem, caps)
+    s.set_text(1, v["cursor"])
+    s.set_bool(0, v["more"])
+    s.set_bool(1, v["complete"])
+
+
+def _read_changes_page(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "changes": [_object_change_codec.read(item, caps) for item in s.get_struct_list(0, 1, 2)],
+        "cursor": s.get_text(1),
+        "more": s.get_bool(0),
+        "complete": s.get_bool(1),
+    }
+
+
+_changes_page_codec = _Codec(1, 2, _write_changes_page, _read_changes_page)
+"""Wire codec for ``ChangesPage`` (1 data words, 2 pointers)."""
+
+
 def _write_plugin_describe(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_u32(0, v["apiVersion"])
     s.set_text(0, v["id"])
     s.set_text(1, v["displayName"])
     s.set_text_list(2, v["rpcFeatures"])
-    _scalar_limits_codec.write(s.init_struct(3, 2, 0), v["scalarLimits"], caps)
-    _plugin_capabilities_codec.write(s.init_struct(4, 1, 9), v["capabilities"], caps)
+    if v.get("scalarLimits") is not None:
+        _scalar_limits_codec.write(s.init_struct(3, 2, 0), v["scalarLimits"], caps)
+    if v.get("capabilities") is not None:
+        _plugin_capabilities_codec.write(s.init_struct(4, 1, 9), v["capabilities"], caps)
     s.set_u16(2, _ord(A.PORTAL_AUTH_MODES, v["portalAuthMode"], "PortalAuthMode"))
     if v.get("passwordEnvVar") is not None:
         s.set_text(5, v["passwordEnvVar"])
     s.set_text_list(6, v["aliases"])
     s.set_u32(2, v["sortKey"])
-    _brand_codec.write(s.init_struct(7, 0, 6), v["brand"], caps)
+    if v.get("brand") is not None:
+        _brand_codec.write(s.init_struct(7, 0, 6), v["brand"], caps)
     items = s.init_struct_list(8, len(v["configOptions"]), 0, 3)
     for item, elem in zip(items, v["configOptions"], strict=True):
         _config_option_codec.write(item, elem, caps)
-    _cli_schema_codec.write(s.init_struct(9, 0, 1), v["cli"], caps)
-    _catalog_capabilities_codec.write(s.init_struct(10, 1, 0), v["catalog"], caps)
-    _media_support_codec.write(s.init_struct(11, 0, 3), v["media"], caps)
+    if v.get("cli") is not None:
+        _cli_schema_codec.write(s.init_struct(9, 0, 1), v["cli"], caps)
+    if v.get("catalog") is not None:
+        _catalog_capabilities_codec.write(s.init_struct(10, 1, 0), v["catalog"], caps)
+    if v.get("media") is not None:
+        _media_support_codec.write(s.init_struct(11, 0, 3), v["media"], caps)
 
 
 def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
@@ -388,9 +657,12 @@ _extensible_config_codec = _Codec(1, 2, _write_extensible_config, _read_extensib
 
 
 def _write_bindings(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _extensible_config_codec.write(s.init_struct(0, 1, 2), v["config"], caps)
-    _extensible_config_codec.write(s.init_struct(1, 1, 2), v["secrets"], caps)
-    _database_adapter_config_codec.write(s.init_struct(2, 1, 4), v["adapter"], caps)
+    if v.get("config") is not None:
+        _extensible_config_codec.write(s.init_struct(0, 1, 2), v["config"], caps)
+    if v.get("secrets") is not None:
+        _extensible_config_codec.write(s.init_struct(1, 1, 2), v["secrets"], caps)
+    if v.get("adapter") is not None:
+        _database_adapter_config_codec.write(s.init_struct(2, 1, 4), v["adapter"], caps)
     if v.get("events") is not None:
         if v["events"] is not None:
             s.set_cap(3, caps.export_cap(v["events"]))
@@ -995,7 +1267,8 @@ _event_read_reply_codec = _Codec(1, 1, _write_event_read_reply, _read_event_read
 
 
 def _write_job_controller(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _job_invocation_codec.write(s.init_struct(0, 3, 8), v["invocation"], caps)
+    if v.get("invocation") is not None:
+        _job_invocation_codec.write(s.init_struct(0, 3, 8), v["invocation"], caps)
     if v.get("input") is not None:
         if v["input"] is not None:
             s.set_cap(1, caps.export_cap(v["input"]))
@@ -1035,13 +1308,14 @@ _job_controller_codec = _Codec(0, 5, _write_job_controller, _read_job_controller
 
 def _write_head_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_bool(0, v["found"])
-    _object_metadata_codec.write(s.init_struct(0, 1, 4), v["meta"], caps)
+    if v.get("meta") is not None:
+        _object_metadata_codec.write(s.init_struct(0, 2, 6), v["meta"], caps)
 
 
 def _read_head_ok(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "found": s.get_bool(0),
-        "meta": _object_metadata_codec.read(s.get_struct(0, 1, 4), caps),
+        "meta": _object_metadata_codec.read(s.get_struct(0, 2, 6), caps),
     }
 
 
@@ -1078,7 +1352,7 @@ def _write_list_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _list_page_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _list_page_codec.write(s.init_struct(0, 1, 2), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -1089,7 +1363,7 @@ def _write_list_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_list_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _list_page_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "ok", "value": _list_page_codec.read(s.get_struct(0, 1, 2), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown ListReply union member: {disc}")
@@ -1100,7 +1374,8 @@ _list_reply_codec = _Codec(1, 1, _write_list_reply, _read_list_reply)
 
 
 def _write_get_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _object_metadata_codec.write(s.init_struct(0, 1, 4), v["meta"], caps)
+    if v.get("meta") is not None:
+        _object_metadata_codec.write(s.init_struct(0, 2, 6), v["meta"], caps)
     if v.get("body") is not None:
         if v["body"] is not None:
             s.set_cap(1, caps.export_cap(v["body"]))
@@ -1108,7 +1383,7 @@ def _write_get_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 
 def _read_get_ok(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
-        "meta": _object_metadata_codec.read(s.get_struct(0, 1, 4), caps),
+        "meta": _object_metadata_codec.read(s.get_struct(0, 2, 6), caps),
     }
     body = caps.import_cap(s.get_cap_index(1))
     if not (body is None):
@@ -1149,7 +1424,7 @@ def _write_put_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _put_result_codec.write(s.init_struct(0, 1, 3), v["value"], caps)
+        _put_result_codec.write(s.init_struct(0, 2, 5), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -1160,7 +1435,7 @@ def _write_put_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_put_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _put_result_codec.read(s.get_struct(0, 1, 3), caps)}
+        return {"kind": "ok", "value": _put_result_codec.read(s.get_struct(0, 2, 5), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown PutReply union member: {disc}")
@@ -1193,6 +1468,131 @@ def _read_copy_reply(s: _StructReader, caps: _CapTable) -> Any:
 
 _copy_reply_codec = _Codec(1, 1, _write_copy_reply, _read_copy_reply)
 """Wire codec for ``CopyReply`` (1 data words, 1 pointers)."""
+
+
+def _write_move_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _move_result_codec.write(s.init_struct(0, 1, 0), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown MoveReply union member: {kind}")
+
+
+def _read_move_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _move_result_codec.read(s.get_struct(0, 1, 0), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown MoveReply union member: {disc}")
+
+
+_move_reply_codec = _Codec(1, 1, _write_move_reply, _read_move_reply)
+"""Wire codec for ``MoveReply`` (1 data words, 1 pointers)."""
+
+
+def _write_move_many_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _move_many_page_codec.write(s.init_struct(0, 2, 2), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown MoveManyReply union member: {kind}")
+
+
+def _read_move_many_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _move_many_page_codec.read(s.get_struct(0, 2, 2), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown MoveManyReply union member: {disc}")
+
+
+_move_many_reply_codec = _Codec(1, 1, _write_move_many_reply, _read_move_many_reply)
+"""Wire codec for ``MoveManyReply`` (1 data words, 1 pointers)."""
+
+
+def _write_delete_many_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _delete_many_result_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown DeleteManyReply union member: {kind}")
+
+
+def _read_delete_many_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _delete_many_result_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown DeleteManyReply union member: {disc}")
+
+
+_delete_many_reply_codec = _Codec(1, 1, _write_delete_many_reply, _read_delete_many_reply)
+"""Wire codec for ``DeleteManyReply`` (1 data words, 1 pointers)."""
+
+
+def _write_head_many_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _head_many_result_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown HeadManyReply union member: {kind}")
+
+
+def _read_head_many_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _head_many_result_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown HeadManyReply union member: {disc}")
+
+
+_head_many_reply_codec = _Codec(1, 1, _write_head_many_reply, _read_head_many_reply)
+"""Wire codec for ``HeadManyReply`` (1 data words, 1 pointers)."""
+
+
+def _write_changes_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _changes_page_codec.write(s.init_struct(0, 1, 2), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown ChangesReply union member: {kind}")
+
+
+def _read_changes_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _changes_page_codec.read(s.get_struct(0, 1, 2), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown ChangesReply union member: {disc}")
+
+
+_changes_reply_codec = _Codec(1, 1, _write_changes_reply, _read_changes_reply)
+"""Wire codec for ``ChangesReply`` (1 data words, 1 pointers)."""
 
 
 def _write_empty_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -1261,7 +1661,8 @@ _pull_reply_codec = _Codec(1, 1, _write_pull_reply, _read_pull_reply)
 
 
 def _write_open_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _object_metadata_codec.write(s.init_struct(0, 1, 4), v["meta"], caps)
+    if v.get("meta") is not None:
+        _object_metadata_codec.write(s.init_struct(0, 2, 6), v["meta"], caps)
     if v.get("body") is not None:
         if v["body"] is not None:
             s.set_cap(1, caps.export_cap(v["body"]))
@@ -1269,7 +1670,7 @@ def _write_open_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 
 def _read_open_ok(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
-        "meta": _object_metadata_codec.read(s.get_struct(0, 1, 4), caps),
+        "meta": _object_metadata_codec.read(s.get_struct(0, 2, 6), caps),
     }
     body = caps.import_cap(s.get_cap_index(1))
     if not (body is None):
@@ -1765,7 +2166,8 @@ def _write_cli_invoke_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_i32(0, v["exitCode"])
     s.set_text(0, v["stdout"])
     s.set_text(1, v["stderr"])
-    _extensible_config_codec.write(s.init_struct(2, 1, 2), v["payload"], caps)
+    if v.get("payload") is not None:
+        _extensible_config_codec.write(s.init_struct(2, 1, 2), v["payload"], caps)
 
 
 def _read_cli_invoke_result(s: _StructReader, caps: _CapTable) -> Any:
@@ -1833,7 +2235,8 @@ _cli_invoke_reply_codec = _Codec(1, 1, _write_cli_invoke_reply, _read_cli_invoke
 
 def _write_database_adapter_config(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["pluginDataDir"])
-    _extensible_config_codec.write(s.init_struct(1, 1, 2), v["settings"], caps)
+    if v.get("settings") is not None:
+        _extensible_config_codec.write(s.init_struct(1, 1, 2), v["settings"], caps)
     if v.get("binding") is not None:
         s.set_text(2, v["binding"])
     if v.get("instanceId") is not None:
@@ -1947,7 +2350,8 @@ def _write_login_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_bool(2, v["showQr"])
     if v.get("timeoutSecs") is not None:
         s.set_u64(1, v["timeoutSecs"])
-    _extensible_config_codec.write(s.init_struct(9, 1, 2), v["extra"], caps)
+    if v.get("extra") is not None:
+        _extensible_config_codec.write(s.init_struct(9, 1, 2), v["extra"], caps)
 
 
 def _read_login_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -1991,7 +2395,8 @@ _login_params_codec = _Codec(2, 10, _write_login_params, _read_login_params)
 
 
 def _write_login_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _source_account_codec.write(s.init_struct(0, 1, 4), v["account"], caps)
+    if v.get("account") is not None:
+        _source_account_codec.write(s.init_struct(0, 1, 4), v["account"], caps)
     if v.get("credentials") is not None:
         s.set_data(1, v["credentials"])
 
@@ -2112,7 +2517,8 @@ def _write_scan_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_u32(0, v["pageSize"])
     s.set_bool(32, v["importEpisodes"])
     s.set_bool(33, v["importPlusTitles"])
-    _account_credential_codec.write(s.init_struct(2, 0, 2), v["credential"], caps)
+    if v.get("credential") is not None:
+        _account_credential_codec.write(s.init_struct(2, 0, 2), v["credential"], caps)
     s.set_text(3, v["cursor"])
     s.set_text(4, v["syncToken"])
 
@@ -2410,8 +2816,10 @@ def _write_fetch_title_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(3, v["cacheDir"])
     if v.get("credentials") is not None:
         s.set_data(4, v["credentials"])
-    _extensible_config_codec.write(s.init_struct(5, 1, 2), v["sourceConfig"], caps)
-    _fetch_options_codec.write(s.init_struct(6, 1, 4), v["fetch"], caps)
+    if v.get("sourceConfig") is not None:
+        _extensible_config_codec.write(s.init_struct(5, 1, 2), v["sourceConfig"], caps)
+    if v.get("fetch") is not None:
+        _fetch_options_codec.write(s.init_struct(6, 1, 4), v["fetch"], caps)
 
 
 def _read_fetch_title_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -2925,7 +3333,8 @@ _catalog_hits_reply_codec = _Codec(1, 1, _write_catalog_hits_reply, _read_catalo
 
 def _write_catalog_detail(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_bool(0, v["found"])
-    _catalog_hit_codec.write(s.init_struct(0, 6, 17), v["hit"], caps)
+    if v.get("hit") is not None:
+        _catalog_hit_codec.write(s.init_struct(0, 6, 17), v["hit"], caps)
 
 
 def _read_catalog_detail(s: _StructReader, caps: _CapTable) -> Any:
@@ -3026,7 +3435,8 @@ _purchase_hint_codec = _Codec(3, 7, _write_purchase_hint, _read_purchase_hint)
 
 def _write_purchase_hint_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_bool(0, v["found"])
-    _purchase_hint_codec.write(s.init_struct(0, 3, 7), v["hint"], caps)
+    if v.get("hint") is not None:
+        _purchase_hint_codec.write(s.init_struct(0, 3, 7), v["hint"], caps)
 
 
 def _read_purchase_hint_result(s: _StructReader, caps: _CapTable) -> Any:
@@ -4401,7 +4811,8 @@ _metadata_file_parse_params_codec = _Codec(0, 3, _write_metadata_file_parse_para
 
 
 def _write_metadata_file_parsed(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _metadata_file_record_codec.write(s.init_struct(0, 2, 14), v["record"], caps)
+    if v.get("record") is not None:
+        _metadata_file_record_codec.write(s.init_struct(0, 2, 14), v["record"], caps)
 
 
 def _read_metadata_file_parsed(s: _StructReader, caps: _CapTable) -> Any:
@@ -4441,7 +4852,8 @@ _metadata_file_parse_reply_codec = _Codec(1, 1, _write_metadata_file_parse_reply
 
 def _write_metadata_file_render_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["dialect"])
-    _metadata_file_record_codec.write(s.init_struct(1, 2, 14), v["record"], caps)
+    if v.get("record") is not None:
+        _metadata_file_record_codec.write(s.init_struct(1, 2, 14), v["record"], caps)
     s.set_u16_list(2, [_ord(A.METADATA_FIELDS, v, "MetadataField") for v in v["fields"]])
     s.set_data(3, v["existing"])
 
@@ -4540,8 +4952,10 @@ _socket_header_codec = _Codec(0, 2, _write_socket_header, _read_socket_header)
 
 
 def _write_socket_auto_response(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _socket_frame_codec.write(s.init_struct(0, 1, 1), v["request"], caps)
-    _socket_frame_codec.write(s.init_struct(1, 1, 1), v["response"], caps)
+    if v.get("request") is not None:
+        _socket_frame_codec.write(s.init_struct(0, 1, 1), v["request"], caps)
+    if v.get("response") is not None:
+        _socket_frame_codec.write(s.init_struct(1, 1, 1), v["response"], caps)
 
 
 def _read_socket_auto_response(s: _StructReader, caps: _CapTable) -> Any:
@@ -4712,7 +5126,8 @@ _socket_message_ok_codec = _Codec(1, 0, _write_socket_message_ok, _read_socket_m
 
 def _write_socket_message(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["socket"])
-    _socket_frame_codec.write(s.init_struct(1, 1, 1), v["frame"], caps)
+    if v.get("frame") is not None:
+        _socket_frame_codec.write(s.init_struct(1, 1, 1), v["frame"], caps)
     s.set_data(2, v["attachment"])
 
 
@@ -4894,7 +5309,8 @@ _sql_span_codec = _Codec(1, 0, _write_sql_span, _read_sql_span)
 
 
 def _write_text_collate_site(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _sql_span_codec.write(s.init_struct(0, 1, 0), v["span"], caps)
+    if v.get("span") is not None:
+        _sql_span_codec.write(s.init_struct(0, 1, 0), v["span"], caps)
 
 
 def _read_text_collate_site(s: _StructReader, caps: _CapTable) -> Any:
@@ -4908,9 +5324,12 @@ _text_collate_site_codec = _Codec(0, 1, _write_text_collate_site, _read_text_col
 
 
 def _write_integer_arith_site(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _sql_span_codec.write(s.init_struct(0, 1, 0), v["full"], caps)
-    _sql_span_codec.write(s.init_struct(1, 1, 0), v["lhs"], caps)
-    _sql_span_codec.write(s.init_struct(2, 1, 0), v["rhs"], caps)
+    if v.get("full") is not None:
+        _sql_span_codec.write(s.init_struct(0, 1, 0), v["full"], caps)
+    if v.get("lhs") is not None:
+        _sql_span_codec.write(s.init_struct(1, 1, 0), v["lhs"], caps)
+    if v.get("rhs") is not None:
+        _sql_span_codec.write(s.init_struct(2, 1, 0), v["rhs"], caps)
     s.set_u16(0, _ord(A.INTEGER_ARITH_KINDS, v["kind"], "IntegerArithKind"))
 
 
@@ -5111,7 +5530,8 @@ _create_table_schema_codec = _Codec(0, 10, _write_create_table_schema, _read_cre
 
 
 def _write_schema_create(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _create_table_schema_codec.write(s.init_struct(0, 0, 10), v["schema"], caps)
+    if v.get("schema") is not None:
+        _create_table_schema_codec.write(s.init_struct(0, 0, 10), v["schema"], caps)
     s.set_text(1, v["fingerprint"])
     s.set_bool(0, v["noop"])
 
@@ -5175,7 +5595,8 @@ def _write_resolved_statement(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     for item, elem in zip(items, v["integerArithSites"], strict=True):
         _integer_arith_site_codec.write(item, elem, caps)
     s.set_text_list(6, v["functions"])
-    _schema_action_codec.write(s.init_struct(7, 1, 1), v["schemaAction"], caps)
+    if v.get("schemaAction") is not None:
+        _schema_action_codec.write(s.init_struct(7, 1, 1), v["schemaAction"], caps)
 
 
 def _read_resolved_statement(s: _StructReader, caps: _CapTable) -> Any:
@@ -5219,7 +5640,8 @@ def _write_adapter_statement(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_u16(0, _ord(A.DB_STATEMENT_KINDS, v["kind"], "DbStatementKind"))
     s.set_u32(1, v["maxRows"])
     s.set_u16(1, _ord(A.DB_RESULT_SELECTIONS, v["resultSelection"], "DbResultSelection"))
-    _resolved_statement_codec.write(s.init_struct(2, 0, 8), v["proof"], caps)
+    if v.get("proof") is not None:
+        _resolved_statement_codec.write(s.init_struct(2, 0, 8), v["proof"], caps)
 
 
 def _read_adapter_statement(s: _StructReader, caps: _CapTable) -> Any:
@@ -5245,7 +5667,8 @@ def _write_adapter_execute_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> 
         _adapter_statement_codec.write(item, elem, caps)
     s.set_u64(0, v["deadlineUnixMs"])
     s.set_u16(4, _ord(A.ISOLATION_REQS, v["isolation"], "IsolationReq"))
-    _adapter_receipt_codec.write(s.init_struct(3, 1, 1), v["receipt"], caps)
+    if v.get("receipt") is not None:
+        _adapter_receipt_codec.write(s.init_struct(3, 1, 1), v["receipt"], caps)
 
 
 def _read_adapter_execute_request(s: _StructReader, caps: _CapTable) -> Any:
@@ -5308,7 +5731,8 @@ def _write_execute_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     items = s.init_struct_list(1, len(v["statements"]), 1, 2)
     for item, elem in zip(items, v["statements"], strict=True):
         _statement_result_codec.write(item, elem, caps)
-    _db_timing_codec.write(s.init_struct(2, 2, 1), v["timing"], caps)
+    if v.get("timing") is not None:
+        _db_timing_codec.write(s.init_struct(2, 2, 1), v["timing"], caps)
 
 
 def _read_execute_reply(s: _StructReader, caps: _CapTable) -> Any:
@@ -5748,7 +6172,8 @@ _byte_source_pull_params_codec = _Codec(1, 0, _write_byte_source_pull_params, _r
 
 
 def _write_byte_source_pull_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _pull_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _pull_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_byte_source_pull_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -5776,7 +6201,8 @@ _destination_head_params_codec = _Codec(0, 1, _write_destination_head_params, _r
 
 
 def _write_destination_head_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _head_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _head_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_destination_head_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -5790,12 +6216,13 @@ _destination_head_results_codec = _Codec(0, 1, _write_destination_head_results, 
 
 
 def _write_destination_list_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _list_options_codec.write(s.init_struct(0, 1, 2), v["options"], caps)
+    if v.get("options") is not None:
+        _list_options_codec.write(s.init_struct(0, 2, 2), v["options"], caps)
 
 
 def _read_destination_list_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "options": _list_options_codec.read(s.get_struct(0, 1, 2), caps),
+        "options": _list_options_codec.read(s.get_struct(0, 2, 2), caps),
     }
 
 
@@ -5804,7 +6231,8 @@ _destination_list_params_codec = _Codec(0, 1, _write_destination_list_params, _r
 
 
 def _write_destination_list_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _list_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _list_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_destination_list_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -5819,7 +6247,8 @@ _destination_list_results_codec = _Codec(0, 1, _write_destination_list_results, 
 
 def _write_destination_get_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["key"])
-    _read_options_codec.write(s.init_struct(1, 0, 1), v["options"], caps)
+    if v.get("options") is not None:
+        _read_options_codec.write(s.init_struct(1, 0, 1), v["options"], caps)
 
 
 def _read_destination_get_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -5834,7 +6263,8 @@ _destination_get_params_codec = _Codec(0, 2, _write_destination_get_params, _rea
 
 
 def _write_destination_get_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _get_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _get_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_destination_get_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -5852,13 +6282,14 @@ def _write_destination_put_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> N
     if v.get("body") is not None:
         if v["body"] is not None:
             s.set_cap(1, caps.export_cap(v["body"]))
-    _write_options_codec.write(s.init_struct(2, 2, 3), v["options"], caps)
+    if v.get("options") is not None:
+        _write_options_codec.write(s.init_struct(2, 2, 4), v["options"], caps)
 
 
 def _read_destination_put_params(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
         "key": s.get_text(0),
-        "options": _write_options_codec.read(s.get_struct(2, 2, 3), caps),
+        "options": _write_options_codec.read(s.get_struct(2, 2, 4), caps),
     }
     body = caps.import_cap(s.get_cap_index(1))
     if not (body is None):
@@ -5871,7 +6302,8 @@ _destination_put_params_codec = _Codec(0, 3, _write_destination_put_params, _rea
 
 
 def _write_destination_put_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _put_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _put_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_destination_put_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -5901,7 +6333,8 @@ _destination_copy_params_codec = _Codec(0, 2, _write_destination_copy_params, _r
 
 
 def _write_destination_copy_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _copy_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _copy_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_destination_copy_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -5929,7 +6362,8 @@ _destination_delete_params_codec = _Codec(0, 1, _write_destination_delete_params
 
 
 def _write_destination_delete_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_destination_delete_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -5959,7 +6393,8 @@ _destination_commit_params_codec = _Codec(0, 2, _write_destination_commit_params
 
 
 def _write_destination_commit_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _put_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _put_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_destination_commit_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -5989,7 +6424,8 @@ _destination_abort_stage_params_codec = _Codec(0, 2, _write_destination_abort_st
 
 
 def _write_destination_abort_stage_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_destination_abort_stage_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6000,6 +6436,158 @@ def _read_destination_abort_stage_results(s: _StructReader, caps: _CapTable) -> 
 
 _destination_abort_stage_results_codec = _Codec(0, 1, _write_destination_abort_stage_results, _read_destination_abort_stage_results)
 """Wire codec for ``DestinationAbortStageResults`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_move_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["from"])
+    s.set_text(1, v["to"])
+    if v.get("options") is not None:
+        _move_options_codec.write(s.init_struct(2, 1, 1), v["options"], caps)
+
+
+def _read_destination_move_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "from": s.get_text(0),
+        "to": s.get_text(1),
+        "options": _move_options_codec.read(s.get_struct(2, 1, 1), caps),
+    }
+
+
+_destination_move_params_codec = _Codec(0, 3, _write_destination_move_params, _read_destination_move_params)
+"""Wire codec for ``DestinationMoveParams`` (0 data words, 3 pointers)."""
+
+
+def _write_destination_move_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _move_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_destination_move_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _move_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_destination_move_results_codec = _Codec(0, 1, _write_destination_move_results, _read_destination_move_results)
+"""Wire codec for ``DestinationMoveResults`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_move_many_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("request") is not None:
+        _move_many_request_codec.write(s.init_struct(0, 1, 3), v["request"], caps)
+
+
+def _read_destination_move_many_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "request": _move_many_request_codec.read(s.get_struct(0, 1, 3), caps),
+    }
+
+
+_destination_move_many_params_codec = _Codec(0, 1, _write_destination_move_many_params, _read_destination_move_many_params)
+"""Wire codec for ``DestinationMoveManyParams`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_move_many_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _move_many_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_destination_move_many_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _move_many_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_destination_move_many_results_codec = _Codec(0, 1, _write_destination_move_many_results, _read_destination_move_many_results)
+"""Wire codec for ``DestinationMoveManyResults`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_delete_many_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text_list(0, v["keys"])
+
+
+def _read_destination_delete_many_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "keys": s.get_text_list(0),
+    }
+
+
+_destination_delete_many_params_codec = _Codec(0, 1, _write_destination_delete_many_params, _read_destination_delete_many_params)
+"""Wire codec for ``DestinationDeleteManyParams`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_delete_many_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _delete_many_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_destination_delete_many_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _delete_many_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_destination_delete_many_results_codec = _Codec(0, 1, _write_destination_delete_many_results, _read_destination_delete_many_results)
+"""Wire codec for ``DestinationDeleteManyResults`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_head_many_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text_list(0, v["keys"])
+
+
+def _read_destination_head_many_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "keys": s.get_text_list(0),
+    }
+
+
+_destination_head_many_params_codec = _Codec(0, 1, _write_destination_head_many_params, _read_destination_head_many_params)
+"""Wire codec for ``DestinationHeadManyParams`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_head_many_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _head_many_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_destination_head_many_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _head_many_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_destination_head_many_results_codec = _Codec(0, 1, _write_destination_head_many_results, _read_destination_head_many_results)
+"""Wire codec for ``DestinationHeadManyResults`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_changes_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("request") is not None:
+        _changes_request_codec.write(s.init_struct(0, 1, 1), v["request"], caps)
+
+
+def _read_destination_changes_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "request": _changes_request_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_destination_changes_params_codec = _Codec(0, 1, _write_destination_changes_params, _read_destination_changes_params)
+"""Wire codec for ``DestinationChangesParams`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_changes_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _changes_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_destination_changes_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _changes_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_destination_changes_results_codec = _Codec(0, 1, _write_destination_changes_results, _read_destination_changes_results)
+"""Wire codec for ``DestinationChangesResults`` (0 data words, 1 pointers)."""
 
 
 def _write_source_open_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -6017,7 +6605,8 @@ _source_open_params_codec = _Codec(0, 1, _write_source_open_params, _read_source
 
 
 def _write_source_open_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _open_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _open_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_source_open_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6047,7 +6636,8 @@ _progress_sink_report_params_codec = _Codec(1, 1, _write_progress_sink_report_pa
 
 
 def _write_progress_sink_report_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_progress_sink_report_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6087,7 +6677,8 @@ _cancellation_poll_results_codec = _Codec(1, 0, _write_cancellation_poll_results
 
 
 def _write_job_runner_job_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _job_controller_codec.write(s.init_struct(0, 0, 5), v["controller"], caps)
+    if v.get("controller") is not None:
+        _job_controller_codec.write(s.init_struct(0, 0, 5), v["controller"], caps)
 
 
 def _read_job_runner_job_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6101,7 +6692,8 @@ _job_runner_job_params_codec = _Codec(0, 1, _write_job_runner_job_params, _read_
 
 
 def _write_job_runner_job_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _handle_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _handle_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_job_runner_job_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6115,7 +6707,8 @@ _job_runner_job_results_codec = _Codec(0, 1, _write_job_runner_job_results, _rea
 
 
 def _write_event_consumer_event_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _event_batch_codec.write(s.init_struct(0, 0, 1), v["batch"], caps)
+    if v.get("batch") is not None:
+        _event_batch_codec.write(s.init_struct(0, 0, 1), v["batch"], caps)
 
 
 def _read_event_consumer_event_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6129,7 +6722,8 @@ _event_consumer_event_params_codec = _Codec(0, 1, _write_event_consumer_event_pa
 
 
 def _write_event_consumer_event_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _event_batch_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _event_batch_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_event_consumer_event_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6143,7 +6737,8 @@ _event_consumer_event_results_codec = _Codec(0, 1, _write_event_consumer_event_r
 
 
 def _write_event_publisher_publish_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _plugin_event_codec.write(s.init_struct(0, 2, 5), v["event"], caps)
+    if v.get("event") is not None:
+        _plugin_event_codec.write(s.init_struct(0, 2, 5), v["event"], caps)
 
 
 def _read_event_publisher_publish_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6157,7 +6752,8 @@ _event_publisher_publish_params_codec = _Codec(0, 1, _write_event_publisher_publ
 
 
 def _write_event_publisher_publish_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _publish_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _publish_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_event_publisher_publish_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6171,7 +6767,8 @@ _event_publisher_publish_results_codec = _Codec(0, 1, _write_event_publisher_pub
 
 
 def _write_event_publisher_read_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _event_read_request_codec.write(s.init_struct(0, 2, 2), v["request"], caps)
+    if v.get("request") is not None:
+        _event_read_request_codec.write(s.init_struct(0, 2, 2), v["request"], caps)
 
 
 def _read_event_publisher_read_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6185,7 +6782,8 @@ _event_publisher_read_params_codec = _Codec(0, 1, _write_event_publisher_read_pa
 
 
 def _write_event_publisher_read_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _event_read_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _event_read_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_event_publisher_read_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6199,7 +6797,8 @@ _event_publisher_read_results_codec = _Codec(0, 1, _write_event_publisher_read_r
 
 
 def _write_scheduled_handler_scheduled_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _scheduled_controller_codec.write(s.init_struct(0, 3, 2), v["controller"], caps)
+    if v.get("controller") is not None:
+        _scheduled_controller_codec.write(s.init_struct(0, 3, 2), v["controller"], caps)
 
 
 def _read_scheduled_handler_scheduled_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6213,7 +6812,8 @@ _scheduled_handler_scheduled_params_codec = _Codec(0, 1, _write_scheduled_handle
 
 
 def _write_scheduled_handler_scheduled_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_scheduled_handler_scheduled_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6227,7 +6827,8 @@ _scheduled_handler_scheduled_results_codec = _Codec(0, 1, _write_scheduled_handl
 
 
 def _write_queue_consumer_queue_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _queue_batch_codec.write(s.init_struct(0, 0, 2), v["batch"], caps)
+    if v.get("batch") is not None:
+        _queue_batch_codec.write(s.init_struct(0, 0, 2), v["batch"], caps)
 
 
 def _read_queue_consumer_queue_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6241,7 +6842,8 @@ _queue_consumer_queue_params_codec = _Codec(0, 1, _write_queue_consumer_queue_pa
 
 
 def _write_queue_consumer_queue_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _queue_batch_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _queue_batch_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_queue_consumer_queue_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6255,7 +6857,8 @@ _queue_consumer_queue_results_codec = _Codec(0, 1, _write_queue_consumer_queue_r
 
 
 def _write_queue_producer_send_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _queue_send_message_codec.write(s.init_struct(0, 1, 2), v["message"], caps)
+    if v.get("message") is not None:
+        _queue_send_message_codec.write(s.init_struct(0, 1, 2), v["message"], caps)
 
 
 def _read_queue_producer_send_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6269,7 +6872,8 @@ _queue_producer_send_params_codec = _Codec(0, 1, _write_queue_producer_send_para
 
 
 def _write_queue_producer_send_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _queue_send_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _queue_send_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_queue_producer_send_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6301,7 +6905,8 @@ _queue_producer_send_batch_params_codec = _Codec(1, 1, _write_queue_producer_sen
 
 
 def _write_queue_producer_send_batch_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _queue_send_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _queue_send_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_queue_producer_send_batch_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6329,7 +6934,8 @@ _kv_namespace_get_params_codec = _Codec(0, 1, _write_kv_namespace_get_params, _r
 
 
 def _write_kv_namespace_get_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _kv_get_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _kv_get_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_kv_namespace_get_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6345,7 +6951,8 @@ _kv_namespace_get_results_codec = _Codec(0, 1, _write_kv_namespace_get_results, 
 def _write_kv_namespace_put_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["key"])
     s.set_data(1, v["value"])
-    _kv_put_options_codec.write(s.init_struct(2, 2, 1), v["options"], caps)
+    if v.get("options") is not None:
+        _kv_put_options_codec.write(s.init_struct(2, 2, 1), v["options"], caps)
 
 
 def _read_kv_namespace_put_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6361,7 +6968,8 @@ _kv_namespace_put_params_codec = _Codec(0, 3, _write_kv_namespace_put_params, _r
 
 
 def _write_kv_namespace_put_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _kv_put_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _kv_put_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_kv_namespace_put_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6389,7 +6997,8 @@ _kv_namespace_delete_params_codec = _Codec(0, 1, _write_kv_namespace_delete_para
 
 
 def _write_kv_namespace_delete_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _kv_delete_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _kv_delete_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_kv_namespace_delete_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6403,7 +7012,8 @@ _kv_namespace_delete_results_codec = _Codec(0, 1, _write_kv_namespace_delete_res
 
 
 def _write_kv_namespace_list_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _kv_list_options_codec.write(s.init_struct(0, 1, 2), v["options"], caps)
+    if v.get("options") is not None:
+        _kv_list_options_codec.write(s.init_struct(0, 1, 2), v["options"], caps)
 
 
 def _read_kv_namespace_list_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6417,7 +7027,8 @@ _kv_namespace_list_params_codec = _Codec(0, 1, _write_kv_namespace_list_params, 
 
 
 def _write_kv_namespace_list_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _kv_list_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _kv_list_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_kv_namespace_list_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6431,7 +7042,8 @@ _kv_namespace_list_results_codec = _Codec(0, 1, _write_kv_namespace_list_results
 
 
 def _write_sockets_connect_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _socket_connect_request_codec.write(s.init_struct(0, 0, 5), v["request"], caps)
+    if v.get("request") is not None:
+        _socket_connect_request_codec.write(s.init_struct(0, 0, 5), v["request"], caps)
 
 
 def _read_sockets_connect_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6445,7 +7057,8 @@ _sockets_connect_params_codec = _Codec(0, 1, _write_sockets_connect_params, _rea
 
 
 def _write_sockets_connect_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _socket_connect_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _socket_connect_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_sockets_connect_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6460,7 +7073,8 @@ _sockets_connect_results_codec = _Codec(0, 1, _write_sockets_connect_results, _r
 
 def _write_sockets_send_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["socket"])
-    _socket_frame_codec.write(s.init_struct(1, 1, 1), v["frame"], caps)
+    if v.get("frame") is not None:
+        _socket_frame_codec.write(s.init_struct(1, 1, 1), v["frame"], caps)
 
 
 def _read_sockets_send_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6475,7 +7089,8 @@ _sockets_send_params_codec = _Codec(0, 2, _write_sockets_send_params, _read_sock
 
 
 def _write_sockets_send_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_sockets_send_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6507,7 +7122,8 @@ _sockets_close_params_codec = _Codec(1, 2, _write_sockets_close_params, _read_so
 
 
 def _write_sockets_close_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_sockets_close_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6537,7 +7153,8 @@ _sockets_set_attachment_params_codec = _Codec(0, 2, _write_sockets_set_attachmen
 
 
 def _write_sockets_set_attachment_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_sockets_set_attachment_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6563,7 +7180,8 @@ _sockets_list_params_codec = _Codec(0, 0, _write_sockets_list_params, _read_sock
 
 
 def _write_sockets_list_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _socket_list_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _socket_list_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_sockets_list_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6577,7 +7195,8 @@ _sockets_list_results_codec = _Codec(0, 1, _write_sockets_list_results, _read_so
 
 
 def _write_socket_handler_message_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _socket_message_codec.write(s.init_struct(0, 0, 3), v["event"], caps)
+    if v.get("event") is not None:
+        _socket_message_codec.write(s.init_struct(0, 0, 3), v["event"], caps)
 
 
 def _read_socket_handler_message_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6591,7 +7210,8 @@ _socket_handler_message_params_codec = _Codec(0, 1, _write_socket_handler_messag
 
 
 def _write_socket_handler_message_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _socket_message_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _socket_message_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_socket_handler_message_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6605,7 +7225,8 @@ _socket_handler_message_results_codec = _Codec(0, 1, _write_socket_handler_messa
 
 
 def _write_socket_handler_closed_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _socket_closed_codec.write(s.init_struct(0, 1, 3), v["event"], caps)
+    if v.get("event") is not None:
+        _socket_closed_codec.write(s.init_struct(0, 1, 3), v["event"], caps)
 
 
 def _read_socket_handler_closed_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6619,7 +7240,8 @@ _socket_handler_closed_params_codec = _Codec(0, 1, _write_socket_handler_closed_
 
 
 def _write_socket_handler_closed_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_socket_handler_closed_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6633,7 +7255,8 @@ _socket_handler_closed_results_codec = _Codec(0, 1, _write_socket_handler_closed
 
 
 def _write_content_source_login_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _login_params_codec.write(s.init_struct(0, 2, 10), v["params"], caps)
+    if v.get("params") is not None:
+        _login_params_codec.write(s.init_struct(0, 2, 10), v["params"], caps)
 
 
 def _read_content_source_login_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6647,7 +7270,8 @@ _content_source_login_params_codec = _Codec(0, 1, _write_content_source_login_pa
 
 
 def _write_content_source_login_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _login_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _login_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_login_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6661,7 +7285,8 @@ _content_source_login_results_codec = _Codec(0, 1, _write_content_source_login_r
 
 
 def _write_content_source_scan_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _scan_params_codec.write(s.init_struct(0, 1, 5), v["params"], caps)
+    if v.get("params") is not None:
+        _scan_params_codec.write(s.init_struct(0, 1, 5), v["params"], caps)
 
 
 def _read_content_source_scan_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6675,7 +7300,8 @@ _content_source_scan_params_codec = _Codec(0, 1, _write_content_source_scan_para
 
 
 def _write_content_source_scan_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _scan_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _scan_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_scan_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6689,7 +7315,8 @@ _content_source_scan_results_codec = _Codec(0, 1, _write_content_source_scan_res
 
 
 def _write_content_source_fetch_title_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _fetch_title_params_codec.write(s.init_struct(0, 0, 7), v["params"], caps)
+    if v.get("params") is not None:
+        _fetch_title_params_codec.write(s.init_struct(0, 0, 7), v["params"], caps)
 
 
 def _read_content_source_fetch_title_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6703,7 +7330,8 @@ _content_source_fetch_title_params_codec = _Codec(0, 1, _write_content_source_fe
 
 
 def _write_content_source_fetch_title_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _fetch_title_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _fetch_title_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_fetch_title_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6729,7 +7357,8 @@ _content_source_list_accounts_params_codec = _Codec(0, 0, _write_content_source_
 
 
 def _write_content_source_list_accounts_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _source_accounts_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _source_accounts_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_list_accounts_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6743,7 +7372,8 @@ _content_source_list_accounts_results_codec = _Codec(0, 1, _write_content_source
 
 
 def _write_content_source_login_start_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _login_params_codec.write(s.init_struct(0, 2, 10), v["params"], caps)
+    if v.get("params") is not None:
+        _login_params_codec.write(s.init_struct(0, 2, 10), v["params"], caps)
 
 
 def _read_content_source_login_start_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6757,7 +7387,8 @@ _content_source_login_start_params_codec = _Codec(0, 1, _write_content_source_lo
 
 
 def _write_content_source_login_start_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _login_start_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _login_start_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_login_start_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6771,7 +7402,8 @@ _content_source_login_start_results_codec = _Codec(0, 1, _write_content_source_l
 
 
 def _write_content_source_login_complete_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _login_complete_params_codec.write(s.init_struct(0, 0, 1), v["params"], caps)
+    if v.get("params") is not None:
+        _login_complete_params_codec.write(s.init_struct(0, 0, 1), v["params"], caps)
 
 
 def _read_content_source_login_complete_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6785,7 +7417,8 @@ _content_source_login_complete_params_codec = _Codec(0, 1, _write_content_source
 
 
 def _write_content_source_login_complete_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _login_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _login_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_login_complete_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6799,7 +7432,8 @@ _content_source_login_complete_results_codec = _Codec(0, 1, _write_content_sourc
 
 
 def _write_content_source_search_catalog_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _search_catalog_params_codec.write(s.init_struct(0, 2, 3), v["params"], caps)
+    if v.get("params") is not None:
+        _search_catalog_params_codec.write(s.init_struct(0, 2, 3), v["params"], caps)
 
 
 def _read_content_source_search_catalog_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6813,7 +7447,8 @@ _content_source_search_catalog_params_codec = _Codec(0, 1, _write_content_source
 
 
 def _write_content_source_search_catalog_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _catalog_hits_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _catalog_hits_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_search_catalog_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6827,7 +7462,8 @@ _content_source_search_catalog_results_codec = _Codec(0, 1, _write_content_sourc
 
 
 def _write_content_source_expand_candidates_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _expand_candidates_params_codec.write(s.init_struct(0, 1, 10), v["params"], caps)
+    if v.get("params") is not None:
+        _expand_candidates_params_codec.write(s.init_struct(0, 1, 10), v["params"], caps)
 
 
 def _read_content_source_expand_candidates_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6841,7 +7477,8 @@ _content_source_expand_candidates_params_codec = _Codec(0, 1, _write_content_sou
 
 
 def _write_content_source_expand_candidates_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _catalog_hits_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _catalog_hits_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_expand_candidates_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6855,7 +7492,8 @@ _content_source_expand_candidates_results_codec = _Codec(0, 1, _write_content_so
 
 
 def _write_content_source_purchase_hint_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _purchase_hint_params_codec.write(s.init_struct(0, 1, 6), v["params"], caps)
+    if v.get("params") is not None:
+        _purchase_hint_params_codec.write(s.init_struct(0, 1, 6), v["params"], caps)
 
 
 def _read_content_source_purchase_hint_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6869,7 +7507,8 @@ _content_source_purchase_hint_params_codec = _Codec(0, 1, _write_content_source_
 
 
 def _write_content_source_purchase_hint_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _purchase_hint_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _purchase_hint_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_purchase_hint_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6883,7 +7522,8 @@ _content_source_purchase_hint_results_codec = _Codec(0, 1, _write_content_source
 
 
 def _write_content_source_list_deals_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _list_deals_params_codec.write(s.init_struct(0, 1, 0), v["params"], caps)
+    if v.get("params") is not None:
+        _list_deals_params_codec.write(s.init_struct(0, 1, 0), v["params"], caps)
 
 
 def _read_content_source_list_deals_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6897,7 +7537,8 @@ _content_source_list_deals_params_codec = _Codec(0, 1, _write_content_source_lis
 
 
 def _write_content_source_list_deals_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _catalog_hits_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _catalog_hits_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_list_deals_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6923,7 +7564,8 @@ _content_source_health_params_codec = _Codec(0, 0, _write_content_source_health_
 
 
 def _write_content_source_health_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_health_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6949,7 +7591,8 @@ _content_source_diagnose_params_codec = _Codec(0, 0, _write_content_source_diagn
 
 
 def _write_content_source_diagnose_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _diagnose_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _diagnose_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_diagnose_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6963,7 +7606,8 @@ _content_source_diagnose_results_codec = _Codec(0, 1, _write_content_source_diag
 
 
 def _write_content_source_catalog_detail_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _catalog_detail_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
+    if v.get("params") is not None:
+        _catalog_detail_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
 
 
 def _read_content_source_catalog_detail_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -6977,7 +7621,8 @@ _content_source_catalog_detail_params_codec = _Codec(0, 1, _write_content_source
 
 
 def _write_content_source_catalog_detail_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _catalog_detail_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _catalog_detail_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_catalog_detail_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -6991,7 +7636,8 @@ _content_source_catalog_detail_results_codec = _Codec(0, 1, _write_content_sourc
 
 
 def _write_content_source_revoke_account_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _revoke_account_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
+    if v.get("params") is not None:
+        _revoke_account_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
 
 
 def _read_content_source_revoke_account_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -7005,7 +7651,8 @@ _content_source_revoke_account_params_codec = _Codec(0, 1, _write_content_source
 
 
 def _write_content_source_revoke_account_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_revoke_account_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7019,7 +7666,8 @@ _content_source_revoke_account_results_codec = _Codec(0, 1, _write_content_sourc
 
 
 def _write_content_source_purchase_hints_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _purchase_hints_params_codec.write(s.init_struct(0, 0, 1), v["params"], caps)
+    if v.get("params") is not None:
+        _purchase_hints_params_codec.write(s.init_struct(0, 0, 1), v["params"], caps)
 
 
 def _read_content_source_purchase_hints_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -7033,7 +7681,8 @@ _content_source_purchase_hints_params_codec = _Codec(0, 1, _write_content_source
 
 
 def _write_content_source_purchase_hints_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _purchase_hints_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _purchase_hints_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_content_source_purchase_hints_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7059,7 +7708,8 @@ _remote_library_health_params_codec = _Codec(0, 0, _write_remote_library_health_
 
 
 def _write_remote_library_health_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_remote_library_health_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7085,7 +7735,8 @@ _remote_library_start_params_codec = _Codec(0, 0, _write_remote_library_start_pa
 
 
 def _write_remote_library_start_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_remote_library_start_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7111,7 +7762,8 @@ _remote_library_stop_params_codec = _Codec(0, 0, _write_remote_library_stop_para
 
 
 def _write_remote_library_stop_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_remote_library_stop_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7137,7 +7789,8 @@ _remote_library_diagnose_params_codec = _Codec(0, 0, _write_remote_library_diagn
 
 
 def _write_remote_library_diagnose_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _diagnose_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _diagnose_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_remote_library_diagnose_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7151,7 +7804,8 @@ _remote_library_diagnose_results_codec = _Codec(0, 1, _write_remote_library_diag
 
 
 def _write_remote_library_scan_library_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _scan_library_params_codec.write(s.init_struct(0, 1, 0), v["params"], caps)
+    if v.get("params") is not None:
+        _scan_library_params_codec.write(s.init_struct(0, 1, 0), v["params"], caps)
 
 
 def _read_remote_library_scan_library_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -7165,7 +7819,8 @@ _remote_library_scan_library_params_codec = _Codec(0, 1, _write_remote_library_s
 
 
 def _write_remote_library_scan_library_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_remote_library_scan_library_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7191,7 +7846,8 @@ _remote_library_sync_listening_params_codec = _Codec(0, 0, _write_remote_library
 
 
 def _write_remote_library_sync_listening_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _sync_listening_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _sync_listening_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_remote_library_sync_listening_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7217,7 +7873,8 @@ _remote_library_poll_events_params_codec = _Codec(0, 0, _write_remote_library_po
 
 
 def _write_remote_library_poll_events_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _event_poll_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _event_poll_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_remote_library_poll_events_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7243,7 +7900,8 @@ _plugin_cli_describe_params_codec = _Codec(0, 0, _write_plugin_cli_describe_para
 
 
 def _write_plugin_cli_describe_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _cli_schema_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _cli_schema_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_plugin_cli_describe_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7257,7 +7915,8 @@ _plugin_cli_describe_results_codec = _Codec(0, 1, _write_plugin_cli_describe_res
 
 
 def _write_plugin_cli_invoke_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _cli_invoke_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
+    if v.get("params") is not None:
+        _cli_invoke_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
 
 
 def _read_plugin_cli_invoke_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -7271,7 +7930,8 @@ _plugin_cli_invoke_params_codec = _Codec(0, 1, _write_plugin_cli_invoke_params, 
 
 
 def _write_plugin_cli_invoke_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _cli_invoke_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _cli_invoke_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_plugin_cli_invoke_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7297,7 +7957,8 @@ _oidc_clients_params_codec = _Codec(0, 0, _write_oidc_clients_params, _read_oidc
 
 
 def _write_oidc_clients_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _oidc_clients_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _oidc_clients_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_oidc_clients_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7311,7 +7972,8 @@ _oidc_clients_results_codec = _Codec(0, 1, _write_oidc_clients_results, _read_oi
 
 
 def _write_oidc_authenticate_user_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _authenticate_user_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
+    if v.get("params") is not None:
+        _authenticate_user_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
 
 
 def _read_oidc_authenticate_user_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -7325,7 +7987,8 @@ _oidc_authenticate_user_params_codec = _Codec(0, 1, _write_oidc_authenticate_use
 
 
 def _write_oidc_authenticate_user_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _external_user_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _external_user_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_oidc_authenticate_user_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7351,7 +8014,8 @@ _metadata_provider_health_params_codec = _Codec(0, 0, _write_metadata_provider_h
 
 
 def _write_metadata_provider_health_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_metadata_provider_health_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7365,7 +8029,8 @@ _metadata_provider_health_results_codec = _Codec(0, 1, _write_metadata_provider_
 
 
 def _write_metadata_provider_lookup_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _metadata_lookup_params_codec.write(s.init_struct(0, 1, 2), v["params"], caps)
+    if v.get("params") is not None:
+        _metadata_lookup_params_codec.write(s.init_struct(0, 1, 2), v["params"], caps)
 
 
 def _read_metadata_provider_lookup_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -7379,7 +8044,8 @@ _metadata_provider_lookup_params_codec = _Codec(0, 1, _write_metadata_provider_l
 
 
 def _write_metadata_provider_lookup_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _metadata_records_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _metadata_records_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_metadata_provider_lookup_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7393,7 +8059,8 @@ _metadata_provider_lookup_results_codec = _Codec(0, 1, _write_metadata_provider_
 
 
 def _write_metadata_provider_search_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _metadata_search_params_codec.write(s.init_struct(0, 1, 4), v["params"], caps)
+    if v.get("params") is not None:
+        _metadata_search_params_codec.write(s.init_struct(0, 1, 4), v["params"], caps)
 
 
 def _read_metadata_provider_search_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -7407,7 +8074,8 @@ _metadata_provider_search_params_codec = _Codec(0, 1, _write_metadata_provider_s
 
 
 def _write_metadata_provider_search_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _metadata_records_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _metadata_records_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_metadata_provider_search_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7421,7 +8089,8 @@ _metadata_provider_search_results_codec = _Codec(0, 1, _write_metadata_provider_
 
 
 def _write_metadata_provider_chapters_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _metadata_chapters_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
+    if v.get("params") is not None:
+        _metadata_chapters_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
 
 
 def _read_metadata_provider_chapters_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -7435,7 +8104,8 @@ _metadata_provider_chapters_params_codec = _Codec(0, 1, _write_metadata_provider
 
 
 def _write_metadata_provider_chapters_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _metadata_chapters_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _metadata_chapters_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_metadata_provider_chapters_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7461,7 +8131,8 @@ _cover_fetcher_health_params_codec = _Codec(0, 0, _write_cover_fetcher_health_pa
 
 
 def _write_cover_fetcher_health_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_cover_fetcher_health_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7475,7 +8146,8 @@ _cover_fetcher_health_results_codec = _Codec(0, 1, _write_cover_fetcher_health_r
 
 
 def _write_cover_fetcher_fetch_covers_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _cover_fetch_params_codec.write(s.init_struct(0, 1, 2), v["params"], caps)
+    if v.get("params") is not None:
+        _cover_fetch_params_codec.write(s.init_struct(0, 1, 2), v["params"], caps)
     if v.get("sink") is not None:
         if v["sink"] is not None:
             s.set_cap(1, caps.export_cap(v["sink"]))
@@ -7496,7 +8168,8 @@ _cover_fetcher_fetch_covers_params_codec = _Codec(0, 2, _write_cover_fetcher_fet
 
 
 def _write_cover_fetcher_fetch_covers_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _cover_images_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _cover_images_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_cover_fetcher_fetch_covers_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7522,7 +8195,8 @@ _metadata_files_health_params_codec = _Codec(0, 0, _write_metadata_files_health_
 
 
 def _write_metadata_files_health_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_metadata_files_health_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7536,7 +8210,8 @@ _metadata_files_health_results_codec = _Codec(0, 1, _write_metadata_files_health
 
 
 def _write_metadata_files_parse_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _metadata_file_parse_params_codec.write(s.init_struct(0, 0, 3), v["params"], caps)
+    if v.get("params") is not None:
+        _metadata_file_parse_params_codec.write(s.init_struct(0, 0, 3), v["params"], caps)
 
 
 def _read_metadata_files_parse_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -7550,7 +8225,8 @@ _metadata_files_parse_params_codec = _Codec(0, 1, _write_metadata_files_parse_pa
 
 
 def _write_metadata_files_parse_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _metadata_file_parse_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _metadata_file_parse_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_metadata_files_parse_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7564,7 +8240,8 @@ _metadata_files_parse_results_codec = _Codec(0, 1, _write_metadata_files_parse_r
 
 
 def _write_metadata_files_render_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _metadata_file_render_params_codec.write(s.init_struct(0, 0, 4), v["params"], caps)
+    if v.get("params") is not None:
+        _metadata_file_render_params_codec.write(s.init_struct(0, 0, 4), v["params"], caps)
 
 
 def _read_metadata_files_render_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -7578,7 +8255,8 @@ _metadata_files_render_params_codec = _Codec(0, 1, _write_metadata_files_render_
 
 
 def _write_metadata_files_render_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _metadata_file_render_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _metadata_file_render_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_metadata_files_render_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7604,7 +8282,8 @@ _database_open_session_params_codec = _Codec(0, 0, _write_database_open_session_
 
 
 def _write_database_open_session_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _adapter_session_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _adapter_session_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_database_open_session_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7632,7 +8311,8 @@ _database_drop_unit_params_codec = _Codec(0, 1, _write_database_drop_unit_params
 
 
 def _write_database_drop_unit_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_database_drop_unit_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7658,7 +8338,8 @@ _adapter_database_session_capabilities_params_codec = _Codec(0, 0, _write_adapte
 
 
 def _write_adapter_database_session_capabilities_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _db_capabilities_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _db_capabilities_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_adapter_database_session_capabilities_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7672,7 +8353,8 @@ _adapter_database_session_capabilities_results_codec = _Codec(0, 1, _write_adapt
 
 
 def _write_adapter_database_session_execute_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _adapter_execute_request_codec.write(s.init_struct(0, 2, 4), v["request"], caps)
+    if v.get("request") is not None:
+        _adapter_execute_request_codec.write(s.init_struct(0, 2, 4), v["request"], caps)
 
 
 def _read_adapter_database_session_execute_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -7686,7 +8368,8 @@ _adapter_database_session_execute_params_codec = _Codec(0, 1, _write_adapter_dat
 
 
 def _write_adapter_database_session_execute_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _execute_result_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _execute_result_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_adapter_database_session_execute_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7712,7 +8395,8 @@ _adapter_database_session_close_params_codec = _Codec(0, 0, _write_adapter_datab
 
 
 def _write_adapter_database_session_close_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_adapter_database_session_close_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7738,7 +8422,8 @@ _adapter_database_session_bootstrap_params_codec = _Codec(0, 0, _write_adapter_d
 
 
 def _write_adapter_database_session_bootstrap_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _db_bootstrap_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _db_bootstrap_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_adapter_database_session_bootstrap_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7764,7 +8449,8 @@ _adapter_database_session_export_identity_params_codec = _Codec(0, 0, _write_ada
 
 
 def _write_adapter_database_session_export_identity_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _identity_export_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _identity_export_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_adapter_database_session_export_identity_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7794,7 +8480,8 @@ _adapter_database_session_import_identity_params_codec = _Codec(0, 1, _write_ada
 
 
 def _write_adapter_database_session_import_identity_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_adapter_database_session_import_identity_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7820,7 +8507,8 @@ _adapter_database_session_list_user_relations_params_codec = _Codec(0, 0, _write
 
 
 def _write_adapter_database_session_list_user_relations_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _user_relations_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _user_relations_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_adapter_database_session_list_user_relations_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7846,7 +8534,8 @@ _adapter_database_session_prepare_unit_restore_params_codec = _Codec(0, 0, _writ
 
 
 def _write_adapter_database_session_prepare_unit_restore_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_adapter_database_session_prepare_unit_restore_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7874,7 +8563,8 @@ _adapter_database_session_drop_user_relations_params_codec = _Codec(0, 1, _write
 
 
 def _write_adapter_database_session_drop_user_relations_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_adapter_database_session_drop_user_relations_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7900,7 +8590,8 @@ _adapter_database_session_assert_restore_constraints_params_codec = _Codec(0, 0,
 
 
 def _write_adapter_database_session_assert_restore_constraints_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_adapter_database_session_assert_restore_constraints_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7914,7 +8605,8 @@ _adapter_database_session_assert_restore_constraints_results_codec = _Codec(0, 1
 
 
 def _write_adapter_database_session_execute_streamed_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _adapter_execute_request_codec.write(s.init_struct(0, 2, 4), v["request"], caps)
+    if v.get("request") is not None:
+        _adapter_execute_request_codec.write(s.init_struct(0, 2, 4), v["request"], caps)
 
 
 def _read_adapter_database_session_execute_streamed_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -7928,7 +8620,8 @@ _adapter_database_session_execute_streamed_params_codec = _Codec(0, 1, _write_ad
 
 
 def _write_adapter_database_session_execute_streamed_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _execute_stream_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _execute_stream_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_adapter_database_session_execute_streamed_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7942,7 +8635,8 @@ _adapter_database_session_execute_streamed_results_codec = _Codec(0, 1, _write_a
 
 
 def _write_guest_database_execute_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _execute_request_codec.write(s.init_struct(0, 1, 3), v["request"], caps)
+    if v.get("request") is not None:
+        _execute_request_codec.write(s.init_struct(0, 1, 3), v["request"], caps)
 
 
 def _read_guest_database_execute_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -7956,7 +8650,8 @@ _guest_database_execute_params_codec = _Codec(0, 1, _write_guest_database_execut
 
 
 def _write_guest_database_execute_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _execute_result_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _execute_result_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_guest_database_execute_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -7982,7 +8677,8 @@ _guest_database_close_params_codec = _Codec(0, 0, _write_guest_database_close_pa
 
 
 def _write_guest_database_close_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_guest_database_close_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -8008,7 +8704,8 @@ _guest_database_limits_params_codec = _Codec(0, 0, _write_guest_database_limits_
 
 
 def _write_guest_database_limits_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _db_capabilities_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _db_capabilities_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_guest_database_limits_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -8022,7 +8719,8 @@ _guest_database_limits_results_codec = _Codec(0, 1, _write_guest_database_limits
 
 
 def _write_guest_database_execute_streamed_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _execute_request_codec.write(s.init_struct(0, 1, 3), v["request"], caps)
+    if v.get("request") is not None:
+        _execute_request_codec.write(s.init_struct(0, 1, 3), v["request"], caps)
 
 
 def _read_guest_database_execute_streamed_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -8036,7 +8734,8 @@ _guest_database_execute_streamed_params_codec = _Codec(0, 1, _write_guest_databa
 
 
 def _write_guest_database_execute_streamed_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _execute_stream_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _execute_stream_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_guest_database_execute_streamed_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -8062,7 +8761,8 @@ _plugin_worker_describe_params_codec = _Codec(0, 0, _write_plugin_worker_describ
 
 
 def _write_plugin_worker_describe_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _describe_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _describe_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_plugin_worker_describe_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -8076,8 +8776,10 @@ _plugin_worker_describe_results_codec = _Codec(0, 1, _write_plugin_worker_descri
 
 
 def _write_plugin_worker_open_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _invocation_codec.write(s.init_struct(0, 1, 4), v["invocation"], caps)
-    _bindings_codec.write(s.init_struct(1, 0, 10), v["bindings"], caps)
+    if v.get("invocation") is not None:
+        _invocation_codec.write(s.init_struct(0, 1, 4), v["invocation"], caps)
+    if v.get("bindings") is not None:
+        _bindings_codec.write(s.init_struct(1, 0, 10), v["bindings"], caps)
 
 
 def _read_plugin_worker_open_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -8092,7 +8794,8 @@ _plugin_worker_open_params_codec = _Codec(0, 2, _write_plugin_worker_open_params
 
 
 def _write_plugin_worker_open_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _entrypoints_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _entrypoints_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_plugin_worker_open_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -8118,7 +8821,8 @@ _plugin_worker_shutdown_params_codec = _Codec(0, 0, _write_plugin_worker_shutdow
 
 
 def _write_plugin_worker_shutdown_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_plugin_worker_shutdown_results(s: _StructReader, caps: _CapTable) -> Any:
@@ -8146,7 +8850,8 @@ _plugin_worker_database_migrations_params_codec = _Codec(0, 1, _write_plugin_wor
 
 
 def _write_plugin_worker_database_migrations_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _plugin_migrations_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+    if v.get("result") is not None:
+        _plugin_migrations_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
 def _read_plugin_worker_database_migrations_results(s: _StructReader, caps: _CapTable) -> Any:

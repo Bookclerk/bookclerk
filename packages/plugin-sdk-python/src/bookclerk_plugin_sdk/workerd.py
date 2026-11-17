@@ -79,8 +79,17 @@ except ImportError:  # authoring / unit tests outside the isolate
 # ``schema/plugin.capnp`` — re-exported here for guest convenience.
 from ._abi import (  # noqa: E402  (re-export)
     FEATURE_SCALAR_LIMITS,
+    FEATURE_STORAGE_CHANGES,
+    FEATURE_STORAGE_CONDITIONAL_WRITE,
     FEATURE_STORAGE_COPY,
+    FEATURE_STORAGE_DELETE_MANY,
+    FEATURE_STORAGE_HEAD_MANY,
+    FEATURE_STORAGE_MOVE,
+    FEATURE_STORAGE_MOVE_MANY,
     FEATURE_STREAMS,
+    MAX_BATCH_KEYS,
+    MAX_CHANGES_CURSOR_BYTES,
+    MAX_CHANGES_PAGE,
     MAX_CHECKPOINT_BYTES,
     MAX_LIST_PAGE,
     MAX_PLUGIN_MIGRATION_OPS,
@@ -96,8 +105,17 @@ from ._abi import (  # noqa: E402  (re-export)
 
 __all__ = [
     "FEATURE_SCALAR_LIMITS",
+    "FEATURE_STORAGE_CHANGES",
+    "FEATURE_STORAGE_CONDITIONAL_WRITE",
     "FEATURE_STORAGE_COPY",
+    "FEATURE_STORAGE_DELETE_MANY",
+    "FEATURE_STORAGE_HEAD_MANY",
+    "FEATURE_STORAGE_MOVE",
+    "FEATURE_STORAGE_MOVE_MANY",
     "FEATURE_STREAMS",
+    "MAX_BATCH_KEYS",
+    "MAX_CHANGES_CURSOR_BYTES",
+    "MAX_CHANGES_PAGE",
     "MAX_CHECKPOINT_BYTES",
     "MAX_LIST_PAGE",
     "MAX_PLUGIN_MIGRATION_OPS",
@@ -1947,6 +1965,11 @@ STORAGE_METHODS: tuple[str, ...] = (
     "delete",
     "commit",
     "abortStage",
+    "move",
+    "moveMany",
+    "deleteMany",
+    "headMany",
+    "changes",
 )
 """RPC surface of the ``storage`` entrypoint."""
 
@@ -1987,6 +2010,48 @@ class StorageEntrypoint(NamedEntrypoint):
     async def abortStage(self, _key: str, _commit_token: str):
         """Discard a staged object."""
         raise _unsupported("abortStage")
+
+    async def move(self, _from_key: str, _to_key: str, _options: Any = None):
+        """Move one object (declare ``storage.move``).
+
+        ``options`` may carry ``noOverwrite`` and ``ifSourceMatch``. Returns
+        ``{"atomic": bool, "alreadyMoved": bool}``; ``alreadyMoved`` reports a
+        retried move whose source is gone and whose target exists.
+        """
+        raise _unsupported("move")
+
+    async def moveMany(self, _request: Any):
+        """Move explicit pairs or one page of a prefix (declare ``storage.moveMany``).
+
+        ``request["target"]`` is ``{"kind": "pairs", "value": [...]}`` (at
+        most ``MAX_BATCH_KEYS``) or ``{"kind": "prefix", "value": {...}}``,
+        paged through ``cursor``. Returns ``{"results", "nextCursor",
+        "atomic", "objectsMoved"}``, one result per pair in order.
+        """
+        raise _unsupported("moveMany")
+
+    async def deleteMany(self, _keys: list[str]):
+        """Delete up to ``MAX_BATCH_KEYS`` objects (declare ``storage.deleteMany``).
+
+        Returns one ``{"key", "error"?}`` outcome per key, in order; a
+        missing object counts as deleted.
+        """
+        raise _unsupported("deleteMany")
+
+    async def headMany(self, _keys: list[str]):
+        """Metadata for up to ``MAX_BATCH_KEYS`` objects (declare ``storage.headMany``).
+
+        Returns one entry per key, in order: object metadata or ``None``.
+        """
+        raise _unsupported("headMany")
+
+    async def changes(self, _request: Any):
+        """One page of the change feed after a cursor (declare ``storage.changes``).
+
+        Returns ``{"changes", "cursor", "more", "complete"}``; ``complete``
+        is false when changes may have been missed and the host must relist.
+        """
+        raise _unsupported("changes")
 
 
 REMOTE_LIBRARY_METHODS: tuple[str, ...] = (

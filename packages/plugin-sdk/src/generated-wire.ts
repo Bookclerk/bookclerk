@@ -83,6 +83,11 @@ function fromOrd<S extends string>(table: readonly S[], ordinal: number, enumNam
   return v;
 }
 
+// An open enum: an ordinal newer than this SDK reads as `fallback`.
+function fromOrdOr<S extends string>(table: readonly S[], ordinal: number, fallback: S): S {
+  return table[ordinal] ?? fallback;
+}
+
 function unknownUnion(struct: string, member: string | number): Error {
   return new Error(`unknown ${struct} union member: ${String(member)}`);
 }
@@ -256,6 +261,98 @@ export interface DestinationAbortStageParams {
  */
 export interface DestinationAbortStageResults {
   result: T.EmptyReply;
+}
+
+/**
+ * Params envelope of `Destination.move`.
+ *
+ * @internal
+ */
+export interface DestinationMoveParams {
+  from: string;
+  to: string;
+  options: T.MoveOptions;
+}
+
+/**
+ * Results envelope of `Destination.move`.
+ *
+ * @internal
+ */
+export interface DestinationMoveResults {
+  result: T.MoveReply;
+}
+
+/**
+ * Params envelope of `Destination.moveMany`.
+ *
+ * @internal
+ */
+export interface DestinationMoveManyParams {
+  request: T.MoveManyRequest;
+}
+
+/**
+ * Results envelope of `Destination.moveMany`.
+ *
+ * @internal
+ */
+export interface DestinationMoveManyResults {
+  result: T.MoveManyReply;
+}
+
+/**
+ * Params envelope of `Destination.deleteMany`.
+ *
+ * @internal
+ */
+export interface DestinationDeleteManyParams {
+  keys: string[];
+}
+
+/**
+ * Results envelope of `Destination.deleteMany`.
+ *
+ * @internal
+ */
+export interface DestinationDeleteManyResults {
+  result: T.DeleteManyReply;
+}
+
+/**
+ * Params envelope of `Destination.headMany`.
+ *
+ * @internal
+ */
+export interface DestinationHeadManyParams {
+  keys: string[];
+}
+
+/**
+ * Results envelope of `Destination.headMany`.
+ *
+ * @internal
+ */
+export interface DestinationHeadManyResults {
+  result: T.HeadManyReply;
+}
+
+/**
+ * Params envelope of `Destination.changes`.
+ *
+ * @internal
+ */
+export interface DestinationChangesParams {
+  request: T.ChangesRequest;
+}
+
+/**
+ * Results envelope of `Destination.changes`.
+ *
+ * @internal
+ */
+export interface DestinationChangesResults {
+  result: T.ChangesReply;
 }
 
 /**
@@ -1693,13 +1790,13 @@ export const PluginErrorCodec: StructCodec<T.PluginError> = {
 };
 
 /**
- * Wire codec for `ObjectMetadata` (1 data words, 4 pointers).
+ * Wire codec for `ObjectMetadata` (2 data words, 6 pointers).
  *
  * @internal
  */
 export const ObjectMetadataCodec: StructCodec<T.ObjectMetadata> = {
-  dataWords: 1,
-  pointerCount: 4,
+  dataWords: 2,
+  pointerCount: 6,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.key ?? "");
@@ -1707,6 +1804,9 @@ export const ObjectMetadataCodec: StructCodec<T.ObjectMetadata> = {
     s.setText(1, v.contentType ?? "");
     s.setText(2, v.etag ?? "");
     s.setData(3, v.sha256 ?? EMPTY_BYTES);
+    s.setUint64(1, BigInt(v.modifiedAtMs ?? 0));
+    s.setText(4, v.versionId ?? "");
+    s.setText(5, v.signature ?? "");
   },
   read(s, caps) {
     void caps;
@@ -1716,45 +1816,58 @@ export const ObjectMetadataCodec: StructCodec<T.ObjectMetadata> = {
       contentType: s.getText(1),
       etag: s.getText(2),
       sha256: s.getData(3),
+      modifiedAtMs: Number(s.getUint64(1)),
+      versionId: s.getText(4),
+      signature: s.getText(5),
     };
   },
 };
 
 /**
- * Wire codec for `ObjectInfo` (1 data words, 1 pointers).
+ * Wire codec for `ObjectInfo` (2 data words, 4 pointers).
  *
  * @internal
  */
 export const ObjectInfoCodec: StructCodec<T.ObjectInfo> = {
-  dataWords: 1,
-  pointerCount: 1,
+  dataWords: 2,
+  pointerCount: 4,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.key ?? "");
     s.setUint64(0, BigInt(v.size ?? 0));
+    s.setText(1, v.etag ?? "");
+    s.setUint64(1, BigInt(v.modifiedAtMs ?? 0));
+    s.setText(2, v.versionId ?? "");
+    s.setText(3, v.signature ?? "");
   },
   read(s, caps) {
     void caps;
     return {
       key: s.getText(0),
       size: Number(s.getUint64(0)),
+      etag: s.getText(1),
+      modifiedAtMs: Number(s.getUint64(1)),
+      versionId: s.getText(2),
+      signature: s.getText(3),
     };
   },
 };
 
 /**
- * Wire codec for `ListOptions` (1 data words, 2 pointers).
+ * Wire codec for `ListOptions` (2 data words, 2 pointers).
  *
  * @internal
  */
 export const ListOptionsCodec: StructCodec<T.ListOptions> = {
-  dataWords: 1,
+  dataWords: 2,
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.prefix ?? "");
     s.setText(1, v.cursor ?? "");
     s.setUint32(0, v.limit ?? 0);
+    s.setBool(32, v.withSignatures ?? false);
+    s.setUint64(1, BigInt(v.modifiedSinceMs ?? 0));
   },
   read(s, caps) {
     void caps;
@@ -1762,32 +1875,38 @@ export const ListOptionsCodec: StructCodec<T.ListOptions> = {
       prefix: s.getText(0),
       cursor: s.getText(1),
       limit: s.getUint32(0),
+      withSignatures: s.getBool(32),
+      modifiedSinceMs: Number(s.getUint64(1)),
     };
   },
 };
 
 /**
- * Wire codec for `ListPage` (0 data words, 2 pointers).
+ * Wire codec for `ListPage` (1 data words, 2 pointers).
  *
  * @internal
  */
 export const ListPageCodec: StructCodec<T.ListPage> = {
-  dataWords: 0,
+  dataWords: 1,
   pointerCount: 2,
   write(s, v, caps) {
     {
       const list = v.objects ?? [];
-      const items = s.initStructList(0, list.length, 1, 1);
+      const items = s.initStructList(0, list.length, 2, 4);
       for (let i = 0; i < items.length; i++) {
         ObjectInfoCodec.write(items[i]!, list[i]!, caps);
       }
     }
     s.setText(1, v.nextCursor ?? "");
+    s.setBool(0, v.signaturesIncluded ?? false);
+    s.setBool(1, v.modifiedSinceApplied ?? false);
   },
   read(s, caps) {
     return {
-      objects: s.getStructList(0, 1, 1).map((item) => ObjectInfoCodec.read(item, caps)),
+      objects: s.getStructList(0, 2, 4).map((item) => ObjectInfoCodec.read(item, caps)),
       nextCursor: s.getText(1),
+      signaturesIncluded: s.getBool(0),
+      modifiedSinceApplied: s.getBool(1),
     };
   },
 };
@@ -1835,13 +1954,13 @@ export const ReadOptionsCodec: StructCodec<T.ReadOptions> = {
 };
 
 /**
- * Wire codec for `WriteOptions` (2 data words, 3 pointers).
+ * Wire codec for `WriteOptions` (2 data words, 4 pointers).
  *
  * @internal
  */
 export const WriteOptionsCodec: StructCodec<T.WriteOptions> = {
   dataWords: 2,
-  pointerCount: 3,
+  pointerCount: 4,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.contentType ?? "");
@@ -1849,6 +1968,8 @@ export const WriteOptionsCodec: StructCodec<T.WriteOptions> = {
     s.setData(1, v.sha256 ?? EMPTY_BYTES);
     s.setText(2, v.commitToken ?? "");
     s.setBool(64, v.stageOnly ?? false);
+    s.setText(3, v.ifMatch ?? "");
+    s.setBool(65, v.ifNoneMatch ?? false);
   },
   read(s, caps) {
     void caps;
@@ -1858,24 +1979,29 @@ export const WriteOptionsCodec: StructCodec<T.WriteOptions> = {
       sha256: s.getData(1),
       commitToken: s.getText(2),
       stageOnly: s.getBool(64),
+      ifMatch: s.getText(3),
+      ifNoneMatch: s.getBool(65),
     };
   },
 };
 
 /**
- * Wire codec for `PutResult` (1 data words, 3 pointers).
+ * Wire codec for `PutResult` (2 data words, 5 pointers).
  *
  * @internal
  */
 export const PutResultCodec: StructCodec<T.PutResult> = {
-  dataWords: 1,
-  pointerCount: 3,
+  dataWords: 2,
+  pointerCount: 5,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.key ?? "");
     s.setUint64(0, BigInt(v.bytesWritten ?? 0));
     s.setText(1, v.etag ?? "");
     s.setData(2, v.sha256 ?? EMPTY_BYTES);
+    s.setUint64(1, BigInt(v.modifiedAtMs ?? 0));
+    s.setText(3, v.versionId ?? "");
+    s.setText(4, v.signature ?? "");
   },
   read(s, caps) {
     void caps;
@@ -1884,6 +2010,9 @@ export const PutResultCodec: StructCodec<T.PutResult> = {
       bytesWritten: Number(s.getUint64(0)),
       etag: s.getText(1),
       sha256: s.getData(2),
+      modifiedAtMs: Number(s.getUint64(1)),
+      versionId: s.getText(3),
+      signature: s.getText(4),
     };
   },
 };
@@ -1904,6 +2033,319 @@ export const CopyResultCodec: StructCodec<T.CopyResult> = {
     void caps;
     return {
       bytesCopied: Number(s.getUint64(0)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `MoveOptions` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MoveOptionsCodec: StructCodec<T.MoveOptions> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.noOverwrite ?? false);
+    s.setText(0, v.ifSourceMatch ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      noOverwrite: s.getBool(0),
+      ifSourceMatch: s.getText(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `MoveResult` (1 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const MoveResultCodec: StructCodec<T.MoveResult> = {
+  dataWords: 1,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.atomic ?? false);
+    s.setBool(1, v.alreadyMoved ?? false);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      atomic: s.getBool(0),
+      alreadyMoved: s.getBool(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for `KeyPair` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const KeyPairCodec: StructCodec<T.KeyPair> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.from ?? "");
+    s.setText(1, v.to ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      from: s.getText(0),
+      to: s.getText(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for `MoveManyTarget` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MoveManyTargetCodec: StructCodec<T.MoveManyTarget> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "pairs":
+        s.setUint16(0, 0);
+        {
+          const list = v.value ?? [];
+          const items = s.initStructList(0, list.length, 0, 2);
+          for (let i = 0; i < items.length; i++) {
+            KeyPairCodec.write(items[i]!, list[i]!, caps);
+          }
+        }
+        break;
+      case "prefix":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          KeyPairCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MoveManyTarget", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "pairs", value: s.getStructList(0, 0, 2).map((item) => KeyPairCodec.read(item, caps)) };
+      case 1:
+        return { kind: "prefix", value: KeyPairCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("MoveManyTarget", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `MoveManyRequest` (1 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const MoveManyRequestCodec: StructCodec<T.MoveManyRequest> = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    if (v.target != null) {
+      MoveManyTargetCodec.write(s.initStruct(0, 1, 1), v.target, caps);
+    }
+    s.setText(1, v.cursor ?? "");
+    s.setUint32(0, v.limit ?? 0);
+    if (v.options != null) {
+      MoveOptionsCodec.write(s.initStruct(2, 1, 1), v.options, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      target: MoveManyTargetCodec.read(s.getStruct(0, 1, 1), caps),
+      cursor: s.getText(1),
+      limit: s.getUint32(0),
+      options: MoveOptionsCodec.read(s.getStruct(2, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for `KeyOutcome` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const KeyOutcomeCodec: StructCodec<T.KeyOutcome> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    s.setText(0, v.key ?? "");
+    if (v.error != null) {
+      PluginErrorCodec.write(s.initStruct(1, 0, 3), v.error, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      key: s.getText(0),
+      error: PluginErrorCodec.read(s.getStruct(1, 0, 3), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for `MoveManyPage` (2 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const MoveManyPageCodec: StructCodec<T.MoveManyPage> = {
+  dataWords: 2,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.results ?? [];
+      const items = s.initStructList(0, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        KeyOutcomeCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    s.setText(1, v.nextCursor ?? "");
+    s.setBool(0, v.atomic ?? false);
+    s.setUint64(1, BigInt(v.objectsMoved ?? 0));
+  },
+  read(s, caps) {
+    return {
+      results: s.getStructList(0, 0, 2).map((item) => KeyOutcomeCodec.read(item, caps)),
+      nextCursor: s.getText(1),
+      atomic: s.getBool(0),
+      objectsMoved: Number(s.getUint64(1)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `DeleteManyResult` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DeleteManyResultCodec: StructCodec<T.DeleteManyResult> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.results ?? [];
+      const items = s.initStructList(0, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        KeyOutcomeCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      results: s.getStructList(0, 0, 2).map((item) => KeyOutcomeCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `HeadManyResult` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const HeadManyResultCodec: StructCodec<T.HeadManyResult> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.objects ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        HeadOkCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      objects: s.getStructList(0, 1, 1).map((item) => HeadOkCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `ChangesRequest` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ChangesRequestCodec: StructCodec<T.ChangesRequest> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.cursor ?? "");
+    s.setUint32(0, v.limit ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      cursor: s.getText(0),
+      limit: s.getUint32(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `ObjectChange` (1 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const ObjectChangeCodec: StructCodec<T.ObjectChange> = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    s.setText(0, v.key ?? "");
+    s.setUint16(0, ord(A.OBJECT_CHANGE_KINDS, v.kind ?? A.OBJECT_CHANGE_KINDS[0]!, "ObjectChangeKind"));
+    if (v.info != null) {
+      ObjectInfoCodec.write(s.initStruct(1, 2, 4), v.info, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      key: s.getText(0),
+      kind: fromOrdOr(A.OBJECT_CHANGE_KINDS, s.getUint16(0), "changed"),
+      info: ObjectInfoCodec.read(s.getStruct(1, 2, 4), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for `ChangesPage` (1 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const ChangesPageCodec: StructCodec<T.ChangesPage> = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.changes ?? [];
+      const items = s.initStructList(0, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        ObjectChangeCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    s.setText(1, v.cursor ?? "");
+    s.setBool(0, v.more ?? false);
+    s.setBool(1, v.complete ?? false);
+  },
+  read(s, caps) {
+    return {
+      changes: s.getStructList(0, 1, 2).map((item) => ObjectChangeCodec.read(item, caps)),
+      cursor: s.getText(1),
+      more: s.getBool(0),
+      complete: s.getBool(1),
     };
   },
 };
@@ -2993,13 +3435,13 @@ export const HeadOkCodec: StructCodec<T.HeadOk> = {
   write(s, v, caps) {
     s.setBool(0, v.found ?? false);
     if (v.meta != null) {
-      ObjectMetadataCodec.write(s.initStruct(0, 1, 4), v.meta, caps);
+      ObjectMetadataCodec.write(s.initStruct(0, 2, 6), v.meta, caps);
     }
   },
   read(s, caps) {
     return {
       found: s.getBool(0),
-      meta: ObjectMetadataCodec.read(s.getStruct(0, 1, 4), caps),
+      meta: ObjectMetadataCodec.read(s.getStruct(0, 2, 6), caps),
     };
   },
 };
@@ -3056,7 +3498,7 @@ export const ListReplyCodec: StructCodec<T.ListReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          ListPageCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          ListPageCodec.write(s.initStruct(0, 1, 2), v.value, caps);
         }
         break;
       case "err":
@@ -3073,7 +3515,7 @@ export const ListReplyCodec: StructCodec<T.ListReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: ListPageCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "ok", value: ListPageCodec.read(s.getStruct(0, 1, 2), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -3092,7 +3534,7 @@ export const GetOkCodec: StructCodec<T.GetOk> = {
   pointerCount: 2,
   write(s, v, caps) {
     if (v.meta != null) {
-      ObjectMetadataCodec.write(s.initStruct(0, 1, 4), v.meta, caps);
+      ObjectMetadataCodec.write(s.initStruct(0, 2, 6), v.meta, caps);
     }
     if (v.body != null) {
       s.setCap(1, caps.exportCap(v.body));
@@ -3100,7 +3542,7 @@ export const GetOkCodec: StructCodec<T.GetOk> = {
   },
   read(s, caps) {
     const out: T.GetOk = {
-      meta: ObjectMetadataCodec.read(s.getStruct(0, 1, 4), caps),
+      meta: ObjectMetadataCodec.read(s.getStruct(0, 2, 6), caps),
     };
     const bodyValue = caps.importCap(s.getCapIndex(1)) as T.ByteSource;
     if (!(bodyValue == null)) {
@@ -3162,7 +3604,7 @@ export const PutReplyCodec: StructCodec<T.PutReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          PutResultCodec.write(s.initStruct(0, 1, 3), v.value, caps);
+          PutResultCodec.write(s.initStruct(0, 2, 5), v.value, caps);
         }
         break;
       case "err":
@@ -3179,7 +3621,7 @@ export const PutReplyCodec: StructCodec<T.PutReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: PutResultCodec.read(s.getStruct(0, 1, 3), caps) };
+        return { kind: "ok", value: PutResultCodec.read(s.getStruct(0, 2, 5), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -3223,6 +3665,201 @@ export const CopyReplyCodec: StructCodec<T.CopyReply> = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CopyReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `MoveReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MoveReplyCodec: StructCodec<T.MoveReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          MoveResultCodec.write(s.initStruct(0, 1, 0), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MoveReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: MoveResultCodec.read(s.getStruct(0, 1, 0), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("MoveReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `MoveManyReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MoveManyReplyCodec: StructCodec<T.MoveManyReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          MoveManyPageCodec.write(s.initStruct(0, 2, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MoveManyReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: MoveManyPageCodec.read(s.getStruct(0, 2, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("MoveManyReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `DeleteManyReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DeleteManyReplyCodec: StructCodec<T.DeleteManyReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          DeleteManyResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("DeleteManyReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: DeleteManyResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("DeleteManyReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `HeadManyReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const HeadManyReplyCodec: StructCodec<T.HeadManyReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          HeadManyResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("HeadManyReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: HeadManyResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("HeadManyReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `ChangesReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ChangesReplyCodec: StructCodec<T.ChangesReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          ChangesPageCodec.write(s.initStruct(0, 1, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("ChangesReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: ChangesPageCodec.read(s.getStruct(0, 1, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("ChangesReply", disc);
     }
   },
 };
@@ -3334,7 +3971,7 @@ export const OpenOkCodec: StructCodec<T.OpenOk> = {
   pointerCount: 2,
   write(s, v, caps) {
     if (v.meta != null) {
-      ObjectMetadataCodec.write(s.initStruct(0, 1, 4), v.meta, caps);
+      ObjectMetadataCodec.write(s.initStruct(0, 2, 6), v.meta, caps);
     }
     if (v.body != null) {
       s.setCap(1, caps.exportCap(v.body));
@@ -3342,7 +3979,7 @@ export const OpenOkCodec: StructCodec<T.OpenOk> = {
   },
   read(s, caps) {
     const out: T.OpenOk = {
-      meta: ObjectMetadataCodec.read(s.getStruct(0, 1, 4), caps),
+      meta: ObjectMetadataCodec.read(s.getStruct(0, 2, 6), caps),
     };
     const bodyValue = caps.importCap(s.getCapIndex(1)) as T.ByteSource;
     if (!(bodyValue == null)) {
@@ -9787,12 +10424,12 @@ export const DestinationListParamsCodec: StructCodec<DestinationListParams> = {
   pointerCount: 1,
   write(s, v, caps) {
     if (v.options != null) {
-      ListOptionsCodec.write(s.initStruct(0, 1, 2), v.options, caps);
+      ListOptionsCodec.write(s.initStruct(0, 2, 2), v.options, caps);
     }
   },
   read(s, caps) {
     return {
-      options: ListOptionsCodec.read(s.getStruct(0, 1, 2), caps),
+      options: ListOptionsCodec.read(s.getStruct(0, 2, 2), caps),
     };
   },
 };
@@ -9873,13 +10510,13 @@ export const DestinationPutParamsCodec: StructCodec<DestinationPutParams> = {
       s.setCap(1, caps.exportCap(v.body));
     }
     if (v.options != null) {
-      WriteOptionsCodec.write(s.initStruct(2, 2, 3), v.options, caps);
+      WriteOptionsCodec.write(s.initStruct(2, 2, 4), v.options, caps);
     }
   },
   read(s, caps) {
     const out: DestinationPutParams = {
       key: s.getText(0),
-      options: WriteOptionsCodec.read(s.getStruct(2, 2, 3), caps),
+      options: WriteOptionsCodec.read(s.getStruct(2, 2, 4), caps),
     };
     const bodyValue = caps.importCap(s.getCapIndex(1)) as T.ByteSource;
     if (!(bodyValue == null)) {
@@ -10071,6 +10708,210 @@ export const DestinationAbortStageResultsCodec: StructCodec<DestinationAbortStag
   read(s, caps) {
     return {
       result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Destination.move` params envelope (0 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const DestinationMoveParamsCodec: StructCodec<DestinationMoveParams> = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    s.setText(0, v.from ?? "");
+    s.setText(1, v.to ?? "");
+    if (v.options != null) {
+      MoveOptionsCodec.write(s.initStruct(2, 1, 1), v.options, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      from: s.getText(0),
+      to: s.getText(1),
+      options: MoveOptionsCodec.read(s.getStruct(2, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Destination.move` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DestinationMoveResultsCodec: StructCodec<DestinationMoveResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MoveReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MoveReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Destination.moveMany` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DestinationMoveManyParamsCodec: StructCodec<DestinationMoveManyParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      MoveManyRequestCodec.write(s.initStruct(0, 1, 3), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: MoveManyRequestCodec.read(s.getStruct(0, 1, 3), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Destination.moveMany` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DestinationMoveManyResultsCodec: StructCodec<DestinationMoveManyResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MoveManyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MoveManyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Destination.deleteMany` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DestinationDeleteManyParamsCodec: StructCodec<DestinationDeleteManyParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.keys ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      keys: s.getTextList(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Destination.deleteMany` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DestinationDeleteManyResultsCodec: StructCodec<DestinationDeleteManyResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      DeleteManyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: DeleteManyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Destination.headMany` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DestinationHeadManyParamsCodec: StructCodec<DestinationHeadManyParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.keys ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      keys: s.getTextList(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Destination.headMany` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DestinationHeadManyResultsCodec: StructCodec<DestinationHeadManyResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      HeadManyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: HeadManyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Destination.changes` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DestinationChangesParamsCodec: StructCodec<DestinationChangesParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      ChangesRequestCodec.write(s.initStruct(0, 1, 1), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: ChangesRequestCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Destination.changes` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DestinationChangesResultsCodec: StructCodec<DestinationChangesResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      ChangesReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: ChangesReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

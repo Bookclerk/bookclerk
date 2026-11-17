@@ -87,6 +87,7 @@ mod rpc_session;
 mod socket_broker;
 mod spawn_plan;
 mod spawn_stdio;
+mod storage_intent;
 mod user_poll;
 
 pub use bookclerk_plugin_sdk::protocol;
