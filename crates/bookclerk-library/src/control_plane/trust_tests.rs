@@ -1043,6 +1043,55 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
     .unwrap();
     let accounts: Vec<_> = scans.into_iter().map(|p| p.account).collect();
     assert_eq!(accounts, vec![s("My Audible")]);
+    // The retained label still reaches the titles of the account it names,
+    // and the job's holdings and its trust read that account the same way.
+    let plan = plan_acquire(
+        &host_db,
+        ScanRequester::User(riley),
+        Some("My Audible"),
+        &titles(&["B0RILEY"]),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(shape(plan), vec![(s("My Audible"), s("B0RILEY"))]);
+    let held: Vec<String> = host_db
+        .acquire_titles_named(Some("my audible"), "B0RILEY")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.account_id)
+        .collect();
+    assert_eq!(held, vec!["a1".to_string()]);
+    let page = host_db
+        .acquire_titles_page(Some("MY AUDIBLE"), None, 64)
+        .await
+        .unwrap();
+    assert!(
+        page.titles.iter().all(|t| t.account_id == "a1") && !page.titles.is_empty(),
+        "{page:?}"
+    );
+    assert_eq!(
+        host_db
+            .accounts_holding_titles(Some("My Audible"), None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect::<Vec<_>>(),
+        vec!["a1".to_string()]
+    );
+    assert!(host_db
+        .acquire_titles_named(Some("nobody"), "B0RILEY")
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(host_db
+        .acquire_titles_page(Some("nobody"), None, 64)
+        .await
+        .unwrap()
+        .titles
+        .is_empty());
     // A named account that is blank never widens to every account, and a
     // list of blank titles never widens to every title.
     for requester in [ScanRequester::User(riley), ScanRequester::Operator] {

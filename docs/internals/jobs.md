@@ -469,8 +469,13 @@ Every scan and acquire is admitted through a planner, whoever asks:
   (`titles`, UUID, ASIN, ISBN or product id) becomes its own job, so each
   can go to any node trusted with it. Operator authority, an Owner or an
   Administrator acquiring everything gets one unsplit job. Anyone else must
-  own a named account and every library row a named title matches (403
-  otherwise); with neither, they get one job per account they wholly own.
+  own the account they name, when they name one, and every account that
+  holds a title a named id matches (a listing's product id, an ASIN or ISBN
+  of its edition, or a holding id; 403 otherwise). An account is named by
+  its id or label, ignoring ASCII case, and a job matches it the same way
+  when it runs. With neither an account nor a title, they get one job per
+  account they wholly own. A node is trusted with an acquire the same way: by the
+  accounts holding the titles its filters match.
   `POST /api/library/acquire` takes `{account, plugin_instance_id, titles,
   editions, force, pdf_only}` and answers a multi-job plan like a scan
   (`job_ids`; 200, 409, 429, or 422 `nothing_to_acquire` for an empty
