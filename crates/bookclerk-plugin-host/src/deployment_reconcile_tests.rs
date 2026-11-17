@@ -2320,7 +2320,7 @@ async fn the_local_destination_sleeps_when_idle_and_wakes_on_its_next_call() {
         )
         .await
         .expect("put through the first guest");
-    exercise_intent_fallbacks(local.as_ref()).await;
+    exercise_intent_operations(local.as_ref()).await;
 
     wait_for_sleep(proxy.as_ref()).await;
     assert_eq!(proxy.wakes(), 0);
@@ -2357,13 +2357,14 @@ async fn the_local_destination_sleeps_when_idle_and_wakes_on_its_next_call() {
     assert!(err.to_string().contains("was stopped"), "{err}");
 }
 
-/// Drives every intent operation through a real guest that declares none of
-/// them, so each one takes the host fallback built from its primitives.
-async fn exercise_intent_fallbacks(local: &dyn bookclerk_storage::StorageBackend) {
+/// Drives every intent operation through the real local guest, which does
+/// all of them natively except the change feed, so the host forwards each
+/// one and falls back only for `changes`.
+async fn exercise_intent_operations(local: &dyn bookclerk_storage::StorageBackend) {
     use bookclerk_storage::{ListRequest, MoveOptions, WriteCondition};
     assert_eq!(
         local.capabilities(),
-        bookclerk_storage::StorageCapabilities::default()
+        bookclerk_storage::LocalFsBackend::CAPABILITIES
     );
     let put = |key: &'static str| async move {
         local
@@ -2382,7 +2383,7 @@ async fn exercise_intent_fallbacks(local: &dyn bookclerk_storage::StorageBackend
         .move_object("Intent/a.m4b", "Moved/a.m4b", &options)
         .await
         .expect("move");
-    assert!(!moved.atomic);
+    assert!(moved.atomic, "a local move is a rename");
     let results = local
         .move_many(
             &[("Intent/b.m4b".to_string(), "Moved/b.m4b".to_string())],
@@ -2411,6 +2412,8 @@ async fn exercise_intent_fallbacks(local: &dyn bookclerk_storage::StorageBackend
         .await
         .expect("hinted list");
     assert!(listed.page.objects.len() >= 2);
+    assert!(listed.signatures_included);
+    assert!(listed.page.objects.iter().all(|o| o.signature.is_some()));
     let body = Box::pin(std::io::Cursor::new(b"y".to_vec()));
     let written = local
         .put_stream_conditional(
