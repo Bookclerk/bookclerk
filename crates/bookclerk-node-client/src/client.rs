@@ -720,7 +720,7 @@ impl Shared {
         &self,
         job_id: &str,
         fence: i64,
-        book_uuid: &str,
+        holding_id: &str,
         primary_key: &str,
         pdf_key: Option<&str>,
         files: Vec<UploadFile>,
@@ -728,7 +728,7 @@ impl Shared {
         let body = Body::UploadGrant {
             job_id: job_id.to_string(),
             fence,
-            book_uuid: book_uuid.to_string(),
+            holding_id: holding_id.to_string(),
             primary_key: primary_key.to_string(),
             pdf_key: pdf_key.map(str::to_string),
             files,

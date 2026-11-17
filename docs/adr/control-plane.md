@@ -1572,7 +1572,7 @@ the handed credentials only. There is no in-process fallback.
   copy.
 - **Key scope.** A grant names only a title `acquire.plan` would hand
   out now: one whose audio is already acquired (or that the plan leaves
-  out otherwise) is refused (`book_not_planned`), so a host cannot
+  out otherwise) is refused (`title_not_planned`), so a host cannot
   re-upload over a title the owner already has. The owner binds every key
   of an upload to the granted title. For each destination it computes the title's folder from its own
   row and that destination's naming options, the way a local acquire
@@ -1581,19 +1581,20 @@ the handed credentials only. There is no in-process fallback.
   folder; a template with no folder admits only top-level keys. A key
   another title already has (its recorded audio or PDF key, or a sidecar
   of that audio) is refused too (`key_out_of_scope`,
-  `key_of_another_book`). The Host's keys never decide where a title goes.
+  `key_of_another_title`). The Host's keys never decide where a title goes.
   Every file a title writes is recorded per destination in
   `edition_files`, for the title's edition: an acquire on a node records
   each key (audio, chapter or part files, sidecars, PDF) just before
   writing it, and a grant claims every key of its manifest for the
   edition. A key recorded for another edition on that destination is
-  refused (`key_of_another_book`), so a folder several titles share (a
+  refused (`key_of_another_title`), so a folder several titles share (a
   template without the title, podcast episodes in the parent's folder, a
   flat layout) never lets one title overwrite another's files. A key its
   own edition holds is claimed only when an earlier upload of the same
   title wrote it, so one account's node never replaces files another
-  account's row of the edition acquired. A title with no edition is
-  refused (`unresolved_title`). The claim is one conditional write per key, so of two uploads of
+  account's row of the edition acquired. An upload names its title by
+  the account holding (`holdings.id`) the plan sent; a holding that is
+  gone or resolves to no edition is refused (`unknown_title`). The claim is one conditional write per key, so of two uploads of
   different titles racing for one key only one is granted.
 - **Host paths.** The Host uses the owner's job and title ids as work
   directory names only when each is one plain segment (ASCII letters,

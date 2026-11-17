@@ -1243,7 +1243,7 @@ async fn a_catalog_upload_never_writes_into_another_titles_folder() {
                     &[&primary, key]
                 )
                 .await,
-                UploadGrant::Refused("key_of_another_book")
+                UploadGrant::Refused("key_of_another_title")
             ),
             "{key} is the library book's sidecar"
         );

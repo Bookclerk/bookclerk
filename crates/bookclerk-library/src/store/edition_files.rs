@@ -514,8 +514,8 @@ impl LibraryStore {
     /// * `writer` - The host upload id.
     /// * `role`, `sha256` - What the file is and its declared digest.
     /// * `expected` - The record read before the claim.
-    /// * `title` - What the upload writes for: the library title
-    ///   (`books.uuid`) of a job upload, or the node holding
+    /// * `title` - What the upload writes for: the
+    ///   account holding (`holdings.id`) of a job upload, or the node holding
     ///   (`holdings.id`) of a catalog upload. A key its edition already
     ///   holds is taken over only when this upload or an earlier upload for
     ///   the same title (or, for a catalog upload, an earlier catalog upload
@@ -595,7 +595,7 @@ impl LibraryStore {
         let mut writers = Condition::any()
             .add(edition_files::Column::Writer.eq(writer))
             .add(uploads_for(
-                Condition::all().add(node_upload_sessions::Column::BookUuid.eq(title)),
+                Condition::all().add(node_upload_sessions::Column::HoldingId.eq(title)),
             ));
         if catalog {
             // The same branch's other catalog uploads: a title it shares

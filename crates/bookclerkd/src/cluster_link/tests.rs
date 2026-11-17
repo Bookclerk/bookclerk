@@ -2765,7 +2765,7 @@ mod results_and_uploads {
             claim.job.lease_generation,
             &owner_node,
             &UploadGrantRequest {
-                book_uuid: &title.uuid,
+                holding_id: &holding_of(&world.owner, &title.uuid).await,
                 primary_key: KEY,
                 pdf_key: None,
                 files: std::slice::from_ref(&file),
@@ -2892,7 +2892,7 @@ mod results_and_uploads {
             claim.job.lease_generation,
             &owner_node,
             &UploadGrantRequest {
-                book_uuid: &second.uuid,
+                holding_id: &holding_of(&world.owner, &second.uuid).await,
                 primary_key: "Author/Title t2/Title t2.m4b",
                 pdf_key: None,
                 files: std::slice::from_ref(&file),
@@ -3064,7 +3064,7 @@ mod results_and_uploads {
             claim.job.lease_generation,
             &owner_node,
             &UploadGrantRequest {
-                book_uuid: &book.uuid,
+                holding_id: &holding_of(&world.owner, &book.uuid).await,
                 primary_key: "Author/Title t1/t1.m4b",
                 pdf_key: None,
                 files: std::slice::from_ref(&file),
@@ -3159,7 +3159,7 @@ mod results_and_uploads {
             fence,
             &owner_node_id(world),
             &UploadGrantRequest {
-                book_uuid,
+                holding_id: &holding_of(&world.owner, book_uuid).await,
                 primary_key: key,
                 pdf_key: None,
                 files: &[local_file(key, bytes)],
@@ -3369,6 +3369,17 @@ mod results_and_uploads {
         }
     }
 
+    /// The account holding of the owner's books row `book_uuid` (the id an
+    /// upload is granted for); empty when it has none.
+    async fn holding_of(store: &LibraryStore, book_uuid: &str) -> String {
+        store
+            .title_holding_of_book(book_uuid)
+            .await
+            .unwrap()
+            .map(|title| title.holding_id)
+            .unwrap_or_default()
+    }
+
     /// The owner's own node id.
     fn owner_node_id(world: &Linked) -> String {
         bookclerk_library::control_plane::load_or_create_node_identity(world.owner_files.path())
@@ -3514,7 +3525,7 @@ mod results_and_uploads {
             fence,
             &owner_node_id(&world),
             &UploadGrantRequest {
-                book_uuid: &book.uuid,
+                holding_id: &holding_of(&world.owner, &book.uuid).await,
                 primary_key: "Author/Title t1/t1.m4b",
                 pdf_key: None,
                 files: &files,
@@ -3573,7 +3584,7 @@ mod results_and_uploads {
             fence,
             &owner_node_id(&world),
             &UploadGrantRequest {
-                book_uuid: &book.uuid,
+                holding_id: &holding_of(&world.owner, &book.uuid).await,
                 primary_key: &format!("{dir}/Title t1 [{id}].m4b"),
                 pdf_key: None,
                 files: &files,
@@ -3599,7 +3610,7 @@ mod results_and_uploads {
             .request(Body::UploadGrant {
                 job_id: job_id.clone(),
                 fence,
-                book_uuid: book.uuid.clone(),
+                holding_id: holding_of(&world.owner, &book.uuid).await,
                 primary_key: format!("{dir}/Title t1 [{id}].m4b"),
                 pdf_key: None,
                 files: vec![files[0].clone()],
@@ -3649,7 +3660,7 @@ mod results_and_uploads {
             fence,
             &owner_node_id(&world),
             &UploadGrantRequest {
-                book_uuid: &book.uuid,
+                holding_id: &holding_of(&world.owner, &book.uuid).await,
                 primary_key: "Author/Title t1/t1.m4b",
                 pdf_key: None,
                 files: &files,
@@ -3726,17 +3737,18 @@ mod results_and_uploads {
         let job_id = enqueue_acquire(&world.owner).await;
         let fence = claim_acquire(&world, 60).await;
         let (handle, _stop) = start(&world, StubGuests::default()).await;
+        let holding_id = holding_of(&world.owner, &book.uuid).await;
         let grant = |files: Vec<UploadFile>| {
             let handle = handle.clone();
             let job_id = job_id.clone();
-            let book_uuid = book.uuid.clone();
+            let holding_id = holding_id.clone();
             async move {
                 let primary_key = files[0].copies[0].key.clone();
                 handle
                     .request(Body::UploadGrant {
                         job_id,
                         fence,
-                        book_uuid,
+                        holding_id,
                         primary_key,
                         pdf_key: None,
                         files,
@@ -3786,7 +3798,7 @@ mod results_and_uploads {
         for (key, reason) in [
             (format!("{dir}/Title t2.m4b"), "key_out_of_scope"),
             (format!("{dir}/Title t2.jpg"), "key_out_of_scope"),
-            (format!("{dir}/Title t1 [{id}].cue"), "key_of_another_book"),
+            (format!("{dir}/Title t1 [{id}].cue"), "key_of_another_title"),
         ] {
             let body = grant(vec![
                 local_file(&format!("{dir}/Title t1 [{id}].m4b"), b"audio"),
@@ -3807,7 +3819,7 @@ mod results_and_uploads {
             .request(Body::UploadGrant {
                 job_id: job_id.clone(),
                 fence,
-                book_uuid: other.uuid.clone(),
+                holding_id: holding_of(&world.owner, &other.uuid).await,
                 primary_key: "Author/Title t2/Title t2.m4b".into(),
                 pdf_key: None,
                 files: vec![local_file("Author/Title t2/Title t2.m4b", b"other")],
@@ -3815,7 +3827,7 @@ mod results_and_uploads {
             .await
             .expect("the owner answers")
             .body;
-        assert_eq!(refusal(&body), "book_not_planned");
+        assert_eq!(refusal(&body), "title_not_planned");
         assert!(files_under(owner_out.path()).is_empty());
     }
 
@@ -3919,7 +3931,7 @@ mod results_and_uploads {
             fence,
             &owner_node_id(world),
             &UploadGrantRequest {
-                book_uuid,
+                holding_id: &holding_of(&world.owner, book_uuid).await,
                 primary_key,
                 pdf_key: None,
                 files,
@@ -4096,8 +4108,11 @@ mod results_and_uploads {
         let Body::AcquireTargets { targets, .. } = answer.body else {
             panic!("expected targets: {answer:?}");
         };
-        let planned: Vec<&str> = targets.iter().map(|t| t.book_uuid.as_str()).collect();
-        assert_eq!(planned, vec![fresh.uuid.as_str()]);
+        let planned: Vec<&str> = targets.iter().map(|t| t.holding_id.as_str()).collect();
+        assert_eq!(
+            planned,
+            vec![holding_of(&world.owner, &fresh.uuid).await.as_str()]
+        );
     }
 
     /// `acquire.plan` sends an episode's podcast parent row with it, so a
@@ -4141,9 +4156,10 @@ mod results_and_uploads {
         let Body::AcquireTargets { targets, .. } = answer.body else {
             panic!("expected targets: {answer:?}");
         };
+        let episode_holding = holding_of(&world.owner, &episode.uuid).await;
         let target = targets
             .iter()
-            .find(|t| t.book_uuid == episode.uuid)
+            .find(|t| t.holding_id == episode_holding)
             .expect("the episode is planned");
         let parent: bookclerk_library::BookRecord =
             serde_json::from_value(target.parent.clone().expect("its parent is sent")).unwrap();

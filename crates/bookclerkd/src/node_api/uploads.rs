@@ -1244,7 +1244,7 @@ pub async fn put_file(
         (status = 404, description = "The node API is not mounted on this listener (`node_api_unmounted`).", body = crate::http_error::ErrorMessage, example = json!({"error": "node_api_unmounted"})),
         (status = 409, description = "The upload lost its fence to a newer one (`lost`).", body = bookclerk_node_proto::UploadAnswer, example = json!({"status": "lost", "job_completed": false})),
         (status = 421, description = "This node is not the upload's receiving node (`misdirected`).", body = bookclerk_node_proto::UploadAnswer, example = json!({"status": "misdirected", "job_completed": false})),
-        (status = 422, description = "The commit was refused (`refused`), with the cause in `reason`: the body does not parse (`invalid_body`); the upload is unknown, aborted, or its job was cancelled (`unknown_upload`, `upload_aborted`, `job_cancelled`); not every granted file arrived (`files_missing`); the destinations changed since the grant (`destinations_changed`); a storage key now belongs to another title or writer, or the title or book is gone (`key_taken`, `unknown_title`, `unknown_book`); or the closing upload is mismatched: an ordinary upload claims to finish the job (`not_a_closing_upload`), the closing upload does not (`closing_upload_must_finish`), or it arrives while titles are still pending (`titles_remaining`).", body = bookclerk_node_proto::UploadAnswer, examples(
+        (status = 422, description = "The commit was refused (`refused`), with the cause in `reason`: the body does not parse (`invalid_body`); the upload is unknown, aborted, or its job was cancelled (`unknown_upload`, `upload_aborted`, `job_cancelled`); not every granted file arrived (`files_missing`); the destinations changed since the grant (`destinations_changed`); a storage key now belongs to another title or writer, or the title's holding is gone (`key_taken`, `unknown_title`); or the closing upload is mismatched: an ordinary upload claims to finish the job (`not_a_closing_upload`), the closing upload does not (`closing_upload_must_finish`), or it arrives while titles are still pending (`titles_remaining`).", body = bookclerk_node_proto::UploadAnswer, examples(
             ("invalid_body" = (summary = "The body does not parse as a commit request.", value = json!({"status": "refused", "reason": "invalid_body", "job_completed": false}))),
             ("unknown_upload" = (summary = "No live upload has this id.", value = json!({"status": "refused", "reason": "unknown_upload", "job_completed": false}))),
             ("upload_aborted" = (summary = "The upload was aborted before the commit.", value = json!({"status": "refused", "reason": "upload_aborted", "job_completed": false}))),
@@ -1252,8 +1252,7 @@ pub async fn put_file(
             ("files_missing" = (summary = "Not every granted file was received.", value = json!({"status": "refused", "reason": "files_missing", "job_completed": false}))),
             ("destinations_changed" = (summary = "The destinations changed since the grant.", value = json!({"status": "refused", "reason": "destinations_changed", "job_completed": false}))),
             ("key_taken" = (summary = "A storage key now belongs to another title or writer.", value = json!({"status": "refused", "reason": "key_taken", "job_completed": false}))),
-            ("unknown_title" = (summary = "The title the upload was granted for no longer exists.", value = json!({"status": "refused", "reason": "unknown_title", "job_completed": false}))),
-            ("unknown_book" = (summary = "The book the upload was granted for no longer exists.", value = json!({"status": "refused", "reason": "unknown_book", "job_completed": false}))),
+            ("unknown_title" = (summary = "The holding the upload was granted for no longer exists.", value = json!({"status": "refused", "reason": "unknown_title", "job_completed": false}))),
             ("not_a_closing_upload" = (summary = "An ordinary upload claims to finish the job.", value = json!({"status": "refused", "reason": "not_a_closing_upload", "job_completed": false}))),
             ("closing_upload_must_finish" = (summary = "The closing upload does not claim to finish the job.", value = json!({"status": "refused", "reason": "closing_upload_must_finish", "job_completed": false}))),
             ("titles_remaining" = (summary = "The closing upload arrived while titles are still pending.", value = json!({"status": "refused", "reason": "titles_remaining", "job_completed": false}))),
@@ -1283,7 +1282,7 @@ pub async fn post_commit(
     // the title once it is marked acquired (later plans skip it). The
     // closing upload carries no files, and an already committed title is
     // answered as committed again.
-    if !session.book_uuid.is_empty() && session.state != "committed" {
+    if !session.holding_id.is_empty() && session.state != "committed" {
         match owner_destinations(&state).await {
             Ok(destinations) if destination_ids(&destinations) == session.destinations => {}
             Ok(destinations) if !destinations.is_empty() => {
