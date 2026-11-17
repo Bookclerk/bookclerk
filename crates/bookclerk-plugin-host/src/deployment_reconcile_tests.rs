@@ -2320,6 +2320,7 @@ async fn the_local_destination_sleeps_when_idle_and_wakes_on_its_next_call() {
         )
         .await
         .expect("put through the first guest");
+    exercise_intent_fallbacks(local.as_ref()).await;
 
     wait_for_sleep(proxy.as_ref()).await;
     assert_eq!(proxy.wakes(), 0);
@@ -2354,4 +2355,79 @@ async fn the_local_destination_sleeps_when_idle_and_wakes_on_its_next_call() {
         .await
         .expect_err("a retired destination refuses calls");
     assert!(err.to_string().contains("was stopped"), "{err}");
+}
+
+/// Drives every intent operation through a real guest that declares none of
+/// them, so each one takes the host fallback built from its primitives.
+async fn exercise_intent_fallbacks(local: &dyn bookclerk_storage::StorageBackend) {
+    use bookclerk_storage::{ListRequest, MoveOptions, WriteCondition};
+    assert_eq!(
+        local.capabilities(),
+        bookclerk_storage::StorageCapabilities::default()
+    );
+    let put = |key: &'static str| async move {
+        local
+            .put(
+                key,
+                bytes::Bytes::from_static(b"x"),
+                bookclerk_storage::ObjectMeta::default(),
+            )
+            .await
+            .expect("put");
+    };
+    put("Intent/a.m4b").await;
+    put("Intent/b.m4b").await;
+    let options = MoveOptions::default();
+    let moved = local
+        .move_object("Intent/a.m4b", "Moved/a.m4b", &options)
+        .await
+        .expect("move");
+    assert!(!moved.atomic);
+    let results = local
+        .move_many(
+            &[("Intent/b.m4b".to_string(), "Moved/b.m4b".to_string())],
+            &options,
+        )
+        .await
+        .expect("move many");
+    assert!(results[0].error.is_none());
+    let page = local
+        .move_prefix("Moved/", "Final/", None, 10, &options)
+        .await
+        .expect("move prefix");
+    assert!(page.objects_moved >= 2, "{}", page.objects_moved);
+    let probes = local
+        .head_many(&["Final/a.m4b".to_string(), "Moved/a.m4b".to_string()])
+        .await
+        .expect("head many");
+    assert!(probes[0].is_some() && probes[1].is_none());
+    let listed = local
+        .list_hinted(&ListRequest {
+            prefix: "Final/".into(),
+            limit: 10,
+            with_signatures: true,
+            ..ListRequest::default()
+        })
+        .await
+        .expect("hinted list");
+    assert!(listed.page.objects.len() >= 2);
+    let body = Box::pin(std::io::Cursor::new(b"y".to_vec()));
+    let written = local
+        .put_stream_conditional(
+            "Final/a.m4b",
+            body,
+            bookclerk_storage::ObjectMeta::default(),
+            &WriteCondition::IfNoneMatch,
+        )
+        .await;
+    assert!(matches!(
+        written,
+        Err(bookclerk_storage::StorageError::Conflict(_))
+    ));
+    let deleted = local
+        .delete_many(&["Final/a.m4b".to_string(), "Final/b.m4b".to_string()])
+        .await
+        .expect("delete many");
+    assert!(deleted.iter().all(|r| r.error.is_none()));
+    assert!(local.changes(None, 10).await.expect("changes").is_none());
 }

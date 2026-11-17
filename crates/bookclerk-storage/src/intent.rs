@@ -522,4 +522,90 @@ mod tests {
         .unwrap();
         assert!(!done.atomic);
     }
+    #[tokio::test]
+    async fn fallback_move_checks_the_source_etag_and_skips_self_moves() {
+        let (_dir, b) = backend().await;
+        put(&b, "a", b"1").await;
+        let same = fallback_move(&b, "a", "a", &MoveOptions::default())
+            .await
+            .unwrap();
+        assert!(same.atomic && !same.already_moved);
+        let stale = MoveOptions {
+            if_source_match: Some("not-the-etag".into()),
+            ..MoveOptions::default()
+        };
+        let err = fallback_move(&b, "a", "b", &stale).await.unwrap_err();
+        assert!(matches!(err, StorageError::Conflict(_)), "{err}");
+        assert!(b.exists("a").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn fallback_move_many_reports_each_pair() {
+        let (_dir, b) = backend().await;
+        put(&b, "a", b"1").await;
+        let pairs = [
+            ("a".to_string(), "b".to_string()),
+            ("missing".to_string(), "c".to_string()),
+        ];
+        let results = fallback_move_many(&b, &pairs, &MoveOptions::default()).await;
+        assert!(results[0].error.is_none());
+        assert!(matches!(results[1].error, Some(StorageError::NotFound(_))));
+        assert!(b.exists("b").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn fallback_head_many_and_hinted_list_report_no_hints() {
+        let (_dir, b) = backend().await;
+        put(&b, "d/a", b"1").await;
+        let probes = fallback_head_many(&b, &["d/a".into(), "d/missing".into()])
+            .await
+            .unwrap();
+        assert_eq!(probes[0].as_ref().unwrap().size, 1);
+        assert!(probes[1].is_none());
+        let page = fallback_list_hinted(
+            &b,
+            &ListRequest {
+                prefix: "d/".into(),
+                limit: 10,
+                with_signatures: true,
+                modified_since_ms: Some(1),
+                ..ListRequest::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(page.page.objects.len(), 1);
+        assert!(!page.signatures_included && !page.modified_since_applied);
+    }
+
+    #[tokio::test]
+    async fn fallback_conditional_put_if_match_compares_the_etag() {
+        let (_dir, b) = backend().await;
+        put(&b, "a", b"1").await;
+        let body = || -> std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>> {
+            Box::pin(std::io::Cursor::new(b"2".to_vec()))
+        };
+        let err = fallback_put_conditional(
+            &b,
+            "a",
+            body(),
+            crate::ObjectMeta::default(),
+            &WriteCondition::IfMatch("not-the-etag".into()),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, StorageError::Conflict(_)));
+        if let Some(etag) = b.head("a").await.unwrap().and_then(|p| p.etag) {
+            fallback_put_conditional(
+                &b,
+                "a",
+                body(),
+                crate::ObjectMeta::default(),
+                &WriteCondition::IfMatch(etag),
+            )
+            .await
+            .unwrap();
+            assert_eq!(b.get("a").await.unwrap().as_ref(), b"2");
+        }
+    }
 }

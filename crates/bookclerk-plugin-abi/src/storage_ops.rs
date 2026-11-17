@@ -1048,3 +1048,452 @@ mod tests {
         }
     }
 }
+
+/// Round trips through a real Cap'n Proto capability: the
+/// [`crate::DestinationServer`] dispatch, the [`crate::DestinationClient`]
+/// codecs and the reply validation it runs.
+#[cfg(test)]
+// capnp servers are `!Send`; the test runs on one thread in a `LocalSet`.
+#[allow(
+    clippy::missing_panics_doc,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::arc_with_non_send_sync
+)]
+mod rpc_tests {
+    use std::cell::RefCell;
+    use std::pin::Pin;
+    use std::sync::Arc;
+
+    use tokio::io::AsyncRead;
+
+    use super::*;
+    use crate::{
+        ByteRange, CopyResult, Destination, DestinationClient, DestinationServer, ListOptions,
+        ListPage, PutResult, ReadResult, WriteOptions,
+    };
+
+    /// How the stub guest answers.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Mode {
+        /// Answers every request correctly.
+        Honest,
+        /// Breaks each operation's reply rules.
+        Broken,
+    }
+
+    /// A guest that implements every intent operation.
+    struct Stub {
+        /// Honest or broken replies.
+        mode: Mode,
+        /// The last list options and write options it saw.
+        seen: RefCell<(Option<ListOptions>, Option<WriteOptions>)>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl Destination for Stub {
+        async fn head(&self, key: &str) -> Result<Option<ObjectMetadata>> {
+            Ok(Some(ObjectMetadata {
+                key: key.into(),
+                size: 1,
+                modified_at_ms: Some(7),
+                version_id: Some("v1".into()),
+                signature: Some("sig".into()),
+                ..ObjectMetadata::default()
+            }))
+        }
+        async fn list(&self, options: ListOptions) -> Result<crate::ListPage> {
+            let hinted = options.with_signatures;
+            self.seen.borrow_mut().0 = Some(options);
+            Ok(ListPage {
+                objects: vec![ObjectInfo {
+                    key: "a/1".into(),
+                    size: 1,
+                    etag: Some("e1".into()),
+                    modified_at_ms: Some(9),
+                    version_id: None,
+                    signature: Some("sig".into()),
+                }],
+                next_cursor: None,
+                signatures_included: hinted,
+                modified_since_applied: false,
+            })
+        }
+        async fn get(&self, _key: &str, _range: Option<ByteRange>) -> Result<ReadResult> {
+            Err(PluginError::unsupported("get"))
+        }
+        async fn put(
+            &self,
+            key: &str,
+            _body: Pin<Box<dyn AsyncRead + Send>>,
+            options: WriteOptions,
+        ) -> Result<PutResult> {
+            let conflict = options.if_none_match;
+            self.seen.borrow_mut().1 = Some(options);
+            if conflict {
+                return Err(PluginError::conflict("exists"));
+            }
+            Ok(PutResult {
+                key: key.into(),
+                bytes_written: 0,
+                signature: Some("sig2".into()),
+                ..PutResult::default()
+            })
+        }
+        async fn copy(&self, _from: &str, _to: &str) -> Result<CopyResult> {
+            Err(PluginError::unsupported("copy"))
+        }
+        async fn delete(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn move_object(
+            &self,
+            from: &str,
+            _to: &str,
+            options: MoveOptions,
+        ) -> Result<MoveResult> {
+            if options.if_source_match.as_deref() == Some("stale") {
+                return Err(PluginError::conflict("source changed"));
+            }
+            Ok(MoveResult {
+                atomic: options.no_overwrite,
+                already_moved: from == "gone",
+            })
+        }
+        async fn move_many(&self, request: MoveManyRequest) -> Result<MoveManyPage> {
+            let results = match (&request.target, self.mode) {
+                (MoveManyTarget::Pairs(pairs), Mode::Honest) => pairs
+                    .iter()
+                    .map(|p| KeyOutcome::ok(p.from.clone()))
+                    .collect(),
+                (MoveManyTarget::Prefix(prefix), Mode::Honest) => {
+                    vec![KeyOutcome::ok(format!("{}x", prefix.from))]
+                }
+                (_, Mode::Broken) => vec![KeyOutcome::ok("elsewhere")],
+            };
+            let next_cursor = match &request.target {
+                MoveManyTarget::Prefix(_) => Some("c2".to_string()),
+                MoveManyTarget::Pairs(_) => None,
+            };
+            Ok(MoveManyPage {
+                objects_moved: u64::try_from(results.len()).unwrap(),
+                results,
+                next_cursor,
+                atomic: true,
+            })
+        }
+        async fn delete_many(&self, keys: Vec<String>) -> Result<Vec<KeyOutcome>> {
+            if self.mode == Mode::Broken {
+                return Ok(keys.into_iter().rev().map(KeyOutcome::ok).collect());
+            }
+            Ok(keys
+                .into_iter()
+                .map(|k| {
+                    if k == "busy" {
+                        KeyOutcome::failed(k, PluginError::conflict("busy"))
+                    } else {
+                        KeyOutcome::ok(k)
+                    }
+                })
+                .collect())
+        }
+        async fn head_many(&self, keys: Vec<String>) -> Result<Vec<Option<ObjectMetadata>>> {
+            if self.mode == Mode::Broken {
+                return Ok(vec![None]);
+            }
+            Ok(keys
+                .into_iter()
+                .map(|k| {
+                    (k != "absent").then(|| ObjectMetadata {
+                        key: k,
+                        size: 2,
+                        ..ObjectMetadata::default()
+                    })
+                })
+                .collect())
+        }
+        async fn changes(&self, request: ChangesRequest) -> Result<ChangesPage> {
+            let cursor = match self.mode {
+                Mode::Honest => "c2".to_string(),
+                Mode::Broken => request.cursor.clone().unwrap_or_default(),
+            };
+            Ok(ChangesPage {
+                changes: vec![ObjectChange {
+                    key: "a/1".into(),
+                    kind: ObjectChangeKind::Removed,
+                    info: None,
+                }],
+                cursor,
+                more: true,
+                complete: true,
+            })
+        }
+    }
+
+    /// A guest that implements only the required methods.
+    struct Bare;
+
+    #[async_trait::async_trait(?Send)]
+    impl Destination for Bare {
+        async fn head(&self, _key: &str) -> Result<Option<ObjectMetadata>> {
+            Ok(None)
+        }
+        async fn list(&self, _options: ListOptions) -> Result<crate::ListPage> {
+            Ok(ListPage::default())
+        }
+        async fn get(&self, _key: &str, _range: Option<ByteRange>) -> Result<ReadResult> {
+            Err(PluginError::unsupported("get"))
+        }
+        async fn put(
+            &self,
+            _key: &str,
+            _body: Pin<Box<dyn AsyncRead + Send>>,
+            _options: WriteOptions,
+        ) -> Result<PutResult> {
+            Err(PluginError::unsupported("put"))
+        }
+        async fn copy(&self, _from: &str, _to: &str) -> Result<CopyResult> {
+            Err(PluginError::unsupported("copy"))
+        }
+        async fn delete(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A client for `dest` over a local capability.
+    fn client(dest: Arc<dyn Destination>) -> DestinationClient {
+        DestinationClient::new(
+            capnp_rpc::new_client(DestinationServer::new(dest, 4096)),
+            4096,
+        )
+    }
+
+    /// An honest or broken stub guest.
+    fn stub(mode: Mode) -> Arc<Stub> {
+        Arc::new(Stub {
+            mode,
+            seen: RefCell::new((None, None)),
+        })
+    }
+
+    fn keys(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn pairs_request(pairs: &[(&str, &str)]) -> MoveManyRequest {
+        MoveManyRequest {
+            target: MoveManyTarget::Pairs(
+                pairs
+                    .iter()
+                    .map(|(f, t)| KeyPair {
+                        from: (*f).into(),
+                        to: (*t).into(),
+                    })
+                    .collect(),
+            ),
+            cursor: None,
+            limit: 0,
+            options: MoveOptions::default(),
+        }
+    }
+
+    fn prefix_request(cursor: Option<&str>) -> MoveManyRequest {
+        MoveManyRequest {
+            target: MoveManyTarget::Prefix(KeyPair {
+                from: "a/".into(),
+                to: "b/".into(),
+            }),
+            cursor: cursor.map(str::to_string),
+            limit: 10,
+            options: MoveOptions {
+                no_overwrite: true,
+                if_source_match: None,
+            },
+        }
+    }
+
+    async fn run<F: std::future::Future<Output = ()>>(f: F) {
+        tokio::task::LocalSet::new().run_until(f).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn honest_guest_round_trips_every_operation() {
+        run(async {
+            let guest = stub(Mode::Honest);
+            let dest = client(guest.clone());
+
+            let moved = dest
+                .move_object(
+                    "gone",
+                    "b",
+                    MoveOptions {
+                        no_overwrite: true,
+                        if_source_match: Some("e1".into()),
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(moved.atomic && moved.already_moved);
+            let stale = dest
+                .move_object(
+                    "a",
+                    "b",
+                    MoveOptions {
+                        no_overwrite: false,
+                        if_source_match: Some("stale".into()),
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(stale.wire_str(), "conflict");
+
+            let page = dest
+                .move_many(pairs_request(&[("x", "y"), ("z", "w")]))
+                .await
+                .unwrap();
+            assert_eq!(page.results.len(), 2);
+            assert!(page.next_cursor.is_none());
+            let prefix = dest.move_many(prefix_request(Some("c1"))).await.unwrap();
+            assert_eq!(prefix.next_cursor.as_deref(), Some("c2"));
+            assert_eq!(prefix.results[0].key, "a/x");
+
+            let deleted = dest.delete_many(keys(&["ok", "busy"])).await.unwrap();
+            assert!(deleted[0].error.is_none());
+            assert_eq!(deleted[1].error.as_ref().unwrap().wire_str(), "conflict");
+
+            let heads = dest.head_many(keys(&["here", "absent"])).await.unwrap();
+            assert_eq!(heads[0].as_ref().unwrap().size, 2);
+            assert!(heads[1].is_none());
+
+            let feed = dest
+                .changes(ChangesRequest {
+                    cursor: Some("c1".into()),
+                    limit: 5,
+                })
+                .await
+                .unwrap();
+            assert_eq!(feed.cursor, "c2");
+            assert_eq!(feed.changes[0].kind, ObjectChangeKind::Removed);
+
+            let listed = dest
+                .list(ListOptions {
+                    with_signatures: true,
+                    modified_since_ms: Some(5),
+                    ..ListOptions::default()
+                })
+                .await
+                .unwrap();
+            assert!(listed.signatures_included);
+            assert_eq!(listed.objects[0].signature.as_deref(), Some("sig"));
+            let seen = guest.seen.borrow().0.clone().unwrap();
+            assert!(seen.with_signatures);
+            assert_eq!(seen.modified_since_ms, Some(5));
+
+            let probe = dest.head("k").await.unwrap().unwrap();
+            assert_eq!(probe.version_id.as_deref(), Some("v1"));
+            assert_eq!(probe.modified_at_ms, Some(7));
+
+            let written = dest
+                .put(
+                    "k",
+                    Box::pin(std::io::Cursor::new(Vec::new())),
+                    WriteOptions {
+                        if_match: Some("e1".into()),
+                        ..WriteOptions::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(written.signature.as_deref(), Some("sig2"));
+            assert_eq!(
+                guest.seen.borrow().1.as_ref().unwrap().if_match.as_deref(),
+                Some("e1")
+            );
+            let refused = dest
+                .put(
+                    "k",
+                    Box::pin(std::io::Cursor::new(Vec::new())),
+                    WriteOptions {
+                        if_none_match: true,
+                        ..WriteOptions::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(refused.wire_str(), "conflict");
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn broken_replies_are_refused() {
+        run(async {
+            let dest = client(stub(Mode::Broken));
+            assert!(dest.move_many(pairs_request(&[("x", "y")])).await.is_err());
+            assert!(dest.move_many(prefix_request(None)).await.is_err());
+            assert!(dest.delete_many(keys(&["a", "b"])).await.is_err());
+            assert!(dest.head_many(keys(&["a", "b"])).await.is_err());
+            assert!(dest
+                .changes(ChangesRequest {
+                    cursor: Some("c1".into()),
+                    limit: 0,
+                })
+                .await
+                .is_err());
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn oversized_and_empty_batches_never_reach_the_guest() {
+        run(async {
+            let dest = client(stub(Mode::Honest));
+            assert!(dest.delete_many(Vec::new()).await.is_err());
+            let many: Vec<String> = (0..=MAX_BATCH_KEYS).map(|i| format!("k{i}")).collect();
+            assert!(dest.head_many(many.clone()).await.is_err());
+            let pairs: Vec<(String, String)> = many
+                .iter()
+                .map(|k| (k.clone(), format!("{k}.new")))
+                .collect();
+            let refs: Vec<(&str, &str)> = pairs
+                .iter()
+                .map(|(a, b)| (a.as_str(), b.as_str()))
+                .collect();
+            assert!(dest.move_many(pairs_request(&refs)).await.is_err());
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn undeclared_operations_answer_unsupported() {
+        run(async {
+            let dest = client(Arc::new(Bare));
+            let code = |r: Result<()>| r.unwrap_err().wire_str().to_string();
+            assert_eq!(
+                code(
+                    dest.move_object("a", "b", MoveOptions::default())
+                        .await
+                        .map(drop)
+                ),
+                "unsupported"
+            );
+            assert_eq!(
+                code(dest.move_many(pairs_request(&[("a", "b")])).await.map(drop)),
+                "unsupported"
+            );
+            assert_eq!(
+                code(dest.delete_many(keys(&["a"])).await.map(drop)),
+                "unsupported"
+            );
+            assert_eq!(
+                code(dest.head_many(keys(&["a"])).await.map(drop)),
+                "unsupported"
+            );
+            assert_eq!(
+                code(dest.changes(ChangesRequest::default()).await.map(drop)),
+                "unsupported"
+            );
+        })
+        .await;
+    }
+}
