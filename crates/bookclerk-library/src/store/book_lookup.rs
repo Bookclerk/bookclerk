@@ -173,60 +173,6 @@ impl LibraryStore {
             .collect()
     }
 
-    /// The first book, in title order, whose product id or ASIN is exactly
-    /// `id`, or else whose primary storage key is exactly `storage_key`.
-    ///
-    /// The id comparison uses the `product_id` and `asin` indexes. The
-    /// storage-key fallback returns at most one row, but `storage_key` has
-    /// no index, so the database may scan the table to find it; it runs
-    /// only when no id matched.
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - A store product id or ASIN.
-    /// * `storage_key` - The primary file's storage key, matched only when
-    ///   no id matches; an empty key matches nothing.
-    ///
-    /// # Returns
-    ///
-    /// The book, or `None` when neither matches.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
-    pub async fn find_book_by_store_id_or_key(
-        &self,
-        id: &str,
-        storage_key: &str,
-    ) -> Result<Option<BookRecord>> {
-        let by_id = books::Entity::find()
-            .filter(
-                Condition::any()
-                    .add(books::Column::ProductId.eq(id))
-                    .add(books::Column::Asin.eq(id)),
-            )
-            .order_by_asc(books::Column::Title)
-            .order_by_asc(books::Column::Id)
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        if let Some(model) = by_id {
-            return map_book(model).map(Some);
-        }
-        if storage_key.is_empty() {
-            return Ok(None);
-        }
-        books::Entity::find()
-            .filter(books::Column::StorageKey.eq(storage_key))
-            .order_by_asc(books::Column::Title)
-            .order_by_asc(books::Column::Id)
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .map(map_book)
-            .transpose()
-    }
-
     /// One keyset page of the acquired books that have a stored file,
     /// identity columns only, by surrogate id.
     ///
@@ -371,55 +317,6 @@ mod tests {
             assert_eq!(uuids(&found), vec![slug.uuid.clone()], "{name}: mixed case");
             let found = store.find_books_by_any_id(None, "missing").await.unwrap();
             assert!(found.is_empty(), "{name}");
-        }
-    }
-
-    /// Product id or ASIN wins over the storage key; the key is a fallback
-    /// and an empty key matches nothing.
-    #[tokio::test]
-    async fn store_id_or_key_lookup_prefers_ids_then_the_stored_file() {
-        for profile in Profile::ALL {
-            let store = kit(profile).await;
-            let name = profile.name();
-            let first = book(&store, "a1", "P-1", Some("B0AAA"), None, "First").await;
-            let second = book(&store, "a1", "P-2", None, None, "Second").await;
-            store
-                .set_acquire_status(
-                    "P-2",
-                    "a1",
-                    AcquireStatus::Acquired,
-                    Some("x/P-1.m4b"),
-                    None,
-                )
-                .await
-                .unwrap();
-
-            let found = store.find_book_by_store_id_or_key("P-1", "x/P-1.m4b").await;
-            assert_eq!(
-                found.unwrap().map(|b| b.uuid),
-                Some(first.uuid.clone()),
-                "{name}"
-            );
-            let found = store.find_book_by_store_id_or_key("B0AAA", "").await;
-            assert_eq!(
-                found.unwrap().map(|b| b.uuid),
-                Some(first.uuid.clone()),
-                "{name}"
-            );
-            let found = store
-                .find_book_by_store_id_or_key("nope", "x/P-1.m4b")
-                .await;
-            assert_eq!(
-                found.unwrap().map(|b| b.uuid),
-                Some(second.uuid.clone()),
-                "{name}"
-            );
-            let found = store.find_book_by_store_id_or_key("nope", "").await;
-            assert!(found.unwrap().is_none(), "{name}");
-            let found = store
-                .find_book_by_store_id_or_key("nope", "y/none.m4b")
-                .await;
-            assert!(found.unwrap().is_none(), "{name}");
         }
     }
 
