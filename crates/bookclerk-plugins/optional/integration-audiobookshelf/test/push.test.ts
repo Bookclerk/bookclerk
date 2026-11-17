@@ -20,6 +20,10 @@ test("the socket URL follows the base URL", () => {
     socketUrl("https://home.example/abs"),
     "wss://home.example/abs/socket.io/?EIO=4&transport=websocket",
   );
+  assert.equal(
+    socketUrl("HTTPS://abs.example"),
+    "wss://abs.example/socket.io/?EIO=4&transport=websocket",
+  );
   assert.equal(socketUrl("ftp://abs.example"), null);
   assert.equal(socketUrl("https://"), null);
   assert.equal(socketUrl(""), null);

@@ -265,6 +265,30 @@ test("a budget that runs out leaves the rest for the next sync", async () => {
   });
 });
 
+test("a row whose item lookup failed is sent again with the next sync", async () => {
+  await eachProfile(async (db, profile) => {
+    let itemUp = false;
+    const server = fakeServer((seen) => {
+      if (seen.path === "/api/users") return json({ users: [{ id: "u1" }] });
+      if (seen.path === "/api/users/u1")
+        return json({ id: "u1", mediaProgress: [{ libraryItemId: "a", progress: 0.5 }] });
+      if (seen.path === "/api/items/a") {
+        return itemUp
+          ? json({ media: { metadata: { asin: "b0a" } } })
+          : new Response("", { status: 503 });
+      }
+      return undefined;
+    });
+    const abs = (): AbsClient => new AbsClient(server.baseUrl, "k", server.fetch);
+    const first = await collectListeningChanges(abs(), db.binding, T0);
+    assert.equal(first.rows[0]?.asin, undefined, profile);
+    itemUp = true;
+    const second = await collectListeningChanges(abs(), db.binding, T0 + 1);
+    assert.equal(second.rows[0]?.asin, "B0A", profile);
+    assert.deepEqual((await collectListeningChanges(abs(), db.binding, T0 + 2)).rows, [], profile);
+  });
+});
+
 test("a memory that fails never fails the sync", async () => {
   // A database without the tables: every memory call fails.
   for (const profile of TEST_DATABASE_PROFILES) {

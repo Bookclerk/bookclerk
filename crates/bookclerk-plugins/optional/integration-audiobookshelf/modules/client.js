@@ -119,12 +119,21 @@ export function checkBaseUrl(raw) {
     if (scheme !== "http" && scheme !== "https") {
         throw new AbsFailure("invalid_params", "the audiobookshelf `base_url` must be http(s)");
     }
+    // The host `fetch` will contact, as the URL standard parses it: a
+    // hand-rolled split disagrees on input such as `\` before `@`.
+    let parsed;
+    try {
+        parsed = new URL(base);
+    }
+    catch {
+        throw new AbsFailure("invalid_params", "the audiobookshelf `base_url` is not a URL");
+    }
+    if (parsed.hostname === "") {
+        throw new AbsFailure("invalid_params", "the audiobookshelf `base_url` has no host");
+    }
     if (scheme === "https")
         return base;
-    const authority = base.slice(sep + 3).split(/[/?#]/)[0] ?? "";
-    const at = authority.lastIndexOf("@");
-    const hostport = at < 0 ? authority : authority.slice(at + 1);
-    if (!isLoopbackHostport(hostport)) {
+    if (!isLoopbackHostport(parsed.hostname)) {
         throw new AbsFailure("invalid_params", "the audiobookshelf `base_url` must use https unless the host is loopback");
     }
     return base;

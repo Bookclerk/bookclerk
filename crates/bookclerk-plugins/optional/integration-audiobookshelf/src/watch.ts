@@ -112,7 +112,8 @@ export class UserWatch {
    * A watch over `db` when granted, else over `memory`.
    *
    * @param db - The plugin's `LISTENING_STATE` database, when granted.
-   * @param memory - The isolate's in-memory set of user keys.
+   * @param memory - The isolate's in-memory set of user keys, plus
+   *   {@link SEEDED} once seeded.
    */
   constructor(db: DatabaseBinding | undefined, memory: Set<string>) {
     this.#db = db;
@@ -134,9 +135,12 @@ export class UserWatch {
   async seed(users: readonly AbsUser[]): Promise<number> {
     const db = this.#db;
     if (db === undefined) {
-      if (this.#memory.size > 0) return 0;
-      for (const user of users) this.#memory.add(await watchKey(user.id));
-      return this.#memory.size;
+      // The marker also records a seed of a server with no users yet.
+      if (this.#memory.has(SEEDED)) return 0;
+      const keys = await Promise.all(users.map((user) => watchKey(user.id)));
+      for (const key of keys) this.#memory.add(key);
+      this.#memory.add(SEEDED);
+      return keys.length;
     }
     if ((await known(db)).seeded) return 0;
     const keys = await Promise.all(users.map((user) => watchKey(user.id)));

@@ -199,6 +199,15 @@ test("a poll seeds the watch when start could not, and reports nobody", async ()
   );
 });
 
+test("without a database, a seed of an empty server still counts", async () => {
+  const state = guest.newState();
+  await guest.start(state, ctxFor(usersServer([])));
+  assert.deepEqual(
+    (await guest.pollEvents(state, ctxFor(usersServer(["ada"])))).map((u) => u.externalUserId),
+    ["ada"],
+  );
+});
+
 test("with the watch off, start and poll ask the server nothing", async () => {
   const server = usersServer(["root"]);
   const sockets = fakeSockets();

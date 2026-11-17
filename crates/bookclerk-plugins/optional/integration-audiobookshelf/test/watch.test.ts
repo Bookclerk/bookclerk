@@ -175,5 +175,5 @@ test("without a database the set lives in memory", async () => {
   assert.equal(await watch.seed(users(["root"])), 1);
   assert.equal(await watch.seed(users(["root", "ada"])), 0);
   assert.deepEqual(ids(await watch.takeNew(users(["root", "ada"]))), ["ada"]);
-  assert.equal(memory.size, 2);
+  assert.equal(memory.size, 3, "two users and the seed marker");
 });

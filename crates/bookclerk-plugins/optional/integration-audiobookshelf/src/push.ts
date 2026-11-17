@@ -48,7 +48,7 @@ const CLOSE: Reaction = { reply: null, close: true, newUser: false };
 /**
  * The WebSocket URL of the Socket.io endpoint under `baseUrl`.
  *
- * `http` becomes `ws` and `https` becomes `wss`; a path prefix on the base
+ * `http` becomes `ws` and `https` becomes `wss`, in any case; a path prefix on the base
  * URL (Audiobookshelf behind a sub-path) is kept.
  *
  * @param baseUrl - The configured server address, such as `https://abs.example`.
@@ -57,8 +57,9 @@ const CLOSE: Reaction = { reply: null, close: true, newUser: false };
 export function socketUrl(baseUrl: string): string | null {
   const base = baseUrl.trim().replace(/\/+$/, "");
   let rest: string;
-  if (base.startsWith("https://")) rest = `wss://${base.slice("https://".length)}`;
-  else if (base.startsWith("http://")) rest = `ws://${base.slice("http://".length)}`;
+  const lower = base.toLowerCase();
+  if (lower.startsWith("https://")) rest = `wss://${base.slice("https://".length)}`;
+  else if (lower.startsWith("http://")) rest = `ws://${base.slice("http://".length)}`;
   else return null;
   if (rest.endsWith("://")) return null;
   return `${rest}${SOCKET_PATH}`;

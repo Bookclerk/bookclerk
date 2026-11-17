@@ -132,7 +132,7 @@ export function hostRow(userId, row, meta) {
  * @param userId - User id.
  * @param previous - What the last sync sent for this user, if it still counts.
  * @param nowMs - The time of this sync.
- * @param items - Item lookups already made by this sync, by item id.
+ * @param items - Item lookups already made by this sync, by item id; `undefined` for one that failed.
  * @returns The rows and memory; `undefined` when Audiobookshelf could not
  *   return the user (their memory then stays as it was).
  * @throws {BudgetSpent} When the budget ran out before the user was read.
@@ -179,7 +179,10 @@ async function collectUser(client, userId, previous, nowMs, items) {
             }
             items.set(row.libraryItemId, meta);
         }
-        remembered.set(row.libraryItemId, fp);
+        // A row whose item lookup failed goes out without its identifiers and
+        // is not remembered, so the next sync looks the item up again.
+        if (meta !== undefined)
+            remembered.set(row.libraryItemId, fp);
         rows.push(hostRow(detail.id, row, meta));
     }
     return { rows, next: { fullAtMs: previous?.fullAtMs ?? nowMs, items: remembered }, complete };

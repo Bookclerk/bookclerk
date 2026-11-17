@@ -42,6 +42,9 @@ test("the base URL must be https unless the host is loopback", () => {
     "ftp://abs.example",
     "abs.example",
     "http://localhost.evil.example",
+    "https://",
+    // `fetch` reads `\\` as a path separator, so this host is abs.example.
+    "http://abs.example\\@127.0.0.1",
   ]) {
     assert.throws(
       () => checkBaseUrl(bad),
@@ -50,6 +53,7 @@ test("the base URL must be https unless the host is loopback", () => {
     );
   }
   assert.equal(isLoopbackHostport("localhost:"), true);
+  assert.equal(checkBaseUrl("HTTP://[::1]"), "HTTP://[::1]");
   assert.equal(isLoopbackHostport("127.0.0.2"), false);
 });
 
