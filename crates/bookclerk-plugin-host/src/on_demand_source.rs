@@ -37,15 +37,15 @@ pub const STOREFRONT_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// True when a storefront deployment of `manifest` may sleep while idle.
 ///
-/// The plugin must belong only to the source family and must not be
-/// Python, whose guests take seconds to start.
+/// The plugin must belong only to the source family. Python storefronts
+/// sleep too, since they start from a stored snapshot.
 ///
 /// # Arguments
 ///
 /// * `manifest` - the installed manifest the deployment spawns.
 #[must_use]
 pub fn storefront_activates_on_demand(manifest: &PluginManifest) -> bool {
-    manifest.families() == [PluginFamily::Source] && !manifest.declares_python()
+    manifest.families() == [PluginFamily::Source]
 }
 
 /// A running storefront guest the proxy forwards to.

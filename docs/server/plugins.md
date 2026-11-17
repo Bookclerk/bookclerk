@@ -311,14 +311,16 @@ The destination's name and instance id stay known while it sleeps, so
 checks that only need to know which destination is which do not wake it.
 
 > [!NOTE]
-> Other storage plugins, plugins that belong to more than one family, and
-> Python plugins stay running for now.
+> Other storage plugins and plugins that belong to more than one family stay
+> running for now.
 
 A Python plugin's first start takes several seconds while Python loads and
 the plugin imports its modules. The host keeps a snapshot of the plugin
 taken right after those imports, one per installed plugin version, and
 later starts begin from it instead. On one CPU that takes a start from
-about 5 seconds to about 1 second.
+about 5 seconds to about 1 second, so Python plugins sleep like the
+others: the first call after a sleep waits about a second longer than it
+would for a plugin written in JavaScript or Rust.
 
 1. The first start of a new plugin version runs normally and saves the
    snapshot.

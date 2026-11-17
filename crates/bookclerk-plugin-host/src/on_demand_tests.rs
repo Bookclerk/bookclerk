@@ -565,6 +565,21 @@ fn trigger_and_lookup_plugins_activate_on_demand() {
     assert!(activates_on_demand(&manifest("native", "\"covers\"", "")));
 }
 
+/// `[workerd]` and a module for a Python isolate.
+const PYTHON: &str = "[workerd]\ncompatibility_date = \"2026-08-01\"\n\
+compatibility_flags = [\"python_workers\", \"disable_python_external_sdk\"]\n\
+main_module = \"plugin.py\"\n\n[[modules]]\nname = \"plugin.py\"\n\
+path = \"plugin.py\"\ntype = \"python\"\n";
+
+#[test]
+fn python_integrations_activate_on_demand() {
+    assert!(activates_on_demand(&manifest(
+        "workerd",
+        "",
+        &format!("{EVENTS}\n{PYTHON}")
+    )));
+}
+
 #[test]
 fn remote_libraries_and_sign_in_providers_activate_on_demand() {
     assert!(activates_on_demand(&manifest(

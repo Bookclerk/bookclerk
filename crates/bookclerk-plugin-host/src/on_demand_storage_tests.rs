@@ -354,6 +354,19 @@ fn manifest(runtime: &str, entrypoints: &str) -> crate::PluginManifest {
 }
 
 #[test]
+fn python_storage_plugins_sleep() {
+    let text = "api_version = 3\nid = \"probe\"\nversion = \"0.1.0\"\n\
+runtime = \"workerd\"\nentrypoints = [\"storage\"]\n\n[capabilities.network]\n\
+mode = \"deny\"\n\n[workerd]\ncompatibility_date = \"2026-08-01\"\n\
+compatibility_flags = [\"python_workers\", \"disable_python_external_sdk\"]\n\
+main_module = \"plugin.py\"\n\n[[modules]]\nname = \"plugin.py\"\n\
+path = \"plugin.py\"\ntype = \"python\"\n";
+    let manifest = bookclerk_plugin_manifest::parse(text).expect("manifest");
+    assert!(manifest.declares_python());
+    assert!(storage_activates_on_demand(&manifest));
+}
+
+#[test]
 fn only_plain_storage_plugins_sleep() {
     assert!(storage_activates_on_demand(&manifest(
         "native",
