@@ -2320,7 +2320,10 @@ async fn the_local_destination_sleeps_when_idle_and_wakes_on_its_next_call() {
         )
         .await
         .expect("put through the first guest");
-    exercise_intent_operations(local.as_ref()).await;
+    // Moves are atomic renames only where the output folder sits on a
+    // local disk; a network or FUSE temp dir takes the cautious path.
+    let local_disk = bookclerk_storage::fs_kind::classify(files).is_local();
+    exercise_intent_operations(local.as_ref(), local_disk).await;
 
     wait_for_sleep(proxy.as_ref()).await;
     assert_eq!(proxy.wakes(), 0);
@@ -2359,8 +2362,12 @@ async fn the_local_destination_sleeps_when_idle_and_wakes_on_its_next_call() {
 
 /// Drives every intent operation through the real local guest, which does
 /// all of them natively except the change feed, so the host forwards each
-/// one and falls back only for `changes`.
-async fn exercise_intent_operations(local: &dyn bookclerk_storage::StorageBackend) {
+/// one and falls back only for `changes`. `local_disk` says whether the
+/// output folder is on a local disk, where moves are atomic renames.
+async fn exercise_intent_operations(
+    local: &dyn bookclerk_storage::StorageBackend,
+    local_disk: bool,
+) {
     use bookclerk_storage::{ListRequest, MoveOptions, WriteCondition};
     assert_eq!(
         local.capabilities(),
@@ -2383,7 +2390,10 @@ async fn exercise_intent_operations(local: &dyn bookclerk_storage::StorageBacken
         .move_object("Intent/a.m4b", "Moved/a.m4b", &options)
         .await
         .expect("move");
-    assert!(moved.atomic, "a local move is a rename");
+    assert_eq!(
+        moved.atomic, local_disk,
+        "a move on a local disk is a rename"
+    );
     let results = local
         .move_many(
             &[("Intent/b.m4b".to_string(), "Moved/b.m4b".to_string())],

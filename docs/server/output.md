@@ -41,18 +41,41 @@ bookclerk plugins config set local root /data/Audiobooks
 bookclerk plugins config get local
 ```
 
-Bookclerk moves, renames and checks files in this folder directly:
+Bookclerk moves, renames and checks files in this folder directly. How it
+does so depends on the file system each file is on, since a folder inside
+the library can be another mount.
+
+On a local disk:
 
 - A move is a rename, so a reader never sees a half-moved file. The
   `.bookclerk-meta.json` sidecar moves with its file.
 - A move that must not replace a file links it to the new name first,
   which fails if a file is already there. On a file system without hard
   links (FAT or exFAT, for example) it checks for the file just before the
-  copy instead.
+  rename instead.
 - A write that must not replace a file uses the same link step. A write
   that must replace only the file Bookclerk last read checks it just before
   the rename. Bookclerk's own writes cannot slip into that moment, but a
   program outside Bookclerk writing the same file at that instant can.
+
+On a network share (NFS, SMB, AFP, WebDAV, a Windows network drive) or a
+FUSE mount (sshfs, rclone, mergerfs and the like):
+
+- Bookclerk never uses hard links. A retried NFS request can report that a
+  link failed after it succeeded, and many of these file systems fake hard
+  links or have none. Writes and moves that must not replace a file check
+  just before the rename instead, and report that they were not atomic.
+- A file's change signature is its size and modification time only.
+  Inode numbers and change times can shift after a remount without the file
+  changing.
+
+Between two file systems (a move into a folder that is another mount),
+Bookclerk copies the file, syncs it to disk, checks its size, and only then
+deletes the original.
+
+Change signatures need a modification time that moves with every write.
+FAT keeps it to 2 seconds and exFAT to 10 milliseconds, so two writes of
+the same size within that window can look alike.
 
 ## S3 and MinIO
 

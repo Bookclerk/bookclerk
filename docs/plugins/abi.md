@@ -1534,9 +1534,10 @@ The rules every operation follows:
   has not moved yet.
 
 The platform `local` destination declares every operation except
-`storage.changes`: moves are renames, `noOverwrite` and `ifNoneMatch`
-publish through a hard link that fails when the target exists, and
-`ifMatch` is checked just before the rename (see
+`storage.changes`: moves are renames, and on a local disk `noOverwrite`
+and `ifNoneMatch` publish through a hard link that fails when the target
+exists. `ifMatch`, and every condition on a network or FUSE mount, is
+checked just before the rename and reported as not atomic (see
 [Local filesystem](../server/output.md#local-filesystem)).
 
 The host checks every reply against the request before acting on it: the
