@@ -48,6 +48,12 @@ image and Node.js majors alone; the
 Node.js major moves by hand. Dependabot still updates the `node` image's
 digest within the pinned major.
 
+Packages that must share one version are grouped so they move in one pull
+request: `capnp`, `capnp-rpc`, `capnpc` and `capnp-futures` in Cargo, and
+`vitest` with its `@vitest/*` plugins in each Worker under `tools/`
+(`@vitest/coverage-v8` accepts only the vitest release it shipped with, so
+bumping either one alone fails `npm ci`).
+
 `examples/` lockfiles are left out, because they are reference plugins and
 never packaged. The full OSV scan still reports them.
 
