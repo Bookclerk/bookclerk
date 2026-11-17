@@ -52,7 +52,7 @@ use super::batch::{exec, request, rows_affected, text};
 use super::enrollment::load_node_credential;
 use super::node_queue::{notify_node, NodeMessage};
 use crate::entities::{
-    account_links, books, catalog_listing_optouts, catalog_lookups, edition_identifiers, editions,
+    account_links, catalog_listing_optouts, catalog_lookups, edition_identifiers, editions,
     expressions, nodes, portal_identities, store_listings, users, work_identifiers,
 };
 use crate::error::{LibraryError, Result};
@@ -175,6 +175,17 @@ pub(crate) fn is_result_bytes_limit(err: &LibraryError) -> bool {
                 | "maxPayloadBytes"
         )
     })
+}
+
+/// Whether `err` is the plugin refusing a reply because rows are too wide:
+/// for its bytes ([`is_result_bytes_limit`]) or because one stored cell is
+/// wider than `maxCellBytes` (a value written before a smaller cap). Reading
+/// fewer rows can narrow the first; the second only leaves the row out.
+pub(crate) fn is_too_wide_to_read(err: &LibraryError) -> bool {
+    is_result_bytes_limit(err)
+        || err
+            .limit()
+            .is_some_and(|limit| limit.limit.as_str() == "maxCellBytes")
 }
 
 /// Every row `fetch(offset, limit)` returns (at most `cap`), in pages of at
@@ -1553,41 +1564,6 @@ pub(super) async fn listable_accounts(
         .collect())
 }
 
-/// The answer edition for `book`, when its store, product id and title
-/// pass the frame rules.
-pub(crate) fn book_edition(book: &books::Model) -> Option<LookupEdition> {
-    let mut formats = Vec::new();
-    if AcquireStatus::parse(&book.acquire_status) == Some(AcquireStatus::Acquired) {
-        formats.push(LookupFormat::Audio);
-    }
-    if AcquireStatus::parse(&book.pdf_status) == Some(AcquireStatus::Acquired) {
-        formats.push(LookupFormat::Pdf);
-    }
-    let edition = LookupEdition {
-        store: book.source.trim().to_ascii_lowercase(),
-        marketplace: book.marketplace.trim().to_ascii_lowercase(),
-        product_id: book.product_id.clone(),
-        availability: Availability::Owned,
-        formats,
-        metadata: CatalogMetadata {
-            title: book.title.clone(),
-            subtitle: book.subtitle.clone(),
-            authors: book.authors.clone(),
-            narrators: book.narrators.clone(),
-            series: book.series.clone(),
-            series_index: book.series_index.clone(),
-            asin: book.asin.clone(),
-            isbn: book.isbn.clone(),
-            publisher: book.publisher.clone(),
-            length_minutes: book.length_minutes,
-            content_kind: Some(book.content_kind.clone()),
-            language: book.language.clone(),
-            published_at: book.published_at.clone(),
-        },
-    };
-    edition.problem().is_none().then_some(edition)
-}
-
 /// One title this library holds of a store listing, with the listing's
 /// text the answer frame carries beside the acquire view.
 #[derive(Debug, Clone)]
@@ -1596,8 +1572,94 @@ pub(crate) struct ListedTitle {
     pub(crate) title: AcquireTitle,
     /// Language code as the store lists it.
     pub(crate) language: Option<String>,
-    /// Publication date text as the store lists it, else the edition's.
+    /// Publication date text as the store lists it.
     pub(crate) published_at: Option<String>,
+}
+
+/// The store text of one listing the answer frame carries beside the
+/// acquire view; columns are matched by name.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct ListingText {
+    /// `store_listings.id`.
+    id: String,
+    /// Language code as the store lists it.
+    language: Option<String>,
+    /// Publication date text as the store lists it.
+    published_at: Option<String>,
+}
+
+/// `titles` with their listings' language and publication text, read in
+/// one narrow column read per chunk of listings.
+///
+/// Storefronts set that text, so a chunk's rows can pass the plugin's
+/// `maxResultBytes` (or one cell its `maxCellBytes`); the chunk is then
+/// read a listing at a time, and a
+/// listing still too wide to read is listed without its text (and
+/// logged) instead of failing the page.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub(crate) async fn listed_titles(
+    store: &LibraryStore,
+    titles: Vec<AcquireTitle>,
+) -> Result<Vec<ListedTitle>> {
+    let listing_ids: Vec<String> = titles
+        .iter()
+        .map(|t| t.listing_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let read = |part: Vec<String>| {
+        store_listings::Entity::find()
+            .select_only()
+            .column(store_listings::Column::Id)
+            .column(store_listings::Column::Language)
+            .column(store_listings::Column::PublishedAt)
+            .filter(store_listings::Column::Id.is_in(part))
+            .into_model::<ListingText>()
+            .all(store.db())
+    };
+    let mut text: HashMap<String, ListingText> = HashMap::new();
+    for part in listing_ids.chunks(in_chunk(store, READ_FIXED_BINDS).max(1)) {
+        let rows = match read(part.to_vec()).await.map_err(LibraryError::Orm) {
+            Ok(rows) => rows,
+            Err(err) if is_too_wide_to_read(&err) => {
+                // The store's text together passes one reply: read each
+                // listing alone, and list one still too wide without it.
+                let mut rows = Vec::with_capacity(part.len());
+                for id in part {
+                    match read(vec![id.clone()]).await.map_err(LibraryError::Orm) {
+                        Ok(one) => rows.extend(one),
+                        Err(err) if is_too_wide_to_read(&err) => {
+                            tracing::warn!(
+                                listing_id = %id,
+                                error = %err,
+                                "listing language and date left out: wider than one database reply"
+                            );
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+                rows
+            }
+            Err(err) => return Err(err),
+        };
+        for row in rows {
+            text.insert(row.id.clone(), row);
+        }
+    }
+    Ok(titles
+        .into_iter()
+        .map(|title| {
+            let listing = text.get(&title.listing_id);
+            ListedTitle {
+                language: listing.and_then(|l| l.language.clone()),
+                published_at: listing.and_then(|l| l.published_at.clone()),
+                title,
+            }
+        })
+        .collect())
 }
 
 /// The answer edition for `listed`, when its store, product id and title

@@ -32,28 +32,28 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bookclerk_node_proto::{
-    LookupEdition, LookupFormat, LookupIdentifier, LookupScheme, LookupWork, WindowWork,
-    MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS, MAX_WINDOW_WORKS,
+    LookupEdition, LookupFormat, LookupIdentifier, LookupScheme, LookupWork, WindowCursor,
+    WindowWork, MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS, MAX_WINDOW_WORKS,
 };
 use chrono::Utc;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
 use super::batch::{exec, int, text, text_opt};
 use super::catalog_lookup::{
-    book_edition, identifiers_of, in_chunk, is_result_bytes_limit, is_trusted_branch,
-    read_chunked_all, read_paged, read_paged_by, result_page, run_batches, stamp,
-    work_for_question, works_of_editions, PAGED_FIXED_BINDS,
+    identifiers_of, in_chunk, is_result_bytes_limit, is_too_wide_to_read, is_trusted_branch,
+    listed_titles, read_chunked_all, read_paged, read_paged_by, result_page, run_batches, stamp,
+    title_edition, work_for_question, works_of_editions, PAGED_FIXED_BINDS,
 };
 use super::clerk_links::list_clerk_links;
 use super::cluster_links::list_cluster_links;
 use crate::entities::{
-    account_links, books, holdings, nodes, portal_identities, store_listings, window_book_parts,
-    window_books,
+    account_links, holdings, nodes, portal_identities, window_book_parts, window_books,
 };
 use crate::error::{LibraryError, Result};
-use crate::store::LibraryStore;
+use crate::store::holdings::find_holdings;
+use crate::store::{AcquireTitle, LibraryStore};
 
-/// Most book rows one [`window_books_page`] reads.
+/// Most holdings one [`window_books_page`] reads.
 pub const WINDOW_BOOKS_READ: u64 = 200;
 
 /// Bytes of works one `window.page` frame carries at most, well under
@@ -89,51 +89,6 @@ async fn person_accounts(store: &LibraryStore, user_id: i64) -> Result<BTreeSet<
     Ok(accounts)
 }
 
-/// The works of `held` books, by book id: each book's store listing (same
-/// plugin key, marketplace and product id), its edition, and that edition's
-/// work.
-async fn works_of_books(
-    store: &LibraryStore,
-    held: &[books::Model],
-) -> Result<HashMap<i64, String>> {
-    let products: Vec<String> = held
-        .iter()
-        .map(|b| b.product_id.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    // A product id can be listed in several marketplaces: page each chunk.
-    let listings = read_chunked_all(store, &products, |part| {
-        store_listings::Entity::find().filter(store_listings::Column::ProductId.is_in(part))
-    })
-    .await?;
-    let edition_of: HashMap<(String, String, String), String> = listings
-        .into_iter()
-        .map(|l| ((l.plugin_key, l.marketplace, l.product_id), l.edition_id))
-        .collect();
-    let edition_ids: Vec<String> = edition_of
-        .values()
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let work_of_edition = works_of_editions(store, &edition_ids).await?;
-    Ok(held
-        .iter()
-        .filter_map(|b| {
-            let key = (
-                b.plugin_key.clone(),
-                b.marketplace.to_ascii_lowercase(),
-                b.product_id.clone(),
-            );
-            edition_of
-                .get(&key)
-                .and_then(|edition| work_of_edition.get(edition))
-                .map(|work| (b.id, work.clone()))
-        })
-        .collect())
-}
-
 /// The page key of a work's `n`th overflow group (`<work>-x<n>`). Work ids
 /// are UUIDs (hex digits and dashes) or `book-<id>`, so the suffix never
 /// ends a real key and [`grouping_key`] can take it off again.
@@ -161,138 +116,55 @@ fn encoded_len<T: serde::Serialize>(value: &T) -> usize {
     serde_json::to_vec(value).map_or(WINDOW_PAGE_BUDGET, |bytes| bytes.len() + 1)
 }
 
-/// The books of `rows` their account still holds: a holding of the
-/// book's store listing (plugin, marketplace, product id) on that account.
+/// The titles of `held` (account holdings, in id order), as acquire
+/// reads them.
 ///
-/// A scan that drops a title (a returned loan, a refund) removes the
-/// account's holding but keeps the book row, so the row alone would list
-/// the title as owned on every read.
-///
-/// # Errors
-///
-/// Returns the read error.
-async fn still_held(store: &LibraryStore, rows: Vec<books::Model>) -> Result<Vec<books::Model>> {
-    if rows.is_empty() {
-        return Ok(rows);
-    }
-    let products: Vec<String> = rows
-        .iter()
-        .map(|b| b.product_id.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let listings = read_chunked_all(store, &products, |part| {
-        store_listings::Entity::find().filter(store_listings::Column::ProductId.is_in(part))
-    })
-    .await?;
-    let listing_ids: Vec<String> = listings.iter().map(|l| l.id.clone()).collect();
-    let held = read_chunked_all(store, &listing_ids, |part| {
-        holdings::Entity::find()
-            .filter(holdings::Column::ListingId.is_in(part))
-            .filter(holdings::Column::AccountId.is_not_null())
-    })
-    .await?;
-    let listing_of: HashMap<String, (String, String, String)> = listings
-        .into_iter()
-        .map(|l| {
-            (
-                l.id,
-                (
-                    l.plugin_key,
-                    l.marketplace.to_ascii_lowercase(),
-                    l.product_id,
-                ),
-            )
-        })
-        .collect();
-    let held: BTreeSet<(String, String, String, String)> = held
-        .into_iter()
-        .filter_map(|h| {
-            let (plugin, marketplace, product) = listing_of.get(&h.listing_id)?.clone();
-            let account = h.account_id?;
-            (h.plugin_key.as_deref().is_none_or(|key| key == plugin)).then_some((
-                plugin,
-                account,
-                marketplace,
-                product,
-            ))
-        })
-        .collect();
-    Ok(rows
-        .into_iter()
-        .filter(|b| {
-            held.contains(&(
-                b.plugin_key.clone(),
-                b.account_id.clone(),
-                b.marketplace.trim().to_ascii_lowercase(),
-                b.product_id.clone(),
-            ))
-        })
-        .collect())
-}
-
-/// The books `select` reads, and the ids it matched in order.
-///
-/// A book row is as wide as all its metadata together, which can pass the
-/// plugin's `maxResultBytes` even when every field fits a cell. When the
-/// page is refused for its bytes, the ids are read alone and each book on
-/// its own; a book still too wide to read is left out of the window (and
-/// logged) instead of failing every page after it. The ids include the
-/// books left out, so the caller's cursor moves past them.
+/// A title's listing carries all its store metadata, which together can
+/// pass the plugin's `maxResultBytes` even when every field fits a cell
+/// (and a value stored before a smaller `maxCellBytes` can pass that).
+/// When the read is refused for its width, each holding is read on its
+/// own; a title still too wide to read is left out of the window (and
+/// logged) instead of failing every page after it.
 ///
 /// # Errors
 ///
-/// Returns any read error other than a book too wide to read.
-async fn read_books_within_bytes(
+/// Returns any read error other than a title too wide to read.
+async fn titles_within_bytes(
     store: &LibraryStore,
-    select: sea_orm::Select<books::Entity>,
-) -> Result<(Vec<books::Model>, Vec<i64>)> {
-    use crate::column_read::SelectColumnExt as _;
-    match select.clone().all(store.db()).await {
-        Ok(rows) => {
-            let ids = rows.iter().map(|b| b.id).collect();
-            return Ok((rows, ids));
-        }
-        Err(err) => {
-            let err = LibraryError::Orm(err);
-            if !is_result_bytes_limit(&err) {
-                return Err(err);
-            }
-        }
+    held: Vec<holdings::Model>,
+) -> Result<Vec<AcquireTitle>> {
+    match store.acquire_titles_of(held.clone()).await {
+        Ok(titles) => return Ok(titles),
+        Err(err) if is_too_wide_to_read(&err) => {}
+        Err(err) => return Err(err),
     }
-    let ids: Vec<i64> = select
-        .into_column::<i64, _>(books::Column::Id)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    let mut rows = Vec::with_capacity(ids.len());
-    for &id in &ids {
-        match books::Entity::find_by_id(id).one(store.db()).await {
-            Ok(Some(book)) => rows.push(book),
-            Ok(None) => {}
-            Err(err) => {
-                let err = LibraryError::Orm(err);
-                if !is_result_bytes_limit(&err) {
-                    return Err(err);
-                }
+    let mut titles = Vec::with_capacity(held.len());
+    for holding in held {
+        let id = holding.id.clone();
+        match store.acquire_titles_of(vec![holding]).await {
+            Ok(one) => titles.extend(one),
+            Err(err) if is_too_wide_to_read(&err) => {
                 tracing::warn!(
-                    book_id = id,
+                    holding_id = %id,
                     error = %err,
-                    "book left out of the window: its row is wider than one database reply"
+                    "title left out of the window: its listing is wider than one database reply"
                 );
             }
+            Err(err) => return Err(err),
         }
     }
-    Ok((rows, ids))
+    Ok(titles)
 }
 
 /// One page of the books this library holds for branch `node_id`'s owner,
 /// for the `window.books` frame.
 ///
-/// Books are read in id order from cursor `after` (at most
-/// [`WINDOW_BOOKS_READ`] rows, and no more than one database result page).
-/// Each is grouped under its work here (its key is the work id, or
-/// `book-<id>` when it has no work), with the work's identifiers; a work
+/// The person's titles (their accounts' holdings) are read in holding id
+/// order from cursor `after` (at most [`WINDOW_BOOKS_READ`] holdings, and
+/// no more than one database result page); the next cursor is the last
+/// holding id the page covered. Each title is grouped under its work here
+/// (its key is the work id, or `edition-<edition id>` when the edition has
+/// no work), with the work's identifiers; a work
 /// lists at most [`MAX_LOOKUP_EDITIONS`] editions (where two of the
 /// person's accounts hold the same edition, one entry with every format
 /// either copy has).
@@ -302,7 +174,7 @@ async fn read_books_within_bytes(
 /// # Arguments
 ///
 /// * `node_id` - The asking node; its owner is the person.
-/// * `after` - The cursor of the previous page (0 for the first).
+/// * `after` - The cursor of the previous page (empty for the first).
 ///
 /// # Returns
 ///
@@ -315,8 +187,8 @@ async fn read_books_within_bytes(
 pub async fn window_books_page(
     store: &LibraryStore,
     node_id: &str,
-    after: i64,
-) -> Result<Option<(Vec<WindowWork>, Option<i64>)>> {
+    after: &WindowCursor,
+) -> Result<Option<(Vec<WindowWork>, Option<WindowCursor>)>> {
     let page = u64::try_from(result_page(store)).unwrap_or(1);
     window_books_page_by(store, node_id, after, page).await
 }
@@ -330,9 +202,9 @@ pub async fn window_books_page(
 async fn window_books_page_by(
     store: &LibraryStore,
     node_id: &str,
-    after: i64,
+    after: &WindowCursor,
     page: u64,
-) -> Result<Option<(Vec<WindowWork>, Option<i64>)>> {
+) -> Result<Option<(Vec<WindowWork>, Option<WindowCursor>)>> {
     let Some(node) = nodes::Entity::find_by_id(node_id.to_string())
         .one(store.db())
         .await
@@ -360,7 +232,7 @@ async fn window_books_page_by(
 /// # Arguments
 ///
 /// * `user_id` - The person: the card's user on this library.
-/// * `after` - The cursor of the previous page (0 for the first).
+/// * `after` - The cursor of the previous page (empty for the first).
 ///
 /// # Returns
 ///
@@ -372,10 +244,48 @@ async fn window_books_page_by(
 pub async fn person_books_page(
     store: &LibraryStore,
     user_id: i64,
-    after: i64,
-) -> Result<(Vec<WindowWork>, Option<i64>)> {
+    after: &WindowCursor,
+) -> Result<(Vec<WindowWork>, Option<WindowCursor>)> {
     let page = u64::try_from(result_page(store)).unwrap_or(1);
     person_books_page_by(store, user_id, after, page).await
+}
+
+/// The account holdings of `account_ids` after cursor `after`, at most
+/// `limit` per chunk of `width` accounts, and the page boundary: the lowest
+/// last row of a chunk that filled (holdings past it may be unread).
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn held_after(
+    store: &LibraryStore,
+    account_ids: &[String],
+    width: usize,
+    after: &WindowCursor,
+    limit: u64,
+) -> Result<(Vec<holdings::Model>, Option<String>)> {
+    let mut read: Vec<holdings::Model> = Vec::new();
+    let mut boundary: Option<String> = None;
+    for part in account_ids.chunks(width.max(1)) {
+        let mut select = find_holdings()
+            .filter(holdings::Column::HolderKind.eq("account"))
+            .filter(holdings::Column::AccountId.is_in(part.to_vec()))
+            .order_by_asc(holdings::Column::Id)
+            .limit(limit);
+        if !after.is_start() {
+            select = select.filter(holdings::Column::Id.gt(after.as_str()));
+        }
+        let rows = select.all(store.db()).await.map_err(LibraryError::Orm)?;
+        if u64::try_from(rows.len()).unwrap_or(u64::MAX) >= limit {
+            if let Some(last) = rows.last() {
+                if boundary.as_ref().is_none_or(|b| last.id < *b) {
+                    boundary = Some(last.id.clone());
+                }
+            }
+        }
+        read.extend(rows);
+    }
+    Ok((read, boundary))
 }
 
 /// [`person_books_page`] reading at most `page` books per database read
@@ -387,66 +297,61 @@ pub async fn person_books_page(
 async fn person_books_page_by(
     store: &LibraryStore,
     person: i64,
-    after: i64,
+    after: &WindowCursor,
     page: u64,
-) -> Result<(Vec<WindowWork>, Option<i64>)> {
+) -> Result<(Vec<WindowWork>, Option<WindowCursor>)> {
     let accounts = person_accounts(store, person).await?;
     if accounts.is_empty() {
         return Ok((Vec::new(), None));
     }
     // Read by account id in chunks within the plugin's bind limit, then keep
-    // only the rows whose plugin key matches too. Each chunk reads at most
-    // `limit` rows after the cursor; when a chunk fills, books of that chunk
-    // past its last row are unread, so the page ends at the lowest such row
-    // and nothing in between is skipped.
-    let width = in_chunk(store, 2).min(MAX_IN_ACCOUNTS);
+    // only the holdings whose plugin key matches too. Each chunk reads at
+    // most `limit` holdings after the cursor; when a chunk fills, holdings
+    // of that chunk past its last row are unread, so the page ends at the
+    // lowest such row and nothing in between is skipped.
+    let width = in_chunk(store, 3).min(MAX_IN_ACCOUNTS);
     let account_ids: Vec<String> = accounts
         .iter()
         .map(|(_, account)| account.clone())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let limit = WINDOW_BOOKS_READ.min(page.max(1));
-    let mut read: Vec<books::Model> = Vec::new();
-    // Every id examined, including books too wide to read, so the cursor
-    // moves past a skipped book like any other.
-    let mut examined: Vec<i64> = Vec::new();
-    let mut boundary: Option<i64> = None;
-    for part in account_ids.chunks(width.max(1)) {
-        let select = books::Entity::find()
-            .filter(books::Column::AccountId.is_in(part.to_vec()))
-            .filter(books::Column::Id.gt(after))
-            .order_by_asc(books::Column::Id)
-            .limit(limit);
-        let (rows, seen) = read_books_within_bytes(store, select).await?;
-        if u64::try_from(seen.len()).unwrap_or(u64::MAX) >= limit {
-            if let Some(&last) = seen.last() {
-                boundary = Some(boundary.map_or(last, |b| b.min(last)));
-            }
+    let mut limit = WINDOW_BOOKS_READ.min(page.max(1));
+    // Holding rows are narrow, but a plugin may advertise a small
+    // `maxResultBytes`: when a read is refused for its bytes, the page is
+    // read again with half as many rows per read.
+    let (mut read, boundary) = loop {
+        match held_after(store, &account_ids, width, after, limit).await {
+            Ok(found) => break found,
+            Err(err) if limit > 1 && is_result_bytes_limit(&err) => limit /= 2,
+            Err(err) => return Err(err),
         }
-        read.extend(rows);
-        examined.extend(seen);
-    }
-    examined.sort_unstable();
-    examined.dedup();
-    if let Some(boundary) = boundary {
-        examined.retain(|id| *id <= boundary);
+    };
+    read.sort_by(|a, b| a.id.cmp(&b.id));
+    read.dedup_by(|a, b| a.id == b.id);
+    if let Some(boundary) = &boundary {
+        read.retain(|h| h.id <= *boundary);
     }
     let cap = usize::try_from(limit).unwrap_or(usize::MAX);
-    let full = boundary.is_some() || examined.len() > cap;
-    examined.truncate(cap);
-    let read_last = examined.last().copied().unwrap_or(after);
-    read.sort_by_key(|b| b.id);
-    read.dedup_by_key(|b| b.id);
-    read.retain(|b| b.id <= read_last);
-    let rows: Vec<books::Model> = read
+    let full = boundary.is_some() || read.len() > cap;
+    read.truncate(cap);
+    let read_last: Option<String> = read.last().map(|h| h.id.clone());
+    let held: Vec<holdings::Model> = read
         .into_iter()
-        .filter(|b| accounts.contains(&(b.plugin_key.clone(), b.account_id.clone())))
+        .filter(|h| match (&h.plugin_key, &h.account_id) {
+            (Some(plugin), Some(account)) => accounts.contains(&(plugin.clone(), account.clone())),
+            _ => false,
+        })
         .collect();
-    // A scan that drops a title removes its holding, not its book row.
-    let rows = still_held(store, rows).await?;
-    let work_of_book = works_of_books(store, &rows).await?;
-    let work_ids: Vec<String> = work_of_book
+    let titles = listed_titles(store, titles_within_bytes(store, held).await?).await?;
+    let edition_ids: Vec<String> = titles
+        .iter()
+        .map(|t| t.title.edition_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let work_of_edition = works_of_editions(store, &edition_ids).await?;
+    let work_ids: Vec<String> = work_of_edition
         .values()
         .cloned()
         .collect::<BTreeSet<_>>()
@@ -457,17 +362,18 @@ async fn person_books_page_by(
     let mut works: Vec<WindowWork> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut used = 0usize;
-    let mut last = after;
+    let mut last: Option<String> = None;
     let mut stopped = false;
-    for book in &rows {
-        let Some(edition) = book_edition(book) else {
-            last = book.id;
+    for listed in &titles {
+        let title = &listed.title;
+        let Some(edition) = title_edition(listed) else {
+            last = Some(title.holding_id.clone());
             continue;
         };
-        let work = work_of_book
-            .get(&book.id)
+        let work = work_of_edition
+            .get(&title.edition_id)
             .cloned()
-            .unwrap_or_else(|| format!("book-{}", book.id));
+            .unwrap_or_else(|| format!("edition-{}", title.edition_id));
         // A work already listing the most editions a frame allows goes on
         // under another key of this page (`<work>-x<n>`) with the same
         // identifiers, so the window still merges them.
@@ -501,7 +407,7 @@ async fn person_books_page_by(
             stopped = true;
             break;
         }
-        last = book.id;
+        last = Some(title.holding_id.clone());
         used += size;
         let at = match at {
             Some(at) => at,
@@ -534,12 +440,15 @@ async fn person_books_page_by(
         }
     }
     if !stopped {
-        // Rows of other plugins' accounts were read past too.
+        // Holdings of other plugins' accounts, and titles too wide to
+        // read, were read past too.
         last = read_last;
     }
     let next = (stopped || full)
         .then_some(last)
-        .filter(|next| *next > after);
+        .flatten()
+        .and_then(|id| WindowCursor::parse(&id))
+        .filter(|next| next > after);
     Ok((works, next))
 }
 

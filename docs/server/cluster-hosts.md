@@ -1028,9 +1028,10 @@ With the setting off for library A, B:
   shows no title as available through B.
 - **Reads its person's books from A.** On every connection, every 30
   minutes, and at once when the setting changes, B sends `window.books`
-  page by page. A answers each page (`window.page`) with the books on the
-  store accounts linked to B's owner in A, at most 100 works per page,
-  grouped by A's works with each work's identifiers. A answers only a
+  page by page. A answers each page (`window.page`) with the titles the
+  store accounts linked to B's owner hold in A, at most 100 works per
+  page, grouped by A's works with each work's identifiers. Each page ends
+  with an opaque cursor string, which B sends back to get the next page. A answers only a
   branch it trusts, and the frame names no user, so B can read only its
   own person's books.
 - **Keeps one copy of the list per library.** B stores each page as it

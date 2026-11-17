@@ -271,7 +271,11 @@ async fn a_card_reads_its_persons_books_and_hears_their_topics_until_it_ends() {
 
     socket
         .send(Message::Text(
-            ClerkFrame::Books { after: 0 }.encode().into(),
+            ClerkFrame::Books {
+                after: bookclerk_node_proto::WindowCursor::start(),
+            }
+            .encode()
+            .into(),
         ))
         .await
         .unwrap();
@@ -283,7 +287,10 @@ async fn a_card_reads_its_persons_books_and_hears_their_topics_until_it_ends() {
     else {
         panic!("a books frame is answered with a page");
     };
-    assert_eq!((after, cursor), (0, None));
+    assert_eq!(
+        (after, cursor),
+        (bookclerk_node_proto::WindowCursor::start(), None)
+    );
     let products: Vec<&str> = works
         .iter()
         .flat_map(|work| work.editions.iter().map(|e| e.product_id.as_str()))
@@ -291,7 +298,7 @@ async fn a_card_reads_its_persons_books_and_hears_their_topics_until_it_ends() {
     assert_eq!(products, vec!["B0RILEY001"], "only Riley's books");
 
     for bad in [
-        r#"{"v":1,"type":"books","after":-1}"#,
+        r#"{"v":1,"type":"books","after":0}"#,
         r#"{"v":1,"type":"claim"}"#,
         "not json",
     ] {
@@ -511,7 +518,11 @@ async fn a_page_is_not_served_once_the_card_ends() {
         .unwrap());
     socket
         .send(Message::Text(
-            ClerkFrame::Books { after: 0 }.encode().into(),
+            ClerkFrame::Books {
+                after: bookclerk_node_proto::WindowCursor::start(),
+            }
+            .encode()
+            .into(),
         ))
         .await
         .unwrap();

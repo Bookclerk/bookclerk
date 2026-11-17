@@ -227,9 +227,11 @@ never sends work on it.
 2. The library answers `hello` with the topics the card hears about
    (`library` and `discover`), then `changed` whenever one of them moves.
 3. The clerk asks for the person's books a page at a time with
-   `{"v":1,"type":"books","after":0}`. The library answers `books.page`
+   `{"v":1,"type":"books","after":""}`. The library answers `books.page`
    with up to 100 works, each with its identifiers and the editions the
    person owns, and the cursor for the next page (none on the last page).
+   A cursor is an opaque string of up to 64 letters, digits and `-`. The
+   clerk sends it back unchanged as the next `after`.
    A frame it cannot read gets `error` with code `invalid`.
 
 The library checks the card again every 30 seconds, and before every page,

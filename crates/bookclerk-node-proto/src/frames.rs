@@ -703,9 +703,10 @@ pub enum Body {
     /// not a branch this library trusts.
     #[serde(rename = "window.books")]
     WindowBooks {
-        /// The `next` cursor of the previous page; 0 for the first page.
+        /// The `next` cursor of the previous page; empty (or absent) for
+        /// the first page.
         #[serde(default)]
-        after: i64,
+        after: crate::window::WindowCursor,
     },
     /// Library → window: one page of the person's books.
     #[serde(rename = "window.page")]
@@ -714,7 +715,7 @@ pub enum Body {
         works: Vec<crate::window::WindowWork>,
         /// The cursor to ask with for the next page; absent on the last.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        next: Option<i64>,
+        next: Option<crate::window::WindowCursor>,
     },
     /// Owner → host: the request with this frame id was applied.
     #[serde(rename = "ok")]

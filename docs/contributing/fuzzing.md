@@ -281,7 +281,8 @@ only that. The others check:
   and a positive generation. A
   `window.page` that passes its validator carries at most 100 works, each
   once, with plain identifiers, 1 to 8 distinct owned editions with a
-  title, and a next cursor past the one asked with. A `scan.removed` or
+  title, and a plain next cursor (up to 64 letters, digits and `-`)
+  sorting past the one asked with. A `scan.removed` or
   `scan.pass_end` that passes its validator names an account and carries
   at most 500 product ids, each non-blank, at most 512 bytes and free of
   control characters, or a sync token of at most 4096 bytes with no
@@ -349,8 +350,8 @@ only that. The others check:
   clerk to library; odd: library to clerk) and the rest is the frame,
   checked against the frame read as an untyped JSON value. A clerk frame
   parses exactly when it is at most 4 KiB and one object with no repeated
-  keys and exactly `v` (the integer 1), `type` (`books`) and `after` (an
-  integer, not negative). A library frame is refused when it is not one
+  keys and exactly `v` (the integer 1), `type` (`books`) and `after` (a
+  cursor string: empty, or up to 64 letters, digits and `-`). A library frame is refused when it is not one
   object, repeats a key, has another `v` or an unknown `type`, or carries
   another type's field; `hello` and `changed` parse exactly when `topics`
   holds at most 16 well-formed names, and keep only the ones the clerk
