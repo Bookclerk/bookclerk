@@ -549,6 +549,16 @@ function check(row: Row, bytes: Uint8Array, rand: () => number): void {
       `unselected field ${field} changed whether the file states it`,
     );
   }
+  // Unselected credits keep every role stated or unstated as it was.
+  if (!fields.includes("credits")) {
+    for (const role of row.roles) {
+      assert.equal(
+        reread.creditRoles.includes(role),
+        parsed.ok.creditRoles.includes(role),
+        `whether the file states the ${role} role changed`,
+      );
+    }
+  }
   // A credit role the request does not state is unknown, so it stays.
   if (fields.includes("credits")) {
     const unstated = row.roles.filter((role) => !record.creditRoles.includes(role));
