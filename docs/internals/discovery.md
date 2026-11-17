@@ -349,9 +349,10 @@ Per [Open Library API guidelines](https://openlibrary.org/developers/api):
   work only takes the fields it lacks
 - Editions already enriched are skipped (the edition's `enrich_source`
   `metadata:<provider>`, or the legacy `openlibrary`) — provenance cache.
-  The work, expression and cover are written before the edition is marked,
-  so a failure leaves the edition to retry. Until the `books` table is
-  retired, the same values are also copied to the edition's `books` rows
+  Until the `books` table is retired, the edition's `books` rows are
+  written first, each taking only the fields it lacks; then the work,
+  expression and cover; and the edition is marked last, so a failure
+  leaves the edition to retry with its gaps still open
 - For bulk data, use [monthly dumps](https://openlibrary.org/data), not the API
 
 WorldCat remains reserved (API key + ToS).

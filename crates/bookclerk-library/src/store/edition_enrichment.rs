@@ -133,11 +133,14 @@ impl LibraryStore {
         }
 
         let edition_ids: Vec<String> = page.iter().map(|e| e.id.clone()).collect();
-        let mut listings = find_chunked::<store_listings::Entity, _>(self, &edition_ids, |part| {
-            store_listings::Entity::find()
-                .filter(store_listings::Column::EditionId.is_in(part.to_vec()))
-        })
-        .await?;
+        // An edition may have more listings than one read returns.
+        let mut listings =
+            find_chunked_paged::<store_listings::Entity, _>(self, &edition_ids, |part| {
+                store_listings::Entity::find()
+                    .filter(store_listings::Column::EditionId.is_in(part.to_vec()))
+                    .order_by_asc(store_listings::Column::Id)
+            })
+            .await?;
         listings.sort_by(|a, b| a.id.cmp(&b.id));
         let listing_ids: Vec<String> = listings.iter().map(|l| l.id.clone()).collect();
         // A listing may have more holdings than one read returns.
@@ -190,12 +193,17 @@ impl LibraryStore {
             .collect();
         let held_ids: Vec<String> = held_editions.iter().map(|e| e.id.clone()).collect();
         let mut isbns: HashMap<String, String> = HashMap::new();
-        for identifier in find_chunked::<edition_identifiers::Entity, _>(self, &held_ids, |part| {
-            edition_identifiers::Entity::find()
-                .filter(edition_identifiers::Column::EditionId.is_in(part.to_vec()))
-                .filter(edition_identifiers::Column::Scheme.eq("isbn"))
-        })
-        .await?
+        for identifier in
+            find_chunked_paged::<edition_identifiers::Entity, _>(self, &held_ids, |part| {
+                edition_identifiers::Entity::find()
+                    .filter(edition_identifiers::Column::EditionId.is_in(part.to_vec()))
+                    .filter(edition_identifiers::Column::Scheme.eq("isbn"))
+                    .order_by_asc(edition_identifiers::Column::EditionId)
+                    .order_by_asc(edition_identifiers::Column::Scheme)
+                    .order_by_asc(edition_identifiers::Column::Value)
+                    .order_by_asc(edition_identifiers::Column::Marketplace)
+            })
+            .await?
         {
             let entry = isbns
                 .entry(identifier.edition_id)
@@ -268,6 +276,24 @@ impl LibraryStore {
                 edition_id,
             ));
         };
+        // The flat rows of the edition's listings first, while `books`
+        // exists: each takes only what it lacks itself. Writing them before
+        // the model means a failure here leaves the work's gaps open, so the
+        // next run offers the same values again.
+        for row in self.flat_rows_of_edition(edition_id).await? {
+            let fields = CatalogEnrichmentFields {
+                description: lacking(row.description.as_deref(), fill.description.as_ref()),
+                language: lacking(row.language.as_deref(), fill.language.as_ref()),
+                cover_url: lacking(row.cover_url.as_deref(), fill.cover_url.as_ref()),
+                subjects: lacking(row.subjects.as_deref(), fill.subjects.as_ref()),
+                categories: None,
+                enrich_source: Some(fill.source.clone()),
+                enrich_confidence: Some(fill.confidence),
+                enrich_updated_at: Some(chrono::Utc::now()),
+            };
+            self.update_catalog_enrichment(&row.uuid, &fields).await?;
+        }
+
         let expression = expressions::Entity::find_by_id(edition.expression_id.clone())
             .one(self.db())
             .await
@@ -297,21 +323,6 @@ impl LibraryStore {
             }
         }
 
-        // The flat rows of the edition's listings, while `books` exists.
-        let fields = CatalogEnrichmentFields {
-            description: fill.description.clone(),
-            language: fill.language.clone(),
-            cover_url: fill.cover_url.clone(),
-            subjects: fill.subjects.clone(),
-            categories: None,
-            enrich_source: Some(fill.source.clone()),
-            enrich_confidence: Some(fill.confidence),
-            enrich_updated_at: Some(chrono::Utc::now()),
-        };
-        for uuid in self.book_uuids_of_edition(edition_id).await? {
-            self.update_catalog_enrichment(&uuid, &fields).await?;
-        }
-
         let cover = lacking(edition.cover_url.as_deref(), fill.cover_url.as_ref());
         let mut am: editions::ActiveModel = edition.into();
         if let Some(cover) = cover {
@@ -326,18 +337,24 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// The UUIDs of the flat `books` rows whose listing sells edition
-    /// `edition_id`.
+    /// The flat `books` rows whose listing sells edition `edition_id`, in
+    /// uuid order.
     ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when a read fails.
-    async fn book_uuids_of_edition(&self, edition_id: &str) -> Result<Vec<String>> {
-        let listings = store_listings::Entity::find()
-            .filter(store_listings::Column::EditionId.eq(edition_id))
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
+    async fn flat_rows_of_edition(&self, edition_id: &str) -> Result<Vec<books::Model>> {
+        // An edition may have more listings than one read returns.
+        let listings = find_chunked_paged::<store_listings::Entity, _>(
+            self,
+            &[edition_id.to_string()],
+            |part| {
+                store_listings::Entity::find()
+                    .filter(store_listings::Column::EditionId.is_in(part.to_vec()))
+                    .order_by_asc(store_listings::Column::Id)
+            },
+        )
+        .await?;
         let product_ids: Vec<String> = listings.iter().map(|l| l.product_id.clone()).collect();
         let rows = find_chunked_paged::<books::Entity, _>(self, &product_ids, |part| {
             books::Entity::find()
@@ -345,7 +362,7 @@ impl LibraryStore {
                 .order_by_asc(books::Column::Id)
         })
         .await?;
-        let mut uuids: Vec<String> = rows
+        let mut matched: Vec<books::Model> = rows
             .into_iter()
             .filter(|b| {
                 listings.iter().any(|l| {
@@ -354,11 +371,10 @@ impl LibraryStore {
                         && l.marketplace == bookclerk_resolve::stored_marketplace(&b.marketplace)
                 })
             })
-            .map(|b| b.uuid)
             .collect();
-        uuids.sort();
-        uuids.dedup();
-        Ok(uuids)
+        matched.sort_by(|a, b| a.uuid.cmp(&b.uuid));
+        matched.dedup_by(|a, b| a.uuid == b.uuid);
+        Ok(matched)
     }
 }
 
@@ -482,6 +498,13 @@ mod tests {
             assert_eq!(again.description.as_deref(), Some("Spice"), "{name}");
             assert_eq!(again.language.as_deref(), Some("en"), "{name}");
             assert_eq!(again.enrich_source.as_deref(), Some("audible"), "{name}");
+            // The flat rows keep their own values too.
+            for uuid in &uuids {
+                let row = store.get_book_by_uuid(uuid).await.unwrap().unwrap();
+                assert_eq!(row.description.as_deref(), Some("Spice"), "{name}");
+                assert_eq!(row.language.as_deref(), Some("en"), "{name}");
+                assert_eq!(row.enrich_source.as_deref(), Some("audible"), "{name}");
+            }
 
             assert!(matches!(
                 store
