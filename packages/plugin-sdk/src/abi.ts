@@ -66,6 +66,30 @@ export const MAX_COVER_BYTES = 10485760 as const;
  */
 export const MAX_COVER_HEADER_BYTES = 1024 as const;
 
+/**
+ * Largest metadata file `MetadataFiles.parse` reads and `MetadataFiles.render`
+ * returns. The host skips a larger sidecar before any plugin sees it.
+ */
+export const MAX_METADATA_FILE_BYTES = 262144 as const;
+
+/** Longest description a `MetadataFileRecord` carries, in UTF-8 bytes. */
+export const MAX_METADATA_FILE_DESCRIPTION_BYTES = 65536 as const;
+
+/**
+ * Longest other text value in a `MetadataFileRecord` (a title, a name, a
+ * genre, a chapter title), in UTF-8 bytes.
+ */
+export const MAX_METADATA_FILE_TEXT_BYTES = 1024 as const;
+
+/**
+ * Most entries in each list of a `MetadataFileRecord` other than chapters
+ * (credits, genres, tags, identifiers, series).
+ */
+export const MAX_METADATA_FILE_LIST_ENTRIES = 256 as const;
+
+/** Most chapters in a `MetadataFileRecord`. */
+export const MAX_METADATA_FILE_CHAPTERS = 2000 as const;
+
 /** Longest `KvNamespace` key in UTF-8 bytes. */
 export const MAX_KV_KEY_BYTES = 512 as const;
 
@@ -135,7 +159,7 @@ export type PluginErrorCode = (typeof PLUGIN_ERROR_CODES)[number];
  *
  * Ordinal-ordered `Entrypoint` wire names (index = Cap'n Proto ordinal).
  */
-export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers"] as const;
+export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles"] as const;
 
 /** Union of `ENTRYPOINTS` wire names. */
 export type Entrypoint = (typeof ENTRYPOINTS)[number];
@@ -270,6 +294,18 @@ export const ABRIDGEMENTS = ["unknown", "unabridged", "abridged"] as const;
 
 /** Union of `ABRIDGEMENTS` wire names. */
 export type Abridgement = (typeof ABRIDGEMENTS)[number];
+
+/**
+ * A field of a `MetadataFileRecord`. Dialects declare in the manifest which
+ * fields their format carries; a parsed record lists the ones its file
+ * states, and a render request lists the ones to write.
+ *
+ * Ordinal-ordered `MetadataField` wire names (index = Cap'n Proto ordinal).
+ */
+export const METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration"] as const;
+
+/** Union of `METADATA_FIELDS` wire names. */
+export type MetadataField = (typeof METADATA_FIELDS)[number];
 
 /**
  * Universal database cell/parameter domain. Engine-native arrays, enums,

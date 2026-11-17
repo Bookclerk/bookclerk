@@ -43,6 +43,7 @@ var FETCHED_FILE_ROLES = ["unspecified", "part", "whole", "cover"];
 var CATALOG_SORTS = ["relevance", "popularity", "rating", "title", "author"];
 var CATALOG_FIELDS = ["any", "author", "narrator", "series", "genre"];
 var ABRIDGEMENTS = ["unknown", "unabridged", "abridged"];
+var METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration"];
 var DB_TYPES = ["unspecified", "bool", "int64", "float64", "text", "bytes"];
 var DB_STATEMENT_KINDS = ["execute", "select", "returning"];
 var DB_RESULT_SELECTIONS = ["discard", "affectedRows", "rows"];
@@ -4560,6 +4561,242 @@ var CoverImagesReplyCodec = {
     }
   }
 };
+var MetadataFileRecordCodec = {
+  dataWords: 2,
+  pointerCount: 14,
+  write(s, v, caps) {
+    s.setUint16List(0, (v.present ?? []).map((v2) => ord(METADATA_FIELDS, v2, "MetadataField")));
+    if (v.title !== void 0) {
+      s.setText(1, v.title ?? "");
+    }
+    if (v.subtitle !== void 0) {
+      s.setText(2, v.subtitle ?? "");
+    }
+    if (v.description !== void 0) {
+      s.setText(3, v.description ?? "");
+    }
+    if (v.publisher !== void 0) {
+      s.setText(4, v.publisher ?? "");
+    }
+    if (v.publishedAt !== void 0) {
+      s.setText(5, v.publishedAt ?? "");
+    }
+    if (v.language !== void 0) {
+      s.setText(6, v.language ?? "");
+    }
+    s.setTextList(7, v.genres ?? []);
+    s.setTextList(8, v.tags ?? []);
+    s.setUint16(0, ord(ABRIDGEMENTS, v.abridgement ?? ABRIDGEMENTS[0], "Abridgement"));
+    s.setUint16(1, ord(EXPRESSION_KINDS, v.expressionKind ?? EXPRESSION_KINDS[0], "ExpressionKind"));
+    {
+      const list = v.identifiers ?? [];
+      const items = s.initStructList(9, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        IdentifierCodec.write(items[i], list[i], caps);
+      }
+    }
+    {
+      const list = v.credits ?? [];
+      const items = s.initStructList(10, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        CreditCodec.write(items[i], list[i], caps);
+      }
+    }
+    s.setUint16List(11, (v.creditRoles ?? []).map((v2) => ord(CREDIT_ROLES, v2, "CreditRole")));
+    {
+      const list = v.seriesEntries ?? [];
+      const items = s.initStructList(12, list.length, 0, 3);
+      for (let i = 0; i < items.length; i++) {
+        SeriesEntryCodec.write(items[i], list[i], caps);
+      }
+    }
+    {
+      const list = v.chapters ?? [];
+      const items = s.initStructList(13, list.length, 3, 1);
+      for (let i = 0; i < items.length; i++) {
+        MetadataChapterCodec.write(items[i], list[i], caps);
+      }
+    }
+    if (v.durationMs !== void 0) {
+      s.setUint64(1, BigInt(v.durationMs ?? 0));
+    }
+  },
+  read(s, caps) {
+    const out = {
+      present: s.getUint16List(0).map((v) => fromOrd(METADATA_FIELDS, v, "MetadataField")),
+      genres: s.getTextList(7),
+      tags: s.getTextList(8),
+      abridgement: fromOrd(ABRIDGEMENTS, s.getUint16(0), "Abridgement"),
+      expressionKind: fromOrd(EXPRESSION_KINDS, s.getUint16(1), "ExpressionKind"),
+      identifiers: s.getStructList(9, 1, 2).map((item) => IdentifierCodec.read(item, caps)),
+      credits: s.getStructList(10, 1, 1).map((item) => CreditCodec.read(item, caps)),
+      creditRoles: s.getUint16List(11).map((v) => fromOrd(CREDIT_ROLES, v, "CreditRole")),
+      seriesEntries: s.getStructList(12, 0, 3).map((item) => SeriesEntryCodec.read(item, caps)),
+      chapters: s.getStructList(13, 3, 1).map((item) => MetadataChapterCodec.read(item, caps))
+    };
+    const titleValue = s.getText(1);
+    if (!(titleValue === "")) {
+      out.title = titleValue;
+    }
+    const subtitleValue = s.getText(2);
+    if (!(subtitleValue === "")) {
+      out.subtitle = subtitleValue;
+    }
+    const descriptionValue = s.getText(3);
+    if (!(descriptionValue === "")) {
+      out.description = descriptionValue;
+    }
+    const publisherValue = s.getText(4);
+    if (!(publisherValue === "")) {
+      out.publisher = publisherValue;
+    }
+    const publishedAtValue = s.getText(5);
+    if (!(publishedAtValue === "")) {
+      out.publishedAt = publishedAtValue;
+    }
+    const languageValue = s.getText(6);
+    if (!(languageValue === "")) {
+      out.language = languageValue;
+    }
+    const durationMsValue = Number(s.getUint64(1));
+    if (!(durationMsValue === 0)) {
+      out.durationMs = durationMsValue;
+    }
+    return out;
+  }
+};
+var MetadataFileParseParamsCodec = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.dialect ?? "");
+    s.setText(1, v.fileName ?? "");
+    s.setData(2, v.bytes ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      dialect: s.getText(0),
+      fileName: s.getText(1),
+      bytes: s.getData(2)
+    };
+  }
+};
+var MetadataFileParsedCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.record != null) {
+      MetadataFileRecordCodec.write(s.initStruct(0, 2, 14), v.record, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      record: MetadataFileRecordCodec.read(s.getStruct(0, 2, 14), caps)
+    };
+  }
+};
+var MetadataFileParseReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          MetadataFileParsedCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MetadataFileParseReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: MetadataFileParsedCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("MetadataFileParseReply", disc);
+    }
+  }
+};
+var MetadataFileRenderParamsCodec = {
+  dataWords: 0,
+  pointerCount: 4,
+  write(s, v, caps) {
+    s.setText(0, v.dialect ?? "");
+    if (v.record != null) {
+      MetadataFileRecordCodec.write(s.initStruct(1, 2, 14), v.record, caps);
+    }
+    s.setUint16List(2, (v.fields ?? []).map((v2) => ord(METADATA_FIELDS, v2, "MetadataField")));
+    s.setData(3, v.existing ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    return {
+      dialect: s.getText(0),
+      record: MetadataFileRecordCodec.read(s.getStruct(1, 2, 14), caps),
+      fields: s.getUint16List(2).map((v) => fromOrd(METADATA_FIELDS, v, "MetadataField")),
+      existing: s.getData(3)
+    };
+  }
+};
+var MetadataFileRenderedCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setData(0, v.bytes ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      bytes: s.getData(0)
+    };
+  }
+};
+var MetadataFileRenderReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          MetadataFileRenderedCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MetadataFileRenderReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: MetadataFileRenderedCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("MetadataFileRenderReply", disc);
+    }
+  }
+};
 var SocketFrameCodec = {
   dataWords: 1,
   pointerCount: 1,
@@ -7035,6 +7272,90 @@ var CoverFetcherFetchCoversResultsCodec = {
     };
   }
 };
+var MetadataFilesHealthParamsCodec = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  }
+};
+var MetadataFilesHealthResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      HealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: HealthReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var MetadataFilesParseParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      MetadataFileParseParamsCodec.write(s.initStruct(0, 0, 3), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: MetadataFileParseParamsCodec.read(s.getStruct(0, 0, 3), caps)
+    };
+  }
+};
+var MetadataFilesParseResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MetadataFileParseReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MetadataFileParseReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var MetadataFilesRenderParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      MetadataFileRenderParamsCodec.write(s.initStruct(0, 0, 4), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: MetadataFileRenderParamsCodec.read(s.getStruct(0, 0, 4), caps)
+    };
+  }
+};
+var MetadataFilesRenderResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MetadataFileRenderReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MetadataFileRenderReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var DatabaseOpenSessionParamsCodec = {
   dataWords: 0,
   pointerCount: 0,
@@ -9044,6 +9365,21 @@ var okCoverImages = (value) => {
   }
   return okValue({ images: value });
 };
+var okFileRecord = (value) => {
+  if (value === null || typeof value !== "object" || !Array.isArray(value.present)) {
+    throw PluginError.fromWire("internal", "metadata file dialect must return a MetadataFileRecord");
+  }
+  return okValue({ record: value });
+};
+var okFileBytes = (value) => {
+  if (typeof value === "string") {
+    return okValue({ bytes: new TextEncoder().encode(value) });
+  }
+  if (!(value instanceof Uint8Array)) {
+    throw PluginError.fromWire("internal", "metadata file dialect must render a Uint8Array or string");
+  }
+  return okValue({ bytes: value });
+};
 var okLines = (value) => okValue({ lines: asList(value).map((l) => String(l)) });
 var okHealth = (value) => {
   const v = value ?? {};
@@ -9360,6 +9696,11 @@ var METHODS = {
       },
       ok: okCoverImages
     })
+  },
+  MetadataFiles: {
+    health: withoutParams("metadataFiles", "health", MetadataFilesHealthParamsCodec, MetadataFilesHealthResultsCodec, okHealth),
+    parse: withParams("metadataFiles", "parse", MetadataFilesParseParamsCodec, MetadataFilesParseResultsCodec, okFileRecord),
+    render: withParams("metadataFiles", "render", MetadataFilesRenderParamsCodec, MetadataFilesRenderResultsCodec, okFileBytes)
   },
   Database: {
     openSession: spec({
@@ -11273,6 +11614,40 @@ var CoverEntrypoint = class extends NamedEntrypoint {
     return Promise.reject(unsupported("fetchCovers"));
   }
 };
+var MetadataFilesEntrypoint = class extends NamedEntrypoint {
+  static bookclerkMethods = Object.freeze(["health", "parse", "render"]);
+  /**
+   * Reports whether the dialects can answer.
+   *
+   * @returns Health flag plus detail.
+   */
+  health() {
+    return Promise.resolve({ ok: true, detail: "" });
+  }
+  /**
+   * What one file says about its edition. List every field the file states
+   * in `present`, including ones it states as empty; leave out fields it
+   * does not mention. Throw `invalid_params` for a file the dialect cannot
+   * read.
+   *
+   * @param _params - Dialect id, file name and the whole file.
+   * @returns The parsed record.
+   */
+  parse(_params) {
+    return Promise.reject(unsupported("parse"));
+  }
+  /**
+   * The new file: `params.existing` with each field in `params.fields` set to
+   * the record's value (removed when the value is empty), everything else
+   * kept as it was. `existing` is empty when the host creates the file.
+   *
+   * @param _params - Dialect id, values, fields to set and the current file.
+   * @returns The new file's bytes; a string is written as UTF-8.
+   */
+  render(_params) {
+    return Promise.reject(unsupported("render"));
+  }
+};
 var ENTRYPOINT_BINDINGS = Object.freeze({
   storefront: "PLUGIN_STOREFRONT",
   storage: "PLUGIN_STORAGE",
@@ -11281,7 +11656,8 @@ var ENTRYPOINT_BINDINGS = Object.freeze({
   cli: "PLUGIN_CLI",
   oidc: "PLUGIN_OIDC",
   metadata: "PLUGIN_METADATA",
-  covers: "PLUGIN_COVERS"
+  covers: "PLUGIN_COVERS",
+  metadataFiles: "PLUGIN_METADATA_FILES"
 });
 var ENTRYPOINT_CLASSES = Object.freeze({
   storefront: "Storefront",
@@ -11291,7 +11667,8 @@ var ENTRYPOINT_CLASSES = Object.freeze({
   cli: "Cli",
   oidc: "Oidc",
   metadata: "Metadata",
-  covers: "Covers"
+  covers: "Covers",
+  metadataFiles: "MetadataFiles"
 });
 function exactLengthBody(body, expected) {
   if (body == null || expected == null || !Number.isFinite(expected)) {
@@ -12735,6 +13112,7 @@ export {
   MAX_STREAM_WINDOW_BYTES,
   MAX_WRITE_KEY_BYTES,
   MetadataEntrypoint,
+  MetadataFilesEntrypoint,
   NamedEntrypoint,
   OidcEntrypoint,
   PRODUCT_API_VERSION,

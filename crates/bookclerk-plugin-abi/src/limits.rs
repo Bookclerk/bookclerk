@@ -66,6 +66,23 @@ pub const MAX_COVER_BYTES: u32 = crate::plugin_capnp::MAX_COVER_BYTES;
 /// either direction, in bytes.
 pub const MAX_COVER_HEADER_BYTES: u32 = crate::plugin_capnp::MAX_COVER_HEADER_BYTES;
 
+/// Largest metadata file `MetadataFiles.parse` reads and `MetadataFiles.render`
+/// returns, in bytes.
+pub const MAX_METADATA_FILE_BYTES: u32 = crate::plugin_capnp::MAX_METADATA_FILE_BYTES;
+
+/// Longest description a `MetadataFileRecord` carries, in UTF-8 bytes.
+pub const MAX_METADATA_FILE_DESCRIPTION_BYTES: u32 =
+    crate::plugin_capnp::MAX_METADATA_FILE_DESCRIPTION_BYTES;
+
+/// Longest other text value in a `MetadataFileRecord`, in UTF-8 bytes.
+pub const MAX_METADATA_FILE_TEXT_BYTES: u32 = crate::plugin_capnp::MAX_METADATA_FILE_TEXT_BYTES;
+
+/// Most entries in each non-chapter list of a `MetadataFileRecord`.
+pub const MAX_METADATA_FILE_LIST_ENTRIES: u32 = crate::plugin_capnp::MAX_METADATA_FILE_LIST_ENTRIES;
+
+/// Most chapters in a `MetadataFileRecord`.
+pub const MAX_METADATA_FILE_CHAPTERS: u32 = crate::plugin_capnp::MAX_METADATA_FILE_CHAPTERS;
+
 /// Parses a `CoverFetcher.fetchCovers` sink key into the URL index it names.
 ///
 /// The guest puts the body for `urls[i]` under the key `i`. Only the

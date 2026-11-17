@@ -138,6 +138,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "metadata_file_record"
+path = "fuzz_targets/metadata_file_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "event_read"
 path = "fuzz_targets/event_read.rs"
 test = false

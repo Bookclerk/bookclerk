@@ -109,7 +109,7 @@ Request headers:
 | --- | --- |
 | `Authorization` | `Bearer <BRIDGE_TOKEN>` |
 | `Content-Type` | `application/x-capnp` |
-| `X-Bookclerk-Interface` | Cap'n interface name: `ContentSource`, `Destination`, `RemoteLibrary`, `EventConsumer`, `JobRunner`, `PluginCli`, `Oidc`, `MetadataProvider`, `CoverFetcher`, `Database`, `AdapterDatabaseSession`, `PluginWorker` |
+| `X-Bookclerk-Interface` | Cap'n interface name: `ContentSource`, `Destination`, `RemoteLibrary`, `EventConsumer`, `JobRunner`, `PluginCli`, `Oidc`, `MetadataProvider`, `CoverFetcher`, `MetadataFiles`, `Database`, `AdapterDatabaseSession`, `PluginWorker` |
 | `X-Bookclerk-Method` | Method name as declared in `plugin.capnp` (`login`, `event`, `job`, `openSession`, `databaseMigrations`, …) |
 | `X-Bookclerk-Context` | Bridge JSON `BridgeContext` (`invocation`, `config`, `secrets`, `eventsToken`, `databases` = `{ <BINDING>: <grant token> }`; `jobId` on `JobRunner.job`) — present for every entrypoint call, absent for `PluginWorker.*`. The adapter isolate exchanges the tokens for the author's `EVENTS` / `env.<BINDING>` bindings; authors never see them |
 | `X-Bookclerk-Caps` | JSON array of capability descriptors for the request message's capability table (only when the `$Params` struct carries interface-typed fields) |
@@ -183,6 +183,7 @@ reach the launcher through the granted `GET /open` / `PUT /put` routes.
 | `Oidc` | `clients`, `authenticateUser` | `Oidc extends OidcEntrypoint` |
 | `MetadataProvider` | `health`, `lookup`, `search`, `chapters` | `Metadata extends MetadataEntrypoint` |
 | `CoverFetcher` | `health`, `fetchCovers` — the `sink` is a `destination` grant token | `Covers extends CoverEntrypoint` |
+| `MetadataFiles` | `health`, `parse`, `render` | `MetadataFiles extends MetadataFilesEntrypoint` |
 | `Database` | `openSession` | `DatabaseAdapter extends DatabaseAdapterEntrypoint` |
 | `AdapterDatabaseSession` | all 10 (`X-Bookclerk-Target`) | the `AdapterDatabaseSession` object `openSession` returned |
 

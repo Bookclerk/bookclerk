@@ -16,6 +16,7 @@ from bookclerk_plugin_sdk.workerd import (
     EventMessage,
     JobController,
     MetadataEntrypoint,
+    MetadataFilesEntrypoint,
     PluginError,
     ScheduledController,
     StorefrontEntrypoint,
@@ -371,6 +372,59 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
 
         images = await Covers().bookclerkInvoke({}, "fetchCovers", {"urls": ["https://a/"]}, "sink")
         self.assertEqual(images, [{"url": "https://a/", "stored": False, "error": "'sink'"}])
+
+    async def test_metadata_files_defaults_and_dispatch(self) -> None:
+        """MetadataFilesEntrypoint reports healthy, refuses parse/render, and dispatches overrides."""
+        files = MetadataFilesEntrypoint()
+        self.assertEqual(await files.health(), {"ok": True, "detail": ""})
+        for method, params in (
+            ("parse", {"dialect": "opf", "fileName": "a.opf", "bytes": b""}),
+            (
+                "render",
+                {"dialect": "opf", "record": {"present": []}, "fields": [], "existing": b""},
+            ),
+        ):
+            with self.assertRaises(PluginError) as ctx:
+                await getattr(files, method)(params)
+            self.assertEqual(ctx.exception.code, "unsupported")
+
+        class Files(MetadataFilesEntrypoint):
+            async def parse(self, params: dict) -> dict:
+                return {"present": ["title"], "title": params["bytes"].decode()}
+
+            async def render(self, params: dict) -> str:
+                return params["record"]["title"]
+
+        record = await Files().bookclerkInvoke(
+            {}, "parse", {"dialect": "txt", "fileName": "desc.txt", "bytes": b"Hi"}
+        )
+        self.assertEqual(record, {"present": ["title"], "title": "Hi"})
+        rendered = await Files().bookclerkInvoke(
+            {}, "render", {"dialect": "txt", "record": {"title": "Hi"}, "fields": ["title"]}
+        )
+        self.assertEqual(rendered, "Hi")
+
+        class JsParams:
+            """Stands in for a JsProxy whose ``to_py()`` nests a ``memoryview``."""
+
+            def to_py(self) -> dict:
+                return {
+                    "dialect": "txt",
+                    "fileName": "desc.txt",
+                    "bytes": memoryview(b"Nested"),
+                    "list": [memoryview(b"x")],
+                }
+
+        class Echo(MetadataFilesEntrypoint):
+            async def parse(self, params: dict) -> dict:
+                self.seen = params
+                return {"present": ["title"], "title": params["bytes"].decode()}
+
+        echo = Echo()
+        record = await echo.bookclerkInvoke({}, "parse", JsParams())
+        self.assertEqual(record, {"present": ["title"], "title": "Nested"})
+        self.assertEqual(echo.seen["list"], [b"x"])
+        self.assertIsInstance(echo.seen["bytes"], bytes)
 
     async def test_execute_streamed_unsupported_by_default(self) -> None:
         """A session that advertises no streamed budget keeps the default, which is unsupported."""

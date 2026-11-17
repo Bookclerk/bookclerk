@@ -4513,7 +4513,7 @@
       "name": "Entrypoints",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 13,
+      "pointerCount": 14,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -4646,6 +4646,16 @@
             "name": "SocketHandler"
           },
           "offset": 12
+        },
+        {
+          "name": "metadataFiles",
+          "codeOrder": 13,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "MetadataFiles"
+          },
+          "offset": 13
         }
       ]
     },
@@ -8342,6 +8352,497 @@
           "type": {
             "kind": "struct",
             "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFileParseParams": {
+      "name": "MetadataFileParseParams",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "dialect",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "fileName",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "bytes",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "MetadataFileParseReply": {
+      "name": "MetadataFileParseReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileParsed"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFileParsed": {
+      "name": "MetadataFileParsed",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "record",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileRecord"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFileRecord": {
+      "name": "MetadataFileRecord",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 14,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "present",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "enum",
+              "name": "MetadataField"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "title",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "subtitle",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        },
+        {
+          "name": "description",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
+        },
+        {
+          "name": "publisher",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 4
+        },
+        {
+          "name": "publishedAt",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 5
+        },
+        {
+          "name": "language",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 6
+        },
+        {
+          "name": "genres",
+          "codeOrder": 7,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 7
+        },
+        {
+          "name": "tags",
+          "codeOrder": 8,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 8
+        },
+        {
+          "name": "abridgement",
+          "codeOrder": 9,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "Abridgement"
+          },
+          "offset": 0
+        },
+        {
+          "name": "expressionKind",
+          "codeOrder": 10,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "ExpressionKind"
+          },
+          "offset": 1
+        },
+        {
+          "name": "identifiers",
+          "codeOrder": 11,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "Identifier"
+            }
+          },
+          "offset": 9
+        },
+        {
+          "name": "credits",
+          "codeOrder": 12,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "Credit"
+            }
+          },
+          "offset": 10
+        },
+        {
+          "name": "creditRoles",
+          "codeOrder": 13,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "enum",
+              "name": "CreditRole"
+            }
+          },
+          "offset": 11
+        },
+        {
+          "name": "seriesEntries",
+          "codeOrder": 14,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "SeriesEntry"
+            }
+          },
+          "offset": 12
+        },
+        {
+          "name": "chapters",
+          "codeOrder": 15,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "MetadataChapter"
+            }
+          },
+          "offset": 13
+        },
+        {
+          "name": "durationMs",
+          "codeOrder": 16,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "MetadataFileRenderParams": {
+      "name": "MetadataFileRenderParams",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 4,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "dialect",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "record",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileRecord"
+          },
+          "offset": 1
+        },
+        {
+          "name": "fields",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "enum",
+              "name": "MetadataField"
+            }
+          },
+          "offset": 2
+        },
+        {
+          "name": "existing",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 3
+        }
+      ]
+    },
+    "MetadataFileRenderReply": {
+      "name": "MetadataFileRenderReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileRendered"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFileRendered": {
+      "name": "MetadataFileRendered",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "bytes",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFiles.health$Params": {
+      "name": "MetadataFiles.health$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "MetadataFiles.health$Results": {
+      "name": "MetadataFiles.health$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "HealthReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFiles.parse$Params": {
+      "name": "MetadataFiles.parse$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileParseParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFiles.parse$Results": {
+      "name": "MetadataFiles.parse$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileParseReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFiles.render$Params": {
+      "name": "MetadataFiles.render$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileRenderParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFiles.render$Results": {
+      "name": "MetadataFiles.render$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileRenderReply"
           },
           "offset": 0
         }
@@ -13640,7 +14141,8 @@
         "cli",
         "oidc",
         "metadata",
-        "covers"
+        "covers",
+        "metadataFiles"
       ]
     },
     "ExpressionKind": {
@@ -13702,6 +14204,27 @@
         "audio",
         "ebook",
         "print"
+      ]
+    },
+    "MetadataField": {
+      "name": "MetadataField",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "title",
+        "subtitle",
+        "description",
+        "publisher",
+        "publishedAt",
+        "language",
+        "genres",
+        "tags",
+        "abridgement",
+        "expressionKind",
+        "identifiers",
+        "credits",
+        "series",
+        "chapters",
+        "duration"
       ]
     },
     "PluginErrorCode": {
@@ -14218,6 +14741,30 @@
         }
       ]
     },
+    "MetadataFiles": {
+      "name": "MetadataFiles",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "health",
+          "ordinal": 0,
+          "params": "MetadataFiles.health$Params",
+          "results": "MetadataFiles.health$Results"
+        },
+        {
+          "name": "parse",
+          "ordinal": 1,
+          "params": "MetadataFiles.parse$Params",
+          "results": "MetadataFiles.parse$Results"
+        },
+        {
+          "name": "render",
+          "ordinal": 2,
+          "params": "MetadataFiles.render$Params",
+          "results": "MetadataFiles.render$Results"
+        }
+      ]
+    },
     "MetadataProvider": {
       "name": "MetadataProvider",
       "file": "plugin.capnp",
@@ -14568,6 +15115,31 @@
       "name": "maxListPage",
       "file": "plugin.capnp",
       "value": 256
+    },
+    "maxMetadataFileBytes": {
+      "name": "maxMetadataFileBytes",
+      "file": "plugin.capnp",
+      "value": 262144
+    },
+    "maxMetadataFileChapters": {
+      "name": "maxMetadataFileChapters",
+      "file": "plugin.capnp",
+      "value": 2000
+    },
+    "maxMetadataFileDescriptionBytes": {
+      "name": "maxMetadataFileDescriptionBytes",
+      "file": "plugin.capnp",
+      "value": 65536
+    },
+    "maxMetadataFileListEntries": {
+      "name": "maxMetadataFileListEntries",
+      "file": "plugin.capnp",
+      "value": 256
+    },
+    "maxMetadataFileTextBytes": {
+      "name": "maxMetadataFileTextBytes",
+      "file": "plugin.capnp",
+      "value": 1024
     },
     "maxPluginMigrationOps": {
       "name": "maxPluginMigrationOps",

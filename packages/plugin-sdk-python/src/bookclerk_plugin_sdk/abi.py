@@ -42,6 +42,7 @@ Entrypoint = Literal[
     "oidc",
     "metadata",
     "covers",
+    "metadataFiles",
 ]
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
@@ -116,6 +117,28 @@ CatalogField = Literal["any", "author", "narrator", "series", "genre"]
 
 Abridgement = Literal["unknown", "unabridged", "abridged"]
 """Whether an edition is abridged."""
+
+MetadataField = Literal[
+    "title",
+    "subtitle",
+    "description",
+    "publisher",
+    "publishedAt",
+    "language",
+    "genres",
+    "tags",
+    "abridgement",
+    "expressionKind",
+    "identifiers",
+    "credits",
+    "series",
+    "chapters",
+    "duration",
+]
+"""A field of a `MetadataFileRecord`. Dialects declare in the manifest which
+fields their format carries; a parsed record lists the ones its file
+states, and a render request lists the ones to write.
+"""
 
 DbType = Literal["unspecified", "bool", "int64", "float64", "text", "bytes"]
 """Universal database cell/parameter domain. Engine-native arrays, enums,
@@ -500,6 +523,8 @@ class Entrypoints(TypedDict):
             capability.
         socketHandler: `[sockets]` handler: messages and closes on host-brokered
             sockets. Null when the guest does not export this capability.
+        metadataFiles: `metadataFiles` entrypoint. Null when the guest does not export
+            this capability.
     """
 
     eventConsumer: NotRequired[EventConsumer | None]
@@ -515,6 +540,7 @@ class Entrypoints(TypedDict):
     metadata: NotRequired[MetadataProvider | None]
     covers: NotRequired[CoverFetcher | None]
     socketHandler: NotRequired[SocketHandler | None]
+    metadataFiles: NotRequired[MetadataFiles | None]
 
 
 class EntrypointsReplyOk(TypedDict):
@@ -2425,6 +2451,48 @@ class CoverFetcher(Protocol):
 
         Returns:
             ``CoverImagesReply``
+        """
+        ...
+
+
+class MetadataFiles(Protocol):
+    """`metadataFiles` entrypoint: reads and writes metadata files that sit next
+    to an edition's media (sidecars such as `metadata.json`, OPF, NFO or CUE),
+    one dialect per format. The plugin only converts bytes: the host reads the
+    file, chooses every path and writes the result, so a dialect plugin needs
+    no network or file grants. The manifest's `[metadata_files]` table names
+    each dialect, the file names it reads and the fields it carries, so the
+    host routes a file to a sleeping plugin without starting it.
+    """
+
+    async def health(self) -> HealthReply:
+        """Liveness / readiness probe.
+
+        Returns:
+            ``HealthReply``
+        """
+        ...
+
+    async def parse(self, params: MetadataFileParseParams) -> MetadataFileParseReply:
+        """What one metadata file says about its edition.
+
+        Args:
+            params: Dialect, file name and bytes.
+
+        Returns:
+            ``MetadataFileParseReply``
+        """
+        ...
+
+    async def render(self, params: MetadataFileRenderParams) -> MetadataFileRenderReply:
+        """The bytes of a metadata file with the given fields set to the record's
+        values and everything else kept from the existing file.
+
+        Args:
+            params: Dialect, record, fields and existing bytes.
+
+        Returns:
+            ``MetadataFileRenderReply``
         """
         ...
 
@@ -4910,6 +4978,190 @@ CoverImagesReply = Union[
 """Result union of `CoverFetcher.fetchCovers`."""
 
 
+class MetadataFileRecord(TypedDict):
+    """What one metadata file says about the edition it sits beside. A field the
+    file does not state is left out of `present` and means "unknown", never
+    "cleared"; a field in `present` with an empty value means the file states
+    that it is empty. The host checks every value against the `maxMetadataFile*`
+    caps and refuses a record that states a field its dialect does not carry.
+
+    Attributes:
+        present: Fields the file states, each at most once; at most the fields the
+            dialect declares.
+        title: Primary title. Omitted when absent (wire zero value).
+        subtitle: Subtitle when distinct from `title`. Omitted when absent (wire zero
+            value).
+        description: Long description / blurb; at most
+            `maxMetadataFileDescriptionBytes`. Omitted when absent (wire zero value).
+        publisher: Publisher name. Omitted when absent (wire zero value).
+        publishedAt: Publication date as `YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Omitted when
+            absent (wire zero value).
+        language: Content language as the file prints it (a code or a name). Omitted
+            when absent (wire zero value).
+        genres: Genre labels in file order.
+        tags: Free tags in file order.
+        abridgement: Whether the edition is abridged; `unknown` when the file does not
+            say.
+        expressionKind: How the work is realised; `unspecified` when the file does not
+            say.
+        identifiers: External identifiers the file carries.
+        credits: Credited contributors in billing order, only in the roles `creditRoles`
+            names.
+        creditRoles: Credit roles the file states, each at most once. A role listed here
+            with no credit means the file states nobody in that role; a role left out is
+            unknown. Empty unless `present` holds `credits`.
+        seriesEntries: Series the work belongs to.
+        chapters: Chapter layout in pre-order (see `MetadataChapter`); at most
+            `maxMetadataFileChapters`, starts never decreasing.
+        durationMs: Running time in milliseconds. Omitted when absent (wire zero value).
+    """
+
+    present: list[MetadataField]
+    title: NotRequired[str]
+    subtitle: NotRequired[str]
+    description: NotRequired[str]
+    publisher: NotRequired[str]
+    publishedAt: NotRequired[str]
+    language: NotRequired[str]
+    genres: list[str]
+    tags: list[str]
+    abridgement: Abridgement
+    expressionKind: ExpressionKind
+    identifiers: list[Identifier]
+    credits: list[Credit]
+    creditRoles: list[CreditRole]
+    seriesEntries: list[SeriesEntry]
+    chapters: list[MetadataChapter]
+    durationMs: NotRequired[int]
+
+
+class MetadataFileParseParams(TypedDict):
+    """Params of `MetadataFiles.parse`.
+
+    Attributes:
+        dialect: Dialect id from the manifest's `[[metadata_files.dialects]]` that the
+            host routed the file to.
+        fileName: The file's name without any folder (`metadata.json`, `Book.opf`).
+        bytes: The whole file; at most `maxMetadataFileBytes`.
+    """
+
+    dialect: str
+    fileName: str
+    bytes: bytes
+
+
+class MetadataFileParsed(TypedDict):
+    """Success payload of `MetadataFiles.parse`.
+
+    Attributes:
+        record: What the file says.
+    """
+
+    record: MetadataFileRecord
+
+
+class MetadataFileParseReplyOk(TypedDict):
+    """``MetadataFileParseReply`` member ``ok``.
+
+    Success: the parsed record.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the parsed record.
+    """
+
+    kind: Literal["ok"]
+    value: MetadataFileParsed
+
+
+class MetadataFileParseReplyErr(TypedDict):
+    """``MetadataFileParseReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+MetadataFileParseReply = Union[
+    MetadataFileParseReplyOk,
+    MetadataFileParseReplyErr,
+]
+"""Result union of `MetadataFiles.parse`. A file the dialect cannot read is
+`invalid_params`, so the host records it as unreadable and moves on.
+"""
+
+
+class MetadataFileRenderParams(TypedDict):
+    """Params of `MetadataFiles.render`.
+
+    Attributes:
+        dialect: Dialect id from the manifest; one that declares `writes = true`.
+        record: Values to write. Only the fields in `fields` are read from it.
+        fields: Fields to set, each at most once and all declared by the dialect. A
+            listed field with an empty value removes it from the file.
+        existing: The file as it is now; empty when the host is creating it. Everything
+            the dialect does not change (unknown keys, comments, other fields) is kept.
+            At most `maxMetadataFileBytes`.
+    """
+
+    dialect: str
+    record: MetadataFileRecord
+    fields: list[MetadataField]
+    existing: bytes
+
+
+class MetadataFileRendered(TypedDict):
+    """Success payload of `MetadataFiles.render`.
+
+    Attributes:
+        bytes: The new file; at most `maxMetadataFileBytes`. Empty when the dialect has
+            nothing left to write; the host decides whether to remove the file.
+    """
+
+    bytes: bytes
+
+
+class MetadataFileRenderReplyOk(TypedDict):
+    """``MetadataFileRenderReply`` member ``ok``.
+
+    Success: the new file.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the new file.
+    """
+
+    kind: Literal["ok"]
+    value: MetadataFileRendered
+
+
+class MetadataFileRenderReplyErr(TypedDict):
+    """``MetadataFileRenderReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+MetadataFileRenderReply = Union[
+    MetadataFileRenderReplyOk,
+    MetadataFileRenderReplyErr,
+]
+"""Result union of `MetadataFiles.render`."""
+
+
 class SocketFrameText(TypedDict):
     """``SocketFrame`` member ``text``.
 
@@ -6523,6 +6775,7 @@ __all__ = [
     "CatalogSort",
     "CatalogField",
     "Abridgement",
+    "MetadataField",
     "DbType",
     "DbStatementKind",
     "DbResultSelection",
@@ -6653,6 +6906,7 @@ __all__ = [
     "Oidc",
     "MetadataProvider",
     "CoverFetcher",
+    "MetadataFiles",
     "EventConsumerSpec",
     "PluginCapabilities",
     "CatalogCapabilities",
@@ -6811,6 +7065,17 @@ __all__ = [
     "CoverImagesReplyOk",
     "CoverImagesReplyErr",
     "CoverImagesReply",
+    "MetadataFileRecord",
+    "MetadataFileParseParams",
+    "MetadataFileParsed",
+    "MetadataFileParseReplyOk",
+    "MetadataFileParseReplyErr",
+    "MetadataFileParseReply",
+    "MetadataFileRenderParams",
+    "MetadataFileRendered",
+    "MetadataFileRenderReplyOk",
+    "MetadataFileRenderReplyErr",
+    "MetadataFileRenderReply",
     "SocketFrameText",
     "SocketFrameBinary",
     "SocketFrame",

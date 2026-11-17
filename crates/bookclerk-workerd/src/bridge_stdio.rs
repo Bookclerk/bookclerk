@@ -33,12 +33,13 @@ use bookclerk_plugin_abi::{
     CoverFetchParams, CoverFetcher, CoverFetcherClient, CoverImage, Database, DatabaseClient,
     Destination, DestinationClient, Entrypoint, Entrypoints, EventConsumer, EventConsumerClient,
     ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Invocation, JobController, JobOutcome,
-    JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataProvider, MetadataProviderClient,
-    ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli,
-    PluginCliClient, PluginClient, PluginDescribe, PluginMigration, PluginWorker, PutResult,
-    QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary, RemoteLibraryClient,
-    ScheduledHandler, ScheduledHandlerClient, SocketHandler, SocketHandlerClient, WriteOptions,
-    MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataFiles, MetadataFilesClient,
+    MetadataProvider, MetadataProviderClient, ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints,
+    PluginCapabilities, PluginCli, PluginCliClient, PluginClient, PluginDescribe, PluginMigration,
+    PluginWorker, PutResult, QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary,
+    RemoteLibraryClient, ScheduledHandler, ScheduledHandlerClient, SocketHandler,
+    SocketHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
+    PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -404,6 +405,9 @@ impl WorkerdRoot {
         if self.exports(Entrypoint::Metadata) {
             exported.metadata = Some(Box::new(MetadataProviderClient::new(invoke.typed())));
         }
+        if self.exports(Entrypoint::MetadataFiles) {
+            exported.metadata_files = Some(Box::new(MetadataFilesClient::new(invoke.typed())));
+        }
         if self.capabilities.sockets {
             exported.socket_handler = Some(Box::new(SocketHandlerClient::new(invoke.typed())));
         }
@@ -443,6 +447,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         metadata,
         covers,
         socket_handler,
+        metadata_files,
     } = opened;
     Entrypoints {
         event_consumer: event_consumer
@@ -484,6 +489,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         socket_handler: socket_handler
             .filter(|_| allow(FAMILY_SOCKET_HANDLER))
             .map(|c| Box::new(c) as Box<dyn SocketHandler>),
+        metadata_files: metadata_files
+            .filter(|_| allow(Entrypoint::MetadataFiles.wire_name()))
+            .map(|c| Box::new(c) as Box<dyn MetadataFiles>),
     }
 }
 

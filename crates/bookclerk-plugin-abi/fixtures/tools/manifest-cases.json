@@ -564,6 +564,113 @@
       "name": "own user agent numeric last label",
       "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"openlibrary.org\"]\n\n[capabilities.network.own_user_agent]\nhosts = [\"*.api.123\"]\nreason = \"r\"\n",
       "error": null
+    },
+    {
+      "name": "metadata files plugin with dialects",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"metadata.json\"]\nfields = [\"title\", \"credits\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\n\n[[metadata_files.dialects]]\nid = \"opf\"\nname = \"OPF\"\nfields = [\"title\", \"publishedAt\"]\nsuffixes = [\".opf\"]\n",
+      "error": null
+    },
+    {
+      "name": "metadata files plugin without the table",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "error": "plugin.toml: `[metadata_files]` is required for a plugin with the `metadataFiles` entrypoint (declare at least one dialect)"
+    },
+    {
+      "name": "metadata files table without the entrypoint",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"metadata.json\"]\nfields = [\"title\", \"credits\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\n",
+      "error": "plugin.toml: `[metadata_files]` needs the `metadataFiles` entrypoint"
+    },
+    {
+      "name": "metadata files with no dialects",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[metadata_files]\ndialects = []\n",
+      "error": "plugin.toml: `[metadata_files].dialects` is empty"
+    },
+    {
+      "name": "metadata files dialect with a bad id",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"ABS\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"metadata.json\"]\nfields = [\"title\", \"credits\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\n",
+      "error": "plugin.toml: metadata_files.dialects[0].id `ABS` is not an identifier ([a-z][a-z0-9_]{0,63})"
+    },
+    {
+      "name": "metadata files dialect id twice",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"metadata.json\"]\nfields = [\"title\", \"credits\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\n[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"other.json\"]\nfields = [\"title\", \"credits\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\n",
+      "error": "plugin.toml: metadata_files dialect id `abs_metadata_json` is declared twice"
+    },
+    {
+      "name": "metadata files dialect without a name",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \" \"\nfile_names = [\"metadata.json\"]\nfields = [\"title\", \"credits\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\n",
+      "error": "plugin.toml: metadata_files.dialects[0].name is required"
+    },
+    {
+      "name": "metadata files dialect without names or suffixes",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfields = [\"title\", \"credits\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\n",
+      "error": "plugin.toml: metadata_files.dialects[0] declares no `file_names` or `suffixes`"
+    },
+    {
+      "name": "metadata files dialect name with a folder",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"meta/data.json\"]\nfields = [\"title\", \"credits\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\n",
+      "error": "plugin.toml: metadata_files.dialects[0].file_names entry `meta/data.json` is not a plain ASCII file name"
+    },
+    {
+      "name": "metadata files dialect name with unicode",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"métadata.json\"]\nfields = [\"title\", \"credits\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\n",
+      "error": "plugin.toml: metadata_files.dialects[0].file_names entry `métadata.json` is not a plain ASCII file name"
+    },
+    {
+      "name": "metadata files suffix without a dot",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"metadata.json\"]\nfields = [\"title\", \"credits\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\nsuffixes = [\"opf\"]\n",
+      "error": "plugin.toml: metadata_files.dialects[0].suffixes entry `opf` must start with `.` and be a plain ASCII file name"
+    },
+    {
+      "name": "metadata files suffix that is only a dot",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"metadata.json\"]\nfields = [\"title\", \"credits\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\nsuffixes = [\".\"]\n",
+      "error": "plugin.toml: metadata_files.dialects[0].suffixes entry `.` must start with `.` and be a plain ASCII file name"
+    },
+    {
+      "name": "metadata files name claimed twice",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"metadata.json\"]\nfields = [\"title\", \"credits\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\n[[metadata_files.dialects]]\nid = \"other\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"METADATA.json\"]\nfields = [\"title\", \"credits\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\n",
+      "error": "plugin.toml: metadata_files `METADATA.json` is claimed twice"
+    },
+    {
+      "name": "metadata files dialect without fields",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"metadata.json\"]\nfields = []\nwrites = true\n",
+      "error": "plugin.toml: metadata_files.dialects[0].fields is empty"
+    },
+    {
+      "name": "metadata files dialect field twice",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"metadata.json\"]\nfields = [\"title\", \"title\"]\nwrites = true\n",
+      "error": "plugin.toml: metadata_files.dialects[0].fields names `title` twice"
+    },
+    {
+      "name": "metadata files dialect credit role twice",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"metadata.json\"]\nfields = [\"title\", \"credits\"]\ncredit_roles = [\"author\", \"author\"]\nwrites = true\n",
+      "error": "plugin.toml: metadata_files.dialects[0].credit_roles names `author` twice"
+    },
+    {
+      "name": "metadata files credits without roles",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"metadata.json\"]\nfields = [\"title\", \"credits\"]\nwrites = true\n",
+      "error": "plugin.toml: metadata_files.dialects[0].credit_roles is empty but `fields` names `credits`"
+    },
+    {
+      "name": "metadata files roles without credits",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
+      "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"metadata.json\"]\nfields = [\"title\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\n",
+      "error": "plugin.toml: metadata_files.dialects[0].credit_roles needs `credits` in `fields`"
     }
   ]
 }

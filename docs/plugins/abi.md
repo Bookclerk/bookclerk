@@ -1385,6 +1385,76 @@ is the complete fetcher. It holds the `*`
 [any public website](capabilities.md#network-rules) grant, because cover
 art lives on every catalog's own CDN.
 
+### Metadata file dialects
+
+Export `metadataFiles` to read, and optionally write, the metadata files
+that sit next to a book's audio: a `metadata.json` from another library
+manager, an OPF, an NFO, a `desc.txt`. Sidecar parsing lives in plugins,
+never in the host: the host finds the files, hands the bytes to the
+plugin that declared the dialect, and checks what comes back.
+
+Each dialect is a row under [`[metadata_files]`](manifest.md#metadata_files-metadata-file-dialects)
+in `plugin.toml`. The row names the files it claims, the fields the
+format carries and whether the plugin also writes it.
+
+The typed methods on `MetadataFiles` and `MetadataFilesEntrypoint` are:
+
+| Method | Notes |
+| --- | --- |
+| `health` | Liveness and readiness |
+| `parse` | `({ dialect, fileName, bytes })` → `MetadataFileRecord`. Read one file and say what it states about its edition |
+| `render` | `({ dialect, record, fields, existing })` → the new file's bytes (`Uint8Array`, or a string written as UTF-8). Set each field in `fields` to the record's value and keep the rest of `existing` as it was |
+
+A `MetadataFileRecord` lists in `present` every field the file states,
+including a field it states as empty. A field the file does not mention
+stays out of `present`: absent means unknown, not cleared. `creditRoles`
+does the same for credits: it names each role the file states, so a file
+that lists only narrators says nothing about authors.
+
+The host checks both directions:
+
+- `dialect` is one the plugin declared, `fileName` is a plain file name
+  (no path) of at most 255 bytes, and `bytes` is at most
+  `MAX_METADATA_FILE_BYTES` (256 KiB). A larger file is skipped rather
+  than sent. The cap keeps the whole call inside one bridge request (see
+  the [workerd bridge](../internals/workerd-bridge.md#post-invoke)).
+- A parsed record lists each field at most once, carries a value only for
+  a field in `present`, and states only fields and credit roles the
+  dialect declares. Labels are non-blank single lines of at most
+  `MAX_METADATA_FILE_TEXT_BYTES` (1024) bytes; `description` is at most
+  `MAX_METADATA_FILE_DESCRIPTION_BYTES` (64 KiB); each list holds at most
+  `MAX_METADATA_FILE_LIST_ENTRIES` (256) entries and `chapters` at most
+  `MAX_METADATA_FILE_CHAPTERS` (2000), in start order with no depth jump
+  of more than one. `publishedAt` is `YYYY`, `YYYY-MM` or `YYYY-MM-DD`.
+- `render` is sent only to a dialect with `writes = true`, only for fields
+  the dialect carries, and the answer is at most
+  `MAX_METADATA_FILE_BYTES`. `existing` is empty when the host creates the
+  file. An empty answer means the dialect has nothing left to write; the
+  host decides whether to remove the file.
+- Throw `invalid_params` from `parse` for a file the dialect cannot read.
+  The host records the file as unreadable and moves on. Any reply that
+  breaks a rule above is refused as `internal`.
+
+```ts
+export class MetadataFiles extends MetadataFilesEntrypoint<Env> {
+  async parse(params: MetadataFileParseParams): Promise<MetadataFileRecord> {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(params.bytes).trim();
+    if (text === "") {
+      return { present: ["description"] };
+    }
+    return { present: ["description"], description: text };
+  }
+
+  async render(params: MetadataFileRenderParams): Promise<string> {
+    return params.record.description ?? "";
+  }
+}
+```
+
+The host does not call the entrypoint yet beyond health probes. Finding
+the files, matching them to editions and writing changes back come with
+the metadata file sync work.
+
 ### Storage entrypoints
 
 Export `storage` (there is no `kind = "output"`). Guests implement

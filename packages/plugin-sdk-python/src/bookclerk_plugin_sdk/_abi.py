@@ -64,6 +64,27 @@ either direction (a condition the host sends, a header the server sent).
 The host ignores a longer header the fetcher returns.
 """
 
+MAX_METADATA_FILE_BYTES: int = 262144
+"""Largest metadata file `MetadataFiles.parse` reads and `MetadataFiles.render`
+returns. The host skips a larger sidecar before any plugin sees it.
+"""
+
+MAX_METADATA_FILE_DESCRIPTION_BYTES: int = 65536
+"""Longest description a `MetadataFileRecord` carries, in UTF-8 bytes."""
+
+MAX_METADATA_FILE_TEXT_BYTES: int = 1024
+"""Longest other text value in a `MetadataFileRecord` (a title, a name, a
+genre, a chapter title), in UTF-8 bytes.
+"""
+
+MAX_METADATA_FILE_LIST_ENTRIES: int = 256
+"""Most entries in each list of a `MetadataFileRecord` other than chapters
+(credits, genres, tags, identifiers, series).
+"""
+
+MAX_METADATA_FILE_CHAPTERS: int = 2000
+"""Most chapters in a `MetadataFileRecord`."""
+
 MAX_KV_KEY_BYTES: int = 512
 """Longest `KvNamespace` key in UTF-8 bytes."""
 
@@ -119,7 +140,7 @@ code.
 Wire strings of ``PluginErrorCode`` in ordinal order (snake_case ``Text`` codes).
 """
 
-ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers")
+ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles")
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
 the default entrypoint (`event`, `job`) are declared separately.
@@ -210,6 +231,14 @@ ABRIDGEMENTS: tuple[str, ...] = ("unknown", "unabridged", "abridged")
 Ordinal-ordered ``Abridgement`` wire names (index = Cap'n Proto ordinal).
 """
 
+METADATA_FIELDS: tuple[str, ...] = ("title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration")
+"""A field of a `MetadataFileRecord`. Dialects declare in the manifest which
+fields their format carries; a parsed record lists the ones its file
+states, and a render request lists the ones to write.
+
+Ordinal-ordered ``MetadataField`` wire names (index = Cap'n Proto ordinal).
+"""
+
 DB_TYPES: tuple[str, ...] = ("unspecified", "bool", "int64", "float64", "text", "bytes")
 """Universal database cell/parameter domain. Engine-native arrays, enums,
 unsigned integers, and JSON text sentinels are not baseline ABI values.
@@ -265,6 +294,11 @@ __all__ = [
     "MAX_COVER_URLS",
     "MAX_COVER_BYTES",
     "MAX_COVER_HEADER_BYTES",
+    "MAX_METADATA_FILE_BYTES",
+    "MAX_METADATA_FILE_DESCRIPTION_BYTES",
+    "MAX_METADATA_FILE_TEXT_BYTES",
+    "MAX_METADATA_FILE_LIST_ENTRIES",
+    "MAX_METADATA_FILE_CHAPTERS",
     "MAX_KV_KEY_BYTES",
     "MAX_SOCKET_FRAME_BYTES",
     "MAX_SOCKET_ATTACHMENT_BYTES",
@@ -294,6 +328,7 @@ __all__ = [
     "CATALOG_SORTS",
     "CATALOG_FIELDS",
     "ABRIDGEMENTS",
+    "METADATA_FIELDS",
     "DB_TYPES",
     "DB_STATEMENT_KINDS",
     "DB_RESULT_SELECTIONS",

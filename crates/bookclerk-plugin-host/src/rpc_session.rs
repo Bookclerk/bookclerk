@@ -83,6 +83,9 @@ type MetadataCall = EntrypointCall<dyn bookclerk_plugin_sdk::MetadataProvider>;
 /// Typed cover-fetch call against the opened `covers` entrypoint.
 type CoversCall = EntrypointCall<dyn bookclerk_plugin_sdk::CoverFetcher>;
 
+/// Typed call against the opened `metadataFiles` entrypoint.
+type MetadataFilesCall = EntrypointCall<dyn bookclerk_plugin_sdk::MetadataFiles>;
+
 /// Typed call against the opened `socketHandler` entrypoint.
 type SocketHandlerCall = EntrypointCall<dyn bookclerk_plugin_abi::SocketHandler>;
 
@@ -183,6 +186,11 @@ enum Work {
     Covers {
         /// Typed call; replies through the sender it captured.
         call: CoversCall,
+    },
+    /// One typed `metadataFiles` method on the opened primary entrypoints.
+    MetadataFiles {
+        /// Typed call; replies through the sender it captured.
+        call: MetadataFilesCall,
     },
     /// One socket event for the opened `socketHandler` entrypoint.
     SocketHandler {
@@ -1350,6 +1358,26 @@ impl PluginSession {
             .await
     }
 
+    /// One typed `metadataFiles` method on the opened primary entrypoints.
+    ///
+    /// `call` runs on the vat thread; its output crosses back to the caller's
+    /// runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the guest did not export `metadataFiles`
+    /// or the method fails.
+    pub async fn metadata_files<T, F, Fut>(&self, call: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_sdk::MetadataFiles>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        self.entrypoint_call(call, |call| Work::MetadataFiles { call })
+            .await
+    }
+
     /// Hands one socket event to the guest's `socketHandler` entrypoint.
     ///
     /// # Returns
@@ -1391,8 +1419,9 @@ impl PluginSession {
     ///
     /// # Errors
     ///
-    /// Returns a plugin error when the vat thread is gone, the guest did not
-    /// export the entrypoint, or the method fails.
+    /// Returns a plugin error when the session's grant was revoked, the vat
+    /// thread is gone, the guest did not export the entrypoint, or the method
+    /// fails.
     async fn entrypoint_call<S, T, F, Fut>(
         &self,
         call: F,
@@ -1405,21 +1434,21 @@ impl PluginSession {
         Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
             + 'static,
     {
-        let (reply, rx) = oneshot::channel::<Result<T>>();
-        let erased: EntrypointCall<S> = Box::new(move |stub| {
-            Box::pin(async move {
-                let out = match stub {
-                    Ok(stub) => call(stub).await.map_err(map_abi),
-                    Err(err) => Err(map_abi(err)),
-                };
-                let _ = reply.send(out);
-            })
-        });
-        self.tx
-            .send(work(erased))
-            .map_err(|_| PluginError::unavailable("plugin vat thread closed"))?;
-        rx.await
-            .map_err(|_| PluginError::unavailable("plugin vat thread dropped reply"))?
+        // Goes through `call`, so a revoked grant is fenced before the work
+        // is sent and again after the reply, like every other method.
+        self.call(move |reply: oneshot::Sender<Result<T>>| {
+            let erased: EntrypointCall<S> = Box::new(move |stub| {
+                Box::pin(async move {
+                    let out = match stub {
+                        Ok(stub) => call(stub).await.map_err(map_abi),
+                        Err(err) => Err(map_abi(err)),
+                    };
+                    let _ = reply.send(out);
+                })
+            });
+            work(erased)
+        })
+        .await
     }
 
     /// One typed `remoteLibrary` method on the opened primary entrypoints.
@@ -3349,6 +3378,22 @@ fn vat_thread(
                                 |eps| {
                                     eps.covers.clone().map(|stub| {
                                         Box::new(stub) as Box<dyn bookclerk_plugin_sdk::CoverFetcher>
+                                    })
+                                },
+                                call,
+                            );
+                            let _ = with_session(&session_cancel, &mut child, &mut guest, open)
+                                .await;
+                        }
+                        Work::MetadataFiles { call } => {
+                            let open = run_entrypoint_call(
+                                &client,
+                                &account_id,
+                                &mut primary,
+                                "metadataFiles",
+                                |eps| {
+                                    eps.metadata_files.clone().map(|stub| {
+                                        Box::new(stub) as Box<dyn bookclerk_plugin_sdk::MetadataFiles>
                                     })
                                 },
                                 call,
