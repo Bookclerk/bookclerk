@@ -1,15 +1,15 @@
 //! Fill library metadata gaps from the deployed metadata providers.
 //!
-//! The Open Library plugin is the usual provider here: a title with an ISBN
-//! is looked up by ISBN, and one without is searched by title and author. The
-//! answer fills the title's missing description, subjects, cover and
-//! language, and its work's description, subjects and cover plus the Open
-//! Library work id. Lookups are low-volume: each run asks at most
+//! The Open Library plugin is the usual provider here: a held edition with
+//! an ISBN is looked up by ISBN, and one without is searched by title and
+//! author. The answer fills what the edition lacks: its work's description,
+//! subjects and cover, its expression's language and its own cover, plus
+//! the work's Open Library id. Lookups are low-volume: each run asks at most
 //! [`MetadataEnrichOptions::max_requests`] times and pauses between asks, as
 //! Open Library's API guidelines ask (bulk data comes from their dumps).
 //!
-//! The work is written before the title is marked enriched, so a work write
-//! that fails leaves the title unmarked and the next run tries again.
+//! The edition is marked enriched only after the rest is written, so a
+//! write that fails leaves it unmarked and the next run tries again.
 
 use std::time::Duration;
 
@@ -17,11 +17,10 @@ use bookclerk_enrich::{
     isbn_identifier, normalize_isbn, record_identifier, MetadataAnswer, MetadataProviders,
     ProvidedRecord,
 };
-use bookclerk_library::{BookRecord, CatalogEnrichmentFields, LibraryStore, WorkEnrichment};
+use bookclerk_library::{EditionEnrichment, EnrichCandidate, LibraryStore};
 use bookclerk_plugin_sdk::{
     IdentifierScheme, MetadataLookupParams, MetadataRecord, MetadataSearchParams,
 };
-use chrono::Utc;
 use tokio::time::sleep;
 
 use crate::error::Result;
@@ -37,7 +36,7 @@ const SEARCH_LIMIT: u32 = 5;
 /// provider's plugin key follows it.
 pub const METADATA_ENRICH_SOURCE_PREFIX: &str = "metadata:";
 /// `enrich_source` the in-process Open Library code wrote before providers
-/// moved into plugins; such titles count as already enriched.
+/// moved into plugins; such editions count as already enriched.
 const LEGACY_OPENLIBRARY_SOURCE: &str = "openlibrary";
 /// Confidence recorded for a provider fill (an ISBN or title match, not scored).
 const PROVIDER_CONFIDENCE: f64 = 0.7;
@@ -60,7 +59,7 @@ impl Default for MetadataEnrichOptions {
     }
 }
 
-/// Which of a title's catalog fields are empty.
+/// Which of an edition's catalog fields are empty.
 #[derive(Debug, Clone, Copy)]
 struct Gaps {
     /// No subjects.
@@ -74,14 +73,14 @@ struct Gaps {
 }
 
 impl Gaps {
-    /// The empty fields of `book`.
-    fn of(book: &BookRecord) -> Self {
+    /// The empty fields of `edition`.
+    fn of(edition: &EnrichCandidate) -> Self {
         let blank = |v: &Option<String>| v.as_deref().unwrap_or("").trim().is_empty();
         Self {
-            subjects: blank(&book.subjects),
-            description: blank(&book.description),
-            cover: blank(&book.cover_url),
-            language: blank(&book.language),
+            subjects: blank(&edition.subjects),
+            description: blank(&edition.description),
+            cover: blank(&edition.cover_url),
+            language: blank(&edition.language),
         }
     }
 
@@ -101,20 +100,20 @@ impl Gaps {
     }
 }
 
-/// Titles read per library page while looking for gaps to fill.
+/// Editions read per library page while looking for gaps to fill.
 #[cfg(not(test))]
 const ENRICH_PAGE: u64 = 200;
 
-/// Titles read per library page in tests, small so the tests' few titles
-/// span several pages.
+/// Editions read per library page in tests, small so the tests' few
+/// editions span several pages.
 #[cfg(test)]
 const ENRICH_PAGE: u64 = 2;
 
 /// Fills missing description, subjects, cover and language from the
 /// deployed metadata providers.
 ///
-/// Skips titles a provider already filled. With no provider deployed, every
-/// answer is empty and nothing changes.
+/// Walks the held editions and skips those a provider already filled. With
+/// no provider deployed, every answer is empty and nothing changes.
 ///
 /// # Arguments
 ///
@@ -124,7 +123,7 @@ const ENRICH_PAGE: u64 = 2;
 ///
 /// # Returns
 ///
-/// The number of titles filled.
+/// The number of editions filled.
 ///
 /// # Errors
 ///
@@ -139,21 +138,17 @@ pub async fn enrich_books_from_metadata(
 
     // The library is read a page at a time, and reading stops once the
     // run's request cap is spent.
-    let mut offset = 0u64;
+    let mut after: Option<String> = None;
     'pages: loop {
-        // A spent budget reads no further page, even when the titles left
+        // A spent budget reads no further page, even when the editions left
         // would not have needed a request.
         if requests >= opts.max_requests {
             break;
         }
         let page = library
-            .list_books_filtered_page(None, None, ENRICH_PAGE, offset)
+            .enrich_candidates_page(after.as_deref(), ENRICH_PAGE)
             .await?;
-        if page.books.is_empty() {
-            break;
-        }
-        offset = offset.saturating_add(ENRICH_PAGE);
-        for book in page.books {
+        for book in page.candidates {
             if already_enriched(&book) {
                 continue;
             }
@@ -215,10 +210,10 @@ pub async fn enrich_books_from_metadata(
             };
             for failure in &answer.failures {
                 tracing::debug!(
-                    uuid = %book.uuid,
+                    edition_id = %book.edition_id,
                     provider = %failure.provider,
                     error = %failure.message,
-                    "metadata provider failed for this title"
+                    "metadata provider failed for this edition"
                 );
             }
             let Some(matched) = matched else {
@@ -227,12 +222,16 @@ pub async fn enrich_books_from_metadata(
             if apply_record(library, &book, gaps, &matched).await? {
                 enriched += 1;
                 tracing::info!(
-                    uuid = %book.uuid,
+                    edition_id = %book.edition_id,
                     title = %book.title,
                     provider = %matched.provider,
-                    "filled title metadata from a metadata provider"
+                    "filled edition metadata from a metadata provider"
                 );
             }
+        }
+        match page.next {
+            Some(next) => after = Some(next),
+            None => break,
         }
     }
 
@@ -240,7 +239,7 @@ pub async fn enrich_books_from_metadata(
 }
 
 /// True when a provider already filled `book`.
-fn already_enriched(book: &BookRecord) -> bool {
+fn already_enriched(book: &EnrichCandidate) -> bool {
     book.enrich_source.as_deref().is_some_and(|source| {
         source.starts_with(METADATA_ENRICH_SOURCE_PREFIX) || source == LEGACY_OPENLIBRARY_SOURCE
     })
@@ -276,14 +275,15 @@ fn normalized_title(title: &str) -> String {
         .join(" ")
 }
 
-/// Writes the fields `matched` fills: the work first, then the title.
+/// Writes the fields `matched` fills onto the edition, its work and its
+/// expression, then marks the edition.
 ///
 /// # Returns
 ///
-/// `false` when the record fills none of the title's gaps.
+/// `false` when the record fills none of the edition's gaps.
 async fn apply_record(
     library: &LibraryStore,
-    book: &BookRecord,
+    book: &EnrichCandidate,
     gaps: Gaps,
     matched: &ProvidedRecord,
 ) -> Result<bool> {
@@ -302,65 +302,30 @@ async fn apply_record(
         return Ok(false);
     }
 
-    // The work first: if one of its writes fails, the title stays unmarked
-    // and the next run asks again (#640). The work only takes what it lacks,
-    // so a work another edition already described keeps its own values. A
-    // title not resolved to a work yet is still filled: resolving it later
-    // copies the title's fields onto its work.
-    let work_id = library.work_id_for_book(&book.uuid).await?;
-    let work = match &work_id {
-        Some(id) => library.get_work(id).await?,
-        None => None,
-    };
-    if let Some(work) = work {
-        let lacking = |stored: &Option<String>, offered: Option<String>| {
-            offered.filter(|_| stored.as_deref().is_none_or(|v| v.trim().is_empty()))
-        };
-        let fill = WorkEnrichment {
-            description: lacking(
-                &work.description,
-                description.clone().or_else(|| book.description.clone()),
-            ),
-            subjects: lacking(
-                &work.subjects,
-                subjects.clone().or_else(|| book.subjects.clone()),
-            ),
-            categories: lacking(&work.categories, book.categories.clone()),
-            cover_url: lacking(
-                &work.cover_url,
-                cover_url.clone().or_else(|| book.cover_url.clone()),
-            ),
-        };
-        let work_id = work.id;
-        if !fill.is_empty() {
-            library.set_work_enrichment(&work_id, &fill).await?;
-        }
-        if let Some(ol) = record_identifier(record, IdentifierScheme::OpenLibraryWork) {
-            library
-                .add_work_identifier(
-                    &work_id,
-                    bookclerk_resolve::IdentifierScheme::OpenLibraryWork,
-                    ol,
-                )
-                .await?;
-        }
+    // The work's Open Library id first: the edition is marked last, so a
+    // failed write leaves it unmarked and the next run asks again (#640).
+    if let (Some(work_id), Some(ol)) = (
+        &book.work_id,
+        record_identifier(record, IdentifierScheme::OpenLibraryWork),
+    ) {
+        library
+            .add_work_identifier(
+                work_id,
+                bookclerk_resolve::IdentifierScheme::OpenLibraryWork,
+                ol,
+            )
+            .await?;
     }
-
     library
-        .update_catalog_enrichment(
-            &book.uuid,
-            &CatalogEnrichmentFields {
+        .enrich_edition(
+            &book.edition_id,
+            &EditionEnrichment {
                 description,
-                language,
-                cover_url,
                 subjects,
-                categories: None,
-                enrich_source: Some(format!(
-                    "{METADATA_ENRICH_SOURCE_PREFIX}{}",
-                    matched.provider
-                )),
-                enrich_confidence: Some(PROVIDER_CONFIDENCE),
-                enrich_updated_at: Some(Utc::now()),
+                cover_url,
+                language,
+                source: format!("{METADATA_ENRICH_SOURCE_PREFIX}{}", matched.provider),
+                confidence: PROVIDER_CONFIDENCE,
             },
         )
         .await?;
@@ -381,7 +346,7 @@ mod tests {
 
     use async_trait::async_trait;
     use bookclerk_enrich::{ChaptersAnswer, ProviderFailure};
-    use bookclerk_library::NewBook;
+    use bookclerk_library::{NewBook, WorkEnrichment};
     use bookclerk_plugin_sdk::{Identifier, MetadataChaptersParams};
 
     use super::*;
@@ -658,25 +623,29 @@ mod tests {
             ("p3", "  ", None),
         ])
         .await;
+        // Every field filled by someone else, and a legacy Open Library mark.
+        let full = store.edition_of_book(&uuids[0]).await.unwrap().unwrap();
         store
-            .update_catalog_enrichment(
-                &uuids[0],
-                &CatalogEnrichmentFields {
+            .enrich_edition(
+                &full,
+                &EditionEnrichment {
                     description: Some("d".into()),
                     language: Some("en".into()),
                     cover_url: Some("https://x/c.jpg".into()),
                     subjects: Some("s".into()),
-                    ..CatalogEnrichmentFields::default()
+                    source: "audible".into(),
+                    confidence: 0.9,
                 },
             )
             .await
             .unwrap();
+        let legacy = store.edition_of_book(&uuids[1]).await.unwrap().unwrap();
         store
-            .update_catalog_enrichment(
-                &uuids[1],
-                &CatalogEnrichmentFields {
-                    enrich_source: Some("openlibrary".into()),
-                    ..CatalogEnrichmentFields::default()
+            .enrich_edition(
+                &legacy,
+                &EditionEnrichment {
+                    source: "openlibrary".into(),
+                    ..EditionEnrichment::default()
                 },
             )
             .await
@@ -880,7 +849,13 @@ mod tests {
             Some("https://covers.openlibrary.org/b/id/1-L.jpg"),
             "the work still takes what it lacked"
         );
+        // The work's own description was no gap, so the edition's flat row
+        // takes only what was filled.
         let book = store.get_book_by_uuid(&uuids[0]).await.unwrap().unwrap();
-        assert_eq!(book.description.as_deref(), Some("A blurb"));
+        assert_eq!(book.description, None);
+        assert_eq!(
+            book.cover_url.as_deref(),
+            Some("https://covers.openlibrary.org/b/id/1-L.jpg")
+        );
     }
 }

@@ -27,6 +27,14 @@ pub struct Model {
     pub created_at: String,
     /// RFC 3339 timestamp when the row was last modified.
     pub updated_at: String,
+    /// Who filled the edition's (and its work's) missing metadata:
+    /// `metadata:<plugin key>` for a metadata provider, `audible` for the
+    /// Audible catalog match; `None` until an enricher filled something.
+    pub enrich_source: Option<String>,
+    /// How sure that enricher was of its match, from 0.0 to 1.0.
+    pub enrich_confidence: Option<f64>,
+    /// When the enricher last filled it (RFC 3339).
+    pub enrich_updated_at: Option<String>,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).
