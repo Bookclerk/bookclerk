@@ -419,7 +419,7 @@ paths):
 | A declared `check_input` (a workspace executable a non-Cargo check launches, such as the `bookclerk-db-testkit` kit the SDK test wrappers spawn) | The checks declared for it, on top of the owner's own selection |
 | A declared `test_guests` executable | The launching package's tests re-run, with no propagation |
 | `ui/`, `packages/plugin-sdk*/`, ABI scripts | The UI, SDK ABI and API-doc checks |
-| A first-party workerd guest without a Cargo package (`crates/bookclerk-plugins/<tier>/<name>/`) | Its type-check, build and tests (`workerd_guests`) and its staged E2E. `packages/plugin-sdk/` also selects `workerd_guests`, because the guests type-check against it |
+| A first-party workerd guest without a Cargo package (`crates/bookclerk-plugins/<tier>/<name>/`) | Its type-check, build and tests (`workerd_guests`) and its staged E2E. `packages/plugin-sdk/` also selects `workerd_guests`, because the guests type-check against it, and so does `crates/bookclerk-db-testkit/`, because a guest with a plugin database tests it under every profile through the kit |
 | A reference example that declares `[[databases]]` and has a `test` script in `package.json`, a `pyproject.toml` or a `Cargo.toml` (`examples/plugins-<name>/`) | Its checks and suite under every database profile (`plugin_examples`) and its staged E2E. `crates/bookclerk-db-testkit/` and `crates/bookclerk-plugin-tools/` also select `plugin_examples`, as do `packages/plugin-sdk/` (with a TypeScript example), `packages/plugin-sdk-python/` (with a Python one) and anything that affects a Rust example's tests, such as the Rust SDK |
 | `docs/**` | The website tests (`site_test`) |
 | `tools/site/**`, `assets/brand/**` | The website tests and audit (`site_test`, `site_audit`) |

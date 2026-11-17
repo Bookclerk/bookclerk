@@ -1409,11 +1409,7 @@ async fn spawn_integration(
     // network the deployed guest would.
     let mut services = services;
     if plugin.manifest.sockets.is_some() {
-        services.sockets = Some(crate::SocketBroker::new(
-            plugin.clone(),
-            config.clone(),
-            crate::host::integration::deployed_endpoint_for(plugin, &prepared.granted_config),
-        ));
+        services.sockets = Some(crate::SocketBroker::new(plugin.clone(), config.clone()));
     }
     let broker = services.sockets.clone();
     let starter = crate::activates_on_demand(&plugin.manifest).then(|| ExternalStarter {

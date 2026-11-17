@@ -291,9 +291,10 @@ checks = ["plugin_sdk_abi", "python_sdk"]
 # package's own selection (unlike `fixture`, ownership still applies).
 [[check_input]]
 # The TS and Python `createTestDatabase` wrappers spawn `bookclerk-db-testkit`,
-# and the database examples' suites spawn it through them.
+# and the database examples' and first-party workerd guests' suites spawn it
+# through them.
 paths = ["crates/bookclerk-db-testkit/**"]
-checks = ["plugin_sdk_abi", "python_sdk", "plugin_examples"]
+checks = ["plugin_sdk_abi", "python_sdk", "plugin_examples", "workerd_guests"]
 
 [[check_input]]
 # `bookclerk-plugin test` runs each database example's suite per profile.

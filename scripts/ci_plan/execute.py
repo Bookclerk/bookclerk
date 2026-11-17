@@ -717,7 +717,9 @@ def _workerd_guest_commands(ctx: "Context") -> list[Command]:
     Each guest's shipped ``modules/`` is emitted from ``src/`` by its build;
     a committed tree that differs from a fresh build is drift. The unit tests
     of all guests run in one ``node --test`` from the repository root, so one
-    LCOV report covers them.
+    LCOV report covers them. A guest with a plugin database tests it under
+    every profile through the SDK's ``createTestDatabase``, which spawns
+    ``bookclerk-db-testkit``, so the kit is built first.
 
     Args:
         ctx: Paths and platform facts.
@@ -742,6 +744,8 @@ def _workerd_guest_commands(ctx: "Context") -> list[Command]:
         ]
     if not dirs:
         return cmds
+    kit_build, kit_env = _db_testkit(ctx)
+    cmds.append(kit_build)
     report = _coverage_report("workerd-guests")
     reporters = ["--test-reporter=spec", "--test-reporter-destination=stdout"]
     if report:
@@ -765,6 +769,7 @@ def _workerd_guest_commands(ctx: "Context") -> list[Command]:
                 *tests,
             ],
             cwd=str(ctx.workspace),
+            env=kit_env,
         )
     )
     return cmds

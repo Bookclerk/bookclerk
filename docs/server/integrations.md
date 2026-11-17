@@ -38,8 +38,8 @@ plugin keeps its own HTTP client inside its package.
 
 ## Audiobookshelf
 
-The first-party integration is **Audiobookshelf**. It loads two ways: an
-in-process `register()` for `cargo run`, and the plugin package in
+The first-party integration is **Audiobookshelf**. It is a TypeScript
+plugin that runs in `workerd`, in
 `crates/bookclerk-plugins/optional/integration-audiobookshelf/`.
 
 The plugin does Audiobookshelf work only: scans, listening sync, sign-in
@@ -54,30 +54,44 @@ It runs on a host when its deployment there is `present`.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| `base_url` | none | Required: the Audiobookshelf address, granted to the plugin as its network endpoint |
+| `base_url` | none | Required: the Audiobookshelf address. `https://`, or `http://` on a loopback address only |
 | `api_key` | none | A secret, sealed in `encrypted_secrets` |
 | `library_id` | none | Optional |
 | `watch_users` | `true` | Watch Audiobookshelf users for claim tickets |
 | `notify_scan_on_acquire` | `true` | Ask Audiobookshelf to scan after an acquire |
 | `allow_credential_login` | `true` | Let people sign back in with Audiobookshelf credentials |
 
-1. Set the address:
+1. Approve the plugin in **Settings → Plugins**. It asks to reach any
+   public website, because it can't know your server's address in
+   advance. It only ever calls the `base_url` you set.
+2. If your server is on a private or loopback address (your home
+   network, a Docker network, or the same machine), add it to the
+   plugin's consent: its host name or IP address as a fetch host, and
+   its address range as a CIDR (for example `192.168.1.20/32`). You can
+   also take "Any public website" out and keep only your server. See
+   [Capabilities and consent](../plugins/capabilities.md).
+3. Set the address:
 
    ```sh
-   bookclerk plugins config set audiobookshelf base_url http://audiobookshelf:80
+   bookclerk plugins config set audiobookshelf base_url https://abs.example.com
    ```
 
-2. Enter the API key (read from stdin):
+4. Enter the API key (read from stdin):
 
    ```sh
    bookclerk plugins config set audiobookshelf api_key --secret
    ```
 
-3. Deploy it:
+5. Deploy it:
 
    ```sh
    bookclerk plugins deploy audiobookshelf
    ```
+
+> [!NOTE]
+> Plain `http://` is refused except on a loopback address, so the API key
+> and sign-in passwords never cross a network unencrypted. Put a server
+> on your network behind HTTPS.
 
 The one setting that stays in `config.toml` is the public address, used
 as the sign-in issuer and in shareable invite links:
@@ -90,7 +104,9 @@ as the sign-in issuer and in shareable invite links:
 ### What it does
 
 - Reports health through `integrations status` and `integrations test`.
-- On `book_acquired`, can ask Audiobookshelf to scan the library.
+- On `book_acquired`, asks Audiobookshelf to scan the library
+  `library_id` names, when `notify_scan_on_acquire` is on. A scan request
+  that fails is retried.
 - Can watch Audiobookshelf users with `pollEvents`, so the host can mint
   claim tickets. See [Watching users](#watching-users).
 - Lets people sign back in with Audiobookshelf credentials
@@ -175,6 +191,9 @@ like when it last sent it, in its own `LISTENING_STATE` database:
 - It forgets a person who has not been synced for seven days.
 - Until you approve that database in the plugin's consent, every sync
   sends all progress, as before.
+- One sync makes at most about 1,000 requests to Audiobookshelf. On a
+  large server the first sync can stop there; the progress it did not
+  reach is sent by the next sync.
 
 API coverage notes:
 [`crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md`](../../crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md).

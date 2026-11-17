@@ -101,9 +101,6 @@ struct Inner {
     plugin: DiscoveredPlugin,
     /// Host config the broker is spawned with.
     config: Config,
-    /// Network authority from the instance document (see
-    /// [`crate::SessionServices::deployed_endpoint`]).
-    deployed_endpoint: Option<Option<String>>,
     /// Where events go; set once the instance's guest proxy exists.
     sink: OnceLock<Weak<dyn SocketSink>>,
     /// The running broker, if any. Held across a connect so two connects
@@ -227,19 +224,12 @@ impl SocketBroker {
     ///
     /// * `plugin` - The deployed plugin; it must declare `[sockets]`.
     /// * `config` - Host config for the broker's spawn.
-    /// * `deployed_endpoint` - The instance document's network authority,
-    ///   as the guest's own spawn receives it.
     #[must_use]
-    pub fn new(
-        plugin: DiscoveredPlugin,
-        config: Config,
-        deployed_endpoint: Option<Option<String>>,
-    ) -> Self {
+    pub fn new(plugin: DiscoveredPlugin, config: Config) -> Self {
         Self {
             inner: Arc::new(Inner {
                 plugin,
                 config,
-                deployed_endpoint,
                 sink: OnceLock::new(),
                 link: tokio::sync::Mutex::new(None),
                 open: Mutex::new(BTreeMap::new()),
@@ -425,7 +415,7 @@ async fn start(inner: &Arc<Inner>) -> AbiResult<Link> {
         serde_json::Value::Null,
         &env,
         None,
-        inner.deployed_endpoint.as_ref().map(|e| e.as_deref()),
+        None,
     )
     .await
     .map_err(unavailable)?;
@@ -456,20 +446,19 @@ async fn start(inner: &Arc<Inner>) -> AbiResult<Link> {
             &inner.plugin,
             &inner.config,
             &identity,
-            inner.deployed_endpoint.as_ref().map(|e| e.as_deref()),
+            None,
         ) {
             spawned.cancel.store(true, Ordering::SeqCst);
             crate::rpc_session::abandon_spawned(spawned);
             return Err(AbiError::forbidden(err.to_string()));
         }
         let hook = Arc::clone(&fenced);
-        crate::authority::register_session_revisions_on_with_deployed_endpoint(
+        crate::authority::register_session_revisions_on(
             inner.plugin.plugin_key().canonical(),
             &identity.grant_revision,
             &identity.authority_revision,
             Arc::new(move || hook.notify_one()),
             Arc::clone(&spawned.cancel),
-            inner.deployed_endpoint.clone(),
         )
     };
     let generation = inner.generation.fetch_add(1, Ordering::SeqCst) + 1;

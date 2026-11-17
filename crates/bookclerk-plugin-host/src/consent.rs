@@ -2681,7 +2681,6 @@ pub fn inject_workerd_grant_env(cmd: &mut Command, grant: &PluginGrant) {
 ///
 /// - active Postgres `[database.postgres].url`
 /// - active D1 `[database.d1].api_base`
-/// - Audiobookshelf `[integrations.audiobookshelf].base_url`
 /// - S3 `[output.s3].endpoint` (custom/MinIO)
 ///
 /// Occupancy is uniquified with [`crate::resolve_plugin_slot`]: a bare alias
@@ -2708,8 +2707,8 @@ pub fn overlay_host_implied_network(
 /// endpoint.
 ///
 /// `deployed_endpoint` of `Some` means this spawn is a deployed instance
-/// whose document names a host to reach (the S3 `endpoint`, the
-/// Audiobookshelf `base_url`); the inner value is `None` when the document
+/// whose document names a host to reach (the S3 `endpoint`); the inner
+/// value is `None` when the document
 /// names none. There is no `config.toml` fallback for plugin endpoints.
 pub(crate) fn overlay_host_implied_network_with(
     grant: &mut PluginGrant,
@@ -2729,8 +2728,8 @@ pub(crate) fn overlay_host_implied_network_with(
 /// SHA-256 of host config that participates in implied network overlays.
 ///
 /// Changing a Postgres URL or D1 API origin must mint a new executor
-/// `configuration_revision` and fence live sessions. Plugin endpoints (S3,
-/// Audiobookshelf) come from instance documents, not `config.toml`.
+/// `configuration_revision` and fence live sessions. Plugin endpoints (the
+/// S3 `endpoint`) come from instance documents, not `config.toml`.
 #[must_use]
 pub fn host_overlay_config_digest(config: &Config) -> String {
     let mut hasher = Sha256::new();
@@ -2918,7 +2917,7 @@ fn overlay_database_slot_matches(
 }
 
 /// Grants TCP to the host a deployed instance document names (the S3
-/// `endpoint` or the Audiobookshelf `base_url`). Default AWS hosts come from
+/// `endpoint`). Default AWS hosts come from
 /// the S3 guest manifest `tcp` list.
 fn overlay_deployed_endpoint(grant: &mut PluginGrant, deployed_endpoint: Option<Option<&str>>) {
     if let Some(Some(endpoint)) = deployed_endpoint {
@@ -3846,16 +3845,16 @@ mode = "outbound"
     }
 
     #[test]
-    fn overlay_audiobookshelf_loopback_implies_cidrs() {
+    fn overlay_loopback_endpoint_implies_cidrs() {
         let dir = tempfile::tempdir().unwrap();
         let plugin = discovered(
             dir.path(),
             r#"
 api_version = 3
-id = "audiobookshelf"
+id = "s3"
 runtime = "native"
 command = "./guest"
-entrypoints = ["remoteLibrary"]
+entrypoints = ["storage"]
 
 [capabilities.network]
 mode = "outbound"

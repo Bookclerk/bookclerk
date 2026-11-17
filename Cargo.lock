@@ -2194,26 +2194,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bookclerk-plugin-integration-audiobookshelf"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bookclerk-config",
- "bookclerk-db-testkit",
- "bookclerk-integrations",
- "bookclerk-library",
- "bookclerk-plugin-sdk",
- "bookclerk-scan-delta",
- "chrono",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
 name = "bookclerk-plugin-manifest"
 version = "0.1.0"
 dependencies = [

@@ -356,10 +356,12 @@ Audible, Libro.fm, Chirp, GraphicAudio and Audiobookshelf ship as
   display alias from a different PluginKey on the same host is invalid
   (fail closed).
 
-The Open Library and Audnexus metadata providers and the `covers`
-fetcher are first-party **workerd TypeScript** guests in the same tree
-(`crates/bookclerk-plugins/optional/metadata-openlibrary`,
-`metadata-audnexus` and `covers`). They have no Cargo package:
+The Audiobookshelf integration, the Open Library and Audnexus metadata
+providers and the `covers` fetcher are first-party **workerd TypeScript**
+guests in the same tree
+(`crates/bookclerk-plugins/optional/integration-audiobookshelf`,
+`metadata-openlibrary`, `metadata-audnexus` and `covers`). They have no
+Cargo package:
 
 - Their source is in `src/`. `npm run build` compiles it with TypeScript
   into the `modules/` that ships, and both are committed. CI's
@@ -369,6 +371,10 @@ fetcher are first-party **workerd TypeScript** guests in the same tree
   unit tests (`npm test`, Node's test runner) drive the same code the
   guest runs. The entrypoint module is tested with the SDK's isolate module
   replaced, because the real one only loads inside `workerd`.
+- A guest with a plugin database (Audiobookshelf's `LISTENING_STATE`)
+  tests it under every `bookclerk-db-testkit` profile through the SDK's
+  `createTestDatabase`, so its tests need `BOOKCLERK_DB_TESTKIT` set to
+  the built kit (or the kit on `PATH`).
 - The root `Cargo.toml` excludes each of them from the plugin-tree member
   globs by name.
 

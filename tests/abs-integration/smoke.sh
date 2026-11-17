@@ -9,7 +9,7 @@
 # builds them) and Docker Compose. It:
 #   1. starts Audiobookshelf, creates its root user and a book library;
 #   2. starts bookclerkd on a fresh volume (it installs its platform plugins);
-#   3. approves the audiobookshelf plugin with a TCP grant to Audiobookshelf
+#   3. approves the audiobookshelf plugin with a grant to Audiobookshelf
 #      (the consent API), configures it (the API key through stdin, sealed)
 #      and deploys it with the CLI, then restarts bookclerkd;
 #   4. checks the plugin reaches Audiobookshelf, mints a claim ticket and
@@ -87,15 +87,16 @@ echo "== bookclerkd, first boot"
 wait_for bookclerkd "$bookclerk_url/health"
 
 echo "== approve, configure and deploy the audiobookshelf plugin"
-# A plugin built from this checkout is local-development provenance, so it
-# does not get the host-implied grant to its base_url that the first-party
-# package from crates.io gets. The operator adds the destination instead,
-# through the same consent API the Settings page uses.
+# The plugin reaches only the hosts its consent grant names. Its manifest
+# asks for any public website; a server on a private or loopback address
+# also needs the address itself (an IP literal is never covered by `*`) and
+# its CIDR, which the operator adds through the same consent API the
+# Settings page uses. The TCP grant covers the pushed-event socket.
 operator_token=$(cli daemon token)
 printf 'Authorization: Bearer %s\n' "$operator_token" \
   | curl -fsS -o /dev/null -H @- -H 'Content-Type: application/json' \
     -X POST "$bookclerk_url/api/plugins/audiobookshelf/consent" \
-    -d '{"approve":true,"grant":{"tcp":[{"host":"127.0.0.1","ports":[80]}],"addressCidrs":["127.0.0.1/32"]}}'
+    -d '{"approve":true,"grant":{"domains":["127.0.0.1"],"tcp":[{"host":"127.0.0.1","ports":[80]}],"addressCidrs":["127.0.0.1/32"]}}'
 cli plugins config set audiobookshelf base_url http://127.0.0.1:80
 cli plugins config set audiobookshelf library_id "$library_id"
 printf '%s' "$token" | cli plugins config set audiobookshelf api_key --secret

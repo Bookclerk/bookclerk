@@ -335,7 +335,7 @@ OS_LEG_JOBS: dict[str, tuple[str, ...]] = {
 # Checks in the ``check`` (lint and docs) job that need no Cargo toolchain.
 # ``python_sdk`` is not one: its tests launch the ``bookclerk-db-testkit``
 # executable (a ``check_input`` in relations.toml), which the check builds.
-NON_CARGO_CHECKS = frozenset({"lint", "ui", "workerd_guests"})
+NON_CARGO_CHECKS = frozenset({"lint", "ui"})
 
 PREREQ_ORDER = ("build", "ensure_workerd", "install_platform", "stage_plugins")
 

@@ -971,6 +971,9 @@ class CoverageCommandTests(unittest.TestCase):
             planned = [c for _, c in planned_commands(artifact(p), "workerd_guests", CTX)]
         drift = [c for c in planned if c.argv == [sys.executable, "-c", execute._MODULES_DRIFT]]
         self.assertEqual([c.cwd for c in drift], [str(guest)])
+        # Guests with a plugin database test it through the kit.
+        self.assertIn(["cargo", "build", "-p", "bookclerk-db-testkit", "--bin", "bookclerk-db-testkit"], cmds)
+        self.assertIn("BOOKCLERK_DB_TESTKIT", planned[-1].env)
         node = cmds[-1]
         self.assertEqual(node[:2], ["node", "--test"])
         self.assertIn(f"--test-reporter-destination={self.dir / 'workerd-guests' / 'lcov.info'}", node)
@@ -1055,6 +1058,7 @@ class CoverageCommandTests(unittest.TestCase):
         dirs = [d.relative_to(REPO).as_posix() for d in execute.workerd_guest_dirs(REPO)]
         self.assertIn("crates/bookclerk-plugins/optional/metadata-openlibrary", dirs)
         self.assertIn("crates/bookclerk-plugins/optional/metadata-audnexus", dirs)
+        self.assertIn("crates/bookclerk-plugins/optional/integration-audiobookshelf", dirs)
         self.assertNotIn("crates/bookclerk-plugins/optional/source-libro", dirs)
 
     def test_rust_report_needs_instrumentation(self) -> None:

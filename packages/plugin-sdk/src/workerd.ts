@@ -170,6 +170,7 @@ export type {
   InvokeReply,
 } from "./invoke.js";
 export type {
+  AuthenticateUserParams,
   CliSchema,
   CliInvokeParams,
   CliInvokeResult,
@@ -178,8 +179,10 @@ export type {
   CoverFetchParams,
   CoverImage,
   CoverImages,
+  ExternalUser,
   HealthOk,
   Identifier,
+  ListeningProgress,
   MetadataChapter,
   MetadataChapters,
   MetadataChaptersParams,
@@ -189,7 +192,9 @@ export type {
   MetadataLookupParams,
   MetadataRecord,
   MetadataSearchParams,
+  ScanLibraryParams,
   SeriesEntry,
+  SocketMessageOk,
 } from "./generated.js";
 export type {
   Abridgement,
