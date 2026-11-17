@@ -106,7 +106,14 @@ PostgreSQL 16+, or Cloudflare D1
 
 ## Files directory layout
 
-`$BOOKCLERK_FILES_DIR` (env or `--bookclerk-files`) is the unit of state:
+`$BOOKCLERK_FILES_DIR` (env or `--bookclerk-files`) is the unit of state.
+Without either, it is the platform's data directory for the app:
+
+- Linux: `$XDG_DATA_HOME/bookclerk` (`~/.local/share/bookclerk`).
+- macOS: `~/Library/Application Support/app.Bookclerk.bookclerk`.
+- Windows: `%APPDATA%\Bookclerk\bookclerk\data`.
+
+Its layout:
 
 ```text
 BookclerkFiles/

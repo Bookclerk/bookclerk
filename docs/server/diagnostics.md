@@ -55,9 +55,9 @@ What you see in the logs and what goes into a report are set separately.
 The design behind this split is in
 [ADR: Logging and tracing](../adr/observability.md).
 
-- **stderr and the OS facility** (journald, macOS `os_log`, Windows Event
-  Log) honor `BOOKCLERK_LOG`, then `RUST_LOG`, then the daemon default
-  `bookclerk=info,warn`. The CLI is quiet by default (`off`). Use `-v`,
+- **stderr and the OS facility** (journald, macOS `os_log` under the
+  subsystem `app.bookclerk`, Windows Event Log) honor `BOOKCLERK_LOG`,
+  then `RUST_LOG`, then the daemon default `bookclerk=info,warn`. The CLI is quiet by default (`off`). Use `-v`,
   `-vv` or `-vvv`, or `BOOKCLERK_LOG`.
 - The **diagnostics ring buffer always keeps TRACE and above**, so crash
   and burst reports include deep context even when the console is quiet.
