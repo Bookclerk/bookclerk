@@ -9,11 +9,13 @@ use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
     Bindings, ByteRange, CopyResult, Destination, Entrypoints, ExtensibleConfig, Invocation,
-    ListOptions, ListPage, ObjectInfo, ObjectMetadata, PluginDescribe, PluginWorker, PutResult,
-    ReadResult, ScalarLimits, StreamCopyHandler, WriteOptions, FEATURE_SCALAR_LIMITS,
-    FEATURE_STORAGE_COPY, FEATURE_STREAMS, PRODUCT_API_VERSION,
+    KeyOutcome, ListOptions, ListPage, MoveManyPage, MoveManyRequest, MoveOptions, MoveResult,
+    ObjectMetadata, PluginDescribe, PluginWorker, PutResult, ReadResult, ScalarLimits,
+    StreamCopyHandler, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY, FEATURE_STREAMS,
+    PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_sdk::{OutputLocalContextDto, PluginError};
+use bookclerk_storage::guest::{self, object_metadata, plugin_error as map_storage};
 use bookclerk_storage::{LocalFsBackend, ObjectMeta, StorageBackend, StorageError};
 use tokio::io::AsyncRead;
 
@@ -21,17 +23,6 @@ use crate::ID;
 
 /// Result alias matching the ABI crate.
 type Result<T> = std::result::Result<T, PluginError>;
-
-/// Maps storage errors onto ABI plugin errors.
-fn map_storage(err: StorageError) -> PluginError {
-    match err {
-        StorageError::NotFound(key) => PluginError::not_found(key),
-        StorageError::PayloadTooLarge(msg) => PluginError::payload_too_large(msg),
-        StorageError::InvalidCursor(msg) => PluginError::invalid_cursor(msg),
-        StorageError::Integrity(msg) => PluginError::internal(format!("integrity: {msg}")),
-        other => PluginError::internal(other.to_string()),
-    }
-}
 
 /// Local filesystem destination capability.
 pub struct LocalDestination {
@@ -71,24 +62,6 @@ impl LocalDestination {
         }
         let backend = LocalFsBackend::with_prefix(root, &parsed.prefix).map_err(map_storage)?;
         Ok(Self { backend })
-    }
-}
-
-fn meta_from_probe(probe: bookclerk_storage::ObjectProbe) -> ObjectMetadata {
-    let sha256 = probe.meta.sha256_hex.as_deref().and_then(|hex| {
-        bookclerk_storage::parse_sha256_hex(hex)
-            .ok()
-            .map(|bytes| bytes.to_vec())
-    });
-    ObjectMetadata {
-        key: probe.key,
-        size: probe.size,
-        content_type: probe.content_type.or(probe.meta.content_type),
-        etag: probe.etag,
-        sha256,
-        modified_at_ms: probe.modified_at_ms,
-        version_id: probe.version_id,
-        signature: probe.signature,
     }
 }
 
@@ -137,29 +110,12 @@ impl Destination for LocalDestination {
         self.backend
             .head(key)
             .await
-            .map(|probe| probe.map(meta_from_probe))
+            .map(|probe| probe.map(object_metadata))
             .map_err(map_storage)
     }
 
     async fn list(&self, options: ListOptions) -> Result<ListPage> {
-        let page = self
-            .backend
-            .list_page(&options.prefix, options.cursor.as_deref(), options.limit)
-            .await
-            .map_err(map_storage)?;
-        Ok(ListPage {
-            objects: page
-                .objects
-                .into_iter()
-                .map(|obj| ObjectInfo {
-                    key: obj.key,
-                    size: obj.size,
-                    ..Default::default()
-                })
-                .collect(),
-            next_cursor: page.next_cursor,
-            ..ListPage::default()
-        })
+        guest::list(&self.backend, options).await
     }
 
     async fn get(&self, key: &str, range: Option<ByteRange>) -> Result<ReadResult> {
@@ -173,7 +129,7 @@ impl Destination for LocalDestination {
             .await
             .map_err(map_storage)?;
         Ok(ReadResult {
-            meta: meta_from_probe(probe),
+            meta: object_metadata(probe),
             body,
         })
     }
@@ -184,16 +140,27 @@ impl Destination for LocalDestination {
         body: Pin<Box<dyn AsyncRead + Send>>,
         options: WriteOptions,
     ) -> Result<PutResult> {
+        let condition = guest::write_condition(&options)?;
         let dest_key = if options.stage_only {
             stage_object_key(options.commit_token.as_deref(), key)?
         } else {
             key.to_string()
         };
-        let written = self
-            .backend
-            .put_stream(&dest_key, body, write_meta(&options)?)
-            .await
-            .map_err(map_storage)?;
+        let meta = write_meta(&options)?;
+        let written = match &condition {
+            Some(condition) => {
+                self.backend
+                    .put_stream_conditional(&dest_key, body, meta, condition)
+                    .await
+                    .map_err(map_storage)?
+                    .put
+            }
+            None => self
+                .backend
+                .put_stream(&dest_key, body, meta)
+                .await
+                .map_err(map_storage)?,
+        };
         Ok(PutResult {
             key: key.into(),
             bytes_written: written.bytes_written,
@@ -248,6 +215,22 @@ impl Destination for LocalDestination {
         }
     }
 
+    async fn move_object(&self, from: &str, to: &str, options: MoveOptions) -> Result<MoveResult> {
+        guest::move_object(&self.backend, from, to, options).await
+    }
+
+    async fn move_many(&self, request: MoveManyRequest) -> Result<MoveManyPage> {
+        guest::move_many(&self.backend, request).await
+    }
+
+    async fn delete_many(&self, keys: Vec<String>) -> Result<Vec<KeyOutcome>> {
+        guest::delete_many(&self.backend, keys).await
+    }
+
+    async fn head_many(&self, keys: Vec<String>) -> Result<Vec<Option<ObjectMetadata>>> {
+        guest::head_many(&self.backend, keys).await
+    }
+
     async fn abort_stage(&self, key: &str, commit_token: &str) -> Result<()> {
         let staged = stage_object_key(Some(commit_token), key)?;
         match self.backend.delete(&staged).await {
@@ -268,11 +251,14 @@ impl PluginWorker for LocalRoot {
             api_version: PRODUCT_API_VERSION,
             id: ID.into(),
             display_name: Some("Local filesystem".into()),
-            rpc_features: vec![
+            rpc_features: [
                 FEATURE_SCALAR_LIMITS.into(),
                 FEATURE_STREAMS.into(),
                 FEATURE_STORAGE_COPY.into(),
-            ],
+            ]
+            .into_iter()
+            .chain(guest::storage_features(LocalFsBackend::CAPABILITIES))
+            .collect(),
             scalar_limits: ScalarLimits::default().into(),
             capabilities: manifest_capabilities(include_str!("../plugin.toml"))?,
             ..PluginDescribe::default()
@@ -361,6 +347,102 @@ mod tests {
         assert!(again.commit("Title/book.pdf", "pdf-tok").await.is_ok());
         assert!(again.commit("Title/book.m4b", "cover-tok").await.is_err());
         assert!(again.commit("Title/book.jpg", "audio-tok").await.is_err());
+        std::env::remove_var("BOOKCLERK_OUTPUT_LOCAL_ROOT");
+    }
+
+    #[tokio::test]
+    async fn describe_accepts_the_native_storage_operations() {
+        let described = LocalRoot.describe().await.expect("describe");
+        for feature in [
+            bookclerk_plugin_sdk::FEATURE_STORAGE_MOVE,
+            bookclerk_plugin_sdk::FEATURE_STORAGE_MOVE_MANY,
+            bookclerk_plugin_sdk::FEATURE_STORAGE_DELETE_MANY,
+            bookclerk_plugin_sdk::FEATURE_STORAGE_HEAD_MANY,
+            bookclerk_plugin_sdk::FEATURE_STORAGE_CONDITIONAL_WRITE,
+        ] {
+            assert!(
+                described.rpc_features.iter().any(|f| f == feature),
+                "{feature} missing from {:?}",
+                described.rpc_features
+            );
+        }
+        assert!(!described
+            .rpc_features
+            .iter()
+            .any(|f| f == bookclerk_plugin_sdk::FEATURE_STORAGE_CHANGES));
+    }
+
+    #[tokio::test]
+    async fn conditional_puts_and_moves_answer_conflict_through_the_destination() {
+        let _guard = ENV_LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = open_at(dir.path());
+        let put_if_absent = |body: &'static [u8]| WriteOptions {
+            content_length: Some(body.len() as u64),
+            if_none_match: true,
+            ..WriteOptions::default()
+        };
+        let first = dest
+            .put(
+                "a.json",
+                Box::pin(std::io::Cursor::new(b"one".to_vec())),
+                put_if_absent(b"one"),
+            )
+            .await
+            .expect("first write");
+        let probe = dest.head("a.json").await.unwrap().expect("probe");
+        assert_eq!(first.etag, probe.etag);
+        let again = dest
+            .put(
+                "a.json",
+                Box::pin(std::io::Cursor::new(b"two".to_vec())),
+                put_if_absent(b"two"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(again.code, bookclerk_plugin_sdk::PluginErrorCode::Conflict);
+        let staged = dest
+            .put(
+                "b.json",
+                Box::pin(std::io::Cursor::new(b"x".to_vec())),
+                WriteOptions {
+                    stage_only: true,
+                    commit_token: Some("t".into()),
+                    ..put_if_absent(b"x")
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            staged.code,
+            bookclerk_plugin_sdk::PluginErrorCode::InvalidParams
+        );
+
+        let moved = dest
+            .move_object("a.json", "c/a.json", MoveOptions::default())
+            .await
+            .expect("move");
+        assert!(moved.atomic);
+        let read = dest.head("c/a.json").await.unwrap().expect("probe").etag;
+        dest.put(
+            "c/a.json",
+            Box::pin(std::io::Cursor::new(b"rewritten".to_vec())),
+            WriteOptions::default(),
+        )
+        .await
+        .expect("rewrite");
+        let stale = dest
+            .move_object(
+                "c/a.json",
+                "d.json",
+                MoveOptions {
+                    if_source_match: read,
+                    ..MoveOptions::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(stale.code, bookclerk_plugin_sdk::PluginErrorCode::Conflict);
         std::env::remove_var("BOOKCLERK_OUTPUT_LOCAL_ROOT");
     }
 }

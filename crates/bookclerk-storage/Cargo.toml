@@ -21,7 +21,7 @@ bookclerk-config.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "net"] }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "sync"] }
 tracing.workspace = true
 
 # The S3 backend (`s3` feature) is only for the `s3` destination plugin. The

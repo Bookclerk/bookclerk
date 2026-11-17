@@ -1,6 +1,7 @@
 //! Local filesystem storage backend.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -14,6 +15,10 @@ use crate::bounded::{
     reject_scalar_hint, ReadSpan, TempGuard, MAX_SCALAR_OBJECT_BYTES,
 };
 use crate::error::{Result, StorageError};
+use crate::intent::{
+    require_disjoint_prefixes, ConditionalPutResult, HintedListPage, KeyResult, ListRequest,
+    MoveOptions, MovePrefixPage, MoveResult, StorageCapabilities, WriteCondition,
+};
 use crate::list_index::list_page_indexed;
 use crate::normalize_prefix;
 use crate::traits::{bookclerk_meta_sidecar_key, ObjectMeta, ObjectProbe, StorageBackend};
@@ -30,9 +35,25 @@ pub struct LocalFsBackend {
     prefix: String,
     /// Test override for [`StorageBackend::scan_placement`].
     placement_override: Option<String>,
+    /// Serializes `ifMatch` writes (and `ifNoneMatch` writes on a file
+    /// system without hard links) through this backend and its clones, so
+    /// two of them never both pass the same check.
+    check_then_write: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl LocalFsBackend {
+    /// What every local backend does natively: moves are renames, batches
+    /// run in one call, and conditional writes are checked here. There is no
+    /// change feed yet.
+    pub const CAPABILITIES: StorageCapabilities = StorageCapabilities {
+        move_object: true,
+        move_many: true,
+        delete_many: true,
+        head_many: true,
+        conditional_write: true,
+        changes: false,
+    };
+
     /// Create a backend rooted at `root` with no key prefix.
     ///
     /// # Errors
@@ -108,6 +129,7 @@ impl LocalFsBackend {
             root,
             prefix,
             placement_override: None,
+            check_then_write: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -232,6 +254,60 @@ fn modified_ms(meta: &std::fs::Metadata) -> Option<u64> {
     u64::try_from(since.as_millis()).ok()
 }
 
+/// A file's change signature, also used as its etag: size and modification
+/// time, plus inode and status-change time on Unix. Reading the file leaves
+/// it unchanged; writing, replacing, renaming onto it or touching it changes
+/// it. `None` when the platform reports no modification time.
+fn file_signature(meta: &std::fs::Metadata) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(format!(
+            "{:x}-{:x}-{}.{:09}-{}.{:09}",
+            meta.ino(),
+            meta.size(),
+            meta.mtime(),
+            meta.mtime_nsec(),
+            meta.ctime(),
+            meta.ctime_nsec()
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let since = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        Some(format!(
+            "{:x}-{}.{:09}",
+            meta.len(),
+            since.as_secs(),
+            since.subsec_nanos()
+        ))
+    }
+}
+
+/// Maps a `NotFound` I/O error to [`StorageError::NotFound`] for `key`.
+fn io_for(key: &str) -> impl FnOnce(std::io::Error) -> StorageError + '_ {
+    move |err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            StorageError::NotFound(key.into())
+        } else {
+            StorageError::Io(err)
+        }
+    }
+}
+
+/// Metadata for `path`, or `None` when nothing is there.
+async fn metadata_if_present(path: &Path) -> Result<Option<std::fs::Metadata>> {
+    match fs::metadata(path).await {
+        Ok(meta) => Ok(Some(meta)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(StorageError::Io(err)),
+    }
+}
+
 /// Rejects empty keys, absolute keys, and any `ParentDir` segment.
 fn validate_key(key: &str) -> Result<()> {
     if key.is_empty() || key.starts_with('/') {
@@ -281,6 +357,155 @@ impl StorageBackend for LocalFsBackend {
 
     fn clone_box(&self) -> Box<dyn StorageBackend> {
         Box::new(self.clone())
+    }
+
+    fn capabilities(&self) -> StorageCapabilities {
+        Self::CAPABILITIES
+    }
+
+    /// Renames the file (and its meta sidecar). With `no_overwrite` the file
+    /// is hard-linked to the target first, which fails when anything is
+    /// already there, and then unlinked from the source; on a file system
+    /// without hard links, or across devices, this falls back to
+    /// [`crate::intent::fallback_move`].
+    async fn move_object(&self, from: &str, to: &str, options: &MoveOptions) -> Result<MoveResult> {
+        let src = self.resolve(from)?;
+        let dest = self.resolve(to)?;
+        let Some(source) = metadata_if_present(&src).await? else {
+            if src != dest && metadata_if_present(&dest).await?.is_some() {
+                return Ok(MoveResult {
+                    atomic: true,
+                    already_moved: true,
+                });
+            }
+            return Err(StorageError::NotFound(from.into()));
+        };
+        if !source.is_file() {
+            return Err(StorageError::InvalidKey(format!("{from} is not an object")));
+        }
+        if let Some(expected) = &options.if_source_match {
+            if file_signature(&source).as_deref() != Some(expected.as_str()) {
+                return Err(StorageError::Conflict(format!(
+                    "{from} changed since it was read"
+                )));
+            }
+        }
+        if src == dest {
+            return Ok(MoveResult {
+                atomic: true,
+                already_moved: false,
+            });
+        }
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        if options.no_overwrite {
+            match fs::hard_link(&src, &dest).await {
+                Ok(()) => fs::remove_file(&src).await.map_err(io_for(from))?,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(StorageError::Conflict(format!("{to} already exists")));
+                }
+                // No hard links on this file system, or another device.
+                Err(_) => return crate::intent::fallback_move(self, from, to, options).await,
+            }
+        } else {
+            match fs::rename(&src, &dest).await {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::CrossesDevices => {
+                    return crate::intent::fallback_move(self, from, to, options).await;
+                }
+                Err(err) => return Err(io_for(from)(err)),
+            }
+        }
+        self.move_sidecar(from, to).await;
+        Ok(MoveResult {
+            atomic: true,
+            already_moved: false,
+        })
+    }
+
+    async fn move_prefix(
+        &self,
+        from_prefix: &str,
+        to_prefix: &str,
+        cursor: Option<&str>,
+        limit: u32,
+        options: &MoveOptions,
+    ) -> Result<MovePrefixPage> {
+        require_disjoint_prefixes(from_prefix, to_prefix)?;
+        let page = self.list_page(from_prefix, cursor, limit).await?;
+        let options = MoveOptions {
+            if_source_match: None,
+            ..options.clone()
+        };
+        let mut out = MovePrefixPage {
+            results: Vec::with_capacity(page.objects.len()),
+            next_cursor: page.next_cursor,
+            atomic: true,
+            objects_moved: 0,
+        };
+        for object in page.objects {
+            let Some(rest) = object.key.strip_prefix(from_prefix) else {
+                continue;
+            };
+            let target = format!("{to_prefix}{rest}");
+            match self.move_object(&object.key, &target, &options).await {
+                Ok(moved) => {
+                    out.atomic &= moved.atomic;
+                    out.objects_moved = out.objects_moved.saturating_add(1);
+                    out.results.push(KeyResult::from_result(object.key, Ok(())));
+                }
+                Err(err) => out
+                    .results
+                    .push(KeyResult::from_result(object.key, Err(err))),
+            }
+        }
+        Ok(out)
+    }
+
+    async fn put_stream_conditional(
+        &self,
+        key: &str,
+        body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        meta: ObjectMeta,
+        condition: &WriteCondition,
+    ) -> Result<ConditionalPutResult> {
+        self.write_stream(key, body, meta, Some(condition)).await
+    }
+
+    /// Fills each entry's etag, signature and modification time from the
+    /// file, and leaves out files modified before `modified_since_ms`.
+    async fn list_hinted(&self, request: &ListRequest) -> Result<HintedListPage> {
+        let mut page = self
+            .list_page(&request.prefix, request.cursor.as_deref(), request.limit)
+            .await?;
+        let wants_stat = request.with_signatures || request.modified_since_ms.is_some();
+        if wants_stat {
+            let mut kept = Vec::with_capacity(page.objects.len());
+            for mut object in page.objects {
+                let Some(meta) = metadata_if_present(&self.resolve(&object.key)?).await? else {
+                    // Removed since the listing; the next listing drops it.
+                    continue;
+                };
+                object.size = meta.len();
+                object.modified_at_ms = modified_ms(&meta);
+                object.signature = file_signature(&meta);
+                object.etag.clone_from(&object.signature);
+                let older = matches!(
+                    (request.modified_since_ms, object.modified_at_ms),
+                    (Some(since), Some(at)) if at < since
+                );
+                if !older {
+                    kept.push(object);
+                }
+            }
+            page.objects = kept;
+        }
+        Ok(HintedListPage {
+            page,
+            signatures_included: wants_stat,
+            modified_since_applied: request.modified_since_ms.is_some(),
+        })
     }
 
     async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()> {
@@ -357,12 +582,13 @@ impl StorageBackend for LocalFsBackend {
             key: key.to_string(),
             size: file_meta.len(),
             content_type: None,
-            etag: None,
+            etag: file_signature(&file_meta),
             meta: ObjectMeta {
                 content_length: Some(file_meta.len()),
                 ..Default::default()
             },
             modified_at_ms: modified_ms(&file_meta),
+            signature: file_signature(&file_meta),
             ..ObjectProbe::default()
         };
         // Cheap sidecar read — never opens the audio body.
@@ -536,9 +762,30 @@ impl StorageBackend for LocalFsBackend {
     async fn put_stream(
         &self,
         key: &str,
+        body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        meta: ObjectMeta,
+    ) -> Result<crate::PutStreamResult> {
+        self.write_stream(key, body, meta, None)
+            .await
+            .map(|written| written.put)
+    }
+}
+
+impl LocalFsBackend {
+    /// Streams `body` into a sibling temp file, then publishes it under `key`
+    /// when `condition` holds (always when it is `None`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Conflict`] when `condition` fails, integrity
+    /// and size errors for the body, and I/O errors.
+    async fn write_stream(
+        &self,
+        key: &str,
         mut body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
         mut meta: ObjectMeta,
-    ) -> Result<crate::PutStreamResult> {
+        condition: Option<&WriteCondition>,
+    ) -> Result<ConditionalPutResult> {
         use sha2::{Digest, Sha256};
         use tokio::io::AsyncWriteExt;
         if let Some(expected) = meta.sha256_hex.as_deref() {
@@ -608,20 +855,94 @@ impl StorageBackend for LocalFsBackend {
             file.flush().await?;
             file.sync_all().await?;
             drop(file);
-            tokio::fs::rename(&tmp, &path).await?;
+            let atomic = self.publish(&tmp, &path, key, condition).await?;
             guard.disarm();
-            Ok(bytes_written)
+            Ok((bytes_written, atomic))
         };
-        match put.await {
-            Ok(bytes_written) => {
-                write_local_meta_sidecar(self, key, &meta).await?;
-                Ok(crate::PutStreamResult {
-                    bytes_written,
-                    etag: None,
-                    sha256_hex: meta.sha256_hex,
-                })
+        let (bytes_written, atomic) = put.await?;
+        write_local_meta_sidecar(self, key, &meta).await?;
+        let etag = metadata_if_present(&path)
+            .await?
+            .as_ref()
+            .and_then(file_signature);
+        Ok(ConditionalPutResult {
+            put: crate::PutStreamResult {
+                bytes_written,
+                etag,
+                sha256_hex: meta.sha256_hex,
+            },
+            atomic,
+        })
+    }
+
+    /// Moves the finished temp file `tmp` to `path` when `condition` holds.
+    /// Returns whether the check and the publish were one step.
+    ///
+    /// `IfNoneMatch` hard-links the temp file into place, which fails if
+    /// anything is already there. `IfMatch` (and `IfNoneMatch` on a file
+    /// system without hard links) checks just before the rename while
+    /// holding [`Self::check_then_write`], so another conditional write
+    /// through Bookclerk cannot pass the same check; a write from outside
+    /// Bookclerk in that instant can.
+    async fn publish(
+        &self,
+        tmp: &Path,
+        path: &Path,
+        key: &str,
+        condition: Option<&WriteCondition>,
+    ) -> Result<bool> {
+        match condition {
+            None => {
+                fs::rename(tmp, path).await?;
+                Ok(true)
             }
-            Err(err) => Err(err),
+            Some(WriteCondition::IfNoneMatch) => match fs::hard_link(tmp, path).await {
+                Ok(()) => {
+                    // The object is published; a leftover temp name is harmless.
+                    let _ = fs::remove_file(tmp).await;
+                    Ok(true)
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    Err(StorageError::Conflict(format!("{key} already exists")))
+                }
+                Err(_) => {
+                    let _held = self.check_then_write.lock().await;
+                    if metadata_if_present(path).await?.is_some() {
+                        return Err(StorageError::Conflict(format!("{key} already exists")));
+                    }
+                    fs::rename(tmp, path).await?;
+                    Ok(false)
+                }
+            },
+            Some(WriteCondition::IfMatch(expected)) => {
+                let _held = self.check_then_write.lock().await;
+                let current = metadata_if_present(path)
+                    .await?
+                    .as_ref()
+                    .and_then(file_signature);
+                if current.as_deref() != Some(expected.as_str()) {
+                    return Err(StorageError::Conflict(format!(
+                        "{key} changed since it was read"
+                    )));
+                }
+                fs::rename(tmp, path).await?;
+                Ok(false)
+            }
+        }
+    }
+
+    /// Moves the companion meta sidecar of `from` to `to`, or removes a
+    /// stale sidecar at `to` when `from` has none. Best effort: the object
+    /// itself has already moved.
+    async fn move_sidecar(&self, from: &str, to: &str) {
+        let (Ok(src), Ok(dest)) = (
+            self.resolve(&bookclerk_meta_sidecar_key(from)),
+            self.resolve(&bookclerk_meta_sidecar_key(to)),
+        ) else {
+            return;
+        };
+        if fs::rename(&src, &dest).await.is_err() {
+            let _ = fs::remove_file(&dest).await;
         }
     }
 }
@@ -1299,5 +1620,293 @@ mod tests {
         );
         assert_eq!(backend.get("dest.m4b").await.unwrap().as_ref(), b"keeper");
         assert!(src.metadata().unwrap().len() > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES);
+    }
+
+    /// A local backend in a fresh directory.
+    fn intent_backend() -> (tempfile::TempDir, LocalFsBackend) {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        (dir, backend)
+    }
+
+    /// Writes `body` under `key` with a digest, so a meta sidecar exists.
+    async fn put_with_sidecar(backend: &LocalFsBackend, key: &str, body: &'static [u8]) {
+        backend
+            .put(
+                key,
+                Bytes::from_static(body),
+                ObjectMeta {
+                    sha256_hex: Some(hex::encode(sha2::Sha256::digest(body))),
+                    ..ObjectMeta::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Streams `body` under `key` with `condition`.
+    async fn put_if(
+        backend: &LocalFsBackend,
+        key: &str,
+        body: &'static [u8],
+        condition: &WriteCondition,
+    ) -> Result<ConditionalPutResult> {
+        backend
+            .put_stream_conditional(
+                key,
+                Box::pin(std::io::Cursor::new(body)),
+                ObjectMeta::default(),
+                condition,
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_native_move_renames_the_file_and_its_sidecar_and_repeats_safely() {
+        let (_dir, b) = intent_backend();
+        put_with_sidecar(&b, "Old/book.m4b", b"audio").await;
+        let moved = b
+            .move_object("Old/book.m4b", "New/book.m4b", &MoveOptions::default())
+            .await
+            .unwrap();
+        assert!(moved.atomic && !moved.already_moved);
+        assert_eq!(b.get("New/book.m4b").await.unwrap().as_ref(), b"audio");
+        assert!(!b.exists("Old/book.m4b").await.unwrap());
+        assert!(b
+            .exists(&bookclerk_meta_sidecar_key("New/book.m4b"))
+            .await
+            .unwrap());
+        assert!(!b
+            .exists(&bookclerk_meta_sidecar_key("Old/book.m4b"))
+            .await
+            .unwrap());
+        let again = b
+            .move_object("Old/book.m4b", "New/book.m4b", &MoveOptions::default())
+            .await
+            .unwrap();
+        assert!(again.already_moved);
+        let missing = b
+            .move_object("Gone/x", "Else/x", &MoveOptions::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(missing, StorageError::NotFound(_)), "{missing}");
+    }
+
+    #[tokio::test]
+    async fn a_move_without_a_sidecar_clears_a_stale_one_at_the_target() {
+        let (_dir, b) = intent_backend();
+        put_with_sidecar(&b, "to.m4b", b"old").await;
+        b.put(
+            "from.m4b",
+            Bytes::from_static(b"new"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        b.move_object("from.m4b", "to.m4b", &MoveOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(b.get("to.m4b").await.unwrap().as_ref(), b"new");
+        assert!(!b
+            .exists(&bookclerk_meta_sidecar_key("to.m4b"))
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn no_overwrite_keeps_an_existing_target_and_the_source() {
+        let (_dir, b) = intent_backend();
+        b.put("a", Bytes::from_static(b"a"), ObjectMeta::default())
+            .await
+            .unwrap();
+        b.put("b", Bytes::from_static(b"b"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let options = MoveOptions {
+            no_overwrite: true,
+            ..MoveOptions::default()
+        };
+        let err = b.move_object("a", "b", &options).await.unwrap_err();
+        assert!(matches!(err, StorageError::Conflict(_)), "{err}");
+        assert_eq!(b.get("a").await.unwrap().as_ref(), b"a");
+        assert_eq!(b.get("b").await.unwrap().as_ref(), b"b");
+        let moved = b.move_object("a", "c/d", &options).await.unwrap();
+        assert!(moved.atomic);
+        assert_eq!(b.get("c/d").await.unwrap().as_ref(), b"a");
+        assert!(!b.exists("a").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn if_source_match_moves_only_the_object_that_was_read() {
+        let (_dir, b) = intent_backend();
+        b.put("a", Bytes::from_static(b"one"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let read = b.head("a").await.unwrap().unwrap().etag.unwrap();
+        b.put("a", Bytes::from_static(b"two"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let stale = MoveOptions {
+            if_source_match: Some(read),
+            ..MoveOptions::default()
+        };
+        let err = b.move_object("a", "b", &stale).await.unwrap_err();
+        assert!(matches!(err, StorageError::Conflict(_)), "{err}");
+        let current = MoveOptions {
+            if_source_match: b.head("a").await.unwrap().unwrap().etag,
+            ..MoveOptions::default()
+        };
+        b.move_object("a", "b", &current).await.unwrap();
+        assert_eq!(b.get("b").await.unwrap().as_ref(), b"two");
+    }
+
+    #[tokio::test]
+    async fn moving_a_directory_key_is_refused() {
+        let (_dir, b) = intent_backend();
+        b.put("dir/x", Bytes::from_static(b"x"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let err = b
+            .move_object("dir", "other", &MoveOptions::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::InvalidKey(_)), "{err}");
+        assert!(b.exists("dir/x").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_etag_changes_when_the_file_is_rewritten_and_not_when_it_is_read() {
+        let (_dir, b) = intent_backend();
+        b.put("a", Bytes::from_static(b"same"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let first = b.head("a").await.unwrap().unwrap();
+        assert!(first.etag.is_some());
+        assert_eq!(first.etag, first.signature);
+        let _ = b.get("a").await.unwrap();
+        assert_eq!(b.head("a").await.unwrap().unwrap().etag, first.etag);
+        b.put("a", Bytes::from_static(b"diff"), ObjectMeta::default())
+            .await
+            .unwrap();
+        assert_ne!(b.head("a").await.unwrap().unwrap().etag, first.etag);
+    }
+
+    #[tokio::test]
+    async fn if_none_match_publishes_once_and_atomically() {
+        let (_dir, b) = intent_backend();
+        let first = put_if(&b, "k", b"first", &WriteCondition::IfNoneMatch)
+            .await
+            .unwrap();
+        assert!(first.atomic);
+        assert_eq!(first.put.etag, b.head("k").await.unwrap().unwrap().etag);
+        let err = put_if(&b, "k", b"second", &WriteCondition::IfNoneMatch)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Conflict(_)), "{err}");
+        assert_eq!(b.get("k").await.unwrap().as_ref(), b"first");
+        let leftovers: Vec<_> = std::fs::read_dir(&b.root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains("bookclerk-tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
+    }
+
+    #[tokio::test]
+    async fn if_match_writes_only_over_the_object_that_was_read() {
+        let (_dir, b) = intent_backend();
+        b.put("k", Bytes::from_static(b"v1"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let read = b.head("k").await.unwrap().unwrap().etag.unwrap();
+        let written = put_if(&b, "k", b"v2", &WriteCondition::IfMatch(read.clone()))
+            .await
+            .unwrap();
+        assert!(!written.atomic, "ifMatch is a check just before the rename");
+        let err = put_if(&b, "k", b"v3", &WriteCondition::IfMatch(read))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Conflict(_)), "{err}");
+        assert_eq!(b.get("k").await.unwrap().as_ref(), b"v2");
+        let absent = put_if(&b, "new", b"x", &WriteCondition::IfMatch("e".into()))
+            .await
+            .unwrap_err();
+        assert!(matches!(absent, StorageError::Conflict(_)), "{absent}");
+        assert!(!b.exists("new").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_hinted_listing_fills_signatures_and_filters_by_time() {
+        let (dir, b) = intent_backend();
+        b.put("p/old", Bytes::from_static(b"o"), ObjectMeta::default())
+            .await
+            .unwrap();
+        b.put("p/new", Bytes::from_static(b"n"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let past = FileTime::from_unix_time(1_000_000, 0);
+        set_file_times(dir.path().join("p/old"), past, past).unwrap();
+        let since = 2_000_000_000;
+        let page = b
+            .list_hinted(&ListRequest {
+                prefix: "p/".into(),
+                limit: 10,
+                with_signatures: true,
+                modified_since_ms: Some(since),
+                ..ListRequest::default()
+            })
+            .await
+            .unwrap();
+        assert!(page.signatures_included && page.modified_since_applied);
+        let keys: Vec<_> = page.page.objects.iter().map(|o| o.key.as_str()).collect();
+        assert_eq!(keys, ["p/new"]);
+        let entry = &page.page.objects[0];
+        assert!(entry.signature.is_some() && entry.modified_at_ms.is_some());
+        assert_eq!(
+            entry.etag,
+            b.head("p/new").await.unwrap().unwrap().etag,
+            "a listing and a probe agree"
+        );
+        let plain = b
+            .list_hinted(&ListRequest {
+                prefix: "p/".into(),
+                limit: 10,
+                ..ListRequest::default()
+            })
+            .await
+            .unwrap();
+        assert!(!plain.signatures_included && !plain.modified_since_applied);
+        assert_eq!(plain.page.objects.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_prefix_move_renames_a_page_and_refuses_overlap() {
+        let (_dir, b) = intent_backend();
+        for key in ["a/1", "a/2", "a/sub/3"] {
+            b.put(key, Bytes::from_static(b"x"), ObjectMeta::default())
+                .await
+                .unwrap();
+        }
+        let page = b
+            .move_prefix("a/", "b/", None, 100, &MoveOptions::default())
+            .await
+            .unwrap();
+        assert!(page.atomic);
+        assert_eq!(page.objects_moved, 3);
+        assert!(page.results.iter().all(|r| r.error.is_none()));
+        for key in ["b/1", "b/2", "b/sub/3"] {
+            assert!(b.exists(key).await.unwrap(), "{key}");
+        }
+        let err = b
+            .move_prefix("b/", "b/sub/", None, 100, &MoveOptions::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::InvalidKey(_)), "{err}");
+    }
+
+    #[test]
+    fn the_backend_reports_its_native_operations() {
+        let (_dir, b) = intent_backend();
+        assert_eq!(b.capabilities(), LocalFsBackend::CAPABILITIES);
     }
 }
