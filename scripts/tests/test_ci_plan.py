@@ -1055,6 +1055,7 @@ class CoverageCommandTests(unittest.TestCase):
         dirs = [d.relative_to(REPO).as_posix() for d in execute.workerd_guest_dirs(REPO)]
         self.assertIn("crates/bookclerk-plugins/optional/metadata-openlibrary", dirs)
         self.assertIn("crates/bookclerk-plugins/optional/metadata-audnexus", dirs)
+        self.assertIn("crates/bookclerk-plugins/optional/metadata-files", dirs)
         self.assertNotIn("crates/bookclerk-plugins/optional/source-libro", dirs)
 
     def test_rust_report_needs_instrumentation(self) -> None:

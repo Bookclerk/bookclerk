@@ -417,6 +417,36 @@ bookclerk nodes set --cache-budget 268435456         # 256 MiB on this node
 bookclerk nodes set --cluster-cache-budget           # back to the cluster's
 ```
 
+## Metadata files
+
+The optional `metadata_files` plugin reads, and for most formats writes,
+the metadata files other tools keep next to a book's audio:
+
+| Format | Files | Writes |
+| --- | --- | --- |
+| Audiobookshelf `metadata.json` | `metadata.json` | Yes |
+| Libation's catalog record | `*.metadata.json` | No, it is the store's record |
+| NFO text (`Key: value` lines) | `*.nfo` | Yes |
+| Audiobookshelf description | `desc.txt` | Yes |
+| Audiobookshelf narrators | `reader.txt` | Yes |
+
+It has no network or file access. Bookclerk hands it one file at a time
+and checks every answer, so a damaged or hostile file can at most be
+reported as unreadable.
+
+> [!NOTE]
+> Bookclerk does not look for these files yet. The plugin can be
+> installed and deployed now, and the metadata file sync work will start
+> using it to read files on storage and write changes back.
+
+To turn it on, install it as
+[Installing plugins](plugins.md#installing-plugins) describes, then deploy
+it. There is no network access to approve:
+
+```sh
+bookclerk plugins deploy metadata_files
+```
+
 ## Claim tickets and Accounts
 
 A **claim ticket** links a person to their identity in another app. With

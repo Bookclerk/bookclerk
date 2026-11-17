@@ -1451,6 +1451,12 @@ export class MetadataFiles extends MetadataFilesEntrypoint<Env> {
 }
 ```
 
+The first-party `metadata_files` plugin
+(`crates/bookclerk-plugins/optional/metadata-files`) is the complete
+reader and writer for Audiobookshelf's `metadata.json`, `desc.txt` and
+`reader.txt`, NFO text and Libation's catalog record. Its README lists
+what each format maps to.
+
 The host does not call the entrypoint yet beyond health probes. Finding
 the files, matching them to editions and writing changes back come with
 the metadata file sync work.

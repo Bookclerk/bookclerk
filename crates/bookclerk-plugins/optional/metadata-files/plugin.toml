@@ -1,0 +1,100 @@
+api_version = 3
+id = "metadata_files"
+name = "Metadata files"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["metadataFiles"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = []
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+# Parsing or rendering one file of at most 256 KiB.
+cpu_ms = 2000
+# The dialects make no requests.
+subrequests = 0
+
+# Emitted from `src/` by `npm run build`; CI fails when they drift.
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[modules]]
+name = "dialects.js"
+path = "dialects.js"
+type = "js"
+
+[[modules]]
+name = "text.js"
+path = "text.js"
+type = "js"
+
+[[modules]]
+name = "abs-json.js"
+path = "abs-json.js"
+type = "js"
+
+[[modules]]
+name = "libation.js"
+path = "libation.js"
+type = "js"
+
+[[modules]]
+name = "nfo.js"
+path = "nfo.js"
+type = "js"
+
+[[modules]]
+name = "plain-text.js"
+path = "plain-text.js"
+type = "js"
+
+[capabilities.network]
+# The host hands every file in and takes every file back, so the plugin
+# needs no network or file grant.
+mode = "deny"
+
+[[metadata_files.dialects]]
+id = "abs_metadata_json"
+name = "Audiobookshelf metadata.json"
+file_names = ["metadata.json"]
+fields = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "identifiers", "credits", "series", "chapters"]
+credit_roles = ["author", "narrator"]
+writes = true
+
+[[metadata_files.dialects]]
+id = "libation_json"
+name = "Libation catalog record"
+suffixes = [".metadata.json"]
+fields = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "abridgement", "identifiers", "credits", "series", "chapters", "duration"]
+credit_roles = ["author", "narrator"]
+
+[[metadata_files.dialects]]
+id = "abs_nfo"
+name = "NFO text"
+suffixes = [".nfo"]
+fields = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "identifiers", "credits", "series"]
+credit_roles = ["author", "narrator"]
+writes = true
+
+[[metadata_files.dialects]]
+id = "desc_txt"
+name = "Audiobookshelf desc.txt"
+file_names = ["desc.txt"]
+fields = ["description"]
+writes = true
+
+[[metadata_files.dialects]]
+id = "reader_txt"
+name = "Audiobookshelf reader.txt"
+file_names = ["reader.txt"]
+fields = ["credits"]
+credit_roles = ["narrator"]
+writes = true
+
+[vars]
