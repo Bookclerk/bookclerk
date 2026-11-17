@@ -192,9 +192,10 @@ like when it last sent it, in its own `LISTENING_STATE` database:
 - Until you approve that database in the plugin's consent, every sync
   sends all progress, as before.
 - One sync makes at most about 1,000 requests to Audiobookshelf. On a
-  large server the first sync can stop there. With the database approved,
-  the next sync skips what it already sent and reaches more of the rest;
-  without it, every sync starts over from the first person.
+  large server a sync can stop there. Every sync starts again from the
+  first person, so later people may still be missed.
+  With the database approved, a later sync skips progress it already sent
+  and so may reach more of the rest.
 
 API coverage notes:
 [`crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md`](../../crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md).

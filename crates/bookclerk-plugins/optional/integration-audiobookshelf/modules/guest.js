@@ -256,7 +256,7 @@ export async function syncListening(state, ctx, nowMs) {
     return serialized(state, async () => {
         const sync = await collectListeningChanges(client, ctx.db, nowMs);
         if (!sync.complete) {
-            console.info("Audiobookshelf listening sync reached its request budget; the next sync sends the rest");
+            console.info("Audiobookshelf listening sync reached its request budget; some progress was not sent");
         }
         return sync.rows;
     });

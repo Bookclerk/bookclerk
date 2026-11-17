@@ -13,8 +13,10 @@
  *
  * One sync may make at most the requests its budget allows (the host caps
  * each call; see `plugin.toml`). When the budget runs low the sync returns
- * what it collected: the rows it skipped are not remembered as sent, so the
- * next sync sends them.
+ * what it collected: the rows it skipped are not remembered as sent, so a
+ * later sync may send them. Each sync starts again from the first user, so
+ * on a server large enough to spend the budget before a user, that user
+ * can still be missed.
  */
 import { BudgetSpent, } from "./client.js";
 import { FINGERPRINT_TAG, LISTENING_KEY_TAG, fingerprint64, hexKey } from "./hash.js";
@@ -163,7 +165,7 @@ async function collectUser(client, userId, previous, nowMs, items) {
             meta = items.get(row.libraryItemId);
         }
         else if (client.budget.left < 1) {
-            // Not remembered, so the next sync sends it.
+            // Not remembered, so a later sync may send it.
             complete = false;
             continue;
         }

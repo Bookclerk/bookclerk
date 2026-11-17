@@ -295,7 +295,7 @@ export async function syncListening(
     const sync = await collectListeningChanges(client, ctx.db, nowMs);
     if (!sync.complete) {
       console.info(
-        "Audiobookshelf listening sync reached its request budget; the next sync sends the rest",
+        "Audiobookshelf listening sync reached its request budget; some progress was not sent",
       );
     }
     return sync.rows;
