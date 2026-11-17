@@ -173,6 +173,8 @@ interface Collected {
   readonly next: UserMemory;
   /** `false` when rows were skipped because the budget ran out. */
   readonly complete: boolean;
+  /** Items sent without being remembered, whose old memory must go. */
+  readonly forget: readonly string[];
 }
 
 /**
@@ -203,6 +205,7 @@ async function collectUser(
     return undefined;
   }
   const remembered = new Map<string, bigint>();
+  const forget: string[] = [];
   const rows: ListeningProgress[] = [];
   let complete = true;
   for (const row of detail.mediaProgress) {
@@ -232,10 +235,18 @@ async function collectUser(
     }
     // A row whose item lookup failed goes out without its identifiers and
     // is not remembered, so the next sync looks the item up again.
+    // Its old fingerprint goes too, so a later return to that progress is
+    // sent rather than taken for unchanged.
     if (meta !== undefined) remembered.set(row.libraryItemId, fp);
+    else forget.push(row.libraryItemId);
     rows.push(hostRow(detail.id, row, meta));
   }
-  return { rows, next: { fullAtMs: previous?.fullAtMs ?? nowMs, items: remembered }, complete };
+  return {
+    rows,
+    next: { fullAtMs: previous?.fullAtMs ?? nowMs, items: remembered },
+    complete,
+    forget,
+  };
 }
 
 /**
@@ -313,6 +324,8 @@ export async function readMemory(
  * @param previous - The memory the sync started from.
  * @param next - The memory to keep.
  * @param nowMs - The time of this sync.
+ * @param forget - Items sent this sync without being remembered; their
+ *   old fingerprints are deleted.
  * @throws The binding's error.
  */
 export async function writeMemory(
@@ -321,8 +334,20 @@ export async function writeMemory(
   previous: UserMemory | undefined,
   next: UserMemory,
   nowMs: bigint,
+  forget: readonly string[] = [],
 ): Promise<void> {
   const statements: PreparedStatement[] = [];
+  if (previous !== undefined) {
+    for (const item of forget) {
+      if (!previous.items.has(item)) continue;
+      statements.push(
+        db
+          .prepare("DELETE FROM abs_listening_items WHERE person = ? AND item = ?")
+          .bind(text(person), text(item))
+          .asRun(),
+      );
+    }
+  }
   if (previous === undefined) {
     statements.push(
       db.prepare("DELETE FROM abs_listening_items WHERE person = ?").bind(text(person)).asRun(),
@@ -395,7 +420,7 @@ export async function collectListeningChanges(
   }
   const users = await client.listUsers();
   const rows: ListeningProgress[] = [];
-  const remembered: Array<[string, UserMemory | undefined, UserMemory]> = [];
+  const remembered: Array<[string, UserMemory | undefined, UserMemory, readonly string[]]> = [];
   const items = new Map<string, AbsItemMetadata | undefined>();
   let complete = true;
   for (const user of users) {
@@ -418,16 +443,16 @@ export async function collectListeningChanges(
     }
     if (collected === undefined) continue;
     rows.push(...collected.rows);
-    remembered.push([person, previous, collected.next]);
+    remembered.push([person, previous, collected.next, collected.forget]);
     if (!collected.complete) {
       complete = false;
       break;
     }
   }
   if (memory !== undefined) {
-    for (const [person, previous, next] of remembered) {
+    for (const [person, previous, next, forget] of remembered) {
       try {
-        await writeMemory(memory, person, previous, next, now);
+        await writeMemory(memory, person, previous, next, now, forget);
       } catch (err) {
         console.warn(`Audiobookshelf listening memory write failed: ${String(err)}`);
       }

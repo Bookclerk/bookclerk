@@ -265,6 +265,14 @@ test("no socket without the binding, the watch, a key or a usable URL", async ()
   assert.equal(sockets.connects.length, 0);
 });
 
+test("a start and a poll that overlap open one socket", async () => {
+  const sockets = fakeSockets();
+  const ctx = ctxFor(usersServer(["root"]), { sockets: sockets.binding });
+  const state = guest.newState();
+  await Promise.all([guest.start(state, ctx), guest.pollEvents(state, ctx)]);
+  assert.equal(sockets.connects.length, 1);
+});
+
 test("a socket that cannot open does not fail start or poll", async () => {
   const broken = {
     connect: () => Promise.reject(new Error("denied")),
@@ -304,6 +312,12 @@ test("book_acquired asks for a rescan; other events and switches only acknowledg
   assert.deepEqual(await guest.onEvent(ctxFor(server, { libraryId: null }), "book_acquired"), {
     kind: "ack",
   });
+  assert.deepEqual(
+    await guest.onEvent(ctxFor(server, { libraryId: null, apiKey: null }), "book_acquired"),
+    {
+      kind: "ack",
+    },
+  );
   assert.deepEqual(
     server.seen.map((s) => `${s.method} ${s.path}`),
     ["POST /api/libraries/lib1/scan"],

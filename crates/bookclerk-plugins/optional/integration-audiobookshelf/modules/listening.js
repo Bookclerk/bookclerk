@@ -149,6 +149,7 @@ async function collectUser(client, userId, previous, nowMs, items) {
         return undefined;
     }
     const remembered = new Map();
+    const forget = [];
     const rows = [];
     let complete = true;
     for (const row of detail.mediaProgress) {
@@ -181,11 +182,20 @@ async function collectUser(client, userId, previous, nowMs, items) {
         }
         // A row whose item lookup failed goes out without its identifiers and
         // is not remembered, so the next sync looks the item up again.
+        // Its old fingerprint goes too, so a later return to that progress is
+        // sent rather than taken for unchanged.
         if (meta !== undefined)
             remembered.set(row.libraryItemId, fp);
+        else
+            forget.push(row.libraryItemId);
         rows.push(hostRow(detail.id, row, meta));
     }
-    return { rows, next: { fullAtMs: previous?.fullAtMs ?? nowMs, items: remembered }, complete };
+    return {
+        rows,
+        next: { fullAtMs: previous?.fullAtMs ?? nowMs, items: remembered },
+        complete,
+        forget,
+    };
 }
 /**
  * Drops the memory of every user not synced for {@link RETENTION_MS}.
@@ -252,10 +262,22 @@ export async function readMemory(db, person, nowMs) {
  * @param previous - The memory the sync started from.
  * @param next - The memory to keep.
  * @param nowMs - The time of this sync.
+ * @param forget - Items sent this sync without being remembered; their
+ *   old fingerprints are deleted.
  * @throws The binding's error.
  */
-export async function writeMemory(db, person, previous, next, nowMs) {
+export async function writeMemory(db, person, previous, next, nowMs, forget = []) {
     const statements = [];
+    if (previous !== undefined) {
+        for (const item of forget) {
+            if (!previous.items.has(item))
+                continue;
+            statements.push(db
+                .prepare("DELETE FROM abs_listening_items WHERE person = ? AND item = ?")
+                .bind(text(person), text(item))
+                .asRun());
+        }
+    }
     if (previous === undefined) {
         statements.push(db.prepare("DELETE FROM abs_listening_items WHERE person = ?").bind(text(person)).asRun());
     }
@@ -338,16 +360,16 @@ export async function collectListeningChanges(client, memory, nowMs) {
         if (collected === undefined)
             continue;
         rows.push(...collected.rows);
-        remembered.push([person, previous, collected.next]);
+        remembered.push([person, previous, collected.next, collected.forget]);
         if (!collected.complete) {
             complete = false;
             break;
         }
     }
     if (memory !== undefined) {
-        for (const [person, previous, next] of remembered) {
+        for (const [person, previous, next, forget] of remembered) {
             try {
-                await writeMemory(memory, person, previous, next, now);
+                await writeMemory(memory, person, previous, next, now, forget);
             }
             catch (err) {
                 console.warn(`Audiobookshelf listening memory write failed: ${String(err)}`);

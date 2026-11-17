@@ -289,6 +289,34 @@ test("a row whose item lookup failed is sent again with the next sync", async ()
   });
 });
 
+test("a return to remembered progress is sent after a failed lookup", async () => {
+  await eachProfile(async (db, profile) => {
+    let progress = 0.1;
+    let itemUp = true;
+    const server = fakeServer((seen) => {
+      if (seen.path === "/api/users") return json({ users: [{ id: "u1" }] });
+      if (seen.path === "/api/users/u1")
+        return json({ id: "u1", mediaProgress: [{ libraryItemId: "a", progress }] });
+      if (seen.path === "/api/items/a")
+        return itemUp ? json({ media: { metadata: {} } }) : new Response("", { status: 503 });
+      return undefined;
+    });
+    const abs = (): AbsClient => new AbsClient(server.baseUrl, "k", server.fetch);
+    assert.equal((await collectListeningChanges(abs(), db.binding, T0)).rows.length, 1);
+    progress = 0.5;
+    itemUp = false;
+    assert.equal((await collectListeningChanges(abs(), db.binding, T0 + 1)).rows[0]?.progress, 0.5);
+    progress = 0.1;
+    itemUp = true;
+    const back = await collectListeningChanges(abs(), db.binding, T0 + 2);
+    assert.deepEqual(
+      back.rows.map((r) => r.progress),
+      [0.1],
+      `${profile}: the return to 0.1 is sent`,
+    );
+  });
+});
+
 test("a memory that fails never fails the sync", async () => {
   // A database without the tables: every memory call fails.
   for (const profile of TEST_DATABASE_PROFILES) {

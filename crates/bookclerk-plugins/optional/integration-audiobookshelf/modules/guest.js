@@ -188,7 +188,8 @@ export async function start(state, ctx) {
             }
         });
     }
-    await ensurePushQuietly(ctx);
+    // Serialized, so a start and a poll that overlap open one socket.
+    await serialized(state, () => ensurePushQuietly(ctx));
 }
 /**
  * `RemoteLibrary.pollEvents`: the users created since the last poll.
@@ -205,7 +206,8 @@ export async function start(state, ctx) {
  *   cannot be listed; the binding's error when the watch cannot be read.
  */
 export async function pollEvents(state, ctx) {
-    await ensurePushQuietly(ctx);
+    // Serialized, so a start and a poll that overlap open one socket.
+    await serialized(state, () => ensurePushQuietly(ctx));
     if (!ctx.settings.watchUsers)
         return [];
     const client = clientFor(ctx);
@@ -297,13 +299,13 @@ export async function authenticateUser(ctx, username, password) {
 export async function onEvent(ctx, eventType) {
     if (eventType !== "book_acquired" || !ctx.settings.notifyScanOnAcquire)
         return { kind: "ack" };
-    const client = tryClient(ctx);
-    if (client instanceof AbsFailure)
-        return { kind: "retry", reason: client.message };
     if (ctx.settings.libraryId === null) {
         console.warn("Audiobookshelf scan skipped: the `library_id` setting is unset");
         return { kind: "ack" };
     }
+    const client = tryClient(ctx);
+    if (client instanceof AbsFailure)
+        return { kind: "retry", reason: client.message };
     try {
         await client.scanLibrary(ctx.settings.libraryId, false);
         return { kind: "ack" };
