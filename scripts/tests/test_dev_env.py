@@ -271,6 +271,32 @@ class ProvisionScriptTests(unittest.TestCase):
         self.assertEqual(None, ignored.get("astral-sh/uv", "missing"))
         self.assertEqual(["version-update:semver-major"], ignored.get("node"))
 
+    def test_dependabot_bumps_vitest_with_its_plugins(self) -> None:
+        """vitest and @vitest/* move in one pull request in every npm directory using both.
+
+        @vitest/coverage-v8 peers on the exact vitest version, so separate
+        bumps each fail ``npm ci`` (#1033 and #1034 did).
+        """
+        config = yaml.safe_load(DEPENDABOT.read_text(encoding="utf-8"))
+        checked = 0
+        for update in (u for u in config["updates"] if u["package-ecosystem"] == "npm"):
+            for directory in update.get("directories") or [update["directory"]]:
+                manifest = ROOT / directory.lstrip("/") / "package.json"
+                if not manifest.is_file():
+                    continue
+                package = json.loads(manifest.read_text(encoding="utf-8"))
+                names = {**package.get("dependencies", {}), **package.get("devDependencies", {})}
+                if "vitest" not in names or not any(n.startswith("@vitest/") for n in names):
+                    continue
+                checked += 1
+                with self.subTest(directory=directory):
+                    grouped = any(
+                        "update-types" not in group and {"vitest", "@vitest/*"} <= set(group.get("patterns", []))
+                        for group in update.get("groups", {}).values()
+                    )
+                    self.assertTrue(grouped, f"{directory}: no group with vitest and @vitest/* for every update type")
+        self.assertGreater(checked, 0, "no npm directory uses vitest with a @vitest/ plugin")
+
     def test_session_setup_finds_node_and_uv_images(self) -> None:
         """session-setup.sh copies Node.js and uv out of these two FROM lines."""
         names = {_split_ref(ref)[0] for ref in _base_images(DEVCONTAINER_DOCKERFILE)}
