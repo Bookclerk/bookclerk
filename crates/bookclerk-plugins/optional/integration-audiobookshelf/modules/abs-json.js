@@ -15,7 +15,7 @@
  * treats it. Rendering keeps every key it does not own, in place, and
  * writes the file with two-space indentation as Audiobookshelf does.
  */
-import { RecordBuilder, chapterTitle, decodeUtf8, encodeFile, firstId, invalid, namesIn, partialDate, secondsToMs, } from "./text.js";
+import { RecordBuilder, chapterTitle, decodeUtf8, decodeUtf8Strict, encodeFile, firstId, invalid, namesIn, partialDate, secondsToMs, } from "./text.js";
 /** A series string's trailing ` #position`, the way Audiobookshelf reads it. */
 const SERIES_POSITION = / #([^#\s]+)$/;
 /**
@@ -283,13 +283,13 @@ function writeChapters(chapters) {
  * @param record - Values to write.
  * @param fields - Fields to set; an empty value removes the field's keys.
  * @returns The new file.
- * @throws {DialectFailure} When `existing` is not a JSON object, or the
- *   result is over the size cap.
+ * @throws {DialectFailure} When `existing` is not UTF-8 or not a JSON
+ *   object, or the result is over the size cap.
  */
 export function renderAbsJson(existing, record, fields) {
     const file = existing.length === 0 ? {} : parseObject(existing, "metadata.json");
     if (existing.length > 0)
-        checkNumbersKept(decodeUtf8(existing));
+        checkNumbersKept(decodeUtf8Strict(existing, "metadata.json"));
     for (const field of fields) {
         switch (field) {
             case "title":

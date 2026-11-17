@@ -99,16 +99,21 @@ else in the file:
   drops the field's other lines, adds a new field after the last
   `Key: value` line, and keeps every other line and the file's line
   endings (CRLF, LF or CR). A removed date also drops the copyright lines
-  it would otherwise be read from.
+  it would otherwise be read from. A subtitle without a title is written
+  as `Title: : Subtitle`.
 - `reader.txt` replaces its first line and keeps the rest.
 
 A value the format cannot hold so that it reads back the same is refused
 with `invalid_params` rather than written changed: a series position with
-a space or `#` in `metadata.json`, a list entry with a comma or a title
-with a colon in an NFO, a narrator name holding a separator in
-`reader.txt`. So is a `metadata.json` holding a number that a re-write
-would change: any number whose exact value a double cannot hold, however
-it is spelled (`9007199254740993`, `9007199254740993e0`, `1e-400`, `1e400`).
+a space or `#` in `metadata.json`, a list entry with a comma, a title with
+a colon or a description line of only `=` in an NFO, a narrator name
+holding a separator or a line break in `reader.txt`. So is a
+`metadata.json` holding a number that a re-write would change: any number
+whose exact value a double cannot hold, however it is spelled
+(`9007199254740993`, `9007199254740993e0`, `1e-400`, `1e400`). So is an
+existing file whose bytes would not survive the re-write: a
+`metadata.json` that is not valid UTF-8, or an NFO or `reader.txt` with a
+byte that neither UTF-8 nor Windows-1252 defines.
 
 An answer with nothing left in it is empty, and the host decides whether
 to remove the file. Formats keep one value where the record can hold

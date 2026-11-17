@@ -25,6 +25,7 @@ import {
   RecordBuilder,
   chapterTitle,
   decodeUtf8,
+  decodeUtf8Strict,
   encodeFile,
   firstId,
   invalid,
@@ -290,8 +291,8 @@ function writeChapters(chapters: MetadataChapter[]): JsonObject[] {
  * @param record - Values to write.
  * @param fields - Fields to set; an empty value removes the field's keys.
  * @returns The new file.
- * @throws {DialectFailure} When `existing` is not a JSON object, or the
- *   result is over the size cap.
+ * @throws {DialectFailure} When `existing` is not UTF-8 or not a JSON
+ *   object, or the result is over the size cap.
  */
 export function renderAbsJson(
   existing: Uint8Array,
@@ -299,7 +300,7 @@ export function renderAbsJson(
   fields: readonly MetadataField[],
 ): Uint8Array {
   const file: JsonObject = existing.length === 0 ? {} : parseObject(existing, "metadata.json");
-  if (existing.length > 0) checkNumbersKept(decodeUtf8(existing));
+  if (existing.length > 0) checkNumbersKept(decodeUtf8Strict(existing, "metadata.json"));
   for (const field of fields) {
     switch (field) {
       case "title":

@@ -585,6 +585,56 @@ describe("values a format cannot hold", () => {
     assert.equal(str(out), "Title: New\rCustom: Keep\r");
   });
 
+  test("an NFO keeps a subtitle without a title", () => {
+    const cleared = renderFile("abs_nfo", utf8("Title: Old: Keep\n"), record(), ["title"]);
+    assert.equal(str(cleared), "Title: : Keep\n");
+    assert.equal(parseFile("abs_nfo", cleared).title, undefined);
+    assert.equal(parseFile("abs_nfo", cleared).subtitle, "Keep");
+    const created = renderFile("abs_nfo", new Uint8Array(), record({ subtitle: "Only" }), [
+      "subtitle",
+    ]);
+    assert.equal(str(created), "Title: : Only\n");
+    assert.equal(parseFile("abs_nfo", created).subtitle, "Only");
+  });
+
+  test("an NFO refuses description lines it would read as an underline", () => {
+    refuses(
+      () =>
+        renderFile("abs_nfo", new Uint8Array(), record({ description: "First\n===\nLast" }), [
+          "description",
+        ]),
+      /section underline/,
+    );
+  });
+
+  test("text dialects refuse to rewrite bytes they cannot decode", () => {
+    // 0x81 is unused in Windows-1252, so it would come back as U+FFFD.
+    const odd = new Uint8Array([...utf8("Title: A\nNote: "), 0x81, 0x0a]);
+    assert.equal(parseFile("abs_nfo", odd).title, "A");
+    refuses(() => renderFile("abs_nfo", odd, record({ title: "B" }), ["title"]), /lose that byte/);
+    const narrators = record({
+      credits: [{ name: "X", role: "narrator", level: "roleDefault" }],
+      creditRoles: ["narrator"],
+    });
+    const reader = new Uint8Array([...utf8("A\n"), 0x8d, 0x0a]);
+    refuses(() => renderFile("reader_txt", reader, narrators, ["credits"]), /lose that byte/);
+    const json = new Uint8Array([...utf8('{"note": "'), 0xff, ...utf8('"}')]);
+    assert.equal(parseFile("abs_metadata_json", json).title, undefined);
+    refuses(
+      () => renderFile("abs_metadata_json", json, record({ title: "T" }), ["title"]),
+      /not valid UTF-8/,
+    );
+  });
+
+  test("reader.txt splits a long space run without a separator quickly", () => {
+    const line = `A${" ".repeat(200_000)}B`;
+    const started = performance.now();
+    const parsed = parseFile("reader_txt", utf8(line));
+    assert.ok(performance.now() - started < 1000, "split took over a second");
+    assert.equal(parsed.credits.length, 1);
+    assert.deepEqual(splitNames(" A , B and C "), [" A", "B", "C "]);
+  });
+
   test("reader.txt refuses names it would split", () => {
     for (const name of ["Doe, Jane", "A & B", "Tom and Jerry", "X;Y", "and"]) {
       const narrators = record({
@@ -596,5 +646,10 @@ describe("values a format cannot hold", () => {
         /holds a separator/,
       );
     }
+    const broken = record({
+      credits: [{ name: "Alice\nBob", role: "narrator", level: "roleDefault" }],
+      creditRoles: ["narrator"],
+    });
+    refuses(() => renderFile("reader_txt", utf8(""), broken, ["credits"]), /line break/);
   });
 });

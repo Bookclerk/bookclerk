@@ -285,7 +285,7 @@ function joinList(values) {
  * @throws {DialectFailure} When the result is over the size cap.
  */
 export function renderNfo(existing, record, fields) {
-    const file = split(decodeText(existing));
+    const file = split(decodeText(existing, true));
     const head = file.head;
     const wants = (field) => fields.includes(field);
     if (wants("title") || wants("subtitle")) {
@@ -296,11 +296,15 @@ export function renderNfo(existing, record, fields) {
         if (wants("title") && title?.includes(":") === true) {
             throw invalid(`title \`${title}\` holds a colon, so an NFO would read part of it as the subtitle`);
         }
-        const value = title === undefined || title === ""
-            ? undefined
-            : subtitle === undefined || subtitle === ""
+        // A subtitle without a title is written as `Title: : Subtitle`, which
+        // reads back as an empty title and the subtitle.
+        const hasTitle = title !== undefined && title !== "";
+        const hasSubtitle = subtitle !== undefined && subtitle !== "";
+        const value = hasSubtitle
+            ? `${hasTitle ? title : ""}: ${subtitle}`
+            : hasTitle
                 ? title
-                : `${title}: ${subtitle}`;
+                : undefined;
         setGroup(head, TITLE, value);
     }
     if (wants("credits")) {
@@ -352,6 +356,10 @@ export function renderNfo(existing, record, fields) {
             section = [];
         }
         else {
+            const rule = description.split(/\r\n|\n|\r/).find((l) => RULE.test(l));
+            if (rule !== undefined) {
+                throw invalid(`description line \`${rule}\` is a section underline, which an NFO reader skips`);
+            }
             const header = file.sectionHeader.length > 0
                 ? file.sectionHeader
                 : ["Book Description", "================"];

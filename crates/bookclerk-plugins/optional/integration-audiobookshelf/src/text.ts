@@ -81,15 +81,24 @@ const CP1252_HIGH = [
  * plain-text sidecars written on Windows.
  *
  * @param bytes - The whole file.
+ * @param forRewrite - Whether the text will be written back; a byte that
+ *   decodes to U+FFFD would then be lost, so it is refused instead.
  * @returns The file's text.
+ * @throws {DialectFailure} When `forRewrite` is set and a byte is neither
+ *   UTF-8 nor Windows-1252.
  */
-export function decodeText(bytes: Uint8Array): string {
+export function decodeText(bytes: Uint8Array, forRewrite = false): string {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
     let out = "";
     for (const byte of bytes) {
       const high = byte >= 0x80 && byte <= 0x9f ? CP1252_HIGH[byte - 0x80] : undefined;
+      if (high === 0 && forRewrite) {
+        throw invalid(
+          `the file holds byte 0x${byte.toString(16)}, which is not valid UTF-8 or Windows-1252, so rewriting it would lose that byte`,
+        );
+      }
       out += String.fromCodePoint(high === undefined ? byte : high === 0 ? 0xfffd : high);
     }
     return out;
@@ -105,6 +114,24 @@ export function decodeText(bytes: Uint8Array): string {
  */
 export function decodeUtf8(bytes: Uint8Array): string {
   return new TextDecoder("utf-8").decode(bytes);
+}
+
+/**
+ * Decodes a JSON file that will be written back. Replacing an invalid
+ * sequence with U+FFFD would change bytes the edit does not touch, so it is
+ * refused instead.
+ *
+ * @param bytes - The whole file.
+ * @param what - File description for errors.
+ * @returns The file's text, a byte order mark dropped.
+ * @throws {DialectFailure} When the bytes are not valid UTF-8.
+ */
+export function decodeUtf8Strict(bytes: Uint8Array, what: string): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw invalid(`${what} is not valid UTF-8, so rewriting it would change bytes it holds`);
+  }
 }
 
 /**

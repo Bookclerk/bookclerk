@@ -12,8 +12,12 @@
 import type { MetadataField, MetadataFileRecord } from "@bookclerk/plugin-sdk/workerd";
 import { RecordBuilder, decodeText, encodeFile, invalid, namesIn } from "./text.ts";
 
-/** Separators between narrator names on `reader.txt`'s first line. */
-const NAME_SEPARATOR = /\s*(?:[,;&]|\band\b)\s*/i;
+/**
+ * Separators between narrator names on `reader.txt`'s first line. The space
+ * around each is trimmed after the split rather than matched here, since a
+ * leading `\s*` would retry from every position of a long space run.
+ */
+const NAME_SEPARATOR = /[,;&]|\band\b/i;
 
 /**
  * Parses a `desc.txt`.
@@ -51,7 +55,15 @@ export function renderDescTxt(
  * @returns The names, blanks dropped.
  */
 export function splitNames(text: string): string[] {
-  return text.split(NAME_SEPARATOR).filter((name) => name.trim() !== "");
+  const pieces = text.split(NAME_SEPARATOR);
+  const last = pieces.length - 1;
+  return pieces
+    .map((piece, i) => {
+      // Space beside a separator is dropped; the line's own ends are kept.
+      const start = i > 0 ? piece.trimStart() : piece;
+      return i < last ? start.trimEnd() : start;
+    })
+    .filter((name) => name.trim() !== "");
 }
 
 /**
@@ -81,10 +93,16 @@ export function renderReaderTxt(
   fields: readonly MetadataField[],
 ): Uint8Array {
   if (!fields.includes("credits") || !record.creditRoles.includes("narrator")) return existing;
-  const text = decodeText(existing);
+  const text = decodeText(existing, true);
   const breakAt = text.search(/\r?\n|\r/);
   const rest = breakAt === -1 ? "" : text.slice(breakAt);
   const names = namesIn(record, "narrator");
+  const broken = names.find((name) => /[\r\n]/.test(name));
+  if (broken !== undefined) {
+    throw invalid(
+      `narrator \`${broken}\` holds a line break, so reader.txt would lose the part after it`,
+    );
+  }
   const split = names.find((name) => splitNames(name).join("\u0000") !== name);
   if (split !== undefined) {
     throw invalid(

@@ -305,7 +305,7 @@ export function renderNfo(
   record: MetadataFileRecord,
   fields: readonly MetadataField[],
 ): Uint8Array {
-  const file = split(decodeText(existing));
+  const file = split(decodeText(existing, true));
   const head = file.head;
   const wants = (field: MetadataField): boolean => fields.includes(field);
   if (wants("title") || wants("subtitle")) {
@@ -318,12 +318,15 @@ export function renderNfo(
         `title \`${title}\` holds a colon, so an NFO would read part of it as the subtitle`,
       );
     }
-    const value =
-      title === undefined || title === ""
-        ? undefined
-        : subtitle === undefined || subtitle === ""
-          ? title
-          : `${title}: ${subtitle}`;
+    // A subtitle without a title is written as `Title: : Subtitle`, which
+    // reads back as an empty title and the subtitle.
+    const hasTitle = title !== undefined && title !== "";
+    const hasSubtitle = subtitle !== undefined && subtitle !== "";
+    const value = hasSubtitle
+      ? `${hasTitle ? title : ""}: ${subtitle}`
+      : hasTitle
+        ? title
+        : undefined;
     setGroup(head, TITLE, value);
   }
   if (wants("credits")) {
@@ -370,6 +373,12 @@ export function renderNfo(
     if (description === undefined) {
       section = [];
     } else {
+      const rule = description.split(/\r\n|\n|\r/).find((l) => RULE.test(l));
+      if (rule !== undefined) {
+        throw invalid(
+          `description line \`${rule}\` is a section underline, which an NFO reader skips`,
+        );
+      }
       const header =
         file.sectionHeader.length > 0
           ? file.sectionHeader

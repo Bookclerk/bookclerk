@@ -505,10 +505,13 @@ function check(row: Row, bytes: Uint8Array, rand: () => number): void {
   const rendered = attempt(() => renderFile(row.id, bytes, record, fields));
   if ("refused" in rendered) {
     // A file parse reads may still be refused when the answer would pass
-    // the size cap, or when it holds a JSON number a re-write would change.
+    // the size cap, when it holds a JSON number a re-write would change, or
+    // when it holds bytes that decode only to U+FFFD.
     const allowed =
       "refused" in parsed ||
-      /^rendered file is|cannot be kept exactly/.test(rendered.refused.message);
+      /^rendered file is|cannot be kept exactly|not valid UTF-8|would lose that byte|section underline/.test(
+        rendered.refused.message,
+      );
     assert.ok(allowed, `render refused a file parse reads: ${rendered.refused.message}`);
     return;
   }
@@ -516,8 +519,6 @@ function check(row: Row, bytes: Uint8Array, rand: () => number): void {
   const reread = parseFile(row.id, rendered.ok);
   assert.equal(hostRefusal(reread, row), undefined, "re-read record breaks the ABI rules");
   for (const field of fields) {
-    // NFO keeps title and subtitle on one line: a subtitle needs a title.
-    if (field === "subtitle" && row.id === "abs_nfo" && reread.title === undefined) continue;
     if (field === "title" && row.id === "abs_nfo" && record.title === undefined) {
       assert.equal(reread.title, undefined);
       continue;
@@ -533,12 +534,19 @@ function check(row: Row, bytes: Uint8Array, rand: () => number): void {
   // Fields the request left out read back as the existing file stated them.
   for (const field of row.fields) {
     if (fields.includes(field)) continue;
-    // An NFO's subtitle shares the title's line, which a removed title takes.
-    if (field === "subtitle" && row.id === "abs_nfo" && fields.includes("title")) continue;
     assert.deepEqual(
       project(reread, field, row, row.roles),
       project(parsed.ok, field, row, row.roles),
       `unselected field ${field} changed`,
+    );
+    // Stated-but-empty and absent read the same through `project`. An NFO
+    // states title and subtitle on one line, so writing either states both.
+    const shared = row.id === "abs_nfo" && (field === "title" || field === "subtitle");
+    if (shared && (fields.includes("title") || fields.includes("subtitle"))) continue;
+    assert.equal(
+      reread.present.includes(field),
+      parsed.ok.present.includes(field),
+      `unselected field ${field} changed whether the file states it`,
     );
   }
   // A credit role the request does not state is unknown, so it stays.
@@ -549,6 +557,13 @@ function check(row: Row, bytes: Uint8Array, rand: () => number): void {
       project(parsed.ok, "credits", row, unstated),
       "an unstated credit role changed",
     );
+    for (const role of unstated) {
+      assert.equal(
+        reread.creditRoles.includes(role),
+        parsed.ok.creditRoles.includes(role),
+        `whether the file states the ${role} role changed`,
+      );
+    }
   }
   // reader.txt keeps every line after the first as it was.
   if (row.id === "reader_txt" && rendered.ok.length > 0) {
