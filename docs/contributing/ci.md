@@ -1813,13 +1813,20 @@ the macOS checks are best effort:
 3. The gate prints a warning and a step-summary note that the macOS checks
    didn't run on that commit.
 
+A [build-only `main` push](#build-only-main-pushes) needs no retry. There
+the macOS job only compiles and saves the macOS `debug` cache, and the
+merge queue already ran the macOS checks on that commit. If GitHub never
+gives it a runner, the same step vouches for it on the first try, so
+`main` doesn't show a failed run for a cache save. The next `main` push
+that gets a runner saves the cache.
+
 `CI Gate` sees such a job as `abandoned` in `needs` (the jobs API reports
 it as `cancelled`), so it accepts either result for a job the step
 vouched for.
 
 A macOS job that ran and failed, or was cancelled after it started, always
-fails the gate. So does a stranded job on a `main` push or an OSV
-remediation run. The gate job reads the GitHub API with a read-only token
+fails the gate. So does a stranded job on an OSV remediation run or a push
+to any branch other than `main`. The gate job reads the GitHub API with a read-only token
 (`actions`, `checks` and `issues`).
 
 ### Merge-queue re-enqueue
