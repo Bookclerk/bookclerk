@@ -900,6 +900,9 @@ struct TextCapped {
     /// Most binds one read may carry (0: no limit), the way a plugin
     /// refuses a statement past its `maxBinds`.
     max_binds: usize,
+    /// Most bytes one text cell of a reply may carry, once set (0 until
+    /// then), the way a plugin refuses a cell past its `maxCellBytes`.
+    max_cell: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[async_trait::async_trait]
@@ -920,6 +923,26 @@ impl sea_orm::ProxyDatabaseTrait for TextCapped {
             ));
         }
         let rows = self.inner.query(statement).await?;
+        let max_cell = self.max_cell.load(std::sync::atomic::Ordering::SeqCst);
+        let widest = rows
+            .iter()
+            .flat_map(|row| row.values.values())
+            .map(|value| match value {
+                sea_orm::Value::String(Some(text)) => text.len(),
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0);
+        if max_cell > 0 && widest > max_cell {
+            return Err(sea_orm::DbErr::Custom(
+                bookclerk_plugin_abi::LimitExceeded::new(
+                    "maxCellBytes",
+                    u64::try_from(max_cell).unwrap(),
+                    u64::try_from(widest).unwrap(),
+                )
+                .to_message(),
+            ));
+        }
         let used: usize = rows
             .iter()
             .flat_map(|row| row.values.values())
@@ -975,7 +998,8 @@ impl sea_orm::ProxyDatabaseTrait for TextCapped {
 async fn a_title_wider_than_one_reply_is_left_out_of_the_window() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
-    let (store, cap) = capped_store(dir.path()).await;
+    let (store, caps) = capped_store(dir.path()).await;
+    let cap = caps.reply;
     let riley = store
         .create_user(UserRole::Member, Some("Riley"), None)
         .await
@@ -1026,17 +1050,27 @@ async fn a_title_wider_than_one_reply_is_left_out_of_the_window() {
     assert_eq!(listed, vec!["B0NARROW01", "B0NARROW02"]);
 }
 
-/// A library over [`TextCapped`] with no cap yet, and the cap to set once
+/// The caps of a [`capped_store`], set once its fixture is stored.
+struct Caps {
+    /// Most bytes of text one reply may carry (0: no cap).
+    reply: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Most bytes one text cell may carry (0: no cap).
+    cell: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// A library over [`TextCapped`] with no caps yet, and the caps to set once
 /// the fixture is stored.
-async fn capped_store(
-    dir: &std::path::Path,
-) -> (LibraryStore, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+async fn capped_store(dir: &std::path::Path) -> (LibraryStore, Caps) {
     let conn = rusqlite::Connection::open(dir.join("library.db")).unwrap();
-    let cap = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let caps = Caps {
+        reply: std::sync::Arc::default(),
+        cell: std::sync::Arc::default(),
+    };
     let engine = TextCapped {
         inner: bookclerk_plugin_database_sqlite::sqlite::SqliteProxy::new(conn).unwrap(),
-        cap: std::sync::Arc::clone(&cap),
+        cap: std::sync::Arc::clone(&caps.reply),
         max_binds: 0,
+        max_cell: std::sync::Arc::clone(&caps.cell),
     };
     let db = sea_orm::Database::connect_proxy(
         sea_orm::DbBackend::Sqlite,
@@ -1046,7 +1080,7 @@ async fn capped_store(
     .unwrap();
     crate::apply_host_schema(&db).await.unwrap();
     crate::configure_master_key(dir).unwrap();
-    (LibraryStore::from_connection(db), cap)
+    (LibraryStore::from_connection(db), caps)
 }
 
 /// Runs `sql` on the library as is, for a fixture the host's writes would
@@ -1062,7 +1096,8 @@ async fn raw(store: &LibraryStore, sql: &str) {
 async fn listing_text_wider_than_one_reply_together_is_read_per_listing() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
-    let (store, cap) = capped_store(dir.path()).await;
+    let (store, caps) = capped_store(dir.path()).await;
+    let cap = caps.reply;
     let riley = store
         .create_user(UserRole::Member, Some("Riley"), None)
         .await
@@ -1104,7 +1139,8 @@ async fn listing_text_wider_than_one_reply_together_is_read_per_listing() {
 async fn another_accounts_wide_book_row_does_not_hide_a_title() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
-    let (store, cap) = capped_store(dir.path()).await;
+    let (store, caps) = capped_store(dir.path()).await;
+    let cap = caps.reply;
     let riley = store
         .create_user(UserRole::Member, Some("Riley"), None)
         .await
@@ -1135,13 +1171,52 @@ async fn another_accounts_wide_book_row_does_not_hide_a_title() {
     assert_eq!(listed, vec!["B0SHARED01"]);
 }
 
+/// A listing cell wider than the plugin's `maxCellBytes` (stored before a
+/// smaller cap) leaves that title out of the window; the page and the
+/// titles around it are still listed.
+#[tokio::test]
+async fn a_listing_cell_wider_than_the_cell_cap_leaves_only_its_title_out() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, caps) = capped_store(dir.path()).await;
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    hold(
+        &store,
+        riley,
+        "riley-acct",
+        &["B0CELL0001".into(), "B0CELL0002".into()],
+    )
+    .await;
+    add_branch(&store, BRANCH, riley).await;
+    let wide = "l".repeat(2000);
+    raw(
+        &store,
+        &format!("UPDATE store_listings SET language = '{wide}' WHERE product_id = 'B0CELL0002'"),
+    )
+    .await;
+    caps.cell.store(1024, std::sync::atomic::Ordering::SeqCst);
+
+    let listed: Vec<String> = read_all(&store, BRANCH)
+        .await
+        .into_iter()
+        .flat_map(|work| work.editions)
+        .map(|edition| edition.product_id)
+        .collect();
+    assert_eq!(listed, vec!["B0CELL0001"]);
+}
+
 /// A holdings read refused for its bytes is read again with fewer rows per
 /// read, and every title is still listed once.
 #[tokio::test]
 async fn a_holdings_read_wider_than_one_reply_reads_fewer_rows() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
-    let (store, cap) = capped_store(dir.path()).await;
+    let (store, caps) = capped_store(dir.path()).await;
+    let cap = caps.reply;
     let riley = store
         .create_user(UserRole::Member, Some("Riley"), None)
         .await
@@ -1187,6 +1262,7 @@ async fn many_editions_repeated_in_one_read_stay_within_the_bind_limit() {
         inner: bookclerk_plugin_database_sqlite::sqlite::SqliteProxy::new(conn).unwrap(),
         cap: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         max_binds: 32,
+        max_cell: std::sync::Arc::default(),
     };
     let db = sea_orm::Database::connect_proxy(
         sea_orm::DbBackend::Sqlite,

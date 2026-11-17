@@ -40,9 +40,9 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
 use super::batch::{exec, int, text, text_opt};
 use super::catalog_lookup::{
-    identifiers_of, in_chunk, is_result_bytes_limit, is_trusted_branch, listed_titles,
-    read_chunked_all, read_paged, read_paged_by, result_page, run_batches, stamp, title_edition,
-    work_for_question, works_of_editions, PAGED_FIXED_BINDS,
+    identifiers_of, in_chunk, is_result_bytes_limit, is_too_wide_to_read, is_trusted_branch,
+    listed_titles, read_chunked_all, read_paged, read_paged_by, result_page, run_batches, stamp,
+    title_edition, work_for_question, works_of_editions, PAGED_FIXED_BINDS,
 };
 use super::cluster_links::list_cluster_links;
 use crate::entities::{
@@ -119,8 +119,9 @@ fn encoded_len<T: serde::Serialize>(value: &T) -> usize {
 /// reads them.
 ///
 /// A title's listing carries all its store metadata, which together can
-/// pass the plugin's `maxResultBytes` even when every field fits a cell.
-/// When the read is refused for its bytes, each holding is read on its
+/// pass the plugin's `maxResultBytes` even when every field fits a cell
+/// (and a value stored before a smaller `maxCellBytes` can pass that).
+/// When the read is refused for its width, each holding is read on its
 /// own; a title still too wide to read is left out of the window (and
 /// logged) instead of failing every page after it.
 ///
@@ -133,7 +134,7 @@ async fn titles_within_bytes(
 ) -> Result<Vec<AcquireTitle>> {
     match store.acquire_titles_of(held.clone()).await {
         Ok(titles) => return Ok(titles),
-        Err(err) if is_result_bytes_limit(&err) => {}
+        Err(err) if is_too_wide_to_read(&err) => {}
         Err(err) => return Err(err),
     }
     let mut titles = Vec::with_capacity(held.len());
@@ -141,7 +142,7 @@ async fn titles_within_bytes(
         let id = holding.id.clone();
         match store.acquire_titles_of(vec![holding]).await {
             Ok(one) => titles.extend(one),
-            Err(err) if is_result_bytes_limit(&err) => {
+            Err(err) if is_too_wide_to_read(&err) => {
                 tracing::warn!(
                     holding_id = %id,
                     error = %err,

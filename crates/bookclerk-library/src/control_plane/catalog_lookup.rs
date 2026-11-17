@@ -177,6 +177,17 @@ pub(crate) fn is_result_bytes_limit(err: &LibraryError) -> bool {
     })
 }
 
+/// Whether `err` is the plugin refusing a reply because rows are too wide:
+/// for its bytes ([`is_result_bytes_limit`]) or because one stored cell is
+/// wider than `maxCellBytes` (a value written before a smaller cap). Reading
+/// fewer rows can narrow the first; the second only leaves the row out.
+pub(crate) fn is_too_wide_to_read(err: &LibraryError) -> bool {
+    is_result_bytes_limit(err)
+        || err
+            .limit()
+            .is_some_and(|limit| limit.limit.as_str() == "maxCellBytes")
+}
+
 /// Every row `fetch(offset, limit)` returns (at most `cap`), in pages of at
 /// most `page` rows.
 ///
@@ -1581,7 +1592,8 @@ struct ListingText {
 /// one narrow column read per chunk of listings.
 ///
 /// Storefronts set that text, so a chunk's rows can pass the plugin's
-/// `maxResultBytes`; the chunk is then read a listing at a time, and a
+/// `maxResultBytes` (or one cell its `maxCellBytes`); the chunk is then
+/// read a listing at a time, and a
 /// listing still too wide to read is listed without its text (and
 /// logged) instead of failing the page.
 ///
@@ -1612,14 +1624,14 @@ pub(crate) async fn listed_titles(
     for part in listing_ids.chunks(in_chunk(store, READ_FIXED_BINDS).max(1)) {
         let rows = match read(part.to_vec()).await.map_err(LibraryError::Orm) {
             Ok(rows) => rows,
-            Err(err) if is_result_bytes_limit(&err) => {
+            Err(err) if is_too_wide_to_read(&err) => {
                 // The store's text together passes one reply: read each
                 // listing alone, and list one still too wide without it.
                 let mut rows = Vec::with_capacity(part.len());
                 for id in part {
                     match read(vec![id.clone()]).await.map_err(LibraryError::Orm) {
                         Ok(one) => rows.extend(one),
-                        Err(err) if is_result_bytes_limit(&err) => {
+                        Err(err) if is_too_wide_to_read(&err) => {
                             tracing::warn!(
                                 listing_id = %id,
                                 error = %err,
