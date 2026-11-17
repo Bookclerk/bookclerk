@@ -8,11 +8,13 @@ use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
     Bindings, ByteRange, CopyResult, Destination, Entrypoints, ExtensibleConfig, Invocation,
-    ListOptions, ListPage, ObjectInfo, ObjectMetadata, PluginDescribe, PluginWorker, PutResult,
-    ReadResult, ScalarLimits, StreamCopyHandler, WriteOptions, FEATURE_SCALAR_LIMITS,
-    FEATURE_STORAGE_COPY, FEATURE_STREAMS, PRODUCT_API_VERSION,
+    KeyOutcome, ListOptions, ListPage, MoveManyPage, MoveManyRequest, MoveOptions, MoveResult,
+    ObjectMetadata, PluginDescribe, PluginWorker, PutResult, ReadResult, ScalarLimits,
+    StreamCopyHandler, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY, FEATURE_STREAMS,
+    PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_sdk::{OutputS3ContextDto, PluginError, S3CredentialsDto};
+use bookclerk_storage::guest::{self, object_metadata, plugin_error as map_storage};
 use bookclerk_storage::{
     ObjectMeta, S3Backend, S3Credentials, S3Settings, StorageBackend, StorageError,
 };
@@ -22,17 +24,6 @@ use crate::ID;
 
 /// Result alias matching the ABI crate.
 type Result<T> = std::result::Result<T, PluginError>;
-
-/// Maps storage errors onto ABI plugin errors.
-fn map_storage(err: StorageError) -> PluginError {
-    match err {
-        StorageError::NotFound(key) => PluginError::not_found(key),
-        StorageError::PayloadTooLarge(msg) => PluginError::payload_too_large(msg),
-        StorageError::InvalidCursor(msg) => PluginError::invalid_cursor(msg),
-        StorageError::Integrity(msg) => PluginError::internal(format!("integrity: {msg}")),
-        other => PluginError::internal(other.to_string()),
-    }
-}
 
 /// S3 destination capability (multipart sink for streamed puts).
 pub struct S3Destination {
@@ -136,24 +127,6 @@ fn credentials_from_dto(dto: &S3CredentialsDto) -> S3Credentials {
     }
 }
 
-fn meta_from_probe(probe: bookclerk_storage::ObjectProbe) -> ObjectMetadata {
-    let sha256 = probe.meta.sha256_hex.as_deref().and_then(|hex| {
-        bookclerk_storage::parse_sha256_hex(hex)
-            .ok()
-            .map(|bytes| bytes.to_vec())
-    });
-    ObjectMetadata {
-        key: probe.key,
-        size: probe.size,
-        content_type: probe.content_type.or(probe.meta.content_type),
-        etag: probe.etag,
-        sha256,
-        modified_at_ms: probe.modified_at_ms,
-        version_id: probe.version_id,
-        signature: probe.signature,
-    }
-}
-
 fn write_meta(options: &WriteOptions) -> Result<ObjectMeta> {
     let sha256_hex =
         bookclerk_storage::sha256_field_from_raw(options.sha256.as_deref()).map_err(map_storage)?;
@@ -199,29 +172,12 @@ impl Destination for S3Destination {
         self.backend
             .head(key)
             .await
-            .map(|probe| probe.map(meta_from_probe))
+            .map(|probe| probe.map(object_metadata))
             .map_err(map_storage)
     }
 
     async fn list(&self, options: ListOptions) -> Result<ListPage> {
-        let page = self
-            .backend
-            .list_page(&options.prefix, options.cursor.as_deref(), options.limit)
-            .await
-            .map_err(map_storage)?;
-        Ok(ListPage {
-            objects: page
-                .objects
-                .into_iter()
-                .map(|obj| ObjectInfo {
-                    key: obj.key,
-                    size: obj.size,
-                    ..Default::default()
-                })
-                .collect(),
-            next_cursor: page.next_cursor,
-            ..ListPage::default()
-        })
+        guest::list(&self.backend, options).await
     }
 
     async fn get(&self, key: &str, range: Option<ByteRange>) -> Result<ReadResult> {
@@ -235,7 +191,7 @@ impl Destination for S3Destination {
             .await
             .map_err(map_storage)?;
         Ok(ReadResult {
-            meta: meta_from_probe(probe),
+            meta: object_metadata(probe),
             body,
         })
     }
@@ -246,16 +202,27 @@ impl Destination for S3Destination {
         body: Pin<Box<dyn AsyncRead + Send>>,
         options: WriteOptions,
     ) -> Result<PutResult> {
+        let condition = guest::write_condition(&options)?;
         let dest_key = if options.stage_only {
             stage_object_key(options.commit_token.as_deref(), key)?
         } else {
             key.to_string()
         };
-        let written = self
-            .backend
-            .put_stream(&dest_key, body, write_meta(&options)?)
-            .await
-            .map_err(map_storage)?;
+        let meta = write_meta(&options)?;
+        let written = match &condition {
+            Some(condition) => {
+                self.backend
+                    .put_stream_conditional(&dest_key, body, meta, condition)
+                    .await
+                    .map_err(map_storage)?
+                    .put
+            }
+            None => self
+                .backend
+                .put_stream(&dest_key, body, meta)
+                .await
+                .map_err(map_storage)?,
+        };
         Ok(PutResult {
             key: key.into(),
             bytes_written: written.bytes_written,
@@ -310,6 +277,22 @@ impl Destination for S3Destination {
         }
     }
 
+    async fn move_object(&self, from: &str, to: &str, options: MoveOptions) -> Result<MoveResult> {
+        guest::move_object(&self.backend, from, to, options).await
+    }
+
+    async fn move_many(&self, request: MoveManyRequest) -> Result<MoveManyPage> {
+        guest::move_many(&self.backend, request).await
+    }
+
+    async fn delete_many(&self, keys: Vec<String>) -> Result<Vec<KeyOutcome>> {
+        guest::delete_many(&self.backend, keys).await
+    }
+
+    async fn head_many(&self, keys: Vec<String>) -> Result<Vec<Option<ObjectMetadata>>> {
+        guest::head_many(&self.backend, keys).await
+    }
+
     async fn abort_stage(&self, key: &str, commit_token: &str) -> Result<()> {
         let staged = stage_object_key(Some(commit_token), key)?;
         match self.backend.delete(&staged).await {
@@ -330,11 +313,18 @@ impl PluginWorker for S3Root {
             api_version: PRODUCT_API_VERSION,
             id: ID.into(),
             display_name: Some("S3 / MinIO".into()),
-            rpc_features: vec![
+            // The features are declared without the bucket's configuration,
+            // so they cover every store: on one that does not enforce
+            // conditional requests, the backend runs the host's algorithm
+            // for each operation itself and reports `atomic: false`.
+            rpc_features: [
                 FEATURE_SCALAR_LIMITS.into(),
                 FEATURE_STREAMS.into(),
                 FEATURE_STORAGE_COPY.into(),
-            ],
+            ]
+            .into_iter()
+            .chain(guest::storage_features(S3Backend::CAPABILITIES))
+            .collect(),
             scalar_limits: ScalarLimits::default().into(),
             capabilities: manifest_capabilities(include_str!("../plugin.toml"))?,
             ..PluginDescribe::default()
@@ -347,5 +337,32 @@ impl PluginWorker for S3Root {
             job_runner: Some(Box::new(StreamCopyHandler)),
             ..Entrypoints::default()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn describe_accepts_the_native_storage_operations() {
+        let described = S3Root.describe().await.expect("describe");
+        for feature in [
+            bookclerk_plugin_sdk::FEATURE_STORAGE_MOVE,
+            bookclerk_plugin_sdk::FEATURE_STORAGE_MOVE_MANY,
+            bookclerk_plugin_sdk::FEATURE_STORAGE_DELETE_MANY,
+            bookclerk_plugin_sdk::FEATURE_STORAGE_HEAD_MANY,
+            bookclerk_plugin_sdk::FEATURE_STORAGE_CONDITIONAL_WRITE,
+        ] {
+            assert!(
+                described.rpc_features.iter().any(|f| f == feature),
+                "{feature} missing from {:?}",
+                described.rpc_features
+            );
+        }
+        assert!(!described
+            .rpc_features
+            .iter()
+            .any(|f| f == bookclerk_plugin_sdk::FEATURE_STORAGE_CHANGES));
     }
 }

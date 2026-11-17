@@ -1541,6 +1541,16 @@ exists. `ifMatch`, and every condition on a network or FUSE mount, is
 checked just before the rename and reported as not atomic (see
 [Local filesystem](../server/output.md#local-filesystem)).
 
+The optional `s3` destination declares the same set. It cannot see its
+bucket's settings when it is described, so it declares them for every store
+and finds out once, on first use, whether the store enforces
+`If-None-Match` and `If-Match` (see
+[Moves and conditional writes](../server/output.md#moves-and-conditional-writes)).
+On a store that does, conditions go to S3 with the request and the store
+decides them; a move is a pinned copy and a conditional delete, never
+atomic. On a store that does not, the guest runs the host's own algorithm
+and says `atomic: false`.
+
 The host checks every reply against the request before acting on it: the
 outcomes must name the keys it sent, in order, a prefix page may only name
 keys under the prefix and must advance its cursor, and a `changes` page

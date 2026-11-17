@@ -55,6 +55,34 @@ struct World {
     stream_bytes: Arc<AtomicUsize>,
     part_gate: Arc<Notify>,
     first_part_started: Arc<Notify>,
+    /// When false the store accepts `If-None-Match` / `If-Match` on writes
+    /// and deletes but ignores them, as some S3-compatible stores do.
+    enforce_conditions: bool,
+}
+
+const PRECONDITION_FAILED: &str = "HTTP/1.1 412 Precondition Failed\r\nContent-Type: application/xml\r\nContent-Length: 48\r\nConnection: close\r\n\r\n<Error><Code>PreconditionFailed</Code></Error>";
+
+/// The 412 a store that enforces conditions answers for a write or delete of
+/// `key` under the request's `If-None-Match` / `If-Match`, or `None` when the
+/// write may go ahead.
+fn refused_condition(
+    world: &World,
+    key: &str,
+    headers: &HashMap<String, String>,
+) -> Option<String> {
+    if !world.enforce_conditions {
+        return None;
+    }
+    let current = world.objects.get(key);
+    if headers.get("if-none-match").map(String::as_str) == Some("*") && current.is_some() {
+        return Some(PRECONDITION_FAILED.into());
+    }
+    if let Some(expected) = headers.get("if-match") {
+        if current.map(|obj| obj.etag.as_str()) != Some(expected.as_str()) {
+            return Some(PRECONDITION_FAILED.into());
+        }
+    }
+    None
 }
 
 fn etag_for(body: &[u8]) -> String {
@@ -246,7 +274,7 @@ async fn handle(
             gate.notified().await;
         }
         if let Some(source) = headers.get("x-amz-copy-source") {
-            let source_key = source.trim_start_matches('/').to_string();
+            let source_key = percent_decode(source.trim_start_matches('/'));
             let if_match = headers
                 .get("x-amz-copy-source-if-match")
                 .cloned()
@@ -292,6 +320,13 @@ async fn handle(
         }
         let upload_id = q.get("uploadId").cloned().unwrap_or_default();
         let mut world = world.lock().await;
+        let Some(upload_key) = world.uploads.get(&upload_id).map(|u| u.key.clone()) else {
+            return "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .into();
+        };
+        if let Some(refused) = refused_condition(&world, &upload_key, headers) {
+            return refused;
+        }
         let Some(upload) = world.uploads.remove(&upload_id) else {
             return "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 .into();
@@ -317,7 +352,14 @@ async fn handle(
         return xml_ok(&xml);
     }
     if method == "DELETE" && !q.contains_key("uploadId") {
-        world.lock().await.objects.remove(key);
+        let mut world = world.lock().await;
+        // Deleting a missing key succeeds, conditions or not.
+        if world.objects.contains_key(key) {
+            if let Some(refused) = refused_condition(&world, key, headers) {
+                return refused;
+            }
+        }
+        world.objects.remove(key);
         return "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into();
     }
     if method == "DELETE" && q.contains_key("uploadId") {
@@ -340,7 +382,12 @@ async fn handle(
         for key in world.objects.keys() {
             if prefix.is_empty() || key.contains(&prefix) {
                 let name = key.strip_prefix("library/").unwrap_or(key);
-                xml.push_str(&format!("<Contents><Key>{name}</Key></Contents>"));
+                let obj = &world.objects[key];
+                xml.push_str(&format!(
+                    "<Contents><Key>{name}</Key><Size>{}</Size><ETag>{}</ETag><LastModified>2026-11-17T12:00:00.000Z</LastModified></Contents>",
+                    obj.body.len(),
+                    obj.etag.replace('"', "&quot;")
+                ));
             }
         }
         xml.push_str("</ListBucketResult>");
@@ -380,7 +427,7 @@ async fn handle(
             .get("x-amz-copy-source")
             .cloned()
             .unwrap_or_default();
-        let source_key = source.trim_start_matches('/').to_string();
+        let source_key = percent_decode(source.trim_start_matches('/'));
         let if_match = headers
             .get("x-amz-copy-source-if-match")
             .cloned()
@@ -393,6 +440,9 @@ async fn handle(
         if obj.etag != if_match {
             return "HTTP/1.1 412 Precondition Failed\r\nContent-Length: 48\r\nConnection: close\r\n\r\n<Error><Code>PreconditionFailed</Code></Error>"
                 .into();
+        }
+        if let Some(refused) = refused_condition(&guard, key, headers) {
+            return refused;
         }
         let etag = obj.etag.clone();
         guard.objects.insert(key.to_string(), obj);
@@ -444,15 +494,21 @@ async fn handle(
             }
         }
         let etag = etag_for(body);
-        world.lock().await.objects.insert(
+        let mut world = world.lock().await;
+        if let Some(refused) = refused_condition(&world, key, headers) {
+            return refused;
+        }
+        world.objects.insert(
             key.to_string(),
             Obj {
                 body: body.to_vec(),
-                etag,
+                etag: etag.clone(),
                 meta,
             },
         );
-        return "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into();
+        return format!(
+            "HTTP/1.1 200 OK\r\nETag: {etag}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
     }
     "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into()
 }
@@ -526,6 +582,7 @@ fn new_world(hold_parts: bool) -> Arc<Mutex<World>> {
         stream_bytes: Arc::new(AtomicUsize::new(0)),
         part_gate: Arc::new(Notify::new()),
         first_part_started: Arc::new(Notify::new()),
+        enforce_conditions: true,
     }))
 }
 
@@ -1253,4 +1310,295 @@ async fn streamed_integrity_records_are_not_fully_buffered() {
         (sent as u64) < 1024 * 1024,
         "understated Content-Length sent {sent} of {total}"
     );
+}
+
+fn put_meta(body: &[u8]) -> ObjectMeta {
+    ObjectMeta {
+        content_length: Some(body.len() as u64),
+        ..ObjectMeta::default()
+    }
+}
+
+async fn put_bytes(backend: &S3Backend, key: &str, body: &[u8]) {
+    backend
+        .put_stream(
+            key,
+            Box::pin(std::io::Cursor::new(body.to_vec())),
+            put_meta(body),
+        )
+        .await
+        .unwrap();
+}
+
+async fn put_if(
+    backend: &S3Backend,
+    key: &str,
+    body: &[u8],
+    condition: &WriteCondition,
+) -> Result<ConditionalPutResult> {
+    backend
+        .put_stream_conditional(
+            key,
+            Box::pin(std::io::Cursor::new(body.to_vec())),
+            put_meta(body),
+            condition,
+        )
+        .await
+}
+
+async fn no_probe_objects_left(world: &Arc<Mutex<World>>) {
+    let world = world.lock().await;
+    assert!(
+        world
+            .objects
+            .keys()
+            .all(|key| !key.contains(".bookclerk-probe/")),
+        "probe object left behind: {:?}",
+        world.objects.keys().collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn the_probe_trusts_only_a_store_that_refuses_the_second_write() {
+    for enforce in [true, false] {
+        let world = new_world(false);
+        world.lock().await.enforce_conditions = enforce;
+        let url = serve(Arc::clone(&world)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = open_sized(&url, dir.path(), None).await;
+        let support = backend.conditional_support().await;
+        assert_eq!(
+            support,
+            ConditionalSupport {
+                writes: enforce,
+                deletes: enforce,
+            }
+        );
+        no_probe_objects_left(&world).await;
+        // Remembered: a second call does not probe again.
+        world.lock().await.enforce_conditions = !enforce;
+        assert_eq!(backend.clone().conditional_support().await, support);
+    }
+}
+
+#[tokio::test]
+async fn conditional_puts_are_atomic_only_on_an_enforcing_store() {
+    for enforce in [true, false] {
+        let world = new_world(false);
+        world.lock().await.enforce_conditions = enforce;
+        let url = serve(Arc::clone(&world)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = open_sized(&url, dir.path(), None).await;
+
+        let first = put_if(&backend, "a.json", b"one", &WriteCondition::IfNoneMatch)
+            .await
+            .unwrap();
+        assert_eq!(first.atomic, enforce);
+        let etag = backend.probe("a.json").await.unwrap().etag;
+        assert_eq!(first.put.etag, etag);
+        let again = put_if(&backend, "a.json", b"two", &WriteCondition::IfNoneMatch).await;
+        assert!(matches!(again, Err(StorageError::Conflict(_))), "{again:?}");
+
+        let stale = put_if(
+            &backend,
+            "a.json",
+            b"three",
+            &WriteCondition::IfMatch("\"stale\"".into()),
+        )
+        .await;
+        assert!(matches!(stale, Err(StorageError::Conflict(_))), "{stale:?}");
+        let fresh = put_if(
+            &backend,
+            "a.json",
+            b"four",
+            &WriteCondition::IfMatch(etag.unwrap()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(fresh.atomic, enforce);
+        assert_eq!(backend.get("a.json").await.unwrap().as_ref(), b"four");
+    }
+}
+
+#[tokio::test]
+async fn the_store_refuses_a_conditional_put_that_lost_a_race() {
+    let world = new_world(false);
+    let url = serve(Arc::clone(&world)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = open_sized(&url, dir.path(), Some(4)).await;
+    assert!(backend.conditional_support().await.writes);
+    // The pre-check passes; another writer lands before the upload
+    // completes, and the store refuses the completion.
+    world.lock().await.hold_parts = true;
+    let racing = tokio::spawn({
+        let backend = backend.clone();
+        async move {
+            put_if(
+                &backend,
+                "race.json",
+                b"mine-and-long",
+                &WriteCondition::IfNoneMatch,
+            )
+            .await
+        }
+    });
+    let (started, gate) = {
+        let world = world.lock().await;
+        (
+            Arc::clone(&world.first_part_started),
+            Arc::clone(&world.part_gate),
+        )
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), started.notified())
+        .await
+        .expect("the upload reached its first part");
+    world.lock().await.objects.insert(
+        "library/race.json".into(),
+        Obj {
+            body: b"theirs".to_vec(),
+            etag: etag_for(b"theirs"),
+            meta: HashMap::new(),
+        },
+    );
+    gate.notify_one();
+    let lost = racing.await.unwrap();
+    assert!(matches!(lost, Err(StorageError::Conflict(_))), "{lost:?}");
+    assert_eq!(backend.get("race.json").await.unwrap().as_ref(), b"theirs");
+}
+
+#[tokio::test]
+async fn moves_copy_then_delete_the_source_only_while_it_is_unchanged() {
+    for enforce in [true, false] {
+        let world = new_world(false);
+        world.lock().await.enforce_conditions = enforce;
+        let url = serve(Arc::clone(&world)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = open_sized(&url, dir.path(), None).await;
+        put_bytes(&backend, "a.m4b", b"book").await;
+        put_bytes(&backend, "taken.m4b", b"other").await;
+
+        let moved = backend
+            .move_object("a.m4b", "b/a.m4b", &MoveOptions::default())
+            .await
+            .unwrap();
+        assert!(!moved.atomic && !moved.already_moved);
+        assert!(!backend.exists("a.m4b").await.unwrap());
+        assert_eq!(backend.get("b/a.m4b").await.unwrap().as_ref(), b"book");
+
+        let again = backend
+            .move_object("a.m4b", "b/a.m4b", &MoveOptions::default())
+            .await
+            .unwrap();
+        assert!(again.already_moved);
+
+        let no_overwrite = MoveOptions {
+            no_overwrite: true,
+            ..MoveOptions::default()
+        };
+        let refused = backend
+            .move_object("b/a.m4b", "taken.m4b", &no_overwrite)
+            .await;
+        assert!(
+            matches!(refused, Err(StorageError::Conflict(_))),
+            "{refused:?}"
+        );
+        assert_eq!(backend.get("taken.m4b").await.unwrap().as_ref(), b"other");
+        assert!(backend.exists("b/a.m4b").await.unwrap());
+
+        let stale = backend
+            .move_object(
+                "b/a.m4b",
+                "c.m4b",
+                &MoveOptions {
+                    if_source_match: Some("\"stale\"".into()),
+                    ..MoveOptions::default()
+                },
+            )
+            .await;
+        assert!(matches!(stale, Err(StorageError::Conflict(_))), "{stale:?}");
+        no_probe_objects_left(&world).await;
+    }
+}
+
+#[tokio::test]
+async fn a_source_rewritten_during_a_move_is_kept() {
+    let world = new_world(false);
+    let url = serve(Arc::clone(&world)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = open_sized(&url, dir.path(), None).await;
+    put_bytes(&backend, "a.m4b", b"book").await;
+    assert!(backend.conditional_support().await.deletes);
+    world.lock().await.hold_copy = true;
+    let moving = tokio::spawn({
+        let backend = backend.clone();
+        async move {
+            backend
+                .move_object("a.m4b", "b.m4b", &MoveOptions::default())
+                .await
+        }
+    });
+    loop {
+        if world.lock().await.copies_held >= 1 {
+            break;
+        }
+        assert!(
+            !moving.is_finished(),
+            "move finished before the copy barrier"
+        );
+        tokio::task::yield_now().await;
+    }
+    {
+        let mut world = world.lock().await;
+        let source = world.objects.get_mut("library/a.m4b").expect("source");
+        source.body = b"newer".to_vec();
+        source.etag = etag_for(b"newer");
+        world.release_copy = true;
+    }
+    let kept = moving.await.unwrap();
+    assert!(matches!(kept, Err(StorageError::Conflict(_))), "{kept:?}");
+    assert_eq!(backend.get("a.m4b").await.unwrap().as_ref(), b"newer");
+    assert_eq!(backend.get("b.m4b").await.unwrap().as_ref(), b"book");
+}
+
+#[tokio::test]
+async fn hinted_listings_carry_signatures_and_filter_by_time() {
+    let world = new_world(false);
+    let url = serve(Arc::clone(&world)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = open_sized(&url, dir.path(), None).await;
+    put_bytes(&backend, "x/a.json", b"a").await;
+    let request = |modified_since_ms| ListRequest {
+        prefix: "x/".into(),
+        cursor: None,
+        limit: 10,
+        with_signatures: true,
+        modified_since_ms,
+    };
+    let objects = |page: &HintedListPage| -> Vec<ObjectInfo> {
+        // Leave out the integrity record the digest is bound to.
+        page.page
+            .objects
+            .iter()
+            .filter(|object| !object.key.contains(".bookclerk-integrity/"))
+            .cloned()
+            .collect()
+    };
+    let page = backend.list_hinted(&request(None)).await.unwrap();
+    assert!(page.signatures_included && !page.modified_since_applied);
+    let probe = backend.probe("x/a.json").await.unwrap();
+    let listed = &objects(&page)[0];
+    assert_eq!(listed.key, "x/a.json");
+    assert_eq!(listed.signature, probe.etag);
+    assert_eq!(listed.etag, probe.etag);
+    let listed_at = listed.modified_at_ms.expect("listed modification time");
+    let newer = backend
+        .list_hinted(&request(Some(listed_at + 1)))
+        .await
+        .unwrap();
+    assert!(newer.modified_since_applied && objects(&newer).is_empty());
+    let same = backend
+        .list_hinted(&request(Some(listed_at)))
+        .await
+        .unwrap();
+    assert_eq!(objects(&same).len(), 1);
 }
