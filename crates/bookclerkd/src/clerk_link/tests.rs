@@ -1178,6 +1178,11 @@ async fn a_grant_is_answered_in_order_and_a_copy_of_another_edition_ends_the_ses
         .fetch_file(1, &files.path().join("none"))
         .await
         .is_err());
+    // The grant's token is kept out of logs while the copy is held, and
+    // leaves the redaction registry with it.
+    assert!(bookclerk_config::contains_registered_secret("dG9rZW4"));
+    drop(copy);
+    assert!(!bookclerk_config::contains_registered_secret("dG9rZW4"));
 
     // A copy from another store is passed over.
     assert!(copies.copy_of(listing("B0GRANT001")).await.is_none());

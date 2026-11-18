@@ -257,6 +257,14 @@ struct CardCopy {
     product_id: String,
 }
 
+impl Drop for CardCopy {
+    /// The token leaves the redaction registry (it was registered when
+    /// granted); its own copy is zeroized with the grant.
+    fn drop(&mut self) {
+        bookclerk_config::unregister_secret(self.granted.token.expose());
+    }
+}
+
 #[async_trait::async_trait]
 impl LibraryCopy for CardCopy {
     fn source_store(&self) -> Option<&str> {
