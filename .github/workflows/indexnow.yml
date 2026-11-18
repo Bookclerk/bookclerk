@@ -5,10 +5,12 @@
 #
 # tools/site/indexnow-run.ts reads every URL the live /sitemap.xml index
 # lists, fingerprints each one (its <lastmod>, else a hash of the page as
-# Markdown), compares them with the snapshot the previous run kept in the
-# Actions cache, and submits the new, changed and removed URLs, each at most
-# once per UTC day. With no snapshot (the first run, or one evicted after 7
-# days without a run) every URL is submitted. See
+# Markdown), compares them with the snapshot the previous run kept as an
+# artifact, and submits the new, changed and removed URLs, each at most once
+# per UTC day. The snapshot is an artifact, not an Actions cache entry,
+# because CI's caches push small entries out within minutes. With no
+# snapshot (the first run, or 90 days without an accepted run) only pages
+# dated in the last 7 days are submitted. See
 # docs/contributing/automation.md#indexnow.
 #
 # Variable INDEXNOW_KEY (repository or organization; public by design): the
@@ -32,8 +34,10 @@ on:
 
 # Least privilege for GITHUB_TOKEN:
 #   contents → checkout
+#   actions  → find and download the previous run's snapshot artifact
 permissions:
   contents: read
+  actions: read
 
 jobs:
   # Outside the submit job's concurrency group, so a wait never holds up
@@ -69,15 +73,30 @@ jobs:
         with:
           node-version-file: .tool-versions
 
-      # The newest snapshot any earlier run saved. Restore and save use the
-      # same path: the cache's version includes it, so another path would
-      # never find the saved snapshot.
-      - name: Restore the previous snapshot
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # The newest snapshot an earlier run on the default branch kept.
+      - name: Find the previous snapshot
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=indexnow-snapshot&per_page=20" \
+            --jq "[.artifacts[] | select(.expired == false and .workflow_run.head_branch == \"$DEFAULT_BRANCH\")][0].workflow_run.id // empty")"
+          if [[ "$id" =~ ^[0-9]{1,20}$ ]]; then
+            echo "run-id=$id" >> "$GITHUB_OUTPUT"
+          else
+            echo "No earlier snapshot; this run submits only recently dated pages."
+          fi
+
+      - name: Download the previous snapshot
+        if: steps.previous.outputs.run-id != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          path: ${{ runner.temp }}/indexnow-snapshot.json
-          key: indexnow-snapshot-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: indexnow-snapshot-
+          name: indexnow-snapshot
+          path: ${{ runner.temp }}
+          run-id: ${{ steps.previous.outputs.run-id }}
+          github-token: ${{ github.token }}
 
       - name: Submit new and changed URLs
         id: submit
@@ -94,11 +113,14 @@ jobs:
             echo "saved=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # Written only when IndexNow accepted the submission; a skipped or
-      # refused run leaves the previous snapshot for the next one.
+      # Kept only when IndexNow accepted the submission; a skipped or
+      # refused run leaves the previous snapshot for the next one. The daily
+      # run renews it long before it expires.
       - name: Keep the new snapshot
         if: steps.submit.outputs.saved == 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          name: indexnow-snapshot
           path: ${{ runner.temp }}/indexnow-snapshot.json
-          key: indexnow-snapshot-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 90

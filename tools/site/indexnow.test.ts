@@ -168,21 +168,30 @@ test("snapshots round-trip and drop malformed entries", () => {
   assert.equal(readSnapshot(" ".repeat(10 * 1024 * 1024 + 1), ORIGIN), null);
 });
 
-test("planSubmission submits everything without a snapshot", () => {
+test("planSubmission submits only recently dated pages without a snapshot", () => {
   const today = day("2026-10-29");
   const current = new Map([
     [url("/"), "sha256:1"],
     [url("/docs"), "lastmod:2026-10-27"],
+    [url("/docs/edge"), "lastmod:2026-10-22"],
+    [url("/docs/old"), "lastmod:2026-10-21"],
+    [url("/docs/future"), "lastmod:2026-10-30"],
   ]);
   const plan = planSubmission(null, current, today);
-  assert.deepEqual(plan.submit, [url("/"), url("/docs")]);
+  assert.deepEqual(plan.submit, [url("/docs"), url("/docs/edge")]);
   assert.deepEqual(
     plan.next,
     new Map([
       [url("/"), { fp: "sha256:1", sent: today }],
       [url("/docs"), { fp: "lastmod:2026-10-27", sent: today }],
+      [url("/docs/edge"), { fp: "lastmod:2026-10-22", sent: today }],
+      [url("/docs/old"), { fp: "lastmod:2026-10-21", sent: today }],
+      [url("/docs/future"), { fp: "lastmod:2026-10-30", sent: today }],
     ]),
   );
+  // The baseline it keeps makes the next run submit only what changed.
+  const after = new Map(current).set(url("/"), "sha256:2");
+  assert.deepEqual(planSubmission(plan.next, after, day("2026-10-30")).submit, [url("/")]);
 });
 
 test("planSubmission submits new, changed and removed URLs once a day", () => {
@@ -336,19 +345,16 @@ const SITE: Readonly<Record<string, string>> = {
   [`${ORIGIN}/`]: "# Bookclerk\n",
 };
 
-test("a first run submits every URL and keeps a snapshot", async () => {
+test("a first run submits recently dated pages and keeps a snapshot of all", async () => {
   const h = harness(SITE);
   assert.equal(await run(["in.json", "out.json"], h.deps), 0);
   const posts = h.seen.filter((s) => s.method === "POST");
   assert.equal(posts.length, 1);
-  assert.deepEqual(JSON.parse(posts[0]?.body ?? "").urlList, [
-    `${ORIGIN}/`,
-    `${ORIGIN}/docs/guide/stores`,
-  ]);
+  assert.deepEqual(JSON.parse(posts[0]?.body ?? "").urlList, [`${ORIGIN}/docs/guide/stores`]);
   const snapshot = readSnapshot(h.files.get("out.json") ?? "", ORIGIN);
   assert.equal(snapshot?.get(url("/docs/guide/stores"))?.fp, "lastmod:2026-10-27");
   assert.match(snapshot?.get(url("/"))?.fp ?? "", /^sha256:[0-9a-f]{64}$/);
-  assert.match(h.files.get("summary.md") ?? "", /2 submitted \(no previous snapshot/);
+  assert.match(h.files.get("summary.md") ?? "", /1 submitted \(no previous snapshot/);
 });
 
 test("a run with nothing changed posts nothing", async () => {

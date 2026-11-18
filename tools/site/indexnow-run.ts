@@ -8,7 +8,8 @@
 // It checks that <origin>/<key>.txt serves the key, reads every sitemap the
 // live /sitemap.xml index names, fingerprints each URL (its `<lastmod>`, else
 // a SHA-256 of the page as Markdown), plans the submission against the
-// previous snapshot (indexnow.ts) and posts it. The new snapshot is written
+// previous snapshot (indexnow.ts) and posts it. Without a snapshot it submits
+// only pages dated in the last RECENT_DAYS days. The new snapshot is written
 // only after IndexNow accepted every request, so a failed run is retried in
 // full. INDEXNOW_DRY_RUN=1 plans and prints without checking the key file,
 // posting or writing, for a look before the key is deployed.
@@ -25,6 +26,7 @@ import {
   MAX_DOCUMENT_BYTES,
   parseKey,
   planSubmission,
+  RECENT_DAYS,
   readSitemap,
   readSnapshot,
   submissionBodies,
@@ -251,7 +253,10 @@ export async function run(argv: readonly string[], deps: RunDeps): Promise<numbe
     const previous = stored === null ? null : readSnapshot(stored, origin);
     const current = await currentUrls(deps, origin, previous);
     const plan = planSubmission(previous, current, today);
-    const what = previous === null ? "no previous snapshot, so every URL" : "new or changed URLs";
+    const what =
+      previous === null
+        ? `no previous snapshot, so only pages dated in the last ${RECENT_DAYS} days`
+        : "new or changed URLs";
     deps.log(`${current.size} URLs listed; submitting ${plan.submit.length} (${what}).`);
     if (dryRun) {
       for (const url of plan.submit) deps.log(url);

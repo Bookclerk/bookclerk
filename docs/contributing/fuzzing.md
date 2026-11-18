@@ -1123,7 +1123,7 @@ fuzzing in `npm test`.
   entity decoder, a URL check against the site's origin and the
   last-updated date oracle.
 - **IndexNow snapshot reader** (`readSnapshot` in `tools/site/indexnow.ts`)
-  reads the previous run's snapshot back from the Actions cache. Corpus
+  reads the previous run's snapshot back from its artifact. Corpus
   `tools/site/fuzz/indexnow_snapshot/`. Oracle: the document read through
   property descriptors, each URL checked against the site's origin and each
   date by the last-updated date oracle.

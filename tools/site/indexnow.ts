@@ -8,7 +8,8 @@
 // A URL is submitted when it is new, when its fingerprint (the sitemap's
 // `<lastmod>`, else a hash of the page) changed, or when it left the
 // sitemaps, and at most once per UTC day: a later change the same day waits
-// for the next day's run.
+// for the next day's run. With no previous snapshot only pages dated within
+// the last RECENT_DAYS are submitted; the rest become the baseline.
 
 import { parseIsoDate } from "./last-updated.ts";
 import type { IsoDate } from "./last-updated.ts";
@@ -37,6 +38,16 @@ const MAX_FINGERPRINT_LENGTH = 128;
  * until the next UTC day so a page restored the same day waits for it.
  */
 const REMOVED_FINGERPRINT = "removed";
+
+/**
+ * How far back, in days before the run's UTC day, a page's `<lastmod>` may
+ * be for a run without a snapshot to submit it. Covers a week of runs that
+ * may have been lost with the snapshot.
+ */
+export const RECENT_DAYS = 7;
+
+/** Milliseconds in one day. */
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The `version` of the snapshot this module writes and reads. */
 const SNAPSHOT_VERSION = 1;
@@ -236,7 +247,11 @@ export function writeSnapshot(snapshot: Snapshot): string {
  * Plans a submission from the previous snapshot and the URLs the sitemaps
  * list now.
  *
- * With no previous snapshot every URL is submitted. Otherwise a URL is
+ * With no previous snapshot (the first run, or one whose snapshot was lost)
+ * only pages whose `<lastmod>` falls within RECENT_DAYS before `today` are
+ * submitted; every listed URL is recorded, so the next run diffs against
+ * them. Undated pages and older ones are left to the sitemaps, which search
+ * engines read anyway. Otherwise a URL is
  * submitted when it is new, its fingerprint changed, or it is no longer
  * listed (a removed page), unless it was already submitted `today`: then
  * its old entry is kept, so the next day's run still sees the change. A
@@ -259,8 +274,19 @@ export function planSubmission(
 ): Plan {
   const submit: SiteUrl[] = [];
   const next: Snapshot = new Map();
+  if (previous === null) {
+    const since = `lastmod:${recentSince(today)}`;
+    const until = `lastmod:${today}`;
+    for (const [url, fp] of current) {
+      // `lastmod:YYYY-MM-DD` fingerprints order as their dates do.
+      if (fp.startsWith("lastmod:") && fp >= since && fp <= until) submit.push(url);
+      next.set(url, { fp, sent: today });
+    }
+    submit.sort();
+    return { submit, next };
+  }
   for (const [url, fp] of current) {
-    const before = previous?.get(url);
+    const before = previous.get(url);
     const sameDay = before !== undefined && before.fp === `lastmod:${before.sent}`;
     const unchanged = before !== undefined && before.fp === fp && !sameDay;
     if (before !== undefined && (unchanged || before.sent === today)) {
@@ -270,7 +296,7 @@ export function planSubmission(
       next.set(url, { fp, sent: today });
     }
   }
-  for (const [url, before] of previous ?? []) {
+  for (const [url, before] of previous) {
     if (current.has(url)) continue;
     if (before.sent === today) next.set(url, before);
     else if (before.fp === REMOVED_FINGERPRINT) continue;
@@ -281,6 +307,18 @@ export function planSubmission(
   }
   submit.sort();
   return { submit, next };
+}
+
+/**
+ * The first UTC day a run without a snapshot still submits pages dated on.
+ *
+ * @param today - The run's UTC day.
+ * @returns The day RECENT_DAYS before `today`, as `YYYY-MM-DD`.
+ */
+function recentSince(today: IsoDate): string {
+  return new Date(Date.parse(`${today}T00:00:00Z`) - RECENT_DAYS * DAY_MS)
+    .toISOString()
+    .slice(0, "YYYY-MM-DD".length);
 }
 
 /**

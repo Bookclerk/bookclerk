@@ -1074,17 +1074,25 @@ edge cache shows the published docs.
 1. It reads every URL that the live `/sitemap.xml` index lists, and gives
    each one a fingerprint: its `<lastmod>`, or a SHA-256 of the page as
    Markdown for pages without one.
-2. It compares them with the snapshot that the previous run kept in the
-   Actions cache. URLs that are new, changed or no longer listed are
-   submitted, each at most once per UTC day. A change made after that
-   day's submission waits for the next day's run. A dated page submitted on
-   the day it is dated is submitted once more on a later day, since its
-   date cannot show a second change that day.
+2. It compares them with the snapshot that the previous run kept as the
+   `indexnow-snapshot` artifact. URLs that are new, changed or no longer
+   listed are submitted, each at most once per UTC day. A change made after
+   that day's submission waits for the next day's run. A dated page
+   submitted on the day it is dated is submitted once more on a later day,
+   since its date cannot show a second change that day.
 3. Only once IndexNow accepts the URLs does it save the new snapshot, so a
    failed run is retried in full.
 
-With no snapshot (the first run, or a run after the cache went 7 days
-unused) every URL is submitted.
+With no snapshot (the first run, or 90 days without an accepted run) only
+pages whose sitemap `<lastmod>` falls in the last 7 days are submitted, and
+every listed URL becomes the snapshot the next run compares against. Search
+engines learn the older and undated pages from the sitemaps.
+
+> [!NOTE]
+> The snapshot is an artifact rather than an Actions cache entry. CI's
+> build caches fill the repository's cache quota and push small entries out
+> within minutes, so a cached snapshot was often missing and every URL was
+> submitted again.
 
 - **Setup.** Set the repository or organization variable `INDEXNOW_KEY` to
   8 to 128 letters, digits or `-`, for example `uuidgen | tr -d -`. The key
