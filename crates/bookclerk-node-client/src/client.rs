@@ -1461,6 +1461,38 @@ impl HostClientHandle {
         )))
     }
 
+    /// Downloads file `index` of `copy` to `dest` from the library that
+    /// granted it, resuming what `dest` already holds
+    /// ([`crate::fetch_copy_file`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CopyFetchError`]; `NoSuchFile` when the grant lists
+    /// no file at `index`.
+    pub async fn fetch_copy_file(
+        &self,
+        copy: &crate::GrantedCopy,
+        index: usize,
+        dest: &std::path::Path,
+    ) -> Result<(), crate::CopyFetchError> {
+        let file = copy
+            .files
+            .get(index)
+            .ok_or(crate::CopyFetchError::NoSuchFile)?;
+        let authorization = copy
+            .authorization()
+            .map_err(|_| crate::CopyFetchError::Status(401))?;
+        crate::fetch_copy_file(
+            &self.shared.endpoint,
+            &authorization,
+            &copy.copy_id,
+            index,
+            file.size,
+            dest,
+        )
+        .await
+    }
+
     /// `catalog.upload`: opens an upload of one shared title's `files` and
     /// opens its sealed token (bound to this node, [`CATALOG_ITEM`], the
     /// fence and the upload).

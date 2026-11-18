@@ -294,6 +294,13 @@ input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.copy_answer]
+crate = "bookclerk-node-proto"
+boundary = "The head of a library's answer to a copy download, GET /api/copies/v1/{copy_id}/files/{n}, which decides how many bytes a branch or clerk takes and where in the file it writes them"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.clerk_socket_frame]
 crate = "bookclerk-node-proto"
 boundary = "The clerk socket's frames, GET /api/clerk/v1/connect: what a library reads from a clerk (pages asked for, a copy asked for) and what a clerk reads back (topics, pages, a granted copy and its token)"

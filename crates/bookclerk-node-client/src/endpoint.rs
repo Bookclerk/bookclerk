@@ -608,6 +608,135 @@ impl OwnerEndpoint {
     }
 }
 
+impl OwnerEndpoint {
+    /// `GET path` of one file of a copy the library granted, streamed into
+    /// `file`: the bytes from `resume_from` on when the library honours
+    /// the range, else the whole file. Nothing is buffered beyond one copy
+    /// chunk, and the header is written straight to the stream and never
+    /// logged.
+    ///
+    /// The answer's head is read by
+    /// [`bookclerk_node_proto::parse_copy_answer`], so a body is taken
+    /// only when it is exactly the bytes asked for: `file` is cut to
+    /// empty before a whole file is written and is written from
+    /// `resume_from` otherwise, and no more than the stated length is
+    /// taken. Every read from the library must make progress within the
+    /// idle timeout.
+    ///
+    /// # Arguments
+    ///
+    /// * `resume_from` - Bytes of the file `file` already holds; 0 asks
+    ///   for the whole file.
+    /// * `size` - The file's exact size, as the grant stated it.
+    ///
+    /// # Returns
+    ///
+    /// The status: `200` or `206` once `file` holds all `size` bytes, any
+    /// other status when the library sent no file bytes (`file` is then
+    /// untouched).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DialError`] when the request cannot be made, the answer
+    /// does not state exactly the bytes asked for or ends early
+    /// ([`DialError::Http`]), a read stalls ([`DialError::Timeout`]), or
+    /// `file` cannot be written.
+    pub async fn get_copy_stream(
+        &self,
+        path: &str,
+        authorization: &str,
+        resume_from: u64,
+        size: u64,
+        file: &mut tokio::fs::File,
+    ) -> Result<u16, DialError> {
+        use bookclerk_node_proto::{parse_copy_answer, CopyAnswer, MAX_COPY_ANSWER_HEAD_BYTES};
+        use tokio::io::AsyncSeekExt as _;
+
+        if authorization.contains(['\r', '\n']) || path.contains(['\r', '\n', ' ']) {
+            return Err(DialError::Http);
+        }
+        let mut io = self.connect().await?;
+        let range = if resume_from > 0 {
+            format!("Range: bytes={resume_from}-\r\n")
+        } else {
+            String::new()
+        };
+        let head = format!(
+            "GET {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: {authorization}\r\n\
+             Accept: application/octet-stream\r\nAccept-Encoding: identity\r\n{range}\
+             Connection: close\r\n\r\n",
+            self.authority(),
+        );
+        let stalled = |err: std::io::Error| {
+            if err.kind() == std::io::ErrorKind::TimedOut {
+                DialError::Timeout
+            } else {
+                DialError::Io(err)
+            }
+        };
+        idle_step(io.write_all(head.as_bytes()))
+            .await
+            .map_err(stalled)?;
+        idle_step(io.flush()).await.map_err(stalled)?;
+
+        let mut chunk = vec![0u8; UPLOAD_COPY_CHUNK];
+        let mut buf = Vec::new();
+        let head_end = loop {
+            if let Some(at) = find(&buf, b"\r\n\r\n") {
+                break at;
+            }
+            if buf.len() > MAX_COPY_ANSWER_HEAD_BYTES + 4 {
+                return Err(DialError::Http);
+            }
+            let n = idle_step(io.read(&mut chunk)).await.map_err(stalled)?;
+            if n == 0 {
+                return Err(DialError::Http);
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        };
+        let answer = parse_copy_answer(&buf[..head_end], resume_from, size).map_err(|problem| {
+            tracing::warn!(problem, "a copy download's answer breaks the rules");
+            DialError::Http
+        })?;
+        let (offset, length) = match answer {
+            CopyAnswer::Status(status) => return Ok(status),
+            CopyAnswer::Body { offset, length } => (offset, length),
+        };
+        if offset == 0 {
+            file.set_len(0).await?;
+        }
+        file.seek(std::io::SeekFrom::Start(offset)).await?;
+        // Nothing past the stated length is taken, whenever it arrives.
+        let early = &buf[head_end + 4..];
+        let early =
+            &early[..usize::try_from(length).map_or(early.len(), |most| most.min(early.len()))];
+        let mut taken = u64::try_from(early.len()).map_err(|_| DialError::Http)?;
+        let body = async {
+            file.write_all(early).await?;
+            while taken < length {
+                let want = usize::try_from(length - taken)
+                    .unwrap_or(usize::MAX)
+                    .min(chunk.len());
+                let n = idle_step(io.read(&mut chunk[..want]))
+                    .await
+                    .map_err(stalled)?;
+                if n == 0 {
+                    return Err(DialError::Http);
+                }
+                file.write_all(&chunk[..n]).await?;
+                taken += u64::try_from(n).map_err(|_| DialError::Http)?;
+            }
+            Ok(())
+        }
+        .await;
+        // What arrived reaches the file even when the download failed, so
+        // the next request resumes after it.
+        file.flush().await?;
+        body?;
+        Ok(if offset == 0 { 200 } else { 206 })
+    }
+}
+
 /// What a first TLS handshake showed of an owner's certificate, before any
 /// pin is known ([`OwnerEndpoint::probe_json`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1133,6 +1262,216 @@ mod tests {
         });
         let endpoint = OwnerEndpoint::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
         (endpoint, held)
+    }
+
+    /// A library that answers each connection with the next of `answers`
+    /// (written as given, then closed) and hands back each request head.
+    async fn scripted_library(
+        answers: Vec<Vec<u8>>,
+    ) -> (OwnerEndpoint, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for answer in answers {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0u8; 1];
+                while !request.ends_with(b"\r\n\r\n") {
+                    if socket.read(&mut byte).await.unwrap() == 0 {
+                        break;
+                    }
+                    request.push(byte[0]);
+                }
+                requests.push(String::from_utf8(request).unwrap());
+                socket.write_all(&answer).await.unwrap();
+                socket.shutdown().await.unwrap();
+            }
+            requests
+        });
+        let endpoint = OwnerEndpoint::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
+        (endpoint, served)
+    }
+
+    /// A `200` answer carrying `body`.
+    fn whole(body: &[u8]) -> Vec<u8> {
+        let mut out =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// A `206` answer carrying `file` from `from` on.
+    fn rest(file: &[u8], from: usize) -> Vec<u8> {
+        let mut out = format!(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {from}-{}/{}\r\n\
+             Content-Length: {}\r\n\r\n",
+            file.len() - 1,
+            file.len(),
+            file.len() - from
+        )
+        .into_bytes();
+        out.extend_from_slice(&file[from..]);
+        out
+    }
+
+    /// A copy's file comes whole, resumes where a cut download stopped,
+    /// is replaced when the library ignores the range, and is never taken
+    /// from an answer that states other bytes than the ones asked for.
+    #[tokio::test]
+    async fn a_copy_file_is_fetched_whole_resumed_or_refused() {
+        const COPY: &str = "0b7f6c7e-3d1a-4a52-9c1e-6f2f0f0c9a11";
+        let content: Vec<u8> = (0..200_000u32).map(|n| (n % 251) as u8).collect();
+        let size = content.len() as u64;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("file.part");
+        let fetch = |endpoint: OwnerEndpoint, dest: std::path::PathBuf| async move {
+            crate::fetch_copy_file(&endpoint, "Bookclerk-Copy secret", COPY, 3, size, &dest).await
+        };
+
+        // Whole, with bytes past the stated length left alone.
+        let mut answer = whole(&content);
+        answer.extend_from_slice(b"extra");
+        let (endpoint, served) = scripted_library(vec![answer]).await;
+        fetch(endpoint, dest.clone()).await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), content);
+        let requests = served.await.unwrap();
+        assert!(
+            requests[0].starts_with(&format!("GET /api/copies/v1/{COPY}/files/3 HTTP/1.1\r\n")),
+            "{requests:?}"
+        );
+        assert!(requests[0].contains("Authorization: Bookclerk-Copy secret\r\n"));
+        assert!(!requests[0].contains("Range:"), "{requests:?}");
+
+        // A complete file asks nothing.
+        let (endpoint, served) = scripted_library(Vec::new()).await;
+        fetch(endpoint, dest.clone()).await.unwrap();
+        assert!(served.await.unwrap().is_empty());
+
+        // An answer cut short keeps what arrived; the next call resumes.
+        std::fs::remove_file(&dest).unwrap();
+        let cut = whole(&content)[..70_000].to_vec();
+        let (endpoint, served) = scripted_library(vec![cut]).await;
+        let out = fetch(endpoint, dest.clone()).await;
+        assert!(
+            matches!(out, Err(crate::CopyFetchError::Transfer(DialError::Http))),
+            "{out:?}"
+        );
+        served.await.unwrap();
+        let held = std::fs::read(&dest).unwrap();
+        assert!(!held.is_empty() && held.len() < content.len());
+        assert_eq!(held, content[..held.len()]);
+        let (endpoint, served) = scripted_library(vec![rest(&content, held.len())]).await;
+        fetch(endpoint, dest.clone()).await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), content);
+        let requests = served.await.unwrap();
+        assert!(
+            requests[0].contains(&format!("Range: bytes={}-\r\n", held.len())),
+            "{requests:?}"
+        );
+
+        // A library that ignores the range replaces what was there.
+        std::fs::write(&dest, b"stale start").unwrap();
+        let (endpoint, served) = scripted_library(vec![whole(&content)]).await;
+        fetch(endpoint, dest.clone()).await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), content);
+        served.await.unwrap();
+
+        // A range the library no longer takes starts over, once.
+        std::fs::write(&dest, &content[..10]).unwrap();
+        let unsatisfiable =
+            b"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\n\r\n".to_vec();
+        let (endpoint, served) = scripted_library(vec![unsatisfiable, whole(&content)]).await;
+        fetch(endpoint, dest.clone()).await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), content);
+        assert_eq!(served.await.unwrap().len(), 2);
+
+        // A longer local file is replaced.
+        let mut longer = content.clone();
+        longer.extend_from_slice(b"tail");
+        std::fs::write(&dest, &longer).unwrap();
+        let (endpoint, served) = scripted_library(vec![whole(&content)]).await;
+        fetch(endpoint, dest.clone()).await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), content);
+        served.await.unwrap();
+
+        // Answers that state other bytes leave the file as it was.
+        for bad in [
+            whole(&content[..100]),
+            rest(&content, 4),
+            rest(&content[..1000], 10),
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n".to_vec(),
+            b"garbage\r\n\r\n".to_vec(),
+        ] {
+            std::fs::write(&dest, &content[..10]).unwrap();
+            let (endpoint, served) = scripted_library(vec![bad]).await;
+            let out = fetch(endpoint, dest.clone()).await;
+            assert!(
+                matches!(out, Err(crate::CopyFetchError::Transfer(DialError::Http))),
+                "{out:?}"
+            );
+            assert_eq!(std::fs::read(&dest).unwrap(), content[..10]);
+            served.await.unwrap();
+        }
+
+        // A refusal is the status, with the file as it was.
+        let refusal = b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 24\r\n\r\n\
+                        {\"error\":\"unauthorized\"}"
+            .to_vec();
+        let (endpoint, served) = scripted_library(vec![refusal]).await;
+        let out = fetch(endpoint, dest.clone()).await;
+        assert!(
+            matches!(out, Err(crate::CopyFetchError::Status(401))),
+            "{out:?}"
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), content[..10]);
+        served.await.unwrap();
+
+        // A name that is not a copy id asks nothing.
+        let (endpoint, served) = scripted_library(Vec::new()).await;
+        let out =
+            crate::fetch_copy_file(&endpoint, "Bookclerk-Copy secret", "../x", 0, size, &dest)
+                .await;
+        assert!(
+            matches!(out, Err(crate::CopyFetchError::InvalidCopy)),
+            "{out:?}"
+        );
+        served.await.unwrap();
+    }
+
+    /// A library that stops sending fails the download at the idle
+    /// timeout, and what arrived is kept.
+    #[tokio::test]
+    async fn a_copy_download_that_stalls_times_out() {
+        const COPY: &str = "0b7f6c7e-3d1a-4a52-9c1e-6f2f0f0c9a11";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let held = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc")
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+        let endpoint = OwnerEndpoint::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("file.part");
+        let out = tokio::time::timeout(
+            Duration::from_secs(20),
+            crate::fetch_copy_file(&endpoint, "Bookclerk-Copy secret", COPY, 0, 10, &dest),
+        )
+        .await
+        .expect("the stalled download is abandoned");
+        assert!(
+            matches!(
+                out,
+                Err(crate::CopyFetchError::Transfer(DialError::Timeout))
+            ),
+            "{out:?}"
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), b"abc");
+        held.abort();
     }
 
     /// A body source that stalls fails the upload at the idle timeout

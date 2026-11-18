@@ -131,9 +131,10 @@ pub use clerk_socket::{
     CLERK_SUBPROTOCOL, MAX_CLERK_FRAME_BYTES, MAX_CLERK_TOPICS, MAX_CLERK_TOPIC_BYTES,
 };
 pub use copies::{
-    copy_grant_problem, copy_granted_problem, is_copy_id, parse_copy_range, CopyFile,
-    CopyGrantedFrame, CopyRange, CopyRole, COPIES_PATH, COPY_AUTH_SCHEME, MAX_COPY_FILES,
-    MAX_COPY_FILE_BYTES, MAX_COPY_NAME_BYTES, MAX_COPY_TOKEN_SECS,
+    copy_grant_problem, copy_granted_problem, is_copy_id, parse_copy_answer, parse_copy_range,
+    CopyAnswer, CopyFile, CopyGrantedFrame, CopyRange, CopyRole, COPIES_PATH, COPY_AUTH_SCHEME,
+    MAX_COPY_ANSWER_HEAD_BYTES, MAX_COPY_FILES, MAX_COPY_FILE_BYTES, MAX_COPY_NAME_BYTES,
+    MAX_COPY_TOKEN_SECS,
 };
 pub use ed25519_dalek::SigningKey;
 pub use frames::{

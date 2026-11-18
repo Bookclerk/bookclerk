@@ -275,6 +275,154 @@ pub fn parse_copy_range(header: &str, size: u64) -> CopyRange {
     }
 }
 
+/// Longest head of a download's answer a reader takes, in bytes: the
+/// status line and headers, before the blank line.
+pub const MAX_COPY_ANSWER_HEAD_BYTES: usize = 16 * 1024;
+
+/// What the head of a download's answer says follows it
+/// ([`parse_copy_answer`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyAnswer {
+    /// `length` bytes of the file follow, from byte `offset` to its end:
+    /// `offset + length` is the file's size, and `offset` is 0 or the
+    /// byte the reader asked to resume from.
+    Body {
+        /// First byte of the file the body holds.
+        offset: u64,
+        /// Number of bytes that follow.
+        length: u64,
+    },
+    /// The library answered with this status and no file bytes: a refusal
+    /// (401, 404), an unsatisfiable range (416) or a fault.
+    Status(u16),
+}
+
+/// Reads the head of the answer to a download of a file of `size` bytes
+/// that asked for the bytes from `asked_from` on (0 for the whole file).
+///
+/// `head` is the status line and the headers, each line ended by CRLF or
+/// the end of the head, without the blank line that ends it. A reader
+/// writes the body where this says, so the head must state exactly the
+/// bytes that were asked for:
+///
+/// - `200` with `Content-Length` equal to `size`: the whole file, also
+///   when a range was asked for (a server may ignore one);
+/// - `206` with `Content-Range: bytes <asked_from>-<size - 1>/<size>` and
+///   the matching `Content-Length`, only when `asked_from` is above 0 and
+///   inside the file;
+/// - any other status from 100 to 599: no file bytes.
+///
+/// # Errors
+///
+/// Returns a short reason when the head is longer than
+/// [`MAX_COPY_ANSWER_HEAD_BYTES`], is not printable ASCII lines, has no
+/// `HTTP/1.x` status line, states a transfer encoding, repeats or
+/// misstates `Content-Length` or `Content-Range`, or answers `200` or
+/// `206` with other bytes than the ones asked for.
+pub fn parse_copy_answer(
+    head: &[u8],
+    asked_from: u64,
+    size: u64,
+) -> Result<CopyAnswer, &'static str> {
+    /// 1 to 19 ASCII digits as a number.
+    fn number(text: &str) -> Option<u64> {
+        (!text.is_empty() && text.len() <= 19 && text.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| text.parse().ok())
+            .flatten()
+    }
+    if head.len() > MAX_COPY_ANSWER_HEAD_BYTES {
+        return Err("head_too_long");
+    }
+    if !head
+        .iter()
+        .all(|byte| matches!(byte, b' '..=b'~' | b'\r' | b'\n' | b'\t'))
+    {
+        return Err("head_not_text");
+    }
+    let text = std::str::from_utf8(head).map_err(|_| "head_not_text")?;
+    let mut lines = text.split("\r\n");
+    let status_line = lines.next().unwrap_or_default();
+    let status = Some(status_line)
+        .filter(|line| !line.contains(['\r', '\n']))
+        .ok_or("bad_status_line")?
+        .strip_prefix("HTTP/1.")
+        .and_then(|rest| rest.strip_prefix(['0', '1']))
+        .and_then(|rest| rest.strip_prefix(' '))
+        .and_then(|rest| {
+            rest.get(..3)
+                .map(|code| (code, rest.get(3..).unwrap_or("")))
+        })
+        .filter(|(_, reason)| reason.is_empty() || reason.starts_with(' '))
+        .and_then(|(code, _)| number(code))
+        .and_then(|code| u16::try_from(code).ok())
+        .filter(|code| (100..=599).contains(code))
+        .ok_or("bad_status_line")?;
+    let mut length = None;
+    let mut range = None;
+    for line in lines {
+        if line.contains(['\r', '\n']) {
+            return Err("bad_header_line");
+        }
+        let (name, value) = line.split_once(':').ok_or("bad_header_line")?;
+        if name.is_empty() || name.contains([' ', '\t']) {
+            return Err("bad_header_line");
+        }
+        let value = value.trim_matches([' ', '\t']);
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("transfer_encoding");
+        } else if name.eq_ignore_ascii_case("content-length") {
+            if length.is_some() {
+                return Err("bad_content_length");
+            }
+            length = Some(number(value).ok_or("bad_content_length")?);
+        } else if name.eq_ignore_ascii_case("content-range") {
+            if range.is_some() {
+                return Err("bad_content_range");
+            }
+            range = Some(value);
+        }
+    }
+    match status {
+        200 => {
+            if range.is_some() {
+                return Err("bad_content_range");
+            }
+            if length != Some(size) {
+                return Err("bad_content_length");
+            }
+            Ok(CopyAnswer::Body {
+                offset: 0,
+                length: size,
+            })
+        }
+        206 => {
+            if asked_from == 0 || asked_from >= size {
+                return Err("unasked_range");
+            }
+            let (first, last, total) = range
+                .and_then(|value| value.strip_prefix("bytes "))
+                .and_then(|spec| spec.split_once('/'))
+                .and_then(|(span, total)| {
+                    let (first, last) = span.split_once('-')?;
+                    Some((number(first)?, number(last)?, number(total)?))
+                })
+                .ok_or("bad_content_range")?;
+            if first != asked_from || total != size || last != size - 1 {
+                return Err("bad_content_range");
+            }
+            let rest = size - asked_from;
+            if length != Some(rest) {
+                return Err("bad_content_length");
+            }
+            Ok(CopyAnswer::Body {
+                offset: asked_from,
+                length: rest,
+            })
+        }
+        other => Ok(CopyAnswer::Status(other)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,6 +655,120 @@ mod tests {
         .is_err());
         assert!(
             serde_json::from_str::<CopyFile>(r#"{"name":"a","role":"video","size":3}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn a_download_answer_states_exactly_the_bytes_asked_for() {
+        use CopyAnswer::{Body, Status};
+        let body = |offset, length| Ok(Body { offset, length });
+        for (head, from, size, want) in [
+            ("HTTP/1.1 200 OK\r\nContent-Length: 10", 0, 10, body(0, 10)),
+            ("HTTP/1.1 200 OK\r\ncontent-length:10", 4, 10, body(0, 10)),
+            ("HTTP/1.0 200\r\nContent-Length: 0", 0, 0, body(0, 0)),
+            (
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-9/10\r\nContent-Length: 6",
+                4,
+                10,
+                body(4, 6),
+            ),
+            (
+                "HTTP/1.1 401 Unauthorized\r\nContent-Length: 24",
+                0,
+                10,
+                Ok(Status(401)),
+            ),
+            (
+                "HTTP/1.1 416 Range Not Satisfiable",
+                10,
+                10,
+                Ok(Status(416)),
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: 9",
+                0,
+                10,
+                Err("bad_content_length"),
+            ),
+            ("HTTP/1.1 200 OK", 0, 10, Err("bad_content_length")),
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nContent-Length: 10",
+                0,
+                10,
+                Err("bad_content_length"),
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nTransfer-Encoding: chunked",
+                0,
+                10,
+                Err("transfer_encoding"),
+            ),
+            (
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 3-9/10\r\nContent-Length: 7",
+                4,
+                10,
+                Err("bad_content_range"),
+            ),
+            (
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-8/10\r\nContent-Length: 5",
+                4,
+                10,
+                Err("bad_content_range"),
+            ),
+            (
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-9/11\r\nContent-Length: 6",
+                4,
+                10,
+                Err("bad_content_range"),
+            ),
+            (
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-9/10\r\nContent-Length: 5",
+                4,
+                10,
+                Err("bad_content_length"),
+            ),
+            (
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-9/10\r\nContent-Length: 10",
+                0,
+                10,
+                Err("unasked_range"),
+            ),
+            (
+                "HTTP/2 200\r\nContent-Length: 10",
+                0,
+                10,
+                Err("bad_status_line"),
+            ),
+            ("HTTP/1.1 2000 OK", 0, 10, Err("bad_status_line")),
+            ("HTTP/1.1 099 Odd", 0, 10, Err("bad_status_line")),
+            ("HTTP/1.1 200 OK\r\nno colon", 0, 10, Err("bad_header_line")),
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length : 10",
+                0,
+                10,
+                Err("bad_header_line"),
+            ),
+            (
+                "HTTP/1.1 200 OK\nContent-Length: 10",
+                0,
+                10,
+                Err("bad_status_line"),
+            ),
+            ("HTTP/1.1 200 OK\r\nX: \u{e9}", 0, 10, Err("head_not_text")),
+        ] {
+            assert_eq!(
+                parse_copy_answer(head.as_bytes(), from, size),
+                want,
+                "{head:?} from {from} of {size}"
+            );
+        }
+        let long = format!(
+            "HTTP/1.1 200 OK\r\nX: {}",
+            "a".repeat(MAX_COPY_ANSWER_HEAD_BYTES)
+        );
+        assert_eq!(
+            parse_copy_answer(long.as_bytes(), 0, 10),
+            Err("head_too_long")
         );
     }
 }
