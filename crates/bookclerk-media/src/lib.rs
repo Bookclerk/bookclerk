@@ -46,6 +46,7 @@ mod mux_aac;
 mod native;
 mod package_m4b;
 mod pool;
+mod probe;
 mod tag_worker;
 
 pub use bookclerk_cover::{CoverSet, CoverSize};
@@ -70,6 +71,7 @@ pub use pool::{
     init_pool, init_pool_from_config, pool, replace_pool, Confinement, MediaPool, MediaPoolConfig,
     JAIL_BIN_ENV, JAIL_BIN_NAME, WORKER_BIN_ENV, WORKER_BIN_NAME, WORKER_ENFORCEMENT_ENV,
 };
+pub use probe::{AudioProbe, FileRange};
 pub use tag_worker::{RangeSource, TAG_WORKER_ARG};
 
 use std::path::{Path, PathBuf};

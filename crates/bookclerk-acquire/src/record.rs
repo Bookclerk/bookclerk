@@ -14,7 +14,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use bookclerk_library::{FileOwner, FileRole, LibraryStore};
+use bookclerk_library::{FileOwner, FileProbe, FileRole, LibraryStore};
 use bookclerk_storage::{
     ByteRange, ListPage, ObjectInfo, ObjectMeta, ObjectProbe, PutStreamResult, StorageBackend,
     StorageError,
@@ -34,6 +34,11 @@ pub(crate) struct RecordingBackend {
     destination: &'static str,
     /// The edition the acquire writes.
     owner: FileOwner,
+    /// Plain id of the storefront the acquire downloads from, when it is
+    /// one a file row may name ([`source_store_of`]).
+    source_store: Option<String>,
+    /// The pool whose confined worker probes written audio.
+    media: Arc<bookclerk_media::MediaPool>,
     /// The first audio key this run wrote here: its primary audio. Every
     /// later audio key (another part or chapter file) is a
     /// [`FileRole::Part`].
@@ -57,6 +62,46 @@ impl RecordingBackend {
         role
     }
 
+    /// Probes the audio file just written at `key` from `path` and stores
+    /// the result on its row, with the storefront the copy came from
+    /// ([`LibraryStore::set_edition_file_probe`]).
+    ///
+    /// Only audio is probed (the primary file, parts and chapters). A file
+    /// that cannot be probed (a format the tag reader does not know, or no
+    /// confined worker where one is required) keeps a row with no probe:
+    /// the file is stored either way, and the acquire does not fail for it.
+    async fn probe(&self, key: &str, path: &Path, role: FileRole) {
+        match role {
+            FileRole::Audio | FileRole::Part | FileRole::Chapter => {}
+            FileRole::Pdf
+            | FileRole::Cover
+            | FileRole::Sidecar
+            | FileRole::Transcript
+            | FileRole::Epub => return,
+        }
+        let probe = match self.media.probe_file(path).await {
+            Ok(probe) => FileProbe {
+                content_type: probe.content_type.to_owned(),
+                bitrate_kbps: probe
+                    .bitrate_kbps
+                    .map(|kbps| kbps.min(FileProbe::MAX_BITRATE_KBPS)),
+                lossless: probe.lossless,
+                source_store: self.source_store.clone(),
+            },
+            Err(err) => {
+                tracing::debug!(key, error = %err, "written audio file was not probed");
+                return;
+            }
+        };
+        if let Err(err) = self
+            .library
+            .set_edition_file_probe(self.destination, key, &self.owner, &probe)
+            .await
+        {
+            tracing::warn!(key, error = %err, "could not store a file's probe result");
+        }
+    }
+
     /// Records `key` for the edition before it is written, with the role
     /// [`Self::role_of`] gives it.
     ///
@@ -66,7 +111,7 @@ impl RecordingBackend {
     /// or when another live edition holds `key`; the write is then not
     /// attempted, so no file goes unrecorded and no edition's file is
     /// replaced by another's.
-    async fn record(&self, key: &str) -> bookclerk_storage::Result<()> {
+    async fn record(&self, key: &str) -> bookclerk_storage::Result<FileRole> {
         let role = self.role_of(key);
         let recorded = self
             .library
@@ -76,13 +121,26 @@ impl RecordingBackend {
                 StorageError::Other(anyhow::anyhow!("could not record a title's file: {err}"))
             })?;
         if recorded {
-            Ok(())
+            Ok(role)
         } else {
             Err(StorageError::Other(anyhow::anyhow!(
                 "{key} is another edition's file; refusing to replace it"
             )))
         }
     }
+}
+
+/// `source` as a file row may name it: a store's plain id (lowercase
+/// letters, digits, `-` and `_`, at most
+/// [`FileProbe::MAX_CONTENT_TYPE_BYTES`] bytes). Anything else is left out,
+/// so an odd plugin id costs the row its source and not the probe.
+fn source_store_of(source: &str) -> Option<String> {
+    let plain = !source.is_empty()
+        && source.len() <= FileProbe::MAX_CONTENT_TYPE_BYTES
+        && source
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+    plain.then(|| source.to_owned())
 }
 
 /// `destinations` with each backend wrapped in a [`RecordingBackend`] for
@@ -92,6 +150,25 @@ pub(crate) fn recording_destinations(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
     owner: Option<&FileOwner>,
+    source: &str,
+) -> AcquireDestinations {
+    recording_destinations_probed_by(
+        library,
+        destinations,
+        owner,
+        source,
+        bookclerk_media::pool(),
+    )
+}
+
+/// [`recording_destinations`] whose written audio is probed through
+/// `media` instead of the process-wide pool.
+pub(crate) fn recording_destinations_probed_by(
+    library: &LibraryStore,
+    destinations: &AcquireDestinations,
+    owner: Option<&FileOwner>,
+    source: &str,
+    media: Arc<bookclerk_media::MediaPool>,
 ) -> AcquireDestinations {
     let items = destinations
         .items
@@ -104,6 +181,8 @@ pub(crate) fn recording_destinations(
                     library: library.clone(),
                     destination: destination_id(item.kind),
                     owner: owner.clone(),
+                    source_store: source_store_of(source),
+                    media: Arc::clone(&media),
                     primary: Arc::default(),
                 }),
                 None => item.backend.clone_box(),
@@ -138,6 +217,8 @@ impl StorageBackend for RecordingBackend {
             library: self.library.clone(),
             destination: self.destination,
             owner: self.owner.clone(),
+            source_store: self.source_store.clone(),
+            media: Arc::clone(&self.media),
             primary: Arc::clone(&self.primary),
         })
     }
@@ -153,8 +234,10 @@ impl StorageBackend for RecordingBackend {
         path: &Path,
         meta: ObjectMeta,
     ) -> bookclerk_storage::Result<()> {
-        self.record(key).await?;
-        self.inner.put_file(key, path, meta).await
+        let role = self.record(key).await?;
+        self.inner.put_file(key, path, meta).await?;
+        self.probe(key, path, role).await;
+        Ok(())
     }
 
     async fn get(&self, key: &str) -> bookclerk_storage::Result<Bytes> {

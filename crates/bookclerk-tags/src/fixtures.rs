@@ -98,7 +98,11 @@ pub fn tagged_m4b() -> Vec<u8> {
     stsd.extend_from_slice(&mp4_box(b"mp4a", &[0u8; 28]));
     let audio_stbl = mp4_box(
         b"stbl",
-        &[full(b"stsd", 0, &stsd), mp4_box(b"stsz", &vec![0u8; 200_000])].concat(),
+        &[
+            full(b"stsd", 0, &stsd),
+            mp4_box(b"stsz", &vec![0u8; 200_000]),
+        ]
+        .concat(),
     );
     let audio_minf = mp4_box(b"minf", &audio_stbl);
     let audio_mdia = mp4_box(b"mdia", &[mdhd(44_100), hdlr(b"soun"), audio_minf].concat());

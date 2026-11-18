@@ -215,7 +215,7 @@ pub async fn acquire_book_indexed(
 ) -> Result<AcquireResult> {
     let owner = file_owner_of_request(library, &req).await?;
     pin_library_id(&mut req, owner.as_ref());
-    let recorded = recording_destinations(library, destinations, owner.as_ref());
+    let recorded = recording_destinations(library, destinations, owner.as_ref(), &req.source);
     acquire_book_recorded(library, &recorded, req, index, source).await
 }
 
@@ -2815,7 +2815,7 @@ pub async fn acquire_pdf_only(
     let owner = file_owner_of_request(library, req).await?;
     let mut req = req.clone();
     pin_library_id(&mut req, owner.as_ref());
-    let recorded = recording_destinations(library, destinations, owner.as_ref());
+    let recorded = recording_destinations(library, destinations, owner.as_ref(), &req.source);
     acquire_pdf_only_recorded(library, &recorded, &req, source).await
 }
 
@@ -3936,6 +3936,106 @@ mod tests {
             .unwrap()
             .map(|edition| bookclerk_library::library_id(&edition).unwrap())
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn written_audio_is_probed_onto_its_file_row() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00PROBE", "user-1", "Probed", None).await;
+        let owner = store.file_owner_of_book(&uuid).await.unwrap().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = counting_destinations(&tmp.path().join("dest"), puts);
+        let media = Arc::new(bookclerk_media::MediaPool::in_process());
+        let recorded = crate::record::recording_destinations_probed_by(
+            &store,
+            &destinations,
+            Some(&owner),
+            "audible",
+            Arc::clone(&media),
+        );
+        let backend = &recorded.primary_destination().backend;
+
+        let audio = tmp.path().join("book.m4b");
+        tokio::fs::write(&audio, bookclerk_tags::fixtures::tagged_m4b())
+            .await
+            .unwrap();
+        backend
+            .put_file("Probed/Probed.m4b", &audio, ObjectMeta::default())
+            .await
+            .unwrap();
+        let probe = store
+            .edition_file_probe("local", "Probed/Probed.m4b")
+            .await
+            .unwrap()
+            .expect("the written audio was probed");
+        assert_eq!(probe.content_type, "audio/mp4");
+        assert!(probe.bitrate_kbps.is_some());
+        assert!(!probe.lossless);
+        assert_eq!(probe.source_store.as_deref(), Some("audible"));
+
+        // A sidecar is recorded but never probed, and audio the reader
+        // cannot parse is stored with no probe instead of failing the write.
+        let cue = tmp.path().join("book.cue");
+        tokio::fs::write(&cue, b"FILE").await.unwrap();
+        backend
+            .put_file("Probed/Probed.cue", &cue, ObjectMeta::default())
+            .await
+            .unwrap();
+        let junk = tmp.path().join("part.mp3");
+        tokio::fs::write(&junk, b"not audio").await.unwrap();
+        backend
+            .put_file("Probed/Probed - 02.mp3", &junk, ObjectMeta::default())
+            .await
+            .unwrap();
+        for key in ["Probed/Probed.cue", "Probed/Probed - 02.mp3"] {
+            assert!(store.edition_file("local", key).await.unwrap().is_some());
+            assert_eq!(store.edition_file_probe("local", key).await.unwrap(), None);
+        }
+
+        // A plugin id that is not a plain store id leaves the source out.
+        // (Each write gets its own source file: the local backend hard-links
+        // what it is given.)
+        let again = tmp.path().join("again.m4b");
+        tokio::fs::write(&again, bookclerk_tags::fixtures::tagged_m4b())
+            .await
+            .unwrap();
+        tokio::fs::remove_file(tmp.path().join("dest/Probed/Probed.m4b"))
+            .await
+            .unwrap();
+        let odd = crate::record::recording_destinations_probed_by(
+            &store,
+            &destinations,
+            Some(&owner),
+            "Odd Store!",
+            media,
+        );
+        odd.primary_destination()
+            .backend
+            .put_file("Probed/Probed.m4b", &again, ObjectMeta::default())
+            .await
+            .unwrap();
+        let probe = store
+            .edition_file_probe("local", "Probed/Probed.m4b")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(probe.source_store, None);
+
+        // With no confined worker where one is required (the default pool),
+        // the file is still written and recorded, just not probed.
+        let unconfined = recording_destinations(&store, &destinations, Some(&owner), "audible");
+        unconfined
+            .primary_destination()
+            .backend
+            .put_file("Probed/Probed - 03.m4b", &again, ObjectMeta::default())
+            .await
+            .unwrap();
+        assert!(store
+            .edition_file("local", "Probed/Probed - 03.m4b")
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]

@@ -4,8 +4,8 @@ use sha2::{Digest, Sha256};
 
 use crate::cache::{Source, Step};
 use crate::{
-    AudioCodec, ByteSpan, Chapter, ChapterSource, Container, Duration, EmbeddedCover, PictureFormat,
-    RegionDigest, Sha256Digest, TagEntry, TagField, TagRecord, MAX_CHAPTERS,
+    AudioCodec, ByteSpan, Chapter, ChapterSource, Container, Duration, EmbeddedCover,
+    PictureFormat, RegionDigest, Sha256Digest, TagEntry, TagField, TagRecord, MAX_CHAPTERS,
     MAX_CHAPTER_TITLE_BYTES, MAX_ENTRIES, MAX_KEY_BYTES, MAX_VALUE_BYTES, REGION_HASH_VERSION,
 };
 

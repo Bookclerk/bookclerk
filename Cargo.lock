@@ -1487,6 +1487,7 @@ dependencies = [
  "bookclerk-plugin-manifest",
  "bookclerk-source",
  "bookclerk-storage",
+ "bookclerk-tags",
  "bytes",
  "chrono",
  "reqwest 0.13.5",

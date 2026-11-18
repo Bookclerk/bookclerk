@@ -12,8 +12,8 @@ use std::cell::Cell;
 use crate::cache::{Miss, Source, Step};
 use crate::text::{latin1, utf16be, utf8, RecordBuilder};
 use crate::{
-    AudioCodec, ByteSpan, ChapterSource, Container, Duration, DurationPrecision, TagError, TagField, TagRecord,
-    MAX_CHAPTERS,
+    AudioCodec, ByteSpan, ChapterSource, Container, Duration, DurationPrecision, TagError,
+    TagField, TagRecord, MAX_CHAPTERS,
 };
 
 /// Container name in errors.
@@ -855,7 +855,10 @@ pub(crate) mod tests {
     #[test]
     fn a_record_whose_codec_the_container_cannot_hold_is_refused() {
         let size = |file: &[u8]| u64::try_from(file.len()).expect("len");
-        for file in [crate::fixtures::tagged_mp3(), crate::fixtures::tagged_flac()] {
+        for file in [
+            crate::fixtures::tagged_mp3(),
+            crate::fixtures::tagged_flac(),
+        ] {
             let record = crate::read_all(&file).expect("record");
             let own = match record.container {
                 Container::Mp3 => AudioCodec::Mp3,
@@ -868,10 +871,7 @@ pub(crate) mod tests {
             for wrong in [None, Some(AudioCodec::Aac)] {
                 let mut forged = record.clone();
                 forged.codec = wrong;
-                assert_eq!(
-                    forged.validate(size(&file)),
-                    Err(crate::RecordError::Codec)
-                );
+                assert_eq!(forged.validate(size(&file)), Err(crate::RecordError::Codec));
             }
         }
     }

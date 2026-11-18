@@ -36,3 +36,5 @@ workspace = true
 
 [dev-dependencies]
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
+# A real tagged audio file, for the test that probes what an acquire wrote.
+bookclerk-tags = { workspace = true, features = ["fixtures"] }
