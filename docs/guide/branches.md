@@ -177,6 +177,22 @@ and offers **Remove**; sign in again to get a new card.
 A server that is already a branch of a library shows your books there
 through that link, so it can't also hold a card for it.
 
+## Core and local branches
+
+Whether other computers can reach an install is a separate question from
+whether it is a library or a branch:
+
+- A **core branch** has a public address (its `public_origin`, see
+  [Configuration](../server/configuration.md)). Other installs can join
+  it, and outside services such as cloud storage can send it
+  notifications.
+- A **local branch** has no public address, such as a computer at home.
+  It connects out to its library and never waits for anyone to connect to
+  it.
+
+A library that others join must be a core branch. A branch is usually a
+local branch, but it can be a core branch too.
+
 ## Leave a library
 
 On the branch, open **Settings → Library → Leave library**.
