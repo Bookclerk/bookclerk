@@ -1,7 +1,7 @@
 //! Patron scopes: which part of the library a Member sees and what they may
-//! do with it ([ADR](../../../docs/adr/patron-scopes.md)).
+//! do with it (see `docs/adr/patron-scopes.md`).
 //!
-//! A scope is a list of rules plus switches. Each rule names a field, one
+//! A scope is a list of rules. Each rule names a field, one
 //! value of that field, and whether it includes or excludes the books that
 //! have it. With no include rules every book passes; with any, a book must
 //! match at least one. An exclude rule always wins over an include.

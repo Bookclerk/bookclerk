@@ -1,6 +1,6 @@
 //! Patron scope routes: an Administrator reads and sets which part of the
-//! library a patron sees, per patron and as the library's default
-//! ([ADR](../../../docs/adr/patron-scopes.md)).
+//! library a patron sees, per patron and as the library's default (see
+//! `docs/adr/patron-scopes.md`).
 //!
 //! The scope itself lives in `bookclerk_library::control_plane`; the
 //! library pages apply it (see `library_works`).
