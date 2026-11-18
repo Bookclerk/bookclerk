@@ -1607,7 +1607,7 @@ pub async fn post_join_sharing(
 /// One edition in [`WindowBooks`], and the library that holds it.
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct WindowEditionView {
-    /// The library (owner cluster id) that holds it for this install's person.
+    /// The library (owner cluster id) that holds it.
     #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
     pub cluster_id: String,
     /// The library's origin.
@@ -1646,6 +1646,11 @@ pub struct WindowEditionView {
     /// Length in minutes, when known.
     #[schema(example = 600)]
     pub length_minutes: Option<i64>,
+    /// True when this install's person holds it there through a store
+    /// account of their own; false for a book only other people there
+    /// hold.
+    #[schema(example = true)]
+    pub yours: bool,
 }
 
 /// One work in [`WindowBooks`]: every edition its libraries hold for the person.
@@ -1670,19 +1675,20 @@ pub struct WindowBooks {
     pub clusters: Vec<super::api::ClusterLinkView>,
     /// The libraries this install holds an active library card for.
     pub cards: Vec<crate::clerk_link::api::ClerkLinkView>,
-    /// Their books for this install's person, one entry per work, by title.
+    /// Their books, every one they list for a member, one entry per work,
+    /// by title; each edition says whether it is this install's person's.
     pub books: Vec<WindowEntryView>,
 }
 
 /// `GET /api/config/join/window`: the window view for the operator or an
-/// Owner: the books every library this install is a window of, or holds
-/// a library card for, holds for this install's person, merged by work
-/// (`{clusters, cards, books}`).
+/// Owner: every book of each library this install is a window of, or
+/// holds a library card for, merged by work, each edition marked when it
+/// is this install's person's (`{clusters, cards, books}`).
 #[utoipa::path(
     get,
     path = "/api/config/join/window",
     responses(
-        (status = 200, description = "The libraries this install is a window of, and their books for its person.", body = WindowBooks),
+        (status = 200, description = "The libraries this install is a window of or holds a card for, and their books.", body = WindowBooks),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
             ("forbidden" = (summary = "The user is not an active Owner.", value = json!({"error": "forbidden"}))),
@@ -1744,6 +1750,7 @@ pub async fn get_join_window(
                         series: meta.series,
                         series_index: meta.series_index,
                         length_minutes: meta.length_minutes,
+                        yours: held.yours,
                     }
                 })
                 .collect(),

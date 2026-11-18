@@ -131,6 +131,7 @@ async fn a_window_reads_the_books_its_library_holds_for_its_person() {
     assert_eq!(view[0].title(), "Through the Window");
     assert_eq!(view[0].editions[0].owner_cluster_id, link.owner_cluster_id);
     assert_eq!(view[0].editions[0].edition.product_id, ASIN);
+    assert!(view[0].editions[0].yours, "on Riley's own account");
     // Read again: nothing new, nothing dropped.
     assert_eq!(
         reader.read_once().await.unwrap(),

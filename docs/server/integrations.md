@@ -113,6 +113,16 @@ as the sign-in issuer and in shareable invite links:
   (`oidc.authenticateUser`), when allowed.
 - Can sync listening progress (`supports_listening_sync`) into the shared
   `listening_progress` table. Discover uses it when it is there.
+- Reads and writes Audiobookshelf's sidecar files for a book: its
+  `metadata.json`, the plain-text `.nfo`, `desc.txt` and `reader.txt`
+  (the `metadataFiles` entrypoint). Bookclerk hands it one file at a
+  time and checks every answer; these calls need no network access. The
+  [plugin README](../../crates/bookclerk-plugins/optional/integration-audiobookshelf/README.md#sidecar-files)
+  lists what each format carries.
+
+> [!NOTE]
+> Bookclerk does not look for sidecar files yet. The metadata file sync
+> work will start using the plugin to read and write them on storage.
 
 ### Watching users
 
@@ -461,7 +471,8 @@ that tools without a plugin of their own keep next to a book's audio:
   is the store's record rather than the library's.
 
 Formats that belong to a tool with its own plugin, such as
-Audiobookshelf's `metadata.json`, live in that tool's plugin.
+Audiobookshelf's `metadata.json`, live in that tool's plugin (see
+[What it does](#what-it-does)).
 
 It has no network or file access. Bookclerk hands it one file at a time
 and checks every answer, so a damaged or hostile file can at most be

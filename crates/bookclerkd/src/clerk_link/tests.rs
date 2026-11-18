@@ -526,7 +526,7 @@ where
 fn work(asin: &str) -> bookclerk_node_proto::WindowWork {
     use bookclerk_node_proto::{
         Availability, CatalogMetadata, LookupEdition, LookupFormat, LookupIdentifier, LookupScheme,
-        WindowWork,
+        WindowEdition, WindowWork,
     };
     WindowWork {
         work: format!("w-{asin}"),
@@ -535,16 +535,19 @@ fn work(asin: &str) -> bookclerk_node_proto::WindowWork {
             value: asin.into(),
             marketplace: "us".into(),
         }],
-        editions: vec![LookupEdition {
-            store: "audible".into(),
-            marketplace: "us".into(),
-            product_id: asin.into(),
-            availability: Availability::Owned,
-            formats: vec![LookupFormat::Audio],
-            metadata: CatalogMetadata {
-                title: format!("Title {asin}"),
-                ..CatalogMetadata::default()
+        editions: vec![WindowEdition {
+            edition: LookupEdition {
+                store: "audible".into(),
+                marketplace: "us".into(),
+                product_id: asin.into(),
+                availability: Availability::Owned,
+                formats: vec![LookupFormat::Audio],
+                metadata: CatalogMetadata {
+                    title: format!("Title {asin}"),
+                    ..CatalogMetadata::default()
+                },
             },
+            yours: true,
         }],
     }
 }

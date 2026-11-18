@@ -60,7 +60,7 @@ boundary extends it.
 | `clerk_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_clerk_query`, `clerk_request_problem` |
 | `clerk_token_request` | A library card's token exchange, the body of `POST /api/clerk/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_clerk_token_request`, `clerk_exchange_matches` |
 | `clerk_token_answer` | A library's answer to a clerk's token exchange, read on the clerk before it seals the library card and records the library | `bookclerk-node-proto::parse_clerk_token_answer` |
-| `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics and pages of the person's books) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
+| `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics and pages of the library's books, the person's marked) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
@@ -1159,34 +1159,42 @@ pick another run.
   condition outside that is refused, and a response header outside it is
   dropped from the answer.
 
-### Metadata file dialect guest
+### Metadata file dialect guests
 
-The `metadata_files` guest reads sidecar files from storage the host does
-not control. Its `test/fuzz.test.ts` replays one corpus per dialect under
+Two guests read sidecar files from storage the host does not control: the
+shared `metadata_files` guest (`libation_json`) and the Audiobookshelf
+plugin (`abs_metadata_json`, `abs_nfo`, `desc_txt` and `reader_txt`).
+Each one's `test/fuzz.test.ts` replays one corpus per dialect under
 `fuzz/<dialect id>/` and runs seeded byte and text mutations, spliced
 across every corpus, in `npm test` (the `workerd_guests` check);
 `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
 
-- **Parsing** (`parseFile` in
-  `crates/bookclerk-plugins/optional/metadata-files/src/dialects.ts`, for
-  `libation_json`, `opf`, `kodi_album_nfo` and `cue`). Oracle, written
-  from the ABI's record rules (`validate_metadata_file_record` and
+- **Parsing** (`parseFile` in each guest's `src/dialects.ts`, under
+  `crates/bookclerk-plugins/optional/metadata-files` (`libation_json`,
+  `opf`, `kodi_album_nfo` and `cue`) and `integration-audiobookshelf`).
+  Oracle, written from the ABI's record rules (`validate_metadata_file_record` and
   `check_record_against_dialect`) and the dialect's manifest row: a file
   is refused only with `invalid_params`. Otherwise the record passes every
   rule the host applies, states only the row's fields and credit roles,
   and is the same on a second parse.
-- **Rendering** (`renderFile`), for every row with `writes = true`, over
-  every mutated file as the existing file, with a random record, field
-  list and list of audio files (today `opf`, `kodi_album_nfo` and `cue`).
-  Oracle: a refusal only for a file `parse` also refuses, an answer that
-  would pass the size cap, or a request the format cannot hold (chapters
-  for a CUE sheet with several files and no audio files, or past a file
-  of unknown length; an audio file name with a double quote). Chapters
-  laid out across several audio files are not compared, because the
-  reader leaves them unstated. Otherwise the answer is within
+- **Rendering** (`renderFile`), for every row with `writes = true` (`opf`,
+  `kodi_album_nfo`, `cue` and all four Audiobookshelf dialects), over every
+  mutated file as the existing file, with a random record and field list
+  (and, for `metadata_files`, a random list of audio files). Oracle: a
+  refusal only for a file `parse` also refuses, an answer that would pass
+  the size cap, a request the format cannot hold (chapters for a CUE sheet
+  with several files and no audio files, or past a file of unknown length;
+  an audio file name with a double quote), a `metadata.json` number whose
+  exact value a double cannot keep, an existing Audiobookshelf file with
+  bytes that decode only to U+FFFD, or an Audiobookshelf NFO description
+  line it would read as an underline. Chapters laid out across several
+  audio files are not compared, because the CUE reader leaves them
+  unstated. Otherwise the answer is within
   `MAX_METADATA_FILE_BYTES`, and a re-parse passes the same rules, reads
   back each field it was asked to write, and reads every other field (and
   every credit role the request does not state) as the existing file did.
+  The Audiobookshelf oracle also checks that each such field stays stated
+  or absent as before.
 - **XML scanning** (`parseXml` in `src/xml.ts`), under every XML dialect's
   parse and render. It decodes only XML's five entities and numeric
   references, refuses a document type with an internal subset and nesting

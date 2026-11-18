@@ -15176,11 +15176,11 @@
         "tags": [
           "Cluster"
         ],
-        "summary": "`GET /api/config/join/window`: the window view for the operator or an\nOwner: the books every library this install is a window of, or holds\na library card for, holds for this install's person, merged by work\n(`{clusters, cards, books}`).",
+        "summary": "`GET /api/config/join/window`: the window view for the operator or an\nOwner: every book of each library this install is a window of, or\nholds a library card for, merged by work, each edition marked when it\nis this install's person's (`{clusters, cards, books}`).",
         "operationId": "get_join_window",
         "responses": {
           "200": {
-            "description": "The libraries this install is a window of, and their books for its person.",
+            "description": "The libraries this install is a window of or holds a card for, and their books.",
             "content": {
               "application/json": {
                 "schema": {
@@ -45929,7 +45929,7 @@
             "items": {
               "$ref": "#/components/schemas/WindowEntryView"
             },
-            "description": "Their books for this install's person, one entry per work, by title."
+            "description": "Their books, every one they list for a member, one entry per work,\nby title; each edition says whether it is this install's person's."
           }
         }
       },
@@ -45943,12 +45943,13 @@
           "marketplace",
           "product_id",
           "formats",
-          "title"
+          "title",
+          "yours"
         ],
         "properties": {
           "cluster_id": {
             "type": "string",
-            "description": "The library (owner cluster id) that holds it for this install's person.",
+            "description": "The library (owner cluster id) that holds it.",
             "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
           },
           "owner_origin": {
@@ -46022,6 +46023,11 @@
             "description": "Length in minutes, when known.",
             "example": 600,
             "nullable": true
+          },
+          "yours": {
+            "type": "boolean",
+            "description": "True when this install's person holds it there through a store\naccount of their own; false for a book only other people there\nhold.",
+            "example": true
           }
         }
       },
