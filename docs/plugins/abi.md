@@ -1534,14 +1534,18 @@ The rules every operation follows:
   segments are dropped and `\` is read as `/`, because a nested object could overwrite one that
   has not moved yet.
 
-The platform `local` destination declares every operation except
-`storage.changes`: moves are renames, and on a local disk `noOverwrite`
+The platform `local` destination declares every operation: moves are
+renames, and on a local disk `noOverwrite`
 and `ifNoneMatch` publish through a hard link that fails when the target
 exists. `ifMatch`, and every condition on a network or FUSE mount, is
 checked just before the rename and reported as not atomic (see
-[Local filesystem](../server/output.md#local-filesystem)).
+[Local filesystem](../server/output.md#local-filesystem)). Its `changes`
+feed comes from a file-system watcher when the instance's `watch` setting
+is on and the root is on a local disk; otherwise every page has `complete`
+false (see [Watching the folder](../server/output.md#watching-the-folder)).
 
-The optional `s3` destination declares the same set. It cannot see its
+The optional `s3` destination declares the same set except
+`storage.changes`. It cannot see its
 bucket's settings when it is described, so it declares them for every store
 and finds out once, on first use, which request kinds (plain upload,
 multipart completion, copy, part copy, delete) enforce their conditions
@@ -1582,6 +1586,15 @@ returns the current position and no changes. A page with `complete` false
 means the guest may have missed changes since the cursor (a watcher
 restarted, a queue dropped messages), and the host backs it with a full
 listing. A change kind added after an SDK was built reads as `changed`. A scheduled listing stays the backstop either way.
+
+`liveWatch` says the running guest produces the feed itself, so stopping
+it would lose changes (a watcher, as opposed to a durable queue). While
+the latest page has both `complete` and `liveWatch` true, the host keeps
+the guest awake instead of stopping it when idle. A page without them, a
+`changes` error, or the guest exiting lets it sleep again. The host
+honours `liveWatch` only from the first-party storage plugins it starts on
+demand, which today means the `local` destination with `watch` on (see
+[decision 13](../adr/event-delivery-model.md#decision)).
 
 First-party S3 ships as `bookclerk-plugin-destination-s3`
 (`api_version = 3`). Its bucket, region, endpoint, prefix, naming

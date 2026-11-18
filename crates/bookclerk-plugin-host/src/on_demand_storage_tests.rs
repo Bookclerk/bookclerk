@@ -346,6 +346,130 @@ async fn a_change_feed_read_never_wakes_a_guest_without_one() {
     assert!(started.lock().expect("started").is_empty());
 }
 
+/// Starter double whose guests watch `root`, on a local disk or (with
+/// `kind`) on a file system the watch refuses.
+struct WatchingStarter {
+    /// Directory every double watches.
+    root: std::path::PathBuf,
+    /// File-system kind every double assumes.
+    kind: bookclerk_storage::fs_kind::FsKind,
+    /// Every guest started on demand, in order.
+    started: Started,
+}
+
+impl WatchingStarter {
+    /// A running double watching `root` as a file system of `kind`.
+    fn guest(root: &std::path::Path, kind: bookclerk_storage::fs_kind::FsKind) -> Arc<FakeStorage> {
+        Arc::new(FakeStorage {
+            running: AtomicBool::new(true),
+            backend: LocalFsBackend::new(root.to_path_buf())
+                .expect("local backend")
+                .with_fs_kind(kind)
+                .with_watch(),
+        })
+    }
+}
+
+#[async_trait]
+impl GuestStarter<dyn AwakeStorage> for WatchingStarter {
+    async fn start_guest(&self) -> std::result::Result<Arc<dyn AwakeStorage>, String> {
+        let guest = Self::guest(&self.root, self.kind);
+        self.started
+            .lock()
+            .expect("started guests")
+            .push(Arc::clone(&guest));
+        Ok(guest)
+    }
+}
+
+/// Proxy over a watching double in `dir` that sleeps after `idle`.
+fn watching_proxy(
+    dir: &tempfile::TempDir,
+    kind: bookclerk_storage::fs_kind::FsKind,
+    idle: Duration,
+) -> (Arc<OnDemandStorage>, Arc<FakeStorage>, Started) {
+    let first = WatchingStarter::guest(dir.path(), kind);
+    let started: Started = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let proxy = OnDemandStorage::wrap(
+        Arc::clone(&first) as Arc<dyn AwakeStorage>,
+        "storage-instance",
+        Box::new(WatchingStarter {
+            root: dir.path().to_path_buf(),
+            kind,
+            started: Arc::clone(&started),
+        }),
+        idle,
+    );
+    (proxy, first, started)
+}
+
+#[tokio::test]
+async fn a_live_watch_keeps_the_guest_awake_until_a_reply_says_otherwise() {
+    use bookclerk_storage::fs_kind::FsKind;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (proxy, first, _started) = watching_proxy(&dir, FsKind::Local, Duration::from_millis(30));
+    assert!(proxy.capabilities().changes);
+    let page = proxy
+        .changes(None, 10)
+        .await
+        .expect("changes")
+        .expect("a feed");
+    assert!(page.complete && page.live_watch, "{page:?}");
+    // Well past the idle timeout: the live watch keeps the guest up.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(first.guest_running(), "a live watch keeps the guest");
+
+    // A cursor the feed cannot vouch for: the reply is incomplete, so the
+    // hold is released and the guest sleeps.
+    let stale = proxy
+        .changes(Some("w1.another-watcher.0"), 10)
+        .await
+        .expect("changes")
+        .expect("a feed");
+    assert!(!stale.complete);
+    wait_asleep(&proxy).await;
+    assert!(!first.guest_running());
+}
+
+#[tokio::test]
+async fn a_watch_that_is_not_live_never_holds_the_guest() {
+    use bookclerk_storage::fs_kind::FsKind;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (proxy, first, _started) = watching_proxy(&dir, FsKind::Remote, Duration::from_millis(30));
+    let page = proxy
+        .changes(None, 10)
+        .await
+        .expect("changes")
+        .expect("a feed");
+    assert!(!page.complete && !page.live_watch, "{page:?}");
+    wait_asleep(&proxy).await;
+    assert!(!first.guest_running());
+}
+
+#[tokio::test]
+async fn a_held_guest_that_exits_is_released_and_a_changes_error_releases_too() {
+    use bookclerk_storage::fs_kind::FsKind;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (proxy, first, started) = watching_proxy(&dir, FsKind::Local, Duration::from_millis(30));
+    proxy.changes(None, 10).await.expect("changes");
+    // The guest dies on its own. A call wakes a replacement, which sleeps
+    // when idle: the hold went with the guest it was for.
+    first.running.store(false, Ordering::SeqCst);
+    assert!(!proxy.exists("nothing").await.expect("exists"));
+    let second = Arc::clone(&started.lock().expect("started")[0]);
+    wait_asleep(&proxy).await;
+    assert!(!second.guest_running());
+
+    // A fresh guest takes the hold, and a `changes` error releases it.
+    proxy.changes(None, 10).await.expect("changes");
+    let second = Arc::clone(&started.lock().expect("started")[1]);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(second.guest_running(), "the new guest is held");
+    assert!(proxy.changes(Some("not a cursor"), 10).await.is_err());
+    wait_asleep(&proxy).await;
+    assert!(!second.guest_running());
+}
+
 #[tokio::test]
 async fn an_open_read_stream_keeps_the_guest_awake_until_it_is_dropped() {
     let dir = tempfile::tempdir().expect("tempdir");

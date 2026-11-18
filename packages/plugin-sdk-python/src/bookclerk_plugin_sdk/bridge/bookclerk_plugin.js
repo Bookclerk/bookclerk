@@ -1281,13 +1281,15 @@ var ChangesPageCodec = {
     s.setText(1, v.cursor ?? "");
     s.setBool(0, v.more ?? false);
     s.setBool(1, v.complete ?? false);
+    s.setBool(2, v.liveWatch ?? false);
   },
   read(s, caps) {
     return {
       changes: s.getStructList(0, 1, 2).map((item) => ObjectChangeCodec.read(item, caps)),
       cursor: s.getText(1),
       more: s.getBool(0),
-      complete: s.getBool(1)
+      complete: s.getBool(1),
+      liveWatch: s.getBool(2)
     };
   }
 };

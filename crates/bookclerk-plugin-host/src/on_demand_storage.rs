@@ -12,6 +12,14 @@
 //! Jobs that run against the guest's session take a hold for as long as
 //! they use it ([`OnDemandStorage::session`]).
 //!
+//! One exception keeps a guest up with no call in flight: while the latest
+//! `changes` reply says the feed is complete and comes from the running
+//! guest itself (`live_watch`, the `local` package with `watch` on), the
+//! proxy holds the guest awake, because stopping it would lose the watch.
+//! A reply that is incomplete or not live, a `changes` error, or the guest
+//! exiting releases the hold (decision 13 of
+//! `docs/adr/event-delivery-model.md`).
+//!
 //! The namespace identity ([`StorageBackend::instance_id`]), scan placement
 //! and copy support are captured from the first guest, so they stay the
 //! same across wakes.
@@ -481,7 +489,14 @@ impl StorageBackend for OnDemandStorage {
             return Ok(None);
         }
         let (guest, _busy) = self.awake().await?;
-        guest.backend().changes(cursor, limit).await
+        let page = guest.backend().changes(cursor, limit).await;
+        match &page {
+            Ok(Some(page)) if page.complete && page.live_watch => {
+                self.activation.hold_awake(&guest);
+            }
+            _ => self.activation.release_hold(),
+        }
+        page
     }
 
     async fn touch_file(

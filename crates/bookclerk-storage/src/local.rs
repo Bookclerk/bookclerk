@@ -43,12 +43,17 @@ pub struct LocalFsBackend {
     /// Test override for the file-system kind of every path (see
     /// [`Self::with_fs_kind`]); `None` classifies each path.
     fs_kind_override: Option<FsKind>,
+    /// The change feed, when [`Self::with_watch`] started one; shared by
+    /// clones.
+    #[cfg(feature = "watch")]
+    watch: Option<Arc<crate::local_watch::LocalWatch>>,
 }
 
 impl LocalFsBackend {
     /// What every local backend does natively: moves are renames, batches
-    /// run in one call, and conditional writes are checked here. There is no
-    /// change feed yet.
+    /// run in one call, and conditional writes are checked here. A backend
+    /// built with [`Self::with_watch`] (feature `watch`) also has a change
+    /// feed.
     pub const CAPABILITIES: StorageCapabilities = StorageCapabilities {
         move_object: true,
         move_many: true,
@@ -135,7 +140,30 @@ impl LocalFsBackend {
             placement_override: None,
             check_then_write: Arc::new(tokio::sync::Mutex::new(())),
             fs_kind_override: None,
+            #[cfg(feature = "watch")]
+            watch: None,
         })
+    }
+
+    /// Starts a change feed for this backend's root (below its prefix),
+    /// served by [`StorageBackend::changes`] for as long as the backend or
+    /// a clone of it lives.
+    ///
+    /// The watcher runs only on a local disk; on a network file system or a
+    /// FUSE mount (see [`crate::fs_kind`]), or when the operating system
+    /// refuses it, every page says the feed may have missed changes, so the
+    /// caller lists instead. Call it after [`Self::with_fs_kind`] for the
+    /// override to apply.
+    #[cfg(feature = "watch")]
+    #[must_use]
+    pub fn with_watch(mut self) -> Self {
+        let dir = self.root.join(self.prefix.trim_end_matches('/'));
+        self.watch = Some(Arc::new(crate::local_watch::LocalWatch::start(
+            &dir,
+            "",
+            self.fs_kind_override,
+        )));
+        self
     }
 
     /// Treats every path as living on a file system of `kind`, instead of
@@ -169,6 +197,18 @@ impl LocalFsBackend {
     pub fn with_scan_placement(mut self, placement: impl Into<String>) -> Self {
         self.placement_override = Some(placement.into());
         self
+    }
+
+    /// True when [`Self::with_watch`] started a change feed (live or not).
+    fn has_watch(&self) -> bool {
+        #[cfg(feature = "watch")]
+        {
+            self.watch.is_some()
+        }
+        #[cfg(not(feature = "watch"))]
+        {
+            false
+        }
     }
 
     /// Prepends the storage prefix to `key` (no-op when the prefix is empty).
@@ -465,7 +505,25 @@ impl StorageBackend for LocalFsBackend {
     }
 
     fn capabilities(&self) -> StorageCapabilities {
-        Self::CAPABILITIES
+        StorageCapabilities {
+            changes: self.has_watch(),
+            ..Self::CAPABILITIES
+        }
+    }
+
+    /// The watcher's journal (see [`Self::with_watch`]); `None` without
+    /// one.
+    async fn changes(
+        &self,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<Option<crate::ChangeFeedPage>> {
+        #[cfg(feature = "watch")]
+        if let Some(watch) = &self.watch {
+            return watch.changes(cursor, limit).map(Some);
+        }
+        let _ = (cursor, limit);
+        Ok(None)
     }
 
     /// Renames the file (and its meta sidecar).

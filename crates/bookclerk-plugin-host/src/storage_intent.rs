@@ -202,6 +202,7 @@ pub(crate) fn change_feed_page(page: ChangesPage) -> ChangeFeedPage {
         cursor: page.cursor,
         more: page.more,
         complete: page.complete,
+        live_watch: page.live_watch,
     }
 }
 
@@ -337,6 +338,7 @@ mod tests {
                 cursor: "c2".into(),
                 more: false,
                 complete: true,
+                live_watch: false,
             })
         }
     }

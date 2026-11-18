@@ -27,6 +27,13 @@ type = "string"
 default = ""
 
 [[settings]]
+key = "watch"
+label = "Watch for changes"
+type = "bool"
+default = false
+description = "Watch the output folder so files added, changed or removed outside Bookclerk are noticed right away. Works on local disks only; keeps this plugin running while on."
+
+[[settings]]
 key = "naming_profile"
 label = "Naming profile"
 type = "enum"

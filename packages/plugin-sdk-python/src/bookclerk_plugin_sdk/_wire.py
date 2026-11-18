@@ -502,6 +502,7 @@ def _write_changes_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(1, v["cursor"])
     s.set_bool(0, v["more"])
     s.set_bool(1, v["complete"])
+    s.set_bool(2, v["liveWatch"])
 
 
 def _read_changes_page(s: _StructReader, caps: _CapTable) -> Any:
@@ -510,6 +511,7 @@ def _read_changes_page(s: _StructReader, caps: _CapTable) -> Any:
         "cursor": s.get_text(1),
         "more": s.get_bool(0),
         "complete": s.get_bool(1),
+        "liveWatch": s.get_bool(2),
     }
 
 

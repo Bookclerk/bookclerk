@@ -201,6 +201,13 @@ pub struct ChangesPage {
     /// cursor; the host then backs it with a full listing.
     #[serde(default)]
     pub complete: bool,
+    /// True when the running guest produces the feed itself (a filesystem
+    /// watcher), so stopping it would lose changes. The host keeps such a
+    /// guest awake while `complete` stays true, and honours this only from
+    /// the first-party storage plugins it starts on demand. Durable feeds
+    /// leave it false.
+    #[serde(default)]
+    pub live_watch: bool,
 }
 
 /// True when `key` can name an object: non-empty, without NUL, and at most
@@ -768,6 +775,7 @@ pub(crate) fn fill_changes_page(
     b.set_cursor(&page.cursor);
     b.set_more(page.more);
     b.set_complete(page.complete);
+    b.set_live_watch(page.live_watch);
     Ok(())
 }
 
@@ -809,6 +817,7 @@ pub(crate) fn read_changes_page(r: changes_page::Reader<'_>) -> Result<ChangesPa
         cursor: strict_text(r.get_cursor())?,
         more: r.get_more(),
         complete: r.get_complete(),
+        live_watch: r.get_live_watch(),
     })
 }
 
@@ -1025,6 +1034,7 @@ mod tests {
             cursor: "c2".into(),
             more: true,
             complete: true,
+            live_watch: false,
         };
         assert!(validate_changes_page(Some("c1"), &page).is_ok());
         assert!(validate_changes_page(Some("c2"), &page).is_err());
@@ -1081,6 +1091,7 @@ mod tests {
                 cursor: "c".into(),
                 more: false,
                 complete: true,
+                live_watch: false,
             }),
             StorageReply::List(crate::ListPage {
                 objects: vec![ObjectInfo {
@@ -1285,6 +1296,7 @@ mod rpc_tests {
                 cursor,
                 more: true,
                 complete: true,
+                live_watch: false,
             })
         }
     }

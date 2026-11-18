@@ -385,6 +385,14 @@ export interface ChangesPage {
    * backs it with a full listing. True means these are all the changes.
    */
   complete: boolean;
+  /**
+   * True when this running guest produces the feed itself (a filesystem
+   * watcher) and stopping it would lose changes, so the host keeps it awake
+   * while `complete` stays true. Durable feeds (a notification queue) leave
+   * it false. The host honours it only from the first-party storage plugins
+   * it starts on demand.
+   */
+  liveWatch: boolean;
 }
 
 /** Guest identity and negotiation surface returned by `describe()`. */
