@@ -576,8 +576,8 @@ pub(crate) async fn spawn_deployed_storage(
 
 /// Spawns a deployed S3 guest from the instance document.
 ///
-/// Bucket, region, prefix, endpoint, and `force_path_style` come from the
-/// document. Credentials are the instance's `access_key_id` /
+/// Bucket, region, prefix, endpoint, `force_path_style` and
+/// `notification_queue_url` come from the document. Credentials are the instance's `access_key_id` /
 /// `secret_access_key` / `session_token` secrets, delivered in `SECRETS`;
 /// without them the guest falls back to the AWS SDK default provider chain
 /// inside its jail. Nothing is written into `CONFIG` or the spawn config
@@ -657,6 +657,10 @@ pub(crate) fn instance_s3_context(
         region,
         endpoint,
         force_path_style: json_bool(body, &["forcePathStyle", "force_path_style"]),
+        notification_queue_url: {
+            let text = json_text(body, &["notification_queue_url"]);
+            (!text.is_empty()).then_some(text)
+        },
         credentials: None,
     };
     serde_json::to_value(&ctx).map_err(|err| crate::PluginError::message(err.to_string()))
@@ -803,6 +807,7 @@ mode = "outbound"
             region: "us-east-1".into(),
             endpoint: None,
             force_path_style: false,
+            notification_queue_url: None,
             credentials: None,
         };
         let json = serde_json::to_string(&ctx).unwrap();
@@ -866,6 +871,20 @@ mode = "outbound"
         let context = super::instance_s3_context(&document).expect("context");
         assert_eq!(context["bucket"], "library");
         assert_eq!(context["forcePathStyle"], true);
+        assert!(context.get("notificationQueueUrl").is_none());
+        let queued = prepared(
+            serde_json::json!({
+                "bucket": "library",
+                "region": "us-east-1",
+                "notification_queue_url": "https://sqs.us-east-1.amazonaws.com/123456789012/q"
+            }),
+            serde_json::json!({}),
+        );
+        let context = super::instance_s3_context(&queued).expect("context");
+        assert_eq!(
+            context["notificationQueueUrl"],
+            "https://sqs.us-east-1.amazonaws.com/123456789012/q"
+        );
         let camel = prepared(
             serde_json::json!({
                 "bucket": "library",
