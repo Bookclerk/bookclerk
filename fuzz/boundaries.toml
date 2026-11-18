@@ -252,6 +252,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.destination_id]
+crate = "bookclerk-config"
+boundary = "A destination id another node sends: an acquire plan's PlanDestination.id and upload records naming the owner's storage plugin instances"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.cache_settings]
 crate = "bookclerk-config"
 boundary = "cache.* values from the settings API and CLI"

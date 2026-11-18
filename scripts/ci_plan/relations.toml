@@ -165,6 +165,8 @@ package = "bookclerk-config"
 paths = [
     "fuzz/corpus/cache_settings/**",
     "fuzz/oracles/cache_settings.rs",
+    "fuzz/corpus/destination_id/**",
+    "fuzz/oracles/destination_id.rs",
 ]
 
 [[test_input]]

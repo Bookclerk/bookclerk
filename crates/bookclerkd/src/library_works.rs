@@ -1353,31 +1353,49 @@ pub(crate) async fn get_edition_cover(
         .map_err(|err| read_failed(ROUTE, &err))?
         .and_then(|acquisition| acquisition.storage_key)
         .ok_or_else(no_cover)?;
-    // The acquisition's key is the primary destination's (the first one).
-    let primary = state
-        .destinations
-        .read()
-        .await
-        .destinations()
-        .into_iter()
-        .next()
-        .map(|primary| primary.backend)
-        .ok_or_else(no_cover)?;
-    let bytes = match primary
-        .get(&bookclerk_acquire::sidecar_key(&storage_key, "jpg"))
-        .await
-    {
-        Ok(bytes) => bytes,
-        Err(bookclerk_storage::StorageError::NotFound(_)) => return Err(no_cover()),
-        // The cover may be there but unreadable: a failure, not a 404.
-        Err(err) => {
-            tracing::error!(error = %err, route = ROUTE, "edition cover read failed");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorMessage::new("the cover could not be read")),
-            ));
+    // Read from a destination that recorded the cover first, then from the
+    // rest: the destination the acquisition wrote first need not lead the
+    // deployed list once more instances are added.
+    let cover_key = bookclerk_acquire::sidecar_key(&storage_key, "jpg");
+    let deployed = state.destinations.read().await.destinations();
+    let mut recorded = Vec::new();
+    let mut others = Vec::new();
+    for destination in deployed {
+        let holds = library
+            .edition_file(destination.id.as_str(), &cover_key)
+            .await
+            .map_err(|err| read_failed(ROUTE, &err))?
+            .is_some();
+        if holds {
+            recorded.push(destination);
+        } else {
+            others.push(destination);
         }
-    };
+    }
+    let mut found = None;
+    for destination in recorded.into_iter().chain(others) {
+        match destination.backend.get(&cover_key).await {
+            Ok(bytes) => {
+                found = Some(bytes);
+                break;
+            }
+            Err(bookclerk_storage::StorageError::NotFound(_)) => {}
+            // The cover may be there but unreadable: a failure, not a 404.
+            Err(err) => {
+                tracing::error!(
+                    error = %err,
+                    route = ROUTE,
+                    destination = %destination.id,
+                    "edition cover read failed"
+                );
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorMessage::new("the cover could not be read")),
+                ));
+            }
+        }
+    }
+    let bytes = found.ok_or_else(no_cover)?;
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, "image/jpeg")],
