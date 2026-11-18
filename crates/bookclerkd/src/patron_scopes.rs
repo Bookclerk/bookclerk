@@ -151,10 +151,10 @@ fn user_scope_json(user: &bookclerk_library::UserRecord, assigned: AssignedScope
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The patron's scope.", body = UserScopeJson),
-        (status = 401, description = "The caller is not signed in.", body = ErrorMessage),
-        (status = 403, description = "The caller may not manage this user.", body = ErrorMessage),
+        (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
+        (status = 403, description = "The caller may not manage this user.", body = ErrorMessage, example = json!({"error": "you may not manage this user"})),
         (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
-        (status = 500, description = "The scope could not be read.", body = ErrorMessage),
+        (status = 500, description = "The scope could not be read.", body = ErrorMessage, example = json!({"error": "the patron scope could not be read or written"})),
     ),
 )]
 pub(crate) async fn get_user_scope(
@@ -187,10 +187,10 @@ pub(crate) async fn get_user_scope(
     responses(
         (status = 200, description = "The patron's scope after the change.", body = UserScopeJson),
         (status = 400, description = "The scope is invalid.", body = ErrorMessage, example = json!({"error": "invalid patron scope: a scope rule needs a value"})),
-        (status = 401, description = "The caller is not signed in.", body = ErrorMessage),
-        (status = 403, description = "The caller may not manage this user, or tried to set their own scope.", body = ErrorMessage),
+        (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
+        (status = 403, description = "The caller may not manage this user, or tried to set their own scope.", body = ErrorMessage, example = json!({"error": "you may not set your own scope"})),
         (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
-        (status = 500, description = "The scope could not be written.", body = ErrorMessage),
+        (status = 500, description = "The scope could not be written.", body = ErrorMessage, example = json!({"error": "the patron scope could not be read or written"})),
     ),
 )]
 pub(crate) async fn put_user_scope(
@@ -234,9 +234,9 @@ pub(crate) async fn put_user_scope(
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The default scope.", body = DefaultScopeJson),
-        (status = 401, description = "The caller is not signed in.", body = ErrorMessage),
-        (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage),
-        (status = 500, description = "The scope could not be read.", body = ErrorMessage),
+        (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
+        (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage, example = json!({"error": "forbidden"})),
+        (status = 500, description = "The scope could not be read.", body = ErrorMessage, example = json!({"error": "the patron scope could not be read or written"})),
     ),
 )]
 pub(crate) async fn get_default_scope(
@@ -262,10 +262,10 @@ pub(crate) async fn get_default_scope(
     responses(
         (status = 200, description = "The default scope after the change.", body = DefaultScopeJson),
         (status = 400, description = "The scope is invalid.", body = ErrorMessage, example = json!({"error": "invalid patron scope: a scope holds at most 64 rules"})),
-        (status = 401, description = "The caller is not signed in.", body = ErrorMessage),
-        (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage),
-        (status = 409, description = "The default kept changing underneath the write; retry.", body = ErrorMessage),
-        (status = 500, description = "The scope could not be written.", body = ErrorMessage),
+        (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
+        (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage, example = json!({"error": "forbidden"})),
+        (status = 409, description = "The default kept changing underneath the write; retry.", body = ErrorMessage, example = json!({"error": "core.patron_scope kept changing; retry"})),
+        (status = 500, description = "The scope could not be written.", body = ErrorMessage, example = json!({"error": "the patron scope could not be read or written"})),
     ),
 )]
 pub(crate) async fn put_default_scope(

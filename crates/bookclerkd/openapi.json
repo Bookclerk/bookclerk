@@ -1788,6 +1788,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
                 }
               }
             }
@@ -1798,6 +1801,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "forbidden"
                 }
               }
             }
@@ -1808,6 +1814,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the patron scope could not be read or written"
                 }
               }
             }
@@ -1889,6 +1898,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
                 }
               }
             }
@@ -1899,6 +1911,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "forbidden"
                 }
               }
             }
@@ -1909,6 +1924,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "core.patron_scope kept changing; retry"
                 }
               }
             }
@@ -1941,6 +1959,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the patron scope could not be read or written"
                 }
               }
             }
@@ -2007,6 +2028,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
                 }
               }
             }
@@ -2017,6 +2041,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "you may not manage this user"
                 }
               }
             }
@@ -2040,6 +2067,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the patron scope could not be read or written"
                 }
               }
             }
@@ -2134,6 +2164,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
                 }
               }
             }
@@ -2144,6 +2177,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "you may not set your own scope"
                 }
               }
             }
@@ -2189,6 +2225,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the patron scope could not be read or written"
                 }
               }
             }
