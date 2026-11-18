@@ -578,7 +578,9 @@ function check(row: Row, bytes: Uint8Array, rand: () => number): void {
     const allowed =
       "refused" in parsed ||
       /^rendered file is \d+ bytes, over the /.test(message) ||
-      (/^cannot write /.test(message) && cueCannotHold(bytes, record, fields, audio));
+      (/^cannot write /.test(message) &&
+        row.id === "cue" &&
+        cueCannotHold(bytes, record, fields, audio));
     assert.ok(allowed, `render refused a file parse reads: ${rendered.refused.message}`);
     return;
   }
