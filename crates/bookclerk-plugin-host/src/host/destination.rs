@@ -880,9 +880,9 @@ mode = "outbound"
             }),
             serde_json::json!({}),
         );
-        let context = super::instance_s3_context(&queued).expect("context");
+        let queued_context = super::instance_s3_context(&queued).expect("queued context");
         assert_eq!(
-            context["notificationQueueUrl"],
+            queued_context["notificationQueueUrl"],
             "https://sqs.us-east-1.amazonaws.com/123456789012/q"
         );
         let camel = prepared(

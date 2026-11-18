@@ -55,7 +55,7 @@ const MAX_PAGE: u32 = 256;
 /// `.amazonaws.com.cn`) and the legacy
 /// `https://<region>.queue.amazonaws.com/<account>/<name>`, where the
 /// account is 12 digits and the name 1 to 80 letters, digits, `-` or `_`,
-/// with an optional `.fifo`.
+/// counting an optional `.fifo` suffix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueUrl {
     /// The URL as given.
@@ -89,7 +89,7 @@ impl QueueUrl {
         }
         let base = name.strip_suffix(".fifo").unwrap_or(name);
         if base.is_empty()
-            || base.len() > 80
+            || name.len() > 80
             || !base
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
@@ -278,7 +278,15 @@ impl NotificationQueue for SqsQueue {
             .await
             .map_err(|err| sqs_error("release", aws_sdk_sqs::error::DisplayErrorContext(err)))?;
         log_batch_failures("release", out.failed());
-        Ok(())
+        if out.failed().is_empty() {
+            Ok(())
+        } else {
+            Err(StorageError::S3(format!(
+                "notification queue release: {} of {} entries failed",
+                out.failed().len(),
+                receipts.len()
+            )))
+        }
     }
 }
 
@@ -302,6 +310,12 @@ struct FeedState {
     next_seq: u64,
     /// Pages not yet known to be read, oldest first.
     pending: VecDeque<PendingPage>,
+    /// Set before receiving and cleared when the page is handed out: still
+    /// set means a receive was interrupted or failed, and messages it took
+    /// stay hidden until the visibility timeout, so the next page is
+    /// incomplete.
+    #[serde(default)]
+    receiving: bool,
 }
 
 impl FeedState {
@@ -311,6 +325,7 @@ impl FeedState {
             feed: uuid::Uuid::new_v4().simple().to_string(),
             next_seq: 1,
             pending: VecDeque::new(),
+            receiving: false,
         }
     }
 }
@@ -331,7 +346,8 @@ pub(crate) struct QueueFeed {
 
 impl QueueFeed {
     /// A feed over `queue` whose state lives in `state_dir`, in a file named
-    /// after `queue_id` so each queue keeps its own.
+    /// after `queue_id`, `bucket` and `prefix`, so each queue and scope
+    /// keeps its own and a cursor from another scope is foreign.
     ///
     /// A missing or unreadable state file starts a new feed: its first page
     /// reports that changes may have been missed.
@@ -347,7 +363,7 @@ impl QueueFeed {
         state_dir: &Path,
     ) -> Result<Self> {
         std::fs::create_dir_all(state_dir)?;
-        let digest = sha2::Sha256::digest(queue_id.as_bytes());
+        let digest = sha2::Sha256::digest(format!("{queue_id}\n{bucket}\n{prefix}").as_bytes());
         let name: String = digest
             .iter()
             .take(8)
@@ -374,7 +390,9 @@ impl QueueFeed {
     /// The first call, and a cursor from another feed (a lost state file, a
     /// changed queue), get only the current position, marked incomplete so
     /// the caller lists. Otherwise the page is `complete` unless a message
-    /// could not be read in full.
+    /// could not be read in full, a release failed (the message stays
+    /// hidden until the visibility timeout), or the previous call's receive
+    /// was interrupted.
     ///
     /// # Errors
     ///
@@ -404,13 +422,16 @@ impl QueueFeed {
         // handed out before is known to be read: it is all released, and
         // the page is only the current position (the caller lists).
         let Some(read_up_to) = read_up_to else {
-            self.settle(&mut state, 0).await?;
+            // The page is incomplete anyway, so a failed release changes
+            // nothing the caller is told.
+            let _released = self.settle(&mut state, 0).await?;
             return self
                 .hand_out(&mut state, Vec::new(), Vec::new(), false, false)
                 .await;
         };
-        self.settle(&mut state, read_up_to).await?;
-        let mut complete = true;
+        let mut complete = self.settle(&mut state, read_up_to).await? && !state.receiving;
+        state.receiving = true;
+        self.persist(&state)?;
 
         let mut events: Vec<ParsedEvent> = Vec::new();
         let mut receipts = Vec::new();
@@ -430,7 +451,7 @@ impl QueueFeed {
             let messages = match self.queue.receive(want, wait).await {
                 Ok(messages) => messages,
                 Err(err) => {
-                    self.release_all(&receipts).await;
+                    let _released = self.release_all(&receipts).await;
                     return Err(err);
                 }
             };
@@ -467,7 +488,7 @@ impl QueueFeed {
                 }
             }
             if !overflow.is_empty() {
-                self.release_all(&overflow).await;
+                complete &= self.release_all(&overflow).await;
                 full = true;
                 break;
             }
@@ -498,6 +519,7 @@ impl QueueFeed {
         let seq = state.next_seq;
         let mut next = state.clone();
         next.next_seq = seq.saturating_add(1);
+        next.receiving = false;
         if !receipts.is_empty() {
             next.pending.push_back(PendingPage {
                 seq,
@@ -508,7 +530,7 @@ impl QueueFeed {
             }
         }
         if let Err(err) = self.persist(&next) {
-            self.release_all(&receipts).await;
+            let _released = self.release_all(&receipts).await;
             return Err(err);
         }
         let cursor = format!("{CURSOR_TAG}.{}.{seq}", next.feed);
@@ -525,33 +547,49 @@ impl QueueFeed {
     /// Deletes the messages of pages up to `seq` and releases those after
     /// it, then saves the state. Sequence numbers start at 1, so `seq` 0
     /// releases every pending page.
-    async fn settle(&self, state: &mut FeedState, seq: u64) -> Result<()> {
+    ///
+    /// # Returns
+    ///
+    /// `false` when a release failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns delete and state-file errors.
+    async fn settle(&self, state: &mut FeedState, seq: u64) -> Result<bool> {
         let (read, later): (Vec<_>, Vec<_>) = state
             .pending
             .iter()
             .cloned()
             .partition(|page| page.seq <= seq);
         if read.is_empty() && later.is_empty() {
-            return Ok(());
+            return Ok(true);
         }
         let read: Vec<String> = read.into_iter().flat_map(|page| page.receipts).collect();
         for chunk in read.chunks(RECEIVE_BATCH) {
             self.queue.delete(chunk).await?;
         }
         let later: Vec<String> = later.into_iter().flat_map(|page| page.receipts).collect();
-        self.release_all(&later).await;
+        let released = self.release_all(&later).await;
         state.pending.clear();
-        self.persist(state)
+        self.persist(state)?;
+        Ok(released)
     }
 
-    /// Makes deliveries visible again, best effort: a failure only delays
-    /// them until the visibility timeout.
-    async fn release_all(&self, receipts: &[String]) {
+    /// Makes deliveries visible again, best effort: a failure delays them
+    /// until the visibility timeout.
+    ///
+    /// # Returns
+    ///
+    /// `false` when any release failed.
+    async fn release_all(&self, receipts: &[String]) -> bool {
+        let mut released = true;
         for chunk in receipts.chunks(RECEIVE_BATCH) {
             if let Err(err) = self.queue.release(chunk).await {
-                tracing::debug!(error = %err, "notification queue release failed");
+                tracing::warn!(error = %err, "notification queue release failed");
+                released = false;
             }
         }
+        released
     }
 
     /// Writes the state file through a temporary file and a rename.
@@ -566,18 +604,26 @@ impl QueueFeed {
 }
 
 /// Orders a page oldest first: by event time (events without one first),
-/// then the events of each key among themselves by S3's sequencer, kept in
-/// the places the key's events already hold.
+/// then the events of each key that carry S3's sequencer among themselves,
+/// kept in the places those events already hold. Events without a
+/// sequencer stay where the time sort put them.
 fn order_events(events: &mut [ParsedEvent]) {
     events.sort_by(|a, b| a.time.cmp(&b.time));
     let mut by_key: std::collections::HashMap<String, Vec<usize>> =
         std::collections::HashMap::new();
     for (at, event) in events.iter().enumerate() {
-        by_key.entry(event.change.key.clone()).or_default().push(at);
+        if event.sequencer.is_some() {
+            by_key.entry(event.change.key.clone()).or_default().push(at);
+        }
     }
     for slots in by_key.into_values().filter(|slots| slots.len() > 1) {
         let mut group: Vec<ParsedEvent> = slots.iter().map(|&at| events[at].clone()).collect();
-        group.sort_by(|a, b| sequencer_cmp(a.sequencer.as_deref(), b.sequencer.as_deref()));
+        group.sort_by(|a, b| {
+            sequencer_cmp(
+                a.sequencer.as_deref().unwrap_or_default(),
+                b.sequencer.as_deref().unwrap_or_default(),
+            )
+        });
         for (at, event) in slots.into_iter().zip(group) {
             events[at] = event;
         }
@@ -586,16 +632,11 @@ fn order_events(events: &mut [ParsedEvent]) {
 
 /// Compares two sequencers: the shorter one is padded with zeros on the
 /// left, as S3 documents, so they compare as hex numbers.
-fn sequencer_cmp(a: Option<&str>, b: Option<&str>) -> std::cmp::Ordering {
-    match (a, b) {
-        (Some(a), Some(b)) => {
-            let width = a.len().max(b.len());
-            format!("{a:0>width$}")
-                .to_ascii_uppercase()
-                .cmp(&format!("{b:0>width$}").to_ascii_uppercase())
-        }
-        _ => std::cmp::Ordering::Equal,
-    }
+fn sequencer_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let width = a.len().max(b.len());
+    format!("{a:0>width$}")
+        .to_ascii_uppercase()
+        .cmp(&format!("{b:0>width$}").to_ascii_uppercase())
 }
 
 /// Splits a queue cursor into its feed id and page number.
@@ -637,6 +678,7 @@ mod tests {
         deliveries: u64,
         deleted: Vec<u64>,
         fail_receive: bool,
+        fail_release: bool,
     }
 
     impl FakeQueue {
@@ -688,6 +730,9 @@ mod tests {
         }
         async fn release(&self, receipts: &[String]) -> Result<()> {
             let mut state = self.state.lock().unwrap();
+            if state.fail_release {
+                return Err(StorageError::S3("release failed".into()));
+            }
             for receipt in receipts {
                 if let Some(at) = state.hidden.iter().position(|(_, _, r)| r == receipt) {
                     let (id, body, _) = state.hidden.remove(at);
@@ -753,6 +798,12 @@ mod tests {
             "a".repeat(81)
         );
         assert!(QueueUrl::parse(&long).is_err());
+        // The 80-character limit counts the `.fifo` suffix.
+        let base = "https://sqs.us-east-1.amazonaws.com/123456789012/";
+        let fits = format!("{base}{}.fifo", "a".repeat(75));
+        assert!(QueueUrl::parse(&fits).is_ok());
+        let over = format!("{base}{}.fifo", "a".repeat(76));
+        assert!(QueueUrl::parse(&over).is_err());
     }
 
     #[tokio::test]
@@ -946,26 +997,33 @@ mod tests {
         queue.state.lock().unwrap().fail_receive = false;
         let again = feed.changes(Some(&page.cursor), 0).await.expect("again");
         assert_eq!(keys(&again), ["a"]);
+        assert!(
+            !again.complete,
+            "the failed receive may have hidden messages"
+        );
     }
 
     #[test]
     fn sequencers_compare_padded() {
         use std::cmp::Ordering;
-        assert_eq!(sequencer_cmp(Some("0A"), Some("000A")), Ordering::Equal);
-        assert_eq!(sequencer_cmp(Some("FF"), Some("100")), Ordering::Less);
-        assert_eq!(sequencer_cmp(Some("0B"), Some("0A")), Ordering::Greater);
-        assert_eq!(sequencer_cmp(Some("0a"), Some("0B")), Ordering::Less);
-        assert_eq!(sequencer_cmp(None, Some("0B")), Ordering::Equal);
-        let event = |key: &str, seq: &str| ParsedEvent {
+        assert_eq!(sequencer_cmp("0A", "000A"), Ordering::Equal);
+        assert_eq!(sequencer_cmp("FF", "100"), Ordering::Less);
+        assert_eq!(sequencer_cmp("0B", "0A"), Ordering::Greater);
+        assert_eq!(sequencer_cmp("0a", "0B"), Ordering::Less);
+        let event = |key: &str, seq: Option<&str>| ParsedEvent {
             change: ObjectChange {
                 key: key.into(),
                 kind: ObjectChangeKind::Changed,
                 info: None,
             },
             time: Some("t".into()),
-            sequencer: Some(seq.into()),
+            sequencer: seq.map(str::to_string),
         };
-        let mut events = vec![event("a", "02"), event("b", "01"), event("a", "01")];
+        let mut events = vec![
+            event("a", Some("02")),
+            event("b", Some("01")),
+            event("a", Some("01")),
+        ];
         order_events(&mut events);
         let order: Vec<_> = events
             .iter()
@@ -975,5 +1033,82 @@ mod tests {
             order,
             [("a", Some("01")), ("b", Some("01")), ("a", Some("02"))]
         );
+        // An event without a sequencer keeps its place; the others around
+        // it still sort among themselves.
+        let mut events = vec![
+            event("a", Some("03")),
+            event("a", None),
+            event("a", Some("01")),
+        ];
+        order_events(&mut events);
+        let order: Vec<_> = events.iter().map(|e| e.sequencer.as_deref()).collect();
+        assert_eq!(order, [Some("01"), None, Some("03")]);
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_receive_makes_the_next_page_incomplete() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let queue = Arc::new(FakeQueue::default());
+        let start = feed(&queue, dir.path())
+            .changes(None, 0)
+            .await
+            .expect("start")
+            .cursor;
+        // A guest stopped in the middle of a receive leaves the flag set.
+        let path = std::fs::read_dir(dir.path())
+            .expect("dir")
+            .next()
+            .expect("state file")
+            .expect("entry")
+            .path();
+        let mut state: FeedState =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("state");
+        state.receiving = true;
+        std::fs::write(&path, serde_json::to_vec(&state).expect("json")).expect("write");
+        let resumed = feed(&queue, dir.path());
+        queue.send(put("a", "t"));
+        let page = resumed.changes(Some(&start), 0).await.expect("page");
+        assert_eq!(keys(&page), ["a"]);
+        assert!(!page.complete);
+        let next = resumed.changes(Some(&page.cursor), 0).await.expect("next");
+        assert!(next.complete, "the flag clears once a page is handed out");
+    }
+
+    #[tokio::test]
+    async fn a_failed_release_makes_the_page_incomplete() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let queue = Arc::new(FakeQueue::default());
+        let feed = feed(&queue, dir.path());
+        let start = feed.changes(None, 0).await.expect("start");
+        queue.send(put("a", "t"));
+        let first = feed.changes(Some(&start.cursor), 0).await.expect("first");
+        assert_eq!(keys(&first), ["a"]);
+        queue.state.lock().unwrap().fail_release = true;
+        // Retrying the start cursor releases the page after it, which fails.
+        let retried = feed.changes(Some(&start.cursor), 0).await.expect("retry");
+        assert!(retried.changes.is_empty());
+        assert!(!retried.complete);
+    }
+
+    #[tokio::test]
+    async fn another_prefix_on_the_same_queue_is_a_foreign_cursor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let queue = Arc::new(FakeQueue::default());
+        let start = feed(&queue, dir.path())
+            .changes(None, 0)
+            .await
+            .expect("start")
+            .cursor;
+        let other = QueueFeed::open(
+            Box::new(Arc::clone(&queue)),
+            "queue-a",
+            "books",
+            "other/",
+            dir.path(),
+        )
+        .expect("open");
+        let page = other.changes(Some(&start), 0).await.expect("page");
+        assert!(!page.complete);
+        assert_eq!(std::fs::read_dir(dir.path()).expect("dir").count(), 2);
     }
 }

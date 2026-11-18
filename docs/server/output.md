@@ -198,10 +198,17 @@ event notifications, so it only reads what changed.
    send to it (the queue's access policy allows `s3.amazonaws.com` to call
    `sqs:SendMessage` for the bucket).
 2. Send the bucket's `s3:ObjectCreated:*` and `s3:ObjectRemoved:*` events
-   to the queue. Any of these work: an event notification that targets the
-   queue, one that targets an SNS topic the queue subscribes to, or an
-   EventBridge rule for the bucket's `Object Created` and `Object Deleted`
-   events that targets the queue.
+   to the queue in one of these ways:
+   - An event notification on the bucket that targets the queue.
+   - An event notification that targets an SNS topic the queue subscribes
+     to. The topic's access policy allows `s3.amazonaws.com` to call
+     `sns:Publish`, and the queue's policy allows `sns.amazonaws.com` to
+     call `sqs:SendMessage` for the topic.
+   - EventBridge: turn on **Send notifications to Amazon EventBridge** in
+     the bucket's event notification settings, then add a rule for the
+     bucket's `Object Created` and `Object Deleted` events that targets the
+     queue. The queue's policy allows `events.amazonaws.com` to call
+     `sqs:SendMessage` for the rule.
 3. Let the plugin's credentials call `sqs:ReceiveMessage`,
    `sqs:DeleteMessage` and `sqs:ChangeMessageVisibility` on the queue.
 4. Give the plugin the queue's URL:
@@ -216,14 +223,18 @@ Things to know:
 - **One reader per queue.** Each message goes to whoever receives it, so
   nothing else may read the queue, and only one destination on one node
   should name it. A queue can carry events for several buckets; the plugin
-  skips other buckets and keys outside its `prefix`.
+  skips other buckets and keys outside its `prefix`. Its receipts are kept
+  per queue, bucket and prefix, so changing either setting starts over
+  with one listing.
 - **Messages wait for Bookclerk.** The plugin deletes a message only after
   Bookclerk has taken the changes in it. Until then the message stays
   hidden for 12 hours, after which the queue offers it again. It keeps the
   receipts it needs to delete messages under its `HOME`, so they survive
   the plugin sleeping between checks.
 - **Listing stays the backstop.** After the queue is first set, after the
-  plugin loses its receipts, or when a message cannot be read, Bookclerk
+  plugin loses its receipts, when a message cannot be read, or when the
+  plugin could not hand a message back to the queue (or stopped in the
+  middle of receiving), Bookclerk
   lists the bucket once and carries on from there. Messages that the queue
   drops (its retention ran out, or a dead-letter queue took them) are found
   by the next scheduled listing.

@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use bookclerk_storage::s3_events::{parse_event_message, EventScope};
+use bookclerk_storage::s3_events::{parse_event_message, EventParseError, EventScope};
 
 #[path = "../../../fuzz/oracles/s3_event.rs"]
 mod s3_event_oracle;
@@ -51,4 +51,31 @@ fn fuzz_corpus_s3_event_holds_the_oracle() {
         accepted >= 5,
         "the seeds must reach the oracle's comparison, {accepted} did"
     );
+}
+
+/// Parses one seed with the scope its first byte selects.
+fn parse_seed(name: &str) -> Result<Vec<String>, EventParseError> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/s3_event")
+        .join(name);
+    let data = std::fs::read(&path).expect("read seed");
+    let (&selector, body) = data.split_first().expect("non-empty seed");
+    let prefix = if selector % 2 == 0 { "" } else { "library/" };
+    let scope = EventScope {
+        bucket: "books",
+        prefix,
+    };
+    parse_event_message(body, scope)
+        .map(|events| events.into_iter().map(|event| event.change.key).collect())
+}
+
+#[test]
+fn named_seeds_keep_their_meaning() {
+    assert_eq!(
+        parse_seed("sns_envelope"),
+        Ok(vec!["big.m4b".to_string()]),
+        "an SNS envelope is unwrapped"
+    );
+    assert_eq!(parse_seed("test_event"), Ok(Vec::new()));
+    assert_eq!(parse_seed("bad_escape"), Err(EventParseError::BadKey));
 }

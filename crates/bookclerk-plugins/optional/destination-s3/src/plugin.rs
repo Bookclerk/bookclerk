@@ -117,12 +117,8 @@ async fn backend_from_ctx(ctx: &OutputS3ContextDto) -> Result<S3Backend> {
         force_path_style: ctx.force_path_style,
     };
     let creds = ctx.credentials.as_ref().map(credentials_from_dto);
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
-        .ok_or_else(|| {
-            PluginError::internal("s3 destination has no HOME for multipart recovery")
-        })?;
+    // The operator's setting is checked before anything about the guest's
+    // own environment, so a bad URL is always reported as such.
     let queue = ctx
         .notification_queue_url
         .as_deref()
@@ -131,6 +127,12 @@ async fn backend_from_ctx(ctx: &OutputS3ContextDto) -> Result<S3Backend> {
         .map(QueueUrl::parse)
         .transpose()
         .map_err(|err| PluginError::invalid_params(err.to_string()))?;
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| {
+            PluginError::internal("s3 destination has no HOME for multipart recovery")
+        })?;
     let journal = home.join("multipart-journal");
     let backend = S3Backend::from_parts_with_journal(&cfg, &ctx.prefix, creds.as_ref(), &journal)
         .await

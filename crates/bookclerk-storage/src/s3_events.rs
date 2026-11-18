@@ -282,7 +282,13 @@ fn records_events(
         if record.s3.bucket.name != scope.bucket {
             continue;
         }
-        let key = decode_form_key(&record.s3.object.key)?;
+        // Scope comes before validation: a broken key in a part of the bucket
+        // this destination does not own must not fail the whole message.
+        let (bytes, clean) = decode_form_bytes(&record.s3.object.key);
+        if !bytes.starts_with(scope.prefix.as_bytes()) {
+            continue;
+        }
+        let key = valid_key(bytes, clean)?;
         let effect = record_effect(&record.event_name, &record.s3.object);
         if let Some(event) = event_for(
             key,
@@ -309,6 +315,9 @@ fn bridge_events(
 ) -> Result<Vec<ParsedEvent>, EventParseError> {
     let detail = event.detail;
     if detail.bucket.name != scope.bucket {
+        return Ok(Vec::new());
+    }
+    if !detail.object.key.starts_with(scope.prefix) {
         return Ok(Vec::new());
     }
     if detail.object.key.len() > MAX_EVENT_KEY_BYTES || detail.object.key.contains('\0') {
@@ -400,32 +409,30 @@ fn quoted(etag: &str) -> String {
 
 /// What an S3 notification's `eventName` means.
 ///
-/// Deleting one version of a versioned object, by a request or by a
-/// lifecycle rule, may leave another current, so that is a `Changed`, not a
-/// `Removed`.
+/// Only the actions known to write or delete the whole object are reported
+/// as such; an action this parser does not know (MinIO adds several, such
+/// as `ObjectCreated:PutRetention`) is a `Changed`, which the host settles
+/// by reading the object. Deleting one version of a versioned object, by a
+/// request or by a lifecycle rule, may leave another current, so that is a
+/// `Changed`, not a `Removed`.
 fn record_effect(event_name: &str, object: &RecordObject) -> Effect {
     let name = event_name.strip_prefix("s3:").unwrap_or(event_name);
     let (family, action) = name.split_once(':').unwrap_or((name, ""));
-    match family {
-        "ObjectCreated" => Effect::Upserted,
-        "ObjectRemoved" | "LifecycleExpiration" if action == "DeleteMarkerCreated" => {
-            Effect::Removed
-        }
-        "ObjectRemoved" | "LifecycleExpiration"
-            if object.version_id.as_deref().is_some_and(|v| !v.is_empty()) =>
-        {
-            Effect::Changed
-        }
-        "ObjectRemoved" | "LifecycleExpiration" => Effect::Removed,
-        "ObjectRestore" | "ObjectReplicated" | "Replication" | "ObjectAccelerated" => {
-            Effect::Changed
-        }
-        "ObjectTagging"
-        | "ObjectAcl"
-        | "LifecycleTransition"
-        | "IntelligentTiering"
-        | "ObjectAccessed"
-        | "s3" => Effect::Ignored,
+    let versioned = object.version_id.as_deref().is_some_and(|v| !v.is_empty());
+    match (family, action) {
+        ("ObjectCreated", "Put" | "Post" | "Copy" | "CompleteMultipartUpload") => Effect::Upserted,
+        ("ObjectRemoved" | "LifecycleExpiration", "DeleteMarkerCreated") => Effect::Removed,
+        ("ObjectRemoved" | "LifecycleExpiration", "Delete") if versioned => Effect::Changed,
+        ("ObjectRemoved" | "LifecycleExpiration", "Delete") => Effect::Removed,
+        (
+            "ObjectTagging"
+            | "ObjectAcl"
+            | "LifecycleTransition"
+            | "IntelligentTiering"
+            | "ObjectAccessed"
+            | "s3",
+            _,
+        ) => Effect::Ignored,
         _ => Effect::Changed,
     }
 }
@@ -459,17 +466,18 @@ fn bridge_effect(
     }
 }
 
-/// Decodes an S3 notification key: `+` is a space and `%XX` a byte, and the
-/// bytes must be UTF-8.
+/// Form-decodes an S3 notification key: `+` is a space and `%XX` a byte.
 ///
-/// # Errors
+/// A broken escape is kept as it is and reported, so the caller can still
+/// tell whether the key is in scope before refusing it.
 ///
-/// Returns [`EventParseError::BadKey`] for a broken escape, bytes that are
-/// not UTF-8, a NUL byte (which no storage key may hold), or a key over
-/// [`MAX_EVENT_KEY_BYTES`].
-fn decode_form_key(encoded: &str) -> Result<String, EventParseError> {
+/// # Returns
+///
+/// The decoded bytes, and `true` when every escape was well formed.
+fn decode_form_bytes(encoded: &str) -> (Vec<u8>, bool) {
     let bytes = encoded.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
+    let mut clean = true;
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
@@ -480,11 +488,14 @@ fn decode_form_key(encoded: &str) -> Result<String, EventParseError> {
             b'%' => {
                 let hi = bytes.get(i + 1).copied().and_then(hex_value);
                 let lo = bytes.get(i + 2).copied().and_then(hex_value);
-                let (Some(hi), Some(lo)) = (hi, lo) else {
-                    return Err(EventParseError::BadKey);
-                };
-                out.push((hi << 4) | lo);
-                i += 3;
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    out.push((hi << 4) | lo);
+                    i += 3;
+                } else {
+                    clean = false;
+                    out.push(b'%');
+                    i += 1;
+                }
             }
             other => {
                 out.push(other);
@@ -492,10 +503,21 @@ fn decode_form_key(encoded: &str) -> Result<String, EventParseError> {
             }
         }
     }
-    if out.len() > MAX_EVENT_KEY_BYTES || out.contains(&0) {
+    (out, clean)
+}
+
+/// Turns decoded key bytes into a storage key.
+///
+/// # Errors
+///
+/// Returns [`EventParseError::BadKey`] for a broken escape, bytes that are
+/// not UTF-8, a NUL byte (which no storage key may hold), or a key over
+/// [`MAX_EVENT_KEY_BYTES`].
+fn valid_key(bytes: Vec<u8>, clean: bool) -> Result<String, EventParseError> {
+    if !clean || bytes.len() > MAX_EVENT_KEY_BYTES || bytes.contains(&0) {
         return Err(EventParseError::BadKey);
     }
-    String::from_utf8(out).map_err(|_| EventParseError::BadKey)
+    String::from_utf8(bytes).map_err(|_| EventParseError::BadKey)
 }
 
 /// The value of one hex digit.
@@ -600,6 +622,38 @@ mod tests {
     }
 
     #[test]
+    fn unknown_create_and_remove_actions_are_changes() {
+        let body = records(&[
+            record("s3:ObjectCreated:PutRetention", "books", "library/a"),
+            record("s3:ObjectCreated:DeleteTagging", "books", "library/b"),
+            record("ObjectRemoved:Something", "books", "library/c"),
+            record("ObjectCreated", "books", "library/d"),
+        ]);
+        let events = parse_event_message(&body, SCOPE).expect("parse");
+        assert_eq!(events.len(), 4);
+        for event in &events {
+            assert_eq!(event.change.kind, ObjectChangeKind::Changed);
+            assert!(event.change.info.is_none());
+        }
+    }
+
+    #[test]
+    fn broken_keys_outside_the_scope_are_skipped() {
+        let body = records(&[
+            record("ObjectCreated:Put", "books", "elsewhere/%zz"),
+            record("ObjectCreated:Put", "books", "elsewhere/%ff"),
+            record("ObjectCreated:Put", "books", "elsewhere/a%00b"),
+            record("ObjectCreated:Put", "other", "library/%zz"),
+            record("ObjectCreated:Put", "books", "library/ok"),
+        ]);
+        let events = parse_event_message(&body, SCOPE).expect("parse");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].change.key, "ok");
+        let bridge = br#"{"source":"aws.s3","detail-type":"Object Created","detail":{"bucket":{"name":"books"},"object":{"key":"elsewhere/a\u0000"}}}"#;
+        assert_eq!(parse_event_message(bridge, SCOPE), Ok(Vec::new()));
+    }
+
+    #[test]
     fn the_test_event_is_empty() {
         let body = br#"{"Service":"Amazon S3","Event":"s3:TestEvent","Time":"2026-11-18T08:00:00.000Z","Bucket":"books"}"#;
         assert!(parse_event_message(body, SCOPE).expect("parse").is_empty());
@@ -691,7 +745,14 @@ mod tests {
             parse_event_message(&not_utf8, SCOPE),
             Err(EventParseError::BadKey)
         );
-        let long = records(&[record("ObjectCreated:Put", "books", &"a".repeat(1025))]);
+        let long = records(&[record(
+            "ObjectCreated:Put",
+            "books",
+            &format!(
+                "library/{}",
+                "a".repeat(MAX_EVENT_KEY_BYTES + 1 - "library/".len())
+            ),
+        )]);
         assert_eq!(
             parse_event_message(&long, SCOPE),
             Err(EventParseError::BadKey)

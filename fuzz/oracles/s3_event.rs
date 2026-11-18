@@ -97,29 +97,47 @@ fn restate(value: &Value, prefix: &str, depth: u8) -> Option<Vec<Expected>> {
                 continue;
             }
             let item = s3.get("object")?;
-            let key = percent_decode(item.get("key")?.as_str()?)?;
+            let (raw, clean) = percent_decode(item.get("key")?.as_str()?);
+            // Keys outside the prefix are skipped before they are judged.
+            if !raw.starts_with(prefix.as_bytes()) {
+                continue;
+            }
+            if !clean {
+                return None;
+            }
+            let key = String::from_utf8(raw).ok()?;
             let name = record.get("eventName")?.as_str()?;
             let name = name.strip_prefix("s3:").unwrap_or(name);
             let colon = name.find(':');
             let family = colon.map_or(name, |at| &name[..at]);
             let action = colon.map_or("", |at| &name[at + 1..]);
             let version = text(item, "versionId");
-            let kind = match family {
-                "ObjectCreated" => Some(ObjectChangeKind::Upserted),
-                "ObjectRemoved" | "LifecycleExpiration" if action == "DeleteMarkerCreated" => {
-                    Some(ObjectChangeKind::Removed)
-                }
-                "ObjectRemoved" | "LifecycleExpiration" if version.is_some() => {
-                    Some(ObjectChangeKind::Changed)
-                }
-                "ObjectRemoved" | "LifecycleExpiration" => Some(ObjectChangeKind::Removed),
-                "ObjectTagging"
-                | "ObjectAcl"
-                | "LifecycleTransition"
-                | "IntelligentTiering"
-                | "ObjectAccessed"
-                | "s3" => None,
-                _ => Some(ObjectChangeKind::Changed),
+            let removal = matches!(family, "ObjectRemoved" | "LifecycleExpiration");
+            let kind = if family == "ObjectCreated"
+                && ["Put", "Post", "Copy", "CompleteMultipartUpload"].contains(&action)
+            {
+                Some(ObjectChangeKind::Upserted)
+            } else if removal && action == "DeleteMarkerCreated" {
+                Some(ObjectChangeKind::Removed)
+            } else if removal && action == "Delete" {
+                Some(if version.is_some() {
+                    ObjectChangeKind::Changed
+                } else {
+                    ObjectChangeKind::Removed
+                })
+            } else if [
+                "ObjectTagging",
+                "ObjectAcl",
+                "LifecycleTransition",
+                "IntelligentTiering",
+                "ObjectAccessed",
+                "s3",
+            ]
+            .contains(&family)
+            {
+                None
+            } else {
+                Some(ObjectChangeKind::Changed)
             };
             push(&mut out, &key, kind, item, "eTag", version, prefix);
         }
@@ -204,28 +222,36 @@ fn push(
 }
 
 /// Form decoding written differently from the parser's: `+` is a space and
-/// `%XX` a byte, read with `u8::from_str_radix`.
-fn percent_decode(encoded: &str) -> Option<String> {
+/// `%XX` a byte, read with `u8::from_str_radix`. A broken escape keeps its
+/// `%` as it is.
+///
+/// Returns the bytes and whether every escape was well formed.
+fn percent_decode(encoded: &str) -> (Vec<u8>, bool) {
     let mut bytes = Vec::new();
+    let mut clean = true;
     let mut rest = encoded;
     while let Some(c) = rest.chars().next() {
-        if c == '%' {
-            let hex = rest.get(1..3)?;
-            if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return None;
-            }
-            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+        let escape = (c == '%')
+            .then(|| rest.get(1..3))
+            .flatten()
+            .filter(|hex| hex.bytes().all(|b| b.is_ascii_hexdigit()))
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        if let Some(byte) = escape {
+            bytes.push(byte);
             rest = &rest[3..];
-        } else {
-            let mut buf = [0u8; 4];
-            let s = if c == '+' {
-                " "
-            } else {
-                c.encode_utf8(&mut buf)
-            };
-            bytes.extend_from_slice(s.as_bytes());
-            rest = &rest[c.len_utf8()..];
+            continue;
         }
+        if c == '%' {
+            clean = false;
+        }
+        let mut buf = [0u8; 4];
+        let s = if c == '+' {
+            " "
+        } else {
+            c.encode_utf8(&mut buf)
+        };
+        bytes.extend_from_slice(s.as_bytes());
+        rest = &rest[c.len_utf8()..];
     }
-    String::from_utf8(bytes).ok()
+    (bytes, clean)
 }
