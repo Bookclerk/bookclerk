@@ -715,6 +715,7 @@ pub fn acquire_request(
         library_id: None,
         parent_library_id: None,
         metadata: bookclerk_acquire::AcquireMetadata::default(),
+        library_copies: bookclerk_acquire::LibraryCopySource::default(),
     }
 }
 

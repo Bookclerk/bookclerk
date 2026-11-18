@@ -779,6 +779,7 @@ pub(crate) fn request_from_title(
         library_id: None,
         parent_library_id: None,
         metadata: crate::AcquireMetadata::default(),
+        library_copies: crate::LibraryCopySource::default(),
     }
 }
 

@@ -189,8 +189,8 @@ pub use leases::{
     RECORD_RETENTION_LEASE, SESSION_EXPIRY_LEASE,
 };
 pub use link_imports::{
-    books_imported_from_link, import_link_title, HeldBookKey, LinkImport, LinkImportOutcome,
-    OwnerShareFilter,
+    books_imported_from_link, import_link_title, record_copy_taken_from_link, HeldBookKey,
+    LinkImport, LinkImportOutcome, OwnerShareFilter, TakenCopy,
 };
 pub(crate) use live::{
     bump, bump_if_any, bump_if_stamped, bump_on, exec_bumped_via, sea_exec, sea_probe, Bump,
