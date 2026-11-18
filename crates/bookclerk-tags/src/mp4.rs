@@ -3,15 +3,16 @@
 //!
 //! The walk reads box headers, the small boxes it needs (`mvhd`, `tkhd`,
 //! `tref`, `mdhd`, `hdlr`), the whole `udta` and `meta` boxes, and the
-//! sample tables of the chapter text track only. The audio track's sample
-//! tables, which are megabytes long in a long book, are skipped by size.
+//! sample tables of the chapter text track only. Of the audio track it reads
+//! the sample description (`stsd`), for the encoding; its sample tables,
+//! which are megabytes long in a long book, are skipped by size.
 
 use std::cell::Cell;
 
 use crate::cache::{Miss, Source, Step};
 use crate::text::{latin1, utf16be, utf8, RecordBuilder};
 use crate::{
-    ByteSpan, ChapterSource, Container, Duration, DurationPrecision, TagError, TagField, TagRecord,
+    AudioCodec, ByteSpan, ChapterSource, Container, Duration, DurationPrecision, TagError, TagField, TagRecord,
     MAX_CHAPTERS,
 };
 
@@ -195,6 +196,7 @@ fn read_moov(walker: &Walker<'_, '_>, moov: &BoxHeader) -> Step<TagRecord> {
         }
     }
 
+    builder.codec = audio_codec(walker, &tracks)?;
     read_chapter_track(walker, &tracks, moov, &mut builder)?;
     if !builder.has_chapters() {
         for (start_ms, title) in &nero {
@@ -254,6 +256,50 @@ fn read_trak(walker: &Walker<'_, '_>, trak: &BoxHeader) -> Step<Track> {
         }
     }
     Ok(track)
+}
+
+/// The encoding of the first audio track: the type of the first sample
+/// entry in its `stsd`.
+///
+/// # Returns
+///
+/// `None` when there is no audio track, its `stsd` is missing, empty or
+/// larger than a sample description can honestly be, or the entry is of a
+/// type the reader does not know.
+fn audio_codec(walker: &Walker<'_, '_>, tracks: &[Track]) -> Step<Option<AudioCodec>> {
+    let Some(stbl) = tracks
+        .iter()
+        .find(|track| &track.handler == b"soun")
+        .and_then(|track| track.stbl.as_ref())
+    else {
+        return Ok(None);
+    };
+    // Walked one header at a time and stopped at `stsd`, which comes first:
+    // the tables after it are megabytes apart in a long book, and reading
+    // their headers would cost a fetch each.
+    let end = stbl.offset + stbl.size;
+    let mut at = stbl.body();
+    while end.saturating_sub(at) >= 8 {
+        let child = walker.header(at, end)?;
+        if &child.kind != b"stsd" {
+            at = child.offset + child.size;
+            continue;
+        }
+        if child.body_len() > MAX_SMALL_BOX {
+            return Ok(None);
+        }
+        // Version and flags, the entry count, then the first entry: its
+        // size and its four-character type.
+        let body = walker.body(&child, MAX_SMALL_BOX)?;
+        let entries = be32(body, 4).unwrap_or_default();
+        let format = body
+            .get(12..16)
+            .and_then(|kind| <[u8; 4]>::try_from(kind).ok());
+        return Ok(format
+            .filter(|_| entries > 0)
+            .and_then(AudioCodec::from_sample_entry));
+    }
+    Ok(None)
 }
 
 /// Reads the chapter titles from the text track the audio track's
@@ -768,10 +814,66 @@ pub(crate) mod tests {
             [(0, "Opening"), (60_000, "Chapter One")]
         );
         assert_eq!(record.duration.map(|d| d.ms), Some(90_000));
+        assert_eq!(record.codec, Some(AudioCodec::Aac));
         let cover = record.cover.expect("cover");
         assert_eq!(cover.format, PictureFormat::Jpeg);
         let at = usize::try_from(cover.span.expect("span").offset).expect("offset");
         assert!(file[at..].starts_with(&[0xFF, 0xD8, 0xFF, 0xDB]));
+    }
+
+    #[test]
+    fn names_the_audio_tracks_encoding() {
+        // The fixture's sample entry is `mp4a`; swapping its type swaps the
+        // codec, and a type the reader does not know reads as none.
+        let file = tagged_m4b();
+        let at = file.windows(4).position(|w| w == b"mp4a").expect("mp4a");
+        for (kind, codec) in [
+            (*b"alac", Some(AudioCodec::Alac)),
+            (*b"fLaC", Some(AudioCodec::Flac)),
+            (*b"Opus", Some(AudioCodec::Opus)),
+            (*b"ec-3", Some(AudioCodec::Eac3)),
+            (*b"zzzz", None),
+        ] {
+            let mut other = file.clone();
+            other[at..at + 4].copy_from_slice(&kind);
+            let record = crate::read_all(&other).expect("record");
+            assert_eq!(record.codec, codec);
+            assert_eq!(
+                codec.map(AudioCodec::is_lossless),
+                codec.map(|c| matches!(c, AudioCodec::Alac | AudioCodec::Flac))
+            );
+            record
+                .validate(u64::try_from(other.len()).expect("len"))
+                .expect("valid");
+        }
+        // No entries: the type bytes that follow are not a sample entry.
+        let mut empty = file.clone();
+        empty[at - 8..at - 4].copy_from_slice(&0u32.to_be_bytes());
+        assert_eq!(crate::read_all(&empty).expect("record").codec, None);
+    }
+
+    #[test]
+    fn a_record_whose_codec_the_container_cannot_hold_is_refused() {
+        let size = |file: &[u8]| u64::try_from(file.len()).expect("len");
+        for file in [crate::fixtures::tagged_mp3(), crate::fixtures::tagged_flac()] {
+            let record = crate::read_all(&file).expect("record");
+            let own = match record.container {
+                Container::Mp3 => AudioCodec::Mp3,
+                Container::Flac => AudioCodec::Flac,
+                Container::Mp4 => unreachable!("not an MP4 fixture"),
+            };
+            assert_eq!(record.codec, Some(own));
+            assert!(!record.container.content_type().is_empty());
+            record.validate(size(&file)).expect("valid");
+            for wrong in [None, Some(AudioCodec::Aac)] {
+                let mut forged = record.clone();
+                forged.codec = wrong;
+                assert_eq!(
+                    forged.validate(size(&file)),
+                    Err(crate::RecordError::Codec)
+                );
+            }
+        }
     }
 
     #[test]

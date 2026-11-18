@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 
 use crate::cache::{Source, Step};
 use crate::{
-    ByteSpan, Chapter, ChapterSource, Container, Duration, EmbeddedCover, PictureFormat,
+    AudioCodec, ByteSpan, Chapter, ChapterSource, Container, Duration, EmbeddedCover, PictureFormat,
     RegionDigest, Sha256Digest, TagEntry, TagField, TagRecord, MAX_CHAPTERS,
     MAX_CHAPTER_TITLE_BYTES, MAX_ENTRIES, MAX_KEY_BYTES, MAX_VALUE_BYTES, REGION_HASH_VERSION,
 };
@@ -55,6 +55,8 @@ pub(crate) struct RecordBuilder {
     chapter_source: Option<ChapterSource>,
     /// The running time.
     pub(crate) duration: Option<Duration>,
+    /// The audio encoding, once the parser knows it.
+    pub(crate) codec: Option<AudioCodec>,
     /// The cover, once one is found.
     cover: Option<EmbeddedCover>,
     /// The metadata region, as spans in the order they were added.
@@ -72,6 +74,11 @@ impl RecordBuilder {
             chapters: Vec::new(),
             chapter_source: None,
             duration: None,
+            codec: match container {
+                Container::Mp3 => Some(AudioCodec::Mp3),
+                Container::Flac => Some(AudioCodec::Flac),
+                Container::Mp4 => None,
+            },
             cover: None,
             region: Vec::new(),
             truncated: false,
@@ -239,6 +246,7 @@ impl RecordBuilder {
             duration: self
                 .duration
                 .filter(|duration| duration.ms <= crate::MAX_DURATION_MS),
+            codec: self.codec,
             cover: self.cover,
             region: RegionDigest {
                 version: REGION_HASH_VERSION,

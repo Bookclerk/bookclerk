@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 
 pub use reader::{read_all, Poll, TagReader};
 pub use record::{
-    Chapter, ChapterSource, Container, Duration, DurationPrecision, EmbeddedCover, PictureFormat,
+    AudioCodec, Chapter, ChapterSource, Container, Duration, DurationPrecision, EmbeddedCover, PictureFormat,
     RecordError, RegionDigest, Sha256Digest, TagEntry, TagField, TagRecord, MAX_DURATION_MS,
 };
 
