@@ -447,10 +447,19 @@ describe("kodi_album_nfo", () => {
         ["publishedAt", "credits"],
       ),
     );
-    assert.doesNotMatch(out, /albumArtistCredits|2009-04-07|<year>2009/);
+    assert.doesNotMatch(out, /Patrick Rothfuss|2009-04-07|<year>2009/);
     assert.match(
       out,
-      /<releasedate>2010-05<\/releasedate>\n {4}<year>2010<\/year>\n {4}<artist>New Author<\/artist>\n<\/album>/,
+      new RegExp(
+        [
+          "<releasedate>2010-05</releasedate>",
+          "<year>2010</year>",
+          "<artistdesc>New Author</artistdesc>",
+          "<artist>New Author</artist>",
+          "<albumArtistCredits><artist>New Author</artist></albumArtistCredits>",
+          "</album>",
+        ].join("\\n {0,4}"),
+      ),
     );
     assert.match(out, /<label>Brilliance Audio<\/label>/);
     const reread = parseFile("kodi_album_nfo", utf8(out));
@@ -465,6 +474,46 @@ describe("kodi_album_nfo", () => {
     const before = seed("kodi_album_nfo/seed_01.nfo");
     const out = renderFile("kodi_album_nfo", before, record(), ["credits"]);
     assert.equal(str(out), str(before));
+    const closed = renderFile("kodi_album_nfo", utf8("<album/>"), record(), ["credits"]);
+    assert.equal(str(closed), "<album/>");
+    const other = renderFile("kodi_album_nfo", before, record(), ["language"]);
+    assert.equal(str(other), str(before));
+  });
+
+  test("reads the artists Kodi exports and a blank release date's year", () => {
+    const parsed = parseFile(
+      "kodi_album_nfo",
+      utf8(
+        "<album><releasedate> </releasedate><year>1999</year>" +
+          "<artist>Old</artist>" +
+          "<albumArtistCredits><artist>A</artist><musicBrainzArtistID/></albumArtistCredits>" +
+          "<albumArtistCredits><artist>B</artist></albumArtistCredits></album>",
+      ),
+    );
+    assert.equal(parsed.publishedAt, "1999");
+    assert.deepEqual(
+      parsed.credits.map((c) => c.name),
+      ["A", "B"],
+    );
+    const blank = parseFile(
+      "kodi_album_nfo",
+      utf8(
+        "<album><releasedate/><artist>Direct</artist>" +
+          "<albumArtistCredits><artist> </artist></albumArtistCredits></album>",
+      ),
+    );
+    assert.ok(blank.present.includes("publishedAt"));
+    assert.equal(blank.publishedAt, undefined);
+    assert.deepEqual(
+      blank.credits.map((c) => c.name),
+      ["Direct"],
+    );
+    const none = parseFile(
+      "kodi_album_nfo",
+      utf8("<album><albumArtistCredits><artist/></albumArtistCredits></album>"),
+    );
+    assert.deepEqual(none.creditRoles, ["author"]);
+    assert.deepEqual(none.credits, []);
   });
 
   test("creates a file", () => {
