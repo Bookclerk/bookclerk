@@ -1199,6 +1199,18 @@ async fn run_source_pipeline(
                 "the copy taken from the library could not be recorded as taken"
             );
         }
+        // A library's copy carries no companion PDF: that still comes
+        // from the store, as it does for a title whose audio was already
+        // here. A PDF failure is recorded on the title, not on the acquire.
+        // Boxed: the PDF path is a whole fetch of its own, and inline it
+        // would make every acquire's future that much larger.
+        Box::pin(resume_missing_companion_pdf(
+            library,
+            destinations,
+            req,
+            source,
+        ))
+        .await?;
     }
     Ok(result)
 }
@@ -3848,6 +3860,59 @@ mod tests {
         assert!(!result.from_library);
         assert_eq!(fetches.load(Ordering::SeqCst), before + 1);
         assert_eq!(none.asked.lock().unwrap().len(), 1);
+    }
+
+    /// With companion PDFs on, the PDF of a title whose audio was taken
+    /// from the library still comes from the store.
+    #[tokio::test]
+    async fn a_title_taken_from_the_library_gets_its_pdf_from_the_store() {
+        use crate::library_copies::tests::{MemoryCopy, OneCopy};
+        use bookclerk_library::FileRole;
+
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let dest = tmp.path().join("dest");
+        let mut destinations = title_named_destinations(&dest, puts);
+        for item in &mut destinations.items {
+            item.options.download_pdf = true;
+        }
+        let job = job_id(&store).await;
+        let audio = bookclerk_tags::fixtures::tagged_m4b();
+        let uuid = edition_book(&store, "B00PDF", "user-1", "Twin", None).await;
+        let pdf_source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: Some(serve_http_body(b"%PDF-1.4 companion".to_vec()).await),
+        };
+        let copy = MemoryCopy::new(
+            Some("audible"),
+            vec![("Twin.m4b", FileRole::Audio, audio.clone())],
+        );
+        let before = fetches.load(Ordering::SeqCst);
+        let req = copy_req(&cache, job, "B00PDF", &uuid, OneCopy::of(copy));
+        let result = acquire_book(&store, &destinations, req, &pdf_source)
+            .await
+            .unwrap();
+        assert!(result.from_library);
+        assert_eq!(
+            fetches.load(Ordering::SeqCst),
+            before + 1,
+            "the store is asked once, for the PDF"
+        );
+        assert_eq!(
+            std::fs::read(dest.join(&result.storage_key)).unwrap(),
+            audio
+        );
+        let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
+        assert_eq!(book.pdf_status, AcquireStatus::Acquired);
+        let pdf_key = book.pdf_storage_key.expect("the PDF was stored");
+        assert_eq!(
+            std::fs::read(dest.join(pdf_key)).unwrap(),
+            b"%PDF-1.4 companion"
+        );
     }
 
     struct CountingBackend {

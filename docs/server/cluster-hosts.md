@@ -815,7 +815,9 @@ library it joined, in turn, for the copy of that listing.
   store.
 
 Only audio and the cover are taken. The branch writes its own sidecars
-(`.cue`, chapter JSON), and a companion PDF still comes from the store.
+(`.cue`, chapter JSON). A companion PDF still comes from the store: when
+companion PDFs are turned on, the branch asks the store for it right
+after it stored the library's audio.
 
 The branch asks a library only while that link's **Keep copies on this
 computer** setting is on and its connection is up; a library that is

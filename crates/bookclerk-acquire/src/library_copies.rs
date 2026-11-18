@@ -17,7 +17,8 @@
 //!
 //! Only audio and the cover are taken. Sidecars are written again by this
 //! install's own pipeline from its own options, and the companion PDF
-//! still comes from the store.
+//! still comes from the store: the pipeline asks the store for it once the
+//! copy is stored, when companion PDFs are turned on.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
