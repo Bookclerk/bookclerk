@@ -106,10 +106,12 @@ fn restate(value: &Value, prefix: &str, depth: u8) -> Option<Vec<Expected>> {
             let version = text(item, "versionId");
             let kind = match family {
                 "ObjectCreated" => Some(ObjectChangeKind::Upserted),
-                "ObjectRemoved" if action == "DeleteMarkerCreated" => {
+                "ObjectRemoved" | "LifecycleExpiration" if action == "DeleteMarkerCreated" => {
                     Some(ObjectChangeKind::Removed)
                 }
-                "ObjectRemoved" if version.is_some() => Some(ObjectChangeKind::Changed),
+                "ObjectRemoved" | "LifecycleExpiration" if version.is_some() => {
+                    Some(ObjectChangeKind::Changed)
+                }
                 "ObjectRemoved" | "LifecycleExpiration" => Some(ObjectChangeKind::Removed),
                 "ObjectTagging"
                 | "ObjectAcl"

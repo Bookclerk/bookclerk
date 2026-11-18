@@ -400,15 +400,20 @@ fn quoted(etag: &str) -> String {
 
 /// What an S3 notification's `eventName` means.
 ///
-/// Deleting one version of a versioned object may leave another current,
-/// so that is a `Changed`, not a `Removed`.
+/// Deleting one version of a versioned object, by a request or by a
+/// lifecycle rule, may leave another current, so that is a `Changed`, not a
+/// `Removed`.
 fn record_effect(event_name: &str, object: &RecordObject) -> Effect {
     let name = event_name.strip_prefix("s3:").unwrap_or(event_name);
     let (family, action) = name.split_once(':').unwrap_or((name, ""));
     match family {
         "ObjectCreated" => Effect::Upserted,
-        "ObjectRemoved" if action == "DeleteMarkerCreated" => Effect::Removed,
-        "ObjectRemoved" if object.version_id.as_deref().is_some_and(|v| !v.is_empty()) => {
+        "ObjectRemoved" | "LifecycleExpiration" if action == "DeleteMarkerCreated" => {
+            Effect::Removed
+        }
+        "ObjectRemoved" | "LifecycleExpiration"
+            if object.version_id.as_deref().is_some_and(|v| !v.is_empty()) =>
+        {
             Effect::Changed
         }
         "ObjectRemoved" | "LifecycleExpiration" => Effect::Removed,
@@ -562,6 +567,12 @@ mod tests {
         let body = br#"{"Records":[{"eventName":"ObjectRemoved:Delete","s3":{"bucket":{"name":"books"},"object":{"key":"library/a","versionId":"v1"}}}]}"#;
         let events = parse_event_message(body, SCOPE).expect("parse");
         assert_eq!(events[0].change.kind, ObjectChangeKind::Changed);
+        let expired = br#"{"Records":[{"eventName":"LifecycleExpiration:Delete","s3":{"bucket":{"name":"books"},"object":{"key":"library/a","versionId":"v1"}}}]}"#;
+        let events = parse_event_message(expired, SCOPE).expect("parse");
+        assert_eq!(events[0].change.kind, ObjectChangeKind::Changed);
+        let marker = br#"{"Records":[{"eventName":"LifecycleExpiration:DeleteMarkerCreated","s3":{"bucket":{"name":"books"},"object":{"key":"library/a","versionId":"v2"}}}]}"#;
+        let events = parse_event_message(marker, SCOPE).expect("parse");
+        assert_eq!(events[0].change.kind, ObjectChangeKind::Removed);
     }
 
     #[test]
