@@ -1,6 +1,6 @@
 # ADR: Storage destinations are plugin instances
 
-- **Status:** Proposed
+- **Status:** Accepted (decisions made with the maintainer on 2026-11-18)
 - **Date:** 2026-11-18
 - **Related:** [Event delivery model](event-delivery-model.md),
   [Metadata claims and file sync](metadata-claims-and-file-sync.md),
