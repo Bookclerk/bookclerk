@@ -29,7 +29,7 @@ use crate::cue::{
 use crate::destinations::{destination_id, AcquireDestination, AcquireDestinations};
 use crate::error::{AcquireError, Result};
 use crate::library_copies::{
-    fetch_library_copy, from_store, LibraryCopyListing, LibraryCopySource,
+    fetch_library_copy, from_store, LibraryCopyListing, LibraryCopySource, LibraryFetch,
 };
 use crate::naming::{
     audio_basename, chapter_storage_key_with_folder, sidecar_key, storage_key_with_contexts,
@@ -1173,38 +1173,35 @@ async fn run_source_pipeline(
     let work_dir = req.cache_dir.join("acquire").join(status_key(req));
     prepare_work_dir(library, req, &work_dir).await?;
 
-    let (fetch, from_library) = match fetch_from_library(library, req, &work_dir).await {
-        Some(fetch) => (fetch, true),
+    let (fetch, library_pdf, from_library) = match fetch_from_library(library, req, &work_dir).await
+    {
+        Some(taken) => (taken.fetch, taken.pdf, true),
         None => (
             fetch_title_enforcing_quota(library, req, source, &work_dir).await?,
+            None,
             false,
         ),
     };
     enforce_work_dir_quota(library, req, &work_dir).await?;
 
     let result = run_stage_enforcing_quota(library, req, &work_dir, async {
-        store_plain_fetch(library, destinations, req, &work_dir, fetch).await
+        let mut result = store_plain_fetch(library, destinations, req, &work_dir, fetch).await?;
+        // The companion PDF the library holds for the edition is the
+        // store's own file, so it is stored as a store's is. The store is
+        // not asked: its only way to a PDF is a whole fetch of the title,
+        // audio included.
+        if let Some(pdf) = library_pdf {
+            let written = store_library_companion_pdf(library, destinations, req, &pdf).await;
+            result.written_keys.extend(written);
+        }
+        Ok(result)
     })
     .await;
     if result.is_ok() {
         enforce_work_dir_quota(library, req, &work_dir).await?;
     }
     let mut result = result?;
-    if from_library {
-        result.from_library = true;
-        // A library's copy carries no companion PDF: that still comes
-        // from the store, as it does for a title whose audio was already
-        // here. A PDF failure is recorded on the title, not on the acquire.
-        // Boxed: the PDF path is a whole fetch of its own, and inline it
-        // would make every acquire's future that much larger.
-        Box::pin(resume_missing_companion_pdf(
-            library,
-            destinations,
-            req,
-            source,
-        ))
-        .await?;
-    }
+    result.from_library = from_library;
     Ok(result)
 }
 
@@ -1230,7 +1227,7 @@ async fn fetch_from_library(
     library: &LibraryStore,
     req: &AcquireRequest,
     work_dir: &Path,
-) -> Option<PlainFetch> {
+) -> Option<LibraryFetch> {
     let copies = req.library_copies.copies()?;
     let title = resolve_title(library, req).await?;
     let copy = copies
@@ -1254,7 +1251,8 @@ async fn fetch_from_library(
     let budget = remaining_temp_budget(library, req, work_dir).await.ok()?;
     let dir = work_dir.join(LIBRARY_COPY_DIR);
     let media = req.library_copies.media();
-    match fetch_library_copy(copy.as_ref(), &dir, budget, &media).await {
+    let want_pdf = req.options.download_pdf;
+    match fetch_library_copy(copy.as_ref(), &dir, budget, &media, want_pdf).await {
         Ok(fetch) => {
             tracing::info!(
                 id = %status_key(req),
@@ -1816,6 +1814,55 @@ async fn store_companion_pdf_sidecars(
         return Ok(Vec::new());
     }
 
+    Ok(put_companion_pdf(library, destinations, req, &pdf_path).await)
+}
+
+/// Stores the companion PDF a library's copy carried, as
+/// [`store_companion_pdf_sidecars`] stores a downloaded one.
+///
+/// Nothing is written when companion PDFs are off, or when the edition
+/// already stores one and the request is not forced. A failure is recorded
+/// on the companion PDF, never on the audio stored before it.
+///
+/// # Returns
+///
+/// The keys written.
+async fn store_library_companion_pdf(
+    library: &LibraryStore,
+    destinations: &AcquireDestinations,
+    req: &AcquireRequest,
+    pdf_path: &Path,
+) -> Vec<String> {
+    if !req.options.download_pdf {
+        return Vec::new();
+    }
+    if !req.force {
+        match stored_edition_pdf(library, destinations, req).await {
+            Ok(Some(_)) => return Vec::new(),
+            Ok(None) => {}
+            Err(err) => {
+                record_companion_pdf_failure(library, req, &err).await;
+                return Vec::new();
+            }
+        }
+    }
+    put_companion_pdf(library, destinations, req, pdf_path).await
+}
+
+/// Writes the companion PDF at `pdf_path` beside the planned audio key of
+/// every destination and marks the PDF acquired under the primary
+/// destination's key (the first written one when the primary write
+/// failed). A destination whose write fails is logged and skipped.
+///
+/// # Returns
+///
+/// The keys written.
+async fn put_companion_pdf(
+    library: &LibraryStore,
+    destinations: &AcquireDestinations,
+    req: &AcquireRequest,
+    pdf_path: &Path,
+) -> Vec<String> {
     let mut primary_pdf_key = None;
     let mut written = Vec::new();
     for dest in &destinations.items {
@@ -1823,8 +1870,8 @@ async fn store_companion_pdf_sidecars(
         let audio_key = planned_storage_key(library, &dest_req).await;
         let pdf_key = sidecar_key(&audio_key, "pdf");
         let asin_str = object_asin_for(library, &dest_req).await;
-        let meta = sidecar_meta(&asin_str, &dest_req.title, "application/pdf", &pdf_path).await;
-        match dest.backend.put_file(&pdf_key, &pdf_path, meta).await {
+        let meta = sidecar_meta(&asin_str, &dest_req.title, "application/pdf", pdf_path).await;
+        match dest.backend.put_file(&pdf_key, pdf_path, meta).await {
             Ok(()) => {
                 if dest.kind == destinations.primary {
                     primary_pdf_key = Some(pdf_key.clone());
@@ -1851,7 +1898,7 @@ async fn store_companion_pdf_sidecars(
         }
     }
 
-    Ok(written)
+    written
 }
 
 /// Records [`AcquireStatus::Error`] for a companion PDF without failing audio acquire.
@@ -3934,10 +3981,11 @@ mod tests {
         );
     }
 
-    /// With companion PDFs on, the PDF of a title whose audio was taken
-    /// from the library still comes from the store.
+    /// With companion PDFs on, a title whose audio was taken from the
+    /// library gets the PDF the library holds too, and the store is not
+    /// asked at all.
     #[tokio::test]
-    async fn a_title_taken_from_the_library_gets_its_pdf_from_the_store() {
+    async fn a_title_taken_from_the_library_gets_the_librarys_pdf() {
         use crate::library_copies::tests::{MemoryCopy, OneCopy};
         use bookclerk_library::FileRole;
 
@@ -3955,24 +4003,28 @@ mod tests {
         let job = job_id(&store).await;
         let audio = bookclerk_tags::fixtures::tagged_m4b();
         let uuid = edition_book(&store, "B00PDF", "user-1", "Twin", None).await;
+        // The store would give another PDF: it must not be the one stored.
         let pdf_source = CountingSource {
             fetches: fetches.clone(),
-            pdf_url: Some(serve_http_body(b"%PDF-1.4 companion".to_vec()).await),
+            pdf_url: Some(serve_http_body(b"%PDF-1.4 from the store".to_vec()).await),
         };
         let copy = MemoryCopy::new(
             Some("audible"),
-            vec![("Twin.m4b", FileRole::Audio, audio.clone())],
+            vec![
+                ("Twin.m4b", FileRole::Audio, audio.clone()),
+                ("Twin.pdf", FileRole::Pdf, b"%PDF-1.4 companion".to_vec()),
+            ],
         );
-        let before = fetches.load(Ordering::SeqCst);
-        let req = copy_req(&cache, job, "B00PDF", &uuid, OneCopy::of(copy));
+        let mut req = copy_req(&cache, job, "B00PDF", &uuid, OneCopy::of(copy));
+        req.options.download_pdf = true;
         let result = acquire_book(&store, &destinations, req, &pdf_source)
             .await
             .unwrap();
         assert!(result.from_library);
         assert_eq!(
             fetches.load(Ordering::SeqCst),
-            before + 1,
-            "the store is asked once, for the PDF"
+            0,
+            "the store is not asked, for the audio or for the PDF"
         );
         assert_eq!(
             std::fs::read(dest.join(&result.storage_key)).unwrap(),
@@ -3981,10 +4033,55 @@ mod tests {
         let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
         assert_eq!(book.pdf_status, AcquireStatus::Acquired);
         let pdf_key = book.pdf_storage_key.expect("the PDF was stored");
+        assert!(result.written_keys.contains(&pdf_key), "{result:?}");
         assert_eq!(
             std::fs::read(dest.join(pdf_key)).unwrap(),
             b"%PDF-1.4 companion"
         );
+    }
+
+    /// With companion PDFs off, the library's PDF is neither downloaded
+    /// nor stored.
+    #[tokio::test]
+    async fn a_librarys_pdf_is_left_alone_when_companion_pdfs_are_off() {
+        use crate::library_copies::tests::{MemoryCopy, OneCopy};
+        use bookclerk_library::FileRole;
+
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let dest = tmp.path().join("dest");
+        let destinations = title_named_destinations(&dest, puts);
+        let job = job_id(&store).await;
+        let uuid = edition_book(&store, "B00NOPDF", "user-1", "Twin", None).await;
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let copy = MemoryCopy::new(
+            Some("audible"),
+            vec![
+                (
+                    "Twin.m4b",
+                    FileRole::Audio,
+                    bookclerk_tags::fixtures::tagged_m4b(),
+                ),
+                ("Twin.pdf", FileRole::Pdf, b"%PDF-1.4 companion".to_vec()),
+            ],
+        );
+        let copy_fetches = copy.fetched.clone();
+        let mut req = copy_req(&cache, job, "B00NOPDF", &uuid, OneCopy::of(copy));
+        req.options.download_pdf = false;
+        let result = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert!(result.from_library);
+        assert_eq!(copy_fetches.load(Ordering::SeqCst), 1, "the audio alone");
+        let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
+        assert_eq!(book.pdf_storage_key, None);
     }
 
     struct CountingBackend {

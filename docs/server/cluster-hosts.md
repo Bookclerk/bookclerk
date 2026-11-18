@@ -800,12 +800,15 @@ own scan. Before it fetches the title from the store, it asks each
 library it joined, in turn, for the copy of that listing.
 
 - **Same store: the library's copy is used.** When the library downloaded
-  its copy from the same store as the branch's title, the branch
-  downloads the library's audio and cover and the store is not asked.
-  The files then go through the branch's own acquire like a store
-  download: converted to the branch's output format, named by its
-  templates, tagged, probed and recorded. Chapters and part titles are
-  read from the downloaded files in the confined media worker.
+  its copy from the same store as the branch's title, and holds it as
+  one audio file, the branch downloads the library's audio and cover and
+  the store is not asked. The files then go through the branch's own
+  acquire like a store download: converted to the branch's output
+  format, named by its templates, tagged, probed and recorded. Chapters
+  are read from the downloaded file in the confined media worker.
+- **Several audio files: the store.** A book the library holds as parts
+  or as one file per chapter is fetched from the branch's store. The
+  grant lists those files by name, which need not be playing order.
 - **Another store: the branch fetches its own.** When the library's copy
   came from a different store, or the library doesn't know where it came
   from, the branch downloads from its own store as usual.
@@ -814,10 +817,15 @@ library it joined, in turn, for the copy of that listing.
   can't read, the branch removes what it downloaded and fetches from the
   store.
 
-Only audio and the cover are taken. The branch writes its own sidecars
-(`.cue`, chapter JSON). A companion PDF still comes from the store: when
-companion PDFs are turned on, the branch asks the store for it right
-after it stored the library's audio.
+Only the audio, the cover and the companion PDF are taken. The branch
+writes its own sidecars (`.cue`, chapter JSON). The PDF is taken only
+when companion PDFs are turned on at the branch and the library holds
+one; it is the file the store gives for the edition, and the branch
+stores it without opening it. The store is not asked for a PDF the
+library doesn't hold, because a store's only way to a PDF is a whole
+download of the title; a later acquire of the same title asks the store
+for a missing PDF as it does for any title whose audio is already
+stored.
 
 The branch asks a library only while that link's **Keep copies on this
 computer** setting is on and its connection is up; a library that is
@@ -1211,7 +1219,8 @@ shared stay in the library, marked as from a branch that left (see
 - A branch takes a library's copy only for a title its own scan found on
   a store account connected to the branch, and only when the library's
   copy came from the same store. It doesn't yet compare a copy from
-  another store with its own download.
+  another store with its own download, and it doesn't take a book the
+  library holds as several audio files.
 - The library's name is the host of its public origin. There is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the

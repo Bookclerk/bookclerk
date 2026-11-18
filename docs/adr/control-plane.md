@@ -2089,8 +2089,11 @@ already processed.
 - **The taker's own acquire uses the copy.** A branch asks during the
   acquire of its own title, before the store fetch, and takes the copy
   only when the library downloaded it from the title's own store; a copy
-  from another store leaves the store fetch as it was. The downloaded
-  audio and cover enter the acquire pipeline where a store fetch would
+  from another store leaves the store fetch as it was, and so does a
+  book the library holds as several audio files (the grant does not
+  state their playing order). The downloaded audio and cover, and the
+  companion PDF when the taker keeps PDFs, enter the acquire pipeline
+  where a store fetch would
   (`bookclerk-acquire`'s `LibraryCopies`), so conversion, naming, tagging,
   probing and `edition_files` are the pipeline's own, and chapters are
   read from the files by the confined tag reader. The pipeline asks

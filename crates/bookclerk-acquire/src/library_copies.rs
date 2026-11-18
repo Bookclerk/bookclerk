@@ -11,14 +11,15 @@
 //! The acquire asks through [`LibraryCopies`], which each kind of install
 //! implements over its own connection to the library. This module decides
 //! which of the copy's files are taken ([`plan_files`]), downloads them
-//! into the acquire's scratch directory and reads their chapters and part
-//! titles in the confined media worker ([`fetch_library_copy`]), giving the
-//! pipeline the same [`PlainFetch`] a store fetch gives.
+//! into the acquire's scratch directory and reads the audio's chapters in
+//! the confined media worker ([`fetch_library_copy`]), giving the pipeline
+//! the same [`PlainFetch`] a store fetch gives.
 //!
-//! Only audio and the cover are taken. Sidecars are written again by this
-//! install's own pipeline from its own options, and the companion PDF
-//! still comes from the store: the pipeline asks the store for it once the
-//! copy is stored, when companion PDFs are turned on.
+//! Only a copy held as one audio file is taken, with its cover and, when
+//! this install keeps companion PDFs, the PDF the library holds for the
+//! edition (the same file the store gives). A book held as several audio
+//! files comes from the store. Sidecars are written again by this
+//! install's own pipeline from its own options.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -171,6 +172,8 @@ pub(crate) enum Taken {
     OtherAudio,
     /// The cover image.
     Cover,
+    /// The companion PDF.
+    Pdf,
 }
 
 /// One file of a copy the acquire downloads.
@@ -203,37 +206,46 @@ const AUDIO_EXTS: [&str; 5] = ["m4b", "m4a", "mp4", "mp3", "flac"];
 /// Image types a copy's cover may be.
 const COVER_EXTS: [&str; 3] = ["jpg", "jpeg", "png"];
 
-/// The files of a copy an acquire downloads, in download order: every
-/// audio file, then the first cover.
+/// The one file type a copy's companion PDF may be.
+const PDF_EXTS: [&str; 1] = ["pdf"];
+
+/// The files of a copy an acquire downloads, in download order: the one
+/// audio file, then the first cover, then (when `want_pdf`) the first
+/// companion PDF.
+///
+/// Only a copy held as **one** audio file is taken. A book the library
+/// holds as several audio files (parts, or one file per chapter) is not:
+/// the grant lists those by storage key, which need not be playing order,
+/// and it may list a whole-book file beside its own chapter files.
 ///
 /// # Returns
 ///
 /// `None` when the copy cannot be taken: it lists no audio, its first
-/// file is not the primary audio, or an audio file is of a kind the tag
-/// reader does not understand.
+/// file is not the primary audio, it lists more than one audio file, or
+/// the audio is of a kind the tag reader does not understand.
 #[must_use]
-pub(crate) fn plan_files(files: &[LibraryCopyFile]) -> Option<Vec<TakenFile>> {
-    if files.first()?.role != FileRole::Audio {
+pub(crate) fn plan_files(files: &[LibraryCopyFile], want_pdf: bool) -> Option<Vec<TakenFile>> {
+    let first = files.first()?;
+    if first.role != FileRole::Audio {
         return None;
     }
-    let mut audio = Vec::new();
+    let ext = known_ext(&first.name, &AUDIO_EXTS)?;
+    let kind = if matches!(ext, "m4b" | "m4a" | "mp4") {
+        Taken::Mp4Audio
+    } else {
+        Taken::OtherAudio
+    };
+    let mut taken = vec![TakenFile {
+        index: 0,
+        kind,
+        ext,
+        size: first.size,
+    }];
     let mut cover = None;
-    for (index, file) in files.iter().enumerate() {
+    let mut pdf = None;
+    for (index, file) in files.iter().enumerate().skip(1) {
         match file.role {
-            FileRole::Audio | FileRole::Part | FileRole::Chapter => {
-                let ext = known_ext(&file.name, &AUDIO_EXTS)?;
-                let kind = if matches!(ext, "m4b" | "m4a" | "mp4") {
-                    Taken::Mp4Audio
-                } else {
-                    Taken::OtherAudio
-                };
-                audio.push(TakenFile {
-                    index,
-                    kind,
-                    ext,
-                    size: file.size,
-                });
-            }
+            FileRole::Audio | FileRole::Part | FileRole::Chapter => return None,
             FileRole::Cover => {
                 if cover.is_none() && file.size > 0 {
                     cover = known_ext(&file.name, &COVER_EXTS).map(|ext| TakenFile {
@@ -244,22 +256,40 @@ pub(crate) fn plan_files(files: &[LibraryCopyFile]) -> Option<Vec<TakenFile>> {
                     });
                 }
             }
-            FileRole::Pdf | FileRole::Sidecar | FileRole::Transcript | FileRole::Epub => {}
+            FileRole::Pdf => {
+                if want_pdf && pdf.is_none() && file.size > 0 {
+                    pdf = known_ext(&file.name, &PDF_EXTS).map(|ext| TakenFile {
+                        index,
+                        kind: Taken::Pdf,
+                        ext,
+                        size: file.size,
+                    });
+                }
+            }
+            FileRole::Sidecar | FileRole::Transcript | FileRole::Epub => {}
         }
     }
-    audio.extend(cover);
-    Some(audio)
+    taken.extend(cover);
+    taken.extend(pdf);
+    Some(taken)
+}
+
+/// A library's copy downloaded into scratch.
+#[derive(Debug)]
+pub(crate) struct LibraryFetch {
+    /// The audio and cover, described as a store fetch describes them.
+    pub fetch: PlainFetch,
+    /// The companion PDF the library holds for the edition, when the
+    /// acquire wants one and the copy lists one.
+    pub pdf: Option<PathBuf>,
 }
 
 /// Downloads the files of `copy` an acquire uses into `dir` and describes
 /// them as a store fetch would.
 ///
-/// A single audio file keeps the chapters the confined tag reader finds in
-/// it. Several audio files become parts in listed order, each titled by
-/// its one chapter when it has exactly one (a chapter file), and are
-/// packaged by the pipeline as a store's parts are; when a part holds
-/// several chapters, the parts' chapters are carried on the joined
-/// timeline ([`joined_chapters`]).
+/// The one audio file keeps the chapters the confined tag reader finds in
+/// it. The companion PDF is downloaded as it is: it is the same file the
+/// store gives for the edition, and it is stored, never opened.
 ///
 /// # Arguments
 ///
@@ -267,21 +297,24 @@ pub(crate) fn plan_files(files: &[LibraryCopyFile]) -> Option<Vec<TakenFile>> {
 /// * `dir` - A scratch directory of this acquire alone; files are written
 ///   as `<index>.<ext>`, never under a name the library gave.
 /// * `budget` - Most bytes the files may take together.
-/// * `media` - Reads each downloaded audio file's tags.
+/// * `media` - Reads the downloaded audio file's tags.
+/// * `want_pdf` - Whether the acquire keeps companion PDFs.
 ///
 /// # Errors
 ///
-/// Returns an error when the copy has no usable audio, is larger than
-/// `budget`, a download fails or leaves a file of another size than
-/// listed, or the tag reader cannot read an audio file. `dir` may then
-/// hold partial files; the caller removes it.
+/// Returns an error when the copy has no usable audio (see
+/// [`plan_files`]), is larger than `budget`, a download fails or leaves a
+/// file of another size than listed, or the tag reader cannot read the
+/// audio. `dir` may then hold partial files; the caller removes it.
 pub(crate) async fn fetch_library_copy(
     copy: &dyn LibraryCopy,
     dir: &Path,
     budget: u64,
     media: &MediaPool,
-) -> Result<PlainFetch, LibraryCopyError> {
-    let taken = plan_files(copy.files()).ok_or("the copy lists no audio this install can read")?;
+    want_pdf: bool,
+) -> Result<LibraryFetch, LibraryCopyError> {
+    let taken = plan_files(copy.files(), want_pdf)
+        .ok_or("the copy is not one audio file this install can read")?;
     let total = taken
         .iter()
         .fold(0u64, |sum, file| sum.saturating_add(file.size));
@@ -297,11 +330,7 @@ pub(crate) async fn fetch_library_copy(
         chapters: Vec::new(),
         pdf_url: None,
     };
-    let audio_files = taken
-        .iter()
-        .filter(|file| file.kind != Taken::Cover)
-        .count();
-    let mut part_tags = Vec::new();
+    let mut pdf = None;
     for file in &taken {
         let path = dir.join(format!("{:03}.{}", file.index, file.ext));
         copy.fetch_file(file.index, &path).await?;
@@ -313,120 +342,34 @@ pub(crate) async fn fetch_library_copy(
             )
             .into());
         }
-        if file.kind == Taken::Cover {
-            fetch.cover_path = Some(path);
-            continue;
-        }
-        let tags = media.read_tags(file.size, &FileRange::new(&path)).await?;
-        if audio_files == 1 {
-            fetch.chapters = tags
-                .chapters
-                .iter()
-                .map(|chapter| (chapter.title.clone(), chapter.start_ms))
-                .collect();
-            if file.kind == Taken::Mp4Audio {
-                fetch.m4b_path = Some(path);
-                continue;
+        match file.kind {
+            Taken::Cover => fetch.cover_path = Some(path),
+            Taken::Pdf => pdf = Some(path),
+            Taken::Mp4Audio | Taken::OtherAudio => {
+                let tags = media.read_tags(file.size, &FileRange::new(&path)).await?;
+                fetch.chapters = tags
+                    .chapters
+                    .iter()
+                    .map(|chapter| (chapter.title.clone(), chapter.start_ms))
+                    .collect();
+                if file.kind == Taken::Mp4Audio {
+                    fetch.m4b_path = Some(path);
+                } else {
+                    fetch.parts.push(audio_part(path, &tags));
+                }
             }
         }
-        fetch.parts.push(audio_part(path, &tags));
-        part_tags.push(tags);
     }
-    if audio_files > 1 {
-        let parts: Vec<PartChapters> = part_tags.iter().map(PartChapters::of).collect();
-        fetch.chapters = joined_chapters(&parts);
-    }
-    Ok(fetch)
+    Ok(LibraryFetch { fetch, pdf })
 }
 
-/// What the tag reader found in one part of a copy with several audio
-/// files, for [`joined_chapters`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PartChapters {
-    /// The part's own chapters: title and start within the part, in
-    /// milliseconds.
-    pub chapters: Vec<(String, u64)>,
-    /// The part's running time in milliseconds, when its container states
-    /// it exactly; an estimate is not enough to place later chapters.
-    pub exact_ms: Option<u64>,
-}
-
-impl PartChapters {
-    /// The chapters and exact running time of one part's tags.
-    fn of(tags: &bookclerk_media::TagRecord) -> Self {
-        Self {
-            chapters: tags
-                .chapters
-                .iter()
-                .map(|chapter| (chapter.title.clone(), chapter.start_ms))
-                .collect(),
-            exact_ms: tags
-                .duration
-                .filter(|duration| {
-                    duration.ms > 0
-                        && match duration.precision {
-                            bookclerk_tags::DurationPrecision::Exact => true,
-                            bookclerk_tags::DurationPrecision::Estimated => false,
-                        }
-                })
-                .map(|duration| duration.ms),
-        }
-    }
-}
-
-/// The chapters of a book held as several audio files, on the timeline of
-/// the files joined in order: each part's own chapters moved by the
-/// running time of the parts before it.
-///
-/// A part without chapters of its own is one chapter, `Part <n>`, at its
-/// start. A chapter that a part before the last places at or past that
-/// part's own end is left out, so the starts never go backwards.
-///
-/// # Returns
-///
-/// Empty when no part has more than one chapter (the pipeline then makes
-/// one chapter per part from the part titles, timed by the audio it
-/// joins), or when a part before the last states no exact running time,
-/// so later chapters could not be placed.
-#[must_use]
-pub(crate) fn joined_chapters(parts: &[PartChapters]) -> Vec<(String, u64)> {
-    if !parts.iter().any(|part| part.chapters.len() > 1) {
-        return Vec::new();
-    }
-    let mut joined = Vec::new();
-    let mut offset = 0u64;
-    for (n, part) in parts.iter().enumerate() {
-        if part.chapters.is_empty() {
-            joined.push((format!("Part {}", n + 1), offset));
-        }
-        let last = n + 1 == parts.len();
-        if !last && part.exact_ms.is_none() {
-            return Vec::new();
-        }
-        for (title, start_ms) in &part.chapters {
-            // A chapter a part places at or past its own end would land
-            // inside a later part: it is left out, so starts never go
-            // backwards.
-            if part.exact_ms.is_some_and(|ms| *start_ms >= ms) && !last {
-                continue;
-            }
-            joined.push((title.clone(), offset.saturating_add(*start_ms)));
-        }
-        offset = offset.saturating_add(part.exact_ms.unwrap_or(0));
-    }
-    joined
-}
-
-/// One downloaded audio file as a part: titled by its one chapter when it
-/// has exactly one, with the running time the tag reader found.
+/// The one downloaded audio file as a part, with the running time the tag
+/// reader found. Its chapters are carried by the fetch, so it has no title
+/// of its own.
 fn audio_part(path: PathBuf, tags: &bookclerk_media::TagRecord) -> PlainAudioPart {
-    let title = match tags.chapters.as_slice() {
-        [only] if !only.title.trim().is_empty() => Some(only.title.clone()),
-        _ => None,
-    };
     PlainAudioPart {
         path,
-        title,
+        title: None,
         duration_ms: tags
             .duration
             .map(|duration| duration.ms)
@@ -565,11 +508,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn audio_and_the_first_cover_are_taken_in_listed_order() {
+    fn the_audio_the_first_cover_and_a_wanted_pdf_are_taken() {
         let files = [
             listed("Book.M4B", FileRole::Audio, 10),
             listed("Book.cue", FileRole::Sidecar, 3),
-            listed("Book.pdf", FileRole::Pdf, 4),
+            listed("empty.pdf", FileRole::Pdf, 0),
+            listed("Book.pdf.exe", FileRole::Pdf, 2),
+            listed("Book.PDF", FileRole::Pdf, 4),
+            listed("Other.pdf", FileRole::Pdf, 4),
             listed("empty.jpg", FileRole::Cover, 0),
             listed("cover.webp", FileRole::Cover, 5),
             listed("cover.JPG", FileRole::Cover, 6),
@@ -577,79 +523,94 @@ pub(crate) mod tests {
             listed("Book.epub", FileRole::Epub, 8),
         ];
         // The first cover that has bytes and is of a type the pipeline
-        // embeds is the one taken.
-        let taken = plan_files(&files).unwrap();
-        assert_eq!(
-            taken,
-            [
-                TakenFile {
-                    index: 0,
-                    kind: Taken::Mp4Audio,
-                    ext: "m4b",
-                    size: 10
-                },
-                TakenFile {
-                    index: 5,
-                    kind: Taken::Cover,
-                    ext: "jpg",
-                    size: 6
-                }
-            ]
-        );
+        // embeds is the one taken, and the first PDF that has bytes.
+        let audio = TakenFile {
+            index: 0,
+            kind: Taken::Mp4Audio,
+            ext: "m4b",
+            size: 10,
+        };
+        let cover = TakenFile {
+            index: 8,
+            kind: Taken::Cover,
+            ext: "jpg",
+            size: 6,
+        };
+        let pdf = TakenFile {
+            index: 4,
+            kind: Taken::Pdf,
+            ext: "pdf",
+            size: 4,
+        };
+        assert_eq!(plan_files(&files, true).unwrap(), [audio, cover, pdf]);
+        // An acquire that keeps no companion PDFs does not download one.
+        assert_eq!(plan_files(&files, false).unwrap(), [audio, cover]);
 
-        let parts = [
-            listed("Book-p001.mp3", FileRole::Audio, 1),
+        let mp3 = [
             listed("art/cover.png", FileRole::Cover, 9),
-            listed("Book-p002.mp3", FileRole::Part, 2),
-            listed("Book - 03.flac", FileRole::Chapter, 3),
+            listed("Book.mp3", FileRole::Audio, 1),
         ];
-        let taken = plan_files(&parts).unwrap();
+        assert_eq!(plan_files(&mp3, true), None, "the audio is listed first");
+        let mp3 = [
+            listed("Book.mp3", FileRole::Audio, 1),
+            listed("art/cover.png", FileRole::Cover, 9),
+        ];
         assert_eq!(
-            taken
+            plan_files(&mp3, true)
+                .unwrap()
                 .iter()
                 .map(|f| (f.index, f.kind, f.ext))
                 .collect::<Vec<_>>(),
-            [
-                (0, Taken::OtherAudio, "mp3"),
-                (2, Taken::OtherAudio, "mp3"),
-                (3, Taken::OtherAudio, "flac"),
-                (1, Taken::Cover, "png"),
-            ]
+            [(0, Taken::OtherAudio, "mp3"), (1, Taken::Cover, "png")]
         );
     }
 
     #[test]
+    fn a_book_held_as_several_audio_files_is_not_taken() {
+        // Parts and chapter files are listed by storage key, which need
+        // not be playing order, and a library may hold a whole-book file
+        // beside its chapter files: such a book comes from the store.
+        for role in [FileRole::Part, FileRole::Chapter, FileRole::Audio] {
+            assert_eq!(
+                plan_files(
+                    &[
+                        listed("Book.m4b", FileRole::Audio, 1),
+                        listed("cover.jpg", FileRole::Cover, 1),
+                        listed("Book - Epilogue.m4b", role, 2),
+                    ],
+                    true
+                ),
+                None,
+                "{role:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_copy_without_readable_primary_audio_is_not_taken() {
-        assert_eq!(plan_files(&[]), None);
+        assert_eq!(plan_files(&[], true), None);
         // The primary audio is always listed first.
-        assert_eq!(plan_files(&[listed("cover.jpg", FileRole::Cover, 1)]), None);
         assert_eq!(
-            plan_files(&[
-                listed("a.mp3", FileRole::Part, 1),
-                listed("b.mp3", FileRole::Audio, 1)
-            ]),
+            plan_files(&[listed("cover.jpg", FileRole::Cover, 1)], true),
+            None
+        );
+        assert_eq!(
+            plan_files(&[listed("a.mp3", FileRole::Part, 1)], true),
             None
         );
         // Audio of a kind the tag reader does not know, or with no
         // extension at all.
         for name in ["Book.ogg", "Book", "Book.mp3.exe", ".m4b/Book"] {
             assert_eq!(
-                plan_files(&[listed(name, FileRole::Audio, 1)]),
+                plan_files(&[listed(name, FileRole::Audio, 1)], true),
                 None,
                 "{name}"
             );
         }
-        assert_eq!(
-            plan_files(&[
-                listed("a.mp3", FileRole::Audio, 1),
-                listed("b.wma", FileRole::Part, 1)
-            ]),
-            None
-        );
     }
 
     #[tokio::test]
-    async fn one_file_keeps_its_chapters_and_several_become_parts() {
+    async fn the_one_audio_file_keeps_its_chapters() {
         let media = MediaPool::in_process();
         let tmp = tempfile::tempdir().unwrap();
 
@@ -661,12 +622,14 @@ pub(crate) mod tests {
                 ("../../escape/Book.m4b", FileRole::Audio, tagged_m4b()),
                 ("Book.cue", FileRole::Sidecar, b"FILE".to_vec()),
                 ("cover.jpg", FileRole::Cover, b"jpeg".to_vec()),
+                ("../Book.pdf", FileRole::Pdf, b"%PDF-1.4".to_vec()),
             ],
         );
         let dir = tmp.path().join("one");
-        let fetch = fetch_library_copy(&copy, &dir, u64::MAX, &media)
+        let taken = fetch_library_copy(&copy, &dir, u64::MAX, &media, true)
             .await
             .unwrap();
+        let fetch = taken.fetch;
         assert_eq!(
             fetch.m4b_path.as_deref(),
             Some(dir.join("000.m4b").as_path())
@@ -681,14 +644,23 @@ pub(crate) mod tests {
             Some(dir.join("002.jpg").as_path())
         );
         assert_eq!(fetch.pdf_url, None);
+        assert_eq!(taken.pdf.as_deref(), Some(dir.join("003.pdf").as_path()));
         // The sidecar was not asked for.
-        assert_eq!(copy.fetched.load(Ordering::SeqCst), 2);
+        assert_eq!(copy.fetched.load(Ordering::SeqCst), 3);
         let mut names: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         names.sort();
-        assert_eq!(names, ["000.m4b", "002.jpg"]);
+        assert_eq!(names, ["000.m4b", "002.jpg", "003.pdf"]);
+
+        // An acquire that keeps no PDFs leaves the library's where it is.
+        let dir = tmp.path().join("no-pdf");
+        let taken = fetch_library_copy(&copy, &dir, u64::MAX, &media, false)
+            .await
+            .unwrap();
+        assert_eq!(taken.pdf, None);
+        assert!(!dir.join("003.pdf").exists());
 
         // One MP3 is a single part, with the chapters it carries.
         let copy = MemoryCopy::new(
@@ -696,14 +668,15 @@ pub(crate) mod tests {
             vec![("Book.mp3", FileRole::Audio, tagged_mp3())],
         );
         let dir = tmp.path().join("mp3");
-        let fetch = fetch_library_copy(&copy, &dir, u64::MAX, &media)
+        let fetch = fetch_library_copy(&copy, &dir, u64::MAX, &media, true)
             .await
-            .unwrap();
+            .unwrap()
+            .fetch;
         assert_eq!(fetch.m4b_path, None);
         assert_eq!(fetch.parts.len(), 1);
         assert_eq!(fetch.parts[0].path, dir.join("000.mp3"));
 
-        // Several files are parts in listed order.
+        // Several audio files are not taken, and nothing is asked for.
         let copy = MemoryCopy::new(
             Some("libro"),
             vec![
@@ -712,24 +685,12 @@ pub(crate) mod tests {
             ],
         );
         let dir = tmp.path().join("parts");
-        let fetch = fetch_library_copy(&copy, &dir, u64::MAX, &media)
+        let err = fetch_library_copy(&copy, &dir, u64::MAX, &media, true)
             .await
-            .unwrap();
-        assert_eq!(fetch.m4b_path, None);
-        // The second part holds several chapters: they are carried, moved
-        // past the first part's running time.
-        let first_ms = fetch.parts[0].duration_ms.expect("the MP3 states its time");
-        assert!(fetch.chapters.len() >= 2, "{:?}", fetch.chapters);
-        assert!(fetch.chapters.windows(2).all(|pair| pair[0].1 <= pair[1].1));
-        assert!(fetch.chapters.iter().any(|(_, start)| *start >= first_ms));
-        assert_eq!(
-            fetch
-                .parts
-                .iter()
-                .map(|p| p.path.clone())
-                .collect::<Vec<_>>(),
-            [dir.join("000.mp3"), dir.join("001.m4b")]
-        );
+            .unwrap_err();
+        assert!(err.to_string().contains("not one audio file"), "{err}");
+        assert_eq!(copy.fetched.load(Ordering::SeqCst), 0);
+        assert!(!dir.exists());
     }
 
     #[tokio::test]
@@ -740,7 +701,7 @@ pub(crate) mod tests {
         // Larger than the scratch budget: nothing is asked for.
         let copy = MemoryCopy::new(Some("a"), vec![("Book.m4b", FileRole::Audio, tagged_m4b())]);
         let size = copy.listed[0].size;
-        let err = fetch_library_copy(&copy, &tmp.path().join("big"), size - 1, &media)
+        let err = fetch_library_copy(&copy, &tmp.path().join("big"), size - 1, &media, true)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("left for scratch"), "{err}");
@@ -751,7 +712,7 @@ pub(crate) mod tests {
         let mut copy =
             MemoryCopy::new(Some("a"), vec![("Book.m4b", FileRole::Audio, tagged_m4b())]);
         copy.failing = Some(0);
-        let err = fetch_library_copy(&copy, &tmp.path().join("cut"), u64::MAX, &media)
+        let err = fetch_library_copy(&copy, &tmp.path().join("cut"), u64::MAX, &media, true)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("cut"), "{err}");
@@ -760,7 +721,7 @@ pub(crate) mod tests {
         let mut copy =
             MemoryCopy::new(Some("a"), vec![("Book.m4b", FileRole::Audio, tagged_m4b())]);
         copy.listed[0].size += 1;
-        let err = fetch_library_copy(&copy, &tmp.path().join("size"), u64::MAX, &media)
+        let err = fetch_library_copy(&copy, &tmp.path().join("size"), u64::MAX, &media, true)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not the"), "{err}");
@@ -771,88 +732,17 @@ pub(crate) mod tests {
             vec![("Book.m4b", FileRole::Audio, b"not audio".to_vec())],
         );
         assert!(
-            fetch_library_copy(&copy, &tmp.path().join("bad"), u64::MAX, &media)
+            fetch_library_copy(&copy, &tmp.path().join("bad"), u64::MAX, &media, true)
                 .await
                 .is_err()
         );
 
         // No audio at all.
         let copy = MemoryCopy::new(Some("a"), vec![("cover.jpg", FileRole::Cover, vec![1])]);
-        let err = fetch_library_copy(&copy, &tmp.path().join("none"), u64::MAX, &media)
+        let err = fetch_library_copy(&copy, &tmp.path().join("none"), u64::MAX, &media, true)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("no audio"), "{err}");
-    }
-
-    /// A part with `chapters` (`(title, start)`) and an exact running time.
-    fn part(chapters: &[(&str, u64)], exact_ms: Option<u64>) -> PartChapters {
-        PartChapters {
-            chapters: chapters
-                .iter()
-                .map(|(title, start)| ((*title).to_string(), *start))
-                .collect(),
-            exact_ms,
-        }
-    }
-
-    #[test]
-    fn chapters_inside_parts_are_carried_on_the_joined_timeline() {
-        let titled = |chapters: Vec<(String, u64)>| -> Vec<(String, u64)> { chapters };
-        // Two parts with chapters of their own, and one with none.
-        let joined = joined_chapters(&[
-            part(&[("One", 0), ("Two", 40_000)], Some(100_000)),
-            part(&[], Some(50_000)),
-            part(&[("Three", 5_000), ("Four", 60_000)], None),
-        ]);
-        assert_eq!(
-            titled(joined),
-            [
-                ("One".to_string(), 0),
-                ("Two".to_string(), 40_000),
-                ("Part 2".to_string(), 100_000),
-                ("Three".to_string(), 155_000),
-                ("Four".to_string(), 210_000),
-            ]
-        );
-
-        // Chapter files (one chapter each) and untagged parts are left to
-        // the pipeline, which times one chapter per part from the audio.
-        assert!(joined_chapters(&[
-            part(&[("One", 0)], Some(1_000)),
-            part(&[("Two", 0)], Some(1_000))
-        ])
-        .is_empty());
-        assert!(joined_chapters(&[part(&[], None), part(&[], None)]).is_empty());
-        assert!(joined_chapters(&[]).is_empty());
-
-        // A part before the last without an exact running time: later
-        // chapters cannot be placed, so none are stated.
-        assert!(joined_chapters(&[
-            part(&[("One", 0), ("Two", 9)], None),
-            part(&[("Three", 0)], Some(1_000))
-        ])
-        .is_empty());
-        // A chapter placed past its own part's end is left out.
-        assert_eq!(
-            joined_chapters(&[
-                part(&[("One", 0), ("Two", 500), ("Stray", 1_000)], Some(1_000)),
-                part(&[("Three", 0)], Some(1_000))
-            ]),
-            [
-                ("One".to_string(), 0),
-                ("Two".to_string(), 500),
-                ("Three".to_string(), 1_000)
-            ]
-        );
-        // The last part's running time is never needed.
-        assert_eq!(
-            joined_chapters(&[
-                part(&[("One", 0)], Some(1_000)),
-                part(&[("Two", 0), ("Three", 7)], None)
-            ])
-            .len(),
-            3
-        );
+        assert!(err.to_string().contains("not one audio file"), "{err}");
     }
 
     #[test]
