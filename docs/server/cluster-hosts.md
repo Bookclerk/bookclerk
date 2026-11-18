@@ -822,8 +822,10 @@ after it stored the library's audio.
 The branch asks a library only while that link's **Keep copies on this
 computer** setting is on and its connection is up; a library that is
 offline is skipped, not waited for. A book taken this way is recorded
-for that library, so the branch never shares it back to the library it
-came from (see [Shared catalog](#shared-catalog)). The job log line
+for that library before the branch stores any of it, so the branch never
+shares it back to the library it came from (see
+[Shared catalog](#shared-catalog)); a copy that can't be recorded isn't
+used. The job log line
 `acquired` carries `from_library=true` for such a title.
 
 A clerk asks the same way on its own socket, for the person its library

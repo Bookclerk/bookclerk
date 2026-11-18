@@ -79,13 +79,17 @@ pub trait LibraryCopy: Send + Sync {
     /// Returns an error when the library refuses or the transfer fails.
     async fn fetch_file(&self, index: usize, dest: &Path) -> Result<(), LibraryCopyError>;
 
-    /// Called once the acquire stored the copy on this install, so the
-    /// implementation can record where the book came from (a branch never
-    /// shares a book back to the library it took it from).
+    /// Called once the acquire holds the copy's files and before it stores
+    /// any of them, so the implementation can record where the book comes
+    /// from (a branch never shares a book back to the library it took it
+    /// from). Recording first means audio a failed store step leaves on a
+    /// destination is already known as the library's. It may run again for
+    /// the same title, so it must be safe to repeat.
     ///
     /// # Errors
     ///
-    /// Returns an error when the record cannot be written.
+    /// Returns an error when the record cannot be written; the acquire
+    /// then does not use the copy.
     async fn taken(&self) -> Result<(), LibraryCopyError>;
 }
 
@@ -453,6 +457,8 @@ pub(crate) mod tests {
         pub taken: Arc<AtomicUsize>,
         /// An index whose download fails.
         pub failing: Option<usize>,
+        /// True when [`LibraryCopy::taken`] fails (after counting).
+        pub refuses_taken: bool,
     }
 
     impl MemoryCopy {
@@ -472,6 +478,7 @@ pub(crate) mod tests {
                 fetched: Arc::new(AtomicUsize::new(0)),
                 taken: Arc::new(AtomicUsize::new(0)),
                 failing: None,
+                refuses_taken: false,
             }
         }
     }
@@ -499,6 +506,9 @@ pub(crate) mod tests {
 
         async fn taken(&self) -> Result<(), LibraryCopyError> {
             self.taken.fetch_add(1, Ordering::SeqCst);
+            if self.refuses_taken {
+                return Err("the record could not be written".into());
+            }
             Ok(())
         }
     }

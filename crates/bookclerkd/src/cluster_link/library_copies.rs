@@ -8,7 +8,7 @@
 //! store listing, and the library answers only for an edition this
 //! branch's person may take. The pipeline then downloads the files
 //! through [`LinkCopy`] (the token goes to the granting library alone)
-//! and, once it stored the title, the copy is recorded in `link_imports`
+//! and, before it stores any of them, the copy is recorded in `link_imports`
 //! so the catalog sync never shares the book back to the library it came
 //! from.
 //!

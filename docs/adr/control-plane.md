@@ -2096,7 +2096,8 @@ already processed.
   read from the files by the confined tag reader. The pipeline asks
   through a trait, so a branch (over its link, only while the link keeps
   copies) and a clerk (over its card) share the rule. A taken copy is
-  recorded in `link_imports` for the granting library, which keeps the
+  recorded in `link_imports` for the granting library before any of it
+  is stored (a copy that cannot be recorded is not used), which keeps the
   catalog sync from sending the book back. Any failure falls back to the
   store.
 - **A clerk asks on its own socket.** `copy.grant` on the clerk socket is

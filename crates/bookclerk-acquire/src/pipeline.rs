@@ -29,7 +29,7 @@ use crate::cue::{
 use crate::destinations::{destination_id, AcquireDestination, AcquireDestinations};
 use crate::error::{AcquireError, Result};
 use crate::library_copies::{
-    fetch_library_copy, from_store, LibraryCopy, LibraryCopyListing, LibraryCopySource,
+    fetch_library_copy, from_store, LibraryCopyListing, LibraryCopySource,
 };
 use crate::naming::{
     audio_basename, chapter_storage_key_with_folder, sidecar_key, storage_key_with_contexts,
@@ -1173,11 +1173,11 @@ async fn run_source_pipeline(
     let work_dir = req.cache_dir.join("acquire").join(status_key(req));
     prepare_work_dir(library, req, &work_dir).await?;
 
-    let (fetch, copy) = match fetch_from_library(library, req, &work_dir).await {
-        Some((fetch, copy)) => (fetch, Some(copy)),
+    let (fetch, from_library) = match fetch_from_library(library, req, &work_dir).await {
+        Some(fetch) => (fetch, true),
         None => (
             fetch_title_enforcing_quota(library, req, source, &work_dir).await?,
-            None,
+            false,
         ),
     };
     enforce_work_dir_quota(library, req, &work_dir).await?;
@@ -1190,15 +1190,8 @@ async fn run_source_pipeline(
         enforce_work_dir_quota(library, req, &work_dir).await?;
     }
     let mut result = result?;
-    if let Some(copy) = copy {
+    if from_library {
         result.from_library = true;
-        if let Err(err) = copy.taken().await {
-            tracing::warn!(
-                id = %status_key(req),
-                error = %err,
-                "the copy taken from the library could not be recorded as taken"
-            );
-        }
         // A library's copy carries no companion PDF: that still comes
         // from the store, as it does for a title whose audio was already
         // here. A PDF failure is recorded on the title, not on the acquire.
@@ -1225,18 +1218,19 @@ const LIBRARY_COPY_DIR: &str = "library-copy";
 ///
 /// A copy from another store is left alone (the title is fetched from its
 /// own store), and so is one that cannot be downloaded whole within the
-/// scratch budget or read by the confined tag reader: the caller then
+/// scratch budget, read by the confined tag reader, or recorded as taken
+/// ([`crate::LibraryCopy::taken`], before anything is stored): the caller then
 /// fetches from the store, and what the attempt left in `work_dir` is
 /// removed first.
 ///
 /// # Returns
 ///
-/// The fetch and the copy it came from, or `None` to fetch from the store.
+/// The fetch, or `None` to fetch from the store.
 async fn fetch_from_library(
     library: &LibraryStore,
     req: &AcquireRequest,
     work_dir: &Path,
-) -> Option<(PlainFetch, Box<dyn LibraryCopy>)> {
+) -> Option<PlainFetch> {
     let copies = req.library_copies.copies()?;
     let title = resolve_title(library, req).await?;
     let copy = copies
@@ -1267,7 +1261,20 @@ async fn fetch_from_library(
                 store = %title.source,
                 "taking the copy the library holds instead of fetching from the store"
             );
-            Some((fetch, copy))
+            // Recorded before anything is stored: a store step that fails
+            // part way can leave the library's audio on a destination, and
+            // that audio must already be known as the library's. A copy
+            // that cannot be recorded is not used.
+            if let Err(err) = copy.taken().await {
+                tracing::warn!(
+                    id = %status_key(req),
+                    error = %err,
+                    "the library's copy could not be recorded as taken; fetching from the store"
+                );
+                remove_library_copy(&dir).await;
+                return None;
+            }
+            Some(fetch)
         }
         Err(err) => {
             tracing::warn!(
@@ -1275,12 +1282,18 @@ async fn fetch_from_library(
                 error = %err,
                 "the library's copy could not be taken; fetching from the store"
             );
-            if let Err(err) = tokio::fs::remove_dir_all(&dir).await {
-                if err.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(error = %err, "could not remove the partial library copy");
-                }
-            }
+            remove_library_copy(&dir).await;
             None
+        }
+    }
+}
+
+/// Removes what a library copy left in scratch, so a store fetch that
+/// follows packages only its own files.
+async fn remove_library_copy(dir: &Path) {
+    if let Err(err) = tokio::fs::remove_dir_all(dir).await {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(error = %err, "could not remove the library copy from scratch");
         }
     }
 }
@@ -3829,18 +3842,20 @@ mod tests {
             vec![("Twin.m4b", FileRole::Audio, audio.clone())],
         );
         copy.failing = Some(0);
-        let taken = copy.taken.clone();
+        let first_taken = copy.taken.clone();
         let before = fetches.load(Ordering::SeqCst);
         let req = copy_req(&cache, job.clone(), "B00CUT", &uuid, OneCopy::of(copy));
         let work_dir = cache.join("acquire").join(&uuid);
         prepare_work_dir(&store, &req, &work_dir).await.unwrap();
         assert!(fetch_from_library(&store, &req, &work_dir).await.is_none());
         assert!(!work_dir.join(LIBRARY_COPY_DIR).exists());
+        assert_eq!(first_taken.load(Ordering::SeqCst), 0);
         let mut copy = MemoryCopy::new(
             Some("audible"),
             vec![("Twin.m4b", FileRole::Audio, audio.clone())],
         );
         copy.failing = Some(0);
+        let taken = copy.taken.clone();
         let req = copy_req(&cache, job.clone(), "B00CUT", &uuid, OneCopy::of(copy));
         let result = acquire_book(&store, &destinations, req, &source)
             .await
@@ -3860,6 +3875,63 @@ mod tests {
         assert!(!result.from_library);
         assert_eq!(fetches.load(Ordering::SeqCst), before + 1);
         assert_eq!(none.asked.lock().unwrap().len(), 1);
+    }
+
+    /// A copy is recorded as the library's before anything is stored, and
+    /// one that cannot be recorded is not used: the title comes from the
+    /// store and nothing of the copy stays in scratch.
+    #[tokio::test]
+    async fn a_copy_that_cannot_be_recorded_as_taken_is_not_used() {
+        use crate::library_copies::tests::{MemoryCopy, OneCopy};
+        use bookclerk_library::FileRole;
+
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let dest = tmp.path().join("dest");
+        let destinations = title_named_destinations(&dest, puts.clone());
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let audio = bookclerk_tags::fixtures::tagged_m4b();
+        let uuid = edition_book(&store, "B00REC", "user-1", "Twin", None).await;
+        let copy_of = || {
+            let mut copy = MemoryCopy::new(
+                Some("audible"),
+                vec![("Twin.m4b", FileRole::Audio, audio.clone())],
+            );
+            copy.refuses_taken = true;
+            copy
+        };
+
+        // The record is asked for once the copy is in scratch and before
+        // any destination is written.
+        let copy = copy_of();
+        let taken = copy.taken.clone();
+        let req = copy_req(&cache, job.clone(), "B00REC", &uuid, OneCopy::of(copy));
+        let work_dir = cache.join("acquire").join(&uuid);
+        prepare_work_dir(&store, &req, &work_dir).await.unwrap();
+        assert!(fetch_from_library(&store, &req, &work_dir).await.is_none());
+        assert_eq!(taken.load(Ordering::SeqCst), 1);
+        assert_eq!(puts.load(Ordering::SeqCst), 0);
+        assert!(!work_dir.join(LIBRARY_COPY_DIR).exists());
+
+        let req = copy_req(&cache, job, "B00REC", &uuid, OneCopy::of(copy_of()));
+        let result = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert!(!result.from_library);
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            std::fs::read(dest.join(&result.storage_key)).unwrap(),
+            b"fake-m4b",
+            "the store's audio is what was stored"
+        );
     }
 
     /// With companion PDFs on, the PDF of a title whose audio was taken
