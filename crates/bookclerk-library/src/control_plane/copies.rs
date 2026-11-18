@@ -570,3 +570,7 @@ pub async fn authorize_copy(
         files,
     }))
 }
+
+#[cfg(test)]
+#[path = "copies_tests.rs"]
+mod tests;

@@ -19,8 +19,8 @@ use crate::master_key::master_key_test_lock_async;
 use crate::models::{AcquireStatus, UserRole};
 use crate::store::NewBook;
 
-const PLUGIN: &str = "path:file:///tmp/store#audible";
-const BRANCH: &str = "window-w";
+pub(crate) const PLUGIN: &str = "path:file:///tmp/store#audible";
+pub(crate) const BRANCH: &str = "window-w";
 
 async fn store_in(dir: &std::path::Path) -> LibraryStore {
     let db = bookclerk_plugin_database_sqlite::open(&dir.join("library.db"))
@@ -31,7 +31,7 @@ async fn store_in(dir: &std::path::Path) -> LibraryStore {
     LibraryStore::from_connection(db)
 }
 
-async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) {
+pub(crate) async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) {
     let now = Utc::now().to_rfc3339();
     nodes::ActiveModel {
         node_id: Set(node_id.into()),
@@ -65,7 +65,7 @@ async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) {
     .unwrap();
 }
 
-fn book(account: &str, asin: &str) -> NewBook {
+pub(crate) fn book(account: &str, asin: &str) -> NewBook {
     NewBook {
         uuid: None,
         product_id: asin.into(),
@@ -94,7 +94,12 @@ fn book(account: &str, asin: &str) -> NewBook {
 
 /// Connects `account` for `user` and records `asins` on it; answers the
 /// work id of each.
-async fn hold(store: &LibraryStore, user: i64, account: &str, asins: &[String]) -> Vec<String> {
+pub(crate) async fn hold(
+    store: &LibraryStore,
+    user: i64,
+    account: &str,
+    asins: &[String],
+) -> Vec<String> {
     store
         .upsert_account(PLUGIN, account, "us", None, true, "audible")
         .await
@@ -1391,7 +1396,7 @@ async fn capped_store(dir: &std::path::Path) -> (LibraryStore, Caps) {
 
 /// Runs `sql` on the library as is, for a fixture the host's writes would
 /// not produce.
-async fn raw(store: &LibraryStore, sql: &str) {
+pub(crate) async fn raw(store: &LibraryStore, sql: &str) {
     use sea_orm::ConnectionTrait;
     store.db().execute_unprepared(sql).await.unwrap();
 }

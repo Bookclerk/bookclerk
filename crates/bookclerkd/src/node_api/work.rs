@@ -580,6 +580,23 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
         Body::WindowBooks { after } => {
             super::host_window::books(library, host, id.clone(), after).await
         }
+        Body::CopyGrant {
+            store,
+            marketplace,
+            product_id,
+        } => {
+            super::copies::grant(
+                library,
+                host,
+                id.clone(),
+                bookclerk_library::control_plane::CopyListing {
+                    store: &store,
+                    marketplace: &marketplace,
+                    product_id: &product_id,
+                },
+            )
+            .await
+        }
         _ => {
             return error(
                 id,

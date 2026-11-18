@@ -1321,4 +1321,4 @@ pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
 
 #[cfg(test)]
 #[path = "window_books_tests.rs"]
-mod tests;
+pub(crate) mod tests;

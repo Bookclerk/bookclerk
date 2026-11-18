@@ -52,6 +52,9 @@ const NODE_SIGNATURE: &str = "nodeSignature";
 /// Security scheme: an upload grant's `Authorization: Bookclerk-Upload …` header.
 const UPLOAD_TOKEN: &str = "uploadToken";
 
+/// Security scheme: a copy grant's `Authorization: Bookclerk-Copy …` header.
+const COPY_TOKEN: &str = "copyToken";
+
 /// Security scheme: an access token this daemon issued as an OIDC provider.
 const OIDC_ACCESS_TOKEN: &str = "oidcAccessToken";
 
@@ -156,7 +159,7 @@ impl Access {
 /// (name, scheme) for the operator Bearer token, the two session cookies, and
 /// the credentials single routes check themselves: node signatures, upload
 /// tokens, OIDC access tokens and clerk sign-in tokens.
-fn security_schemes() -> [(&'static str, SecurityScheme); 7] {
+fn security_schemes() -> [(&'static str, SecurityScheme); 8] {
     [
         (
             OPERATOR_TOKEN,
@@ -195,6 +198,13 @@ fn security_schemes() -> [(&'static str, SecurityScheme); 7] {
             SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
                 "Authorization",
                 "The token of an upload grant, as `Authorization: Bookclerk-Upload <token>`.",
+            ))),
+        ),
+        (
+            COPY_TOKEN,
+            SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
+                "Authorization",
+                "The token of a copy grant, as `Authorization: Bookclerk-Copy <token>`.",
             ))),
         ),
         (
