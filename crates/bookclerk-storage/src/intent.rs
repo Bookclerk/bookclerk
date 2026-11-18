@@ -149,7 +149,8 @@ pub struct ChangeFeedPage {
 }
 
 /// Moves one object with the required primitives: probe, copy (server-side
-/// when the backend supports it, else streamed), then delete the source.
+/// when the backend supports it, else streamed), check that the copy has the
+/// source's size, then delete the source.
 ///
 /// A repeated move whose source is gone and whose target exists succeeds
 /// with `already_moved`.
@@ -210,6 +211,16 @@ pub async fn fallback_move<B: StorageBackend + ?Sized>(
             backend.copy(from, to).await?;
         } else {
             copy_streamed(backend, &source, to, None).await?;
+        }
+    }
+    // Check the copy landed whole before touching the source: a network
+    // mount can report a write done that a later reader does not see.
+    match backend.head(to).await? {
+        Some(copied) if copied.size == source.size => {}
+        _ => {
+            return Err(StorageError::Integrity(format!(
+                "{to} does not match {from} after the copy; the source was kept"
+            )));
         }
     }
     match backend.head(from).await? {

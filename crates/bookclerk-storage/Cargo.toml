@@ -47,6 +47,13 @@ s3 = [
   "bookclerk-plugin-sdk/http",
 ]
 
+# File-system classification for the local backend (`fs_kind`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 # The crate's own tests always cover the S3 backend.
 bookclerk-storage = { path = ".", features = ["s3"] }

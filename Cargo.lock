@@ -2447,6 +2447,7 @@ dependencies = [
  "fs4 1.1.0",
  "hex",
  "http-body-util",
+ "libc",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -2455,6 +2456,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -20,6 +20,7 @@ mod bounded;
 /// Error types returned by destination storage backends.
 mod error;
 mod fanout;
+pub mod fs_kind;
 /// Serving a backend's intent operations from a storage guest.
 pub mod guest;
 /// Intent operations (moves, batches, conditional writes, change feeds) and
