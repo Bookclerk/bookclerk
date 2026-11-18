@@ -38,6 +38,7 @@ const {
   PluginError,
   QueueBatch,
   QueueMessage,
+  PURCHASE_HINTS_CONCURRENCY,
   StorefrontEntrypoint,
   cliArgs,
   decodeExtensibleConfig,
@@ -595,6 +596,40 @@ const jobInvocation = {
     () => bare.bookclerkInvoke(context, "login", { accountId: "a" }),
     (err) => err instanceof PluginError && err.wireCode === "unsupported",
     "declared-but-unimplemented methods report unsupported",
+  );
+
+  // The default `purchaseHints` overlaps a few one-title lookups and keeps
+  // each answer in its query's place.
+  class SlowStore extends StorefrontEntrypoint {
+    running = 0;
+    peak = 0;
+    async purchaseHint(params) {
+      this.running += 1;
+      this.peak = Math.max(this.peak, this.running);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      this.running -= 1;
+      return params.productId ? { productId: params.productId } : null;
+    }
+  }
+  const slow = new SlowStore({}, {});
+  const queries = Array.from({ length: 10 }, (_, n) =>
+    n % 3 === 0 ? { title: `t${n}` } : { productId: `p${n}` },
+  );
+  const hints = await slow.purchaseHints({ queries });
+  assert.deepEqual(
+    hints.map((h) => h?.productId ?? null),
+    queries.map((q) => q.productId ?? null),
+  );
+  assert.equal(slow.peak, PURCHASE_HINTS_CONCURRENCY);
+  class LimitedStore extends StorefrontEntrypoint {
+    async purchaseHint() {
+      throw new PluginError("rate_limited", "slow down");
+    }
+  }
+  await assert.rejects(
+    () => new LimitedStore({}, {}).purchaseHints({ queries }),
+    (err) => err instanceof PluginError && err.wireCode === "rate_limited",
+    "a failed lookup rejects the whole batch",
   );
 }
 

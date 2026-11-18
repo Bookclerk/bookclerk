@@ -698,9 +698,28 @@ appears as **one card** with `store_editions` for each catalog match.
 Live prices use **public** storefront endpoints (no auth). The Discover feed
 loads with `no_purchase_hints=true`; the GUI:
 
-1. Progressively reveals shelves/cards while scrolling
-2. **Viewport-gates** pricing (`IntersectionObserver`)
-3. **Batches** visible cards into `POST /api/discover/purchase-hints/batch`
+1. Progressively reveals shelves and cards while scrolling. A shelf adds
+   eight cards at a time and keeps at least a screen's width of cards past
+   the visible ones, adding the next eight once less than that is left.
+2. Prices **a shelf at a time**: once a shelf is within half a screen of
+   the viewport, every card it has added looks up its prices and details
+   together, and each new group of eight does the same as it is added.
+3. **Batches** those lookups into `POST /api/discover/purchase-hints/batch`
+   and `POST /api/discover/title-meta/batch` (24 titles at most per
+   request). Lookups asked within 60 ms share a batch, only one batch of
+   each kind is in flight at a time (lookups asked meanwhile go out
+   together in the next one), and a title already waiting is not asked
+   twice.
+4. Lets **covers go first**: each batch waits until the covers on screen
+   have loaded, for at most 2 seconds, so on a small machine covers never
+   queue behind store lookups. Only covers that are loading and on screen
+   count; one off screen or clipped by a shelf does not.
+5. Keeps each finished answer **per title** for the tab (prices 10
+   minutes, details 6 hours) in memory and `sessionStorage`, and puts only
+   the titles it lacks into a batch, so a reload or a return to Discover
+   asks nothing it already has. The batch routes are `POST`s and API JSON
+   is `no-store`, so the browser's HTTP cache never holds them; signing out
+   clears this cache, since prices depend on the viewer's linked stores.
 
 The daemon still searches **all** stores, then highlights `best` using the
 caller’s associated accounts (portal account links, or all operator accounts)
@@ -713,7 +732,8 @@ sends every visible card's query to each deployed store's `purchaseHints`
 entrypoint together, with the product id the card already knows for that
 store, so Audible prices up to fifty titles in one catalog request and
 Chirp prices a page in one aliased GraphQL query; Libro.fm and GraphicAudio
-have no bulk endpoint and loop inside the guest. Audible and Chirp resolve
+have no bulk endpoint, so the SDK's default `purchaseHints` looks their
+titles up four at a time inside the guest. Audible and Chirp resolve
 the titles whose product id they already know first, then look the rest up
 by title for at most five seconds, so a slow search never costs a known
 title its price; Audible prices each query in its own marketplace. The batch answers within

@@ -1,4 +1,7 @@
 import { normalizeThemePreference, type ThemePreference } from "@/lib/theme";
+import { coversSettled } from "@/lib/coverLoads";
+import { createLookupBatcher } from "@/lib/lookupBatcher";
+import { clearLookupCaches, createLookupCache } from "@/lib/lookupCache";
 
 /**
  * Pipeline acquire state for a library book row.
@@ -822,6 +825,8 @@ export async function fetchSigninMethods(): Promise<{
  * @throws {ApiError} When the library answers anything else.
  */
 export async function logout(): Promise<void> {
+  // What a viewer pays depends on their linked store accounts.
+  clearLookupCaches();
   const res = await fetch("/api/auth/logout", {
     method: "POST",
     credentials: "include",
@@ -2886,6 +2891,8 @@ export async function portalLoginIntegration(body: {
  * @returns Resolves when logout finishes (best-effort).
  */
 export async function portalLogout(): Promise<void> {
+  // What a viewer pays depends on their linked store accounts.
+  clearLookupCaches();
   await fetch("/api/portal/logout", {
     method: "POST",
     credentials: "include",
@@ -3793,7 +3800,7 @@ export async function requestDiscoverRefresh(): Promise<DiscoverStatus> {
  */
 export async function fetchDiscoverFeed(): Promise<DiscoverFeed> {
   // The daemon only reads stored shelves (queued jobs build them), so this
-  // answers quickly; live prices still load viewport-gated per card.
+  // answers quickly; live prices load per shelf, in batches (see lookupBatcher.ts).
   const res = await fetchWithTimeout(
     "/api/discover/recommendations",
     { credentials: "include" },
@@ -3803,14 +3810,24 @@ export async function fetchDiscoverFeed(): Promise<DiscoverFeed> {
   return parseJson(res);
 }
 
-type PurchaseHintsWaiter = {
-  query: PurchaseHintsQuery;
-  resolve: (value: PurchaseHintsResponse) => void;
-  reject: (err: unknown) => void;
-};
+/** Most queries the lookup batch routes take in one request. */
+const LOOKUP_BATCH_MAX = 24;
+/** How long the first card's lookup waits for other cards to join its batch. */
+const LOOKUP_BATCH_WINDOW_MS = 60;
+/**
+ * Longest a lookup batch waits for the covers on screen to load first. Covers
+ * are what the viewer sees first; prices and details follow.
+ */
+const COVERS_FIRST_MAX_WAIT_MS = 2_000;
 
-let purchaseHintsQueue: PurchaseHintsWaiter[] = [];
-let purchaseHintsTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * Lets the covers on screen load before a lookup batch goes out.
+ *
+ * @returns A promise that resolves once they have, or after the cap.
+ */
+function coversFirst(): Promise<void> {
+  return coversSettled(COVERS_FIRST_MAX_WAIT_MS);
+}
 
 function serializePurchaseHintsQuery(q: PurchaseHintsQuery) {
   return {
@@ -3825,59 +3842,59 @@ function serializePurchaseHintsQuery(q: PurchaseHintsQuery) {
   };
 }
 
-async function flushPurchaseHintsQueue() {
-  const batch = purchaseHintsQueue.splice(0, purchaseHintsQueue.length);
-  purchaseHintsTimer = null;
-  if (batch.length === 0) return;
-
-  // Chunk to the server's max of 24.
-  for (let i = 0; i < batch.length; i += 24) {
-    const chunk = batch.slice(i, i + 24);
-    try {
-      const res = await fetchWithTimeout(
-        "/api/discover/purchase-hints/batch",
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            queries: chunk.map((w) => serializePurchaseHintsQuery(w.query)),
-          }),
-        },
-        25_000,
-        "Purchase hints batch",
-      );
-      const data = (await parseJson(res)) as { results: PurchaseHintsResponse[] };
-      chunk.forEach((waiter, idx) => {
-        const result = data.results[idx] ?? { hints: [], best: null };
-        waiter.resolve(result);
-      });
-    } catch (err) {
-      // Fall back to single-card requests if the batch endpoint fails.
-      await Promise.all(
-        chunk.map(async (waiter) => {
-          try {
-            const res = await fetchWithTimeout(
-              "/api/discover/purchase-hints",
-              {
-                method: "POST",
-                credentials: "include",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(serializePurchaseHintsQuery(waiter.query)),
-              },
-              25_000,
-              "Purchase hints",
-            );
-            waiter.resolve(await parseJson(res));
-          } catch (singleErr) {
-            waiter.reject(singleErr);
-          }
-        }),
-      );
-      void err;
-    }
+/**
+ * Sends one purchase-hints batch; when the batch route fails, asks for each
+ * query on its own instead.
+ *
+ * @param queries - At most {@link LOOKUP_BATCH_MAX} queries.
+ * @returns One answer per query, in order.
+ */
+async function sendPurchaseHintsBatch(
+  queries: PurchaseHintsQuery[],
+): Promise<PurchaseHintsResponse[]> {
+  try {
+    const res = await fetchWithTimeout(
+      "/api/discover/purchase-hints/batch",
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queries: queries.map(serializePurchaseHintsQuery) }),
+      },
+      25_000,
+      "Purchase hints batch",
+    );
+    const data = (await parseJson(res)) as { results: PurchaseHintsResponse[] };
+    return queries.map((_, idx) => data.results[idx] ?? { hints: [], best: null });
+  } catch {
+    // Fall back to single-card requests if the batch endpoint fails.
+    return Promise.all(
+      queries.map(async (query) => {
+        const res = await fetchWithTimeout(
+          "/api/discover/purchase-hints",
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(serializePurchaseHintsQuery(query)),
+          },
+          25_000,
+          "Purchase hints",
+        );
+        return (await parseJson(res)) as PurchaseHintsResponse;
+      }),
+    );
   }
 }
+
+/** Purchase-hint lookups, batched (see `lookupBatcher.ts`). */
+const purchaseHintsBatcher = createLookupBatcher<PurchaseHintsQuery, PurchaseHintsResponse>({
+  maxBatch: LOOKUP_BATCH_MAX,
+  windowMs: LOOKUP_BATCH_WINDOW_MS,
+  keyOf: (q) => purchaseHintsClientKey(q),
+  send: sendPurchaseHintsBatch,
+  before: coversFirst,
+});
 
 /**
  * One Audible customer review for title detail.
@@ -3954,26 +3971,23 @@ export type TitleReviewsPage = {
   reviews: TitleReview[];
 };
 
-type CacheEntry<T> = { value: T; expires: number };
-
-const purchaseHintsClientCache = new Map<string, CacheEntry<PurchaseHintsResponse>>();
-const titleMetaClientCache = new Map<string, CacheEntry<TitleMeta | null>>();
 const PURCHASE_HINTS_CLIENT_TTL_MS = 10 * 60_000;
 const TITLE_META_CLIENT_TTL_MS = 6 * 60 * 60_000;
+/** Most titles each Discover lookup cache keeps for the tab. */
+const LOOKUP_CACHE_ENTRIES = 600;
 
-function clientCacheGet<T>(map: Map<string, CacheEntry<T>>, key: string): T | undefined {
-  const hit = map.get(key);
-  if (!hit) return undefined;
-  if (hit.expires <= Date.now()) {
-    map.delete(key);
-    return undefined;
-  }
-  return hit.value;
-}
-
-function clientCacheSet<T>(map: Map<string, CacheEntry<T>>, key: string, value: T, ttlMs: number) {
-  map.set(key, { value, expires: Date.now() + ttlMs });
-}
+/** Finished price answers per title (see `lookupCache.ts`). */
+const purchaseHintsClientCache = createLookupCache<PurchaseHintsResponse>(
+  "purchase-hints",
+  PURCHASE_HINTS_CLIENT_TTL_MS,
+  LOOKUP_CACHE_ENTRIES,
+);
+/** Details answers per title, `null` for none (see `lookupCache.ts`). */
+const titleMetaClientCache = createLookupCache<TitleMeta | null>(
+  "title-meta",
+  TITLE_META_CLIENT_TTL_MS,
+  LOOKUP_CACHE_ENTRIES,
+);
 
 function purchaseHintsClientKey(q: PurchaseHintsQuery): string {
   const editions = (q.store_editions ?? [])
@@ -3993,32 +4007,24 @@ function purchaseHintsClientKey(q: PurchaseHintsQuery): string {
 }
 
 /**
- * Resolves purchase hints, coalescing viewport-gated cards into a short batch window.
+ * Resolves purchase hints through a batch shared with every other card.
+ *
+ * Lookups asked close together go out as one batch request, one batch at a
+ * time, after the covers on screen have loaded (see `lookupBatcher.ts`).
  *
  * @param body - Title identity and optional candidate edition.
  * @returns Hints list plus optional best pick (client-cached).
  */
 export function fetchPurchaseHints(body: PurchaseHintsQuery): Promise<PurchaseHintsResponse> {
   const key = purchaseHintsClientKey(body);
-  const cached = clientCacheGet(purchaseHintsClientCache, key);
+  const cached = purchaseHintsClientCache.get(key);
   if (cached) return Promise.resolve(cached);
-  return new Promise((resolve, reject) => {
-    purchaseHintsQueue.push({
-      query: body,
-      resolve: (value) => {
-        // An unfinished lookup is not kept, so the next ask reaches the server.
-        if (!value.incomplete) {
-          clientCacheSet(purchaseHintsClientCache, key, value, PURCHASE_HINTS_CLIENT_TTL_MS);
-        }
-        resolve(value);
-      },
-      reject,
-    });
-    if (purchaseHintsTimer == null) {
-      purchaseHintsTimer = setTimeout(() => {
-        void flushPurchaseHintsQueue();
-      }, 40);
+  return purchaseHintsBatcher(body).then((value) => {
+    // An unfinished lookup is not kept, so the next ask reaches the server.
+    if (!value.incomplete) {
+      purchaseHintsClientCache.set(key, value);
     }
+    return value;
   });
 }
 
@@ -4057,70 +4063,52 @@ function serializeTitleMetaQuery(body: TitleMetaQuery) {
   };
 }
 
-type TitleMetaWaiter = {
-  query: TitleMetaQuery;
-  resolve: (value: TitleMeta | null) => void;
-  reject: (err: unknown) => void;
-};
-
-let titleMetaQueue: TitleMetaWaiter[] = [];
-let titleMetaTimer: ReturnType<typeof setTimeout> | null = null;
-
-async function flushTitleMetaQueue() {
-  const batch = titleMetaQueue.splice(0, titleMetaQueue.length);
-  titleMetaTimer = null;
-  if (batch.length === 0) return;
-  for (let i = 0; i < batch.length; i += 24) {
-    const chunk = batch.slice(i, i + 24);
-    try {
-      const res = await fetchWithTimeout(
-        "/api/discover/title-meta/batch",
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            queries: chunk.map((w) => serializeTitleMetaQuery(w.query)),
-          }),
-        },
-        25_000,
-        "Title metadata batch",
-      );
-      const data = (await parseJson(res)) as { results: (TitleMeta | null)[] };
-      chunk.forEach((waiter, idx) => {
-        const meta = data.results[idx] ?? null;
-        clientCacheSet(
-          titleMetaClientCache,
-          titleMetaClientKey(waiter.query),
-          meta,
-          TITLE_META_CLIENT_TTL_MS,
-        );
-        waiter.resolve(meta);
-      });
-    } catch (err) {
-      chunk.forEach((waiter) => waiter.reject(err));
-    }
-  }
+/**
+ * Sends one title-metadata batch and keeps each answer in the client cache.
+ *
+ * @param queries - At most {@link LOOKUP_BATCH_MAX} queries.
+ * @returns One answer (or `null`) per query, in order.
+ */
+async function sendTitleMetaBatch(queries: TitleMetaQuery[]): Promise<(TitleMeta | null)[]> {
+  const res = await fetchWithTimeout(
+    "/api/discover/title-meta/batch",
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ queries: queries.map(serializeTitleMetaQuery) }),
+    },
+    25_000,
+    "Title metadata batch",
+  );
+  const data = (await parseJson(res)) as { results: (TitleMeta | null)[] };
+  return queries.map((query, idx) => {
+    const meta = data.results[idx] ?? null;
+    titleMetaClientCache.set(titleMetaClientKey(query), meta);
+    return meta;
+  });
 }
 
+/** Title-metadata lookups, batched (see `lookupBatcher.ts`). */
+const titleMetaBatcher = createLookupBatcher<TitleMetaQuery, TitleMeta | null>({
+  maxBatch: LOOKUP_BATCH_MAX,
+  windowMs: LOOKUP_BATCH_WINDOW_MS,
+  keyOf: titleMetaClientKey,
+  send: sendTitleMetaBatch,
+  before: coversFirst,
+});
+
 /**
- * Fetches title metadata, coalescing viewport-gated cards into a short batch window.
+ * Fetches title metadata through a batch shared with every other card (see
+ * {@link fetchPurchaseHints}).
  *
  * @param body - Title identity fields.
  * @returns Metadata or `null` when none matched (client-cached).
  */
 export function fetchTitleMeta(body: TitleMetaQuery): Promise<TitleMeta | null> {
-  const key = titleMetaClientKey(body);
-  const cached = clientCacheGet(titleMetaClientCache, key);
+  const cached = titleMetaClientCache.get(titleMetaClientKey(body));
   if (cached !== undefined) return Promise.resolve(cached);
-  return new Promise((resolve, reject) => {
-    titleMetaQueue.push({ query: body, resolve, reject });
-    if (titleMetaTimer == null) {
-      titleMetaTimer = setTimeout(() => {
-        void flushTitleMetaQueue();
-      }, 40);
-    }
-  });
+  return titleMetaBatcher(body);
 }
 
 /**
@@ -4167,38 +4155,18 @@ export async function fetchTitleMetaBatch(
   const results: (TitleMeta | null)[] = new Array(queries.length).fill(null);
   const pending: { index: number; query: TitleMetaQuery }[] = [];
   queries.forEach((query, index) => {
-    const cached = clientCacheGet(titleMetaClientCache, titleMetaClientKey(query));
+    const cached = titleMetaClientCache.get(titleMetaClientKey(query));
     if (cached !== undefined) {
       results[index] = cached;
     } else {
       pending.push({ index, query });
     }
   });
-  for (let i = 0; i < pending.length; i += 24) {
-    const chunk = pending.slice(i, i + 24);
-    const res = await fetchWithTimeout(
-      "/api/discover/title-meta/batch",
-      {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          queries: chunk.map((c) => serializeTitleMetaQuery(c.query)),
-        }),
-      },
-      25_000,
-      "Title metadata batch",
-    );
-    const data = (await parseJson(res)) as { results: (TitleMeta | null)[] };
+  for (let i = 0; i < pending.length; i += LOOKUP_BATCH_MAX) {
+    const chunk = pending.slice(i, i + LOOKUP_BATCH_MAX);
+    const metas = await sendTitleMetaBatch(chunk.map((c) => c.query));
     chunk.forEach((item, idx) => {
-      const meta = data.results[idx] ?? null;
-      clientCacheSet(
-        titleMetaClientCache,
-        titleMetaClientKey(item.query),
-        meta,
-        TITLE_META_CLIENT_TTL_MS,
-      );
-      results[item.index] = meta;
+      results[item.index] = metas[idx] ?? null;
     });
   }
   return results;

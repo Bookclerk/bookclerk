@@ -2179,6 +2179,14 @@ export class NamedEntrypoint<
  */
 export const PURCHASE_HINTS_BUDGET_MS = 4_000;
 
+/**
+ * How many one-title lookups the default `purchaseHints` keeps in flight
+ * at once. A store without a bulk endpoint answers a page of cards in
+ * about a quarter of the time one lookup after another takes, while
+ * staying a polite handful of requests rather than a burst.
+ */
+export const PURCHASE_HINTS_CONCURRENCY = 4;
+
 const STOREFRONT_METHODS = Object.freeze([
   "login",
   "scan",
@@ -2299,8 +2307,9 @@ export class StorefrontEntrypoint<
   /**
    * Purchase links / price hints for several titles in one call, one
    * answer per query in order. The default asks {@link purchaseHint} for
-   * each query, those with a product id first, and stops starting lookups
-   * after {@link PURCHASE_HINTS_BUDGET_MS}; a store whose catalog prices
+   * each query, {@link PURCHASE_HINTS_CONCURRENCY} at a time, those with a
+   * product id first, and stops starting lookups after
+   * {@link PURCHASE_HINTS_BUDGET_MS}; a store whose catalog prices
    * many products per request overrides this to make one request. Reject with a
    * `rate_limited` {@link PluginError} (its `details.retryAfterMs` says how
    * long) when the store asks to slow down, so the host leaves it alone.
@@ -2317,10 +2326,18 @@ export class StorefrontEntrypoint<
       .map((query, i) => ({ i, direct: Boolean(query.productId?.trim()) }))
       .sort((a, b) => Number(b.direct) - Number(a.direct))
       .map((entry) => entry.i);
-    for (const i of order) {
-      if (Date.now() - started >= PURCHASE_HINTS_BUDGET_MS) break;
-      out[i] = await this.purchaseHint(params.queries[i]);
-    }
+    // A few lanes take the next query in order; the first failure (a rate
+    // limit included) rejects the batch.
+    let next = 0;
+    const lane = async (): Promise<void> => {
+      while (next < order.length) {
+        if (Date.now() - started >= PURCHASE_HINTS_BUDGET_MS) return;
+        const i = order[next++];
+        out[i] = await this.purchaseHint(params.queries[i]);
+      }
+    };
+    const lanes = Math.min(PURCHASE_HINTS_CONCURRENCY, order.length);
+    await Promise.all(Array.from({ length: lanes }, lane));
     return out;
   }
   /**

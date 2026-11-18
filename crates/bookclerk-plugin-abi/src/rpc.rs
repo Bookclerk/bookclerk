@@ -6575,6 +6575,54 @@ mod tests {
             .await;
     }
 
+    /// Answers after a short wait, counting how many lookups run at once.
+    struct SlowStore {
+        /// Lookups running right now.
+        running: std::cell::Cell<usize>,
+        /// Most lookups seen running at once.
+        peak: std::cell::Cell<usize>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl ContentSource for SlowStore {
+        async fn purchase_hint(&self, params: PurchaseHintParams) -> Result<Option<PurchaseHint>> {
+            self.running.set(self.running.get() + 1);
+            self.peak.set(self.peak.get().max(self.running.get()));
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            self.running.set(self.running.get() - 1);
+            Ok(params.product_id.map(|product_id| PurchaseHint {
+                product_id,
+                ..PurchaseHint::default()
+            }))
+        }
+    }
+
+    /// The default batch runs a handful of one-title lookups at once and
+    /// still answers each query in its own place.
+    #[tokio::test(flavor = "current_thread")]
+    async fn default_purchase_hints_overlaps_lookups_in_order() {
+        let store = SlowStore {
+            running: std::cell::Cell::new(0),
+            peak: std::cell::Cell::new(0),
+        };
+        let queries: Vec<PurchaseHintParams> = (0..10)
+            .map(|n| PurchaseHintParams {
+                product_id: (n % 3 != 0).then(|| format!("p{n}")),
+                ..PurchaseHintParams::default()
+            })
+            .collect();
+        let hints = store
+            .purchase_hints(PurchaseHintsParams { queries })
+            .await
+            .expect("a batch");
+        let ids: Vec<Option<String>> = hints.into_iter().map(|h| h.map(|h| h.product_id)).collect();
+        let want: Vec<Option<String>> = (0..10)
+            .map(|n| (n % 3 != 0).then(|| format!("p{n}")))
+            .collect();
+        assert_eq!(ids, want);
+        assert_eq!(store.peak.get(), crate::PURCHASE_HINTS_CONCURRENCY);
+    }
+
     /// Host `EVENTS` binding for the read round trip: records each request
     /// and answers with a fixed page, or `forbidden` for the type `secret`.
     struct PagePublisher {
