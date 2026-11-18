@@ -580,7 +580,9 @@ async fn asked(socket: &mut FakeSocket) -> Option<String> {
         if let tokio_tungstenite::tungstenite::Message::Text(text) = message {
             let frame = bookclerk_node_proto::parse_clerk_frame(text.as_bytes())
                 .expect("the clerk sends frames the library reads");
-            let bookclerk_node_proto::ClerkFrame::Books { after } = frame;
+            let bookclerk_node_proto::ClerkFrame::Books { after } = frame else {
+                panic!("this clerk asks only for pages");
+            };
             return Some(after.as_str().to_owned());
         }
     }

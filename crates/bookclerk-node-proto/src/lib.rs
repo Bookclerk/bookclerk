@@ -126,9 +126,9 @@ pub use clerk::{
     MAX_CLERK_STATE_BYTES,
 };
 pub use clerk_socket::{
-    is_topic_name, parse_clerk_frame, parse_library_frame, ClerkFrame, ClerkSocketError,
-    ClerkTopic, LibraryFrame, CLERK_CONNECT_PATH, CLERK_SOCKET_VERSION, CLERK_SUBPROTOCOL,
-    MAX_CLERK_FRAME_BYTES, MAX_CLERK_TOPICS, MAX_CLERK_TOPIC_BYTES,
+    is_topic_name, parse_clerk_frame, parse_library_frame, ClerkCopy, ClerkFrame, ClerkSocketError,
+    ClerkTopic, CopyToken, LibraryFrame, CLERK_CONNECT_PATH, CLERK_SOCKET_VERSION,
+    CLERK_SUBPROTOCOL, MAX_CLERK_FRAME_BYTES, MAX_CLERK_TOPICS, MAX_CLERK_TOPIC_BYTES,
 };
 pub use copies::{
     copy_grant_problem, copy_granted_problem, is_copy_id, parse_copy_range, CopyFile,

@@ -8,6 +8,12 @@
 //! - **diagnostics ring buffer** (always): retains **all** levels through TRACE so
 //!   crash / burst uploads include deep context even when stderr is quieter
 //!
+//! Records from the `log` crate reach the same sinks through a bridge that
+//! drops what [`UNBRIDGED_LOG_TARGETS`] names: the WebSocket library traces
+//! every frame's payload (in hex, which no registered secret matches) and
+//! the request head of a handshake, and a frame or a header can carry a
+//! bearer token.
+//!
 //! The CLI default filter is `off` so command tables stay human-readable.
 //! `bookclerkd` defaults to JSON at `bookclerk=info,warn`.
 //!
@@ -32,6 +38,46 @@ use crate::diagnostics::{self, DiagnosticsHandle, DiagnosticsLayer};
 use crate::journal::{OsLogFacility, OsLogLayer};
 use crate::redact::RedactingWriter;
 use crate::settings::DiagnosticsConfig;
+
+/// `log` targets whose records reach no sink, by prefix: `tungstenite`
+/// (and so `tungstenite::protocol` and `tungstenite::handshake`) writes
+/// frame payloads, whole messages and handshake requests at TRACE.
+pub const UNBRIDGED_LOG_TARGETS: [&str; 1] = ["tungstenite"];
+
+/// True when records of `target` are dropped by the bridge.
+fn is_unbridged(target: &str) -> bool {
+    UNBRIDGED_LOG_TARGETS.iter().any(|prefix| {
+        target
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with("::"))
+    })
+}
+
+/// The `log` crate's logger: every record becomes a `tracing` event,
+/// except those of [`UNBRIDGED_LOG_TARGETS`].
+struct LogBridge(tracing_log::LogTracer);
+
+impl log::Log for LogBridge {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        !is_unbridged(metadata.target()) && log::Log::enabled(&self.0, metadata)
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if !is_unbridged(record.target()) {
+            log::Log::log(&self.0, record);
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+/// Installs [`LogBridge`] as the process's `log` logger. A logger already
+/// installed stays (a second call, or a host that set its own).
+fn install_log_bridge() {
+    if log::set_boxed_logger(Box::new(LogBridge(tracing_log::LogTracer::new()))).is_ok() {
+        log::set_max_level(log::LevelFilter::Trace);
+    }
+}
 
 /// Output format for the stderr sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -101,6 +147,9 @@ pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
     let filter = EnvFilter::try_from_env("BOOKCLERK_LOG")
         .or_else(|_| EnvFilter::try_from_default_env())
         .unwrap_or_else(|_| EnvFilter::new(&opts.default_level));
+    // Before the subscriber: `try_init` below would otherwise install a
+    // bridge that carries every record.
+    install_log_bridge();
 
     let diag_handle = DiagnosticsHandle::new(opts.diagnostics.clone(), opts.version.clone());
     diagnostics::install_global(diag_handle.clone());
@@ -324,6 +373,80 @@ pub fn strip_ansi_escapes(input: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::strip_ansi_escapes;
+
+    /// Lines a test subscriber wrote.
+    #[derive(Clone, Default)]
+    struct Lines(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Lines {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Lines {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// The bridge carries a `log` record to the subscriber, except one of
+    /// the WebSocket library's, whose frame traces spell payloads in hex.
+    #[test]
+    fn the_log_bridge_drops_websocket_library_records() {
+        use log::Log as _;
+
+        for (target, dropped) in [
+            ("tungstenite", true),
+            ("tungstenite::protocol::frame", true),
+            ("tungstenite::protocol", true),
+            ("tungstenite::handshake::client", true),
+            ("tungstenite_other", false),
+            ("tokio_tungstenite", false),
+            ("hyper::proto", false),
+            ("", false),
+        ] {
+            assert_eq!(super::is_unbridged(target), dropped, "{target:?}");
+        }
+
+        let lines = Lines::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(lines.clone())
+            .finish();
+        let bridge = super::LogBridge(tracing_log::LogTracer::new());
+        let record = |target: &'static str, text: &'static str| {
+            bridge.log(
+                &log::Record::builder()
+                    .level(log::Level::Trace)
+                    .target(target)
+                    .args(format_args!("{text}"))
+                    .build(),
+            );
+        };
+        tracing::subscriber::with_default(subscriber, || {
+            record("tungstenite::protocol::frame", "writing frame 0x746f6b656e");
+            record("tungstenite::protocol", "Received message token");
+            record("hyper::proto", "a carried record");
+            let frame = log::Metadata::builder()
+                .level(log::Level::Trace)
+                .target("tungstenite::protocol::frame")
+                .build();
+            assert!(!bridge.enabled(&frame));
+        });
+        let written = String::from_utf8(lines.0.lock().unwrap().clone()).unwrap();
+        assert!(written.contains("a carried record"), "{written}");
+        assert!(!written.contains("746f6b656e"), "{written}");
+        assert!(!written.contains("Received message"), "{written}");
+    }
 
     #[test]
     fn strip_ansi_is_noop_without_escapes() {

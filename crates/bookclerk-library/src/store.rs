@@ -2623,6 +2623,50 @@ impl LibraryStore {
         .await
     }
 
+    /// The person a library card is signed in as right now, read without
+    /// touching the session: a `clerk` session with that token hash that
+    /// has not expired, whose identity names a user who exists and is not
+    /// disabled.
+    ///
+    /// A copy download asks this on every request
+    /// ([`crate::control_plane::authorize_copy`]); it does not keep the
+    /// card signed in, which only the card's own use does
+    /// ([`Self::get_clerk_session_identity`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `token_hash` - SHA-256 hex of the card's token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read fails.
+    pub async fn clerk_session_person(&self, token_hash: &str) -> Result<Option<i64>> {
+        let Some(session) = portal_sessions::Entity::find()
+            .filter(portal_sessions::Column::TokenHash.eq(token_hash))
+            .filter(
+                portal_sessions::Column::Kind.eq(crate::models::PortalSessionKind::Clerk.as_str()),
+            )
+            .filter(portal_sessions::Column::ExpiresAt.gt(now_str()))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        let Some(user_id) = self
+            .get_portal_identity_by_id(session.identity_id)
+            .await?
+            .and_then(|identity| identity.user_id)
+        else {
+            return Ok(None);
+        };
+        Ok(self
+            .get_user(user_id)
+            .await?
+            .filter(|user| !matches!(user.status, crate::models::UserStatus::Disabled))
+            .map(|_| user_id))
+    }
+
     /// Resolves a live session of one kind, touching it at most once a
     /// minute and, with `slide`, moving its expiry to `slide` from now.
     ///

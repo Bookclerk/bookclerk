@@ -62,7 +62,7 @@ boundary extends it.
 | `clerk_token_request` | A library card's token exchange, the body of `POST /api/clerk/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_clerk_token_request`, `clerk_exchange_matches` |
 | `clerk_token_answer` | A library's answer to a clerk's token exchange, read on the clerk before it seals the library card and records the library | `bookclerk-node-proto::parse_clerk_token_answer` |
 | `copy_range` | The `Range` header of a copy download, `GET /api/copies/v1/{copy_id}/files/{n}`, which decides which bytes of a library's file are sent | `bookclerk-node-proto::parse_copy_range` |
-| `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics and pages of the library's books, the person's marked) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
+| `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics, pages of the library's books with the person's marked, and the grant of a copy with its download token) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
@@ -426,15 +426,23 @@ only that. The others check:
 - **`clerk_socket_frame`**: the first byte picks the direction (even:
   clerk to library; odd: library to clerk) and the rest is the frame,
   checked against the frame read as an untyped JSON value. A clerk frame
-  parses exactly when it is at most 4 KiB and one object with no repeated
-  keys and exactly `v` (the integer 1), `type` (`books`) and `after` (a
-  cursor string: empty, or up to 64 letters, digits and `-`). A library frame is refused when it is not one
+  parses exactly when it is at most 4 KiB, one object with no repeated
+  keys and `v` the integer 1, and is either `books` with `after` (a
+  cursor string: empty, or up to 64 letters, digits and `-`) and no
+  listing field, or `copy.grant` with a well-formed `store`, `product_id`
+  and optional `marketplace` and no `after`. A library frame is refused when it is not one
   object, repeats a key, has another `v` or an unknown `type`, or carries
   another type's field; `hello` and `changed` parse exactly when `topics`
   holds at most 16 well-formed names, and keep only the ones the clerk
   knows; `error` parses exactly for a known `code`; an accepted
-  `books.page` passes `window_page_problem`. Every accepted frame
-  round-trips through its encoder. The shared oracle is
+  `books.page` passes `window_page_problem`; `copy.granted` parses
+  exactly when its listing is well formed, `copy_id` is a lowercase UUID,
+  `token` is 1 to 1024 base64url characters, the life is 1 to 86 400
+  seconds, `copy` is present and well formed
+  (`WindowCopy::is_well_formed`), and the files are 1 to 1000 well-formed files with distinct
+  names and exactly one primary audio. Every accepted frame
+  round-trips through its encoder, unless the encoded text is over the
+  size limit. The shared oracle is
   `fuzz/oracles/clerk_socket_frame.rs`, replayed from
   `bookclerk-node-proto`.
 - **`job_cap_request`**: reads the body as an untyped JSON value. It is
