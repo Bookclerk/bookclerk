@@ -42,11 +42,13 @@ The words Bookclerk uses, in plain language.
   it. See [Join a library as a branch](branches.md).
 - **Shared branch**: A branch that is an extra copy of the library itself
   on another machine, sharing its database.
-- **Core branch**: A library or branch with a public address, so other
-  installs and outside services can reach it. See
+- **Core branch**: An install that other computers can reach, because it
+  has an address of its own. Other branches can join it. See
   [Core and local branches](branches.md#core-and-local-branches).
-- **Local branch**: A library or branch with no public address. It only
-  connects out, for example to its library.
+- **Local branch**: An install that other computers cannot reach, such as
+  a laptop. It connects out to the core branches it joins.
+- **Remote branch**: A core branch that contributes to another core
+  branch.
 - **Clerk**: Another Bookclerk install that a
   person uses to see their books from a library. It signs in with a
   library card and is not a branch: the library never gives it work.
