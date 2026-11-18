@@ -299,7 +299,8 @@ impl WorkScope {
     }
 
     /// Content id of the scope's include and exclude values: lowercase hex
-    /// SHA-256 over [`Self::key_rows`], each field length-prefixed, so two
+    /// SHA-256 over its `(effect, facet, key)` rows, sorted and without
+    /// duplicates, each field length-prefixed, so two
     /// scopes share an id exactly when they hold the same values.
     #[must_use]
     pub fn key_set_id(&self) -> String {
