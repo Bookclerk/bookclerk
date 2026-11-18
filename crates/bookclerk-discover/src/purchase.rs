@@ -183,9 +183,10 @@ pub struct PurchaseHintsResponse {
     pub hints: Vec<PurchaseHint>,
     /// Lowest-priced hint (or first catalog hit when no prices resolved).
     pub best: Option<PurchaseHint>,
-    /// True when the batch deadline cut this lookup short: the hints are the
-    /// query's trusted seeds alone, so a client should not keep the answer
-    /// and asks again later. Omitted (false) for a finished lookup.
+    /// True when the batch deadline cut this lookup short (the hints are the
+    /// query's trusted seeds alone), or when the hints could not be checked
+    /// against the card's recording in time: a client should not keep the
+    /// answer and asks again later. Omitted (false) for a finished lookup.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[schema(example = false)]
     pub incomplete: bool,
@@ -584,7 +585,8 @@ pub async fn retain_card_recording(
 }
 
 /// The card's own store editions, as `(source, product_id)`: its candidate
-/// edition first, then its other store editions, without repeats.
+/// edition first, then its other store editions, without repeats. A card
+/// that names no store edition but an ASIN is that Audible product.
 fn card_editions(query: &PurchaseHintsQuery) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut push = |source: &str, product: &str| {
@@ -607,6 +609,13 @@ fn card_editions(query: &PurchaseHintsQuery) -> Vec<(String, String)> {
     }
     for edition in &query.store_editions {
         push(&edition.source, &edition.product_id);
+    }
+    // A card named only by its ASIN is that Audible product.
+    let named = query.candidate_product_id.is_some() || !query.store_editions.is_empty();
+    if !named {
+        if let Some(asin) = query.asin.as_deref() {
+            push("audible", asin);
+        }
     }
     out
 }
@@ -1647,12 +1656,21 @@ mod tests {
             ),
             now,
         );
+        let audible = crate::pool::catalog_listing(
+            "audible",
+            "us",
+            &hit(
+                "B0DRAMA",
+                bookclerk_source::records::ExpressionKind::Dramatisation,
+            ),
+            now,
+        );
         library
-            .record_catalog_listings(&[narration, drama])
+            .record_catalog_listings(&[narration, drama, audible])
             .await
             .unwrap();
         let mut registry = SourceRegistry::new();
-        for id in ["libro", "chirp"] {
+        for id in ["libro", "chirp", "audible"] {
             registry.register(std::sync::Arc::new(BatchStore {
                 id,
                 answer: Answer::Priced,
@@ -1710,6 +1728,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(all.hints.len(), 2);
+
+        // A card named only by an ASIN is that Audible product: here the
+        // pool placed it in a dramatisation, so the narration's price goes.
+        let by_asin = PurchaseHintsQuery {
+            title: "The Sunlit Man".into(),
+            asin: Some("B0DRAMA".into()),
+            ..PurchaseHintsQuery::default()
+        };
+        let mut priced_both = PurchaseHintsResponse {
+            hints: vec![priced("libro", "L1", 2_000), priced("chirp", "G1", 1_499)],
+            best: None,
+            incomplete: false,
+        };
+        retain_card_recording(&library, &registry, &by_asin, &mut priced_both)
+            .await
+            .unwrap();
+        let kept: Vec<&str> = priced_both
+            .hints
+            .iter()
+            .map(|h| h.product_id.as_str())
+            .collect();
+        assert!(!kept.contains(&"L1"), "kept {kept:?}");
     }
 
     /// A page of cards is one call per store; member prices only reach a

@@ -754,9 +754,16 @@ lookup drop every price whose product the
 [shared listing pool](#shared-listing-pool) places only in another
 expression (recording) than the card's own store editions
 (`retain_card_recording` in `bookclerk-discover`, reading
-`LibraryStore::listing_expressions`). A price for a product the pool never
-listed stays, and so does every price when the pool knows none of the
-card's editions.
+`LibraryStore::listing_expressions`). A card that names no store edition
+but an ASIN is checked as that Audible product. A price for a product the
+pool never listed stays, and so does every price when the pool knows none
+of the card's editions.
+
+The check shares the route's deadline (the batch's 10 seconds, or the
+wishlist's enrichment budget). When the pool read fails or runs out of time,
+the prices stay unchecked: a Discover answer is marked `incomplete`, so the
+page shows it but asks again later, and a new wish is saved with the
+resolved prices.
 
 A page of cards is priced with **one call per store**: the batch route
 sends every visible card's query to each deployed store's `purchaseHints`

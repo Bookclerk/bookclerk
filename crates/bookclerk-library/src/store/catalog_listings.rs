@@ -1129,39 +1129,42 @@ mod tests {
     /// expressions, a product listed nowhere has none.
     #[tokio::test]
     async fn listed_products_name_their_recordings() {
-        let store = store().await;
-        let narration = title("9780000000011");
-        let mut drama = title("9780000000012");
-        drama.draft.plugin_key = String::from("chirp");
-        drama.draft.product_id = String::from("ga-12");
-        drama.draft.title = narration.draft.title.clone();
-        drama.draft.expression_kind = Some(resolve::ExpressionKind::Dramatisation);
-        drama.draft.credits.truncate(1);
-        let ids = store
-            .record_catalog_listings(&[narration, drama])
-            .await
-            .unwrap()
-            .ids;
-        assert!(ids.iter().all(Option::is_some));
-        let pair = |key: &str, product: &str| (key.to_string(), product.to_string());
-        let got = store
-            .listing_expressions(&[
+        for profile in crate::test_support::Profile::ALL {
+            let store = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let narration = title("9780000000011");
+            let mut drama = title("9780000000012");
+            drama.draft.plugin_key = String::from("chirp");
+            drama.draft.product_id = String::from("ga-12");
+            drama.draft.title = narration.draft.title.clone();
+            drama.draft.expression_kind = Some(resolve::ExpressionKind::Dramatisation);
+            drama.draft.credits.truncate(1);
+            // More listings than the tightest profile reads in one page.
+            let mut listings = vec![narration, drama];
+            listings.extend((20..26).map(|n| title(&format!("97800000000{n}"))));
+            let ids = store.record_catalog_listings(&listings).await.unwrap().ids;
+            assert!(ids.iter().all(Option::is_some), "{profile:?}");
+            let pair = |key: &str, product: &str| (key.to_string(), product.to_string());
+            let mut asked = vec![
                 pair("libro", "9780000000011"),
                 pair("chirp", "ga-12"),
                 pair("chirp", "never-listed"),
                 pair("libro", " 9780000000011 "),
-            ])
-            .await
-            .unwrap();
-        let narration = &got[&pair("libro", "9780000000011")];
-        let drama = &got[&pair("chirp", "ga-12")];
-        assert_eq!(narration.len(), 1);
-        assert_eq!(drama.len(), 1);
-        assert_ne!(narration, drama, "two recordings, two expressions");
-        assert!(!got.contains_key(&pair("chirp", "never-listed")));
-        // The product id is compared in its stored spelling.
-        assert_eq!(&got[&pair("libro", " 9780000000011 ")], narration);
-        assert!(store.listing_expressions(&[]).await.unwrap().is_empty());
+            ];
+            asked.extend((20..26).map(|n| pair("libro", &format!("97800000000{n}"))));
+            let got = store.listing_expressions(&asked).await.unwrap();
+            let narration = &got[&pair("libro", "9780000000011")];
+            let drama = &got[&pair("chirp", "ga-12")];
+            assert_eq!(narration.len(), 1, "{profile:?}");
+            assert_eq!(drama.len(), 1, "{profile:?}");
+            assert_ne!(narration, drama, "two recordings, two expressions");
+            assert!(!got.contains_key(&pair("chirp", "never-listed")));
+            // The product id is compared in its stored spelling.
+            assert_eq!(&got[&pair("libro", " 9780000000011 ")], narration);
+            assert_eq!(got.len(), 9, "every listed product answers ({profile:?})");
+            assert!(store.listing_expressions(&[]).await.unwrap().is_empty());
+        }
     }
 
     #[tokio::test]
