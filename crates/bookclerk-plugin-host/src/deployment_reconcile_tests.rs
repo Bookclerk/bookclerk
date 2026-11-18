@@ -2361,9 +2361,10 @@ async fn the_local_destination_sleeps_when_idle_and_wakes_on_its_next_call() {
 }
 
 /// Drives every intent operation through the real local guest, which does
-/// all of them natively except the change feed, so the host forwards each
-/// one and falls back only for `changes`. `local_disk` says whether the
-/// output folder is on a local disk, where moves are atomic renames.
+/// all of them natively, so the host forwards each one. Its `watch`
+/// setting is off, so the change feed answers that it cannot vouch for
+/// itself. `local_disk` says whether the output folder is on a local disk,
+/// where moves are atomic renames.
 async fn exercise_intent_operations(
     local: &dyn bookclerk_storage::StorageBackend,
     local_disk: bool,
@@ -2371,7 +2372,10 @@ async fn exercise_intent_operations(
     use bookclerk_storage::{ListRequest, MoveOptions, WriteCondition};
     assert_eq!(
         local.capabilities(),
-        bookclerk_storage::LocalFsBackend::CAPABILITIES
+        bookclerk_storage::StorageCapabilities {
+            changes: true,
+            ..bookclerk_storage::LocalFsBackend::CAPABILITIES
+        }
     );
     let put = |key: &'static str| async move {
         local
@@ -2442,5 +2446,13 @@ async fn exercise_intent_operations(
         .await
         .expect("delete many");
     assert!(deleted.iter().all(|r| r.error.is_none()));
-    assert!(local.changes(None, 10).await.expect("changes").is_none());
+    let feed = local
+        .changes(None, 10)
+        .await
+        .expect("changes")
+        .expect("the guest declares a feed");
+    assert!(
+        !feed.complete && !feed.live_watch && feed.changes.is_empty(),
+        "{feed:?}"
+    );
 }
