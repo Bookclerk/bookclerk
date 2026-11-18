@@ -110,8 +110,8 @@ export function ClerkCallbackPage({ onOpenLibrary }: ClerkCallbackPageProps) {
       title={`Signed in to ${phase.library}`}
       lead={
         <>
-          This server now holds a library card for <strong>{phase.library}</strong>. Your books
-          there show in Library within a minute, beside your books here. It downloads nothing from
+          This server now holds a library card for <strong>{phase.library}</strong>. Its books show
+          in Library within a minute, yours marked, beside the books here. It downloads nothing from
           that library.
         </>
       }

@@ -713,7 +713,7 @@ export async function makeWindowOf(
 
 /** One edition in the window view, and the library that holds it. */
 export interface WindowEditionView {
-  /** The library (cluster id) that holds it for this server's person. */
+  /** The library (cluster id) that holds it. */
   cluster_id: string;
   /** The library's origin. */
   owner_origin: string;
@@ -739,9 +739,14 @@ export interface WindowEditionView {
   series_index?: string | null;
   /** Length in minutes, when known. */
   length_minutes?: number | null;
+  /**
+   * True when this server's person holds it there through a store account
+   * of their own; false for a book only other people there hold.
+   */
+  yours: boolean;
 }
 
-/** One work in the window view: every edition its libraries hold for the person. */
+/** One work in the window view: every edition its libraries hold. */
 export interface WindowEntryView {
   /** Stable key for the entry. */
   key: string;
@@ -757,7 +762,7 @@ export interface WindowBooks {
   clusters: BranchLinkView[];
   /** The libraries this server holds an active library card for. */
   cards: ClerkCardView[];
-  /** Their books for this server's person, by title. */
+  /** Their books, every one they list for a member, by title. */
   books: WindowEntryView[];
 }
 
@@ -815,6 +820,34 @@ export function filterWindowBooks(books: WindowEntryView[], q: string): WindowEn
       ),
     ),
   );
+}
+
+/**
+ * True when any edition of the entry is this server's person's own.
+ *
+ * @param entry - A window entry.
+ * @returns Whether to mark it Yours.
+ */
+export function windowEntryIsYours(entry: WindowEntryView): boolean {
+  return entry.editions.some((edition) => edition.yours);
+}
+
+/**
+ * The entries to show: those matching the Library search, and with
+ * `onlyYours` only the person's own.
+ *
+ * @param books - The merged window entries.
+ * @param q - The Library search text.
+ * @param onlyYours - Keep only entries with an edition of the person's.
+ * @returns The entries to show, in their order.
+ */
+export function shownWindowBooks(
+  books: WindowEntryView[],
+  q: string,
+  onlyYours: boolean,
+): WindowEntryView[] {
+  const found = filterWindowBooks(books, q);
+  return onlyYours ? found.filter(windowEntryIsYours) : found;
 }
 
 /**

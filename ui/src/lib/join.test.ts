@@ -26,6 +26,8 @@ import {
   setLinkDownload,
   makeWindowOf,
   filterWindowBooks,
+  shownWindowBooks,
+  windowEntryIsYours,
   windowEntryLibraries,
   setMembersListing,
   setBranchSharing,
@@ -457,6 +459,7 @@ describe("window view helpers", () => {
     product_id: "B0X",
     formats,
     title: "T",
+    yours: false,
   });
 
   it("names each library once, by host, in order", () => {
@@ -501,6 +504,23 @@ describe("window view helpers", () => {
     expect(filterWindowBooks(books, "HERBERT")).toEqual([dune]);
     expect(filterWindowBooks(books, " classics ")).toEqual([emma]);
     expect(filterWindowBooks(books, "nothing")).toEqual([]);
+  });
+
+  it("marks and keeps the person's own books", () => {
+    const theirs = {
+      key: "work:1",
+      editions: [
+        edition("https://a.example", "audible", []),
+        { ...edition("https://b.example", "libro", []), yours: true },
+      ],
+    };
+    const others = { key: "work:2", editions: [edition("https://a.example", "audible", [])] };
+    const books = [theirs, others];
+    expect(windowEntryIsYours(theirs)).toBe(true);
+    expect(windowEntryIsYours(others)).toBe(false);
+    expect(shownWindowBooks(books, "", false)).toEqual(books);
+    expect(shownWindowBooks(books, "", true)).toEqual([theirs]);
+    expect(shownWindowBooks(books, "nothing", true)).toEqual([]);
   });
 });
 

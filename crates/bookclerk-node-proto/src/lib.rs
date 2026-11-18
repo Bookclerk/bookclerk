@@ -60,10 +60,11 @@
 //! [`Body::RequestsClaim`] and reports with [`Body::RequestFinish`]; the
 //! book itself travels up through the catalog sync.
 //!
-//! A window (a branch whose link takes no work) reads the books the
-//! library holds for its person with [`Body::WindowBooks`], page by page
-//! ([`Body::WindowPage`], [`WindowWork`]), and merges them by identifier
-//! with the other libraries it joined.
+//! A window (a branch whose link takes no work) reads the library's books
+//! with [`Body::WindowBooks`], page by page ([`Body::WindowPage`],
+//! [`WindowWork`], each edition a [`WindowEdition`] marked when it is the
+//! branch owner's), and merges them by identifier with the other libraries
+//! it joined.
 //!
 //! A host that leaves sends [`Body::NodeLeaving`]; the owner revokes the
 //! node at once. Joining with a sign-in instead of a link is the OAuth
@@ -80,7 +81,7 @@
 //! whose session token travels as `Authorization: Bookclerk-Clerk`
 //! ([`parse_clerk_authorization`]). With it the clerk holds the clerk
 //! socket at [`CLERK_CONNECT_PATH`] ([`ClerkFrame`], [`LibraryFrame`]):
-//! changed topics and pages of the person's books, never work.
+//! changed topics and pages of the library's books, never work.
 //!
 //! This crate is pure: no I/O, no clock, no randomness. The daemon (owner)
 //! and the host client share it so both sides sign and check the same
@@ -177,7 +178,7 @@ pub use signature::{
     verify_auth, ArtifactRequest, AuthContext, AuthError, ARTIFACT_AUTH_SCHEME, ARTIFACT_DOMAIN,
     ARTIFACT_REQUEST_MAX_SKEW_SECS, AUTH_DOMAIN, NONCE_LEN,
 };
-pub use window::{window_page_problem, WindowCursor, WindowWork, MAX_WINDOW_WORKS};
+pub use window::{window_page_problem, WindowCursor, WindowEdition, WindowWork, MAX_WINDOW_WORKS};
 
 /// Path prefix of the owner's artifact endpoint: `GET
 /// /api/node/v1/artifacts/<archive_sha256>` with a signed `Authorization`

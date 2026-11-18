@@ -118,15 +118,17 @@ download anything extra for this.
 
 ## See your books without downloading them
 
-A server can show the books you have in each library you joined without
-keeping copies. Open **Settings → Library** and turn off **Use this
+A server can show the books of each library you joined without keeping
+copies. Open **Settings → Library** and turn off **Use this
 computer to download** for that library. Your server is then a window of
 it:
 
 - It runs none of that library's work, and anything in progress is handed
   back.
-- **Library** shows **Your books in other libraries**: the books each
-  library holds for you, merged into one list. The same book in two
+- **Library** shows **Books in other libraries**: every book in each
+  library, as you would see it on that library's own Library page, merged
+  into one list. Books on your own store accounts there are marked
+  **Yours**, and **Only yours** shows just those. The same book in two
   libraries shows once, with both libraries named.
 - The search box on **Library** narrows this list too.
 - The list is refreshed when your server connects, every 30 minutes, and
@@ -145,9 +147,9 @@ until you turn downloading on.
 
 ## Sign in with a library card
 
-To see your books in a library without joining it as a branch, sign in to
-it with a library card. Your server is then a clerk of that library: it
-shows your books there and never takes its work.
+To see a library's books without joining it as a branch, sign in to it
+with a library card. Your server is then a clerk of that library: it shows
+the library's books, yours marked, and never takes its work.
 
 1. Open **Settings → Library → Library cards** and choose **Sign in with a
    library card**.
@@ -162,9 +164,9 @@ shows your books there and never takes its work.
    account there, and approve the card.
 
 The library sends you back to your server, which says **Signed in to**
-*library*. Within a minute, **Library** shows your books there under **Your
-books in other libraries**, beside the books of any library your server is
-a window of.
+*library*. Within a minute, **Library** shows that library's books under
+**Books in other libraries**, yours marked, beside the books of any library
+your server is a window of.
 
 To stop, choose **Sign out** beside the library in the same list. Your
 server forgets the card and the books, and asks the library to end the

@@ -1,11 +1,13 @@
-//! Window mode: an install whose link has "Use this computer to download"
-//! turned off takes no work from that library, and instead reads the books
-//! the library holds for its person (`window.books`, `window.page`), so it
-//! can show them beside the books of every other library it joined.
+//! The person's view of a library's books (`window.books`, `window.page`):
+//! a branch reads every book of each library it joined, as the library's
+//! own Library page lists them for its person, so it can show them beside
+//! the books of every other library it joined. A clerk reads the same
+//! pages over its clerk socket.
 //!
 //! The person is the branch node's owner on the library, so the request
-//! names no user or account; the library answers from the books on the
-//! store accounts linked to that person.
+//! names no user or account. The library answers with every book on its
+//! store accounts, and marks each edition the person holds through a store
+//! account of their own ([`WindowEdition::yours`]).
 //!
 //! 1. window → library: [`crate::Body::WindowBooks`] with the cursor of the
 //!    previous page ([`WindowCursor`]; empty for the first).
@@ -104,16 +106,32 @@ pub struct WindowWork {
     /// [`MAX_LOOKUP_IDENTIFIERS`], and empty when the library has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub identifiers: Vec<LookupIdentifier>,
-    /// The editions the person holds there; 1 to [`MAX_LOOKUP_EDITIONS`],
+    /// The library's editions of the work; 1 to [`MAX_LOOKUP_EDITIONS`],
     /// each [`Availability::Owned`].
-    pub editions: Vec<LookupEdition>,
+    pub editions: Vec<WindowEdition>,
+}
+
+/// One edition of a [`WindowWork`]: the edition as the library holds it,
+/// and whether it is the person's own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowEdition {
+    /// The edition, with every format any of the library's copies has.
+    pub edition: LookupEdition,
+    /// True when the person holds it through a store account of their own
+    /// on the library; false for a book only other people there hold.
+    /// A hint for the reader: anything the library hands out on the
+    /// strength of it is checked again there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub yours: bool,
 }
 
 impl WindowWork {
     /// Why the work is malformed, or `None`: a grouping key
     /// ([`is_work_ref`]), at most [`MAX_LOOKUP_IDENTIFIERS`] distinct
     /// well-formed identifiers, and 1 to [`MAX_LOOKUP_EDITIONS`] well-formed
-    /// owned editions with distinct (store, marketplace, product id).
+    /// editions the library holds, with distinct (store, marketplace,
+    /// product id).
     #[must_use]
     pub fn problem(&self) -> Option<&'static str> {
         if !is_work_ref(&self.work) {
@@ -132,7 +150,7 @@ impl WindowWork {
             return Some("invalid_editions");
         }
         let mut keys = std::collections::BTreeSet::new();
-        for edition in &self.editions {
+        for edition in self.editions.iter().map(|e| &e.edition) {
             if let Some(problem) = edition.problem() {
                 return Some(problem);
             }
@@ -208,7 +226,10 @@ mod tests {
                 value: "B0TEST".into(),
                 marketplace: "us".into(),
             }],
-            editions: vec![edition("B0TEST")],
+            editions: vec![WindowEdition {
+                edition: edition("B0TEST"),
+                yours: true,
+            }],
         }
     }
 
@@ -226,6 +247,24 @@ mod tests {
         let mut value = serde_json::to_value(&work).unwrap();
         value["editions"][0]["user"] = serde_json::json!(1);
         assert!(serde_json::from_value::<WindowWork>(value).is_err());
+        let mut value = serde_json::to_value(&work).unwrap();
+        value["editions"][0]["edition"]["user"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<WindowWork>(value).is_err());
+    }
+
+    #[test]
+    fn yours_is_sent_only_when_true() {
+        let mut work = work();
+        let text = serde_json::to_string(&work).unwrap();
+        assert!(text.contains("\"yours\":true"), "{text}");
+        work.editions[0].yours = false;
+        let text = serde_json::to_string(&work).unwrap();
+        assert!(!text.contains("yours"), "{text}");
+        let back: WindowWork = serde_json::from_str(&text).unwrap();
+        assert!(
+            !back.editions[0].yours,
+            "an edition without the flag is not yours"
+        );
     }
 
     #[test]
@@ -237,10 +276,13 @@ mod tests {
         bad.editions.clear();
         assert_eq!(bad.problem(), Some("invalid_editions"));
         let mut bad = work();
-        bad.editions.push(edition("B0TEST"));
+        bad.editions.push(WindowEdition {
+            edition: edition("B0TEST"),
+            yours: false,
+        });
         assert_eq!(bad.problem(), Some("invalid_editions"));
         let mut bad = work();
-        bad.editions[0].availability = Availability::Reachable;
+        bad.editions[0].edition.availability = Availability::Reachable;
         assert_eq!(bad.problem(), Some("invalid_availability"));
         let mut bad = work();
         bad.identifiers.push(bad.identifiers[0].clone());

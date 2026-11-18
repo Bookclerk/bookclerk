@@ -18,7 +18,7 @@ branch on the library's own database, and what each side runs and shares.
   operator is the library's operator. See
   [Shared branches](#shared-branches).
 - A **clerk** signs in to a library as its person with a **library
-  card** and shows that person's books. It isn't a node: the library
+  card** and shows that library's books, the person's own marked. It isn't a node: the library
   never sends it work, and it holds no node key. See
   [Library cards](sign-in.md#library-cards).
 
@@ -1029,22 +1029,24 @@ With the setting off for library A, B:
   client of A, not one of its nodes. It answers A's catalog questions as
   "missing" and every interlibrary request from A as "not listed", so A
   shows no title as available through B.
-- **Reads its person's books from A.** On every connection, every 30
-  minutes, and at once when the setting changes, B sends `window.books`
-  page by page. A answers each page (`window.page`) with the titles the
-  store accounts linked to B's owner hold in A, at most 100 works per
-  page, grouped by A's works with each work's identifiers. Each page ends
-  with an opaque cursor string, which B sends back to get the next page. A answers only a
-  branch it trusts, and the frame names no user, so B can read only its
-  own person's books.
+- **Reads A's books.** On every connection, every 30 minutes, and at
+  once when the setting changes, B sends `window.books` page by page. A
+  answers each page (`window.page`) with the titles on all of A's store
+  accounts, as A's own Library page lists them for a member, at most 100
+  works per page, grouped by A's works with each work's identifiers. Each
+  edition is marked `yours` when a store account linked to B's owner
+  holds it. Each page ends with an opaque cursor string, which B sends
+  back to get the next page. A answers only a branch it trusts, and the
+  frame names no user, so the mark is always for B's own person.
 - **Keeps one copy of the list per library.** B stores each page as it
   arrives. Once the last page is in, it drops the books A no longer
   named. A read cut short keeps the list from the last complete read.
   Turning the setting back on clears that library's list.
 
-B's **Library** page then shows **Your books in other libraries** to B's
+B's **Library** page then shows **Books in other libraries** to B's
 operator and Owners: every library B is a window of, merged into one list
-by work. Two books are the same work when their identifiers reach the
+by work, the person's own books marked **Yours**, with an **Only yours**
+filter. Two books are the same work when their identifiers reach the
 same work in B's own library, when they share a strong identifier (an
 ASIN with its marketplace, or an OpenLibrary edition or work id), or when
 one library groups them under one work. An ISBN alone doesn't join two

@@ -42,16 +42,19 @@ fn work(asin: &str, title: &str) -> WindowWork {
             value: asin.into(),
             marketplace: "us".into(),
         }],
-        editions: vec![LookupEdition {
-            store: "audible".into(),
-            marketplace: "us".into(),
-            product_id: asin.into(),
-            availability: Availability::Owned,
-            formats: vec![LookupFormat::Audio],
-            metadata: CatalogMetadata {
-                title: title.into(),
-                ..CatalogMetadata::default()
+        editions: vec![bookclerk_node_proto::WindowEdition {
+            edition: LookupEdition {
+                store: "audible".into(),
+                marketplace: "us".into(),
+                product_id: asin.into(),
+                availability: Availability::Owned,
+                formats: vec![LookupFormat::Audio],
+                metadata: CatalogMetadata {
+                    title: title.into(),
+                    ..CatalogMetadata::default()
+                },
             },
+            yours: true,
         }],
     }
 }

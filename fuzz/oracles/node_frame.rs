@@ -380,7 +380,7 @@ fn check_window(body: &Body) {
                 work.editions.len()
             );
             let mut keys = BTreeSet::new();
-            for edition in &work.editions {
+            for edition in work.editions.iter().map(|e| &e.edition) {
                 assert_eq!(
                     edition.availability,
                     Availability::Owned,
