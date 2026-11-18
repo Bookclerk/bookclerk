@@ -65,6 +65,7 @@ boundary extends it.
 | `copy_range` | The `Range` header of a copy download, `GET /api/copies/v1/{copy_id}/files/{n}`, which decides which bytes of a library's file are sent | `bookclerk-node-proto::parse_copy_range` |
 | `copy_answer` | A library's answer to a copy download, read on the branch or clerk that took the copy: where its head ends, how many bytes follow and where in the file they are written | `bookclerk-node-proto::copy_answer_head_end`, `parse_copy_answer` |
 | `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics, pages of the library's books with the person's marked, and the grant of a copy with its download token) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
+| `instance_config` | A plugin instance's settings, table rows included: the `settings` object of `PUT /api/config/plugin-instances/{id}/config` and the row text of `bookclerk plugins config set` | `bookclerk-library::control_plane::PluginInstanceConfigV1::validate`, `parse_setting_text` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
@@ -476,6 +477,17 @@ only that. The others check:
   size limit. The shared oracle is
   `fuzz/oracles/clerk_socket_frame.rs`, replayed from
   `bookclerk-node-proto`.
+- **`instance_config`**: the first byte picks the path, against a fixed
+  schema with a string `name` and a table `mappings` (`library` required,
+  `prefix`, `watch` with a default, `mode` an enum). The settings object
+  is read as an untyped JSON value and accepted exactly when every key is
+  declared and every value fits its kind, rows included, with strings of
+  at most 1024 bytes and no NUL; an accepted table normalizes once and
+  then stays the same, with defaults filled. Row text is split by the
+  oracle's own reading of `|`, `\|` and `\\` and accepted exactly when its
+  cells fit their columns and name `library`, giving one row of exactly
+  those cells. The shared oracle is `fuzz/oracles/instance_config.rs`,
+  replayed from `bookclerk-library`.
 - **`job_cap_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
   besides `cluster_id` (a string) and `max_jobs` (`null` or a whole number

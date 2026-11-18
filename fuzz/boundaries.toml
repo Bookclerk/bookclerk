@@ -308,6 +308,13 @@ input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.instance_config]
+crate = "bookclerk-library"
+boundary = "A plugin instance's settings, including table rows, from PUT /api/config/plugin-instances/{id}/config and bookclerk plugins config set"
+input_from = "operator"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.job_cap_request]
 crate = "bookclerk-library"
 boundary = "A branch's job cap for one library, from POST /api/config/join/capacity"

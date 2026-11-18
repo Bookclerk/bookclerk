@@ -458,7 +458,8 @@ struct PluginSettingOption {
     /// Current string form of the setting.
     #[schema(example = "m4b")]
     value: String,
-    /// UI widget hint (`boolean`, `string`, or `number`).
+    /// UI widget hint (`boolean`, `string`, `number`, `secret`, or
+    /// `table`).
     #[schema(example = "string")]
     value_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -472,6 +473,36 @@ struct PluginSettingOption {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = true)]
     secret_set: Option<bool>,
+    /// Columns of a `table` setting, in display order; omitted for other
+    /// kinds. `value` is then the rows as JSON text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    columns: Option<Vec<PluginSettingColumn>>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// One column of a `table` setting in the Settings UI.
+struct PluginSettingColumn {
+    /// Record field the column fills in each row.
+    #[schema(example = "prefix")]
+    key: String,
+    /// Column heading.
+    #[schema(example = "Storage key prefix")]
+    label: String,
+    /// UI widget hint (`boolean`, `string`, or `number`).
+    #[schema(example = "string")]
+    value_type: String,
+    /// Dropdown values of an `enum` column; omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    choices: Option<Vec<PluginSettingChoice>>,
+    /// String form of the value a new row starts with; omitted when there
+    /// is no default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "")]
+    default: Option<String>,
+    /// True when every row must have a value in this column.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[schema(example = true)]
+    required: bool,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -2643,6 +2674,7 @@ fn plugin_setting_option(
         choices: None,
         secret: false,
         secret_set: None,
+        columns: None,
     }
 }
 
@@ -2677,6 +2709,7 @@ fn plugin_setting_option_with_choices(
         },
         secret: false,
         secret_set: None,
+        columns: None,
     }
 }
 
@@ -2878,6 +2911,65 @@ async fn plugin_settings_snapshot(
     groups
 }
 
+/// String form of a setting value in the Settings UI: a string as itself,
+/// anything else (numbers, booleans, table rows) as JSON text.
+fn setting_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// UI widget hint for a setting kind.
+fn setting_value_type(kind: bookclerk_plugin_abi::SettingKind) -> &'static str {
+    use bookclerk_plugin_abi::SettingKind;
+    match kind {
+        SettingKind::Bool => "boolean",
+        SettingKind::Integer => "number",
+        SettingKind::String | SettingKind::Enum => "string",
+        SettingKind::Secret => "secret",
+        SettingKind::Table => "table",
+    }
+}
+
+/// Dropdown choices of an `enum` entry, labelled by id when unlabelled.
+fn setting_choices(spec: &bookclerk_plugin_abi::SettingSpec) -> Vec<PluginSettingChoice> {
+    spec.values
+        .iter()
+        .map(|choice| {
+            plugin_setting_choice(
+                choice.id.clone(),
+                if choice.label.trim().is_empty() {
+                    choice.id.clone()
+                } else {
+                    choice.label.clone()
+                },
+            )
+        })
+        .collect()
+}
+
+/// Settings UI column for one column of a `table` setting.
+fn setting_column(column: &bookclerk_plugin_abi::SettingSpec) -> PluginSettingColumn {
+    let choices = setting_choices(column);
+    PluginSettingColumn {
+        key: column.key.clone(),
+        label: if column.label.trim().is_empty() {
+            setting_label(&column.key)
+        } else {
+            column.label.clone()
+        },
+        value_type: setting_value_type(column.kind).to_string(),
+        choices: if choices.is_empty() {
+            None
+        } else {
+            Some(choices)
+        },
+        default: column.default.as_ref().map(setting_text),
+        required: column.required,
+    }
+}
+
 /// Settings group for one plugin instance, rendered from its pinned schema.
 ///
 /// Option keys are the bare setting keys; the group's `plugin_instance_id`
@@ -2895,24 +2987,19 @@ fn instance_settings_group(
     for spec in &view.schema {
         let value = stored
             .and_then(|config| config.settings.get(&spec.key))
-            .map(|value| match value {
-                SettingValue::Bool(flag) => flag.to_string(),
-                SettingValue::Number(number) => number.to_string(),
-                SettingValue::String(text) => text.clone(),
-            })
-            .or_else(|| {
-                spec.default.as_ref().map(|default| match default {
-                    serde_json::Value::String(text) => text.clone(),
-                    other => other.to_string(),
-                })
-            })
-            .unwrap_or_default();
-        let value_type = match spec.kind {
-            SettingKind::Bool => "boolean",
-            SettingKind::Integer => "number",
-            SettingKind::String | SettingKind::Enum => "string",
-            SettingKind::Secret => "secret",
-        };
+            .map(SettingValue::to_json)
+            .or_else(|| spec.default.clone())
+            // Show what the guest receives: table rows with column
+            // defaults filled.
+            .map(|value| setting_text(&spec.normalize_value(&value)))
+            .unwrap_or_else(|| {
+                if spec.kind == SettingKind::Table {
+                    "[]".to_string()
+                } else {
+                    String::new()
+                }
+            });
+        let value_type = setting_value_type(spec.kind);
         let label = if spec.label.trim().is_empty() {
             setting_label(&spec.key)
         } else {
@@ -2924,23 +3011,14 @@ fn instance_settings_group(
                 label,
                 value,
                 value_type,
-                spec.values
-                    .iter()
-                    .map(|choice| {
-                        plugin_setting_choice(
-                            choice.id.clone(),
-                            if choice.label.trim().is_empty() {
-                                choice.id.clone()
-                            } else {
-                                choice.label.clone()
-                            },
-                        )
-                    })
-                    .collect(),
+                setting_choices(spec),
             )
         } else {
             plugin_setting_option(spec.key.clone(), label, value, value_type)
         };
+        if spec.kind == SettingKind::Table {
+            option.columns = Some(spec.columns.iter().map(setting_column).collect());
+        }
         if spec.kind == SettingKind::Secret {
             option.value = String::new();
             option.secret = true;
@@ -8896,5 +8974,58 @@ tcp = {tcp}
         );
         let missing = super::serve_invite_spa(&dist.path().join("gone.html")).await;
         assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
+mod instance_settings_tests {
+    use bookclerk_plugin_abi::SettingSpec;
+
+    use crate::config_authority::PluginInstanceView;
+
+    /// An instance with one table setting whose default rows omit a
+    /// defaulted column.
+    // A fixed, valid literal.
+    #[allow(clippy::expect_used)]
+    fn view() -> PluginInstanceView {
+        let table: SettingSpec = serde_json::from_value(serde_json::json!({
+            "key": "mappings",
+            "type": "table",
+            "default": [{ "library": "main" }],
+            "columns": [
+                { "key": "library", "type": "string", "required": true },
+                { "key": "watch", "type": "bool", "default": true }
+            ]
+        }))
+        .expect("spec");
+        PluginInstanceView {
+            plugin_instance_id: "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b".into(),
+            plugin_key: "example".into(),
+            alias: "example".into(),
+            display_name: String::new(),
+            is_default: true,
+            created_at: "2026-11-18T00:00:00Z".into(),
+            schema: vec![table],
+            config: None,
+            deployments: Vec::new(),
+            placement: None,
+        }
+    }
+
+    #[test]
+    // The test's own literal value.
+    #[allow(clippy::expect_used)]
+    fn an_unset_table_shows_its_default_rows_with_column_defaults() {
+        let group = super::instance_settings_group(&view(), None, "node-1");
+        let option = group
+            .settings
+            .iter()
+            .find(|option| option.key == "mappings")
+            .expect("the table");
+        let rows: serde_json::Value = serde_json::from_str(&option.value).expect("rows");
+        assert_eq!(
+            rows,
+            serde_json::json!([{ "library": "main", "watch": true }])
+        );
     }
 }

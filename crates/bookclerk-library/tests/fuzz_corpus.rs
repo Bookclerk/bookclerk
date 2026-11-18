@@ -245,6 +245,29 @@ fn fuzz_corpus_plan_authz_replays() {
     assert!(refused > 0, "every plan_authz seed planned a job");
 }
 
+/// The `instance_config` oracle, shared with the fuzz target: plugin
+/// instance settings, table rows included, are accepted exactly when they
+/// fit the declared schema.
+#[path = "../../../fuzz/oracles/instance_config.rs"]
+mod instance_config_oracle;
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_instance_config_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("instance_config") {
+        if instance_config_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(accepted > 0, "no instance_config seed was accepted");
+    assert!(refused > 0, "every instance_config seed was accepted");
+}
+
 /// The `job_cap_request` oracle, shared with the fuzz target: a branch's job
 /// cap body is accepted exactly when it has the documented shape.
 #[path = "../../../fuzz/oracles/job_cap_request.rs"]

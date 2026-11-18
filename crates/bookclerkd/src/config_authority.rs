@@ -1297,7 +1297,12 @@ pub async fn get_plugin_instance_config(
                 .body
                 .settings
                 .iter()
-                .map(|(key, value)| (key.clone(), setting_value_json(value)))
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        bookclerk_library::control_plane::SettingValue::to_json(value),
+                    )
+                })
                 .collect();
             pinned.schema.effective_config(&settings).config
         })
@@ -1313,16 +1318,6 @@ pub async fn get_plugin_instance_config(
             .map(|pinned| pinned.schema.settings)
             .unwrap_or_default(),
     }))
-}
-
-/// JSON form of a stored setting value.
-fn setting_value_json(value: &bookclerk_library::control_plane::SettingValue) -> serde_json::Value {
-    use bookclerk_library::control_plane::SettingValue;
-    match value {
-        SettingValue::Bool(flag) => serde_json::Value::Bool(*flag),
-        SettingValue::Number(number) => serde_json::Value::Number(number.clone()),
-        SettingValue::String(text) => serde_json::Value::String(text.clone()),
-    }
 }
 
 /// `PUT /api/config/plugin-instances/{id}/config` body.
@@ -2891,6 +2886,7 @@ mod tests {
                 default: Some(json!("/srv/audiobooks")),
                 required: false,
                 description: Some("Where finished books go.".into()),
+                columns: Vec::new(),
             },
             SettingSpec {
                 key: "api_token".into(),
@@ -2900,6 +2896,7 @@ mod tests {
                 default: None,
                 required: false,
                 description: None,
+                columns: Vec::new(),
             },
         ]);
         bookclerk_library::control_plane::pin_plugin_schema(

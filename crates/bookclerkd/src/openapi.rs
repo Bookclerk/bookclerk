@@ -1486,7 +1486,8 @@ pub(crate) struct SettingSpecDoc {
     /// Operator-facing label; omitted when the key is shown.
     #[schema(example = "Library root")]
     label: Option<String>,
-    /// Value type: `string`, `bool`, `integer`, `enum` or `secret`.
+    /// Value type: `string`, `bool`, `integer`, `enum`, `secret` or
+    /// `table`.
     #[schema(rename = "type", example = "string")]
     kind: SettingKindDoc,
     /// Allowed values of an `enum` setting; omitted for other kinds.
@@ -1502,6 +1503,10 @@ pub(crate) struct SettingSpecDoc {
     /// Help text shown beside the setting; omitted when there is none.
     #[schema(example = "Directory the finished audiobooks are written to.")]
     description: Option<String>,
+    /// Columns of a `table` setting, in display order: each a scalar entry
+    /// naming one field of every row. Omitted for other kinds.
+    #[schema(no_recursion)]
+    columns: Option<Vec<SettingSpecDoc>>,
 }
 
 /// Value type of a declared plugin setting.
@@ -1521,6 +1526,9 @@ pub(crate) enum SettingKindDoc {
     Enum,
     /// A secret stored through the secrets binding, never in the document.
     Secret,
+    /// Rows of records: an array of objects keyed by the declared
+    /// `columns`.
+    Table,
 }
 
 /// One allowed value of an `enum` setting: the stored id and its label.
@@ -1546,7 +1554,8 @@ fn setting_default_schema() -> utoipa::openapi::schema::Schema {
         .schema_type(SchemaType::AnyValue)
         .description(Some(
             "Default applied when the instance document has no value; omitted when there is \
-             none. A string, boolean or integer, as the setting's `type` says.",
+             none. A string, boolean or integer, or for a `table` an array of row objects, as \
+             the setting's `type` says.",
         ))
         .examples([serde_json::json!("/srv/audiobooks")])
         .build()
