@@ -53,6 +53,7 @@ boundary extends it.
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
+| `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `audible_catalog` | Audible public catalog answers (search results and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
@@ -162,6 +163,13 @@ only that. The others check:
   byte, and that URL is the hash's picture on `www.gravatar.com` with
   nothing else in it. The shared oracle is `fuzz/oracles/cover_token.rs`,
   replayed from `bookclerk-cover`.
+- **`destination_id`**: the input is the id as received, read as UTF-8
+  lossily. It is accepted exactly when it is 1 to 64 bytes, each a
+  lowercase ASCII letter, a digit, `_` or `-`, checked byte by byte, so no
+  separator, dot or control byte reaches a storage key or a table row. An
+  accepted id keeps its text and survives a JSON round trip, and JSON
+  refuses whatever the parser refuses. The shared oracle is
+  `fuzz/oracles/destination_id.rs`, replayed from `bookclerk-config`.
 - **`cache_settings`**: the first byte picks the key. A value is accepted
   exactly when, after ASCII whitespace is trimmed, it is one or more ASCII
   digits whose number, read digit by digit with overflow detection, lies in

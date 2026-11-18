@@ -88,8 +88,8 @@ pub use operator_auth::{
     ResolveOperatorTokenEnv,
 };
 pub use output::{
-    normalize_storage_prefix, BadBookAction, DestinationNaming, MultiDestinationMode,
-    OutputBackendKind, OutputConfig,
+    normalize_storage_prefix, BadBookAction, DestinationId, DestinationKeyStyle, DestinationNaming,
+    MultiDestinationMode, OutputConfig,
 };
 pub use overrides::{
     apply_config_updates, apply_config_updates_from_path, apply_setting_overrides,

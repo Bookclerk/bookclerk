@@ -5,60 +5,44 @@
 //! deployment cannot acquire.
 
 use bookclerk_acquire::{AcquireDestination, AcquireDestinations, AcquireError, Result};
-use bookclerk_config::{Config, OutputBackendKind};
+use bookclerk_config::Config;
 use bookclerk_source::DownloadOptions;
 use bookclerk_storage::StorageBackend;
 
 use crate::host::DestinationRegistry;
 
-/// One deployed destination: its kind and a handle on its storage backend.
-type DeployedBackend = (OutputBackendKind, Box<dyn StorageBackend>);
-
-/// Deployed `(kind, backend)` pairs, local first so it is the primary when present.
-fn deployed_backends(
-    destinations: &DestinationRegistry,
-) -> std::result::Result<Vec<DeployedBackend>, String> {
-    let mut out = Vec::new();
-    if let Some(local) = destinations.require_local()? {
-        out.push((OutputBackendKind::Local, local.clone_box()));
-    }
-    if let Some(s3) = destinations.require_s3()? {
-        out.push((OutputBackendKind::S3, s3.clone_box()));
-    }
-    Ok(out)
-}
+/// What a host with no deployed destination says when asked to store.
+const NO_DESTINATION: &str =
+    "no output destination is deployed on this host; deploy a storage plugin such as `local` or `s3`";
 
 /// Build destination backends for acquire from the deployed output plugins.
 ///
+/// Every deployed storage plugin instance is a destination; path
+/// destinations come first, and the first destination is the primary.
+///
 /// # Errors
 ///
-/// Returns an error when no destination is deployed on this host or two
-/// instances of one kind are deployed.
+/// Returns an error when no destination is deployed on this host.
 pub fn build_acquire_destinations(
     config: &Config,
     destinations: &DestinationRegistry,
 ) -> Result<AcquireDestinations> {
-    let backends =
-        deployed_backends(destinations).map_err(|err| AcquireError::Other(anyhow::anyhow!(err)))?;
-    let primary = backends.first().map(|(kind, _)| *kind).ok_or_else(|| {
-        AcquireError::Other(anyhow::anyhow!(
-            "no output destination is deployed on this host; enable the `local` or `s3` plugin"
-        ))
-    })?;
-    let items = backends
+    let deployed = destinations.destinations();
+    let primary = deployed
+        .first()
+        .map(|dest| dest.id.clone())
+        .ok_or_else(|| AcquireError::Other(anyhow::anyhow!(NO_DESTINATION)))?;
+    let items = deployed
         .into_iter()
-        .map(|(kind, backend)| {
-            let settings = destinations.settings_for(kind).unwrap_or_default();
-            AcquireDestination {
-                kind,
-                options: DownloadOptions::for_destination(
-                    config,
-                    kind,
-                    &settings.naming,
-                    &settings.prefix,
-                ),
-                backend,
-            }
+        .map(|dest| AcquireDestination {
+            options: DownloadOptions::for_destination(
+                config,
+                dest.key_style,
+                &dest.settings.naming,
+                &dest.settings.prefix,
+            ),
+            id: dest.id,
+            backend: dest.backend.clone_box(),
         })
         .collect();
     Ok(AcquireDestinations {
@@ -72,23 +56,19 @@ pub fn build_acquire_destinations(
 ///
 /// # Errors
 ///
-/// Returns an error when no destination is deployed or two instances of one
-/// kind are deployed.
+/// Returns an error when no destination is deployed.
 pub fn build_storage_backend(
     destinations: &DestinationRegistry,
 ) -> bookclerk_storage::Result<Box<dyn StorageBackend>> {
     use bookclerk_storage::{FanoutBackend, StorageError};
 
-    let mut backends: Vec<Box<dyn StorageBackend>> = deployed_backends(destinations)
-        .map_err(StorageError::InvalidKey)?
+    let mut backends: Vec<Box<dyn StorageBackend>> = destinations
+        .destinations()
         .into_iter()
-        .map(|(_, backend)| backend)
+        .map(|dest| dest.backend.clone_box())
         .collect();
     if backends.is_empty() {
-        return Err(StorageError::InvalidKey(
-            "no output destination is deployed on this host; enable the `local` or `s3` plugin"
-                .into(),
-        ));
+        return Err(StorageError::InvalidKey(NO_DESTINATION.into()));
     }
     if backends.len() == 1 {
         return Ok(backends.remove(0));

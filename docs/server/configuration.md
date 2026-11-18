@@ -542,7 +542,7 @@ The web app edits this document in **Settings → Output**.
   path inside its files directory is stored as relative, so other hosts
   find it under their own.
 - Each destination's root, prefix, naming overrides and credentials are
-  `local` and `s3` plugin settings.
+  settings of its storage plugin (`local`, `s3`, ...).
 
 ## Image cache
 

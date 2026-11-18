@@ -21,7 +21,21 @@ files.
 | Local filesystem | `local` (platform) | none | Yes, on every host at enrollment |
 | S3 / MinIO | `s3` (optional) | Sealed keys, or the AWS SDK chain | No, until `bookclerk plugins deploy s3` |
 
-External plugins with a `storage` entrypoint load the same way.
+Any other plugin with a `storage` entrypoint is a destination too, and an
+acquire writes to it like the built-in ones:
+
+- Each deployed plugin instance is its own destination, named by its
+  plugin instance id. That id is what upload records and `edition_files`
+  keep, so two instances of one plugin (two buckets, say) are two
+  destinations, and an acquire writes to both. Add one with
+  `bookclerk plugins instances create s3 --name "Backup bucket"`, then
+  deploy it ([plugin instances](plugins.md#instances)).
+- Destinations that name files as paths come first and the rest follow by
+  instance id. The first one is the primary destination: the library
+  records its key as the title's storage key.
+- `local` names files as paths on a file system. Every other destination
+  gets object-store keys: one key of at most 1024 bytes, with the
+  object-store character set (`output.path_sanitization = "auto"`).
 
 ## Local filesystem
 
