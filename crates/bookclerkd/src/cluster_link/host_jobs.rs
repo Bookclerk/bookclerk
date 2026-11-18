@@ -61,7 +61,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use bookclerk_config::OutputBackendKind;
 use bookclerk_library::control_plane::LinkImportOutcome;
-use bookclerk_library::{BookRecord, JobKind, LibraryStore, NewBook};
+use bookclerk_library::{AcquireTitle, BookRecord, JobKind, LibraryStore, NewBook};
 use bookclerk_node_client::{HostJobCtx, OwnerCallError};
 use bookclerk_node_proto::{
     AcquireTarget, FileCopy, PlanDestination, TargetTitle, UploadFile, UploadProbe,
@@ -627,25 +627,84 @@ pub fn scratch_book(
     }
 }
 
-/// The acquire request for `book` named with `options`: what a host's
+/// The fields of a title an acquire request names it with: the same on
+/// the owner, which reads them from its holdings ([`AcquireTitle`]), and on
+/// a host, which reads them from its scratch library row ([`BookRecord`]),
+/// so both name the title the same way.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestTitle<'a> {
+    /// Store product id the guest downloads.
+    pub product_id: &'a str,
+    /// Library row id the pipeline records the acquire on, when the title
+    /// has one.
+    pub book_uuid: Option<&'a str>,
+    /// Display alias of the store plugin (`audible`, `libro`, ...).
+    pub source: &'a str,
+    /// Store account that holds the title.
+    pub account_id: &'a str,
+    /// Display title.
+    pub title: &'a str,
+    /// Author names, comma-separated.
+    pub authors: Option<&'a str>,
+    /// Narrator names, comma-separated.
+    pub narrators: Option<&'a str>,
+    /// Series name.
+    pub series: Option<&'a str>,
+    /// Position in the series, as the store writes it.
+    pub series_index: Option<&'a str>,
+}
+
+impl<'a> From<&'a BookRecord> for RequestTitle<'a> {
+    fn from(book: &'a BookRecord) -> Self {
+        Self {
+            product_id: book.download_product_id(),
+            book_uuid: Some(book.uuid.as_str()),
+            source: &book.source,
+            account_id: &book.account_id,
+            title: &book.title,
+            authors: book.authors.as_deref(),
+            narrators: book.narrators.as_deref(),
+            series: book.series.as_deref(),
+            series_index: book.series_index.as_deref(),
+        }
+    }
+}
+
+impl<'a> From<&'a AcquireTitle> for RequestTitle<'a> {
+    fn from(title: &'a AcquireTitle) -> Self {
+        Self {
+            product_id: &title.product_id,
+            book_uuid: title.book_uuid.as_deref(),
+            source: &title.source,
+            account_id: &title.account_id,
+            title: &title.title,
+            authors: title.authors.as_deref(),
+            narrators: title.narrators.as_deref(),
+            series: title.series.as_deref(),
+            series_index: title.series_index.as_deref(),
+        }
+    }
+}
+
+/// The acquire request for `title` named with `options`: what a host's
 /// acquire runs, and what the owner computes the title's key scope from
 /// (so both name the title the same way).
 #[must_use]
 pub fn acquire_request(
     cfg: &bookclerk_config::Config,
-    book: &BookRecord,
+    title: RequestTitle<'_>,
     options: &DownloadOptions,
 ) -> bookclerk_acquire::AcquireRequest {
     bookclerk_acquire::AcquireRequest {
-        asin: book.download_product_id().to_string(),
-        book_uuid: Some(book.uuid.clone()),
-        source: book.source.clone(),
-        account_id: book.account_id.clone(),
-        title: book.title.clone(),
-        authors: book.authors.clone(),
-        narrators: book.narrators.clone(),
-        series: book.series.clone(),
-        series_index: book.series_index.clone(),
+        asin: title.product_id.to_string(),
+        book_uuid: title.book_uuid.map(str::to_string),
+        source: title.source.to_string(),
+        account_id: title.account_id.to_string(),
+        title: title.title.to_string(),
+        authors: title.authors.map(str::to_string),
+        narrators: title.narrators.map(str::to_string),
+        series: title.series.map(str::to_string),
+        series_index: title.series_index.map(str::to_string),
         options: options.clone(),
         files_dir: cfg.paths().files_dir.clone(),
         cache_dir: cfg.download_cache_dir(),
@@ -712,7 +771,7 @@ async fn acquire_into(
     };
     // The owner names keys from the same request; the scratch dir does not
     // enter a key.
-    let mut request = acquire_request(cfg, book, &primary.options);
+    let mut request = acquire_request(cfg, book.into(), &primary.options);
     request.cache_dir = cache_dir.to_path_buf();
     request.library_id.clone_from(&title.library_id);
     request

@@ -354,9 +354,9 @@ pub(super) async fn acquire_plan(
     Ok(frame)
 }
 
-/// This node's destinations with the key scope of the title `book` on
-/// each: the folders a local acquire of the title would write under, named
-/// with that destination's own options from this node's library row,
+/// This node's destinations with the key scope of `title` on each: the
+/// folders a local acquire of the title would write under, named with that
+/// destination's own options from this node's holding of it,
 /// and, where that folder is shared with other titles or is the root, the
 /// title's own planned names there
 /// ([`bookclerk_acquire::planned_title_names`]). A title this node does not
@@ -364,17 +364,17 @@ pub(super) async fn acquire_plan(
 async fn title_destinations(
     library: &LibraryStore,
     host: &HostContext,
-    book: Option<&bookclerk_library::BookRecord>,
+    title: Option<&AcquireTitle>,
     destinations: &[super::uploads::OwnerDestination],
 ) -> Vec<UploadDestination> {
     let cfg = host.state.config.read().await.clone();
     let mut out = Vec::with_capacity(destinations.len());
     for destination in destinations {
-        let (title_folders, title_names) = match book {
-            Some(book) => {
+        let (title_folders, title_names) = match title {
+            Some(title) => {
                 let request = crate::cluster_link::host_jobs::acquire_request(
                     &cfg,
-                    book,
+                    title.into(),
                     &destination.options,
                 );
                 let planned = bookclerk_acquire::planned_title_names(library, &request).await;
@@ -430,16 +430,11 @@ pub(super) async fn upload_grant(
                 return Ok(error(id, "refused", "title_not_planned"));
             }
         }
-        // The keys are scoped from the flat row while `books` exists.
-        let book = match title.and_then(|title| title.book_uuid) {
-            Some(book_uuid) => library.get_book_by_uuid(&book_uuid).await?,
-            None => None,
-        };
         let destinations = match super::uploads::owner_destinations(&host.state).await {
             Ok(destinations) if !destinations.is_empty() => destinations,
             _ => return Ok(error(id, "unavailable", "no_destination")),
         };
-        title_destinations(library, host, book.as_ref(), &destinations).await
+        title_destinations(library, host, title.as_ref(), &destinations).await
     };
     let request = UploadGrantRequest {
         destinations: &scoped,
