@@ -599,8 +599,7 @@ pub const BATCH_DEADLINE: Duration = Duration::from_secs(10);
 /// ([`bookclerk_source::SourceError::RateLimited`]) is left alone for the
 /// time it said (see [`RATE_LIMIT_FIRST_PAUSE`]).
 ///
-/// Each store is asked the strongest way it supports ([`store_query_opts`]):
-/// by the product it already sells, by the card's exact ISBN or ASIN when it
+/// Each store is asked the strongest way it supports: by the product it already sells, by the card's exact ISBN or ASIN when it
 /// declared that lookup, else by title. A title search's records are
 /// stored in the listing pool and kept only for the card's recording.
 ///
@@ -608,8 +607,8 @@ pub const BATCH_DEADLINE: Duration = Duration::from_secs(10);
 ///
 /// * `registry` - Configured content-source or integration registry.
 /// * `library` - The library whose listing pool places title-search
-///   records (see [`evaluate_answer`]); `None` keeps only records that
-///   carry the card's ISBN or ASIN.
+///   records, keeping those of the card's recording; `None` keeps only
+///   records that carry the card's ISBN or ASIN.
 /// * `queries` - Batch of purchase-hint queries.
 /// * `max_concurrent` - Unused since each store is asked once; kept for
 ///   the route's call shape.
