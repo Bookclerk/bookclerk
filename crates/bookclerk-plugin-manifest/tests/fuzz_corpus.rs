@@ -340,3 +340,21 @@ fn fuzz_corpus_https_url_policy_replays() {
     }
     assert!(accepted > 0, "no https_url_policy seed was accepted");
 }
+
+#[test]
+fn fuzz_corpus_table_setting_seed_parses_and_round_trips() {
+    let path = corpus_files("plugin_manifest")
+        .into_iter()
+        .find(|path| path.ends_with("table-setting.toml"))
+        .expect("table-setting.toml seed");
+    let text = std::fs::read_to_string(&path).expect("read");
+    let manifest = parse(&text).expect("the table seed is a valid manifest");
+    let spec = manifest
+        .settings
+        .iter()
+        .find(|spec| spec.key == "mappings")
+        .expect("mappings setting");
+    assert_eq!(spec.columns.len(), 4);
+    let formatted = format_manifest(&manifest).expect("format");
+    assert_eq!(parse(&formatted).expect("reparse"), manifest);
+}

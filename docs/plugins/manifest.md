@@ -416,7 +416,7 @@ nothing per plugin.
 [[settings]]
 key = "bitrate"              # ^[a-z][a-z0-9_]{0,63}$, unique within the plugin
 label = "Bitrate"
-type = "enum"                # string | bool | integer | enum | secret
+type = "enum"                # string | bool | integer | enum | secret | table
 values = [{ id = "high", label = "High" }, { id = "normal", label = "Normal" }]
 default = "high"
 required = false
@@ -436,6 +436,48 @@ type = "secret"              # sealed in the database, delivered in SECRETS; no 
   as `env.CONFIG`, and sealed values as `env.SECRETS`.
 - `required = true` makes a spawn fail with an `error` observation when
   neither the document nor a default supplies the key.
+
+### Table settings
+
+A `table` setting holds a list of rows, such as one row per mapped
+library. Its `[[settings.columns]]` declare the fields of each row. A
+column is a `string`, `bool`, `integer` or `enum` entry with its own
+`label`, `values`, `default`, `required` and `description`.
+
+```toml
+[[settings]]
+key = "mappings"
+label = "Library mappings"
+type = "table"
+default = [{ library = "main", prefix = "" }]
+
+[[settings.columns]]
+key = "library"
+label = "Library"
+type = "string"
+required = true              # every row needs a value, from the row or the default
+
+[[settings.columns]]
+key = "prefix"
+label = "Storage key prefix"
+type = "string"
+
+[[settings.columns]]
+key = "watch"
+type = "bool"
+default = true               # a row that leaves the column out gets this value
+```
+
+- A table declares 1 to 16 columns and holds at most 64 rows.
+- Rows are stored and delivered as objects keyed by column, so
+  `env.CONFIG.mappings` is an array such as
+  `[{ "library": "main", "prefix": "", "watch": true }]`. The TypeScript
+  SDK types it from the columns.
+- Adding a column keeps existing rows valid: a row that leaves a column
+  out gets the column's default. A new column that is `required` needs a
+  default for the same reason.
+- When a newer version removes a column, its values are dropped from
+  every row at enrollment, and the rest of each row is kept.
 
 `describe().configOptions` is derived from this list. The SDK fills it
 in, and a guest that returns its own non-empty list must return the same

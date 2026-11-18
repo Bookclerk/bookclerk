@@ -360,7 +360,37 @@ function validateQueues(m: Manifest): void {
 }
 
 /** Value types accepted in `[[settings]] type`. */
-export const SETTING_TYPES = ["string", "bool", "integer", "enum", "secret"] as const;
+export const SETTING_TYPES = ["string", "bool", "integer", "enum", "secret", "table"] as const;
+
+/** Value types a `[[settings.columns]]` entry of a `table` setting may have. */
+export const COLUMN_TYPES = ["string", "bool", "integer", "enum"] as const;
+
+/** Most columns one `table` setting may declare. */
+const MAX_TABLE_COLUMNS = 16;
+
+/** Most rows one `table` value may hold. */
+const MAX_TABLE_ROWS = 64;
+
+/** One cell of a `table` setting row. */
+export type SettingCellToml = string | number | boolean;
+
+/** One `[[settings.columns]]` entry: a record field every row of a `table` setting has. */
+export type SettingColumnToml = {
+  /** Field name (`^[a-z][a-z0-9_]{0,63}$`), unique within the table. */
+  key: string;
+  /** Column heading; defaults to the key. */
+  label?: string;
+  /** Value type of the cells. */
+  type: (typeof COLUMN_TYPES)[number];
+  /** Allowed values for `type = "enum"`. */
+  values?: Array<{ id: string; label?: string }>;
+  /** Value a row takes when it leaves the column out. */
+  default?: SettingCellToml;
+  /** When true, every row must have a value (from the row or `default`). */
+  required?: boolean;
+  /** Optional help text. */
+  description?: string;
+};
 
 /** One `[[settings]]` row: an operator setting the host validates and renders. */
 export type SettingToml = {
@@ -372,13 +402,150 @@ export type SettingToml = {
   type: (typeof SETTING_TYPES)[number];
   /** Allowed values for `type = "enum"`. */
   values?: Array<{ id: string; label?: string }>;
-  /** Default applied when the instance document omits the key (not for secrets). */
-  default?: string | number | boolean;
+  /**
+   * Default applied when the instance document omits the key (not for
+   * secrets); an array of row tables for `type = "table"`.
+   */
+  default?: SettingCellToml | Array<Record<string, SettingCellToml>>;
   /** When true, a spawn without a value fails. */
   required?: boolean;
   /** Optional help text. */
   description?: string;
+  /** Columns of a `type = "table"` setting, in display order. */
+  columns?: SettingColumnToml[];
 };
+
+/**
+ * Validates an enum entry's `values`, or that a non-enum declares none.
+ *
+ * @param where - Message prefix naming the entry.
+ * @param type - The entry's declared type.
+ * @param values - The entry's `values`.
+ * @throws {Error} When an enum has no values or a duplicated or empty id, or a
+ *   non-enum declares values.
+ */
+function validateEnumValues(
+  where: string,
+  type: string,
+  values: Array<{ id: string; label?: string }>,
+): void {
+  if (type === "enum") {
+    if (values.length === 0) {
+      throw new Error(`plugin.toml: [[settings]] enum ${where} must declare \`values\``);
+    }
+    const ids = new Set<string>();
+    for (const value of values) {
+      const id = String(value.id ?? "");
+      if (!id || ids.has(id)) {
+        throw new Error(
+          `plugin.toml: [[settings]] enum ${where} has an invalid or duplicated value id`,
+        );
+      }
+      ids.add(id);
+    }
+  } else if (values.length > 0) {
+    throw new Error(`plugin.toml: [[settings]] ${where} declares \`values\` but is not an enum`);
+  }
+}
+
+/**
+ * Whether `value` fits a scalar entry of `type`.
+ *
+ * @param type - Declared scalar type.
+ * @param values - Allowed ids of an enum.
+ * @param value - Candidate value.
+ * @returns True when the value has the type's JSON shape (and is an allowed id).
+ */
+function scalarFits(
+  type: string,
+  values: Array<{ id: string; label?: string }>,
+  value: unknown,
+): boolean {
+  return type === "bool"
+    ? typeof value === "boolean"
+    : type === "integer"
+      ? typeof value === "number" && Number.isInteger(value)
+      : type === "enum"
+        ? typeof value === "string" && values.some((v) => v.id === value)
+        : typeof value === "string";
+}
+
+/**
+ * Validates the columns of a `table` setting and, when given, its default rows.
+ *
+ * @param key - The table setting's key.
+ * @param spec - The table setting.
+ * @throws {Error} When the columns are missing, too many, duplicated, not
+ *   scalar, or badly declared, or the default rows do not fit them.
+ */
+function validateTableColumns(key: string, spec: SettingToml): void {
+  const columns = spec.columns ?? [];
+  if (columns.length === 0) {
+    throw new Error(`plugin.toml: [[settings]] table setting \`${key}\` must declare \`columns\``);
+  }
+  if (columns.length > MAX_TABLE_COLUMNS) {
+    throw new Error(
+      `plugin.toml: [[settings]] table setting \`${key}\` declares more than ${MAX_TABLE_COLUMNS} columns`,
+    );
+  }
+  const seen = new Set<string>();
+  for (const column of columns) {
+    const name = String(column.key ?? "");
+    const where = `table setting \`${key}\` column \`${name}\``;
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(name)) {
+      throw new Error(`plugin.toml: [[settings]] ${where} must match ^[a-z][a-z0-9_]{0,63}$`);
+    }
+    if (seen.has(name)) {
+      throw new Error(`plugin.toml: [[settings]] ${where} is duplicated`);
+    }
+    seen.add(name);
+    if (!(COLUMN_TYPES as readonly string[]).includes(String(column.type))) {
+      throw new Error(`plugin.toml: [[settings]] ${where} must be a string, bool, integer or enum`);
+    }
+    if ("columns" in column) {
+      throw new Error(`plugin.toml: [[settings]] ${where} may not declare columns`);
+    }
+    const values = column.values ?? [];
+    validateEnumValues(where, column.type, values);
+    if (column.default !== undefined && !scalarFits(column.type, values, column.default)) {
+      throw new Error(`plugin.toml: [[settings]] default for ${where} does not match its type`);
+    }
+  }
+  if (spec.default === undefined) return;
+  const rows = spec.default;
+  const fits =
+    Array.isArray(rows) &&
+    rows.length <= MAX_TABLE_ROWS &&
+    rows.every(
+      (row) =>
+        !!row &&
+        typeof row === "object" &&
+        !Array.isArray(row) &&
+        Object.entries(row).every(([field, cell]) => {
+          const column = columns.find((c) => c.key === field);
+          return !!column && scalarFits(column.type, column.values ?? [], cell);
+        }) &&
+        columns.every(
+          (column) => !column.required || column.default !== undefined || fieldIn(row, column.key),
+        ),
+    );
+  if (!fits) {
+    throw new Error(
+      `plugin.toml: [[settings]] default for setting \`${key}\` does not match its columns`,
+    );
+  }
+}
+
+/**
+ * Whether a default row sets `field`.
+ *
+ * @param row - Row table from a `table` default.
+ * @param field - Column key.
+ * @returns True when the row has an own entry for the field.
+ */
+function fieldIn(row: object, field: string): boolean {
+  return Object.prototype.hasOwnProperty.call(row, field);
+}
 
 /**
  * Validates `[[settings]]` the way `bookclerk-plugin-manifest` does.
@@ -409,25 +576,12 @@ function validateSettings(m: Manifest): void {
       );
     }
     const values = spec.values ?? [];
-    if (spec.type === "enum") {
-      if (values.length === 0) {
-        throw new Error(
-          `plugin.toml: [[settings]] enum setting \`${key}\` must declare \`values\``,
-        );
-      }
-      const ids = new Set<string>();
-      for (const value of values) {
-        const id = String(value.id ?? "");
-        if (!id || ids.has(id)) {
-          throw new Error(
-            `plugin.toml: [[settings]] enum setting \`${key}\` has an invalid or duplicated value id`,
-          );
-        }
-        ids.add(id);
-      }
-    } else if (values.length > 0) {
+    validateEnumValues(`setting \`${key}\``, spec.type, values);
+    if (spec.type === "table") {
+      validateTableColumns(key, spec);
+    } else if (spec.columns !== undefined) {
       throw new Error(
-        `plugin.toml: [[settings]] setting \`${key}\` declares \`values\` but is not an enum`,
+        `plugin.toml: [[settings]] setting \`${key}\` declares \`columns\` but is not a table`,
       );
     }
     if (spec.type === "secret") {
@@ -449,16 +603,8 @@ function validateSettings(m: Manifest): void {
       );
     }
     const def = spec.default;
-    if (def === undefined) continue;
-    const ok =
-      spec.type === "bool"
-        ? typeof def === "boolean"
-        : spec.type === "integer"
-          ? typeof def === "number" && Number.isInteger(def)
-          : spec.type === "enum"
-            ? typeof def === "string" && values.some((v) => v.id === def)
-            : typeof def === "string";
-    if (!ok) {
+    if (def === undefined || spec.type === "table") continue;
+    if (!scalarFits(spec.type, values, def)) {
       throw new Error(
         `plugin.toml: [[settings]] default for setting \`${key}\` does not match its type`,
       );

@@ -40075,6 +40075,55 @@
           }
         }
       },
+      "PluginSettingColumn": {
+        "type": "object",
+        "description": "One column of a `table` setting in the Settings UI.",
+        "required": [
+          "key",
+          "label",
+          "value_type"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Record field the column fills in each row.",
+            "example": "prefix"
+          },
+          "label": {
+            "type": "string",
+            "description": "Column heading.",
+            "example": "Storage key prefix"
+          },
+          "value_type": {
+            "type": "string",
+            "description": "UI widget hint (`boolean`, `string`, or `number`).",
+            "example": "string"
+          },
+          "choices": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PluginSettingChoice"
+            },
+            "description": "Dropdown values of an `enum` column; omitted otherwise."
+          },
+          "default": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "String form of the value a new row starts with; omitted when there\nis no default.",
+            "example": ""
+          },
+          "required": {
+            "type": "boolean",
+            "description": "True when every row must have a value in this column.",
+            "example": true
+          }
+        }
+      },
       "PluginSettingOption": {
         "type": "object",
         "description": "One editable setting shown in the Settings UI.",
@@ -40102,7 +40151,7 @@
           },
           "value_type": {
             "type": "string",
-            "description": "UI widget hint (`boolean`, `string`, or `number`).",
+            "description": "UI widget hint (`boolean`, `string`, `number`, `secret`, or\n`table`).",
             "example": "string"
           },
           "choices": {
@@ -40127,6 +40176,16 @@
             ],
             "description": "For a secret setting, whether the instance document names a sealed value.",
             "example": true
+          },
+          "columns": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PluginSettingColumn"
+            },
+            "description": "Columns of a `table` setting, in display order; omitted for other\nkinds. `value` is then the rows as JSON text."
           }
         }
       },
@@ -42414,6 +42473,23 @@
           }
         }
       },
+      "SettingCell": {
+        "oneOf": [
+          {
+            "type": "boolean",
+            "description": "JSON boolean."
+          },
+          {
+            "$ref": "#/components/schemas/SettingNumber",
+            "description": "Finite JSON number; an integer for integer columns."
+          },
+          {
+            "type": "string",
+            "description": "JSON string, at most 1024 bytes."
+          }
+        ],
+        "description": "One cell of a table setting row: the scalar kinds only."
+      },
       "SettingKind": {
         "type": "string",
         "description": "Value type of a declared plugin setting.",
@@ -42422,7 +42498,8 @@
           "bool",
           "integer",
           "enum",
-          "secret"
+          "secret",
+          "table"
         ],
         "example": "string"
       },
@@ -42456,7 +42533,7 @@
           },
           "type": {
             "$ref": "#/components/schemas/SettingKind",
-            "description": "Value type: `string`, `bool`, `integer`, `enum` or `secret`."
+            "description": "Value type: `string`, `bool`, `integer`, `enum`, `secret` or\n`table`."
           },
           "values": {
             "type": [
@@ -42469,7 +42546,7 @@
             "description": "Allowed values of an `enum` setting; omitted for other kinds."
           },
           "default": {
-            "description": "Default applied when the instance document has no value; omitted when there is none. A string, boolean or integer, as the setting's `type` says.",
+            "description": "Default applied when the instance document has no value; omitted when there is none. A string, boolean or integer, or for a `table` an array of row objects, as the setting's `type` says.",
             "examples": [
               "/srv/audiobooks"
             ]
@@ -42489,6 +42566,16 @@
             ],
             "description": "Help text shown beside the setting; omitted when there is none.",
             "example": "Directory the finished audiobooks are written to."
+          },
+          "columns": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/SettingSpec"
+            },
+            "description": "Columns of a `table` setting, in display order: each a scalar entry\nnaming one field of every row. Omitted for other kinds."
           }
         }
       },
@@ -42505,9 +42592,22 @@
           {
             "type": "string",
             "description": "JSON string, at most 1024 bytes."
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/components/schemas/SettingCell"
+              },
+              "propertyNames": {
+                "type": "string"
+              }
+            },
+            "description": "Rows of a table setting: each row maps a column key to a scalar cell.\nRows are records rather than positional lists, so a column added to\nthe declaration later keeps existing rows valid."
           }
         ],
-        "description": "One scalar setting. Nested objects and arrays are not representable.",
+        "description": "One setting value: a scalar, or the rows of a table setting.",
         "example": "/srv/audiobooks"
       },
       "SettingValueSpec": {

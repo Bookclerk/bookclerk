@@ -10,7 +10,9 @@
 use crate::EntityKind;
 use std::collections::BTreeMap;
 
-use bookclerk_plugin_abi::{is_valid_setting_key, ExtensibleConfig, SettingsSchema};
+use bookclerk_plugin_abi::{
+    is_valid_setting_key, ExtensibleConfig, SettingsSchema, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -38,7 +40,7 @@ pub const MAX_INSTANCE_SECRET_REFS: usize = 16;
 /// Maximum UTF-8 size of one string setting.
 pub const MAX_INSTANCE_SETTING_BYTES: usize = 1024;
 
-/// One scalar setting. Nested objects and arrays are not representable.
+/// One setting value: a scalar, or the rows of a table setting.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(untagged)]
 #[schema(example = "/srv/audiobooks")]
@@ -51,6 +53,58 @@ pub enum SettingValue {
     Number(serde_json::Number),
     /// JSON string, at most 1024 bytes.
     String(String),
+    /// Rows of a table setting: each row maps a column key to a scalar cell.
+    /// Rows are records rather than positional lists, so a column added to
+    /// the declaration later keeps existing rows valid.
+    Rows(Vec<BTreeMap<String, SettingCell>>),
+}
+
+impl SettingValue {
+    /// The value as JSON, the form `CONFIG` and the API carry.
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        match self {
+            Self::Bool(flag) => Value::Bool(*flag),
+            Self::Number(number) => Value::Number(number.clone()),
+            Self::String(text) => Value::String(text.clone()),
+            Self::Rows(rows) => Value::Array(
+                rows.iter()
+                    .map(|row| {
+                        Value::Object(
+                            row.iter()
+                                .map(|(column, cell)| (column.clone(), cell.to_json()))
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            ),
+        }
+    }
+}
+
+/// One cell of a table setting row: the scalar kinds only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(untagged)]
+pub enum SettingCell {
+    /// JSON boolean.
+    Bool(bool),
+    /// Finite JSON number; an integer for integer columns.
+    #[schema(value_type = SettingNumber)]
+    Number(serde_json::Number),
+    /// JSON string, at most 1024 bytes.
+    String(String),
+}
+
+impl SettingCell {
+    /// The cell as JSON.
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        match self {
+            Self::Bool(flag) => Value::Bool(*flag),
+            Self::Number(number) => Value::Number(number.clone()),
+            Self::String(text) => Value::String(text.clone()),
+        }
+    }
 }
 
 /// Schema-only stand-in for [`SettingValue::Number`]: a JSON number with no
@@ -238,11 +292,91 @@ pub fn parse_setting_text(schema: &SettingsSchema, key: &str, text: &str) -> Res
                 .into(),
         ),
         SettingKind::String | SettingKind::Enum => SettingValue::String(text.to_string()),
+        SettingKind::Table => parse_table_text(spec, text)?,
     };
     let json =
         serde_json::to_value(&value).map_err(|err| invalid(&format!("encode failed: {err}")))?;
     spec.check_value(&json).map_err(|msg| invalid(&msg))?;
     Ok(value)
+}
+
+/// Parses operator text for a table setting.
+///
+/// Text starting with `[` is the JSON array of row objects. Anything else is
+/// one row in column order, cells separated by `|` (`\|` for a literal bar,
+/// `\\` for a backslash); empty cells are left out so the column default
+/// applies, and each cell is read the way a scalar setting of that column's
+/// kind is.
+///
+/// # Errors
+///
+/// Returns an error when the JSON is malformed, a row has more cells than
+/// the table has columns, or a cell does not fit its column.
+fn parse_table_text(spec: &bookclerk_plugin_abi::SettingSpec, text: &str) -> Result<SettingValue> {
+    let key = &spec.key;
+    if text.trim_start().starts_with('[') {
+        return serde_json::from_str::<SettingValue>(text)
+            .ok()
+            .filter(|value| matches!(value, SettingValue::Rows(_)))
+            .ok_or_else(|| {
+                invalid(&format!(
+                    "setting `{key}` must be a JSON array of row objects"
+                ))
+            });
+    }
+    let cells = split_row_text(text);
+    if cells.len() > spec.columns.len() {
+        return Err(invalid(&format!(
+            "setting `{key}` has {} columns but the row has {} cells",
+            spec.columns.len(),
+            cells.len()
+        )));
+    }
+    let mut row = BTreeMap::new();
+    for (column, cell) in spec.columns.iter().zip(cells) {
+        if cell.is_empty() {
+            continue;
+        }
+        let one = SettingsSchema::new(vec![column.clone()]);
+        let value = parse_setting_text(&one, &column.key, &cell)
+            .map_err(|err| invalid(&format!("setting `{key}`: {err}")))?;
+        let cell = match value {
+            SettingValue::Bool(flag) => SettingCell::Bool(flag),
+            SettingValue::Number(number) => SettingCell::Number(number),
+            SettingValue::String(text) => SettingCell::String(text),
+            SettingValue::Rows(_) => {
+                return Err(invalid(&format!(
+                    "setting `{key}` column `{}` is not a scalar",
+                    column.key
+                )))
+            }
+        };
+        row.insert(column.key.clone(), cell);
+    }
+    Ok(SettingValue::Rows(vec![row]))
+}
+
+/// Splits one row of operator text on unescaped `|`, trimming each cell.
+fn split_row_text(text: &str) -> Vec<String> {
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => match chars.next() {
+                Some(next @ ('|' | '\\')) => cell.push(next),
+                Some(next) => {
+                    cell.push('\\');
+                    cell.push(next);
+                }
+                None => cell.push('\\'),
+            },
+            '|' => cells.push(std::mem::take(&mut cell).trim().to_string()),
+            _ => cell.push(ch),
+        }
+    }
+    cells.push(cell.trim().to_string());
+    cells
 }
 
 /// A parsed instance document plus its revision.
@@ -372,7 +506,8 @@ pub struct PrunedInstanceConfig {
     pub instance_id: String,
     /// Keys dropped from the document: settings the schema no longer
     /// declares, declares as secrets, or whose value no longer fits the
-    /// entry's kind; secret refs whose key is gone or now plain.
+    /// entry's kind; secret refs whose key is gone or now plain. Empty when
+    /// only table rows were brought to the current columns.
     pub removed_keys: Vec<String>,
     /// Revision after the rewrite.
     pub revision: i64,
@@ -381,7 +516,10 @@ pub struct PrunedInstanceConfig {
 /// Rewrites every instance document of `plugin_key` to what `schema` still
 /// accepts: settings whose key is gone, became a secret, or whose value no
 /// longer fits (a type or enum change), and secret refs whose key is gone or
-/// became plain, are dropped.
+/// became plain, are dropped. Table rows are brought to the current columns
+/// with [`bookclerk_plugin_abi::SettingSpec::normalize_value`]: cells of
+/// removed columns are dropped and defaults of new columns written, which
+/// changes the document without removing a key.
 ///
 /// Enrollment runs this on every pass, so a document that lost a race or
 /// was written under an earlier schema is repaired on the next restart
@@ -424,7 +562,7 @@ pub async fn reconcile_instance_configs_to_schema(
             }
         };
         let (body, removed) = prune_body(&doc.body, schema);
-        if removed.is_empty() {
+        if removed.is_empty() && body == doc.body {
             continue;
         }
         let operation_id = format!("schema-prune-{}-r{}", instance.id, doc.revision);
@@ -466,8 +604,8 @@ pub async fn reconcile_instance_configs_to_schema(
     Ok(pruned)
 }
 
-/// The document with everything `schema` rejects removed, and the keys
-/// that were removed.
+/// The document with everything `schema` rejects removed and table rows
+/// normalized to the current columns, and the keys that were removed.
 fn prune_body(
     body: &PluginInstanceConfigV1,
     schema: &SettingsSchema,
@@ -475,16 +613,24 @@ fn prune_body(
     let mut body = body.clone();
     let mut removed = Vec::new();
     body.settings.retain(|key, value| {
-        let keep = schema.get(key).is_some_and(|spec| {
-            !spec.is_secret()
-                && serde_json::to_value(&*value)
-                    .map(|json| spec.check_value(&json).is_ok())
-                    .unwrap_or(false)
+        let normalized = schema.get(key).and_then(|spec| {
+            if spec.is_secret() {
+                return None;
+            }
+            let json = spec.normalize_value(&serde_json::to_value(&*value).ok()?);
+            spec.check_value(&json).ok()?;
+            serde_json::from_value::<SettingValue>(json).ok()
         });
-        if !keep {
-            removed.push(key.clone());
+        match normalized {
+            Some(normalized) => {
+                *value = normalized;
+                true
+            }
+            None => {
+                removed.push(key.clone());
+                false
+            }
         }
-        keep
     });
     body.secret_refs.retain(|secret_ref| {
         let keep = schema
@@ -725,24 +871,219 @@ fn validate_key(key: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
-/// Scalars only. Non-finite numbers are rejected.
+/// Scalars, or rows of scalars. Non-finite numbers are rejected, as are
+/// more than [`MAX_TABLE_ROWS`] rows or more than [`MAX_TABLE_COLUMNS`]
+/// cells in a row.
 fn validate_setting_value(value: &SettingValue) -> Result<()> {
     match value {
         SettingValue::Bool(_) => Ok(()),
-        SettingValue::String(text) => {
-            if text.len() > MAX_INSTANCE_SETTING_BYTES || text.contains('\u{0000}') {
-                return Err(invalid("string settings must be at most 1024 bytes"));
+        SettingValue::String(text) => validate_setting_text(text),
+        SettingValue::Number(number) => validate_setting_number(number),
+        SettingValue::Rows(rows) => {
+            if rows.len() > MAX_TABLE_ROWS {
+                return Err(invalid("table settings may hold at most 64 rows"));
+            }
+            for row in rows {
+                if row.len() > MAX_TABLE_COLUMNS {
+                    return Err(invalid("table rows may hold at most 16 cells"));
+                }
+                for (column, cell) in row {
+                    validate_key(column, "table column")?;
+                    match cell {
+                        SettingCell::Bool(_) => {}
+                        SettingCell::String(text) => validate_setting_text(text)?,
+                        SettingCell::Number(number) => validate_setting_number(number)?,
+                    }
+                }
             }
             Ok(())
         }
-        SettingValue::Number(number) => match number.as_f64() {
-            Some(value) if value.is_finite() => Ok(()),
-            _ => Err(invalid("numeric settings must be finite")),
-        },
+    }
+}
+
+/// String settings and cells: at most 1024 bytes and no NUL.
+fn validate_setting_text(text: &str) -> Result<()> {
+    if text.len() > MAX_INSTANCE_SETTING_BYTES || text.contains('\u{0000}') {
+        return Err(invalid("string settings must be at most 1024 bytes"));
+    }
+    Ok(())
+}
+
+/// Numeric settings and cells must be finite.
+fn validate_setting_number(number: &serde_json::Number) -> Result<()> {
+    match number.as_f64() {
+        Some(value) if value.is_finite() => Ok(()),
+        _ => Err(invalid("numeric settings must be finite")),
     }
 }
 
 /// Error for a plugin-instance document outside schema 1.
 fn invalid(detail: &str) -> LibraryError {
     LibraryError::Invalid(format!("invalid configuration: {detail}"))
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+    use bookclerk_plugin_abi::{SettingKind, SettingSpec};
+
+    /// A setting entry of `kind` with nothing else declared.
+    fn spec(key: &str, kind: SettingKind) -> SettingSpec {
+        SettingSpec {
+            key: key.into(),
+            label: String::new(),
+            kind,
+            values: Vec::new(),
+            default: None,
+            required: false,
+            description: None,
+            columns: Vec::new(),
+        }
+    }
+
+    /// Schema with one `mappings` table: a required `library` string, an
+    /// optional `prefix` and a `watch` bool defaulting to true.
+    fn schema() -> SettingsSchema {
+        SettingsSchema::new(vec![SettingSpec {
+            columns: vec![
+                SettingSpec {
+                    required: true,
+                    ..spec("library", SettingKind::String)
+                },
+                spec("prefix", SettingKind::String),
+                SettingSpec {
+                    default: Some(Value::Bool(true)),
+                    ..spec("watch", SettingKind::Bool)
+                },
+            ],
+            ..spec("mappings", SettingKind::Table)
+        }])
+    }
+
+    fn row(cells: &[(&str, SettingCell)]) -> BTreeMap<String, SettingCell> {
+        cells
+            .iter()
+            .map(|(key, cell)| ((*key).to_string(), cell.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn rows_round_trip_as_json_records() {
+        let value: SettingValue =
+            serde_json::from_str(r#"[{"library":"a","watch":false},{"library":"b"}]"#).unwrap();
+        let expected = SettingValue::Rows(vec![
+            row(&[
+                ("library", SettingCell::String("a".into())),
+                ("watch", SettingCell::Bool(false)),
+            ]),
+            row(&[("library", SettingCell::String("b".into()))]),
+        ]);
+        assert_eq!(value, expected);
+        assert_eq!(serde_json::to_value(&value).unwrap(), value.to_json());
+        // A nested object is not a setting value.
+        assert!(serde_json::from_str::<SettingValue>(r#"{"a":1}"#).is_err());
+        assert!(serde_json::from_str::<SettingValue>(r#"[{"a":[1]}]"#).is_err());
+    }
+
+    #[test]
+    fn shape_bounds_rows_and_cells() {
+        let mut body = PluginInstanceConfigV1::empty();
+        let one = row(&[("library", SettingCell::String("a".into()))]);
+        body.settings.insert(
+            "mappings".into(),
+            SettingValue::Rows(vec![one.clone(); MAX_TABLE_ROWS]),
+        );
+        body.validate_shape().unwrap();
+        body.validate(&schema()).unwrap();
+        body.settings.insert(
+            "mappings".into(),
+            SettingValue::Rows(vec![one; MAX_TABLE_ROWS + 1]),
+        );
+        assert!(body.validate_shape().is_err());
+        let wide = (0..=MAX_TABLE_COLUMNS)
+            .map(|n| (format!("c{n}"), SettingCell::Bool(true)))
+            .collect();
+        body.settings
+            .insert("mappings".into(), SettingValue::Rows(vec![wide]));
+        assert!(body.validate_shape().is_err());
+        let bad_key = row(&[("Bad", SettingCell::Bool(true))]);
+        body.settings
+            .insert("mappings".into(), SettingValue::Rows(vec![bad_key]));
+        assert!(body.validate_shape().is_err());
+        let long = row(&[(
+            "library",
+            SettingCell::String("x".repeat(MAX_INSTANCE_SETTING_BYTES + 1)),
+        )]);
+        body.settings
+            .insert("mappings".into(), SettingValue::Rows(vec![long]));
+        assert!(body.validate_shape().is_err());
+    }
+
+    #[test]
+    fn table_text_parses_json_and_column_order_rows() {
+        let schema = schema();
+        assert_eq!(
+            parse_setting_text(&schema, "mappings", r#"[{"library":"a"}]"#).unwrap(),
+            SettingValue::Rows(vec![row(&[("library", SettingCell::String("a".into()))])])
+        );
+        assert_eq!(
+            parse_setting_text(&schema, "mappings", r"main | kids\|teens/ | false").unwrap(),
+            SettingValue::Rows(vec![row(&[
+                ("library", SettingCell::String("main".into())),
+                ("prefix", SettingCell::String("kids|teens/".into())),
+                ("watch", SettingCell::Bool(false)),
+            ])])
+        );
+        // An empty cell leaves the column out so its default applies.
+        assert_eq!(
+            parse_setting_text(&schema, "mappings", r"main||").unwrap(),
+            SettingValue::Rows(vec![row(&[(
+                "library",
+                SettingCell::String("main".into())
+            )])])
+        );
+        assert_eq!(
+            parse_setting_text(&schema, "mappings", r"a\\b").unwrap(),
+            SettingValue::Rows(vec![row(&[(
+                "library",
+                SettingCell::String(r"a\b".into())
+            )])])
+        );
+        assert!(parse_setting_text(&schema, "mappings", "a|b|true|extra").is_err());
+        assert!(parse_setting_text(&schema, "mappings", "a|b|maybe").is_err());
+        assert!(parse_setting_text(&schema, "mappings", "|b").is_err());
+        assert!(parse_setting_text(&schema, "mappings", "[1]").is_err());
+        assert!(parse_setting_text(&schema, "mappings", "[{").is_err());
+    }
+
+    #[test]
+    fn prune_normalizes_rows_to_current_columns() {
+        let mut body = PluginInstanceConfigV1::empty();
+        body.settings.insert(
+            "mappings".into(),
+            SettingValue::Rows(vec![row(&[
+                ("library", SettingCell::String("a".into())),
+                ("retired", SettingCell::Bool(true)),
+            ])]),
+        );
+        let (pruned, removed) = prune_body(&body, &schema());
+        assert!(removed.is_empty());
+        assert_eq!(
+            pruned.settings.get("mappings"),
+            Some(&SettingValue::Rows(vec![row(&[
+                ("library", SettingCell::String("a".into())),
+                ("watch", SettingCell::Bool(true)),
+            ])]))
+        );
+        pruned.validate(&schema()).unwrap();
+
+        // Rows that still miss a required column are dropped with the key.
+        body.settings.insert(
+            "mappings".into(),
+            SettingValue::Rows(vec![row(&[("prefix", SettingCell::String("x".into()))])]),
+        );
+        let (pruned, removed) = prune_body(&body, &schema());
+        assert_eq!(removed, vec!["mappings".to_string()]);
+        assert!(pruned.settings.is_empty());
+    }
 }

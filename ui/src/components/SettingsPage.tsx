@@ -19,6 +19,7 @@ import {
   type PluginConsentGrantDraft,
 } from "@/components/PluginConsentDialog";
 import { CpuCoresSlider } from "@/components/CpuCoresSlider";
+import { SettingsTableEditor } from "@/components/SettingsTableEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,6 +40,7 @@ import {
   type ListedSession,
   type PluginConsentResponse,
   type PluginDeploymentView,
+  type InstanceSettingValue,
   type PluginSettingOption,
   type PluginSettingsGroup,
   signOut,
@@ -46,6 +48,7 @@ import {
   type SettingsResponse,
 } from "@/lib/api";
 import { storeIconSrc } from "@/lib/catalogTitle";
+import { parseRows, rowsProblem } from "@/lib/settingsTable";
 import { cn, pageWidthClass } from "@/lib/utils";
 
 const FAMILY_LABELS: Record<string, string> = {
@@ -225,10 +228,8 @@ function deploymentStatusLabel(deployment: PluginDeploymentView | undefined): st
 }
 
 /** Converts a form string into the JSON type the instance document stores. */
-function documentValue(
-  option: PluginSettingOption,
-  value: string,
-): string | number | boolean | null {
+function documentValue(option: PluginSettingOption, value: string): InstanceSettingValue | null {
+  if (option.value_type === "table") return parseRows(value);
   if (option.value_type === "boolean") {
     const normalized = value.trim().toLowerCase();
     return (
@@ -615,6 +616,9 @@ export function SettingsPage({
     if (option.value_type === "boolean") {
       return null;
     }
+    if (option.value_type === "table") {
+      return rowsProblem(option.columns ?? [], parseRows(value));
+    }
     if (option.choices?.length) {
       return option.choices.some((choice) => choice.value === value)
         ? null
@@ -842,7 +846,7 @@ export function SettingsPage({
         fetchPluginInstanceConfig(instanceId),
         `Read ${plugin.id} settings`,
       );
-      const nextSettings: Record<string, string | number | boolean> = { ...doc.settings };
+      const nextSettings: Record<string, InstanceSettingValue> = { ...doc.settings };
       const secrets: Record<string, string> = {};
       for (const option of changed) {
         const draft = pluginValues[pluginValueKey(plugin, option)] ?? "";
@@ -1222,6 +1226,20 @@ export function SettingsPage({
             onChange={(e) => setPluginValue(plugin, option, e.target.value)}
           />
         </FieldBlock>
+      );
+    }
+
+    if (option.value_type === "table") {
+      return (
+        <SettingsTableEditor
+          key={fieldId}
+          id={fieldId}
+          label={option.label}
+          columns={option.columns ?? []}
+          value={value}
+          error={error}
+          onChange={(next) => setPluginValue(plugin, option, next)}
+        />
       );
     }
 

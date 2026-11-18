@@ -824,11 +824,12 @@ Arguments:
 
 - `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id
 - `<KEY>`: Setting key from the plugin's `[[settings]]`
-- `[VALUE]`: Value text (`true`/`false`, a number, or a string)
+- `[VALUE]`: Value text: `true`/`false`, a number, or a string. A `table` setting takes a JSON array of row objects, or one row with its cells in column order separated by `|` (an empty cell takes the column default; `\|` is a literal bar)
 
 Options:
 
 - `--secret`: Seal a secret read from stdin
+- `--append`: For a `table` setting, add the given rows after the current ones instead of replacing them
 
 #### `bookclerk plugins config unset`
 
@@ -842,6 +843,10 @@ Arguments:
 
 - `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id
 - `<KEY>`: Setting key
+
+Options:
+
+- `--row <N>`: For a `table` setting, remove only this row (counted from 1, as `config get` lists them) and keep the others
 
 ### `bookclerk plugins approve`
 
