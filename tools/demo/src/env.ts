@@ -90,6 +90,12 @@ export interface Env {
   DEMO_VERSION?: string;
   /** `https://` URL of the project website, linked from the demo's pages. */
   SITE_URL?: string;
+  /**
+   * `https://` origin of the diagnostics collector. When set, each
+   * visitor's copy sends problem reports there (`diagnostics.share_reports`);
+   * without it, the copies send none.
+   */
+  DIAGNOSTICS_URL?: string;
   /** Sessions that may run at once, as decimal text. */
   MAX_LIVE_SESSIONS?: string;
   /** Visitor-hours per UTC day, as decimal text. */

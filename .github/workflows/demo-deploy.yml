@@ -394,8 +394,25 @@ jobs:
         if: steps.gate.outputs.deploy == 'true'
         env:
           DOMAIN: ${{ vars.DOMAIN }}
+          # The diagnostics collector's workers.dev origin, used when there
+          # is no DOMAIN (docs/server/diagnostics.md).
+          COLLECTOR_BASE_URL: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
         run: |
           set -euo pipefail
+          # Where the visitors' copies send problem reports: the collector
+          # every release build uses. Without one, the copies send none.
+          if [ -n "$DOMAIN" ]; then
+            collector="https://diagnostics.${DOMAIN}"
+          else
+            collector="$COLLECTOR_BASE_URL"
+          fi
+          if [ -n "$collector" ]; then
+            if [[ "$collector" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then
+              echo "diagnostics=${collector}" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::Not an https origin, so the demo sends no problem reports: $collector"
+            fi
+          fi
           if [ -z "$DOMAIN" ]; then
             # No custom domain: serve on the account's workers.dev subdomain.
             sed -i 's/^workers_dev = false$/workers_dev = true/' wrangler.toml
@@ -461,7 +478,7 @@ jobs:
           workingDirectory: tools/demo
           # No wranglerVersion: the action then uses the wrangler that `npm
           # ci` installed from package-lock.json, the one the tests ran.
-          command: deploy --var DEMO_VERSION:${{ steps.gate.outputs.sha }}${{ steps.route.outputs.site && format(' --var SITE_URL:{0}', steps.route.outputs.site) || '' }}
+          command: deploy --var DEMO_VERSION:${{ steps.gate.outputs.sha }}${{ steps.route.outputs.site && format(' --var SITE_URL:{0}', steps.route.outputs.site) || '' }}${{ steps.route.outputs.diagnostics && format(' --var DIAGNOSTICS_URL:{0}', steps.route.outputs.diagnostics) || '' }}
 
       # Cloudflare's own startup figure for this deploy
       # (docs/contributing/ci.md#worker-startup-time); warns near the limit.

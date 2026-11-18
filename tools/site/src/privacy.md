@@ -8,7 +8,7 @@ Bookclerk is free software you run on your own computer. This page explains what
 
 - This website sets no cookies. The documentation pages remember display preferences, such as the language of a code sample, in your browser only; nothing identifying is stored or sent.
 - We count visits with Cloudflare Web Analytics, which uses no cookies and does not identify you.
-{{#demo}}- The live demo uses cookies only to keep your own private copy running, and deletes that copy when you leave.
+{{#demo}}- The live demo uses cookies only to keep your own private copy running, sends us problem reports so we can fix its bugs, and deletes that copy when you leave.
 {{/demo}}- The Bookclerk app sends us nothing unless you turn on problem reports.
 - This website{{#demo}}, the demo{{/demo}} and the report collector run on Cloudflare; problem reports are stored with Backblaze.
 
@@ -44,6 +44,7 @@ The [live demo]({{demoUrl}}) starts a private copy of Bookclerk just for you, on
 - **Limits.** To share the demo fairly, we count how many demos each visitor starts. We do not store your IP address: we store a scrambled code made from it that changes every day, so it cannot be turned back into your address or linked across days.
 - **Your copy.** Your copy never learns your IP address. If you sign in to a store, your password or sign-in goes only to your copy and to that store. Your copy, your store sign-ins and anything you scanned are deleted when you press **Start over**, after 10 minutes without activity, or after 30 minutes. Before that, Bookclerk signs your store accounts out.
 - **In your browser.** The app inside the demo remembers a few display choices in your browser's storage, such as light or dark mode and whether you closed the welcome message. These stay on your device and you can clear them in your browser's settings.
+- **Problem reports.** Your copy sends problem reports, the same ones the app sends when you turn them on (described below), so we hear about bugs in the demo. They have your passwords, sign-in tokens, book titles and account IDs removed, and never your IP address.
 - **What we keep.** For each demo we keep a record of when it started and ended, why it ended, how many store sign-ins were started and signed out, and the daily code above. The records name no one. We delete them after 30 days, and the daily counts after two days.
 {{/demo}}
 ## Problem reports from the app

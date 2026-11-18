@@ -26,8 +26,8 @@
 # each visitor's container is a VM and library of its own that never joins
 # a cluster, the ids carry no secret (the cluster secret is the per-container
 # master.key), and the baked plugin deployments are keyed by the node id, so
-# a new id would orphan them. The ids only appear in diagnostics reports,
-# which the demo does not send.
+# a new id would orphan them. The ids also appear in the diagnostics reports
+# the copies send, where every demo shares them.
 set -eu
 
 dir=${BOOKCLERK_FILES_DIR:?BOOKCLERK_FILES_DIR must name the template dir}

@@ -65,4 +65,13 @@ if [ ! -e "$marker" ]; then
 	fi
 fi
 
+# Problem reports: the demo Worker passes the collector's address when the
+# deploy has one, and the copy then shares redacted reports so the project
+# hears about the demo's bugs (docs/server/diagnostics.md). Without the
+# address, or with a config.toml already there, nothing changes.
+if [ -n "${BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL:-}" ] && [ ! -e "${BOOKCLERK_CONFIG:-$dir/config.toml}" ]; then
+	printf '[diagnostics]\nshare_reports = true\n' >"${BOOKCLERK_CONFIG:-$dir/config.toml}" ||
+		echo 'demo: could not turn problem reports on' >&2
+fi
+
 exec /opt/bookclerk/bookclerkd
