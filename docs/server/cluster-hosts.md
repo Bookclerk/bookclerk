@@ -844,9 +844,9 @@ Limits: 1000 files per copy and 512-byte names. A grant is dropped once
 it expires.
 
 > [!NOTE]
-> This is the library's side. A branch doesn't yet take copies by itself
-> when it acquires a book the library already holds, and the clerk app
-> doesn't yet download them.
+> A branch takes copies as
+> [When a branch takes the copy](#when-a-branch-takes-the-copy) describes.
+> The clerk app doesn't yet download them.
 
 ## Node-local instances
 
