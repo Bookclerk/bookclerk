@@ -3627,6 +3627,17 @@ export type MetadataFileParseReply =
   | { kind: "ok"; value: MetadataFileParsed } // Success: the parsed record.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
+/**
+ * One audio file of the edition a sidecar describes, for formats that name
+ * their audio (a CUE sheet's `FILE` lines).
+ */
+export interface MetadataAudioFile {
+  /** The file's name without any folder, as it sits next to the sidecar. */
+  name: string;
+  /** Running time in milliseconds; 0 when the host does not know it. */
+  durationMs: number;
+}
+
 /** Params of `MetadataFiles.render`. */
 export interface MetadataFileRenderParams {
   /** Dialect id from the manifest; one that declares `writes = true`. */
@@ -3644,6 +3655,12 @@ export interface MetadataFileRenderParams {
    * kept. At most `maxMetadataFileBytes`.
    */
   existing: Uint8Array;
+  /**
+   * The edition's audio files in playback order, at most
+   * `maxMetadataAudioFiles`; empty when the host has none or does not know
+   * them. Chapter starts in `record` count from the start of the first file.
+   */
+  audioFiles: MetadataAudioFile[];
 }
 
 /** Success payload of `MetadataFiles.render`. */

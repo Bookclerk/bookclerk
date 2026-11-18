@@ -5587,6 +5587,19 @@ MetadataFileParseReply = Union[
 """
 
 
+class MetadataAudioFile(TypedDict):
+    """One audio file of the edition a sidecar describes, for formats that name
+    their audio (a CUE sheet's `FILE` lines).
+
+    Attributes:
+        name: The file's name without any folder, as it sits next to the sidecar.
+        durationMs: Running time in milliseconds; 0 when the host does not know it.
+    """
+
+    name: str
+    durationMs: int
+
+
 class MetadataFileRenderParams(TypedDict):
     """Params of `MetadataFiles.render`.
 
@@ -5598,12 +5611,16 @@ class MetadataFileRenderParams(TypedDict):
         existing: The file as it is now; empty when the host is creating it. Everything
             the dialect does not change (unknown keys, comments, other fields) is kept.
             At most `maxMetadataFileBytes`.
+        audioFiles: The edition's audio files in playback order, at most
+            `maxMetadataAudioFiles`; empty when the host has none or does not know them.
+            Chapter starts in `record` count from the start of the first file.
     """
 
     dialect: str
     record: MetadataFileRecord
     fields: list[MetadataField]
     existing: bytes
+    audioFiles: list[MetadataAudioFile]
 
 
 class MetadataFileRendered(TypedDict):
@@ -7591,6 +7608,7 @@ __all__ = [
     "MetadataFileParseReplyOk",
     "MetadataFileParseReplyErr",
     "MetadataFileParseReply",
+    "MetadataAudioFile",
     "MetadataFileRenderParams",
     "MetadataFileRendered",
     "MetadataFileRenderReplyOk",

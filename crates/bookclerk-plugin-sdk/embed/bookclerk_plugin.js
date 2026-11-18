@@ -5177,9 +5177,25 @@ var MetadataFileParseReplyCodec = {
     }
   }
 };
+var MetadataAudioFileCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.name ?? "");
+    s.setUint64(0, BigInt(v.durationMs ?? 0));
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      name: s.getText(0),
+      durationMs: Number(s.getUint64(0))
+    };
+  }
+};
 var MetadataFileRenderParamsCodec = {
   dataWords: 0,
-  pointerCount: 4,
+  pointerCount: 5,
   write(s, v, caps) {
     s.setText(0, v.dialect ?? "");
     if (v.record != null) {
@@ -5187,13 +5203,21 @@ var MetadataFileRenderParamsCodec = {
     }
     s.setUint16List(2, (v.fields ?? []).map((v2) => ord(METADATA_FIELDS, v2, "MetadataField")));
     s.setData(3, v.existing ?? EMPTY_BYTES);
+    {
+      const list = v.audioFiles ?? [];
+      const items = s.initStructList(4, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        MetadataAudioFileCodec.write(items[i], list[i], caps);
+      }
+    }
   },
   read(s, caps) {
     return {
       dialect: s.getText(0),
       record: MetadataFileRecordCodec.read(s.getStruct(1, 2, 14), caps),
       fields: s.getUint16List(2).map((v) => fromOrd(METADATA_FIELDS, v, "MetadataField")),
-      existing: s.getData(3)
+      existing: s.getData(3),
+      audioFiles: s.getStructList(4, 1, 1).map((item) => MetadataAudioFileCodec.read(item, caps))
     };
   }
 };
@@ -7924,12 +7948,12 @@ var MetadataFilesRenderParamsCodec = {
   pointerCount: 1,
   write(s, v, caps) {
     if (v.params != null) {
-      MetadataFileRenderParamsCodec.write(s.initStruct(0, 0, 4), v.params, caps);
+      MetadataFileRenderParamsCodec.write(s.initStruct(0, 0, 5), v.params, caps);
     }
   },
   read(s, caps) {
     return {
-      params: MetadataFileRenderParamsCodec.read(s.getStruct(0, 0, 4), caps)
+      params: MetadataFileRenderParamsCodec.read(s.getStruct(0, 0, 5), caps)
     };
   }
 };

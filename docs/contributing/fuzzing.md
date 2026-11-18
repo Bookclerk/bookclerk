@@ -1176,11 +1176,14 @@ across every corpus, in `npm test` (the `workerd_guests` check);
   rule the host applies, states only the row's fields and credit roles,
   and is the same on a second parse.
 - **Rendering** (`renderFile`), for every row with `writes = true`, over
-  every mutated file as the existing file, with a random record and field
-  list (today `opf`, `kodi_album_nfo` and `cue`). Oracle: a refusal only
-  for a file `parse` also refuses, an answer that would pass the size cap,
-  or a request the format cannot hold (chapters for a CUE sheet with
-  several files). Otherwise the answer is within
+  every mutated file as the existing file, with a random record, field
+  list and list of audio files (today `opf`, `kodi_album_nfo` and `cue`).
+  Oracle: a refusal only for a file `parse` also refuses, an answer that
+  would pass the size cap, or a request the format cannot hold (chapters
+  for a CUE sheet with several files and no audio files, or past a file
+  of unknown length; an audio file name with a double quote). Chapters
+  laid out across several audio files are not compared, because the
+  reader leaves them unstated. Otherwise the answer is within
   `MAX_METADATA_FILE_BYTES`, and a re-parse passes the same rules, reads
   back each field it was asked to write, and reads every other field (and
   every credit role the request does not state) as the existing file did.

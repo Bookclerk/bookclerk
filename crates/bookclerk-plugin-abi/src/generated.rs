@@ -3011,6 +3011,19 @@ pub struct MetadataFileParsed {
     pub record: MetadataFileRecord,
 }
 
+/// One audio file of the edition a sidecar describes, for formats that name
+/// their audio (a CUE sheet's `FILE` lines).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataAudioFile {
+    /// The file's name without any folder, as it sits next to the sidecar.
+    #[serde(default)]
+    pub name: String,
+    /// Running time in milliseconds; 0 when the host does not know it.
+    #[serde(default)]
+    pub duration_ms: u64,
+}
+
 /// Params of `MetadataFiles.render`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3030,6 +3043,11 @@ pub struct MetadataFileRenderParams {
     /// kept. At most `maxMetadataFileBytes`.
     #[serde(default, with = "crate::json_bytes::b64")]
     pub existing: Vec<u8>,
+    /// The edition's audio files in playback order, at most
+    /// `maxMetadataAudioFiles`; empty when the host has none or does not know
+    /// them. Chapter starts in `record` count from the start of the first file.
+    #[serde(default)]
+    pub audio_files: Vec<MetadataAudioFile>,
 }
 
 /// Success payload of `MetadataFiles.render`.
@@ -7469,6 +7487,34 @@ pub fn read_metadata_file_parse_reply(
     }
 }
 
+/// Encode a [`MetadataAudioFile`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_metadata_audio_file(
+    mut b: plugin_capnp::metadata_audio_file::Builder<'_>,
+    v: &MetadataAudioFile,
+) -> capnp::Result<()> {
+    b.set_name(&v.name);
+    b.set_duration_ms(v.duration_ms);
+    Ok(())
+}
+
+/// Decode a [`MetadataAudioFile`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_metadata_audio_file(
+    r: plugin_capnp::metadata_audio_file::Reader<'_>,
+) -> capnp::Result<MetadataAudioFile> {
+    Ok(MetadataAudioFile {
+        name: r.get_name()?.to_string()?,
+        duration_ms: r.get_duration_ms(),
+    })
+}
+
 /// Encode a [`MetadataFileRenderParams`] onto a Cap'n Proto builder.
 ///
 /// # Errors
@@ -7487,6 +7533,14 @@ pub fn write_metadata_file_render_params(
         }
     }
     b.set_existing(&v.existing);
+    {
+        let mut items = b
+            .reborrow()
+            .init_audio_files(list_len(v.audio_files.len())?);
+        for (i, item) in v.audio_files.iter().enumerate() {
+            write_metadata_audio_file(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
     Ok(())
 }
 
@@ -7507,6 +7561,11 @@ pub fn read_metadata_file_render_params(
             .map(|item| item.map(Into::into))
             .collect::<Result<Vec<_>, _>>()?,
         existing: r.get_existing()?.to_vec(),
+        audio_files: r
+            .get_audio_files()?
+            .iter()
+            .map(|item| read_metadata_audio_file(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
     })
 }
 
@@ -7972,7 +8031,7 @@ pub fn read_socket_closed(
 
 /// Number of root structs [`read_any_message`] can decode; selectors are
 /// `0..READ_ANY_COUNT` in schema order.
-pub const READ_ANY_COUNT: u8 = 125;
+pub const READ_ANY_COUNT: u8 = 126;
 
 /// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
 /// root is the struct `selector` names, through that struct's `read_*`
@@ -8482,70 +8541,75 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
             )?;
         }
         110 => {
+            let _ = read_metadata_audio_file(
+                reader.get_root::<plugin_capnp::metadata_audio_file::Reader<'_>>()?,
+            )?;
+        }
+        111 => {
             let _ = read_metadata_file_render_params(
                 reader.get_root::<plugin_capnp::metadata_file_render_params::Reader<'_>>()?,
             )?;
         }
-        111 => {
+        112 => {
             let _ = read_metadata_file_rendered(
                 reader.get_root::<plugin_capnp::metadata_file_rendered::Reader<'_>>()?,
             )?;
         }
-        112 => {
+        113 => {
             let _ = read_metadata_file_render_reply(
                 reader.get_root::<plugin_capnp::metadata_file_render_reply::Reader<'_>>()?,
             )?;
         }
-        113 => {
+        114 => {
             let _ =
                 read_socket_frame(reader.get_root::<plugin_capnp::socket_frame::Reader<'_>>()?)?;
         }
-        114 => {
+        115 => {
             let _ =
                 read_socket_header(reader.get_root::<plugin_capnp::socket_header::Reader<'_>>()?)?;
         }
-        115 => {
+        116 => {
             let _ = read_socket_auto_response(
                 reader.get_root::<plugin_capnp::socket_auto_response::Reader<'_>>()?,
             )?;
         }
-        116 => {
+        117 => {
             let _ = read_socket_connect_request(
                 reader.get_root::<plugin_capnp::socket_connect_request::Reader<'_>>()?,
             )?;
         }
-        117 => {
+        118 => {
             let _ = read_socket_info(reader.get_root::<plugin_capnp::socket_info::Reader<'_>>()?)?;
         }
-        118 => {
+        119 => {
             let _ = read_socket_connect_reply(
                 reader.get_root::<plugin_capnp::socket_connect_reply::Reader<'_>>()?,
             )?;
         }
-        119 => {
+        120 => {
             let _ = read_socket_list(reader.get_root::<plugin_capnp::socket_list::Reader<'_>>()?)?;
         }
-        120 => {
+        121 => {
             let _ = read_socket_list_reply(
                 reader.get_root::<plugin_capnp::socket_list_reply::Reader<'_>>()?,
             )?;
         }
-        121 => {
+        122 => {
             let _ = read_socket_message_reply(
                 reader.get_root::<plugin_capnp::socket_message_reply::Reader<'_>>()?,
             )?;
         }
-        122 => {
+        123 => {
             let _ = read_socket_message_ok(
                 reader.get_root::<plugin_capnp::socket_message_ok::Reader<'_>>()?,
             )?;
         }
-        123 => {
+        124 => {
             let _ = read_socket_message(
                 reader.get_root::<plugin_capnp::socket_message::Reader<'_>>()?,
             )?;
         }
-        124 => {
+        125 => {
             let _ =
                 read_socket_closed(reader.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)?;
         }
@@ -13280,6 +13344,50 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             }
         }
         110 => {
+            let first = read_metadata_audio_file(
+                reader.get_root::<plugin_capnp::metadata_audio_file::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_audio_file(
+                message.init_root::<plugin_capnp::metadata_audio_file::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_audio_file(
+                    again.get_root::<plugin_capnp::metadata_audio_file::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_audio_file(
+                    message.init_root::<plugin_capnp::metadata_audio_file::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataAudioFile value".to_string(),
+                    ));
+                }
+            }
+        }
+        111 => {
             let first = read_metadata_file_render_params(
                 reader.get_root::<plugin_capnp::metadata_file_render_params::Reader<'_>>()?,
             )?;
@@ -13323,7 +13431,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        111 => {
+        112 => {
             let first = read_metadata_file_rendered(
                 reader.get_root::<plugin_capnp::metadata_file_rendered::Reader<'_>>()?,
             )?;
@@ -13367,7 +13475,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        112 => {
+        113 => {
             let first = read_metadata_file_render_reply(
                 reader.get_root::<plugin_capnp::metadata_file_render_reply::Reader<'_>>()?,
             )?;
@@ -13411,7 +13519,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        113 => {
+        114 => {
             let first =
                 read_socket_frame(reader.get_root::<plugin_capnp::socket_frame::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13452,7 +13560,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        114 => {
+        115 => {
             let first =
                 read_socket_header(reader.get_root::<plugin_capnp::socket_header::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13493,7 +13601,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        115 => {
+        116 => {
             let first = read_socket_auto_response(
                 reader.get_root::<plugin_capnp::socket_auto_response::Reader<'_>>()?,
             )?;
@@ -13537,7 +13645,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        116 => {
+        117 => {
             let first = read_socket_connect_request(
                 reader.get_root::<plugin_capnp::socket_connect_request::Reader<'_>>()?,
             )?;
@@ -13581,7 +13689,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        117 => {
+        118 => {
             let first =
                 read_socket_info(reader.get_root::<plugin_capnp::socket_info::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13622,7 +13730,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        118 => {
+        119 => {
             let first = read_socket_connect_reply(
                 reader.get_root::<plugin_capnp::socket_connect_reply::Reader<'_>>()?,
             )?;
@@ -13666,7 +13774,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        119 => {
+        120 => {
             let first =
                 read_socket_list(reader.get_root::<plugin_capnp::socket_list::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13707,7 +13815,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        120 => {
+        121 => {
             let first = read_socket_list_reply(
                 reader.get_root::<plugin_capnp::socket_list_reply::Reader<'_>>()?,
             )?;
@@ -13751,7 +13859,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        121 => {
+        122 => {
             let first = read_socket_message_reply(
                 reader.get_root::<plugin_capnp::socket_message_reply::Reader<'_>>()?,
             )?;
@@ -13795,7 +13903,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        122 => {
+        123 => {
             let first = read_socket_message_ok(
                 reader.get_root::<plugin_capnp::socket_message_ok::Reader<'_>>()?,
             )?;
@@ -13839,7 +13947,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        123 => {
+        124 => {
             let first = read_socket_message(
                 reader.get_root::<plugin_capnp::socket_message::Reader<'_>>()?,
             )?;
@@ -13881,7 +13989,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        124 => {
+        125 => {
             let first =
                 read_socket_closed(reader.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();

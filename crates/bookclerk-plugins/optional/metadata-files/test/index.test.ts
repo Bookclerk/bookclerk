@@ -127,9 +127,26 @@ test("a refused file or request becomes invalid_params", async () => {
     /not valid JSON/,
   );
   await invalidParams(
-    files.render({ dialect: "libation_json", record: empty(), fields: [], existing: utf8("") }),
+    files.render({
+      dialect: "libation_json",
+      record: empty(),
+      fields: [],
+      existing: utf8(""),
+      audioFiles: [],
+    }),
     /read-only/,
   );
+});
+
+test("a render hands the book's audio files to the dialect", async () => {
+  const out = await files.render({
+    dialect: "cue",
+    record: { ...empty(), title: "Hi" },
+    fields: ["title"],
+    existing: utf8(""),
+    audioFiles: [{ name: "book.mp3", durationMs: 0 }],
+  });
+  assert.match(new TextDecoder().decode(out), /^TITLE "Hi"\nFILE "book.mp3" MP3\n/);
 });
 
 test("other errors pass through unchanged", async () => {

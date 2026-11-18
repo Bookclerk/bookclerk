@@ -7879,6 +7879,10 @@ mod tests {
             },
             fields: vec![crate::MetadataField::Title],
             existing: b"old:".to_vec(),
+            audio_files: vec![crate::MetadataAudioFile {
+                name: "book.m4b".into(),
+                duration_ms: 1_000,
+            }],
         };
         let rendered = client.render(render("opf")).await.expect("render");
         assert_eq!(rendered.bytes, b"old:Dune");

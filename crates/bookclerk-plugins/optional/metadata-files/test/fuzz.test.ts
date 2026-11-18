@@ -13,7 +13,10 @@
  *   host accepts, stating only the fields and roles the row declares;
  * - `render` over any existing file either refuses with `invalid_params`
  *   (only where `parse` refuses the same file) or returns a file within the
- *   size cap that parses back to the values it was asked to write.
+ *   size cap that parses back to the values it was asked to write. The
+ *   request carries a random list of the book's audio files; chapters laid
+ *   out across several files are not compared, because a sheet with
+ *   several files leaves its chapters unstated.
  *
  * `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run; a failure prints the
  * seed, iteration and input that reproduce it.
@@ -23,7 +26,12 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
 
-import type { CreditRole, MetadataField, MetadataFileRecord } from "@bookclerk/plugin-sdk/workerd";
+import type {
+  CreditRole,
+  MetadataAudioFile,
+  MetadataField,
+  MetadataFileRecord,
+} from "@bookclerk/plugin-sdk/workerd";
 import { DIALECTS, parseFile, renderFile } from "../src/dialects.ts";
 import { DialectFailure } from "../src/text.ts";
 
@@ -362,6 +370,23 @@ function phrases(rand: () => number, max: number): string[] {
 }
 
 /**
+ * Builds a render request's audio files: none half the time, else one to
+ * three plain file names, some with a double quote, each with a length or
+ * none.
+ *
+ * @param rand - PRNG.
+ * @returns The audio files, in playback order.
+ */
+function audioFiles(rand: () => number): MetadataAudioFile[] {
+  if (rand() < 0.5) return [];
+  const names = ["book.m4b", "Part 1.mp3", "part2.flac", 'say "hi".mp3', "x"];
+  return Array.from({ length: 1 + Math.floor(rand() * 3) }, (_, i) => ({
+    name: `${i}-${names[Math.floor(rand() * names.length)] ?? "x"}`,
+    durationMs: rand() < 0.2 ? 0 : 1 + Math.floor(rand() * 10_000_000),
+  }));
+}
+
+/**
  * Builds a render request's record with clean values, each field empty or
  * set at random.
  *
@@ -505,7 +530,8 @@ function check(row: Row, bytes: Uint8Array, rand: () => number): void {
   if (!row.writes) return;
   const record = cleanRecord(rand, row);
   const fields = row.fields.filter(() => rand() < 0.6);
-  const rendered = attempt(() => renderFile(row.id, bytes, record, fields));
+  const audio = audioFiles(rand);
+  const rendered = attempt(() => renderFile(row.id, bytes, record, fields, audio));
   if ("refused" in rendered) {
     // A file parse reads may still be refused when the answer would pass
     // the size cap, or when the format cannot hold what was asked for.
@@ -518,6 +544,7 @@ function check(row: Row, bytes: Uint8Array, rand: () => number): void {
   const reread = parseFile(row.id, rendered.ok);
   assert.equal(hostRefusal(reread, row), undefined, "re-read record breaks the ABI rules");
   for (const field of fields) {
+    if (field === "chapters" && row.id === "cue" && audio.length > 1) continue;
     const roles = record.creditRoles;
     assert.deepEqual(
       project(reread, field, row, roles),

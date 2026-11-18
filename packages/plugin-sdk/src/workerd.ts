@@ -200,6 +200,7 @@ export type {
   HealthOk,
   Identifier,
   ListeningProgress,
+  MetadataAudioFile,
   MetadataChapter,
   MetadataChapters,
   MetadataChaptersParams,

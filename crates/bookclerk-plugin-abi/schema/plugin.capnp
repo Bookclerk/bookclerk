@@ -92,6 +92,8 @@ const maxMetadataFileTextBytes :UInt32 = 1024;
 const maxMetadataFileListEntries :UInt32 = 256;
 # Most chapters in a `MetadataFileRecord`.
 const maxMetadataFileChapters :UInt32 = 2000;
+# Most entries in `MetadataFileRenderParams.audioFiles`.
+const maxMetadataAudioFiles :UInt32 = 4096;
 # Longest `KvNamespace` key in UTF-8 bytes.
 const maxKvKeyBytes :UInt32 = 512;
 # Largest WebSocket message, text or binary, that `Sockets.send` accepts or
@@ -3317,6 +3319,15 @@ struct MetadataFileParseReply {
   }
 }
 
+# One audio file of the edition a sidecar describes, for formats that name
+# their audio (a CUE sheet's `FILE` lines).
+struct MetadataAudioFile {
+  # The file's name without any folder, as it sits next to the sidecar.
+  name @0 :Text;
+  # Running time in milliseconds; 0 when the host does not know it.
+  durationMs @1 :UInt64;
+}
+
 # Params of `MetadataFiles.render`.
 struct MetadataFileRenderParams {
   # Dialect id from the manifest; one that declares `writes = true`.
@@ -3330,6 +3341,10 @@ struct MetadataFileRenderParams {
   # the dialect does not change (unknown keys, comments, other fields) is
   # kept. At most `maxMetadataFileBytes`.
   existing @3 :Data;
+  # The edition's audio files in playback order, at most
+  # `maxMetadataAudioFiles`; empty when the host has none or does not know
+  # them. Chapter starts in `record` count from the start of the first file.
+  audioFiles @4 :List(MetadataAudioFile);
 }
 
 # Success payload of `MetadataFiles.render`.

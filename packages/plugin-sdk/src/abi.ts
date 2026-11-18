@@ -102,6 +102,9 @@ export const MAX_METADATA_FILE_LIST_ENTRIES = 256 as const;
 /** Most chapters in a `MetadataFileRecord`. */
 export const MAX_METADATA_FILE_CHAPTERS = 2000 as const;
 
+/** Most entries in `MetadataFileRenderParams.audioFiles`. */
+export const MAX_METADATA_AUDIO_FILES = 4096 as const;
+
 /** Longest `KvNamespace` key in UTF-8 bytes. */
 export const MAX_KV_KEY_BYTES = 512 as const;
 

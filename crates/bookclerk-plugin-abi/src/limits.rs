@@ -83,6 +83,9 @@ pub const MAX_METADATA_FILE_LIST_ENTRIES: u32 = crate::plugin_capnp::MAX_METADAT
 /// Most chapters in a `MetadataFileRecord`.
 pub const MAX_METADATA_FILE_CHAPTERS: u32 = crate::plugin_capnp::MAX_METADATA_FILE_CHAPTERS;
 
+/// Most audio files a `MetadataFiles.render` request names.
+pub const MAX_METADATA_AUDIO_FILES: u32 = crate::plugin_capnp::MAX_METADATA_AUDIO_FILES;
+
 /// Parses a `CoverFetcher.fetchCovers` sink key into the URL index it names.
 ///
 /// The guest puts the body for `urls[i]` under the key `i`. Only the

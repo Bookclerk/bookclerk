@@ -22,8 +22,8 @@ use std::collections::HashSet;
 
 use crate::{
     Abridgement, CreditRole, ExpressionKind, MetadataField, MetadataFileParseParams,
-    MetadataFileRecord, MetadataFileRenderParams, MetadataFileRendered, MAX_METADATA_FILE_BYTES,
-    MAX_METADATA_FILE_CHAPTERS, MAX_METADATA_FILE_DESCRIPTION_BYTES,
+    MetadataFileRecord, MetadataFileRenderParams, MetadataFileRendered, MAX_METADATA_AUDIO_FILES,
+    MAX_METADATA_FILE_BYTES, MAX_METADATA_FILE_CHAPTERS, MAX_METADATA_FILE_DESCRIPTION_BYTES,
     MAX_METADATA_FILE_LIST_ENTRIES, MAX_METADATA_FILE_TEXT_BYTES,
 };
 
@@ -88,6 +88,9 @@ pub enum MetadataFileError {
     ReadOnlyDialect,
     /// A request named a dialect other than the one being checked against.
     WrongDialect,
+    /// An audio file's duration is past what a JavaScript number holds
+    /// exactly (2^53 - 1 ms).
+    BadAudioDuration,
 }
 
 impl std::fmt::Display for MetadataFileError {
@@ -131,6 +134,9 @@ impl std::fmt::Display for MetadataFileError {
             ),
             Self::ReadOnlyDialect => f.write_str("metadata file dialect does not write files"),
             Self::WrongDialect => f.write_str("metadata file request names another dialect"),
+            Self::BadAudioDuration => {
+                f.write_str("metadata file audio duration is past 2^53 - 1 milliseconds")
+            }
         }
     }
 }
@@ -523,9 +529,15 @@ pub fn check_parse_params(params: &MetadataFileParseParams) -> Result<(), Metada
     Ok(())
 }
 
+/// Longest audio file duration a render request carries, in milliseconds:
+/// the largest integer a JavaScript number holds exactly.
+const MAX_SAFE_MS: u64 = (1 << 53) - 1;
+
 /// Checks a `MetadataFiles.render` request before it is sent: a dialect id,
 /// fields named once each, existing bytes within [`MAX_METADATA_FILE_BYTES`],
-/// and a record that passes [`validate_metadata_file_record`].
+/// at most [`MAX_METADATA_AUDIO_FILES`] audio files with plain names and
+/// durations a JavaScript number holds exactly, and a record that passes
+/// [`validate_metadata_file_record`].
 ///
 /// # Arguments
 ///
@@ -545,6 +557,17 @@ pub fn check_render_params(params: &MetadataFileRenderParams) -> Result<(), Meta
     check_unique_fields(&params.fields)?;
     if params.existing.len() > cap(MAX_METADATA_FILE_BYTES) {
         return Err(MetadataFileError::BadFileSize(params.existing.len()));
+    }
+    if params.audio_files.len() > cap(MAX_METADATA_AUDIO_FILES) {
+        return Err(MetadataFileError::TooMany("audioFiles"));
+    }
+    for file in &params.audio_files {
+        if !is_plain_file_name(&file.name) {
+            return Err(MetadataFileError::BadFileName);
+        }
+        if file.duration_ms > MAX_SAFE_MS {
+            return Err(MetadataFileError::BadAudioDuration);
+        }
     }
     validate_metadata_file_record(&params.record)
 }
@@ -660,7 +683,9 @@ pub fn encode_metadata_file_record_bytes(record: &MetadataFileRecord) -> capnp::
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
-    use crate::{Credit, Identifier, IdentifierScheme, MetadataChapter, SeriesEntry};
+    use crate::{
+        Credit, Identifier, IdentifierScheme, MetadataAudioFile, MetadataChapter, SeriesEntry,
+    };
 
     fn dialect() -> MetadataFileDialect {
         MetadataFileDialect {
@@ -999,8 +1024,42 @@ mod tests {
             record: good(),
             fields: vec![MetadataField::Title, MetadataField::Credits],
             existing: Vec::new(),
+            audio_files: vec![MetadataAudioFile {
+                name: "Part 1.mp3".into(),
+                duration_ms: 3_600_000,
+            }],
         };
         assert_eq!(check_render_params(&render), Ok(()));
+        let pathed = MetadataFileRenderParams {
+            audio_files: vec![MetadataAudioFile {
+                name: "../x.mp3".into(),
+                duration_ms: 0,
+            }],
+            ..render.clone()
+        };
+        assert_eq!(
+            check_render_params(&pathed),
+            Err(MetadataFileError::BadFileName)
+        );
+        let long = MetadataFileRenderParams {
+            audio_files: vec![MetadataAudioFile {
+                name: "a.mp3".into(),
+                duration_ms: 1 << 53,
+            }],
+            ..render.clone()
+        };
+        assert_eq!(
+            check_render_params(&long),
+            Err(MetadataFileError::BadAudioDuration)
+        );
+        let many = MetadataFileRenderParams {
+            audio_files: vec![MetadataAudioFile::default(); cap(MAX_METADATA_AUDIO_FILES) + 1],
+            ..render.clone()
+        };
+        assert_eq!(
+            check_render_params(&many),
+            Err(MetadataFileError::TooMany("audioFiles"))
+        );
         assert_eq!(check_render_against_dialect(&render, &dialect()), Ok(()));
         let twice = MetadataFileRenderParams {
             fields: vec![MetadataField::Title, MetadataField::Title],
@@ -1080,6 +1139,7 @@ mod tests {
             MetadataFileError::CreditRoleNotCarried(CreditRole::Cast),
             MetadataFileError::ReadOnlyDialect,
             MetadataFileError::WrongDialect,
+            MetadataFileError::BadAudioDuration,
         ] {
             assert!(!err.to_string().is_empty());
         }

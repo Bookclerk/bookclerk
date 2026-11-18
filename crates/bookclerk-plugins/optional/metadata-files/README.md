@@ -10,7 +10,7 @@ file's bytes.
 | Dialect          | Files             | Writes | Fields                                                                                                                                             |
 | ---------------- | ----------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `libation_json`  | `*.metadata.json` | no     | title, subtitle, description, publisher, date, language, genres, abridgement, ASIN and ISBN, authors and narrators, series, chapters, running time |
-| `cue` | `*.cue` | edits existing sheets | title, date, genres, authors, chapters |
+| `cue`            | `*.cue`           | yes    | title, date, genres, authors, chapters                                                                                                             |
 | `kodi_album_nfo` | `album.nfo`       | yes    | title, description, publisher, date, genres, authors                                                                                               |
 | `opf`            | `*.opf`           | yes    | title, description, publisher, date, language, genres, ISBN and ASIN, authors, narrators, translators, editors and illustrators, series            |
 
@@ -79,12 +79,25 @@ each track's `TITLE` and `INDEX 01` (in 1/75 s frames) make a chapter. A
 sheet with several `FILE`s times each track from the start of its own
 file, so its chapters are left unstated.
 
-A write edits a sheet that exists, line by line: the book's details go
-just before the first `FILE`, and new chapters replace every track. It
-cannot create a sheet, because a sheet must name its audio file and a
-write is not told it, and it refuses chapters for a sheet with several
-files. CUE cannot escape `"`, so a value's double quotes are written as
-single quotes.
+A write edits a sheet line by line: the book's details go just before the
+first `FILE`, and new chapters replace every track. When the host passes
+the book's audio files (`audioFiles` in the render request), a write can
+also create a sheet, and writing chapters rebuilds the `FILE` lines from
+those files:
+
+- each chapter goes into the file it starts in, timed from that file's
+  start, and track numbers run on across files;
+- a file that opens partway through a chapter starts with a track that
+  carries that chapter on;
+- with no chapters, the files get no tracks;
+- a file keeps the type the sheet gave it, else takes the type its
+  extension names (`MP3`, `AIFF`, `MP4`, otherwise `WAVE`).
+
+Without the audio files, a write cannot create a sheet or write chapters
+into a sheet with several files. Chapters past a file of unknown length
+are refused, since the write cannot tell where that file ends. CUE cannot
+escape `"`, so a value's double quotes are written as single quotes, and
+an audio file name with one is refused.
 
 ## XML
 
