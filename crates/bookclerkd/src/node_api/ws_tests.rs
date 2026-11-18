@@ -778,7 +778,7 @@ async fn work_frames_seal_secrets_and_resume_refuses_lost_fences() {
 
     let logs = logs.text();
     assert!(
-        logs.contains("job handed to host node"),
+        logs.contains("job handed to branch node"),
         "the capture sees the session's logs"
     );
     assert!(
@@ -815,7 +815,7 @@ async fn the_hosts_node_queue_is_forwarded_and_acked_by_the_host() {
     handshake(&mut client, &node_id, &key, &origin)
         .await
         .unwrap();
-    // The session registers this owner node as the queue's consumer.
+    // The session registers this shared node as the queue's consumer.
     let queue = node_queue_name(&node_id);
     let consumer = format!("node:{node_id}");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

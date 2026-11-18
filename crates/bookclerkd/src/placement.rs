@@ -375,7 +375,7 @@ mod tests {
         let nodes = listed["nodes"].as_array().unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0]["node_id"], json!(mine));
-        assert_eq!(nodes[0]["kind"], "owner");
+        assert_eq!(nodes[0]["kind"], "shared");
         assert_eq!(nodes[0]["owner"]["user_id"], host.id);
         assert_eq!(nodes[0]["owner"]["role"], "host");
         let (_, all) = send(&operator, "GET", "/api/config/nodes", Value::Null).await;

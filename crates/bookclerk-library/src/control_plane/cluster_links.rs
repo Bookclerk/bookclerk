@@ -1,4 +1,4 @@
-//! On a host node: the owner clusters this install enrolled into, and the
+//! On a branch node: the owner clusters this install enrolled into, and the
 //! node keys it enrolled with (H-4 design, sections 2 and 8).
 //!
 //! Joining a cluster generates an Ed25519 signing seed and an X25519 box

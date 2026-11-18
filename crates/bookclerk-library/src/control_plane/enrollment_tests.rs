@@ -95,7 +95,7 @@ async fn a_link_redeems_once_into_a_host_node_owned_by_its_user() {
     assert!(!enrolled.replayed);
     assert_eq!(enrolled.owner_user_id, riley);
     let node = load_node(&store, &enrolled.node_id).await.unwrap();
-    assert_eq!(node.kind, NodeKind::Host);
+    assert_eq!(node.kind, NodeKind::Branch);
     assert_eq!(node.owner_user_id, Some(riley));
     assert_eq!(node.cluster_id, enrolled.cluster_id);
     assert_eq!(node.software_version, "1.2.3");
@@ -133,7 +133,7 @@ async fn a_link_redeems_once_into_a_host_node_owned_by_its_user() {
         .await
         .unwrap()
         .into_iter()
-        .filter(|node| node.kind == NodeKind::Host)
+        .filter(|node| node.kind == NodeKind::Branch)
         .collect();
     assert_eq!(hosts.len(), 1);
 
@@ -269,7 +269,7 @@ async fn an_expired_or_revoked_link_does_not_redeem() {
         .await
         .unwrap()
         .iter()
-        .all(|node| node.kind == NodeKind::Owner));
+        .all(|node| node.kind == NodeKind::Shared));
 }
 
 #[tokio::test]
@@ -505,12 +505,12 @@ async fn revoking_a_node_marks_its_credential_and_wakes_every_node() {
         .count();
     assert!(messages >= 1, "no node.revoked message published");
 
-    // An owner node has no credential to revoke.
+    // A shared node has no credential to revoke.
     let owner_node = list_nodes(&store)
         .await
         .unwrap()
         .into_iter()
-        .find(|node| node.kind == NodeKind::Owner)
+        .find(|node| node.kind == NodeKind::Shared)
         .unwrap();
     let err = revoke_node_credential(&store, &operator(), &owner_node.node_id)
         .await
@@ -540,7 +540,7 @@ async fn race_two_redeems(stores: [LibraryStore; 2], minted: &MintedLink) {
         .await
         .unwrap()
         .into_iter()
-        .filter(|node| node.kind == NodeKind::Host)
+        .filter(|node| node.kind == NodeKind::Branch)
         .count();
     assert_eq!(hosts, 1);
     let credentials = node_credentials::Entity::find()
@@ -566,10 +566,10 @@ async fn concurrent_redeems_on_two_sqlite_connections_create_one_node() {
             .await
             .unwrap();
         race_two_redeems([store_a.clone(), store_b.clone()], &minted).await;
-        // Next round starts from no host nodes.
+        // Next round starts from no branch nodes.
         store_a
             .db()
-            .execute_unprepared("DELETE FROM nodes WHERE kind = 'host'")
+            .execute_unprepared("DELETE FROM nodes WHERE kind = 'branch'")
             .await
             .unwrap();
     }
@@ -683,7 +683,7 @@ async fn owner_node_removal_is_one_batch_without_an_interactive_transaction() {
             .await
             .unwrap();
         let enrolled =
-            redeem_enrollment_link_as(&store, &redeem_request(&minted, 7), NodeKind::Owner)
+            redeem_enrollment_link_as(&store, &redeem_request(&minted, 7), NodeKind::Shared)
                 .await
                 .unwrap();
         for node in [&enrolled.node_id, &this_node] {
@@ -740,7 +740,7 @@ async fn owner_node_removal_is_one_batch_without_an_interactive_transaction() {
             .await
             .unwrap();
         let second =
-            redeem_enrollment_link_as(&store, &redeem_request(&minted, 8), NodeKind::Owner)
+            redeem_enrollment_link_as(&store, &redeem_request(&minted, 8), NodeKind::Shared)
                 .await
                 .unwrap();
         let batches_before = kit.batch_sizes().len();
@@ -781,22 +781,22 @@ async fn a_shared_branch_redeem_records_an_owner_node_with_no_socket_credential(
         .await
         .unwrap();
     let req = redeem_request(&minted, 7);
-    let enrolled = redeem_enrollment_link_as(&store, &req, NodeKind::Owner)
+    let enrolled = redeem_enrollment_link_as(&store, &req, NodeKind::Shared)
         .await
         .unwrap();
     let node = load_node(&store, &enrolled.node_id).await.unwrap();
-    assert_eq!(node.kind, NodeKind::Owner);
+    assert_eq!(node.kind, NodeKind::Shared);
     assert!(load_node_credential(&store, &enrolled.node_id)
         .await
         .unwrap()
         .is_none());
     // The kind is part of the request: a retry as a host is refused.
-    let again = redeem_enrollment_link_as(&store, &req, NodeKind::Owner)
+    let again = redeem_enrollment_link_as(&store, &req, NodeKind::Shared)
         .await
         .unwrap();
     assert!(again.replayed);
     assert_forbidden(
-        &redeem_enrollment_link_as(&store, &req, NodeKind::Host)
+        &redeem_enrollment_link_as(&store, &req, NodeKind::Branch)
             .await
             .unwrap_err(),
     );
@@ -949,7 +949,7 @@ async fn a_shared_branch_redeem_records_an_owner_node_with_no_socket_credential(
         1
     );
 
-    // A branch (host node) is revoked, not removed.
+    // A branch (branch node) is revoked, not removed.
     let minted = mint_enrollment_link(&store, &operator(), owner, "desk", None)
         .await
         .unwrap();

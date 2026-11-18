@@ -254,7 +254,7 @@ fn parse(at: &str) -> Option<DateTime<Utc>> {
 /// True when `node_id` is a branch this library trusts: a `host` node with
 /// a live credential and an active owner user.
 pub(crate) async fn is_trusted_branch(store: &LibraryStore, row: &nodes::Model) -> Result<bool> {
-    if row.kind != "host" {
+    if row.kind != "branch" {
         return Ok(false);
     }
     let Some(owner) = row.owner_user_id else {
@@ -282,7 +282,7 @@ pub async fn trusted_branches(store: &LibraryStore) -> Result<Vec<String>> {
     let rows = read_paged(
         store,
         nodes::Entity::find()
-            .filter(nodes::Column::Kind.eq("host"))
+            .filter(nodes::Column::Kind.eq("branch"))
             .filter(nodes::Column::OwnerUserId.is_not_null())
             .order_by_asc(nodes::Column::NodeId),
         None,

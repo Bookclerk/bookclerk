@@ -1,4 +1,4 @@
-//! Wire protocol between a Bookclerk host node and its owner cluster.
+//! Wire protocol between a Bookclerk branch node and its owner cluster.
 //!
 //! A host connects to `GET /api/node/v1/connect` with the WebSocket
 //! subprotocol [`SUBPROTOCOL`] and proves itself with the Ed25519 key it
@@ -70,7 +70,7 @@
 //! node at once. Joining with a sign-in instead of a link is the OAuth
 //! code + PKCE flow of the built-in client [`BRANCH_CLIENT_ID`] ([`OwnerInfo`],
 //! [`OAuthEnrollRequest`]). An Owner of the library may instead let the
-//! install join as a shared branch (an owner node, [`ConnectionType::SharedBranch`]): its
+//! install join as a shared branch (a shared node, [`ConnectionType::SharedBranch`]): its
 //! redeem answer carries a [`SharedBranchBootstrap`] sealed to the node's box key.
 //! A branch's redeem answer may carry the signing-in user's own store
 //! accounts as an [`AccountBundle`] sealed the same way, when the user

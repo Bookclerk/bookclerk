@@ -435,7 +435,7 @@ impl HostJobCtx {
     }
 
     /// Asks the owner which titles this acquire should fetch, and with
-    /// which destinations (the owner node's, the primary first, each with
+    /// which destinations (the shared node's, the primary first, each with
     /// its own `DownloadOptions`).
     ///
     /// # Errors

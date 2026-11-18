@@ -1,6 +1,6 @@
 //! Host-node enrollment: single-use links, redeem, and revocation.
 //!
-//! A link enrolls one independent Bookclerk install (a *host node*) into this
+//! A link enrolls one independent Bookclerk install (a *branch node*) into this
 //! cluster. The owner keeps only `hash_token(secret)`; the secret travels in
 //! the URL fragment of `https://<origin>/enroll#bcn1.<link_id>.<secret>`,
 //! which proxies and access logs never see.
@@ -13,7 +13,7 @@
 //!
 //! Redeeming checks the hash, expiry, single use, revocation, the link
 //! user's status, and the enrollment switch inside one canonical batch that
-//! also inserts the `nodes` row (`kind = host`, owned by the link's user),
+//! also inserts the `nodes` row (`kind = branch`, owned by the link's user),
 //! the `node_credentials` row, and an idempotency receipt. Two redeems of one
 //! link create at most one node on every backend.
 //!
@@ -614,7 +614,7 @@ pub(super) async fn insert_link_while_switch_holds(
     Ok(batch::rows_affected(&reply, 0) == 1)
 }
 
-/// Mints a link that enrolls one host node for `for_user_id`.
+/// Mints a link that enrolls one branch node for `for_user_id`.
 ///
 /// `ttl` defaults to 24 hours and must be 5 minutes to 7 days. The insert
 /// is predicated on the enrollment switch revision read as enabled, so a
@@ -965,7 +965,7 @@ pub async fn record_node_left(store: &LibraryStore, node_id: &str) -> Result<boo
         let _ = store
             .insert_security_audit_event(&format!("node:{node_id}"), "node_left", None)
             .await;
-        tracing::info!(node_id, "host node left the cluster");
+        tracing::info!(node_id, "branch node left the cluster");
     }
     notify_all_nodes(
         store,
@@ -1078,13 +1078,13 @@ pub async fn redeem_enrollment_link(
     store: &LibraryStore,
     req: &RedeemRequest,
 ) -> Result<EnrolledNode> {
-    redeem_enrollment_link_as(store, req, super::NodeKind::Host).await
+    redeem_enrollment_link_as(store, req, super::NodeKind::Branch).await
 }
 
 /// [`redeem_enrollment_link`] for a node of `kind`: the same canonical
 /// batch, recording `kind` on the `nodes` row.
 ///
-/// A [`super::NodeKind::Owner`] node (a shared branch, which joined with a sign-in
+/// A [`super::NodeKind::Shared`] node (a shared branch, which joined with a sign-in
 /// an Owner approved as such) shares the library's database, so it gets no
 /// `node_credentials` row: it never dials the node socket. The kind is part
 /// of the request hash, so a retry of a branch redeem as a shared branch (or the
@@ -1245,7 +1245,7 @@ pub async fn redeem_enrollment_link_as(
 }
 
 /// Request hash of a redeem: the link, the secret's hash, both keys, and
-/// (for anything but a host node) the node kind.
+/// (for anything but a branch node) the node kind.
 fn redeem_hash(req: &RedeemRequest, token_hash: &str, kind: super::NodeKind) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"bookclerk-enroll-node-v1\0");
@@ -1255,7 +1255,7 @@ fn redeem_hash(req: &RedeemRequest, token_hash: &str, kind: super::NodeKind) -> 
     hasher.update([0]);
     hasher.update(&req.sign_public_key);
     hasher.update(&req.box_public_key);
-    if kind != super::NodeKind::Host {
+    if kind != super::NodeKind::Branch {
         hasher.update([0]);
         hasher.update(kind.as_str().as_bytes());
     }
@@ -1289,10 +1289,10 @@ async fn redeem_replay(
     }))
 }
 
-/// A host node's stored credential.
+/// A branch node's stored credential.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NodeCredential {
-    /// Host node.
+    /// Branch node.
     pub node_id: String,
     /// Ed25519 public signing key.
     pub sign_public_key: Vec<u8>,
@@ -1322,7 +1322,7 @@ impl From<node_credentials::Model> for NodeCredential {
     }
 }
 
-/// Reads a host node's credential.
+/// Reads a branch node's credential.
 ///
 /// # Errors
 ///
@@ -1338,7 +1338,7 @@ pub async fn load_node_credential(
         .map(NodeCredential::from))
 }
 
-/// Stamps `last_connected_at` after a host node authenticates. Returns
+/// Stamps `last_connected_at` after a branch node authenticates. Returns
 /// false (and stamps nothing) when the credential is missing or revoked,
 /// so a revoke that lands mid-handshake still refuses the connection.
 ///
@@ -1359,17 +1359,17 @@ pub async fn record_node_connected(store: &LibraryStore, node_id: &str) -> Resul
     Ok(updated.rows_affected == 1)
 }
 
-/// Revokes a host node's credential and tells every node, so the node
+/// Revokes a branch node's credential and tells every node, so the node
 /// holding that host's connection can close it.
 ///
-/// The operator and an Owner may revoke any host node; any other active
+/// The operator and an Owner may revoke any branch node; any other active
 /// user may revoke the nodes they own. Revoking twice keeps the first time.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::NotFound`] when the node is unknown or not the
 /// caller's (the two read the same), [`LibraryError::Invalid`] when the
-/// node has no host credential (an owner node), and the write error when
+/// node has no host credential (a shared node), and the write error when
 /// the update fails.
 pub async fn revoke_node_credential(
     store: &LibraryStore,
@@ -1409,7 +1409,7 @@ pub async fn revoke_node_credential(
         .ok_or_else(not_found)?;
     // A revoked branch is one that left: it holds nothing here any more.
     super::branch_catalog::detach_branch_titles(store, node_id, super::DETACHED_LEFT).await?;
-    tracing::info!(node_id, "revoked host node credential");
+    tracing::info!(node_id, "revoked branch node credential");
     notify_all_nodes(
         store,
         NodeMessage::NodeRevoked {

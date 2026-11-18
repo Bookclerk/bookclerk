@@ -13,7 +13,7 @@
 //!
 //! External guests share the same [`SourceScope`] boundary.
 //!
-//! On a host node running an owner cluster's job, the store credentials are
+//! On a branch node running an owner cluster's job, the store credentials are
 //! the ones the owner handed with the job
 //! ([`ExternalSource::with_handed_credentials`]): the guest gets only those,
 //! the host's own library is never read for credentials, and a scan

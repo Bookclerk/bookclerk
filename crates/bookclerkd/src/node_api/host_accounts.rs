@@ -24,7 +24,7 @@
 //! that is not shareable, linked to the branch's owner, shared with this
 //! branch, and only above the last revision applied from it.
 //!
-//! Both frames run one at a time on this owner node ([`ACCOUNTS_GATE`]),
+//! Both frames run one at a time on this shared node ([`ACCOUNTS_GATE`]),
 //! and each is refused unless the connection it came on is still the
 //! branch's live one. A branch that timed out waiting for an offer and
 //! then disconnected the account over a new connection therefore never
@@ -46,7 +46,7 @@ use serde_json::json;
 
 use super::work::{error, HostContext};
 
-/// Serializes `accounts.add` and `accounts.remove` on this owner node,
+/// Serializes `accounts.add` and `accounts.remove` on this shared node,
 /// across every branch connection. Both are rare, person-driven actions.
 pub(super) static ACCOUNTS_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 

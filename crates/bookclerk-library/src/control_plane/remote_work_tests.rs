@@ -103,7 +103,7 @@ async fn add_host_node(store: &LibraryStore, node_id: &str, owner: i64) {
         scratch_bytes: Set(None),
         target: Set(String::new()),
         labels_json: Set("[]".into()),
-        kind: Set("host".into()),
+        kind: Set("branch".into()),
         owner_user_id: Set(Some(owner)),
         ..Default::default()
     }
@@ -3542,7 +3542,7 @@ async fn write_back_is_one_guarded_batch_without_begin() {
 }
 
 /// Permits taken under a higher limit are still found after the limit is
-/// lowered (or on an owner node configured lower), so the fence stays live
+/// lowered (or on a shared node configured lower), so the fence stays live
 /// and finishing gives them back.
 #[tokio::test]
 async fn permits_above_a_lowered_limit_are_still_held() {

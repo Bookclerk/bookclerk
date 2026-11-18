@@ -178,8 +178,8 @@ how it relates to other libraries:
   has none and only dials out. Relationships: a **local branch** is a
   local branch contributing to a core branch, a **remote branch** a core
   branch contributing to another core branch, and a **shared branch** two
-  core branches sharing one database. Only core branches can be joined or
-  share a database. Remote and local branches use the same dial-out
+  installs sharing one database (core and local may mix; the library is
+  reachable through its core installs). Only core branches can be joined. Remote and local branches use the same dial-out
   websocket and the rules above; which one a link is follows from whether
   the contributing branch reports a `public_origin`, so gaining an address
   needs no new join. A clerk is not a branch. Features that need inbound

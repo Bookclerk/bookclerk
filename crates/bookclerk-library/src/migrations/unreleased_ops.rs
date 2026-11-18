@@ -1126,7 +1126,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         scratch_bytes INTEGER,
         target TEXT NOT NULL DEFAULT '',
         labels_json TEXT NOT NULL DEFAULT '[]',
-        kind TEXT NOT NULL DEFAULT 'owner' CHECK (kind IN ('owner', 'host')),
+        kind TEXT NOT NULL DEFAULT 'shared' CHECK (kind IN ('shared', 'branch')),
         owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
         share_books INTEGER CHECK (share_books IN (0, 1)),
         include_branches INTEGER CHECK (include_branches IN (0, 1)),
@@ -1503,7 +1503,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         PRIMARY KEY (owner_cluster_id, plugin_key)
     )",
     ),
-    // H-4 step 9: one title's streamed upload from a host node. Only the
+    // H-4 step 9: one title's streamed upload from a branch node. Only the
     // token's hash is stored; nothing of the files is.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS node_upload_sessions (

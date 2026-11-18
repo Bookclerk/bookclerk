@@ -1,11 +1,11 @@
 //! The host side of the node API (H-4 design, sections 2 to 4; step 7).
 //!
-//! A host node is a separate Bookclerk install that enrolled into an owner
+//! A branch node is a separate Bookclerk install that enrolled into an owner
 //! cluster with a single-use link ([`join_cluster`]) or a sign-in at the
 //! owner ([`inspect_library`], [`authorize_branch`],
 //! [`redeem_branch_code`]); it tells the owner when it leaves
 //! ([`announce_leaving`]). An empty install may instead join as a shared branch, an
-//! owner node that shares the library's database and DEK
+//! shared node that shares the library's database and DEK
 //! ([`redeem_shared_branch_code`], [`apply_shared_branch_bootstrap`]). Its node keys are
 //! sealed in its own database
 //! (`bookclerk_library::control_plane::record_cluster_link`). For every

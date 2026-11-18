@@ -2429,7 +2429,7 @@ export interface ConfigNodeView {
   /** True for the node serving this request. */
   this_node: boolean;
   /** `owner` (shares the database) or `host` (its own database, enrolled to contribute). */
-  kind: "owner" | "host";
+  kind: "shared" | "branch";
   /** User who administers this node, when one is assigned. */
   owner: { user_id: number; display_name: string | null; role: string } | null;
 }

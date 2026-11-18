@@ -59,8 +59,8 @@ function NodeCard({ node }: { node: ConfigNodeView }) {
         {!node.runtime.schedulable ? (
           <Badge className="bg-brick/10 text-brick normal-case tracking-normal">Drained</Badge>
         ) : null}
-        {node.kind === "host" ? (
-          <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">Host node</Badge>
+        {node.kind === "branch" ? (
+          <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">Branch</Badge>
         ) : null}
         {node.owner ? (
           <span className="text-xs text-ink/55">Owned by {ownerName(node.owner)}</span>
@@ -162,7 +162,7 @@ export function StatusPage({
                   value={`${cluster.live} / ${cluster.nodes} live`}
                   detail={[
                     cluster.drained > 0 ? `${cluster.drained} drained` : null,
-                    cluster.host_nodes > 0 ? `${cluster.host_nodes} host node(s)` : null,
+                    cluster.host_nodes > 0 ? `${cluster.host_nodes} branch node(s)` : null,
                   ]
                     .filter(Boolean)
                     .join(" · ")}

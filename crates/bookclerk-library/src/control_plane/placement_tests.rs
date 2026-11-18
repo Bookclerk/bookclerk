@@ -730,9 +730,9 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
         .await
         .unwrap();
 
-    // Every node starts as an owner node with no owner.
+    // Every node starts as a shared node with no owner.
     let node = load_node(&store, &mine).await.unwrap();
-    assert_eq!(node.kind, NodeKind::Owner);
+    assert_eq!(node.kind, NodeKind::Shared);
     assert_eq!(node.owner_user_id, None);
 
     // Only an operator assigns ownership, and only to a real user.

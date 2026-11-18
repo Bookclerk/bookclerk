@@ -1,7 +1,7 @@
 //! Per-item trust: which jobs a node may claim, and the scan-all planner.
 //!
-//! A node that shares the library database and `master.key` (kind `owner`)
-//! already holds every secret, so it may claim any job. A Host node keeps
+//! A node that shares the library database and `master.key` (kind `shared`)
+//! already holds every secret, so it may claim any job. A Branch node keeps
 //! its own database and receives a job's secrets from the owner, so what it
 //! may claim follows the role of the user who owns it:
 //!
@@ -57,14 +57,14 @@ pub enum Claimant {
     #[default]
     Local,
     /// A node that authenticated over the node API. It must have a `nodes`
-    /// row and, unless it is an owner node, a live node credential.
+    /// row and, unless it is a shared node, a live node credential.
     Remote,
 }
 
 /// What a node is trusted with, resolved from the database.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeTrust {
-    /// Every job: an owner node, or a Host owned by an active Owner or
+    /// Every job: a shared node, or a Host owned by an active Owner or
     /// Administrator.
     All,
     /// Only jobs whose secrets all belong to this user.
@@ -118,9 +118,9 @@ pub async fn node_trust(
             Claimant::Remote => NodeTrust::Nothing,
         });
     };
-    // Only the exact stored kind `owner` shares the database; anything
-    // else (including text this build does not know) is treated as a Host.
-    if row.kind == "owner" {
+    // Only the exact stored kind `shared` shares the database; anything
+    // else (including text this build does not know) is treated as a branch.
+    if row.kind == "shared" {
         return Ok(NodeTrust::All);
     }
     let credential_live = load_node_credential(store, &row.node_id)
@@ -346,7 +346,7 @@ pub async fn job_item_accounts(
 /// user's pinned jobs and jobs with requirements), as a branch takes only
 /// its owner's work unless its
 /// operator turned on "Download for other members". A scope never widens
-/// trust, and an owner node, which shares the database, keeps every job.
+/// trust, and a shared node, which shares the database, keeps every job.
 ///
 /// # Errors
 ///
@@ -369,7 +369,7 @@ pub async fn node_trust_in_scope(
         // A worker in this process (no `nodes` row) holds the database.
         return Ok(trust);
     };
-    if row.kind == "owner" {
+    if row.kind == "shared" {
         return Ok(trust);
     }
     Ok(row

@@ -859,7 +859,7 @@ async fn add_branch(
         compatible: Set(1),
         target: Set(String::new()),
         labels_json: Set("[]".into()),
-        kind: Set("host".into()),
+        kind: Set("branch".into()),
         owner_user_id: Set(Some(owner)),
         ..Default::default()
     }

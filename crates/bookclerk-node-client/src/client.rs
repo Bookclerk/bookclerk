@@ -695,7 +695,7 @@ impl Shared {
         }
     }
 
-    /// `acquire.plan`: the titles still to acquire and the owner node's
+    /// `acquire.plan`: the titles still to acquire and the shared node's
     /// destinations, the primary first.
     pub(crate) async fn acquire_plan(
         &self,
@@ -1690,7 +1690,7 @@ impl<R: HostJobRunner> HostClient<R> {
                     tracing::error!(
                         node_id = %self.shared.node_id,
                         cluster_id = %self.shared.cluster_id,
-                        "the owner revoked this host node; stopping the cluster link"
+                        "the owner revoked this branch node; stopping the cluster link"
                     );
                     return ClientExit::Revoked;
                 }

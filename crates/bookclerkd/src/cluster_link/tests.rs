@@ -2542,7 +2542,7 @@ mod results_and_uploads {
         );
     }
 
-    /// An owner node with two destinations whose naming templates differ
+    /// A shared node with two destinations whose naming templates differ
     /// gets each destination written under its own key, as a local
     /// acquire would: the plan carries both destinations' options, the
     /// file crosses the network once, the title is recorded under the

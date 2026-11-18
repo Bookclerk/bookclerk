@@ -10541,7 +10541,7 @@
         "tags": [
           "Cluster"
         ],
-        "summary": "`DELETE /api/config/nodes/{node_id}`: remove an owner node (a shared branch, or\nany node sharing this database) that is no longer running from the\nlibrary's node list. The operator or an Owner may remove any; another\nuser only one they own. A running node, this node, or a branch is\nrefused (a branch is revoked instead).",
+        "summary": "`DELETE /api/config/nodes/{node_id}`: remove a shared node (a shared branch, or\nany node sharing this database) that is no longer running from the\nlibrary's node list. The operator or an Owner may remove any; another\nuser only one they own. A running node, this node, or a branch is\nrefused (a branch is revoked instead).",
         "operationId": "delete_owner_node",
         "parameters": [
           {
@@ -10556,7 +10556,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The owner node was removed.",
+            "description": "The shared node was removed.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10716,7 +10716,7 @@
         "tags": [
           "Cluster"
         ],
-        "summary": "`GET /api/config/shared-branches`: the owner nodes (this one and its shared branches) for\nSettings → Shared branches, shaped like `GET /api/config/nodes`. The operator or\nan Owner sees every one, as `DELETE /api/config/nodes/{node_id}` lets\nthem remove any; another user only the ones they own, which the nodes\nlisting already shows them. Branches are not listed.",
+        "summary": "`GET /api/config/shared-branches`: the shared nodes (this one and its shared branches) for\nSettings → Shared branches, shaped like `GET /api/config/nodes`. The operator or\nan Owner sees every one, as `DELETE /api/config/nodes/{node_id}` lets\nthem remove any; another user only the ones they own, which the nodes\nlisting already shows them. Branches are not listed.",
         "operationId": "get_shared_branches",
         "responses": {
           "200": {
@@ -16678,7 +16678,7 @@
           "Cluster"
         ],
         "summary": "`DELETE /api/config/node-credentials/{node_id}`: revoke an enrolled\nhost's credential so it can no longer connect.",
-        "description": "# Arguments\n\n* `caller` - Who is asking; the operator or an Owner may revoke any host,\n  any other active user only the hosts they own.\n* `node_id` - The host node to revoke.\n\n# Returns\n\n`{credential}` with `revoked_at` set; revoking twice keeps the first\ntime.\n\n# Errors\n\nReturns 404 when the node is unknown or not the caller's, 400 when the\nnode has no host credential, 403 for a disabled user, and an error\nresponse when the write fails.",
+        "description": "# Arguments\n\n* `caller` - Who is asking; the operator or an Owner may revoke any host,\n  any other active user only the hosts they own.\n* `node_id` - The branch node to revoke.\n\n# Returns\n\n`{credential}` with `revoked_at` set; revoking twice keeps the first\ntime.\n\n# Errors\n\nReturns 404 when the node is unknown or not the caller's, 400 when the\nnode has no host credential, 403 for a disabled user, and an error\nresponse when the write fails.",
         "operationId": "delete_node_credential",
         "parameters": [
           {
@@ -16840,12 +16840,12 @@
         "tags": [
           "Cluster"
         ],
-        "summary": "`GET /api/config/host-enrollment`: whether host nodes may enroll.",
+        "summary": "`GET /api/config/host-enrollment`: whether branch nodes may enroll.",
         "description": "# Returns\n\n`{enabled, revision}`; `revision` is `null` while the default (enabled)\napplies.\n\n# Errors\n\nReturns an error response when the switch cannot be read.",
         "operationId": "get_host_enrollment",
         "responses": {
           "200": {
-            "description": "Whether host nodes may enroll.",
+            "description": "Whether branch nodes may enroll.",
             "content": {
               "application/json": {
                 "schema": {
@@ -31644,7 +31644,7 @@
       },
       "BranchView": {
         "type": "object",
-        "description": "One branch (host node) of this library.",
+        "description": "One branch (branch node) of this library.",
         "required": [
           "node_id",
           "created_at",
@@ -35135,7 +35135,7 @@
         "properties": {
           "enabled": {
             "type": "boolean",
-            "description": "Whether host nodes may enroll into this cluster.",
+            "description": "Whether branch nodes may enroll into this cluster.",
             "example": true
           },
           "revision": {
@@ -35629,7 +35629,7 @@
           },
           {
             "$ref": "#/components/schemas/SharedBranchJoined",
-            "description": "Joined as a shared branch: this install restarts as an owner node of the library."
+            "description": "Joined as a shared branch: this install restarts as a shared node of the library."
           }
         ],
         "description": "JSON body once a join completed: as a branch, or as a shared branch."
@@ -36225,7 +36225,7 @@
         "properties": {
           "node_id": {
             "type": "string",
-            "description": "Host node.",
+            "description": "Branch node.",
             "example": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
           },
           "link_id": {
@@ -36308,10 +36308,10 @@
         "type": "string",
         "description": "How a node joined the cluster.",
         "enum": [
-          "owner",
-          "host"
+          "shared",
+          "branch"
         ],
-        "example": "owner"
+        "example": "shared"
       },
       "NodeOwnerChanged": {
         "type": "object",
@@ -36753,7 +36753,7 @@
               "boolean",
               "null"
             ],
-            "description": "A branch's sharing setting, as it last reported it; `null` for an\nowner node.",
+            "description": "A branch's sharing setting, as it last reported it; `null` for an\nshared node.",
             "example": true
           },
           "include_branches": {
@@ -36761,7 +36761,7 @@
               "boolean",
               "null"
             ],
-            "description": "A branch's include-branches setting, as it last reported it;\n`null` for an owner node.",
+            "description": "A branch's include-branches setting, as it last reported it;\n`null` for a shared node.",
             "example": false
           },
           "owner": {
@@ -41055,7 +41055,7 @@
         "properties": {
           "enabled": {
             "type": "boolean",
-            "description": "Whether host nodes may enroll into this cluster.",
+            "description": "Whether branch nodes may enroll into this cluster.",
             "example": true
           }
         },
@@ -42670,7 +42670,7 @@
           },
           "restarting": {
             "type": "boolean",
-            "description": "Always `true`: the daemon restarts as an owner node right after answering.",
+            "description": "Always `true`: the daemon restarts as a shared node right after answering.",
             "example": true
           }
         }
@@ -43053,7 +43053,7 @@
           },
           "shared_branch": {
             "type": "boolean",
-            "description": "Offer to join as a shared branch (an owner node that shares the library's\ndatabase): only an empty install may, and its data is replaced.",
+            "description": "Offer to join as a shared branch (a shared node that shares the library's\ndatabase): only an empty install may, and its data is replaced.",
             "example": false
           }
         },

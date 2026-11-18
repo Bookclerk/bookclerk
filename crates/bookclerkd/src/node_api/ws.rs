@@ -43,7 +43,7 @@
 //! superseded it, or the node was revoked) or that cannot be queued: the
 //! host never sees that job, so its claim is given back unspent at once.
 //!
-//! A newer connection for the same host shares the owner node's wake
+//! A newer connection for the same host shares the shared node's wake
 //! catalog row with the one it supersedes. Promoting a welcomed connection
 //! to live with enabling the row, and unregistering one with disabling it,
 //! run under one lock, and only the connection still live disables the row,
@@ -168,7 +168,7 @@ struct SessionSlot {
     close: watch::Sender<Option<u16>>,
 }
 
-/// Host connections on this owner node, by node id.
+/// Host connections on this shared node, by node id.
 #[derive(Default)]
 struct SessionTable {
     /// The live connection of each node: it has been welcomed.
@@ -179,7 +179,7 @@ struct SessionTable {
     pending: HashMap<String, Vec<SessionSlot>>,
 }
 
-/// Host connections on this owner node.
+/// Host connections on this shared node.
 static SESSIONS: LazyLock<Mutex<SessionTable>> =
     LazyLock::new(|| Mutex::new(SessionTable::default()));
 
@@ -234,7 +234,7 @@ pub(crate) fn unregister_for_test(node_id: &str, serial: u64) {
     unregister(node_id, serial);
 }
 
-/// True while this owner node holds a live connection of `node_id`.
+/// True while this shared node holds a live connection of `node_id`.
 #[cfg(test)]
 pub(crate) fn node_session_live(node_id: &str) -> bool {
     sessions().live.contains_key(node_id)
@@ -314,7 +314,7 @@ pub(super) struct Registered {
 
 /// Makes the welcomed pending connection `serial` of `node_id` (from
 /// [`register_pending`], whose `close` receiver it hands back) the node's
-/// live one with [`promote`] and enables this owner node's wake catalog row
+/// live one with [`promote`] and enables this shared node's wake catalog row
 /// for it, both under [`CATALOG_GATE`]. `None`, with nothing enabled, when
 /// [`promote`] refuses (the connection was revoked during the handshake).
 pub(super) async fn start_session(
@@ -501,7 +501,7 @@ async fn run(
         close,
         mut wakes,
     } = authed.registered;
-    tracing::info!(node_id = %authed.node_id, ?peer, "host node connected");
+    tracing::info!(node_id = %authed.node_id, ?peer, "branch node connected");
     // Uploads are received by this node; its own identity file names it
     // (the queue's process-wide id is the consumer's, not necessarily it).
     let receiving_node_id =
@@ -520,7 +520,7 @@ async fn run(
     };
     session(&library, socket, &host, authed.resume, &mut wakes, close).await;
     end_session(&library, &authed.node_id, serial, wakes).await;
-    tracing::info!(node_id = %authed.node_id, "host node disconnected");
+    tracing::info!(node_id = %authed.node_id, "branch node disconnected");
 }
 
 /// Closes a refused connection and records why.
@@ -539,7 +539,7 @@ async fn refuse(
         node_id = refusal.node_id.as_deref().unwrap_or(""),
         ?peer,
         reason = refusal.reason,
-        "host node handshake refused"
+        "branch node handshake refused"
     );
     let actor = refusal
         .node_id
@@ -839,7 +839,7 @@ async fn session(
     if let Some((code, reason)) =
         session_loop(library, stream, &outbox, host, resume, wakes, close).await
     {
-        tracing::info!(node_id = %host.node_id, code, reason, "closing host node connection");
+        tracing::info!(node_id = %host.node_id, code, reason, "closing branch node connection");
         let close = Message::Close(Some(CloseFrame {
             code,
             reason: reason.into(),
@@ -989,7 +989,7 @@ async fn session_loop(
                                 let answer = match record_node_left(library, node_id).await {
                                     Ok(_) => Body::Accepted {},
                                     Err(err) => {
-                                        tracing::warn!(node_id, error = %err, "could not record a leaving host node");
+                                        tracing::warn!(node_id, error = %err, "could not record a leaving branch node");
                                         Body::Error {
                                             code: "unavailable".into(),
                                             message: "the leave could not be recorded; retry".into(),
@@ -1009,7 +1009,7 @@ async fn session_loop(
                         }
                         let answer = work::answer(library, host, frame).await;
                         if !deliver(library, outbox, host, &close, answer).await {
-                            tracing::warn!(node_id, "host node stopped reading; dropping the connection");
+                            tracing::warn!(node_id, "branch node stopped reading; dropping the connection");
                             return None;
                         }
                     }

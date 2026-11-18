@@ -16,7 +16,7 @@
 //! may). When the library's Owner chooses shared branch, the sealed bootstrap is
 //! opened with the node key and written as this install's own bootstrap
 //! ([`bookclerk_node_client::apply_shared_branch_bootstrap`]); `bookclerkd` then
-//! starts on it as an owner node at its next start.
+//! starts on it as a shared node at its next start.
 //!
 //! The verifier, `state`, code, node keys and bootstrap never go on argv or
 //! into a log.
@@ -255,11 +255,11 @@ pub enum Joined {
     /// A branch: the link is recorded and a running daemon dials it.
     Branch(bookclerk_library::control_plane::ClusterLink),
     /// A shared branch: the library's bootstrap is written; `bookclerkd` starts on
-    /// it as an owner node at its next start.
+    /// it as a shared node at its next start.
     SharedBranch {
         /// The library's cluster id.
         cluster_id: String,
-        /// The owner node id the library recorded.
+        /// The shared node id the library recorded.
         node_id: String,
         /// What was written.
         applied: AppliedSharedBranch,

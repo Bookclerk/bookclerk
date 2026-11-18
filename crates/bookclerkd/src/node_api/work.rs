@@ -35,7 +35,7 @@
 //! direction, even where the WebSocket library traces frames. The
 //! plaintext lives in zeroizing buffers and is never logged: log lines name
 //! jobs and fences only. A connection keeps no work state; every frame is
-//! checked against the database, so a host can resume on any owner node.
+//! checked against the database, so a host can resume on any shared node.
 
 use std::time::Duration;
 
@@ -81,9 +81,9 @@ pub(crate) struct HostContext {
     /// This connection's owner box secret; its public key went out in
     /// `welcome`, and token write-backs are sealed to it.
     pub owner_box_secret: Zeroizing<[u8; 32]>,
-    /// Lease and semaphore settings of this owner node.
+    /// Lease and semaphore settings of this shared node.
     pub settings: RemoteClaimSettings,
-    /// This owner node's id: uploads granted on this connection are
+    /// This shared node's id: uploads granted on this connection are
     /// received here.
     pub owner_node_id: String,
     /// The daemon, for this node's output destinations and settings.
@@ -194,7 +194,7 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 job_id = %job_id,
                 fence,
                 reason = bounded(&reason),
-                "host node gives a job back"
+                "branch node gives a job back"
             );
             finish_release(library, host, id.clone(), job_id, fence, resumed).await
         }
@@ -773,7 +773,7 @@ async fn claim(
                 job_id = %job.id,
                 fence,
                 kind = job.kind.as_str(),
-                "job handed to host node"
+                "job handed to branch node"
             );
             Ok(work)
         }
@@ -785,7 +785,7 @@ async fn claim(
                 node_id = %host.node_id,
                 job_id = %job.id,
                 fence,
-                "job secrets could not be sealed for host node"
+                "job secrets could not be sealed for branch node"
             );
             finish_remote_job(
                 library,
@@ -795,7 +795,7 @@ async fn claim(
                 host.settings.limits,
                 RemoteOutcome::Fail {
                     kind: SECRETS_UNAVAILABLE,
-                    message: "the job's secrets could not be sealed for a host node",
+                    message: "the job's secrets could not be sealed for a branch node",
                 },
             )
             .await?;
@@ -1081,7 +1081,7 @@ async fn instance_config(
         instance_id,
         revision,
         secrets = has_secrets && trusted,
-        "instance config handed to host node"
+        "instance config handed to branch node"
     );
     Ok(frame)
 }
@@ -1178,7 +1178,7 @@ pub(crate) async fn resume(
         renewed = renewed.len(),
         lost = lost.len(),
         unchecked = unchecked.len(),
-        "host node resumed its leases"
+        "branch node resumed its leases"
     );
     Body::Resumed {
         lease_secs: (!renewed.is_empty()).then_some(host.settings.lease_secs),

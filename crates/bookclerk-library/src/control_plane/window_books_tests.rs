@@ -44,7 +44,7 @@ pub(crate) async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) 
         compatible: Set(1),
         target: Set(String::new()),
         labels_json: Set("[]".into()),
-        kind: Set("host".into()),
+        kind: Set("branch".into()),
         owner_user_id: Set(Some(owner)),
         ..Default::default()
     }

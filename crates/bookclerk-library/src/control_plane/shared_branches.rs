@@ -1,15 +1,15 @@
-//! Shared branches: owner nodes (`kind = owner`) that joined a library with a
+//! Shared branches: shared nodes (`kind = shared`) that joined a library with a
 //! sign-in an Owner approved as such, sharing its database and DEK.
 //!
 //! - [`library_contents`] is what a joining install checks before it may
 //!   join as a shared branch: a shared branch's own database is replaced by the library's,
 //!   so the install must hold no library data of its own (no users, store
 //!   accounts, books, or libraries it is a branch of).
-//! - [`owner_nodes_visible_to`] lists the owner nodes a caller may see
+//! - [`owner_nodes_visible_to`] lists the shared nodes a caller may see
 //!   (Settings → Shared branches), by the same rule [`remove_owner_node`] removes
 //!   them.
-//! - [`remove_owner_node`] removes an owner node that is no longer running
-//!   from the library's node list, the way any owner node leaves.
+//! - [`remove_owner_node`] removes a shared node that is no longer running
+//!   from the library's node list, the way any shared node leaves.
 
 use crate::EntityKind;
 use chrono::Utc;
@@ -94,7 +94,7 @@ pub async fn library_contents(store: &LibraryStore) -> Result<LibraryContents> {
     })
 }
 
-/// The owner nodes (`kind = owner`: this one and its shared branches) `actor` may
+/// The shared nodes (`kind = shared`: this one and its shared branches) `actor` may
 /// see, by the rule [`remove_owner_node`] removes them: the operator or an
 /// active Owner sees every one; another active user only the ones they own;
 /// an unknown or disabled user none.
@@ -109,7 +109,7 @@ pub async fn owner_nodes_visible_to(
     let owner_nodes = list_nodes(store)
         .await?
         .into_iter()
-        .filter(|node| node.kind == NodeKind::Owner);
+        .filter(|node| node.kind == NodeKind::Shared);
     match actor {
         EnrollmentActor::Operator { .. } => Ok(owner_nodes.collect()),
         EnrollmentActor::User { user_id } => {
@@ -128,7 +128,7 @@ pub async fn owner_nodes_visible_to(
     }
 }
 
-/// Removes owner node `node_id` from the library's node list, in one
+/// Removes shared node `node_id` from the library's node list, in one
 /// transaction: its `nodes` row (and with it its labels and credentials),
 /// status, event-subscriber registrations, secret handoffs, and plugin
 /// deployments with their observations. Only a node that is not
@@ -142,13 +142,13 @@ pub async fn owner_nodes_visible_to(
 /// database credentials or DEK it held; rotate those when it is not
 /// trusted any more.
 ///
-/// The operator or an Owner may remove any owner node; another user only
+/// The operator or an Owner may remove any shared node; another user only
 /// one they own.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::NotFound`] for an unknown node or one the
-/// caller may not see, [`LibraryError::Invalid`] for a host node (revoke
+/// caller may not see, [`LibraryError::Invalid`] for a branch node (revoke
 /// it instead) or this node, [`LibraryError::Conflict`] while it is live,
 /// and the write error.
 pub async fn remove_owner_node(
@@ -177,7 +177,7 @@ pub async fn remove_owner_node(
             format!("user:{}", user.id)
         }
     };
-    if node.kind != NodeKind::Owner {
+    if node.kind != NodeKind::Shared {
         return Err(LibraryError::Invalid(format!(
             "node {node_id} is a branch: revoke it instead"
         )));
@@ -237,7 +237,7 @@ pub async fn remove_owner_node(
          AND NOT EXISTS (SELECT 1 FROM node_status WHERE node_id = ?)",
         vec![
             batch::text(node_id),
-            batch::text(NodeKind::Owner.as_str()),
+            batch::text(NodeKind::Shared.as_str()),
             batch::text(node_id),
         ],
     ));
@@ -290,10 +290,10 @@ pub async fn remove_owner_node(
         tracing::warn!(
             node_id,
             error = %err,
-            "removed an owner node, but could not record the owner_node_removed audit event"
+            "removed a shared node, but could not record the owner_node_removed audit event"
         );
     }
-    tracing::info!(node_id, "removed an owner node from the library");
+    tracing::info!(node_id, "removed a shared node from the library");
     Ok(())
 }
 

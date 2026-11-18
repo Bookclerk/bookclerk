@@ -1,4 +1,4 @@
-//! `bookclerk clusters`: this install as a host node of owner clusters,
+//! `bookclerk clusters`: this install as a branch node of owner clusters,
 //! and this host operator's consent to the plugins they ask to run here
 //! (H-4 design, section 5).
 //!
@@ -14,7 +14,7 @@
 //! `join --url <owner>` joins by signing in to the owner library in a
 //! browser (an OAuth code with PKCE, sent back to a loopback listener this
 //! command opens). `--as shared-branch` offers to join as a shared branch instead of a
-//! branch (an owner node sharing the library's database; only an empty
+//! branch (a shared node sharing the library's database; only an empty
 //! install, and only when the library's Owner chooses it). Without `--url`, `join` reads an enrollment link (a
 //! branch invite) from stdin or a prompt, never from argv: the link carries
 //! a single-use secret. A running daemon dials a newly joined cluster
@@ -44,9 +44,9 @@ const CLI_APPROVER: &str = "cli";
 /// `clusters join --as`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum JoinAs {
-    /// A branch (host node) with its own database.
+    /// A branch (branch node) with its own database.
     Branch,
-    /// A shared branch (owner node) sharing the library's database and key.
+    /// A shared branch (shared node) sharing the library's database and key.
     SharedBranch,
 }
 
@@ -360,7 +360,7 @@ pub async fn run(
                     }),
                     || {
                         println!(
-                            "joined library {cluster_id} as shared branch node {node_id} ({} database); restart bookclerkd to start as an owner node of the library",
+                            "joined library {cluster_id} as shared branch node {node_id} ({} database); restart bookclerkd to start as a shared node of the library",
                             applied.database.as_str()
                         );
                     },

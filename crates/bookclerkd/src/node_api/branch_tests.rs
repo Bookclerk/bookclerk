@@ -236,7 +236,7 @@ async fn a_consented_code_enrolls_one_node_and_retries_replay() {
     assert_eq!(status, StatusCode::OK, "{enrolled}");
     let node_id = enrolled["node_id"].as_str().unwrap().to_string();
     let node = load_node(&store, &node_id).await.unwrap();
-    assert_eq!(node.kind, NodeKind::Host);
+    assert_eq!(node.kind, NodeKind::Branch);
     assert_eq!(node.owner_user_id, Some(member));
     {
         use bookclerk_library::entities::node_enrollment_links as links;

@@ -83,10 +83,10 @@ pub enum NodesCommand {
         #[arg(long, conflicts_with = "user")]
         clear: bool,
     },
-    /// Mint a single-use link that enrolls one host node for a user. The
+    /// Mint a single-use link that enrolls one branch node for a user. The
     /// link (with its secret in the URL fragment) is printed once.
     Invite {
-        /// Login name or user id of the user who will own the host node.
+        /// Login name or user id of the user who will own the branch node.
         #[arg(long, value_name = "USER")]
         user: String,
         /// How long the link stays valid (`30m`, `24h`, `7d`; 5m to 7d).
@@ -102,10 +102,10 @@ pub enum NodesCommand {
         /// Invites verb.
         command: InvitesCommand,
     },
-    /// Revoke an enrolled host node's credential. Its connection closes and
+    /// Revoke an enrolled branch node's credential. Its connection closes and
     /// it receives no more work.
     Revoke {
-        /// Host node id.
+        /// Branch node id.
         node: String,
     },
 }
@@ -462,7 +462,7 @@ pub async fn run(
             emit(format, &payload, || {
                 println!("{}", url.as_str());
                 println!(
-                    "enrolls one host node for {}; expires {}; shown once",
+                    "enrolls one branch node for {}; expires {}; shown once",
                     describe_user(&owner),
                     minted.link.expires_at
                 );
@@ -523,7 +523,7 @@ pub async fn run(
             });
             emit(format, &payload, || {
                 println!(
-                    "host node {} revoked at {}",
+                    "branch node {} revoked at {}",
                     credential.node_id,
                     credential.revoked_at.as_deref().unwrap_or("-")
                 );

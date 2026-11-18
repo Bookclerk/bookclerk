@@ -1,4 +1,4 @@
-//! On the owner: what a Host node may read about the plugins deployed to
+//! On the owner: what a Branch node may read about the plugins deployed to
 //! it (H-4 design, section 3; step 8).
 //!
 //! A Host acts on its `node.<id>` wakes by reading back what changed. The

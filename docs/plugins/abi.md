@@ -575,7 +575,7 @@ frozen `ScheduledController` (`cron`, `scheduled_time`, `fire_id`,
   never fires, and `describe()` can't add schedules beyond `plugin.toml`.
 
 > [!NOTE]
-> Fires run only on library nodes. An owned host node (one that runs work
+> Fires run only on library nodes. An owned branch node (one that runs work
 > for a single member) doesn't claim `plugin_scheduled` jobs.
 
 ## Pushed sockets (`[sockets]`)

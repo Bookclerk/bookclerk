@@ -1769,11 +1769,11 @@ pub(crate) struct NodeView {
     #[schema(example = 7)]
     owner_user_id: Option<i64>,
     /// A branch's sharing setting, as it last reported it; `null` for an
-    /// owner node.
+    /// shared node.
     #[schema(example = true)]
     share_books: Option<bool>,
     /// A branch's include-branches setting, as it last reported it;
-    /// `null` for an owner node.
+    /// `null` for a shared node.
     #[schema(example = false)]
     include_branches: Option<bool>,
     /// The owner, when the node has one and the user still exists.
@@ -2076,7 +2076,7 @@ pub async fn get_cluster_status(
     let mut memory_reserved = 0i64;
     let mut running_guests = 0i64;
     for node in &all {
-        if node.kind == bookclerk_library::control_plane::NodeKind::Host {
+        if node.kind == bookclerk_library::control_plane::NodeKind::Branch {
             host_nodes += 1;
         }
         let Some(status) = statuses.get(&node.node_id) else {
@@ -2185,7 +2185,7 @@ async fn node_runtime_or_default(
 }
 
 /// The shared branch actor for a node-administration `caller`: the library's
-/// shared branch rules (an Owner reaches every owner node) are checked on it.
+/// shared branch rules (an Owner reaches every shared node) are checked on it.
 fn shared_branch_actor(
     caller: NodeAdminCaller,
 ) -> bookclerk_library::control_plane::EnrollmentActor {
@@ -2199,7 +2199,7 @@ fn shared_branch_actor(
     }
 }
 
-/// `GET /api/config/shared-branches`: the owner nodes (this one and its shared branches) for
+/// `GET /api/config/shared-branches`: the shared nodes (this one and its shared branches) for
 /// Settings → Shared branches, shaped like `GET /api/config/nodes`. The operator or
 /// an Owner sees every one, as `DELETE /api/config/nodes/{node_id}` lets
 /// them remove any; another user only the ones they own, which the nodes
@@ -2255,7 +2255,7 @@ pub(crate) struct OwnerNodeRemoved {
     removed: bool,
 }
 
-/// `DELETE /api/config/nodes/{node_id}`: remove an owner node (a shared branch, or
+/// `DELETE /api/config/nodes/{node_id}`: remove a shared node (a shared branch, or
 /// any node sharing this database) that is no longer running from the
 /// library's node list. The operator or an Owner may remove any; another
 /// user only one they own. A running node, this node, or a branch is
@@ -2265,7 +2265,7 @@ pub(crate) struct OwnerNodeRemoved {
     path = "/api/config/nodes/{node_id}",
     params(("node_id" = String, Path, description = "Node id.")),
     responses(
-        (status = 200, description = "The owner node was removed.", body = OwnerNodeRemoved),
+        (status = 200, description = "The shared node was removed.", body = OwnerNodeRemoved),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 404, description = "No such node, or not one the caller administers.", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e not found"})),
@@ -3101,7 +3101,7 @@ mod tests {
         assert_eq!(shared_branches["nodes"][0]["node_id"], json!(node));
         assert_eq!(shared_branches["nodes"][0]["this_node"], true);
         assert_eq!(shared_branches["nodes"][0]["owner"], Value::Null);
-        assert_eq!(shared_branches["nodes"][0]["kind"], "owner");
+        assert_eq!(shared_branches["nodes"][0]["kind"], "shared");
         let (status, refused) = send(
             &app,
             "DELETE",

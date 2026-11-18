@@ -530,7 +530,7 @@ async fn undeployed_cron_fire_fails_after_grace(store_a: LibraryStore, store_b: 
     );
 }
 
-/// Inserts a Host node owned by a new user of `role`, with a live
+/// Inserts a Branch node owned by a new user of `role`, with a live
 /// credential.
 async fn add_host_node(store: &LibraryStore, node_id: &str, role: UserRole) {
     use crate::entities::{node_credentials, nodes};
@@ -561,7 +561,7 @@ async fn add_host_node(store: &LibraryStore, node_id: &str, role: UserRole) {
         scratch_bytes: Set(None),
         target: Set(String::new()),
         labels_json: Set("[]".into()),
-        kind: Set("host".into()),
+        kind: Set("branch".into()),
         owner_user_id: Set(Some(owner)),
         ..Default::default()
     }

@@ -49,7 +49,7 @@ async fn add_node(store: &LibraryStore, node_id: &str, kind: &str, owner: Option
     .insert(store.db())
     .await
     .unwrap();
-    if kind == "host" {
+    if kind == "branch" {
         node_credentials::ActiveModel {
             node_id: Set(node_id.into()),
             sign_public_key: Set(vec![1; 32]),

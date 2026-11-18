@@ -252,7 +252,7 @@ impl Default for DaemonConfig {
     }
 }
 
-/// How host nodes may reach the node API (`[daemon.node_api] mode`).
+/// How branch nodes may reach the node API (`[daemon.node_api] mode`).
 ///
 /// Plain HTTP is accepted only on loopback, in every mode.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -283,7 +283,7 @@ impl NodeApiMode {
     }
 }
 
-/// `[daemon.node_api]`: transport policy for host nodes.
+/// `[daemon.node_api]`: transport policy for branch nodes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct NodeApiConfig {

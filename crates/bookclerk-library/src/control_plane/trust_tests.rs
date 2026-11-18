@@ -116,7 +116,7 @@ async fn add_node(store: &LibraryStore, node_id: &str, kind: &str, owner: Option
     .insert(store.db())
     .await
     .unwrap();
-    if kind == "host" {
+    if kind == "branch" {
         node_credentials::ActiveModel {
             node_id: Set(node_id.into()),
             sign_public_key: Set(vec![1; 32]),
@@ -224,7 +224,7 @@ async fn host_trust_follows_its_owners_role(owner_db: LibraryStore, host_db: Lib
 
 /// A demotion that lands after the claim but before handoff denies: the job
 /// returns to pending with no attempt spent and its permits released, and
-/// the owner node then runs it.
+/// the shared node then runs it.
 async fn demotion_before_handoff_denies(owner_db: LibraryStore, host_db: LibraryStore) {
     let riley = user(&owner_db, UserRole::Administrator, "Riley").await;
     add_account(&owner_db, PLUGIN, "sam-acct", true).await;
@@ -269,7 +269,7 @@ async fn demotion_before_handoff_denies(owner_db: LibraryStore, host_db: Library
     assert!(claim(&host_db, HOST, Claimant::Remote).await.is_none());
     let local = claim(&owner_db, "node-owner", Claimant::Local)
         .await
-        .expect("the owner node's worker runs it");
+        .expect("the shared node's worker runs it");
     assert_eq!(local.job.id, job);
     assert_eq!(local.job.attempt_count, 1);
 }
@@ -332,7 +332,7 @@ async fn stale_claim_handoff_denies(owner_db: LibraryStore, host_db: LibraryStor
     // does not disturb the new holder.
     let local = claim(&owner_db, "node-owner", Claimant::Local)
         .await
-        .expect("the owner node's worker claims it");
+        .expect("the shared node's worker claims it");
     assert!(handoff_routed_job(&host_db, &host_request, claimed.clone())
         .await
         .unwrap()
@@ -364,7 +364,7 @@ async fn stale_claim_handoff_denies(owner_db: LibraryStore, host_db: LibraryStor
 }
 
 /// Nodes that are trusted with nothing: an unknown remote node, a Host with
-/// no owner, a disabled owner, and a revoked credential. An owner node is
+/// no owner, a disabled owner, and a revoked credential. A shared node is
 /// trusted with everything.
 async fn untrusted_nodes_claim_nothing(owner_db: LibraryStore, host_db: LibraryStore) {
     // Another Owner, so Riley is not the last one and may be disabled.

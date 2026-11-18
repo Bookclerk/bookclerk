@@ -73,7 +73,7 @@ pub struct AcquireRequest {
     /// Refuse a new scratch dir when registered temps already exceed this.
     pub temp_quota_bytes: Option<u64>,
     /// The `<library id>` to name the title by instead of its edition in
-    /// `library`: a host acquiring for an owner node names the title as the
+    /// `library`: a host acquiring for a shared node names the title as the
     /// owner does, since its scratch library's edition ids are its own.
     pub library_id: Option<String>,
     /// Likewise for the title's podcast parent, whose folder an episode

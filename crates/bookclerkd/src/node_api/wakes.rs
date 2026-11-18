@@ -1,9 +1,9 @@
 //! Forwarding a host's `node.<host_id>` queue over its socket (H-4 design,
 //! section 3, *Wakeups*).
 //!
-//! While a host's socket is live, the owner node holding it registers
+//! While a host's socket is live, the shared node holding it registers
 //! itself as the consumer of that host's queue (catalog row
-//! `node:<host_id>` on this owner node) and heartbeats the row with the
+//! `node:<host_id>` on this shared node) and heartbeats the row with the
 //! session. Each claimed delivery is sent as a `wake` frame; it is acked
 //! only once the host answers `ack` with the same frame id. When the
 //! session ends, deliveries still waiting for an ack are released without
@@ -43,7 +43,7 @@ const WAKE_ID_PREFIX: &str = "wake:";
 
 /// Forwards one host's queue over one connection.
 pub(crate) struct WakeForwarder {
-    /// This owner node (the catalog row's node).
+    /// This shared node (the catalog row's node).
     owner_node_id: String,
     /// The host whose queue is forwarded.
     host_id: String,
@@ -58,7 +58,7 @@ pub(crate) struct WakeForwarder {
 }
 
 impl WakeForwarder {
-    /// A forwarder for `host_id` on owner node `owner_node_id`, or `None`
+    /// A forwarder for `host_id` on shared node `owner_node_id`, or `None`
     /// when the host id cannot name a queue.
     pub(crate) fn new(owner_node_id: &str, host_id: &str, serial: u64) -> Option<Self> {
         if owner_node_id.is_empty() || !is_valid_node_id(host_id) {
@@ -74,7 +74,7 @@ impl WakeForwarder {
         })
     }
 
-    /// Heartbeats (or, with `enabled = false`, disables) this owner node's
+    /// Heartbeats (or, with `enabled = false`, disables) this shared node's
     /// consumer row for the host's queue.
     pub(crate) async fn heartbeat(&self, library: &LibraryStore, enabled: bool) {
         let subs = [EventCatalogSubscription::queue(node_queue_name(
@@ -163,7 +163,7 @@ impl WakeForwarder {
                     | NodeMessage::InstallChanged { .. }
                     | NodeMessage::ConfigurationChanged { .. }
             ) {
-                // Nothing a host acts on (placement runs on owner nodes;
+                // Nothing a host acts on (placement runs on shared nodes;
                 // revocation closes the socket through the owner's queue).
                 let _ = library.ack_event_delivery(&fence).await;
                 continue;
@@ -198,7 +198,7 @@ impl WakeForwarder {
     }
 
     /// Releases every unacked wake for prompt redelivery and, with
-    /// `disable`, disables this owner node's consumer row. The session
+    /// `disable`, disables this shared node's consumer row. The session
     /// passes `disable = false` when a newer connection for the same host
     /// has registered, since that connection now owns the shared row.
     pub(crate) async fn shutdown(mut self, library: &LibraryStore, disable: bool) {
