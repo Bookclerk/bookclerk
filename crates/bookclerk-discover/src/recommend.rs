@@ -18,8 +18,8 @@ use crate::candidates::{gather_storefront_candidates, select_taste_seeds, Candid
 use crate::embed::{bytes_to_vector, cosine, open_embedder, Embedder};
 use crate::error::Result;
 use crate::identity::{
-    identities_match, merge_recommendation, push_edition, push_shelf_category,
-    recommendation_map_key, StoreEdition, WorkIdentity,
+    merge_recommendation, push_edition, push_shelf_category, recommendation_map_key,
+    same_edition_identifiers, StoreEdition,
 };
 use crate::purchase::{
     purchase_hints_for, seed_purchase_hint, seed_source_is_trusted, PurchaseHint,
@@ -97,9 +97,16 @@ impl Default for RecommendOptions {
 /// One ranked recommendation (typically an unowned storefront title).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct Recommendation {
-    /// Library `works.id` UUID when the recommendation is tied to an owned work.
+    /// Library `works.id` of the work the card's edition belongs to, when
+    /// the library's data model places it (a wish, or a store listing from
+    /// the shared listing pool). Cards for one work are one card.
     #[schema(example = "5b7e2c1d-8a4f-4e3b-9c6d-2f1a0b9e8d7c")]
     pub work_id: Option<String>,
+    /// `expressions.id` of the card's edition, when known: the recording
+    /// (or text) it is. Only listings of this expression add prices to the
+    /// card. Used while ranking; never stored or sent.
+    #[serde(skip)]
+    pub expression_id: Option<String>,
     /// Display title as shown on the storefront or library card.
     #[schema(example = "The Left Hand of Darkness")]
     pub title: String,
@@ -761,7 +768,8 @@ pub(crate) async fn rank_candidates(
             purchase_hints.push(hint);
         }
         let mut rec = Recommendation {
-            work_id: None,
+            work_id: c.work_id,
+            expression_id: c.expression_id,
             title: c.title,
             authors: c.authors,
             narrators: c.narrators,
@@ -839,6 +847,8 @@ pub(crate) async fn rank_candidates(
             })
             .collect();
         let mut rec = Recommendation {
+            work_id: Some(entry.work_id),
+            expression_id: entry.expression_id,
             title: entry.title,
             authors: entry.authors,
             narrators: entry.narrators,
@@ -1209,7 +1219,8 @@ async fn library_owns_work(library: &LibraryStore, entry: &GlobalQueueEntry) -> 
 ///
 /// # Returns
 ///
-/// The candidates whose work the library does not hold, in their order.
+/// The candidates whose work the library does not hold, in their order,
+/// each carrying the work it was placed in (`work_id`) when it has one.
 ///
 /// # Errors
 ///
@@ -1254,7 +1265,12 @@ pub(crate) async fn retain_unowned_works(
     Ok(placed
         .into_iter()
         .filter(|(_, work_id)| work_id.as_ref().is_none_or(|w| !held.contains(w)))
-        .map(|(c, _)| c)
+        .map(|(mut c, work_id)| {
+            // A live hit keeps the work it resolved to, so the ranking
+            // makes one card per work without comparing titles.
+            c.work_id = work_id;
+            c
+        })
         .collect())
 }
 
@@ -1308,42 +1324,257 @@ pub(crate) fn retain_reader_languages(
     candidates
 }
 
-/// Inserts or merges a recommendation when ASIN/ISBN/title identity already exists.
-fn upsert_recommendation(map: &mut HashMap<String, Recommendation>, rec: Recommendation) {
-    let match_key = map.iter().find_map(|(key, existing)| {
-        if identities_match(
-            WorkIdentity::new(
-                rec.asin.as_deref(),
-                rec.isbn.as_deref(),
-                &rec.title,
-                rec.authors.as_deref(),
-            )
-            .with_series(rec.series.as_deref())
-            .with_series_index(rec.series_index.as_deref()),
-            WorkIdentity::new(
-                existing.asin.as_deref(),
-                existing.isbn.as_deref(),
-                &existing.title,
-                existing.authors.as_deref(),
-            )
-            .with_series(existing.series.as_deref())
-            .with_series_index(existing.series_index.as_deref()),
-        ) {
-            Some(key.clone())
-        } else {
-            None
-        }
-    });
+/// How the library's data model relates two cards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CardRelation {
+    /// Different works, or nothing ties them together.
+    Unrelated,
+    /// One work in two different recordings (a narration and a full-cast
+    /// dramatisation, or two narrators): one card, but their prices are for
+    /// different things, so only the owning card's are shown.
+    SameWork,
+    /// The same recording: one expression, or editions that share an ISBN
+    /// or ASIN. Other stores' listings of it are more places to buy it.
+    SameRecording,
+}
 
-    if let Some(old_key) = match_key {
-        let mut existing = map.remove(&old_key).expect("just found");
-        merge_recommendation(&mut existing, rec);
-        let new_key = recommendation_map_key(&existing);
-        map.insert(new_key, existing);
-        return;
+/// How `a` and `b` relate, from the data model's work and expression and
+/// from shared ISBNs and ASINs only. Titles and authors are never compared:
+/// the library's resolver has already placed every pooled listing and every
+/// wish in a work, and a store hit it could not place stays its own card.
+///
+/// # Arguments
+///
+/// * `a` - One card.
+/// * `b` - The other card.
+fn card_relation(a: &Recommendation, b: &Recommendation) -> CardRelation {
+    let work = |r: &Recommendation| r.work_id.clone().filter(|w| !w.trim().is_empty());
+    let expression = |r: &Recommendation| r.expression_id.clone().filter(|x| !x.trim().is_empty());
+    let same_work = match (work(a), work(b)) {
+        (Some(wa), Some(wb)) => Some(wa == wb),
+        _ => None,
+    };
+    if same_work == Some(false) {
+        return CardRelation::Unrelated;
     }
+    let same_recording = match (expression(a), expression(b)) {
+        (Some(xa), Some(xb)) => Some(xa == xb),
+        _ => same_edition_identifiers(
+            a.asin.as_deref(),
+            a.isbn.as_deref(),
+            b.asin.as_deref(),
+            b.isbn.as_deref(),
+        ),
+    };
+    match (same_recording, same_work) {
+        (Some(true), _) => CardRelation::SameRecording,
+        (_, Some(true)) => CardRelation::SameWork,
+        _ => CardRelation::Unrelated,
+    }
+}
 
-    let key = recommendation_map_key(&rec);
+/// Whether `challenger` should own a card instead of `holder`: a wish
+/// always owns its work's card (it names the edition someone asked for);
+/// between two store cards, the higher score does.
+fn takes_card_from(challenger: &Recommendation, holder: &Recommendation) -> bool {
+    match (challenger.from_request, holder.from_request) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => challenger.score > holder.score,
+    }
+}
+
+/// Folds a store listing of the same recording into a wish's card.
+///
+/// The wish describes the edition someone asked for, so every field it has
+/// stays; the listing only fills blanks, and adds its store edition and
+/// price as another place to buy the same recording.
+///
+/// # Arguments
+///
+/// * `wish` - The wish's card.
+/// * `listing` - A store card for the same recording.
+fn fold_recording_into_wish(wish: &mut Recommendation, listing: Recommendation) {
+    for ed in listing.store_editions {
+        push_edition(&mut wish.store_editions, ed);
+    }
+    if let (Some(s), Some(p)) = (
+        listing.candidate_source.as_deref(),
+        listing.candidate_product_id.as_deref(),
+    ) {
+        push_edition(&mut wish.store_editions, StoreEdition::new(s, p));
+    }
+    for hint in listing.purchase_hints {
+        if !wish.purchase_hints.iter().any(|h| {
+            h.source.eq_ignore_ascii_case(&hint.source)
+                && h.product_id.eq_ignore_ascii_case(&hint.product_id)
+        }) {
+            wish.purchase_hints.push(hint);
+        }
+    }
+    let fill = |slot: &mut Option<String>, value: Option<String>| {
+        if slot.as_deref().is_none_or(|v| v.trim().is_empty()) {
+            *slot = value.filter(|v| !v.trim().is_empty());
+        }
+    };
+    fill(&mut wish.authors, listing.authors);
+    fill(&mut wish.narrators, listing.narrators);
+    fill(&mut wish.series, listing.series);
+    fill(&mut wish.series_index, listing.series_index);
+    fill(&mut wish.cover_url, listing.cover_url);
+    fill(&mut wish.subtitle, listing.subtitle);
+    fill(&mut wish.description, listing.description);
+    fill(&mut wish.publisher, listing.publisher);
+    fill(&mut wish.published_at, listing.published_at);
+    fill(&mut wish.genres, listing.genres);
+    fill(&mut wish.language, listing.language);
+    if wish.length_minutes.is_none() {
+        wish.length_minutes = listing.length_minutes;
+    }
+    if wish.expression_id.is_none() {
+        wish.expression_id = listing.expression_id;
+    }
+    absorb_signals(
+        wish,
+        listing.score,
+        listing.reasons,
+        listing.categories,
+        listing.seed_title,
+        listing.seed_categories,
+        listing.starter_genre,
+    );
+}
+
+/// Folds a card for another recording of the same work into `owner`.
+///
+/// The owner keeps its edition, text and prices: the other recording's
+/// cover, narrators, length and price describe something else. What the
+/// other card says about the reader's taste (score, reasons, shelf tags,
+/// seed) still counts toward the work.
+///
+/// # Arguments
+///
+/// * `owner` - The card that stays.
+/// * `other` - A card for another recording of the owner's work.
+fn fold_other_recording(owner: &mut Recommendation, other: Recommendation) {
+    if other.from_request {
+        owner.from_request = true;
+        if owner.request_uuid.is_none() {
+            owner.request_uuid = other.request_uuid;
+        }
+    }
+    for wisher in other.wishers {
+        bookclerk_library::push_queue_wisher(&mut owner.wishers, wisher);
+    }
+    owner.wish_count = owner.wish_count.max(other.wish_count);
+    absorb_signals(
+        owner,
+        other.score,
+        other.reasons,
+        other.categories,
+        other.seed_title,
+        other.seed_categories,
+        other.starter_genre,
+    );
+}
+
+/// Adds another card's taste signals for the same work to `card`: the
+/// better score, every reason and shelf tag once, and the seed and starter
+/// genre when the card has none.
+fn absorb_signals(
+    card: &mut Recommendation,
+    score: f64,
+    reasons: Vec<String>,
+    categories: Vec<String>,
+    seed_title: Option<String>,
+    seed_categories: Option<String>,
+    starter_genre: Option<String>,
+) {
+    card.score = card.score.max(score);
+    for reason in reasons {
+        if !card.reasons.iter().any(|r| r == &reason) {
+            card.reasons.push(reason);
+        }
+    }
+    for cat in categories {
+        push_shelf_category(&mut card.categories, &cat);
+    }
+    if card.seed_title.is_none() {
+        card.seed_title = seed_title;
+    }
+    if card.seed_categories.is_none() {
+        card.seed_categories = seed_categories;
+    }
+    if card.starter_genre.is_none() {
+        card.starter_genre = starter_genre;
+    }
+}
+
+/// Adds `rec` to the ranked cards, folding it into the card for its work
+/// when there is one (see [`card_relation`]).
+///
+/// A wish owns its work's card and keeps the edition it names; listings of
+/// the same recording add their prices to it, and listings of another
+/// recording of the work add only their taste signals. Two store cards of
+/// one recording merge as before ([`merge_recommendation`]); of one work in
+/// different recordings, the higher-scoring card stays as it is.
+fn upsert_recommendation(map: &mut HashMap<String, Recommendation>, rec: Recommendation) {
+    let mut found: Option<(String, CardRelation)> = None;
+    for (key, existing) in map.iter() {
+        match card_relation(&rec, existing) {
+            CardRelation::Unrelated => {}
+            CardRelation::SameRecording => {
+                found = Some((key.clone(), CardRelation::SameRecording));
+                break;
+            }
+            CardRelation::SameWork => {
+                if found.is_none() {
+                    found = Some((key.clone(), CardRelation::SameWork));
+                }
+            }
+        }
+    }
+    let Some((old_key, relation)) = found else {
+        insert_card(map, rec);
+        return;
+    };
+    let Some(existing) = map.remove(&old_key) else {
+        return;
+    };
+    let (mut owner, other) = if takes_card_from(&rec, &existing) {
+        (rec, existing)
+    } else {
+        (existing, rec)
+    };
+    match relation {
+        CardRelation::SameRecording if owner.from_request && !other.from_request => {
+            fold_recording_into_wish(&mut owner, other);
+        }
+        CardRelation::SameRecording => merge_recommendation(&mut owner, other),
+        CardRelation::SameWork | CardRelation::Unrelated => fold_other_recording(&mut owner, other),
+    }
+    // A wish keeps the key its own entry carries, which clients match on.
+    if !owner.from_request || owner.work_key.trim().is_empty() {
+        owner.work_key = recommendation_map_key(&owner);
+    }
+    insert_card(map, owner);
+}
+
+/// Inserts `rec` under its map key, qualified with its store and product
+/// when another card already holds that key: a key without an ISBN or ASIN
+/// names only the title and authors, and two cards are never joined on that.
+fn insert_card(map: &mut HashMap<String, Recommendation>, rec: Recommendation) {
+    let mut key = recommendation_map_key(&rec);
+    if map.contains_key(&key) {
+        key = format!(
+            "{key}|{}:{}",
+            rec.candidate_source.as_deref().unwrap_or("wish"),
+            rec.candidate_product_id
+                .as_deref()
+                .or(rec.work_id.as_deref())
+                .unwrap_or(rec.title.as_str())
+        );
+    }
     map.insert(key, rec);
 }
 
@@ -1683,6 +1914,165 @@ fn split_tokens_display(s: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// A store card for one listing of *The Sunlit Man*, in work
+    /// `w-sunlit`, recording `expression`.
+    fn sunlit_listing(
+        source: &str,
+        product_id: &str,
+        expression: &str,
+        score: f64,
+    ) -> Recommendation {
+        let mut rec = Recommendation {
+            work_id: Some("w-sunlit".into()),
+            expression_id: Some(expression.into()),
+            title: "The Sunlit Man: A Cosmere Novel (GraphicAudio)".into(),
+            authors: Some("Brandon Sanderson".into()),
+            narrators: Some("A full cast".into()),
+            series: Some("Secret Projects".into()),
+            series_index: Some("4".into()),
+            score,
+            cover_url: Some(format!(
+                "https://covers.example/{product_id}-longer-cover.jpg"
+            )),
+            length_minutes: Some(671),
+            candidate_source: Some(source.into()),
+            candidate_product_id: Some(product_id.into()),
+            purchase_hints: vec![PurchaseHint {
+                source: source.into(),
+                product_id: product_id.into(),
+                price_cents: Some(1499),
+                price_label: Some("$14.99".into()),
+                ..Default::default()
+            }],
+            categories: vec!["from_store".into(), "author".into()],
+            reasons: vec![format!("{source} author")],
+            ..Default::default()
+        };
+        rec.work_key = recommendation_map_key(&rec);
+        rec
+    }
+
+    /// The wish for the Audible edition of *The Sunlit Man*.
+    fn sunlit_wish() -> Recommendation {
+        Recommendation {
+            work_id: Some("w-sunlit".into()),
+            expression_id: Some("x-demeritt".into()),
+            title: "The Sunlit Man".into(),
+            authors: Some("Brandon Sanderson".into()),
+            narrators: Some("William DeMeritt".into()),
+            series: Some("The Cosmere".into()),
+            series_index: Some("4".into()),
+            asin: Some("B0D1KV49FL".into()),
+            isbn: Some("9781938570452".into()),
+            cover_url: Some("https://covers.example/wished.jpg".into()),
+            length_minutes: Some(671),
+            score: 40.0,
+            from_request: true,
+            work_key: "asin:B0D1KV49FL".into(),
+            categories: vec!["requests".into()],
+            store_editions: vec![StoreEdition::new("audible", "B0D1KV49FL")],
+            ..Default::default()
+        }
+    }
+
+    /// The only card in `map`.
+    fn only_card(map: HashMap<String, Recommendation>) -> Recommendation {
+        assert_eq!(map.len(), 1, "{:?}", map.keys());
+        map.into_values().next().unwrap_or_default()
+    }
+
+    /// A store listing of another recording that was ranked first does not
+    /// replace the wished edition: the card keeps the wish's title, cover,
+    /// series and narrator, and takes neither the other recording's price
+    /// nor its store edition.
+    #[test]
+    fn a_wish_keeps_its_edition_over_another_recording() {
+        let mut map = HashMap::new();
+        upsert_recommendation(
+            &mut map,
+            sunlit_listing("chirp", "ga-1", "x-full-cast", 3.0),
+        );
+        upsert_recommendation(&mut map, sunlit_wish());
+        let card = only_card(map);
+        assert_eq!(card.title, "The Sunlit Man");
+        assert_eq!(card.series.as_deref(), Some("The Cosmere"));
+        assert_eq!(card.narrators.as_deref(), Some("William DeMeritt"));
+        assert_eq!(
+            card.cover_url.as_deref(),
+            Some("https://covers.example/wished.jpg")
+        );
+        assert_eq!(card.asin.as_deref(), Some("B0D1KV49FL"));
+        assert_eq!(card.work_key, "asin:B0D1KV49FL");
+        assert!(card.purchase_hints.is_empty(), "{:?}", card.purchase_hints);
+        assert_eq!(
+            card.store_editions,
+            vec![StoreEdition::new("audible", "B0D1KV49FL")]
+        );
+        assert!(card.from_request);
+        // The other listing's taste signals still count for the work.
+        assert!(card.categories.iter().any(|c| c == "author"));
+        assert!(card.reasons.iter().any(|r| r == "chirp author"));
+    }
+
+    /// Another store's listing of the wished recording adds its price and
+    /// store edition, and fills only what the wish lacks.
+    #[test]
+    fn a_wish_takes_prices_from_its_own_recording() {
+        let mut map = HashMap::new();
+        let mut libro = sunlit_listing("libro", "li-1", "x-demeritt", 3.0);
+        libro.publisher = Some("Dragonsteel".into());
+        upsert_recommendation(&mut map, sunlit_wish());
+        upsert_recommendation(&mut map, libro);
+        let card = only_card(map);
+        assert_eq!(card.title, "The Sunlit Man");
+        assert_eq!(card.series.as_deref(), Some("The Cosmere"));
+        assert_eq!(
+            card.cover_url.as_deref(),
+            Some("https://covers.example/wished.jpg")
+        );
+        assert_eq!(card.publisher.as_deref(), Some("Dragonsteel"));
+        assert_eq!(card.purchase_hints.len(), 1);
+        assert_eq!(card.purchase_hints[0].source, "libro");
+        assert!(card
+            .store_editions
+            .contains(&StoreEdition::new("libro", "li-1")));
+    }
+
+    /// Two store cards for different recordings of one work are one card:
+    /// the higher-scoring one, with only its own price.
+    #[test]
+    fn one_card_per_work_keeps_the_owning_recordings_price() {
+        let mut map = HashMap::new();
+        upsert_recommendation(
+            &mut map,
+            sunlit_listing("chirp", "ga-1", "x-full-cast", 2.0),
+        );
+        upsert_recommendation(
+            &mut map,
+            sunlit_listing("audible", "B0D1KV49FL", "x-demeritt", 5.0),
+        );
+        let card = only_card(map);
+        assert_eq!(card.candidate_source.as_deref(), Some("audible"));
+        assert_eq!(card.purchase_hints.len(), 1);
+        assert_eq!(card.purchase_hints[0].source, "audible");
+        assert!(!card.store_editions.iter().any(|e| e.source == "chirp"));
+        assert!((card.score - 5.0).abs() < f64::EPSILON);
+    }
+
+    /// Cards the data model has not placed are never joined on their title
+    /// and author.
+    #[test]
+    fn unplaced_cards_with_one_title_stay_apart() {
+        let mut map = HashMap::new();
+        for (source, product) in [("chirp", "ga-1"), ("libro", "li-1")] {
+            let mut rec = sunlit_listing(source, product, "", 1.0);
+            rec.work_id = None;
+            rec.expression_id = None;
+            upsert_recommendation(&mut map, rec);
+        }
+        assert_eq!(map.len(), 2, "{:?}", map.keys());
+    }
+
     #[test]
     fn candidates_use_local_hash_without_a_models_dir() {
         let opts = RecommendOptions {
@@ -1711,6 +2101,8 @@ mod tests {
     #[test]
     fn a_ranked_entry_names_its_work() {
         let entry = GlobalQueueEntry {
+            edition_id: None,
+            expression_id: None,
             work_key: "asin:B002V1OF70".into(),
             work_id: "work-dune".into(),
             title: "Dune".into(),
@@ -1780,6 +2172,7 @@ mod tests {
                 is_abridged: None,
                 store_rank: None,
                 work_id: None,
+                expression_id: None,
             };
         let opts = RecommendOptions {
             include_purchase_hints: false,
@@ -2054,6 +2447,8 @@ mod tests {
             }
         };
         let entry = |title: &str, work_id: String| GlobalQueueEntry {
+            edition_id: None,
+            expression_id: None,
             work_key: String::new(),
             work_id,
             title: title.into(),

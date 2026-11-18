@@ -432,6 +432,7 @@ mod tests {
                 product_id: c.product_id.clone(),
                 edition_id: String::from("e"),
                 work_id: None,
+                expression_id: None,
                 title: c.title.clone(),
                 categories: c.categories.clone(),
                 detail: bookclerk_library::ListingDetail {

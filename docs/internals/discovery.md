@@ -449,9 +449,9 @@ languages are the normalized languages of the taste books (the subject's own,
 with the household's blended in while those are few), or the default
 preferred language (`en`) when no taste book has one. A candidate whose store
 gave no language, or one `normalize_language` does not recognize, stays, as
-in catalog search. Editions in two different known languages are never merged
-into one candidate by a title-and-author match, so dropping one language never
-drops the other edition with it.
+in catalog search. Editions in two different languages are different
+expressions, so they are never merged into one candidate, and dropping one
+language never drops the other edition with it.
 
 Whether a wished title is already owned is decided by the library's
 resolver (`LibraryStore::owned_work_for`), the same way a scanned listing
@@ -691,9 +691,26 @@ Kind matching: `author` hides every `author:…` row; `from_store` hides all
 
 ## Store links and pricing
 
-Recommendations are consolidated by bibliographic identity (canonical ISBN when
-present, ASIN, soft title+author) so the same book from multiple storefronts
-appears as **one card** with `store_editions` for each catalog match.
+Discover shows **one card per work**, and every card shows one recording
+of it. Which cards belong together comes from the library's data model, never
+from comparing titles and authors:
+
+- Candidates read from the shared listing pool carry the work and the
+  expression (`expressions.id`: one recording or text) their listing resolved
+  into; a live store hit carries the work the library's resolver places it in
+  (`LibraryStore::work_for`), when there is one. Each wish carries its work,
+  and the queue entry carries the edition the newest wish names and that
+  edition's expression.
+- Listings of **one recording** (the same expression, or a shared ISBN or ASIN)
+  are one card, with `store_editions` and a price for each store that sells it.
+- Listings of **one work in different recordings** (a narration and a full-cast
+  dramatisation, or two narrators) are one card too, but it keeps the owning
+  recording's cover, text and prices; the other recording adds only its taste
+  signals (score, reasons, shelf tags). A wish always owns its work's card and
+  keeps the edition it names, so **On the wishlist** shows the wished edition.
+  Between store cards, the higher-scoring one owns the card.
+- Cards with no work and no shared identifier stay apart, even with the same
+  title.
 
 Live prices use **public** storefront endpoints (no auth). The Discover feed
 loads with `no_purchase_hints=true`; the GUI:

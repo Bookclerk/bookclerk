@@ -1301,6 +1301,15 @@ pub struct GlobalQueueEntry {
     pub work_key: String,
     /// The work every wish of this entry is for: the queue groups by it.
     pub work_id: String,
+    /// The edition the newest wish naming one is for (`editions.id`); the
+    /// entry's title, identifiers and cover describe that edition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edition_id: Option<String>,
+    /// That edition's expression (`expressions.id`), when the library
+    /// places it: store listings of the same expression are the same
+    /// recording, so Discover prices the wish from them only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression_id: Option<String>,
     /// Display title of the work or edition.
     pub title: String,
     /// Comma-separated or JSON author list from the storefront.
