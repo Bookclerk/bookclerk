@@ -42,7 +42,7 @@ use bookclerk_library::control_plane::{
     FORWARDABLE_KEYS_MAX_PAGE,
 };
 use bookclerk_library::{
-    AcquireStatus, AcquiredBookKey, BookRecord, LibraryStore, ACQUIRED_KEYS_MAX_PAGE,
+    AcquireStatus, AcquireTitle, AcquiredTitleKey, LibraryStore, ACQUIRED_KEYS_MAX_PAGE,
 };
 use bookclerk_node_client::{CatalogSession, HostClientHandle, OwnerCallError};
 use bookclerk_node_proto::{
@@ -133,8 +133,8 @@ pub struct SyncReport {
 /// pass never holds every title's metadata at once.
 #[derive(Debug, Clone)]
 enum Source {
-    /// A book acquired on this install.
-    Own(AcquiredBookKey),
+    /// A store account's title of an edition acquired on this install.
+    Own(AcquiredTitleKey),
     /// A title one of this install's branches shared, files delivered.
     Branch(ForwardableBranchKey),
 }
@@ -142,8 +142,8 @@ enum Source {
 /// The full row behind a [`Source`], read just before it is used.
 #[derive(Debug, Clone)]
 enum Loaded {
-    /// A book acquired on this install.
-    Own(Box<BookRecord>),
+    /// A store account's title of an edition acquired on this install.
+    Own(Box<AcquireTitle>),
     /// A title one of this install's branches shared, files delivered.
     Branch(Box<ForwardableBranchTitle>),
 }
@@ -206,7 +206,7 @@ fn own_marketplace(marketplace: &str) -> String {
 }
 
 /// Metadata of an own book.
-fn own_metadata(book: &BookRecord) -> CatalogMetadata {
+fn own_metadata(book: &AcquireTitle) -> CatalogMetadata {
     CatalogMetadata {
         title: book.title.clone(),
         subtitle: book.subtitle.clone(),
@@ -218,7 +218,7 @@ fn own_metadata(book: &BookRecord) -> CatalogMetadata {
         isbn: book.isbn.clone(),
         publisher: book.publisher.clone(),
         length_minutes: book.length_minutes,
-        content_kind: Some(book.content_kind.clone()),
+        content_kind: Some(book.content_kind.to_string()),
         language: book.language.clone(),
         published_at: book.published_at.map(|at| at.to_rfc3339()),
     }
@@ -348,7 +348,7 @@ impl<S: BranchShelf> CatalogSync<S> {
     ) -> anyhow::Result<Vec<Entry>> {
         let mut seen = BTreeSet::new();
         let mut out = Vec::new();
-        let mut after = None;
+        let mut after: Option<String> = None;
         // The branch owner's own books go up (and, when the library
         // acquires all of this branch's members' books, every book this
         // branch lists to it), never one the library acquired itself and
@@ -357,11 +357,9 @@ impl<S: BranchShelf> CatalogSync<S> {
         loop {
             let page = self
                 .library
-                .acquired_book_keys_page(after, ENTRY_PAGE)
+                .acquired_title_keys_page(after.as_deref(), ENTRY_PAGE)
                 .await?;
-            let full = u64::try_from(page.len()).unwrap_or(u64::MAX) >= ENTRY_PAGE;
-            after = page.last().map(|key| key.id);
-            for key in page {
+            for key in page.keys {
                 if !owners.admits(&key) {
                     continue;
                 }
@@ -381,14 +379,15 @@ impl<S: BranchShelf> CatalogSync<S> {
                     order: format!(
                         "{}|own|{}",
                         changed.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-                        key.uuid
+                        key.holding_id
                     ),
                     reference,
                     source: Source::Own(key),
                 });
             }
-            if !full {
-                break;
+            match page.next {
+                Some(next) => after = Some(next),
+                None => break,
             }
         }
         if include_branches {
@@ -436,12 +435,12 @@ impl<S: BranchShelf> CatalogSync<S> {
         Ok(match &entry.source {
             Source::Own(key) => self
                 .library
-                .get_book_by_uuid(&key.uuid)
+                .acquire_title_of_holding(&key.holding_id)
                 .await?
-                .filter(|book| {
-                    book.acquire_status == AcquireStatus::Acquired && book.storage_key.is_some()
+                .filter(|title| {
+                    title.status == AcquireStatus::Acquired && title.storage_key.is_some()
                 })
-                .map(|book| Loaded::Own(Box::new(book))),
+                .map(|title| Loaded::Own(Box::new(title))),
             Source::Branch(key) => forwardable_branch_title(&self.library, &key.id)
                 .await?
                 .map(|row| Loaded::Branch(Box::new(row))),

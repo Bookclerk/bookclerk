@@ -32,7 +32,7 @@ use super::trust::accounts_owned_by;
 use crate::entities::{account_links, link_imports};
 use crate::error::{LibraryError, Result};
 use crate::models::{AcquireStatus, BookRecord};
-use crate::store::AcquiredBookKey;
+use crate::store::AcquiredTitleKey;
 use crate::store::{FileRole, LibraryStore, NewBook};
 
 /// Rows per read of [`books_imported_from_link`] when the database plugin
@@ -410,7 +410,7 @@ impl OwnerShareFilter {
 
     /// True when the book `key` names is sent.
     #[must_use]
-    pub fn admits(&self, key: &AcquiredBookKey) -> bool {
+    pub fn admits(&self, key: &AcquiredTitleKey) -> bool {
         let held = held_key(key);
         let account = (key.plugin_key.clone(), key.account_id.clone());
         let sent = self.accounts.contains(&account) || self.listed.contains(&account);
@@ -422,13 +422,13 @@ impl OwnerShareFilter {
     /// book no earlier than this, so a book already past the sync's cursor
     /// still goes up on the next pass.
     #[must_use]
-    pub fn requested_at(&self, key: &AcquiredBookKey) -> Option<DateTime<Utc>> {
+    pub fn requested_at(&self, key: &AcquiredTitleKey) -> Option<DateTime<Utc>> {
         self.requested.get(&held_key(key)).copied()
     }
 }
 
 /// The store identity of an acquired book, normalized as stored.
-fn held_key(key: &AcquiredBookKey) -> HeldBookKey {
+fn held_key(key: &AcquiredTitleKey) -> HeldBookKey {
     (
         key.plugin_key.clone(),
         bookclerk_resolve::stored_marketplace(&key.marketplace),

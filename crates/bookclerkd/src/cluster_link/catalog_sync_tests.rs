@@ -725,22 +725,24 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
     assert_eq!((report.sent, report.upserted), (2, 2));
 
     // A new pass from the start ("Include books from my own branches"
-    // turned off) cannot list b1's folder: b2 still goes, b1 stays shared.
+    // turned off) cannot list the first title's folder: the other still
+    // goes, and the first stays shared.
+    let first = listed[0].clone();
     set_cluster_link_sharing(&b, &b_link.owner_cluster_id, true, false)
         .await
         .unwrap();
-    *fail.lock().unwrap() = Some("Author/b1/".into());
+    *fail.lock().unwrap() = Some(format!("Author/{first}/"));
     let report = b_sync.sync_once().await.unwrap();
     assert_eq!(report.sent, 1);
     for product in ["b1", "b2"] {
         assert!(shares(&a, product).await, "{product}");
     }
-    // The pass did not end and its cursor stayed before b1 (the first
-    // title): the next pass tries it again and ends, after which nothing
-    // is resent.
+    // The pass did not end and its cursor stayed before the first title:
+    // the next pass tries it again and ends, after which nothing is
+    // resent.
     *fail.lock().unwrap() = None;
     let report = b_sync.sync_once().await.unwrap();
-    assert_eq!(report.sent, 2, "the pass resumed before b1");
-    assert!(shares(&a, "b1").await);
+    assert_eq!(report.sent, 2, "the pass resumed before {first}");
+    assert!(shares(&a, &first).await);
     assert_eq!(b_sync.sync_once().await.unwrap().sent, 0);
 }

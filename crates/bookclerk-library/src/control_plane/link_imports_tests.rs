@@ -215,7 +215,7 @@ async fn only_the_owners_own_books_are_shared_upward() {
             panic!("{name}: imported");
         };
 
-        let keys = store.acquired_book_keys_page(None, 100).await.unwrap();
+        let keys = store.all_acquired_title_keys().await;
         let sent = |filter: &OwnerShareFilter| -> BTreeSet<String> {
             keys.iter()
                 .filter(|key| filter.admits(key))
@@ -372,7 +372,7 @@ async fn a_primary_key_another_edition_holds_is_not_imported() {
             ),
             "{name}"
         );
-        let books = store.acquired_book_keys_page(None, 100).await.unwrap();
+        let books = store.all_acquired_title_keys().await;
         assert!(
             books.iter().all(|key| key.product_id != "P9"),
             "{name}: not acquired"
