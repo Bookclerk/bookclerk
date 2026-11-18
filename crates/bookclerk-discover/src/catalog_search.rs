@@ -1,7 +1,8 @@
 //! Multi-storefront catalog search for Discover.
 //!
 //! Search is a **non-personalized catalog browser**: fan out one page per
-//! storefront, identity-merge, apply server-side include/exclude filters (with
+//! storefront, merge hits of one recording (shared ISBN or ASIN, or one
+//! expression in the shared listing pool; never by title), apply server-side include/exclude filters (with
 //! over-fetch), then return a page envelope + opaque cursor. Personalized
 //! ranking stays on Discover shelves.
 
@@ -18,12 +19,9 @@ use std::cmp::Ordering;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-use crate::candidates::{hit_to_candidate, StorefrontCandidate};
+use crate::candidates::{hit_to_candidate, insert_keyed, same_recording_key, StorefrontCandidate};
 use crate::error::Result;
-use crate::identity::{
-    hard_work_key, identities_match, merge_candidate_metadata, push_edition, work_map_key,
-    StoreEdition, WorkIdentity,
-};
+use crate::identity::{merge_candidate_metadata, push_edition, StoreEdition};
 use crate::ttl_cache::TtlCache;
 
 /// Cap a single storefront so one slow guest cannot burn the whole search budget.
@@ -351,6 +349,7 @@ pub async fn catalog_search_with_field(
     }
     let page = catalog_search_page(
         registry,
+        None,
         CatalogSearchPageOpts {
             query,
             region,
@@ -373,6 +372,9 @@ pub async fn catalog_search_with_field(
 /// # Arguments
 ///
 /// * `registry` - Configured content-source or integration registry.
+/// * `pool` - The library whose shared listing pool names the recording
+///   each hit is, so one recording sold by several stores is one row; `None`
+///   merges hits only by shared ISBN, ASIN or store product.
 /// * `opts` - Options struct for this operation.
 ///
 /// # Returns
@@ -384,6 +386,7 @@ pub async fn catalog_search_with_field(
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn catalog_search_page(
     registry: &SourceRegistry,
+    pool: Option<&bookclerk_library::LibraryStore>,
     opts: CatalogSearchPageOpts<'_>,
 ) -> Result<CatalogSearchPage> {
     let q = opts.query.trim();
@@ -521,6 +524,9 @@ pub async fn catalog_search_page(
             }
 
             let mut fetched_any = false;
+            // This round's hits, named with their pooled recordings before
+            // they are merged into rows.
+            let mut round: Vec<StorefrontCandidate> = Vec::new();
             while let Some(joined) = set.join_next().await {
                 let (id, outcome) = match joined {
                     Ok(v) => v,
@@ -559,43 +565,46 @@ pub async fn catalog_search_page(
                     let hit = hit.decode_html_entities();
                     // The store's declared rank; 0 is "unranked" on the wire.
                     let store_rank = hit.rank_hint.filter(|rank| *rank > 0);
-                    upsert_hit(
-                        &mut by_key,
-                        StorefrontCandidate {
-                            source: id.clone(),
-                            product_id: hit.product_id.clone(),
-                            title: hit.title.clone(),
-                            authors: hit.authors(),
-                            narrators: hit.narrators(),
-                            series: hit.series(),
-                            series_index: hit.series_index(),
-                            asin: hit.asin_in(&region),
-                            isbn: hit.isbn(),
-                            cover_url: hit.cover_url.clone(),
-                            seed_categories: None,
-                            origin: String::from("catalog search"),
-                            seed_title: None,
-                            starter_genre: None,
-                            store_editions: Vec::new(),
-                            subtitle: hit.subtitle.clone(),
-                            description: hit.description.clone(),
-                            publisher: hit.publisher.clone(),
-                            length_minutes: hit.length_minutes,
-                            published_at: hit.published_at.clone(),
-                            categories: hit.categories.clone(),
-                            language: hit.language.clone(),
-                            price_cents: hit.price_cents,
-                            currency: hit.currency.clone(),
-                            price_label: hit.price_label.clone(),
-                            rating_overall: hit.rating_overall,
-                            rating_count: hit.rating_count,
-                            is_abridged: hit.is_abridged,
-                            store_rank,
-                            work_id: None,
-                            expression_id: None,
-                        },
-                    );
+                    round.push(StorefrontCandidate {
+                        source: id.clone(),
+                        product_id: hit.product_id.clone(),
+                        title: hit.title.clone(),
+                        authors: hit.authors(),
+                        narrators: hit.narrators(),
+                        series: hit.series(),
+                        series_index: hit.series_index(),
+                        asin: hit.asin_in(&region),
+                        isbn: hit.isbn(),
+                        cover_url: hit.cover_url.clone(),
+                        seed_categories: None,
+                        origin: String::from("catalog search"),
+                        seed_title: None,
+                        starter_genre: None,
+                        store_editions: Vec::new(),
+                        subtitle: hit.subtitle.clone(),
+                        description: hit.description.clone(),
+                        publisher: hit.publisher.clone(),
+                        length_minutes: hit.length_minutes,
+                        published_at: hit.published_at.clone(),
+                        categories: hit.categories.clone(),
+                        language: hit.language.clone(),
+                        price_cents: hit.price_cents,
+                        currency: hit.currency.clone(),
+                        price_label: hit.price_label.clone(),
+                        rating_overall: hit.rating_overall,
+                        rating_count: hit.rating_count,
+                        is_abridged: hit.is_abridged,
+                        store_rank,
+                        work_id: None,
+                        expression_id: None,
+                    });
                 }
+            }
+            if let Some(pool) = pool {
+                attach_pooled_recordings(pool, registry, &mut round).await;
+            }
+            for hit in round {
+                upsert_hit(&mut by_key, hit);
             }
 
             if !fetched_any {
@@ -1203,7 +1212,20 @@ fn decode_cursor(raw: &str) -> Option<SearchCursorV1> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// Merges a storefront candidate into the work map by hard ISBN/ASIN key or soft identity.
+/// Merges a storefront hit into the row of the same recording, or adds it
+/// as a row of its own.
+///
+/// Hits are one recording when they share an ISBN or ASIN, are the same
+/// store product, or were resolved into the same expression by the shared
+/// listing pool (see [`attach_pooled_recordings`]). Titles and authors are
+/// never compared, so another recording of the book (a different narrator,
+/// a dramatisation, an abridgement) stays a row of its own with its own
+/// cover and price.
+///
+/// # Arguments
+///
+/// * `map` - Search rows by key.
+/// * `hit` - The incoming hit.
 fn upsert_hit(map: &mut HashMap<String, StorefrontCandidate>, mut hit: StorefrontCandidate) {
     push_edition(
         &mut hit.store_editions,
@@ -1215,73 +1237,57 @@ fn upsert_hit(map: &mut HashMap<String, StorefrontCandidate>, mut hit: Storefron
             *isbn = n;
         }
     }
-
-    // Fast path: exact hard bibliographic key already in the map.
-    if let Some(hard) = hard_work_key(hit.asin.as_deref(), hit.isbn.as_deref()) {
-        if let Some(mut existing) = map.remove(&hard) {
-            merge_candidate_metadata(&mut existing, &hit);
-            let new_key = work_map_key(
-                existing.asin.as_deref(),
-                existing.isbn.as_deref(),
-                &existing.title,
-                existing.authors.as_deref(),
-                Some(existing.source.as_str()),
-                Some(existing.product_id.as_str()),
-            );
-            map.insert(new_key, existing);
-            return;
-        }
-    }
-
-    let match_key = map.iter().find_map(|(key, existing)| {
-        if identities_match(
-            WorkIdentity::new(
-                hit.asin.as_deref(),
-                hit.isbn.as_deref(),
-                &hit.title,
-                hit.authors.as_deref(),
-            )
-            .with_series(hit.series.as_deref())
-            .with_series_index(hit.series_index.as_deref()),
-            WorkIdentity::new(
-                existing.asin.as_deref(),
-                existing.isbn.as_deref(),
-                &existing.title,
-                existing.authors.as_deref(),
-            )
-            .with_series(existing.series.as_deref())
-            .with_series_index(existing.series_index.as_deref()),
-        ) {
-            Some(key.clone())
-        } else {
-            None
-        }
-    });
-
-    if let Some(old_key) = match_key {
-        let mut existing = map.remove(&old_key).expect("just found");
+    if let Some(mut existing) = same_recording_key(map, &hit).and_then(|key| map.remove(&key)) {
         merge_candidate_metadata(&mut existing, &hit);
-        let new_key = work_map_key(
-            existing.asin.as_deref(),
-            existing.isbn.as_deref(),
-            &existing.title,
-            existing.authors.as_deref(),
-            Some(existing.source.as_str()),
-            Some(existing.product_id.as_str()),
-        );
-        map.insert(new_key, existing);
+        insert_keyed(map, existing);
         return;
     }
+    insert_keyed(map, hit);
+}
 
-    let key = work_map_key(
-        hit.asin.as_deref(),
-        hit.isbn.as_deref(),
-        &hit.title,
-        hit.authors.as_deref(),
-        Some(hit.source.as_str()),
-        Some(hit.product_id.as_str()),
-    );
-    map.insert(key, hit);
+/// Names the recording each hit is, from the shared listing pool.
+///
+/// A hit whose store product the pool resolved into exactly one expression
+/// gets that expression, so listings of one recording at stores that share
+/// no ISBN or ASIN still become one row. A product the pool never listed, or
+/// one it placed in two recordings, is left as it is.
+///
+/// # Arguments
+///
+/// * `pool` - The library holding the shared listing pool.
+/// * `registry` - Maps each hit's store to the plugin key it pools under.
+/// * `hits` - One fetch round's hits.
+async fn attach_pooled_recordings(
+    pool: &bookclerk_library::LibraryStore,
+    registry: &SourceRegistry,
+    hits: &mut [StorefrontCandidate],
+) {
+    let keys: Vec<Option<(String, String)>> = hits
+        .iter()
+        .map(|hit| {
+            let source = registry.get(&hit.source)?;
+            Some((source.plugin_key().to_string(), hit.product_id.clone()))
+        })
+        .collect();
+    let pairs: Vec<(String, String)> = keys.iter().flatten().cloned().collect();
+    if pairs.is_empty() {
+        return;
+    }
+    let expressions = match pool.listing_expressions(&pairs).await {
+        Ok(found) => found,
+        Err(err) => {
+            tracing::debug!(error = %err, "catalog search could not read pooled recordings");
+            return;
+        }
+    };
+    for (hit, key) in hits.iter_mut().zip(keys) {
+        let Some(found) = key.and_then(|key| expressions.get(&key)) else {
+            continue;
+        };
+        if let [only] = found.iter().collect::<Vec<_>>().as_slice() {
+            hit.expression_id = Some((*only).clone());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1615,6 +1621,8 @@ mod tests {
         fails: bool,
         /// Lookups made, as `isbn:<v>` or `product:<v>`.
         calls: Arc<std::sync::Mutex<Vec<String>>>,
+        /// Hits the first page of every catalog search returns.
+        listed: Vec<CatalogHit>,
     }
 
     impl DetailStore {
@@ -1686,6 +1694,17 @@ mod tests {
             true
         }
 
+        async fn search_catalog(
+            &self,
+            opts: &CatalogSearchOpts,
+        ) -> bookclerk_source::Result<Vec<CatalogHit>> {
+            Ok(if opts.page <= 1 {
+                self.listed.clone()
+            } else {
+                Vec::new()
+            })
+        }
+
         async fn catalog_detail(
             &self,
             product_id: &str,
@@ -1721,8 +1740,173 @@ mod tests {
             answer,
             fails,
             calls: calls.clone(),
+            listed: Vec::new(),
         };
         (Arc::new(store), calls)
+    }
+
+    /// A store whose catalog search lists `listed` and whose detail lookups
+    /// find nothing.
+    fn search_store(id: &'static str, listed: Vec<CatalogHit>) -> Arc<dyn ContentSource> {
+        Arc::new(DetailStore {
+            id,
+            answer: None,
+            fails: false,
+            calls: Arc::default(),
+            listed,
+        })
+    }
+
+    /// A search hit for "The Sunlit Man" in recording `kind`, carrying
+    /// `isbn` when given.
+    fn sunlit(
+        product: &str,
+        kind: bookclerk_source::records::ExpressionKind,
+        isbn: Option<&str>,
+    ) -> CatalogHit {
+        CatalogHit {
+            product_id: product.into(),
+            title: "The Sunlit Man".into(),
+            language: Some("en".into()),
+            is_abridged: Some(false),
+            work_kind: bookclerk_source::records::WorkKind::Book,
+            expression_kind: kind,
+            media_kind: bookclerk_source::records::MediaKind::Audio,
+            credits: [
+                (
+                    "Brandon Sanderson",
+                    bookclerk_source::records::CreditRole::Author,
+                ),
+                (
+                    "William DeMeritt",
+                    bookclerk_source::records::CreditRole::Narrator,
+                ),
+            ]
+            .into_iter()
+            .filter_map(|(name, role)| bookclerk_source::records::credit(name, role))
+            .collect(),
+            identifiers: isbn
+                .map(|value| bookclerk_source::records::Identifier {
+                    scheme: bookclerk_source::records::IdentifierScheme::Isbn,
+                    value: value.into(),
+                    marketplace: None,
+                })
+                .into_iter()
+                .collect(),
+            ..CatalogHit::default()
+        }
+    }
+
+    /// The rows a search for "sunlit" returns, each as its sorted
+    /// `source:product` editions.
+    async fn sunlit_rows(
+        registry: &SourceRegistry,
+        pool: Option<&bookclerk_library::LibraryStore>,
+    ) -> Vec<Vec<String>> {
+        let page = catalog_search_page(
+            registry,
+            pool,
+            CatalogSearchPageOpts {
+                query: "sunlit",
+                region: "us",
+                page_size: 24,
+                cursor: None,
+                sort: CatalogSearchSort::Relevance,
+                sort_dir: CatalogSortDir::Desc,
+                field: None,
+                language: Some("en"),
+                all_languages: false,
+                filters: CatalogSearchFilters::default(),
+            },
+        )
+        .await
+        .unwrap();
+        let mut rows: Vec<Vec<String>> = page
+            .items
+            .iter()
+            .map(|hit| {
+                let mut editions: Vec<String> = hit
+                    .store_editions
+                    .iter()
+                    .map(|e| format!("{}:{}", e.source, e.product_id))
+                    .collect();
+                editions.sort();
+                editions
+            })
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    /// Hits with one title are never merged on it: a narration and a
+    /// dramatisation of the book stay two rows, and one narration sold by
+    /// two stores becomes one row only when the stores share an ISBN or the
+    /// listing pool resolved both listings into one recording.
+    #[tokio::test]
+    async fn search_merges_one_recording_never_one_title() {
+        use bookclerk_source::records::ExpressionKind::{Dramatisation, Narration};
+        let mut registry = SourceRegistry::new();
+        registry.register(search_store(
+            "libro",
+            vec![
+                sunlit("L1", Narration, None),
+                sunlit("L2", Narration, Some("9781938570452")),
+            ],
+        ));
+        registry.register(search_store(
+            "chirp",
+            vec![
+                sunlit("C1", Narration, None),
+                sunlit("G1", Dramatisation, None),
+                sunlit("C2", Narration, Some("978-1-938570-45-2")),
+            ],
+        ));
+        let separate = |ids: &[&str]| -> Vec<Vec<String>> {
+            let mut rows: Vec<Vec<String>> = ids.iter().map(|id| vec![(*id).to_string()]).collect();
+            rows.sort();
+            rows
+        };
+
+        // Without the pool only the shared ISBN joins two listings.
+        let mut expected = separate(&["chirp:C1", "chirp:G1", "libro:L1"]);
+        expected.push(vec!["chirp:C2".into(), "libro:L2".into()]);
+        expected.sort();
+        assert_eq!(sunlit_rows(&registry, None).await, expected);
+
+        // The pool resolved L1 and C1 into one edition (their stores' detail
+        // pages named one ISBN) and G1 into the dramatisation.
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let now = chrono::Utc::now();
+        library
+            .record_catalog_listings(&[
+                crate::pool::catalog_listing(
+                    "libro",
+                    "us",
+                    &sunlit("L1", Narration, Some("9780000000002")),
+                    now,
+                ),
+                crate::pool::catalog_listing(
+                    "chirp",
+                    "us",
+                    &sunlit("C1", Narration, Some("9780000000002")),
+                    now,
+                ),
+                crate::pool::catalog_listing(
+                    "chirp",
+                    "us",
+                    &sunlit("G1", Dramatisation, Some("9780000000019")),
+                    now,
+                ),
+            ])
+            .await
+            .unwrap();
+        let mut expected = separate(&["chirp:G1"]);
+        expected.push(vec!["chirp:C1".into(), "libro:L1".into()]);
+        expected.push(vec!["chirp:C2".into(), "libro:L2".into()]);
+        expected.sort();
+        assert_eq!(sunlit_rows(&registry, Some(&library)).await, expected);
     }
 
     /// A lean row from `source` with no description, narrators or runtime.

@@ -611,14 +611,23 @@ CLI `discover recommend` applies the operator prefs row.
 **Discover shelves** stay taste-ranked (library, listening, embeddings).
 
 **Catalog search** (`GET /api/discover/search`) is a **non-personalized multi-store
-browser**: one page per connected storefront in parallel, identity-merge, then
-server-side include/exclude filters and sort. By default results are hard-filtered
+browser**: one page per connected storefront in parallel, merge the hits of one
+recording into one row, then server-side include/exclude filters and sort. By default results are hard-filtered
 to the client language (`lang` / `language=`). Chirp catalog hits carry Chirp’s
 `language` field (`English` / `Spanish` / …) plus `promotedTags` as genres, so
 non-matching languages are dropped; unknown/missing language metadata (e.g.
 sparse GraphicAudio rows) still passes. **All languages** (`all_languages=1`)
 disables the hard filter
 (soft prefer remains a weak tie-break).
+
+A row is one recording, never one title. Two stores' hits share a row when
+they share an ISBN or ASIN, or when the shared listing pool resolved both
+store products into the same expression (`LibraryStore::listing_expressions`;
+a product the pool has not listed, or placed in two recordings, merges only on
+its identifiers). Titles and authors are never compared, so a narration and a
+dramatisation of one book, or two narrations whose stores share no identifier
+and that the pool has not seen, are separate rows with their own cover,
+narrators and price.
 
 | Param | Notes |
 | --- | --- |
