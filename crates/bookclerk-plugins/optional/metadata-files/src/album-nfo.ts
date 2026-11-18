@@ -18,7 +18,7 @@
  */
 
 import type { MetadataField, MetadataFileRecord } from "@bookclerk/plugin-sdk/workerd";
-import { RecordBuilder, decodeUtf8, encodeFile, invalid } from "./text.ts";
+import { RecordBuilder, decodeUtf8, encodeFile, invalid, labels } from "./text.ts";
 import {
   type XmlElement,
   appendChildren,
@@ -108,14 +108,19 @@ export function parseAlbumNfo(bytes: Uint8Array): MetadataFileRecord {
   const label = first("label");
   if (label !== undefined) out.text("publisher", label.text);
   const released = first("releasedate");
-  const date = released !== undefined && released.text.trim() !== "" ? released : first("year");
+  // A blank releasedate gives way to year, else still states the date empty.
+  const date =
+    released !== undefined && released.text.trim() !== "" ? released : (first("year") ?? released);
   if (date !== undefined) out.publishedAt(date.text);
   if (first("genre") !== undefined) out.labels("genres", all("genre"));
-  const credited = kids
-    .filter((k) => k.name === "albumArtistCredits")
-    .flatMap((k) => k.children.filter((c) => c.name === "artist").map((c) => c.text));
+  // Credits with a usable name win; blank ones give way to direct artists.
+  const credits = kids.filter((k) => k.name === "albumArtistCredits");
+  const credited = labels(
+    credits.flatMap((k) => k.children.filter((c) => c.name === "artist").map((c) => c.text)),
+  );
   if (credited.length > 0) out.credits("author", credited);
   else if (first("artist") !== undefined) out.credits("author", all("artist"));
+  else if (credits.length > 0) out.credits("author", []);
   return out.build();
 }
 

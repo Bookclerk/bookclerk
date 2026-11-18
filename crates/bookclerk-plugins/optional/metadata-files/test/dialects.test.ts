@@ -495,6 +495,25 @@ describe("kodi_album_nfo", () => {
       parsed.credits.map((c) => c.name),
       ["A", "B"],
     );
+    const blank = parseFile(
+      "kodi_album_nfo",
+      utf8(
+        "<album><releasedate/><artist>Direct</artist>" +
+          "<albumArtistCredits><artist> </artist></albumArtistCredits></album>",
+      ),
+    );
+    assert.ok(blank.present.includes("publishedAt"));
+    assert.equal(blank.publishedAt, undefined);
+    assert.deepEqual(
+      blank.credits.map((c) => c.name),
+      ["Direct"],
+    );
+    const none = parseFile(
+      "kodi_album_nfo",
+      utf8("<album><albumArtistCredits><artist/></albumArtistCredits></album>"),
+    );
+    assert.deepEqual(none.creditRoles, ["author"]);
+    assert.deepEqual(none.credits, []);
   });
 
   test("creates a file", () => {
