@@ -69,6 +69,7 @@ pub mod oidc_clients;
 pub mod oidc_refresh_tokens;
 pub mod oidc_rp_states;
 pub mod operator_sessions;
+pub mod patron_scope_keys;
 pub mod patron_scopes;
 pub mod pending_joins;
 pub mod plugin_artifacts;

@@ -571,32 +571,56 @@ async fn caller_user_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
         .and_then(|identity| identity.user_id)
 }
 
-/// The patron scope filter of the signed-in caller: `None` for an operator
-/// token, an Owner or Administrator, or a patron whose scope hides nothing.
+/// The patron scope filter of the caller: `None` for the operator, an
+/// Owner or Administrator, or a patron whose scope hides nothing.
+///
+/// Only a caller positively identified as the operator, or as a user whose
+/// stored role is never scoped, sees the whole library. A session linked to
+/// no user (or to a user that no longer exists) gets the library default.
 ///
 /// # Errors
 ///
-/// A 500 when the user or their scope cannot be read: the library fails
+/// A 500 when the caller, the user or their scope cannot be read, and a
+/// 401 when the session ended since it was admitted: the library fails
 /// closed rather than show a patron books outside their scope.
 async fn caller_scope(
     state: &AppState,
     headers: &HeaderMap,
     route: &str,
 ) -> Result<Option<WorkScope>, WorksError> {
-    let Some(user_id) = caller_user_id(state, headers).await else {
-        return Ok(None);
+    let user_id = match crate::auth::caller_subject(state, headers).await {
+        crate::auth::CallerSubject::Operator => return Ok(None),
+        crate::auth::CallerSubject::Person(user_id) => user_id,
+        crate::auth::CallerSubject::SignedOut => {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorMessage::new("sign in again")),
+            ))
+        }
+        crate::auth::CallerSubject::Unavailable => {
+            tracing::error!(route, "the caller could not be identified");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage::new("the library could not be read")),
+            ));
+        }
     };
     let library = state.library_snapshot().await;
-    let Some(user) = library
-        .get_user(user_id)
-        .await
-        .map_err(|err| read_failed(route, &err))?
-    else {
-        return Ok(None);
+    let user = match user_id {
+        Some(user_id) => library
+            .get_user(user_id)
+            .await
+            .map_err(|err| read_failed(route, &err))?,
+        None => None,
     };
-    bookclerk_library::control_plane::work_scope_for_user(&library, &user)
-        .await
-        .map_err(|err| read_failed(route, &err))
+    match user {
+        Some(user) => bookclerk_library::control_plane::work_scope_for_user(&library, &user)
+            .await
+            .map_err(|err| read_failed(route, &err)),
+        None => bookclerk_library::control_plane::default_work_scope(&library)
+            .await
+            .map_err(|err| read_failed(route, &err)),
+    }
 }
 
 /// Refuses a work outside the caller's scope with the same 404 an unknown

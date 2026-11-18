@@ -13,9 +13,10 @@ use axum::Json;
 use bookclerk_library::control_plane::{
     assigned_patron_scope, default_patron_scope, role_is_scoped, set_default_patron_scope,
     set_patron_scope, verify_patron_administrator, AssignedScope, ConfigActor, PatronScope,
+    PutUserScope,
 };
 use bookclerk_library::LibraryError;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::api::AppState;
 use crate::auth::{authorize_provisioner, Provisioner};
@@ -40,15 +41,6 @@ pub(crate) struct UserScopeJson {
     /// Administrator, who always see the whole library.
     #[schema(example = true)]
     applies: bool,
-}
-
-/// `PUT /api/users/{id}/scope` body.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PutUserScope {
-    /// The patron's own scope, or `null` to return them to the library's
-    /// default.
-    scope: Option<PatronScope>,
 }
 
 /// The library's default scope as the scope routes report it.

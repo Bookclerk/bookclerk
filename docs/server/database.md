@@ -669,7 +669,7 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `accounts`, `books`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
 `operator_sessions`, `account_links`, `member_account_rules`, `patron_scopes`,
-`account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
+`patron_scope_keys`, `account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `discover_candidates`, `discover_store_calls`,
 `discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
@@ -683,7 +683,11 @@ model tables below.
 accounts: a row with `may_connect = 0` stops that user from connecting
 store accounts here, and no row allows it. `patron_scopes` holds a
 Member's own patron scope as JSON; a Member with no row follows the
-library's default scope (see [Sharing](../guide/sharing.md#limit-what-a-patron-sees)). `account_shares` records each
+library's default scope (see [Sharing](../guide/sharing.md#limit-what-a-patron-sees)). `patron_scope_keys`
+holds a scope's include and exclude values as rows, keyed by a hash of
+the whole value set, so the Library filter joins them with a fixed
+number of parameters however many rules a scope has; the rows are
+written the first time a scope is used and never change. `account_shares` records each
 account a person's join sent to a branch (`sent`, peer `node:<id>`) or
 received from a library (`received`, peer `link:<cluster id>`); it is
 removed with the account. `account_credential_revisions` holds, per account

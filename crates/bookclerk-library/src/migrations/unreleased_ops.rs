@@ -287,6 +287,19 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     )",
     ),
+    // The include and exclude values of a patron scope as rows, keyed by
+    // the content id of the value set (`crate::WorkScope::key_set_id`), so
+    // the Library filter joins them with a fixed number of binds whatever
+    // the rule count. Rows are written once per value set and never change.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS patron_scope_keys (
+        scope_hash TEXT NOT NULL,
+        effect TEXT NOT NULL CHECK (effect IN ('include', 'exclude')),
+        facet TEXT NOT NULL,
+        key TEXT NOT NULL,
+        PRIMARY KEY (scope_hash, effect, facet, key)
+    )",
+    ),
     // Where a store account travelled with its person: `sent` to a branch
     // (`peer = node:<node_id>`) or `received` from a library this install
     // joined (`peer = link:<cluster_id>`). Read to disconnect an account

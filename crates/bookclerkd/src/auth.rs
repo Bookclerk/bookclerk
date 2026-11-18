@@ -1958,6 +1958,60 @@ pub async fn caller_portal_identity(
     timed_portal_identity_from_headers(&library, headers).await
 }
 
+/// Who an admitted request acts as, for checks that must fail closed.
+///
+/// Unlike [`caller_portal_identity`], which folds "nobody", "the operator"
+/// and "the library did not answer" into `None`, this keeps them apart so a
+/// patron limit (scope or member control) is lifted only for a caller that
+/// is positively the operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallerSubject {
+    /// The operator (token, operator session not impersonating, or auth
+    /// turned off): never limited.
+    Operator,
+    /// A signed-in person, or an operator impersonating one. `None` when
+    /// the session's identity is linked to no library user, which is
+    /// limited like a patron with no store accounts of their own.
+    Person(Option<i64>),
+    /// The session cookie or card no longer names a live session.
+    SignedOut,
+    /// The library failed or did not answer, so the caller is unknown.
+    Unavailable,
+}
+
+/// Resolves who an admitted request acts as ([`CallerSubject`]).
+///
+/// # Arguments
+///
+/// * `state` - Daemon state holding the auth configuration and library.
+/// * `headers` - Request headers carrying the operator token, operator
+///   session or portal session.
+///
+/// # Returns
+///
+/// [`CallerSubject::Unavailable`] when a library read fails or times out.
+pub(crate) async fn caller_subject(state: &AppState, headers: &HeaderMap) -> CallerSubject {
+    let auth = state.auth_snapshot().await;
+    if !auth.enabled {
+        return CallerSubject::Operator;
+    }
+    if let Some(op) = resolve_operator_session(state, &auth, headers).await {
+        return match op.impersonating_user_id {
+            Some(user_id) => CallerSubject::Person(Some(user_id)),
+            None => CallerSubject::Operator,
+        };
+    }
+    if authorize_operator_bearer_only(&auth, headers) {
+        return CallerSubject::Operator;
+    }
+    let library = state.library_snapshot().await;
+    match portal_lookup_from_headers(&library, headers).await {
+        PortalLookup::SignedIn(identity) => CallerSubject::Person(identity.user_id),
+        PortalLookup::SignedOut => CallerSubject::SignedOut,
+        PortalLookup::Unavailable => CallerSubject::Unavailable,
+    }
+}
+
 /// Subject key + optional portal identity id for the caller's preferences row.
 ///
 /// Portal callers must resolve to their own prefs key. If the portal-identity

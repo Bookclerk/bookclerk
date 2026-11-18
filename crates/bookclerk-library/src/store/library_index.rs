@@ -40,9 +40,10 @@ use super::write_batches::{CountedBatches, WriteBatches};
 use super::LibraryStore;
 use crate::control_plane::batch;
 use crate::entities::{
-    contributors, credits, edition_acquisitions, editions, expressions, holdings,
-    library_index_builds, library_work_facets, library_work_rows, series, series_entries,
-    store_listings, user_title_state, user_work_tags, works,
+    account_links, contributors, credits, edition_acquisitions, editions, expressions, holdings,
+    library_index_builds, library_work_facets, library_work_rows, patron_scope_keys,
+    portal_identities, series, series_entries, store_listings, user_title_state, user_work_tags,
+    works,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::AcquireStatus;
@@ -271,9 +272,9 @@ pub struct WorkScope {
     pub include: Vec<(WorkFacet, String)>,
     /// `(facet, key)` pairs that hide a work, whatever `include` says.
     pub exclude: Vec<(WorkFacet, String)>,
-    /// The patron's own store accounts as `(plugin key, account id)`: what
-    /// they hold always passes.
-    pub own_accounts: Vec<(String, String)>,
+    /// The patron (`users.id`) whose linked store accounts' books always
+    /// pass; `None` for a caller with no accounts of their own.
+    pub owner: Option<i64>,
 }
 
 impl WorkScope {
@@ -282,7 +283,44 @@ impl WorkScope {
     pub fn sees_everything(&self) -> bool {
         self.include.is_empty() && self.exclude.is_empty()
     }
+
+    /// The scope's values as `(effect, facet, key)` rows, sorted and
+    /// without duplicates, as `patron_scope_keys` stores them.
+    fn key_rows(&self) -> BTreeSet<(&'static str, &'static str, &str)> {
+        let include = self
+            .include
+            .iter()
+            .map(|(facet, key)| (SCOPE_INCLUDE, facet.as_str(), key.as_str()));
+        let exclude = self
+            .exclude
+            .iter()
+            .map(|(facet, key)| (SCOPE_EXCLUDE, facet.as_str(), key.as_str()));
+        include.chain(exclude).collect()
+    }
+
+    /// Content id of the scope's include and exclude values: lowercase hex
+    /// SHA-256 over [`Self::key_rows`], each field length-prefixed, so two
+    /// scopes share an id exactly when they hold the same values.
+    #[must_use]
+    pub fn key_set_id(&self) -> String {
+        use sha2::{Digest as _, Sha256};
+        let mut hash = Sha256::new();
+        for (effect, facet, key) in self.key_rows() {
+            for field in [effect, facet, key] {
+                let len = u64::try_from(field.len()).unwrap_or(u64::MAX);
+                hash.update(len.to_be_bytes());
+                hash.update(field.as_bytes());
+            }
+        }
+        hex::encode(hash.finalize())
+    }
 }
+
+/// `patron_scope_keys.effect` of an include value.
+const SCOPE_INCLUDE: &str = "include";
+
+/// `patron_scope_keys.effect` of an exclude value.
+const SCOPE_EXCLUDE: &str = "exclude";
 
 /// One row of the page index, as list views show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1142,6 +1180,59 @@ impl LibraryStore {
         self.work_of_edition(&listing.edition_id).await
     }
 
+    /// Writes the `patron_scope_keys` rows of `scope`'s value set when they
+    /// are not all there yet, so the Library filter can join them.
+    ///
+    /// Rows are keyed by the set's content id and never change, so the
+    /// write is idempotent: one `INSERT OR IGNORE` per value, grouped into
+    /// as few batches as the database plugin's limits allow. A read finds
+    /// the rows already there after the first use of a scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the count fails, or the write
+    /// error.
+    pub(crate) async fn ensure_scope_keys(&self, scope: Option<&WorkScope>) -> Result<()> {
+        use sea_orm::PaginatorTrait as _;
+        let Some(scope) = scope.filter(|scope| !scope.sees_everything()) else {
+            return Ok(());
+        };
+        let key_set = scope.key_set_id();
+        let rows = scope.key_rows();
+        let stored = patron_scope_keys::Entity::find()
+            .filter(patron_scope_keys::Column::ScopeHash.eq(key_set.as_str()))
+            .count(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        if usize::try_from(stored).is_ok_and(|stored| stored >= rows.len()) {
+            return Ok(());
+        }
+        let mut batches = WriteBatches::new(self.db_capabilities(), "patron scope key");
+        let mut full = Vec::new();
+        for (effect, facet, key) in rows {
+            let statement = batch::exec(
+                "INSERT OR IGNORE INTO patron_scope_keys (scope_hash, effect, facet, key) \
+                 VALUES (?, ?, ?, ?)",
+                vec![
+                    batch::text(&key_set),
+                    batch::text(effect),
+                    batch::text(facet),
+                    batch::text(key),
+                ],
+            );
+            if let Some(done) = batches.push(statement)? {
+                full.push(done);
+            }
+        }
+        full.extend(batches.finish());
+        for statements in full {
+            let operation_id = format!("patron-scope-keys-{}", Uuid::new_v4().simple());
+            self.execute_host_batch(batch::request(&operation_id, statements))
+                .await?;
+        }
+        Ok(())
+    }
+
     /// The rows of `ids` that pass `query`'s filters, in the order of
     /// `ids` (a search's relevance order); `query`'s order, cursor and
     /// limit are not used. Unheld works and ids with no row are left out.
@@ -1160,6 +1251,7 @@ impl LibraryStore {
         query: &WorkPageQuery,
     ) -> Result<Vec<LibraryWorkRow>> {
         use library_work_rows::Column as C;
+        self.ensure_scope_keys(query.scope.as_ref()).await?;
         let mut found: HashMap<String, LibraryWorkRow> =
             find_chunked_paged::<library_work_rows::Entity, _>(self, ids, |part| {
                 filtered_rows(query)
@@ -1183,6 +1275,7 @@ impl LibraryStore {
     /// Returns [`LibraryError::Orm`] when a read fails.
     pub async fn work_in_scope(&self, work_id: &str, scope: &WorkScope) -> Result<bool> {
         use library_work_rows::Column as C;
+        self.ensure_scope_keys(Some(scope)).await?;
         let top = works::Entity::find_by_id(work_id.to_string())
             .one(self.db())
             .await
@@ -1234,6 +1327,7 @@ impl LibraryStore {
             /// Works in the group.
             works: i64,
         }
+        self.ensure_scope_keys(scope).await?;
         let cap = self.result_row_cap();
         let limit = limit.max(1).min(cap);
         let probe = limit.saturating_add(1).min(cap);
@@ -1326,6 +1420,7 @@ impl LibraryStore {
     /// order, or [`LibraryError::Orm`] when the read fails.
     pub async fn library_works_page(&self, query: &WorkPageQuery) -> Result<WorkPage> {
         use library_work_rows::Column as C;
+        self.ensure_scope_keys(query.scope.as_ref()).await?;
         let cap = self.result_row_cap();
         let limit = query.limit.max(1).min(cap);
         // One row past the page tells whether another follows; an adapter
@@ -1494,37 +1589,53 @@ fn scope_condition(scope: &WorkScope) -> Condition {
     if scope.sees_everything() {
         return Condition::all();
     }
+    let key_set = scope.key_set_id();
     let mut permitted = Condition::all();
     if !scope.include.is_empty() {
-        permitted = permitted.add(C::WorkId.in_subquery(facet_works_subquery(&scope.include)));
+        permitted =
+            permitted.add(C::WorkId.in_subquery(scope_works_subquery(&key_set, SCOPE_INCLUDE)));
     }
     if !scope.exclude.is_empty() {
-        permitted = permitted.add(C::WorkId.not_in_subquery(facet_works_subquery(&scope.exclude)));
+        permitted =
+            permitted.add(C::WorkId.not_in_subquery(scope_works_subquery(&key_set, SCOPE_EXCLUDE)));
     }
-    if scope.own_accounts.is_empty() {
-        permitted
-    } else {
-        Condition::any()
+    match scope.owner {
+        None => permitted,
+        Some(user_id) => Condition::any()
             .add(permitted)
-            .add(C::WorkId.in_subquery(own_works_subquery(&scope.own_accounts)))
+            .add(C::WorkId.in_subquery(owner_works_subquery(user_id))),
     }
 }
 
-/// The works with any of these `(facet, key)` values.
-fn facet_works_subquery(values: &[(WorkFacet, String)]) -> sea_orm::sea_query::SelectStatement {
+/// The works with any of a stored scope's values of one effect: the facet
+/// rows joined to `patron_scope_keys`, two binds whatever the rule count.
+///
+/// # Arguments
+///
+/// * `key_set` - [`WorkScope::key_set_id`] of a scope whose rows
+///   [`LibraryStore::ensure_scope_keys`] wrote.
+/// * `effect` - [`SCOPE_INCLUDE`] or [`SCOPE_EXCLUDE`].
+fn scope_works_subquery(key_set: &str, effect: &str) -> sea_orm::sea_query::SelectStatement {
     use library_work_facets::Column as F;
-    let mut any = Condition::any();
-    for (facet, key) in values {
-        any = any.add(
-            Condition::all()
-                .add(F::Facet.eq(facet.as_str()))
-                .add(F::Key.eq(key.as_str())),
-        );
-    }
+    use patron_scope_keys::Column as K;
+    use sea_orm::sea_query::ExprTrait as _;
     Query::select()
-        .column(F::WorkId)
+        .column((library_work_facets::Entity, F::WorkId))
         .from(library_work_facets::Entity)
-        .cond_where(any)
+        .inner_join(
+            patron_scope_keys::Entity,
+            Condition::all()
+                .add(
+                    Expr::col((patron_scope_keys::Entity, K::Facet))
+                        .equals((library_work_facets::Entity, F::Facet)),
+                )
+                .add(
+                    Expr::col((patron_scope_keys::Entity, K::Key))
+                        .equals((library_work_facets::Entity, F::Key)),
+                ),
+        )
+        .and_where(Expr::col((patron_scope_keys::Entity, K::ScopeHash)).eq(Expr::val(key_set)))
+        .and_where(Expr::col((patron_scope_keys::Entity, K::Effect)).eq(Expr::val(effect)))
         .to_owned()
 }
 
@@ -1594,24 +1705,36 @@ fn account_works_subquery(account: &str) -> sea_orm::sea_query::SelectStatement 
     )
 }
 
-/// The top-level works one of these store accounts holds a listing of.
-fn own_works_subquery(accounts: &[(String, String)]) -> sea_orm::sea_query::SelectStatement {
+/// The top-level works a store account linked to `user_id` holds a
+/// listing of, through any of the user's portal identities: one bind
+/// whatever the number of accounts.
+fn owner_works_subquery(user_id: i64) -> sea_orm::sea_query::SelectStatement {
     use sea_orm::sea_query::ExprTrait as _;
-    let mut any = Condition::any();
-    for (plugin_key, account_id) in accounts {
-        any = any.add(
+    let mut select = held_works_subquery(
+        Condition::all().add(
+            Expr::col((portal_identities::Entity, portal_identities::Column::UserId))
+                .eq(Expr::val(user_id)),
+        ),
+    );
+    select
+        .inner_join(
+            account_links::Entity,
             Condition::all()
                 .add(
-                    Expr::col((holdings::Entity, holdings::Column::PluginKey))
-                        .eq(Expr::val(plugin_key.as_str())),
+                    Expr::col((account_links::Entity, account_links::Column::PluginKey))
+                        .equals((holdings::Entity, holdings::Column::PluginKey)),
                 )
                 .add(
-                    Expr::col((holdings::Entity, holdings::Column::AccountId))
-                        .eq(Expr::val(account_id.as_str())),
+                    Expr::col((account_links::Entity, account_links::Column::AccountId))
+                        .equals((holdings::Entity, holdings::Column::AccountId)),
                 ),
+        )
+        .inner_join(
+            portal_identities::Entity,
+            Expr::col((portal_identities::Entity, portal_identities::Column::Id))
+                .equals((account_links::Entity, account_links::Column::IdentityId)),
         );
-    }
-    held_works_subquery(any)
+    select
 }
 
 /// The top-level works of the holdings that pass `holding`: the works of

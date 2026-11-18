@@ -216,10 +216,11 @@ pub use output::{
 };
 pub use ownership::{nodes_owned_by, set_node_owner, verify_node_owner};
 pub use patron_scope::{
-    assigned_patron_scope, default_patron_scope, load_default_patron_scope, role_is_scoped,
-    scope_for_user, set_default_patron_scope, set_patron_scope, verify_patron_administrator,
-    work_scope_for_user, AssignedScope, PatronScope, RuleEffect, ScopeField, ScopeRule,
-    MAX_SCOPE_RULES, MAX_SCOPE_VALUE_BYTES, PATRON_SCOPE_NAMESPACE,
+    assigned_patron_scope, default_patron_scope, default_work_scope, load_default_patron_scope,
+    parse_patron_scope, parse_user_scope_request, role_is_scoped, scope_for_user,
+    set_default_patron_scope, set_patron_scope, verify_patron_administrator, work_scope_for_user,
+    AssignedScope, PatronScope, PutUserScope, RuleEffect, ScopeField, ScopeRule, MAX_SCOPE_RULES,
+    MAX_SCOPE_VALUE_BYTES, PATRON_SCOPE_NAMESPACE,
 };
 pub use pending_joins::{
     create_pending_join, finish_pending_join, open_pending_join, purge_expired_pending_joins,

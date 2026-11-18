@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 
 use chrono::Utc;
 use sea_orm::EntityTrait;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::documents::{
     self, import_if_absent, load_document, replace_document, DocumentKey, ReplaceOutcome,
@@ -47,19 +47,7 @@ pub const MAX_SCOPE_RULES: usize = 64;
 pub const MAX_SCOPE_VALUE_BYTES: usize = 256;
 
 /// The book field a [`ScopeRule`] matches one value of.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Serialize,
-    Deserialize,
-    utoipa::ToSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeField {
     /// A genre (store category), such as "Kids".
@@ -86,19 +74,7 @@ impl ScopeField {
 }
 
 /// Whether a [`ScopeRule`] lets matching books in or keeps them out.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Serialize,
-    Deserialize,
-    utoipa::ToSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleEffect {
     /// Matching books are visible (once any include rule exists, only books
@@ -109,7 +85,9 @@ pub enum RuleEffect {
 }
 
 /// One rule of a scope: a field, one value of it, and its effect.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+// Read by a strict hand-written reader (module `strict`); the serde
+// attributes here shape the schema and match what that reader takes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScopeRule {
     /// The field the rule matches.
@@ -123,7 +101,9 @@ pub struct ScopeRule {
 }
 
 /// Which part of the library a patron sees.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+// Read by a strict hand-written reader (module `strict`); the serde
+// attributes here shape the schema and match what that reader takes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PatronScope {
     /// Visibility rules, at most 64. Empty means every book is visible.
@@ -193,6 +173,240 @@ impl PatronScope {
             rule.value = rule.value.trim().to_string();
         }
         self
+    }
+}
+
+/// `PUT /api/users/{id}/scope` body.
+// Read by a strict hand-written reader (module `strict`); the serde
+// attribute here shapes the schema and matches what that reader takes.
+#[derive(Debug, Clone, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PutUserScope {
+    /// The patron's own scope, or `null` to return them to the library's
+    /// default.
+    pub scope: Option<PatronScope>,
+}
+
+/// Parses the body of `PUT /api/users/default-scope` from its raw bytes,
+/// sans IO, the way the route reads it: JSON into [`PatronScope`], then
+/// trimmed ([`PatronScope::normalized`]) and checked
+/// ([`PatronScope::validate`]) as [`set_default_patron_scope`] does.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for bytes that are not the scope's JSON
+/// shape (unknown or repeated fields, wrong types, a missing rule field) or
+/// a scope that fails [`PatronScope::validate`].
+pub fn parse_patron_scope(body: &[u8]) -> Result<PatronScope> {
+    let scope = serde_json::from_slice::<PatronScope>(body)
+        .map_err(|err| invalid(&format!("scope body: {err}")))?
+        .normalized();
+    scope.validate()?;
+    Ok(scope)
+}
+
+/// Parses the body of `PUT /api/users/{id}/scope` from its raw bytes, sans
+/// IO, the way the route reads it: JSON into [`PutUserScope`], then the
+/// scope (when one is given) trimmed and checked as [`set_patron_scope`]
+/// does.
+///
+/// # Returns
+///
+/// The patron's own scope, or `None` (`"scope": null`, or no `scope` key)
+/// to return them to the default.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for bytes that are not the body's JSON
+/// shape or a scope that fails [`PatronScope::validate`].
+pub fn parse_user_scope_request(body: &[u8]) -> Result<Option<PatronScope>> {
+    let body = serde_json::from_slice::<PutUserScope>(body)
+        .map_err(|err| invalid(&format!("user scope body: {err}")))?;
+    body.scope
+        .map(|scope| {
+            let scope = scope.normalized();
+            scope.validate().map(|()| scope)
+        })
+        .transpose()
+}
+
+/// Strict JSON readers for the scope types.
+///
+/// A derived reader would also take a struct written as an array
+/// (`["genre", "Kids", "include"]`) and a unit variant written as an object
+/// (`{"genre": null}`). Scopes come from Administrators over the web API,
+/// so the readers here take only the documented shape: objects for the
+/// structs, with no unknown, repeated or (for a rule) missing keys, and
+/// strings for the field and effect names. The `patron_scope_request` fuzz
+/// target checks them against an independent reading.
+mod strict {
+    use std::fmt;
+
+    use serde::de::{self, Deserializer, MapAccess, Visitor};
+    use serde::Deserialize;
+
+    use super::{PatronScope, PutUserScope, RuleEffect, ScopeField, ScopeRule};
+
+    /// Reads one of the names of a unit enum from a JSON string.
+    struct Name<T: 'static> {
+        /// What the reader expects, for errors.
+        what: &'static str,
+        /// The accepted names and their values.
+        names: &'static [(&'static str, T)],
+        /// The accepted names alone, for errors.
+        expected: &'static [&'static str],
+    }
+
+    impl<T: Copy> Visitor<'_> for Name<T> {
+        type Value = T;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(self.what)
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<T, E> {
+            self.names
+                .iter()
+                .find(|(name, _)| *name == value)
+                .map(|(_, found)| *found)
+                .ok_or_else(|| E::unknown_variant(value, self.expected))
+        }
+    }
+
+    impl<'de> Deserialize<'de> for ScopeField {
+        fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            de.deserialize_str(Name {
+                what: "a scope field name",
+                names: &[
+                    ("genre", ScopeField::Genre),
+                    ("series", ScopeField::Series),
+                    ("author", ScopeField::Author),
+                    ("narrator", ScopeField::Narrator),
+                ],
+                expected: &["genre", "series", "author", "narrator"],
+            })
+        }
+    }
+
+    impl<'de> Deserialize<'de> for RuleEffect {
+        fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            de.deserialize_str(Name {
+                what: "include or exclude",
+                names: &[
+                    ("include", RuleEffect::Include),
+                    ("exclude", RuleEffect::Exclude),
+                ],
+                expected: &["include", "exclude"],
+            })
+        }
+    }
+
+    /// Stores one key's value, refusing a key written twice.
+    fn once<'de, A: MapAccess<'de>, T: Deserialize<'de>>(
+        map: &mut A,
+        slot: &mut Option<T>,
+        key: &'static str,
+    ) -> Result<(), A::Error> {
+        if slot.is_some() {
+            return Err(de::Error::duplicate_field(key));
+        }
+        *slot = Some(map.next_value()?);
+        Ok(())
+    }
+
+    /// Reads a [`ScopeRule`] from an object.
+    struct RuleVisitor;
+
+    impl<'de> Visitor<'de> for RuleVisitor {
+        type Value = ScopeRule;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a scope rule object")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<ScopeRule, A::Error> {
+            const KEYS: &[&str] = &["field", "value", "effect"];
+            let (mut field, mut value, mut effect) = (None, None, None);
+            while let Some(key) = map.next_key::<String>()? {
+                match key.as_str() {
+                    "field" => once(&mut map, &mut field, "field")?,
+                    "value" => once(&mut map, &mut value, "value")?,
+                    "effect" => once(&mut map, &mut effect, "effect")?,
+                    other => return Err(de::Error::unknown_field(other, KEYS)),
+                }
+            }
+            Ok(ScopeRule {
+                field: field.ok_or_else(|| de::Error::missing_field("field"))?,
+                value: value.ok_or_else(|| de::Error::missing_field("value"))?,
+                effect: effect.ok_or_else(|| de::Error::missing_field("effect"))?,
+            })
+        }
+    }
+
+    impl<'de> Deserialize<'de> for ScopeRule {
+        fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            de.deserialize_map(RuleVisitor)
+        }
+    }
+
+    /// Reads a [`PatronScope`] from an object.
+    struct ScopeVisitor;
+
+    impl<'de> Visitor<'de> for ScopeVisitor {
+        type Value = PatronScope;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a patron scope object")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<PatronScope, A::Error> {
+            let mut rules = None;
+            while let Some(key) = map.next_key::<String>()? {
+                match key.as_str() {
+                    "rules" => once(&mut map, &mut rules, "rules")?,
+                    other => return Err(de::Error::unknown_field(other, &["rules"])),
+                }
+            }
+            Ok(PatronScope {
+                rules: rules.unwrap_or_default(),
+            })
+        }
+    }
+
+    impl<'de> Deserialize<'de> for PatronScope {
+        fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            de.deserialize_map(ScopeVisitor)
+        }
+    }
+
+    /// Reads a [`PutUserScope`] from an object.
+    struct PutVisitor;
+
+    impl<'de> Visitor<'de> for PutVisitor {
+        type Value = PutUserScope;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an object with an optional `scope`")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<PutUserScope, A::Error> {
+            let mut scope: Option<Option<PatronScope>> = None;
+            while let Some(key) = map.next_key::<String>()? {
+                match key.as_str() {
+                    "scope" => once(&mut map, &mut scope, "scope")?,
+                    other => return Err(de::Error::unknown_field(other, &["scope"])),
+                }
+            }
+            Ok(PutUserScope {
+                scope: scope.flatten(),
+            })
+        }
+    }
+
+    impl<'de> Deserialize<'de> for PutUserScope {
+        fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            de.deserialize_map(PutVisitor)
+        }
     }
 }
 
@@ -390,9 +604,9 @@ pub async fn scope_for_user(
 /// The page index filter for `user`: `None` when nothing is hidden from
 /// them (an Owner or Administrator, or a patron whose scope has no rules).
 ///
-/// The filter carries every store account linked to the user, connected
-/// or not, because the books those accounts hold are the patron's own and
-/// always pass.
+/// The filter names the user as its owner, so the books held by every
+/// store account linked to them, connected or not, are the patron's own
+/// and always pass.
 ///
 /// # Errors
 ///
@@ -407,16 +621,29 @@ pub async fn work_scope_for_user(
     if scope.sees_everything() {
         return Ok(None);
     }
-    let mut own_accounts = BTreeSet::new();
-    for identity in store.list_portal_identities_for_user(user.id).await? {
-        for link in store.list_account_links(identity.id).await? {
-            own_accounts.insert((link.plugin_key, link.account_id));
-        }
+    Ok(Some(WorkScope {
+        include: scope.facet_keys(RuleEffect::Include),
+        exclude: scope.facet_keys(RuleEffect::Exclude),
+        owner: Some(user.id),
+    }))
+}
+
+/// The page index filter for a caller who is not a library user, such as a
+/// session whose identity is linked to nobody: the library default, with
+/// no store accounts of their own. `None` when the default hides nothing.
+///
+/// # Errors
+///
+/// Returns a read or parse error; callers fail closed on it.
+pub async fn default_work_scope(store: &LibraryStore) -> Result<Option<WorkScope>> {
+    let scope = default_patron_scope(store).await?;
+    if scope.sees_everything() {
+        return Ok(None);
     }
     Ok(Some(WorkScope {
         include: scope.facet_keys(RuleEffect::Include),
         exclude: scope.facet_keys(RuleEffect::Exclude),
-        own_accounts: own_accounts.into_iter().collect(),
+        owner: None,
     }))
 }
 
@@ -602,9 +829,18 @@ mod tests {
                 work_scope_for_user(store, &sam).await.unwrap(),
                 Some(WorkScope {
                     include: vec![(WorkFacet::Genre, "kids".into())],
-                    ..WorkScope::default()
+                    exclude: Vec::new(),
+                    owner: Some(sam.id),
                 }),
                 "{name}"
+            );
+            assert_eq!(
+                default_work_scope(store).await.unwrap(),
+                Some(WorkScope {
+                    include: vec![(WorkFacet::Genre, "kids".into())],
+                    ..WorkScope::default()
+                }),
+                "{name}: the default for a caller with no user"
             );
 
             // Their own scope, replaced, then removed.
@@ -649,11 +885,45 @@ mod tests {
                 work_scope_for_user(store, &sam)
                     .await
                     .unwrap()
-                    .map(|scope| scope.own_accounts),
-                Some(vec![("audible".to_string(), "acct-1".to_string())]),
+                    .map(|scope| scope.owner),
+                Some(Some(sam.id)),
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn scopes_read_only_from_the_documented_shape() {
+        assert!(parse_patron_scope(b"{}").unwrap().rules.is_empty());
+        let rule = br#"{"rules":[{"field":"genre","value":" Kids ","effect":"include"}]}"#;
+        assert_eq!(parse_patron_scope(rule).unwrap().rules[0].value, "Kids");
+        for refused in [
+            &b"[]"[..],
+            br#"[[]]"#,
+            br#"{"rules":[["genre","Kids","include"]]}"#,
+            br#"{"rules":[{"field":{"genre":null},"value":"Kids","effect":"include"}]}"#,
+            br#"{"rules":null}"#,
+            br#"{"rules":[],"rules":[]}"#,
+            br#"{"rules":[{"field":"genre","value":"Kids"}]}"#,
+            br#"{"rules":[{"field":"genre","field":"genre","value":"Kids","effect":"include"}]}"#,
+        ] {
+            assert!(
+                matches!(parse_patron_scope(refused), Err(LibraryError::Invalid(_))),
+                "{}",
+                String::from_utf8_lossy(refused)
+            );
+        }
+        assert_eq!(parse_user_scope_request(b"{}").unwrap(), None);
+        assert_eq!(
+            parse_user_scope_request(br#"{"scope":null}"#).unwrap(),
+            None
+        );
+        assert!(parse_user_scope_request(br#"[null]"#).is_err());
+        assert!(parse_user_scope_request(br#"{"scope":null,"scope":null}"#).is_err());
+        // What the reader takes, the writer gives back.
+        let scope = parse_patron_scope(rule).unwrap();
+        let json = serde_json::to_vec(&scope).unwrap();
+        assert_eq!(parse_patron_scope(&json).unwrap(), scope);
     }
 
     #[test]
