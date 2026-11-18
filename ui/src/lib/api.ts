@@ -1831,14 +1831,43 @@ export interface PluginSettingChoice {
 export interface PluginSettingOption {
   key: string;
   label: string;
+  /** String form of the value; for a `table` setting, the rows as JSON text. */
   value: string;
-  value_type: "string" | "boolean" | "number" | "secret";
+  value_type: "string" | "boolean" | "number" | "secret" | "table";
   choices?: PluginSettingChoice[];
   /** True for a `secret` setting; `value` is always empty. */
   secret?: boolean;
   /** For a secret setting, whether a sealed value is stored for the instance. */
   secret_set?: boolean;
+  /** Columns of a `table` setting, in display order. */
+  columns?: PluginSettingColumn[];
 }
+
+/**
+ * One column of a `table` setting: the record field each row fills.
+ */
+export interface PluginSettingColumn {
+  /** Field name in each row object. */
+  key: string;
+  /** Column heading. */
+  label: string;
+  value_type: "string" | "boolean" | "number";
+  /** Dropdown values of an `enum` column. */
+  choices?: PluginSettingChoice[];
+  /** String form of the value a new row starts with. */
+  default?: string;
+  /** True when every row must have a value in this column. */
+  required?: boolean;
+}
+
+/** One stored cell of a `table` setting row. */
+export type SettingCellValue = string | number | boolean;
+
+/** One stored row of a `table` setting, keyed by column. */
+export type SettingRow = Record<string, SettingCellValue>;
+
+/** One value in a plugin instance document. */
+export type InstanceSettingValue = SettingCellValue | SettingRow[];
 
 /**
  * This node's deployment of a plugin instance, with its latest observation.
@@ -1920,7 +1949,7 @@ export interface PluginInstanceConfig {
   plugin_key: string;
   revision: number;
   /** Stored settings (operator writes only; defaults are not stored). */
-  settings: Record<string, string | number | boolean>;
+  settings: Record<string, InstanceSettingValue>;
   /** Secret refs (names only). */
   secret_refs: { key: string; name: string }[];
   /** Schema defaults under the stored settings. */
@@ -1932,7 +1961,7 @@ export interface PluginInstanceConfig {
  */
 export interface PluginInstanceConfigWrite {
   expected_revision: number;
-  settings: Record<string, string | number | boolean>;
+  settings: Record<string, InstanceSettingValue>;
   secret_refs: { key: string; name: string }[];
   /** Secret values to seal; never echoed back. */
   secrets?: Record<string, string>;

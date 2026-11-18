@@ -2086,6 +2086,23 @@ already processed.
   digest of the file rows the grant listed. It lives one hour and the
   record-retention pass deletes it after that; deleting a user deletes
   their grants.
+- **The taker's own acquire uses the copy.** A branch asks during the
+  acquire of its own title, before the store fetch, and takes the copy
+  only when the library downloaded it from the title's own store; a copy
+  from another store leaves the store fetch as it was, and so does a
+  book the library holds as several audio files (the grant does not
+  state their playing order). The downloaded audio and cover, and the
+  companion PDF when the taker keeps PDFs, enter the acquire pipeline
+  where a store fetch would
+  (`bookclerk-acquire`'s `LibraryCopies`), so conversion, naming, tagging,
+  probing and `edition_files` are the pipeline's own, and chapters are
+  read from the files by the confined tag reader. The pipeline asks
+  through a trait, so a branch (over its link, only while the link keeps
+  copies) and a clerk (over its card) share the rule. A taken copy is
+  recorded in `link_imports` for the granting library before any of it
+  is stored (a copy that cannot be recorded is not used), which keeps the
+  catalog sync from sending the book back. Any failure falls back to the
+  store.
 - **A clerk asks on its own socket.** `copy.grant` on the clerk socket is
   the same grant for the card's person, through the same plan and
   destination choice. A clerk has no box key, so `copy.granted` carries

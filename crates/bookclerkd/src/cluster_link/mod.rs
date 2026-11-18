@@ -62,6 +62,7 @@ pub mod consent;
 pub mod host_jobs;
 pub mod join;
 pub mod keeper;
+pub(crate) mod library_copies;
 pub mod remote_bindings;
 pub mod requests;
 pub mod window;

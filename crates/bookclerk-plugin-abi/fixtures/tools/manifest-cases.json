@@ -671,6 +671,11 @@
       "top": "runtime = \"workerd\"\nentrypoints = [\"metadataFiles\"]\n",
       "tables": "[[metadata_files.dialects]]\nid = \"abs_metadata_json\"\nname = \"Audiobookshelf metadata.json\"\nfile_names = [\"metadata.json\"]\nfields = [\"title\"]\ncredit_roles = [\"author\", \"narrator\"]\nwrites = true\n",
       "error": "plugin.toml: metadata_files.dialects[0].credit_roles needs `credits` in `fields`"
+    },
+    {
+      "name": "table setting with columns",
+      "tables": "[vars]\n[[settings]]\nkey = \"mappings\"\ntype = \"table\"\ndefault = [{ library = \"main\" }]\n[[settings.columns]]\nkey = \"library\"\ntype = \"string\"\nrequired = true\n[[settings.columns]]\nkey = \"watch\"\ntype = \"bool\"\ndefault = true\n",
+      "error": null
     }
   ]
 }

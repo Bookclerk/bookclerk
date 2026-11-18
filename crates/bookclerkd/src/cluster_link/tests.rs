@@ -1388,18 +1388,22 @@ mod results_and_uploads {
     use super::super::remote_bindings::HostJobBindings;
     use super::*;
 
-    /// The key an acquire names `book`'s audio with under `options`.
+    /// The key an acquire names a title's audio with under `options`.
+    ///
+    /// # Arguments
+    ///
+    /// * `title` - The title's product id, title and authors.
     fn planned_key(
-        book: &bookclerk_library::BookRecord,
+        (product_id, title, authors): (&str, &str, Option<&str>),
         library_id: Option<&str>,
         options: &DownloadOptions,
     ) -> String {
         let templates = options.naming_templates();
         bookclerk_acquire::storage_key(
             &bookclerk_acquire::NamingContext {
-                asin: book.product_id.clone(),
-                title: book.title.clone(),
-                authors: book.authors.clone(),
+                asin: product_id.to_string(),
+                title: title.to_string(),
+                authors: authors.map(str::to_string),
                 library_id: library_id.map(str::to_string),
                 ..Default::default()
             },
@@ -1508,7 +1512,7 @@ mod results_and_uploads {
         }
     }
 
-    /// An owner's title a [`StubGuests`] imported: the owner's book uuid and
+    /// An owner's title a [`StubGuests`] imported: the owner's holding id and
     /// the `(destination, key)` files kept.
     type ImportedTitle = (String, Vec<(&'static str, String)>);
 
@@ -1592,7 +1596,11 @@ mod results_and_uploads {
             let mut keys = Vec::new();
             for (index, destination) in title.destinations.iter().enumerate() {
                 let key = planned_key(
-                    &title.book,
+                    (
+                        &title.book.product_id,
+                        &title.book.title,
+                        title.book.authors.as_deref(),
+                    ),
                     title.library_id.as_deref(),
                     &destination.options,
                 );
@@ -1633,10 +1641,10 @@ mod results_and_uploads {
         }
 
         async fn import_owner_title(&self, copy: super::super::host_jobs::OwnerTitleCopy<'_>) {
-            self.imported
-                .lock()
-                .unwrap()
-                .push((copy.book.uuid.clone(), copy.files.to_vec()));
+            self.imported.lock().unwrap().push((
+                copy.book.uuid.clone().unwrap_or_default(),
+                copy.files.to_vec(),
+            ));
         }
 
         fn work_dir(&self) -> PathBuf {
@@ -2189,9 +2197,10 @@ mod results_and_uploads {
             payload,
             "the host's own destination has its copy"
         );
+        let holding = holding_of(&world.owner, &book.uuid).await;
         assert_eq!(
             guests.imported.lock().unwrap().as_slice(),
-            &[(book.uuid.clone(), vec![("local", key.clone())])],
+            &[(holding, vec![("local", key.clone())])],
             "the owner's own title joins the branch's library with its copy"
         );
         assert!(job(&world.owner, &job_id)
@@ -4246,9 +4255,8 @@ mod results_and_uploads {
             .iter()
             .find(|t| t.holding_id == episode_holding)
             .expect("the episode is planned");
-        let parent: bookclerk_library::BookRecord =
-            serde_json::from_value(target.parent.clone().expect("its parent is sent")).unwrap();
-        assert_eq!(parent.uuid, show.uuid);
+        let parent = target.parent.as_ref().expect("its parent is sent");
+        assert_eq!(parent.product_id, show.product_id);
     }
 
     /// A title the owner refuses after this host copied it to its own
@@ -4294,7 +4302,11 @@ mod results_and_uploads {
         let short = bookclerk_acquire::library_id_of(&world.owner, &book.uuid)
             .await
             .unwrap();
-        let key = planned_key(&book, short.as_deref(), &options);
+        let key = planned_key(
+            (&book.product_id, &book.title, book.authors.as_deref()),
+            short.as_deref(),
+            &options,
+        );
         record_for_book(&world.owner, "local", &key, &other.uuid)
             .await
             .unwrap();
@@ -4445,6 +4457,200 @@ mod results_and_uploads {
             String::from_utf8_lossy(&answer[..split]).to_ascii_lowercase(),
             answer[split + 4..].to_vec(),
         )
+    }
+
+    /// A branch's own acquire is offered the copy its library holds, with
+    /// the store the library downloaded it from, only while the link keeps
+    /// copies on this computer and its client is connected; a copy it took
+    /// is recorded as the library's, so it is never shared back.
+    #[tokio::test]
+    async fn an_acquire_is_offered_the_librarys_copy_only_while_the_link_keeps_copies() {
+        use bookclerk_acquire::{LibraryCopies as _, LibraryCopyListing};
+        use bookclerk_library::control_plane::{
+            books_imported_from_link, set_cluster_link_keep_copies,
+        };
+        use sea_orm::ConnectionTrait as _;
+
+        use super::super::library_copies::LinkCopies;
+
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let scope = world.owner.scope(PLUGIN, "test");
+        let book = scope
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        scope
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        // The library acquired t1 from the `test` store and probed it.
+        const KEY: &str = "Author/Title t1/Title t1.m4b";
+        let audio: Vec<u8> = (0..90_000u32).map(|i| (i % 241) as u8).collect();
+        std::fs::create_dir_all(owner_out.path().join("Author/Title t1")).unwrap();
+        std::fs::write(owner_out.path().join(KEY), &audio).unwrap();
+        world
+            .owner
+            .set_acquire_status(
+                "t1",
+                "riley-acct",
+                bookclerk_library::AcquireStatus::Acquired,
+                Some(KEY),
+                None,
+            )
+            .await
+            .unwrap();
+        let owner_of = world
+            .owner
+            .file_owner_of_book(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(world
+            .owner
+            .record_edition_file("local", KEY, &owner_of, bookclerk_library::FileRole::Audio)
+            .await
+            .unwrap());
+        assert!(world
+            .owner
+            .set_edition_file_probe(
+                "local",
+                KEY,
+                &owner_of,
+                &bookclerk_library::FileProbe {
+                    content_type: "audio/mp4".into(),
+                    bitrate_kbps: Some(64),
+                    lossless: false,
+                    source_store: Some("test".into()),
+                },
+            )
+            .await
+            .unwrap());
+
+        let guests = StubGuests {
+            work: world.host_files.path().join("cluster-work"),
+            ..StubGuests::default()
+        };
+        let (handle, _stop) = start(&world, guests).await;
+        let library = world.link.owner_cluster_id.clone();
+        let listing = |product_id: &'static str| LibraryCopyListing {
+            store: "test",
+            plugin_key: PLUGIN,
+            account_id: "riley-acct",
+            marketplace: "us",
+            product_id,
+        };
+        let grants = || async {
+            world
+                .owner
+                .db()
+                .query_one_raw(sea_orm::Statement::from_string(
+                    world.owner.db().get_database_backend(),
+                    "SELECT COUNT(*) AS n FROM copy_grants",
+                ))
+                .await
+                .unwrap()
+                .unwrap()
+                .try_get::<i64>("", "n")
+                .unwrap()
+        };
+        let copies = {
+            let handle = handle.clone();
+            LinkCopies::over(world.host.clone(), move |_| Some(handle.clone()))
+        };
+
+        // "Keep copies on this computer" is on for a new link: the copy
+        // is offered, downloads whole, and is recorded once taken.
+        let copy = copies
+            .copy_of(listing("t1"))
+            .await
+            .expect("the library holds t1");
+        assert_eq!(copy.source_store(), Some("test"));
+        let listed: Vec<(&str, bookclerk_library::FileRole, u64)> = copy
+            .files()
+            .iter()
+            .map(|file| (file.name.as_str(), file.role, file.size))
+            .collect();
+        assert_eq!(
+            listed,
+            [("Title t1.m4b", bookclerk_library::FileRole::Audio, 90_000)]
+        );
+        let taken = tempfile::tempdir().unwrap();
+        let dest = taken.path().join("000.m4b");
+        copy.fetch_file(0, &dest).await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), audio);
+        assert!(copy
+            .fetch_file(1, &taken.path().join("none"))
+            .await
+            .is_err());
+        assert!(books_imported_from_link(&world.host, &library)
+            .await
+            .unwrap()
+            .is_empty());
+        // The title is on a store account connected to the branch.
+        world
+            .host
+            .upsert_account(PLUGIN, "riley-acct", "us", None, true, PLUGIN)
+            .await
+            .unwrap();
+        copy.taken().await.unwrap();
+        assert_eq!(
+            books_imported_from_link(&world.host, &library)
+                .await
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            [(
+                PLUGIN.to_string(),
+                "us".to_string(),
+                "t1".to_string(),
+                "riley-acct".to_string()
+            )]
+        );
+
+        // A title the library has not acquired is not offered.
+        assert!(copies.copy_of(listing("t2")).await.is_none());
+
+        // With the setting off, or with no connected client, the library
+        // is not even asked.
+        let asked = grants().await;
+        assert_eq!(asked, 1);
+        assert!(set_cluster_link_keep_copies(&world.host, &library, false)
+            .await
+            .unwrap());
+        assert!(copies.copy_of(listing("t1")).await.is_none());
+        assert!(set_cluster_link_keep_copies(&world.host, &library, true)
+            .await
+            .unwrap());
+        let no_client = LinkCopies::over(world.host.clone(), |_| None);
+        assert!(no_client.copy_of(listing("t1")).await.is_none());
+        assert_eq!(grants().await, asked);
+        // On again, it is.
+        assert!(copies.copy_of(listing("t1")).await.is_some());
+        assert_eq!(grants().await, asked + 1);
+
+        // A copy the library downloaded from another store than the
+        // title's is granted but passed over, so a library asked after
+        // this one still gets its turn.
+        assert!(world
+            .owner
+            .set_edition_file_probe(
+                "local",
+                KEY,
+                &owner_of,
+                &bookclerk_library::FileProbe {
+                    content_type: "audio/mp4".into(),
+                    bitrate_kbps: Some(64),
+                    lossless: false,
+                    source_store: Some("elsewhere".into()),
+                },
+            )
+            .await
+            .unwrap());
+        assert!(copies.copy_of(listing("t1")).await.is_none());
+        assert_eq!(grants().await, asked + 2);
     }
 
     /// A branch takes the copy its library already holds: `copy.grant`

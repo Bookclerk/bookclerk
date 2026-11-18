@@ -308,7 +308,8 @@ pub use scan_page::{
 };
 pub use settings_schema::{
     is_valid_setting_key, EffectiveConfig, SettingKind, SettingSpec, SettingValueSpec,
-    SettingsSchema, MAX_SETTINGS, MAX_SETTING_STRING_BYTES, SETTINGS_SCHEMA_VERSION,
+    SettingsSchema, MAX_SETTINGS, MAX_SETTING_STRING_BYTES, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS,
+    SETTINGS_SCHEMA_VERSION,
 };
 pub use storage_ops::{
     decode_storage_reply_bytes, encode_storage_reply_bytes, require_batch_len,

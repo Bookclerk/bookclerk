@@ -161,8 +161,9 @@ pub use instance_config::{
     reconcile_instance_configs_to_schema, replace_instance_config, resolve_instance_bindings,
     seal_instance_secret, set_secret_ref, set_setting, InstanceBindingGrant,
     InstanceConfigDocument, InstanceConfigReplace, InstanceSecretRefV1, PluginInstanceConfigV1,
-    PrunedInstanceConfig, ResolvedInstanceBindings, SettingValue, MAX_INSTANCE_SECRET_REFS,
-    MAX_INSTANCE_SETTINGS, MAX_INSTANCE_SETTING_BYTES, PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
+    PrunedInstanceConfig, ResolvedInstanceBindings, SettingCell, SettingValue,
+    MAX_INSTANCE_SECRET_REFS, MAX_INSTANCE_SETTINGS, MAX_INSTANCE_SETTING_BYTES,
+    PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
 };
 pub use instances::{
     create_node_local_instance, create_plugin_instance, default_instance_for_key,
@@ -188,8 +189,8 @@ pub use leases::{
     RECORD_RETENTION_LEASE, SESSION_EXPIRY_LEASE,
 };
 pub use link_imports::{
-    books_imported_from_link, import_link_title, HeldBookKey, LinkImport, LinkImportOutcome,
-    OwnerShareFilter,
+    books_imported_from_link, import_link_title, record_copy_taken_from_link, HeldBookKey,
+    LinkImport, LinkImportOutcome, OwnerShareFilter, TakenCopy,
 };
 pub(crate) use live::{
     bump, bump_if_any, bump_if_stamped, bump_on, exec_bumped_via, sea_exec, sea_probe, Bump,

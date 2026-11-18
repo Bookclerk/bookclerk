@@ -25,6 +25,12 @@ pub const MAX_SETTING_VALUES: usize = 64;
 /// Maximum UTF-8 size of one string setting value.
 pub const MAX_SETTING_STRING_BYTES: usize = 1024;
 
+/// Maximum columns one [`SettingKind::Table`] setting may declare.
+pub const MAX_TABLE_COLUMNS: usize = 16;
+
+/// Maximum rows one [`SettingKind::Table`] value may hold.
+pub const MAX_TABLE_ROWS: usize = 64;
+
 /// Value type of one setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,10 +45,16 @@ pub enum SettingKind {
     Enum,
     /// Sealed secret: delivered in `SECRETS`, never stored in a document.
     Secret,
+    /// Rows of records: a JSON array of objects whose keys are the declared
+    /// [`SettingSpec::columns`] (at most [`MAX_TABLE_ROWS`] rows). A row may
+    /// leave out a column that is not required, so adding a column keeps
+    /// existing rows valid.
+    Table,
 }
 
 impl SettingKind {
-    /// Wire / UI name (`string`, `bool`, `integer`, `enum`, `secret`).
+    /// Wire / UI name (`string`, `bool`, `integer`, `enum`, `secret`,
+    /// `table`).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -51,6 +63,17 @@ impl SettingKind {
             Self::Integer => "integer",
             Self::Enum => "enum",
             Self::Secret => "secret",
+            Self::Table => "table",
+        }
+    }
+
+    /// True for the kinds a table column may have: string, bool, integer
+    /// and enum.
+    #[must_use]
+    pub fn is_scalar(self) -> bool {
+        match self {
+            Self::String | Self::Bool | Self::Integer | Self::Enum => true,
+            Self::Secret | Self::Table => false,
         }
     }
 }
@@ -91,6 +114,12 @@ pub struct SettingSpec {
     /// Optional help text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Columns of a [`SettingKind::Table`] setting, in display order; empty
+    /// otherwise. Each column is a scalar entry: its `key` names the record
+    /// field, `required` means every row must have a value (from the row or
+    /// the column `default`), and it declares no columns of its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<SettingSpec>,
 }
 
 impl SettingSpec {
@@ -149,7 +178,182 @@ impl SettingSpec {
                         .join(", ")
                 )),
             },
+            SettingKind::Table => self.check_rows(value),
         }
+    }
+
+    /// Column entry for `key` of a table setting.
+    #[must_use]
+    pub fn column(&self, key: &str) -> Option<&SettingSpec> {
+        self.columns.iter().find(|column| column.key == key)
+    }
+
+    /// Checks a table value: an array of at most [`MAX_TABLE_ROWS`] objects
+    /// whose keys are declared columns holding values of the column's kind,
+    /// with every required column filled by the row or the column default.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the setting, the row (counted from 1) and
+    /// the column.
+    fn check_rows(&self, value: &Value) -> Result<(), String> {
+        let key = &self.key;
+        let Some(rows) = value.as_array() else {
+            return Err(format!("setting `{key}` must be an array of rows"));
+        };
+        if rows.len() > MAX_TABLE_ROWS {
+            return Err(format!(
+                "setting `{key}` may hold at most {MAX_TABLE_ROWS} rows"
+            ));
+        }
+        for (index, row) in rows.iter().enumerate() {
+            let number = index + 1;
+            let Some(fields) = row.as_object() else {
+                return Err(format!("setting `{key}` row {number} must be an object"));
+            };
+            for (field, cell) in fields {
+                let column = self.column(field).ok_or_else(|| {
+                    format!("setting `{key}` row {number}: column `{field}` is not declared")
+                })?;
+                column
+                    .check_value(cell)
+                    .map_err(|err| format!("setting `{key}` row {number}: {err}"))?;
+            }
+            for column in &self.columns {
+                if column.required && column.default.is_none() && !fields.contains_key(&column.key)
+                {
+                    return Err(format!(
+                        "setting `{key}` row {number}: column `{}` is required",
+                        column.key
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A stored value brought to the current declaration: for a table, row
+    /// fields of columns no longer declared are dropped and missing columns
+    /// with a default are filled; other kinds come back unchanged.
+    #[must_use]
+    pub fn normalize_value(&self, value: &Value) -> Value {
+        if self.kind != SettingKind::Table {
+            return value.clone();
+        }
+        let Some(rows) = value.as_array() else {
+            return value.clone();
+        };
+        Value::Array(
+            rows.iter()
+                .map(|row| {
+                    let Some(fields) = row.as_object() else {
+                        return row.clone();
+                    };
+                    let mut out = serde_json::Map::new();
+                    for column in &self.columns {
+                        if let Some(cell) = fields.get(&column.key).or(column.default.as_ref()) {
+                            out.insert(column.key.clone(), cell.clone());
+                        }
+                    }
+                    Value::Object(out)
+                })
+                .collect(),
+        )
+    }
+
+    /// Validates a table's column declarations.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message describing the first failed rule.
+    fn validate_columns(&self) -> Result<(), String> {
+        let key = &self.key;
+        if self.kind != SettingKind::Table {
+            if self.columns.is_empty() {
+                return Ok(());
+            }
+            return Err(format!(
+                "setting `{key}` declares `columns` but is not a table"
+            ));
+        }
+        if self.columns.is_empty() {
+            return Err(format!("table setting `{key}` must declare `columns`"));
+        }
+        if self.columns.len() > MAX_TABLE_COLUMNS {
+            return Err(format!(
+                "table setting `{key}` declares more than {MAX_TABLE_COLUMNS} columns"
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for column in &self.columns {
+            let name = &column.key;
+            if !is_valid_setting_key(name) {
+                return Err(format!(
+                    "table setting `{key}` column `{name}` must match ^[a-z][a-z0-9_]{{0,63}}$"
+                ));
+            }
+            if !seen.insert(name.as_str()) {
+                return Err(format!(
+                    "table setting `{key}` column `{name}` is duplicated"
+                ));
+            }
+            if !column.kind.is_scalar() {
+                return Err(format!(
+                    "table setting `{key}` column `{name}` must be a string, bool, integer or enum"
+                ));
+            }
+            if !column.columns.is_empty() {
+                return Err(format!(
+                    "table setting `{key}` column `{name}` may not declare columns"
+                ));
+            }
+            column
+                .validate_values()
+                .map_err(|err| format!("table setting `{key}`: {err}"))?;
+            if let Some(default) = &column.default {
+                column
+                    .check_value(default)
+                    .map_err(|err| format!("table setting `{key}` column default: {err}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates the `values` list: present and well formed for an enum,
+    /// absent for every other kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message describing the first failed rule.
+    fn validate_values(&self) -> Result<(), String> {
+        let key = &self.key;
+        if self.kind == SettingKind::Enum {
+            if self.values.is_empty() {
+                return Err(format!("enum setting `{key}` must declare `values`"));
+            }
+            if self.values.len() > MAX_SETTING_VALUES {
+                return Err(format!(
+                    "enum setting `{key}` declares more than {MAX_SETTING_VALUES} values"
+                ));
+            }
+            let mut ids = std::collections::HashSet::new();
+            for value in &self.values {
+                if value.id.is_empty() || value.id.len() > MAX_SETTING_STRING_BYTES {
+                    return Err(format!("enum setting `{key}` has an invalid value id"));
+                }
+                if !ids.insert(value.id.as_str()) {
+                    return Err(format!(
+                        "enum setting `{key}` value `{}` is duplicated",
+                        value.id
+                    ));
+                }
+            }
+        } else if !self.values.is_empty() {
+            return Err(format!(
+                "setting `{key}` declares `values` but is not an enum"
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -204,32 +408,8 @@ impl SettingsSchema {
             if !seen.insert(key.as_str()) {
                 return Err(format!("settings key `{key}` is duplicated"));
             }
-            if spec.kind == SettingKind::Enum {
-                if spec.values.is_empty() {
-                    return Err(format!("enum setting `{key}` must declare `values`"));
-                }
-                if spec.values.len() > MAX_SETTING_VALUES {
-                    return Err(format!(
-                        "enum setting `{key}` declares more than {MAX_SETTING_VALUES} values"
-                    ));
-                }
-                let mut ids = std::collections::HashSet::new();
-                for value in &spec.values {
-                    if value.id.is_empty() || value.id.len() > MAX_SETTING_STRING_BYTES {
-                        return Err(format!("enum setting `{key}` has an invalid value id"));
-                    }
-                    if !ids.insert(value.id.as_str()) {
-                        return Err(format!(
-                            "enum setting `{key}` value `{}` is duplicated",
-                            value.id
-                        ));
-                    }
-                }
-            } else if !spec.values.is_empty() {
-                return Err(format!(
-                    "setting `{key}` declares `values` but is not an enum"
-                ));
-            }
+            spec.validate_values()?;
+            spec.validate_columns()?;
             if spec.kind == SettingKind::Secret {
                 if spec.default.is_some() {
                     return Err(format!("secret setting `{key}` may not declare a default"));
@@ -278,7 +458,11 @@ impl SettingsSchema {
     #[must_use]
     pub fn defaults(&self) -> BTreeMap<String, Value> {
         self.config_entries()
-            .filter_map(|spec| spec.default.clone().map(|v| (spec.key.clone(), v)))
+            .filter_map(|spec| {
+                spec.default
+                    .as_ref()
+                    .map(|v| (spec.key.clone(), spec.normalize_value(v)))
+            })
             .collect()
     }
 
@@ -345,7 +529,10 @@ impl SettingsSchema {
     /// Keys the schema does not declare are dropped and returned in
     /// `dropped`; declared keys whose value no longer fits the entry's kind
     /// (a type or enum change after an upgrade) are left out of `config` and
-    /// returned in `invalid`, so the default applies instead. A required key
+    /// returned in `invalid`, so the default applies instead. Table rows are
+    /// first brought to the current columns with
+    /// [`SettingSpec::normalize_value`], so a removed column does not
+    /// invalidate them. A required key
     /// with neither a usable value nor a default is `missing`.
     #[must_use]
     pub fn effective_config(&self, settings: &BTreeMap<String, Value>) -> EffectiveConfig {
@@ -355,8 +542,9 @@ impl SettingsSchema {
         for (key, value) in settings {
             match self.get(key) {
                 Some(spec) if !spec.is_secret() => {
-                    if spec.check_value(value).is_ok() {
-                        config.insert(key.clone(), value.clone());
+                    let value = spec.normalize_value(value);
+                    if spec.check_value(&value).is_ok() {
+                        config.insert(key.clone(), value);
                     } else {
                         invalid.push(key.clone());
                     }
@@ -406,6 +594,7 @@ mod tests {
             default: None,
             required: false,
             description: None,
+            columns: Vec::new(),
         }
     }
 
@@ -538,5 +727,191 @@ mod tests {
             required_secret.required_secret_keys().collect::<Vec<_>>(),
             vec!["token"]
         );
+    }
+
+    fn mappings_spec() -> SettingSpec {
+        SettingSpec {
+            columns: vec![
+                SettingSpec {
+                    required: true,
+                    ..spec("library", SettingKind::String)
+                },
+                spec("prefix", SettingKind::String),
+                SettingSpec {
+                    default: Some(Value::Bool(true)),
+                    ..spec("watch", SettingKind::Bool)
+                },
+                enum_spec("mode", &["read", "write"], None),
+            ],
+            ..spec("mappings", SettingKind::Table)
+        }
+    }
+
+    #[test]
+    fn table_toml_shape_parses() {
+        let text = r#"
+            [[settings]]
+            key = "mappings"
+            type = "table"
+            default = [{ library = "main" }]
+
+            [[settings.columns]]
+            key = "library"
+            type = "string"
+            required = true
+
+            [[settings.columns]]
+            key = "watch"
+            type = "bool"
+            default = true
+        "#;
+        let schema: SettingsSchema = toml::from_str(text).unwrap();
+        schema.validate(true, true).unwrap();
+        let spec = schema.get("mappings").unwrap();
+        assert_eq!(spec.kind.as_str(), "table");
+        assert_eq!(spec.columns.len(), 2);
+        assert!(spec.column("watch").is_some());
+        assert!(spec.column("absent").is_none());
+    }
+
+    #[test]
+    fn table_rows_are_checked() {
+        let spec = mappings_spec();
+        assert!(spec
+            .check_value(&serde_json::json!([{ "library": "a", "mode": "read" }, { "library": "b", "watch": false }]))
+            .is_ok());
+        assert!(spec.check_value(&serde_json::json!([])).is_ok());
+        let err = spec.check_value(&serde_json::json!({})).unwrap_err();
+        assert!(err.contains("array of rows"), "{err}");
+        let err = spec.check_value(&serde_json::json!(["a"])).unwrap_err();
+        assert!(err.contains("row 1 must be an object"), "{err}");
+        let err = spec
+            .check_value(&serde_json::json!([{ "library": "a" }, { "prefix": "x/" }]))
+            .unwrap_err();
+        assert!(err.contains("row 2: column `library` is required"), "{err}");
+        let err = spec
+            .check_value(&serde_json::json!([{ "library": "a", "extra": 1 }]))
+            .unwrap_err();
+        assert!(err.contains("`extra` is not declared"), "{err}");
+        let err = spec
+            .check_value(&serde_json::json!([{ "library": 7 }]))
+            .unwrap_err();
+        assert!(err.contains("row 1"), "{err}");
+        let err = spec
+            .check_value(&serde_json::json!([{ "library": "a", "mode": "both" }]))
+            .unwrap_err();
+        assert!(err.contains("row 1"), "{err}");
+        let many: Vec<Value> = (0..=MAX_TABLE_ROWS)
+            .map(|_| serde_json::json!({ "library": "a" }))
+            .collect();
+        let err = spec.check_value(&Value::Array(many)).unwrap_err();
+        assert!(err.contains("at most 64 rows"), "{err}");
+    }
+
+    #[test]
+    fn table_rows_normalize_to_current_columns() {
+        let table = mappings_spec();
+        let stored = serde_json::json!([
+            { "library": "a", "retired": "x" },
+            { "library": "b", "watch": false },
+        ]);
+        assert!(table.check_value(&stored).is_err());
+        let normalized = table.normalize_value(&stored);
+        assert_eq!(
+            normalized,
+            serde_json::json!([
+                { "library": "a", "watch": true },
+                { "library": "b", "watch": false },
+            ])
+        );
+        assert!(table.check_value(&normalized).is_ok());
+        // Other kinds and malformed values come back unchanged.
+        assert_eq!(
+            table.normalize_value(&serde_json::json!("x")),
+            serde_json::json!("x")
+        );
+        let scalar = spec("name", SettingKind::String);
+        assert_eq!(
+            scalar.normalize_value(&serde_json::json!("x")),
+            serde_json::json!("x")
+        );
+
+        let schema = SettingsSchema::new(vec![table]);
+        let mut doc = BTreeMap::new();
+        doc.insert("mappings".to_string(), stored);
+        let effective = schema.effective_config(&doc);
+        assert!(effective.invalid.is_empty());
+        assert_eq!(effective.config.get("mappings"), Some(&normalized));
+
+        // A table-level default is normalized the same way when unset.
+        let defaulted = SettingSpec {
+            default: Some(serde_json::json!([{ "library": "main", "prefix": "" }])),
+            ..mappings_spec()
+        };
+        let schema = SettingsSchema::new(vec![defaulted]);
+        let expected = serde_json::json!([{ "library": "main", "prefix": "", "watch": true }]);
+        assert_eq!(schema.defaults().get("mappings"), Some(&expected));
+        assert_eq!(
+            schema
+                .effective_config(&BTreeMap::new())
+                .config
+                .get("mappings"),
+            Some(&expected)
+        );
+    }
+
+    #[test]
+    fn table_columns_are_validated() {
+        let ok = SettingsSchema::new(vec![mappings_spec()]);
+        ok.validate(true, true).unwrap();
+
+        let no_columns = SettingsSchema::new(vec![spec("mappings", SettingKind::Table)]);
+        let err = no_columns.validate(true, true).unwrap_err();
+        assert!(err.contains("must declare `columns`"), "{err}");
+
+        let stray = SettingsSchema::new(vec![SettingSpec {
+            columns: vec![spec("a", SettingKind::String)],
+            ..spec("name", SettingKind::String)
+        }]);
+        let err = stray.validate(true, true).unwrap_err();
+        assert!(err.contains("is not a table"), "{err}");
+
+        let with = |columns: Vec<SettingSpec>| {
+            SettingsSchema::new(vec![SettingSpec {
+                columns,
+                ..spec("mappings", SettingKind::Table)
+            }])
+            .validate(true, true)
+            .unwrap_err()
+        };
+        assert!(with(vec![spec("Bad", SettingKind::String)]).contains("must match"));
+        assert!(with(vec![
+            spec("a", SettingKind::String),
+            spec("a", SettingKind::Bool)
+        ])
+        .contains("duplicated"));
+        assert!(with(vec![spec("a", SettingKind::Secret)]).contains("must be a string"));
+        assert!(with(vec![spec("a", SettingKind::Table)]).contains("must be a string"));
+        assert!(with(vec![SettingSpec {
+            columns: vec![spec("b", SettingKind::String)],
+            ..spec("a", SettingKind::String)
+        }])
+        .contains("may not declare columns"));
+        assert!(with(vec![spec("a", SettingKind::Enum)]).contains("must declare `values`"));
+        assert!(with(vec![SettingSpec {
+            default: Some(Value::Bool(true)),
+            ..spec("a", SettingKind::String)
+        }])
+        .contains("column default"));
+        let too_many = (0..=MAX_TABLE_COLUMNS)
+            .map(|n| spec(&format!("c{n}"), SettingKind::String))
+            .collect();
+        assert!(with(too_many).contains("more than 16 columns"));
+
+        let bad_default = SettingsSchema::new(vec![SettingSpec {
+            default: Some(serde_json::json!([{ "prefix": "x/" }])),
+            ..mappings_spec()
+        }]);
+        assert!(bad_default.validate(true, true).is_err());
     }
 }

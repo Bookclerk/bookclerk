@@ -625,6 +625,10 @@ A host never writes library SQL.
    title carries its store account's holding id on the owner, which its
    upload names, and its library id on the owner, so the `<library id>`
    naming tag writes the owner's id rather than the host's scratch one.
+   It also carries the store listing the acquire needs (store, product id,
+   marketplace, title, people, series and dates), read from the owner's
+   holdings and editions, and a podcast episode carries its show's
+   listing the same way.
 3. The host acquires each title into a per-title outbox, with one
    sub-directory per owner destination. So each destination's file names
    come out exactly as a local acquire on the owner would name them.
@@ -792,6 +796,55 @@ it hands out the token: the branch is still trusted, it still belongs to
 the same person, that person may still see the edition, and the files
 are still the ones the grant listed. A token outlives none of them.
 
+### When a branch takes the copy
+
+A branch asks for a copy when it acquires one of its **own** titles: a
+book on a store account connected to the branch, found by the branch's
+own scan. Before it fetches the title from the store, it asks each
+library it joined, in turn, for the copy of that listing.
+
+- **Same store: the library's copy is used.** When the library downloaded
+  its copy from the same store as the branch's title, and holds it as
+  one audio file, the branch downloads the library's audio and cover and
+  the store is not asked. The files then go through the branch's own
+  acquire like a store download: converted to the branch's output
+  format, named by its templates, tagged, probed and recorded. Chapters
+  are read from the downloaded file in the confined media worker.
+- **Several audio files: the store.** A book the library holds as parts
+  or as one file per chapter is fetched from the branch's store. The
+  grant lists those files by name, which need not be playing order.
+- **Split by chapter: MP4 audio only.** A branch whose output is split
+  into chapter files takes the library's copy only when it is an M4B,
+  M4A or MP4 file; otherwise it fetches from the store.
+- **Another store: the branch fetches its own.** When the library's copy
+  came from a different store, or the library doesn't know where it came
+  from, that library is passed over and the next one is asked. When no
+  library has a copy from the title's store, the branch downloads from
+  its own store as usual.
+- **Any problem: the store.** If the copy doesn't arrive whole, is larger
+  than the acquire's scratch budget, or holds audio the media worker
+  can't read, the branch removes what it downloaded and fetches from the
+  store.
+
+Only the audio, the cover and the companion PDF are taken. The branch
+writes its own sidecars (`.cue`, chapter JSON). The PDF is taken only
+when companion PDFs are turned on at the branch and the library holds
+one; it is the file the store gives for the edition, and the branch
+stores it without opening it. The store is not asked for a PDF the
+library doesn't hold, because a store's only way to a PDF is a whole
+download of the title; a later acquire of the same title asks the store
+for a missing PDF as it does for any title whose audio is already
+stored.
+
+The branch asks a library only while that link's **Keep copies on this
+computer** setting is on and its connection is up; a library that is
+offline is skipped, not waited for. A book taken this way is recorded
+for that library before the branch stores any of it, so the branch never
+shares it back to the library it came from (see
+[Shared catalog](#shared-catalog)); a copy that can't be recorded isn't
+used. The job log line
+`acquired` carries `from_library=true` for such a title.
+
 A clerk asks the same way on its own socket, for the person its library
 card belongs to. Its token is not sealed (a clerk has no box key; the
 socket is the card's own connection, TLS except on loopback), and each download checks that the
@@ -812,9 +865,9 @@ Limits: 1000 files per copy and 512-byte names. A grant is dropped once
 it expires.
 
 > [!NOTE]
-> This is the library's side. A branch doesn't yet take copies by itself
-> when it acquires a book the library already holds, and the clerk app
-> doesn't yet download them.
+> A branch takes copies as
+> [When a branch takes the copy](#when-a-branch-takes-the-copy) describes.
+> The clerk app doesn't yet download them.
 
 ## Node-local instances
 
@@ -882,9 +935,13 @@ all on by default:
 - **List my members' books to <library>.** Off: B answers A's catalog
   questions with its owner's books only (see
   [Shared catalog](#shared-catalog)).
-- **Keep copies on this computer.** Off: B leaves A's copies of its
-  person's books at A. B still takes A's work, lists its books to A and
-  shows A's books (see [Books in other libraries](#books-in-other-libraries)).
+- **Keep copies on this computer.** On: when B acquires one of its own
+  titles and A already holds a copy from the same store, B takes A's copy
+  instead of downloading from the store (see
+  [When a branch takes the copy](#when-a-branch-takes-the-copy)). Off: B
+  leaves A's copies at A and downloads its own titles from their stores.
+  B still takes A's work, lists its books to A and shows A's books (see
+  [Books in other libraries](#books-in-other-libraries)).
 
 B's operator or an Owner of B may change them. An Owner sees only the
 libraries, these settings and each library's job cap (see
@@ -1168,9 +1225,11 @@ shared stay in the library, marked as from a branch that left (see
   (the operator or an Owner). There is no CLI command for them yet.
 - A branch answers only from its own library, not from other libraries it
   joined.
-- **Keep copies on this computer** is stored but doesn't copy anything
-  yet: taking a library's copy into a branch's own storage arrives with
-  the branch side of library copies.
+- A branch takes a library's copy only for a title its own scan found on
+  a store account connected to the branch, and only when the library's
+  copy came from the same store. It doesn't yet compare a copy from
+  another store with its own download, and it doesn't take a book the
+  library holds as several audio files.
 - The library's name is the host of its public origin. There is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the

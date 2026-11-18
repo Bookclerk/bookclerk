@@ -914,6 +914,8 @@ pub async fn run_acquire(
     let total = targets.len();
     // Deployed metadata providers fill the plain-audio overlay.
     let metadata = crate::covers::acquire_metadata(state).await;
+    // A library this install joined may already hold a title's copy.
+    let library_copies = crate::cluster_link::library_copies::acquire_copies(&library);
     for (idx, book) in targets.into_iter().enumerate() {
         if let Some(ctx) = ctx {
             if ctx.is_cancelled()
@@ -957,6 +959,7 @@ pub async fn run_acquire(
             library_id: None,
             parent_library_id: None,
             metadata: metadata.clone(),
+            library_copies: library_copies.clone(),
         };
         let mut attempts = 0u32;
         loop {
@@ -987,7 +990,12 @@ pub async fn run_acquire(
                     break;
                 }
                 Ok(result) => {
-                    info!(asin = %result.asin, key = %result.storage_key, "acquired");
+                    info!(
+                        asin = %result.asin,
+                        key = %result.storage_key,
+                        from_library = result.from_library,
+                        "acquired"
+                    );
                     notify_integrations(state).await;
                     ok += 1;
                     break;
