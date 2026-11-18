@@ -127,7 +127,10 @@ export function newRow(columns: PluginSettingColumn[]): SettingRow {
  * @param columns - Columns of the table.
  * @param rows - Rows to check.
  * @returns A message naming the row (counted from 1) and the column, or
- *   `null` when every required column has a value and every choice is valid.
+ *   `null` when every required column has a value, every choice is valid and
+ *   every number is a whole number JavaScript holds exactly. An integer
+ *   beyond 2^53 - 1 that arrived from the CLI or API was already rounded by
+ *   `JSON.parse`, so saving it would store a different value.
  */
 export function rowsProblem(columns: PluginSettingColumn[], rows: SettingRow[]): string | null {
   for (const [index, row] of rows.entries()) {
@@ -138,6 +141,9 @@ export function rowsProblem(columns: PluginSettingColumn[], rows: SettingRow[]):
           return `Row ${index + 1}: ${column.label} is required`;
         }
         continue;
+      }
+      if (typeof value === "number" && !Number.isSafeInteger(value)) {
+        return `Row ${index + 1}: ${column.label} must be a whole number this form can hold exactly; set larger numbers with the CLI`;
       }
       if (column.choices?.length && !column.choices.some((choice) => choice.value === value)) {
         return `Row ${index + 1}: choose a valid ${column.label}`;

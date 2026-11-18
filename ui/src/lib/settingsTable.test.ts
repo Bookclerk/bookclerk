@@ -100,5 +100,10 @@ describe("table settings", () => {
     expect(rowsProblem(columns, [{ library: "a", mode: "both" }])).toBe(
       "Row 1: choose a valid Mode",
     );
+    expect(rowsProblem(columns, parseRows('[{"library":"a","depth":9007199254740993}]'))).toMatch(
+      /^Row 1: Depth must be a whole number/,
+    );
+    expect(rowsProblem(columns, [{ library: "a", depth: 1.5 }])).toMatch(/^Row 1: Depth/);
+    expect(rowsProblem(columns, [{ library: "a", depth: -3 }])).toBeNull();
   });
 });
