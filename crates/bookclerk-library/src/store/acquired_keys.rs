@@ -58,6 +58,50 @@ pub struct AcquiredTitleKeyPage {
     pub next: Option<String>,
 }
 
+/// A `store_listings` read of the identity columns only: the store text
+/// (title, people, synopsis, ...) reads as empty, so a listing whose text is
+/// longer than one result cell allows never fails the read.
+fn listing_identities() -> sea_orm::Select<store_listings::Entity> {
+    use sea_orm::sea_query::Expr;
+    use sea_orm::Iterable as _;
+    let mut select = store_listings::Entity::find().select_only();
+    for column in store_listings::Column::iter() {
+        select = match column {
+            store_listings::Column::Id
+            | store_listings::Column::PluginKey
+            | store_listings::Column::Marketplace
+            | store_listings::Column::ProductId
+            | store_listings::Column::EditionId
+            | store_listings::Column::ObservedAt
+            | store_listings::Column::CreatedAt
+            | store_listings::Column::UpdatedAt => select.column(column),
+            store_listings::Column::Title => {
+                select.column_as(Expr::cust("''"), sea_orm::IdenStatic::as_str(&column))
+            }
+            store_listings::Column::Categories
+            | store_listings::Column::Subtitle
+            | store_listings::Column::Authors
+            | store_listings::Column::Narrators
+            | store_listings::Column::Series
+            | store_listings::Column::SeriesIndex
+            | store_listings::Column::SeriesProductId
+            | store_listings::Column::Description
+            | store_listings::Column::Publisher
+            | store_listings::Column::PublishedAt
+            | store_listings::Column::LengthMinutes
+            | store_listings::Column::Language
+            | store_listings::Column::CoverUrl
+            | store_listings::Column::Url
+            | store_listings::Column::RatingOverall
+            | store_listings::Column::RatingCount
+            | store_listings::Column::IsAbridged => {
+                select.column_as(Expr::cust("NULL"), sea_orm::IdenStatic::as_str(&column))
+            }
+        };
+    }
+    select
+}
+
 /// `text` as a time, or the time of the read when it does not parse.
 fn changed_at(text: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(text.trim())
@@ -89,7 +133,7 @@ impl LibraryStore {
         after: Option<&str>,
         limit: u64,
     ) -> Result<AcquiredTitleKeyPage> {
-        use super::library_model::{find_chunked, find_chunked_paged};
+        use super::library_model::find_chunked_paged;
         let want = match self.db_capabilities().max_result_rows {
             0 => limit.clamp(1, ACQUIRED_KEYS_MAX_PAGE),
             rows => limit
@@ -119,7 +163,7 @@ impl LibraryStore {
         let edition_ids: Vec<String> = acquired.iter().map(|row| row.edition_id.clone()).collect();
         let listings =
             find_chunked_paged::<store_listings::Entity, _>(self, &edition_ids, |part| {
-                store_listings::Entity::find()
+                listing_identities()
                     .filter(store_listings::Column::EditionId.is_in(part.to_vec()))
                     .order_by_asc(store_listings::Column::Id)
             })
@@ -139,8 +183,12 @@ impl LibraryStore {
         account_ids.sort_unstable();
         account_ids.dedup();
         let sources: std::collections::BTreeMap<(String, String), String> =
-            find_chunked::<accounts::Entity, _>(self, &account_ids, |part| {
-                accounts::Entity::find().filter(accounts::Column::AccountId.is_in(part.to_vec()))
+            // The same account id on two stores is two rows, so the accounts
+            // are read in pages.
+            find_chunked_paged::<accounts::Entity, _>(self, &account_ids, |part| {
+                accounts::Entity::find()
+                    .filter(accounts::Column::AccountId.is_in(part.to_vec()))
+                    .order_by_asc(accounts::Column::Id)
             })
             .await?
             .into_iter()
@@ -287,6 +335,58 @@ mod tests {
                     assert_eq!(title.status, AcquireStatus::Acquired, "{name}");
                 }
             }
+        }
+    }
+
+    /// Under every profile, the minimum one included: one account id on two
+    /// stores (two `accounts` rows for one id) and a listing whose synopsis
+    /// is longer than a result cell allows still read back.
+    #[tokio::test]
+    async fn shared_account_ids_and_long_synopses_read_under_every_profile() {
+        use sea_orm::sea_query::Expr;
+        use sea_orm::{EntityTrait as _, QueryFilter as _};
+        for profile in Profile::ALL {
+            let kit = crate::test_support::sqlite::memory(profile).await;
+            let store = kit.store();
+            let name = profile.name();
+            store
+                .upsert_account("audible", "acct", "us", None, true, "audible")
+                .await
+                .unwrap();
+            store
+                .upsert_account("libro", "acct", "us", None, true, "libro")
+                .await
+                .unwrap();
+            store
+                .upsert_book(&NewBook::minimal("B0LONG001", "acct", "us", "Long"))
+                .await
+                .unwrap();
+            store
+                .set_acquire_status(
+                    "B0LONG001",
+                    "acct",
+                    AcquireStatus::Acquired,
+                    Some("k/long.m4b"),
+                    None,
+                )
+                .await
+                .unwrap();
+            crate::entities::store_listings::Entity::update_many()
+                .col_expr(
+                    crate::entities::store_listings::Column::Description,
+                    Expr::value("x".repeat(8_000)),
+                )
+                .filter(sea_orm::ColumnTrait::eq(
+                    &crate::entities::store_listings::Column::ProductId,
+                    "B0LONG001",
+                ))
+                .exec(kit.connection())
+                .await
+                .unwrap();
+            let keys = store.all_acquired_title_keys().await;
+            assert_eq!(keys.len(), 1, "{name}");
+            assert_eq!(keys[0].product_id, "B0LONG001", "{name}");
+            assert_eq!(keys[0].source, "audible", "{name}");
         }
     }
 }
