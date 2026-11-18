@@ -61,6 +61,11 @@ The design behind this split is in
   `-vv` or `-vvv`, or `BOOKCLERK_LOG`.
 - The **diagnostics ring buffer always keeps TRACE and above**, so crash
   and burst reports include deep context even when the console is quiet.
+- **The WebSocket library's own log records reach neither.** It traces
+  every frame's payload in hex and the request head of each handshake,
+  and a frame or a header can carry a bearer token in a form the
+  redaction would not recognize. Bookclerk's own events about its sockets
+  are logged as usual.
 
 > [!TIP]
 > To investigate locally, set `BOOKCLERK_LOG=bookclerk=debug`, or pass

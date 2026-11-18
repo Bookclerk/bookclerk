@@ -785,7 +785,7 @@ are still the ones the grant listed. A token outlives none of them.
 
 A clerk asks the same way on its own socket, for the person its library
 card belongs to. Its token is not sealed (a clerk has no box key; the
-socket is the card's TLS connection), and each download checks that the
+socket is the card's own connection, TLS except on loopback), and each download checks that the
 card is still signed in instead of a branch's trust. See
 [The clerk socket](sign-in.md#the-clerk-socket).
 

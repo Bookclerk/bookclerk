@@ -438,9 +438,11 @@ only that. The others check:
   `books.page` passes `window_page_problem`; `copy.granted` parses
   exactly when its listing is well formed, `copy_id` is a lowercase UUID,
   `token` is 1 to 1024 base64url characters, the life is 1 to 86 400
-  seconds, and the files are 1 to 1000 well-formed files with distinct
+  seconds, `copy` is present and well formed
+  (`WindowCopy::is_well_formed`), and the files are 1 to 1000 well-formed files with distinct
   names and exactly one primary audio. Every accepted frame
-  round-trips through its encoder. The shared oracle is
+  round-trips through its encoder, unless the encoded text is over the
+  size limit. The shared oracle is
   `fuzz/oracles/clerk_socket_frame.rs`, replayed from
   `bookclerk-node-proto`.
 - **`job_cap_request`**: reads the body as an untyped JSON value. It is

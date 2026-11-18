@@ -603,21 +603,37 @@ async fn get_copy_file(
     )
 }
 
+/// The next thing the socket did within ten seconds that is not a
+/// `changed` frame, which the library may send at any time.
+async fn answer_of(socket: &mut Socket) -> Next {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match next(socket, left).await {
+            Next::Frame(LibraryFrame::Changed { .. }) => {}
+            other => return other,
+        }
+    }
+}
+
 /// Sends `frame` and answers what came back.
 async fn ask(socket: &mut Socket, frame: &ClerkFrame) -> Next {
     socket
         .send(Message::Text(frame.encode().into()))
         .await
         .unwrap();
-    next(socket, Duration::from_secs(10)).await
+    answer_of(socket).await
 }
 
 /// A card takes the copy the library holds of an edition another member
 /// provided: `copy.grant` answers what the copy is, its files with their
 /// sizes and a token; each file downloads whole or by range with it and
 /// with nothing else; an edition without a copy is `not_found`; signing
-/// the card out stops the downloads at once; and at TRACE neither the
-/// token nor the card reaches a log.
+/// the card out refuses the next download; and at TRACE neither the
+/// token nor the card reaches a log this daemon writes. (The `log` bridge
+/// is not installed here: the test's own WebSocket client would trace the
+/// frame it received. `bookclerk-config`'s bridge, which drops the
+/// WebSocket library's records, has its own test.)
 #[tokio::test]
 async fn a_card_downloads_the_librarys_copy_until_it_is_signed_out() {
     use bookclerk_node_proto::{CopyRole, COPIES_PATH};
@@ -722,7 +738,7 @@ async fn a_card_downloads_the_librarys_copy_until_it_is_signed_out() {
         .await
         .unwrap();
     assert_eq!(
-        next(&mut socket, Duration::from_secs(5)).await,
+        answer_of(&mut socket).await,
         Next::Frame(LibraryFrame::Error {
             code: ClerkSocketError::Invalid,
         })

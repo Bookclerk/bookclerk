@@ -12,8 +12,8 @@
 //! may not" and "there is no copy" alike as `not_found`. This node then
 //! picks the first of its output destinations that holds the edition's
 //! files, reads their sizes, and seals the token to the node's box key.
-//! A clerk has no box key: its token is frame text on the card's own TLS
-//! session.
+//! A clerk has no box key: its token is frame text on the card's own
+//! connection (TLS, except on loopback, by the transport policy).
 //!
 //! The download carries `Authorization: Bookclerk-Copy <token>`. The route
 //! sits outside the cookie and operator auth layers (the token is the
@@ -97,7 +97,8 @@ pub(super) enum Granted {
     /// it, or no destination of this node holds every file. One answer for
     /// all three.
     NotFound,
-    /// This node's storage could not be read; ask again later.
+    /// This node's storage could not be read, or a destination that
+    /// lists the files could not be asked for them; ask again later.
     Unavailable,
     /// The grant is recorded.
     Opened {
@@ -146,6 +147,9 @@ pub(super) async fn open_for(
     };
     // The first destination, in this node's order, that holds every file.
     let mut chosen = None;
+    // A destination that could not be asked may hold the copy: "not
+    // found" is only for destinations that answered.
+    let mut unasked = false;
     for destination in &destinations {
         let Some(listed) = plan.destinations.get(&destination.id) else {
             continue;
@@ -158,11 +162,16 @@ pub(super) async fn open_for(
             Ok(None) => {}
             Err(err) => {
                 tracing::warn!(destination = %destination.id, error = %err, "could not size a copy's files");
+                unasked = true;
             }
         }
     }
     let Some((destination, files)) = chosen else {
-        return Ok(Granted::NotFound);
+        return Ok(if unasked {
+            Granted::Unavailable
+        } else {
+            Granted::NotFound
+        });
     };
     let Some(opened) = open_copy(library, holder, &plan, destination, serving_node_id).await?
     else {
@@ -242,7 +251,7 @@ pub(super) async fn grant(
 
 /// `copy.grant` on a clerk socket: the same grant, for the card's person,
 /// with the token as frame text (a clerk has no box key; the socket is
-/// the card's own TLS session).
+/// the card's own connection, TLS except on loopback).
 ///
 /// # Arguments
 ///
@@ -253,14 +262,16 @@ pub(super) async fn grant(
 ///
 /// # Returns
 ///
-/// `copy.granted`, or the `error` frame.
+/// `copy.granted` with its grant, or the `error` frame. The caller holds
+/// the grant until the frame is sent: the token stays in the redaction
+/// registry for as long as the grant lives.
 pub(super) async fn grant_to_card(
     library: &LibraryStore,
     state: &AppState,
     card: &str,
     listing: CopyListing<'_>,
-) -> LibraryFrame {
-    let failed = |code| LibraryFrame::Error { code };
+) -> (LibraryFrame, Option<OpenedCopy>) {
+    let failed = |code| (LibraryFrame::Error { code }, None);
     let files_dir = state.config.read().await.paths().files_dir.clone();
     let Ok(this_node) = load_or_create_node_identity(&files_dir) else {
         tracing::warn!("no node identity to serve a copy from");
@@ -301,7 +312,7 @@ pub(super) async fn grant_to_card(
         return failed(ClerkSocketError::NotFound);
     }
     tracing::info!(copy_id = %opened.copy_id, "granted a copy of an edition to a library card");
-    frame
+    (frame, Some(opened))
 }
 
 /// A JSON refusal.
@@ -347,7 +358,7 @@ fn body_of(reader: Pin<Box<dyn AsyncRead + Send>>) -> Body {
     responses(
         (status = 200, description = "The whole file.", body = crate::openapi::BinaryBody, content_type = "application/octet-stream"),
         (status = 206, description = "The requested byte range, with `Content-Range`.", body = crate::openapi::BinaryBody, content_type = "application/octet-stream"),
-        (status = 401, description = "The copy token is missing, wrong or expired, or the grant no longer holds: the branch is no longer trusted or the library card is signed out, the person may no longer take the edition, or the library's files changed since the grant (`unauthorized`). Ask for a new grant.", body = crate::http_error::ErrorMessage, example = json!({"error": "unauthorized"})),
+        (status = 401, description = "The copy token is missing, wrong or expired, or the grant no longer holds: the branch is no longer trusted or the library card is signed out, the person may no longer take the edition, or the library's files changed since the grant (`unauthorized`). Ask for a new grant; a clerk whose library card is signed out signs in again first.", body = crate::http_error::ErrorMessage, example = json!({"error": "unauthorized"})),
         (status = 403, description = "The connection failed the transport policy (`transport_insecure`, with the check in `reason`).", body = crate::http_error::TransportRefused, example = json!({"error": "transport_insecure", "reason": "plain_http"})),
         (status = 404, description = "The index names no file of the copy (`unknown_file`), or the node API is not mounted on this listener (`node_api_unmounted`).", body = crate::http_error::ErrorMessage, example = json!({"error": "unknown_file"})),
         (status = 416, description = "The range starts at or past the end of the file (`range_not_satisfiable`); `Content-Range` states the size.", body = crate::http_error::ErrorMessage, example = json!({"error": "range_not_satisfiable"})),

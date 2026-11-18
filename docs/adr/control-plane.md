@@ -2090,7 +2090,8 @@ already processed.
   the same grant for the card's person, through the same plan and
   destination choice. A clerk has no box key, so `copy.granted` carries
   the token as text (`token`, with the listing echoed, since clerk frames
-  have no ids); the socket is the card's TLS session, and the token is
+  have no ids); the socket is the card's own connection (TLS except on loopback, by
+  the transport policy), and the token is
   worth no more than the card that asked. The grant's holder is the
   card's token hash, as `portal_sessions` already stores it: unique,
   never reused, and gone with the session.

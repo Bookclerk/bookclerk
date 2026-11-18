@@ -43,7 +43,9 @@
 //!   with distinct names, each well formed by the copy boundary's rules,
 //!   exactly one of them the primary audio.
 //! - Every accepted frame encodes to text that parses back to the same
-//!   frame.
+//!   frame, unless the text is over the size limit (encoding writes out a
+//!   probe's defaults, so a `copy.granted` just under 1 MiB can grow past
+//!   it; the library never sends such a frame).
 
 use std::collections::BTreeSet;
 
@@ -231,9 +233,18 @@ fn expected_granted(frame: &[u8], fields: &Map<String, Value>) -> Option<Library
         .iter()
         .filter(|file| file.role == CopyRole::Audio)
         .count();
+    // A file's media type, read here: `type/subtype`, neither part empty.
+    let typed = |file: &CopyFile| {
+        file.content_type.as_deref().is_none_or(|media| {
+            media
+                .split_once('/')
+                .is_some_and(|(kind, sub)| !kind.is_empty() && !sub.is_empty())
+        })
+    };
     let well_formed = copy.is_well_formed()
         && (1..=1000).contains(&files.len())
         && files.iter().all(CopyFile::is_well_formed)
+        && files.iter().all(typed)
         && names.len() == files.len()
         && primaries == 1;
     well_formed.then(|| {
@@ -380,11 +391,14 @@ fn check_library(frame: &[u8]) -> bool {
         }
     }
     if let Some(frame) = &parsed {
-        assert_eq!(
-            parse_library_frame(frame.encode().as_bytes()).as_ref(),
-            Some(frame),
-            "{text:?} does not round-trip"
-        );
+        let encoded = frame.encode();
+        if encoded.len() <= 1024 * 1024 {
+            assert_eq!(
+                parse_library_frame(encoded.as_bytes()).as_ref(),
+                Some(frame),
+                "{text:?} does not round-trip"
+            );
+        }
     }
     parsed.is_some()
 }

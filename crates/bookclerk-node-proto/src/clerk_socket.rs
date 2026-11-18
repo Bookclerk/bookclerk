@@ -23,8 +23,8 @@
 //! `after` it answers and a granted copy echoes its listing.
 //!
 //! A clerk has no box key, so the copy token is frame text here, where a
-//! node's is sealed: the socket is the card's own TLS session (the
-//! transport policy admits plain HTTP on loopback only), and the token is
+//! node's is sealed: the socket is the card's own connection (TLS, except
+//! that the transport policy admits plain HTTP on loopback), and the token is
 //! good for one hour, for that card's person and that edition.
 //!
 //! A page carries what a window's `window.page` carries: works

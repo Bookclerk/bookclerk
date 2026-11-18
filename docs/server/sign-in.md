@@ -262,14 +262,15 @@ Answers come in the order the frames were asked.
 The copy token is good only while the card is: the library checks on every
 download that the card is still signed in and its user is not disabled,
 that the person may still see the edition and that the files are the ones
-it listed. Signing the card out stops its downloads at once. See
+it listed. Once the card is signed out, every new download request is
+refused; a file already being sent is not cut off. See
 [Taking a copy from the library](cluster-hosts.md#taking-a-copy-from-the-library)
 for the download route's answers.
 
 > [!NOTE]
 > The token is frame text on this socket, where a branch's is sealed to
 > its key: a clerk has no key of its own, and the socket is the card's own
-> TLS connection. Treat it like the card. The library stores only its hash
+> connection, which is TLS except on loopback. Treat it like the card. The library stores only its hash
 > and keeps it out of its logs.
 
 The library checks the card again every 30 seconds, and before every page
