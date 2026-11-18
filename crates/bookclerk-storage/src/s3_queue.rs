@@ -316,6 +316,13 @@ struct FeedState {
     /// incomplete.
     #[serde(default)]
     receiving: bool,
+    /// The last page handed out as incomplete. Until a cursor at or past
+    /// it arrives, the host may not have seen that page (its response can
+    /// be lost and the older cursor retried), so every page stays
+    /// incomplete: the gap it reported, such as a message a failed release
+    /// left hidden, is not forgotten.
+    #[serde(default)]
+    gap_at: Option<u64>,
 }
 
 impl FeedState {
@@ -326,6 +333,7 @@ impl FeedState {
             next_seq: 1,
             pending: VecDeque::new(),
             receiving: false,
+            gap_at: None,
         }
     }
 }
@@ -430,6 +438,11 @@ impl QueueFeed {
                 .await;
         };
         let mut complete = self.settle(&mut state, read_up_to).await? && !state.receiving;
+        match state.gap_at {
+            Some(gap) if read_up_to < gap => complete = false,
+            Some(_) => state.gap_at = None,
+            None => {}
+        }
         state.receiving = true;
         self.persist(&state)?;
 
@@ -520,6 +533,9 @@ impl QueueFeed {
         let mut next = state.clone();
         next.next_seq = seq.saturating_add(1);
         next.receiving = false;
+        if !complete {
+            next.gap_at = Some(seq);
+        }
         if !receipts.is_empty() {
             next.pending.push_back(PendingPage {
                 seq,
@@ -1088,6 +1104,32 @@ mod tests {
         let retried = feed.changes(Some(&start.cursor), 0).await.expect("retry");
         assert!(retried.changes.is_empty());
         assert!(!retried.complete);
+        // The incomplete answer is lost and the host retries again: the
+        // message is still hidden, so the page must stay incomplete.
+        queue.state.lock().unwrap().fail_release = false;
+        let lost = feed.changes(Some(&start.cursor), 0).await.expect("lost");
+        assert!(!lost.complete);
+        let acknowledged = feed.changes(Some(&lost.cursor), 0).await.expect("ack");
+        assert!(acknowledged.complete, "a cursor past the gap clears it");
+    }
+
+    #[tokio::test]
+    async fn a_failed_overflow_release_stays_incomplete_when_the_answer_is_lost() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let queue = Arc::new(FakeQueue::default());
+        queue.send(put("a", "t1"));
+        let two = r#"{"Records":[{"eventName":"ObjectCreated:Put","s3":{"bucket":{"name":"books"},"object":{"key":"library/b"}}},{"eventName":"ObjectCreated:Put","s3":{"bucket":{"name":"books"},"object":{"key":"library/c"}}}]}"#;
+        queue.send(two.to_string());
+        let feed = feed(&queue, dir.path());
+        let start = feed.changes(None, 2).await.expect("start");
+        queue.state.lock().unwrap().fail_release = true;
+        let page = feed.changes(Some(&start.cursor), 2).await.expect("page");
+        assert_eq!(keys(&page), ["a"]);
+        assert!(page.more);
+        assert!(!page.complete, "the overflow message stayed hidden");
+        queue.state.lock().unwrap().fail_release = false;
+        let lost = feed.changes(Some(&start.cursor), 2).await.expect("lost");
+        assert!(!lost.complete);
     }
 
     #[tokio::test]
