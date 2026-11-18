@@ -314,6 +314,9 @@ async fn a_grant_is_checked_afresh_on_every_download() {
         .unwrap();
     assert_ne!(row.token_hash, *opened.token);
     assert_eq!(row.token_hash, crate::hash_token(&opened.token));
+    // The log redaction knows it while the grant is held.
+    let line = format!("token {}", opened.token.as_str());
+    assert!(!bookclerk_config::redact_str(&line).contains(opened.token.as_str()));
     // Nor does the grant print it.
     let printed = format!("{opened:?}");
     assert!(printed.contains(&opened.copy_id) && !printed.contains(opened.token.as_str()));

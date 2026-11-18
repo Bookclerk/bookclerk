@@ -442,6 +442,16 @@ pub struct OpenedCopy {
     pub expires_in_secs: u64,
 }
 
+impl Drop for OpenedCopy {
+    /// The token leaves the redaction registry ([`open_copy`] registered
+    /// it) and its copy here is zeroized with the grant. The holder's
+    /// later requests carry it in a `Bookclerk-Copy` header, which the
+    /// redaction patterns cover.
+    fn drop(&mut self) {
+        bookclerk_config::unregister_secret(self.token.as_str());
+    }
+}
+
 impl std::fmt::Debug for OpenedCopy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenedCopy")
@@ -480,12 +490,18 @@ pub async fn open_copy(
     let Some(digest) = plan.digests.get(destination) else {
         return Ok(None);
     };
-    let copy_id = uuid::Uuid::new_v4().to_string();
     let token = mint_token();
+    // Registered before anything can fail or log with it in scope.
+    bookclerk_config::register_secret(token.as_str());
+    let opened = OpenedCopy {
+        copy_id: uuid::Uuid::new_v4().to_string(),
+        token,
+        expires_in_secs: u64::try_from(COPY_TOKEN_TTL_SECS).unwrap_or(0),
+    };
     let now = Utc::now();
     copy_grants::Entity::insert(copy_grants::ActiveModel {
-        copy_id: Set(copy_id.clone()),
-        token_hash: Set(crate::hash_token(&token)),
+        copy_id: Set(opened.copy_id.clone()),
+        token_hash: Set(crate::hash_token(&opened.token)),
         holder_kind: Set(holder.kind().to_string()),
         holder_id: Set(holder.id().to_string()),
         user_id: Set(plan.person),
@@ -499,11 +515,7 @@ pub async fn open_copy(
     .exec_without_returning(store.db())
     .await
     .map_err(LibraryError::Orm)?;
-    Ok(Some(OpenedCopy {
-        copy_id,
-        token,
-        expires_in_secs: u64::try_from(COPY_TOKEN_TTL_SECS).unwrap_or(0),
-    }))
+    Ok(Some(opened))
 }
 
 /// What a download request may read ([`authorize_copy`]).
