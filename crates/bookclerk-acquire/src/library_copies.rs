@@ -100,6 +100,11 @@ pub trait LibraryCopies: Send + Sync {
     /// The copy a library this install joined offers of `listing`; `None`
     /// when no library holds one this install's person may take, when
     /// this install does not keep copies, or when no library answers.
+    ///
+    /// The acquire takes only a copy from the listing's own store
+    /// ([`from_store`]). An implementation that asks several libraries
+    /// therefore keeps asking past a copy from another store, so that
+    /// copy does not hide a later library's usable one.
     async fn copy_of(&self, listing: LibraryCopyListing<'_>) -> Option<Box<dyn LibraryCopy>>;
 }
 
@@ -157,8 +162,11 @@ impl std::fmt::Debug for LibraryCopySource {
 /// install's title belongs to. A copy whose store the library does not
 /// know, or one from another store, is not taken: the install fetches its
 /// own.
+///
+/// An implementation of [`LibraryCopies`] that asks several libraries uses
+/// this to pass over a copy from another store and ask the next library.
 #[must_use]
-pub(crate) fn from_store(copy_store: Option<&str>, store: &str) -> bool {
+pub fn from_store(copy_store: Option<&str>, store: &str) -> bool {
     let store = store.trim();
     !store.is_empty() && copy_store.is_some_and(|theirs| theirs.trim().eq_ignore_ascii_case(store))
 }

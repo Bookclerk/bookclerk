@@ -811,7 +811,9 @@ library it joined, in turn, for the copy of that listing.
   grant lists those files by name, which need not be playing order.
 - **Another store: the branch fetches its own.** When the library's copy
   came from a different store, or the library doesn't know where it came
-  from, the branch downloads from its own store as usual.
+  from, that library is passed over and the next one is asked. When no
+  library has a copy from the title's store, the branch downloads from
+  its own store as usual.
 - **Any problem: the store.** If the copy doesn't arrive whole, is larger
   than the acquire's scratch budget, or holds audio the media worker
   can't read, the branch removes what it downloaded and fetches from the

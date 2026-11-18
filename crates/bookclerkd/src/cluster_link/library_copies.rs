@@ -12,15 +12,16 @@
 //! so the catalog sync never shares the book back to the library it came
 //! from.
 //!
-//! Nothing here decides whether the copy is used: the pipeline takes it
-//! only when the library downloaded it from the title's own store, and
-//! fetches from the store otherwise.
+//! The pipeline takes a copy only when the library downloaded it from the
+//! title's own store, and fetches from the store otherwise. A library
+//! whose copy came from another store is therefore passed over here, so
+//! the next library is still asked.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use bookclerk_acquire::{
-    LibraryCopies, LibraryCopy, LibraryCopyError, LibraryCopyFile, LibraryCopyListing,
+    from_store, LibraryCopies, LibraryCopy, LibraryCopyError, LibraryCopyFile, LibraryCopyListing,
     LibraryCopySource,
 };
 use bookclerk_library::control_plane::{
@@ -109,6 +110,17 @@ impl LibraryCopies for LinkCopies {
                     continue;
                 }
             };
+            // A copy from another store is never taken, so it must not
+            // hide the same-store copy a later library holds.
+            if !from_store(granted.copy.source_store.as_deref(), listing.store) {
+                tracing::debug!(
+                    library = %link.owner_cluster_id,
+                    store = %listing.store,
+                    copy_store = ?granted.copy.source_store,
+                    "the library's copy is from another store; asking the next library"
+                );
+                continue;
+            }
             return Some(Box::new(LinkCopy {
                 files: granted.files.iter().map(listed).collect(),
                 granted,

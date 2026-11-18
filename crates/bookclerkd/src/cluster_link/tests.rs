@@ -4618,6 +4618,27 @@ mod results_and_uploads {
         // On again, it is.
         assert!(copies.copy_of(listing("t1")).await.is_some());
         assert_eq!(grants().await, asked + 1);
+
+        // A copy the library downloaded from another store than the
+        // title's is granted but passed over, so a library asked after
+        // this one still gets its turn.
+        assert!(world
+            .owner
+            .set_edition_file_probe(
+                "local",
+                KEY,
+                &owner_of,
+                &bookclerk_library::FileProbe {
+                    content_type: "audio/mp4".into(),
+                    bitrate_kbps: Some(64),
+                    lossless: false,
+                    source_store: Some("elsewhere".into()),
+                },
+            )
+            .await
+            .unwrap());
+        assert!(copies.copy_of(listing("t1")).await.is_none());
+        assert_eq!(grants().await, asked + 2);
     }
 
     /// A branch takes the copy its library already holds: `copy.grant`

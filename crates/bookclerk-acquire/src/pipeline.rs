@@ -1185,16 +1185,15 @@ async fn run_source_pipeline(
     enforce_work_dir_quota(library, req, &work_dir).await?;
 
     let result = run_stage_enforcing_quota(library, req, &work_dir, async {
-        let mut result = store_plain_fetch(library, destinations, req, &work_dir, fetch).await?;
-        // The companion PDF the library holds for the edition is the
-        // store's own file, so it is stored as a store's is. The store is
-        // not asked: its only way to a PDF is a whole fetch of the title,
-        // audio included.
-        if let Some(pdf) = library_pdf {
-            let written = store_library_companion_pdf(library, destinations, req, &pdf).await;
-            result.written_keys.extend(written);
-        }
-        Ok(result)
+        store_plain_fetch(
+            library,
+            destinations,
+            req,
+            &work_dir,
+            fetch,
+            library_pdf.as_deref(),
+        )
+        .await
     })
     .await;
     if result.is_ok() {
@@ -1303,6 +1302,7 @@ async fn store_plain_fetch(
     req: &AcquireRequest,
     work_dir: &Path,
     plain: PlainFetch,
+    library_pdf: Option<&Path>,
 ) -> Result<AcquireResult> {
     let want_mp3 = req.options.wants_mp3();
     let multi = plain.parts.len() > 1;
@@ -1311,7 +1311,8 @@ async fn store_plain_fetch(
     // No-op output: keep store-delivered bytes (no remux/transcode).
     if req.options.is_noop_output() {
         if multi {
-            return store_plain_parts(library, destinations, req, work_dir, plain).await;
+            return store_plain_parts(library, destinations, req, work_dir, plain, library_pdf)
+                .await;
         }
         let path = plain
             .m4b_path
@@ -1340,6 +1341,7 @@ async fn store_plain_fetch(
                 chapters: plain.chapters,
                 pdf_url: plain.pdf_url,
             },
+            library_pdf,
         )
         .await;
     }
@@ -1348,7 +1350,7 @@ async fn store_plain_fetch(
     // When an Audible ASIN enrichment is available, package first so we can embed /
     // split by the literary chapter tree instead of track-boundary placeholders.
     if multi && req.options.wants_split_by_chapter() && !audible_overlay_possible {
-        return store_plain_parts(library, destinations, req, work_dir, plain).await;
+        return store_plain_parts(library, destinations, req, work_dir, plain, library_pdf).await;
     }
 
     let mut chapters = plain.chapters.clone();
@@ -1645,7 +1647,7 @@ async fn store_plain_fetch(
             destinations,
             req,
             work_dir,
-            plain.pdf_url.as_deref(),
+            CompanionPdf::of(plain.pdf_url.as_deref(), library_pdf),
         )
         .await?,
     );
@@ -1674,6 +1676,7 @@ async fn store_plain_parts(
     req: &AcquireRequest,
     work_dir: &Path,
     plain: PlainFetch,
+    library_pdf: Option<&Path>,
 ) -> Result<AcquireResult> {
     let mut prepared = Vec::new();
     for (idx, part) in plain.parts.iter().enumerate() {
@@ -1727,7 +1730,7 @@ async fn store_plain_parts(
             destinations,
             req,
             work_dir,
-            plain.pdf_url.as_deref(),
+            CompanionPdf::of(plain.pdf_url.as_deref(), library_pdf),
         )
         .await?,
     );
@@ -1742,6 +1745,10 @@ async fn store_plain_parts(
 }
 
 /// Download + store companion PDF sidecars when `output.download_pdf` is enabled.
+///
+/// A PDF a library's copy carried ([`CompanionPdf::Library`]) is stored
+/// from its scratch file instead of downloaded; this runs before the
+/// acquire's scratch directory is removed, so the file is still there.
 ///
 /// Soft-fails (logs + returns `Ok(empty)`) when the URL is missing, HTTP fails,
 /// or the remaining scratch budget cannot hold the body so audio acquire still
@@ -1759,12 +1766,18 @@ async fn store_companion_pdf_sidecars(
     destinations: &AcquireDestinations,
     req: &AcquireRequest,
     work_dir: &Path,
-    pdf_url: Option<&str>,
+    pdf: CompanionPdf<'_>,
 ) -> Result<Vec<String>> {
     if !req.options.download_pdf {
         return Ok(Vec::new());
     }
-    let Some(pdf_url) = pdf_url.map(str::trim).filter(|s| !s.is_empty()) else {
+    let pdf_url = match pdf {
+        CompanionPdf::Library(path) => {
+            return Ok(store_library_companion_pdf(library, destinations, req, path).await);
+        }
+        CompanionPdf::Store(url) => url.map(str::trim).filter(|s| !s.is_empty()),
+    };
+    let Some(pdf_url) = pdf_url else {
         return Ok(Vec::new());
     };
 
@@ -1815,6 +1828,23 @@ async fn store_companion_pdf_sidecars(
     }
 
     Ok(put_companion_pdf(library, destinations, req, &pdf_path).await)
+}
+
+/// Where an acquire's companion PDF comes from.
+#[derive(Debug, Clone, Copy)]
+enum CompanionPdf<'a> {
+    /// The URL the store gave with the title, when it gave one.
+    Store(Option<&'a str>),
+    /// The file a library's copy carried, already in the acquire's
+    /// scratch directory.
+    Library(&'a Path),
+}
+
+impl<'a> CompanionPdf<'a> {
+    /// The library's file when the acquire took one, else the store's URL.
+    fn of(store_url: Option<&'a str>, library_pdf: Option<&'a Path>) -> Self {
+        library_pdf.map_or(Self::Store(store_url), Self::Library)
+    }
 }
 
 /// Stores the companion PDF a library's copy carried, as
@@ -3697,10 +3727,15 @@ mod tests {
         prepare_work_dir(&store, &req, &work_dir).await.unwrap();
         let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let destinations = counting_destinations(&dest_root, puts.clone());
-        let written =
-            store_companion_pdf_sidecars(&store, &destinations, &req, &work_dir, Some(&url))
-                .await
-                .expect("companion PDF quota must soft-fail so audio acquire can succeed");
+        let written = store_companion_pdf_sidecars(
+            &store,
+            &destinations,
+            &req,
+            &work_dir,
+            CompanionPdf::Store(Some(&url)),
+        )
+        .await
+        .expect("companion PDF quota must soft-fail so audio acquire can succeed");
         assert!(written.is_empty());
         assert!(!work_dir.join("B00TEST.pdf").exists());
         assert_eq!(puts.load(Ordering::SeqCst), 0);
@@ -3999,6 +4034,9 @@ mod tests {
         let mut destinations = title_named_destinations(&dest, puts);
         for item in &mut destinations.items {
             item.options.download_pdf = true;
+            // The packaging path removes the acquire's scratch directory
+            // when it is done: the PDF must be stored before that.
+            item.options.format = bookclerk_config::OutputFormat::EnrichedM4b;
         }
         let job = job_id(&store).await;
         let audio = bookclerk_tags::fixtures::tagged_m4b();
@@ -4021,6 +4059,10 @@ mod tests {
             .await
             .unwrap();
         assert!(result.from_library);
+        let scratch: Vec<_> = std::fs::read_dir(cache.join("acquire"))
+            .map(|dir| dir.map(|entry| entry.unwrap().path()).collect())
+            .unwrap_or_default();
+        assert!(scratch.is_empty(), "scratch was cleaned: {scratch:?}");
         assert_eq!(
             fetches.load(Ordering::SeqCst),
             0,

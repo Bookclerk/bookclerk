@@ -30,7 +30,7 @@ mod storage_scan;
 pub use destinations::{destination_id, AcquireDestination, AcquireDestinations};
 pub use error::{AcquireError, Result};
 pub use library_copies::{
-    LibraryCopies, LibraryCopy, LibraryCopyError, LibraryCopyFile, LibraryCopyListing,
+    from_store, LibraryCopies, LibraryCopy, LibraryCopyError, LibraryCopyFile, LibraryCopyListing,
     LibraryCopySource,
 };
 pub use match_storage::{
