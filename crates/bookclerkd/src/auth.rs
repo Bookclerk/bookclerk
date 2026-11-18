@@ -3967,7 +3967,7 @@ pub async fn set_password(
 
 /// Who may provision users, and which roles they may assign or manage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Provisioner {
+pub(crate) enum Provisioner {
     /// Daemon operator token or session (no first-party `users` row).
     Operator,
     /// Elevated owner principal for privileged operator actions.
@@ -3989,7 +3989,7 @@ enum Provisioner {
 
 impl Provisioner {
     /// Security-audit actor string (`operator` or `user:{id}`).
-    fn audit_actor(self) -> String {
+    pub(crate) fn audit_actor(self) -> String {
         match self {
             Self::Operator => String::from("operator"),
             Self::ElevatedOwner { user_id }
@@ -3999,7 +3999,7 @@ impl Provisioner {
     }
 
     /// First-party user id for portal provisioners; `None` for the operator principal.
-    fn user_id(self) -> Option<i64> {
+    pub(crate) fn user_id(self) -> Option<i64> {
         match self {
             Self::Operator => None,
             Self::ElevatedOwner { user_id }
@@ -4009,7 +4009,7 @@ impl Provisioner {
     }
 
     /// Whether this principal may assign `role` (operators and elevated owners: any; owners: not Owner; admins: Member only).
-    fn can_assign_role(self, role: UserRole) -> bool {
+    pub(crate) fn can_assign_role(self, role: UserRole) -> bool {
         match self {
             Self::Operator | Self::ElevatedOwner { .. } => true,
             Self::Owner { .. } => !matches!(role, UserRole::Owner),
@@ -4019,7 +4019,7 @@ impl Provisioner {
 
     /// Profile patch / self-delete may target the caller. Authenticator reset,
     /// claim remint, and `PUT /api/auth/password` with `user_id` must not.
-    fn can_manage_target(self, target_role: UserRole, is_self: bool) -> bool {
+    pub(crate) fn can_manage_target(self, target_role: UserRole, is_self: bool) -> bool {
         if is_self {
             return true;
         }
@@ -4036,7 +4036,7 @@ impl Provisioner {
 ///
 /// Impersonation uses the target user's role (Owner / Administrator), not
 /// operator privileges.
-async fn authorize_provisioner(
+pub(crate) async fn authorize_provisioner(
     state: &AppState,
     auth: &OperatorAuthState,
     headers: &HeaderMap,

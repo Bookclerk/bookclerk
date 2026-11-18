@@ -14,6 +14,7 @@ import { createPortal } from "react-dom";
 import { Check, Copy, Headphones, MoreHorizontal, Search, UserPlus, X } from "lucide-react";
 import { AddBranchDialog } from "@/components/AddBranchDialog";
 import { AvatarPickerDialog } from "@/components/AvatarPickerDialog";
+import { PatronScopeEditor } from "@/components/PatronScopeEditor";
 import { UserAvatar, userDisplayLabel } from "@/components/UserAvatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1351,6 +1352,14 @@ export function UserManagementPanel({
                 </span>
               </label>
 
+              {selectedEditable && currentUserId !== selected.id ? (
+                <PatronScopeEditor
+                  key={selected.id}
+                  target={{ kind: "user", userId: selected.id }}
+                  disabled={busy}
+                />
+              ) : null}
+
               <div className="space-y-2">
                 <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">
                   Integrations ({(selected.integrations ?? []).length})
@@ -1381,9 +1390,14 @@ export function UserManagementPanel({
               </p>
             </div>
           ) : (
-            <p className="text-sm text-ink/50">
-              Select a user to edit role, status, and review integrations.
-            </p>
+            <div className="space-y-4">
+              <p className="text-sm text-ink/50">
+                Select a user to edit role, status, and review integrations.
+              </p>
+              {roleChoices.length > 0 ? (
+                <PatronScopeEditor target={{ kind: "default" }} disabled={busy} />
+              ) : null}
+            </div>
           )}
         </aside>
       </div>

@@ -3,7 +3,9 @@
 
 use bookclerk_resolve::{MediaKind, WorkKind};
 
-use super::{FacetValuesOf, WorkCursor, WorkFacet, WorkFilter, WorkPageQuery, WorkSort};
+use super::{
+    facet_key, FacetValuesOf, WorkCursor, WorkFacet, WorkFilter, WorkPageQuery, WorkScope, WorkSort,
+};
 use crate::models::AcquireStatus;
 use crate::store::holdings::HoldingSelection;
 use crate::store::{LibraryStore, NewBook};
@@ -690,7 +692,12 @@ async fn facets_filter_works_and_list_their_values_under(profile: Profile) {
     let mut after: Option<String> = None;
     loop {
         let page = store
-            .library_facet_values(FacetValuesOf::Facet(WorkFacet::Genre), after.as_deref(), 2)
+            .library_facet_values(
+                FacetValuesOf::Facet(WorkFacet::Genre),
+                after.as_deref(),
+                2,
+                None,
+            )
             .await
             .unwrap();
         values.extend(page.values);
@@ -825,7 +832,7 @@ async fn tags_and_progress_filter_by_the_users_own_state_under(profile: Profile)
     let mut after: Option<String> = None;
     loop {
         let page = store
-            .library_facet_values(FacetValuesOf::Tags(ana.id), after.as_deref(), 10)
+            .library_facet_values(FacetValuesOf::Tags(ana.id), after.as_deref(), 10, None)
             .await
             .unwrap();
         tags.extend(page.values);
@@ -917,7 +924,7 @@ async fn one_refresh_of_many_works_writes_each_row_and_its_values_under(profile:
             let mut after: Option<String> = None;
             loop {
                 let page = store
-                    .library_facet_values(FacetValuesOf::Facet(facet), after.as_deref(), 500)
+                    .library_facet_values(FacetValuesOf::Facet(facet), after.as_deref(), 500, None)
                     .await
                     .unwrap();
                 values.extend(page.values);
@@ -1093,4 +1100,124 @@ async fn a_works_cover_comes_from_its_edition_listing_or_work() {
         edition_cover(&store, &edition).await.as_deref(),
         Some("https://img.example/store.jpg")
     );
+}
+
+#[tokio::test]
+async fn a_patron_scope_filters_lists_search_and_facets() {
+    for profile in Profile::ALL {
+        a_patron_scope_filters_lists_search_and_facets_under(profile).await;
+    }
+}
+
+/// [`a_patron_scope_filters_lists_search_and_facets`] under one profile.
+async fn a_patron_scope_filters_lists_search_and_facets_under(profile: Profile) {
+    let store = store_under(profile).await;
+    let hobbit = scan(&store, "B001", "acct-1", "The Hobbit", "J. R. R. Tolkien").await;
+    let dune = scan(&store, "B002", "acct-1", "Dune", "Frank Herbert").await;
+    let anathem = scan(&store, "B003", "acct-2", "Anathem", "Neal Stephenson").await;
+    let ids = [hobbit.clone(), dune.clone(), anathem.clone()];
+    store.refresh_library_works(&ids).await.unwrap();
+    let author = |name: &str| (WorkFacet::Author, facet_key(name));
+    let scoped = |scope: WorkScope| WorkPageQuery {
+        limit: 10,
+        scope: Some(scope),
+        ..WorkPageQuery::default()
+    };
+
+    let tolkien_only = WorkScope {
+        include: vec![author("J. R. R. Tolkien")],
+        ..WorkScope::default()
+    };
+    assert_eq!(
+        walk(&store, scoped(tolkien_only.clone())).await,
+        ["The Hobbit"],
+        "{profile:?}: include"
+    );
+    let no_herbert = WorkScope {
+        exclude: vec![author(" FRANK HERBERT ")],
+        ..WorkScope::default()
+    };
+    assert_eq!(
+        walk(&store, scoped(no_herbert)).await,
+        ["Anathem", "The Hobbit"],
+        "{profile:?}: exclude"
+    );
+    let both = WorkScope {
+        include: vec![author("J. R. R. Tolkien"), author("Frank Herbert")],
+        exclude: vec![author("Frank Herbert")],
+        ..WorkScope::default()
+    };
+    assert_eq!(
+        walk(&store, scoped(both)).await,
+        ["The Hobbit"],
+        "{profile:?}: exclude wins"
+    );
+
+    // What the patron's own account holds always passes.
+    let own = WorkScope {
+        include: vec![author("J. R. R. Tolkien")],
+        exclude: vec![author("Neal Stephenson")],
+        own_accounts: vec![("audible".into(), "acct-2".into())],
+    };
+    assert_eq!(
+        walk(&store, scoped(own.clone())).await,
+        ["Anathem", "The Hobbit"],
+        "{profile:?}: own books"
+    );
+    let other_plugin = WorkScope {
+        own_accounts: vec![("libro".into(), "acct-2".into())],
+        ..own
+    };
+    assert_eq!(
+        walk(&store, scoped(other_plugin)).await,
+        ["The Hobbit"],
+        "{profile:?}: own accounts match by plugin too"
+    );
+
+    // Search results and work pages read through the same filter.
+    let found = store
+        .library_works_by_ids(&ids, &scoped(tolkien_only.clone()))
+        .await
+        .unwrap();
+    assert_eq!(
+        found.iter().map(|w| w.work_id.as_str()).collect::<Vec<_>>(),
+        [hobbit.as_str()],
+        "{profile:?}: search"
+    );
+
+    // Facet values count only the works in scope.
+    assert_eq!(
+        author_values(&store, Some(&tolkien_only)).await,
+        ["J. R. R. Tolkien"],
+        "{profile:?}: facet values"
+    );
+    assert_eq!(
+        author_values(&store, Some(&WorkScope::default()))
+            .await
+            .len(),
+        3,
+        "{profile:?}: empty scope"
+    );
+}
+
+/// Every author value inside `scope`, page by page.
+async fn author_values(store: &LibraryStore, scope: Option<&WorkScope>) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let page = store
+            .library_facet_values(
+                FacetValuesOf::Facet(WorkFacet::Author),
+                after.as_deref(),
+                50,
+                scope,
+            )
+            .await
+            .unwrap();
+        values.extend(page.values.into_iter().map(|v| v.value));
+        match page.next {
+            Some(next) => after = Some(next),
+            None => return values,
+        }
+    }
 }

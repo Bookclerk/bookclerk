@@ -495,7 +495,13 @@ async fn a_work_reads_with_its_editions_or_is_a_404() {
 
 /// The cover route's refusal for `edition`, as status and message.
 async fn cover_refusal(state: &Arc<AppState>, edition: &str) -> (StatusCode, String) {
-    match get_edition_cover(State(state.clone()), AxumPath(edition.to_string())).await {
+    match get_edition_cover(
+        State(state.clone()),
+        HeaderMap::new(),
+        AxumPath(edition.to_string()),
+    )
+    .await
+    {
         Ok(res) => panic!("expected a refusal, got {}", res.status()),
         Err((status, Json(body))) => (status, body.error),
     }
@@ -978,4 +984,134 @@ fn tags_collapse_whitespace_and_clear_when_empty() {
     assert_eq!(rating_edit("r", None).expect("keep"), FieldEdit::Keep);
     assert!(rating_edit("r", Some(Some(f64::NAN))).is_err());
     assert!(rating_edit("r", Some(Some(-0.5))).is_err());
+}
+
+/// Sends `GET uri` with `cookie` (or the operator token) through the
+/// router; returns the status and decoded body.
+async fn get_json(
+    app: &axum::Router,
+    cookie: Option<&str>,
+    uri: &str,
+) -> (StatusCode, serde_json::Value) {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let request = axum::http::Request::builder().uri(uri);
+    let request = match cookie {
+        Some(cookie) => request.header(header::COOKIE, cookie),
+        None => request.header(header::AUTHORIZATION, "Bearer op-token-scope"),
+    };
+    let response = app
+        .clone()
+        .oneshot(request.body(axum::body::Body::empty()).expect("request"))
+        .await
+        .expect("response");
+    let status = response.status();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+/// The titles of a `GET /api/library/works` answer.
+fn titles(page: &serde_json::Value) -> Vec<String> {
+    page["works"]
+        .as_array()
+        .expect("works")
+        .iter()
+        .map(|w| w["title"].as_str().expect("title").to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_scoped_member_sees_only_their_scope_on_every_library_screen() {
+    use bookclerk_library::control_plane::{
+        set_patron_scope, PatronScope, RuleEffect, ScopeField, ScopeRule,
+    };
+    let (_state, app, library) = crate::auth::tests::phase2_harness("op-token-scope").await;
+    library
+        .upsert_account("audible", "acct", "us", None, true, "audible")
+        .await
+        .expect("account");
+    let ids = vec![
+        scan(&library, "B001", "The Hobbit", "J. R. R. Tolkien").await,
+        scan(&library, "B002", "Dune", "Frank Herbert").await,
+        scan(&library, "B003", "Anathem", "Neal Stephenson").await,
+    ];
+    library.refresh_library_works(&ids).await.expect("refresh");
+    let cookie = crate::auth::tests::portal_cookie_for(&library, "test", "member-ext").await;
+    let identity = library
+        .get_portal_identity("test", "member-ext")
+        .await
+        .expect("read")
+        .expect("identity");
+    let member = identity.user_id.expect("a member user");
+    let dune = &ids[1];
+    let (_, detail) = get_json(&app, None, &format!("/api/library/works/{dune}")).await;
+    let dune_edition = detail["editions"][0]["id"]
+        .as_str()
+        .expect("an edition")
+        .to_string();
+
+    // Out of the box nothing is hidden.
+    let (status, page) = get_json(&app, Some(&cookie), "/api/library/works").await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(titles(&page).len(), 3);
+
+    set_patron_scope(
+        &library,
+        member,
+        Some(PatronScope {
+            rules: vec![ScopeRule {
+                field: ScopeField::Author,
+                value: "J. R. R. Tolkien".into(),
+                effect: RuleEffect::Include,
+            }],
+        }),
+    )
+    .await
+    .expect("scope");
+
+    let (_, page) = get_json(&app, Some(&cookie), "/api/library/works").await;
+    assert_eq!(titles(&page), ["The Hobbit"], "list");
+    let (_, page) = get_json(&app, None, "/api/library/works").await;
+    assert_eq!(titles(&page).len(), 3, "the operator is never scoped");
+    let (status, body) = get_json(&app, Some(&cookie), &format!("/api/library/works/{dune}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "work page: {body}");
+    assert_eq!(body["error"], format!("work {dune} not found"));
+    let (status, _) = get_json(
+        &app,
+        Some(&cookie),
+        &format!("/api/library/editions/{dune_edition}/cover"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "cover");
+    let (status, body) = get_json(
+        &app,
+        Some(&cookie),
+        "/api/library/works/facets/author?limit=50",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let authors: Vec<&str> = body["values"]
+        .as_array()
+        .expect("values")
+        .iter()
+        .filter_map(|v| v["value"].as_str())
+        .collect();
+    assert_eq!(authors, ["J. R. R. Tolkien"], "facet values");
+
+    // Books on the member's own store account always pass.
+    library
+        .link_account(identity.id, "audible", "acct", "audible")
+        .await
+        .expect("link");
+    let (_, page) = get_json(&app, Some(&cookie), "/api/library/works").await;
+    assert_eq!(titles(&page).len(), 3, "own books");
+    let (status, _) = get_json(&app, Some(&cookie), &format!("/api/library/works/{dune}")).await;
+    assert_eq!(status, StatusCode::OK, "own book's page");
 }

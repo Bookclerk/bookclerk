@@ -249,10 +249,39 @@ pub struct WorkPageQuery {
     pub account: Option<String>,
     /// Only works that pass this filter.
     pub filter: Option<WorkFilter>,
+    /// Only works inside this patron scope; `None` for a caller who sees
+    /// the whole library.
+    pub scope: Option<WorkScope>,
     /// Continue after this cursor.
     pub after: Option<WorkCursor>,
     /// Most rows to return; at least 1.
     pub limit: u64,
+}
+
+/// The part of the library a patron may see, as the page index applies it.
+///
+/// A work passes when one of the patron's own store accounts holds it, or
+/// when it matches no exclude value and, if there are include values,
+/// matches at least one of them. Values are [`facet_key`]s of the page
+/// index's facets.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkScope {
+    /// `(facet, key)` pairs a work must match one of; empty lets every
+    /// work through.
+    pub include: Vec<(WorkFacet, String)>,
+    /// `(facet, key)` pairs that hide a work, whatever `include` says.
+    pub exclude: Vec<(WorkFacet, String)>,
+    /// The patron's own store accounts as `(plugin key, account id)`: what
+    /// they hold always passes.
+    pub own_accounts: Vec<(String, String)>,
+}
+
+impl WorkScope {
+    /// True when the scope hides nothing.
+    #[must_use]
+    pub fn sees_everything(&self) -> bool {
+        self.include.is_empty() && self.exclude.is_empty()
+    }
 }
 
 /// One row of the page index, as list views show it.
@@ -1145,6 +1174,35 @@ impl LibraryStore {
         Ok(ids.iter().filter_map(|id| found.remove(id)).collect())
     }
 
+    /// Whether a work is inside a patron scope: its top-level work (the
+    /// show, for an episode) is a held work of the page index that passes
+    /// `scope`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn work_in_scope(&self, work_id: &str, scope: &WorkScope) -> Result<bool> {
+        use library_work_rows::Column as C;
+        let top = works::Entity::find_by_id(work_id.to_string())
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .map_or_else(
+                || work_id.to_string(),
+                |work| work.parent_work_id.unwrap_or(work.id),
+            );
+        let query = WorkPageQuery {
+            scope: Some(scope.clone()),
+            ..WorkPageQuery::default()
+        };
+        Ok(filtered_rows(&query)
+            .filter(C::WorkId.eq(top))
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .is_some())
+    }
+
     /// One page of the values a facet has across the held works, by key.
     ///
     /// # Arguments
@@ -1153,6 +1211,8 @@ impl LibraryStore {
     /// * `after` - The `next` key of the previous page; `None` to start.
     /// * `limit` - Most values to return; at least 1, further capped at the
     ///   database's result-row limit.
+    /// * `scope` - Count only the works inside this patron scope; `None`
+    ///   for a caller who sees the whole library.
     ///
     /// # Errors
     ///
@@ -1162,6 +1222,7 @@ impl LibraryStore {
         of: FacetValuesOf,
         after: Option<&str>,
         limit: u64,
+        scope: Option<&WorkScope>,
     ) -> Result<FacetValuesPage> {
         /// One group of the read, decoded by column name.
         #[derive(Debug, sea_orm::FromQueryResult)]
@@ -1177,10 +1238,14 @@ impl LibraryStore {
         let limit = limit.max(1).min(cap);
         let probe = limit.saturating_add(1).min(cap);
         let held = || {
+            let mut held = Condition::all().add(library_work_rows::Column::HoldingCount.gt(0));
+            if let Some(scope) = scope {
+                held = held.add(scope_condition(scope));
+            }
             Query::select()
                 .column(library_work_rows::Column::WorkId)
                 .from(library_work_rows::Entity)
-                .and_where(library_work_rows::Column::HoldingCount.gt(0))
+                .cond_where(held)
                 .to_owned()
         };
         let mut groups = match of {
@@ -1192,6 +1257,9 @@ impl LibraryStore {
                     .column_as(F::Value.min(), "value")
                     .column_as(F::WorkId.count(), "works")
                     .filter(F::Facet.eq(facet.as_str()));
+                if scope.is_some_and(|scope| !scope.sees_everything()) {
+                    select = select.filter(F::WorkId.in_subquery(held()));
+                }
                 if let Some(after) = after {
                     select = select.filter(F::Key.gt(after));
                 }
@@ -1413,7 +1481,51 @@ fn filtered_rows(query: &WorkPageQuery) -> sea_orm::Select<library_work_rows::En
     if let Some(filter) = &query.filter {
         select = select.filter(filter_condition(filter));
     }
+    if let Some(scope) = &query.scope {
+        select = select.filter(scope_condition(scope));
+    }
     select
+}
+
+/// The condition a [`WorkScope`] puts on `library_work_rows`; empty (no
+/// restriction) when the scope hides nothing.
+fn scope_condition(scope: &WorkScope) -> Condition {
+    use library_work_rows::Column as C;
+    if scope.sees_everything() {
+        return Condition::all();
+    }
+    let mut permitted = Condition::all();
+    if !scope.include.is_empty() {
+        permitted = permitted.add(C::WorkId.in_subquery(facet_works_subquery(&scope.include)));
+    }
+    if !scope.exclude.is_empty() {
+        permitted = permitted.add(C::WorkId.not_in_subquery(facet_works_subquery(&scope.exclude)));
+    }
+    if scope.own_accounts.is_empty() {
+        permitted
+    } else {
+        Condition::any()
+            .add(permitted)
+            .add(C::WorkId.in_subquery(own_works_subquery(&scope.own_accounts)))
+    }
+}
+
+/// The works with any of these `(facet, key)` values.
+fn facet_works_subquery(values: &[(WorkFacet, String)]) -> sea_orm::sea_query::SelectStatement {
+    use library_work_facets::Column as F;
+    let mut any = Condition::any();
+    for (facet, key) in values {
+        any = any.add(
+            Condition::all()
+                .add(F::Facet.eq(facet.as_str()))
+                .add(F::Key.eq(key.as_str())),
+        );
+    }
+    Query::select()
+        .column(F::WorkId)
+        .from(library_work_facets::Entity)
+        .cond_where(any)
+        .to_owned()
 }
 
 /// The condition a [`WorkFilter`] puts on `library_work_rows`.
@@ -1476,6 +1588,36 @@ fn filter_condition(filter: &WorkFilter) -> Condition {
 /// held editions, and the shows of held episodes.
 fn account_works_subquery(account: &str) -> sea_orm::sea_query::SelectStatement {
     use sea_orm::sea_query::ExprTrait as _;
+    held_works_subquery(
+        Condition::all()
+            .add(Expr::col((holdings::Entity, holdings::Column::AccountId)).eq(Expr::val(account))),
+    )
+}
+
+/// The top-level works one of these store accounts holds a listing of.
+fn own_works_subquery(accounts: &[(String, String)]) -> sea_orm::sea_query::SelectStatement {
+    use sea_orm::sea_query::ExprTrait as _;
+    let mut any = Condition::any();
+    for (plugin_key, account_id) in accounts {
+        any = any.add(
+            Condition::all()
+                .add(
+                    Expr::col((holdings::Entity, holdings::Column::PluginKey))
+                        .eq(Expr::val(plugin_key.as_str())),
+                )
+                .add(
+                    Expr::col((holdings::Entity, holdings::Column::AccountId))
+                        .eq(Expr::val(account_id.as_str())),
+                ),
+        );
+    }
+    held_works_subquery(any)
+}
+
+/// The top-level works of the holdings that pass `holding`: the works of
+/// the held editions, and the shows of held episodes.
+fn held_works_subquery(holding: Condition) -> sea_orm::sea_query::SelectStatement {
+    use sea_orm::sea_query::ExprTrait as _;
     Query::select()
         .expr(Expr::cust(
             "CASE WHEN works.parent_work_id IS NULL THEN works.id ELSE works.parent_work_id END",
@@ -1501,9 +1643,7 @@ fn account_works_subquery(account: &str) -> sea_orm::sea_query::SelectStatement 
             Expr::col((works::Entity, works::Column::Id))
                 .equals((expressions::Entity, expressions::Column::WorkId)),
         )
-        .and_where(
-            Expr::col((holdings::Entity, holdings::Column::AccountId)).eq(Expr::val(account)),
-        )
+        .cond_where(holding)
         .to_owned()
 }
 

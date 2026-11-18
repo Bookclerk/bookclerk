@@ -2051,6 +2051,7 @@ pub struct BranchMembersBooks {
 fn admin_audit_actor(actor: &ConfigActor) -> String {
     match actor {
         ConfigActor::ClusterOwner(owner) => format!("user:{}", owner.user_id()),
+        ConfigActor::PatronAdministrator(admin) => format!("user:{}", admin.user_id()),
         ConfigActor::Operator { id } => id.clone(),
         ConfigActor::Administrator { id } | ConfigActor::Member { id } => format!("user:{id}"),
         ConfigActor::NodeOwner(_) | ConfigActor::Bootstrap | ConfigActor::Scheduler => {

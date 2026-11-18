@@ -277,6 +277,16 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     )",
     ),
+    // A Member's own patron scope (`crate::patron_scope`). No row means
+    // the Member follows the library's default scope document.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS patron_scopes (
+        user_id INTEGER PRIMARY KEY,
+        scope_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    )",
+    ),
     // Where a store account travelled with its person: `sent` to a branch
     // (`peer = node:<node_id>`) or `received` from a library this install
     // joined (`peer = link:<cluster_id>`). Read to disconnect an account
