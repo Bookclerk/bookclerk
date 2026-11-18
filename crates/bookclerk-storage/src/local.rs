@@ -478,8 +478,8 @@ impl StorageBackend for LocalFsBackend {
     ///   and then unlinked from the source; the move is atomic. Without
     ///   hard links it falls back as above.
     /// - On a network or FUSE file system: no hard links. `no_overwrite`
-    ///   checks the target just before the rename under
-    ///   [`Self::check_then_write`], and the move reports `atomic: false`.
+    ///   checks the target just before the rename under the backend's
+    ///   check-then-write lock, and the move reports `atomic: false`.
     ///
     /// A retried network rename that answers "not found" after it already
     /// happened counts as done.
