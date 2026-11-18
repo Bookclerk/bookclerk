@@ -5,8 +5,8 @@
 
 use bookclerk_node_proto::{
     window_page_problem, Availability, CatalogMetadata, LookupEdition, LookupFormat,
-    LookupIdentifier, LookupScheme, WindowCursor, WindowEdition, WindowWork, MAX_FRAME_BYTES,
-    MAX_LOOKUP_EDITIONS, MAX_WINDOW_WORKS,
+    LookupIdentifier, LookupScheme, WindowCopy, WindowCursor, WindowEdition, WindowWork,
+    MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS, MAX_WINDOW_WORKS,
 };
 use sea_orm::{ActiveModelTrait, ActiveValue::Set};
 
@@ -461,6 +461,7 @@ fn yours(edition: LookupEdition) -> WindowEdition {
     WindowEdition {
         edition,
         yours: true,
+        copy: None,
     }
 }
 
@@ -653,6 +654,213 @@ async fn one_edition_on_two_pages_of_a_read_keeps_every_format() {
     );
 }
 
+/// The page states the copy the library holds of an edition: the probe of
+/// its acquired primary audio file, the media type its name implies when
+/// it was never probed, and nothing for an edition that is not acquired or
+/// whose file has no row. The version changes when the file is rewritten.
+#[tokio::test]
+async fn a_page_states_the_copy_the_library_holds() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    let asins: Vec<String> = [
+        "B0PROBED01",
+        "B0UNPROBED",
+        "B0UNKNOWN1",
+        "B0NOROW001",
+        "B0NOTYET01",
+    ]
+    .map(String::from)
+    .to_vec();
+    hold(&store, riley, "riley-acct", &asins).await;
+    let acquire = |asin: &'static str, key: &'static str, recorded: bool| {
+        let store = store.clone();
+        async move {
+            store
+                .set_acquire_status(asin, "riley-acct", AcquireStatus::Acquired, Some(key), None)
+                .await
+                .unwrap();
+            let book = store.get_book(asin, "riley-acct").await.unwrap().unwrap();
+            let owner = store.file_owner_of_book(&book.uuid).await.unwrap().unwrap();
+            if recorded {
+                assert!(store
+                    .record_edition_file("local", key, &owner, FileRole::Audio)
+                    .await
+                    .unwrap());
+            }
+            owner
+        }
+    };
+    let probed = acquire("B0PROBED01", "A/Probed/Probed.m4b", true).await;
+    assert!(store
+        .set_edition_file_probe(
+            "local",
+            "A/Probed/Probed.m4b",
+            &probed,
+            &crate::FileProbe {
+                content_type: "audio/flac".into(),
+                bitrate_kbps: Some(900),
+                lossless: true,
+                source_store: Some("libro".into()),
+            },
+        )
+        .await
+        .unwrap());
+    // The same file on a second destination, never probed: the probed row
+    // is the one described.
+    assert!(store
+        .record_edition_file("a-first", "A/Probed/Probed.m4b", &probed, FileRole::Audio)
+        .await
+        .unwrap());
+    acquire("B0UNPROBED", "A/Unprobed/Unprobed.mp3", true).await;
+    acquire("B0UNKNOWN1", "A/Unknown/Unknown.ogg", true).await;
+    acquire("B0NOROW001", "A/NoRow/NoRow.m4b", false).await;
+
+    let copies = |works: Vec<WindowWork>| -> BTreeMap<String, Option<WindowCopy>> {
+        works
+            .into_iter()
+            .flat_map(|work| work.editions)
+            .map(|held| (held.edition.product_id, held.copy))
+            .collect()
+    };
+    let (works, next) = person_books_page(&store, riley, &WindowCursor::start())
+        .await
+        .unwrap();
+    assert_eq!(next, None);
+    assert_eq!(
+        window_page_problem(&WindowCursor::start(), &works, None),
+        None
+    );
+    let first = copies(works);
+    let version = |asin: &str| first[asin].as_ref().map(|copy| copy.version.clone());
+    assert_eq!(
+        first["B0PROBED01"],
+        Some(WindowCopy {
+            source_store: Some("libro".into()),
+            content_type: "audio/flac".into(),
+            bitrate_kbps: Some(900),
+            lossless: true,
+            version: version("B0PROBED01").unwrap(),
+        })
+    );
+    assert_eq!(
+        first["B0UNPROBED"],
+        Some(WindowCopy {
+            source_store: None,
+            content_type: "audio/mpeg".into(),
+            bitrate_kbps: None,
+            lossless: false,
+            version: version("B0UNPROBED").unwrap(),
+        })
+    );
+    assert_ne!(version("B0PROBED01"), version("B0UNPROBED"));
+    for none in ["B0UNKNOWN1", "B0NOROW001", "B0NOTYET01"] {
+        assert_eq!(first[none], None, "{none}");
+    }
+
+    // Read again: the same file is the same version. Written again by an
+    // upload (a new writer and digest, the probe not yet taken): a new one.
+    let (works, _) = person_books_page(&store, riley, &WindowCursor::start())
+        .await
+        .unwrap();
+    assert_eq!(copies(works), first);
+    {
+        use crate::entities::edition_files;
+        use sea_orm::sea_query::Expr;
+        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+        let none: Option<String> = None;
+        edition_files::Entity::update_many()
+            .col_expr(edition_files::Column::Writer, Expr::value("upload-2"))
+            .col_expr(edition_files::Column::Sha256, Expr::value("ab12"))
+            .col_expr(edition_files::Column::ProbedAt, Expr::value(none.clone()))
+            .col_expr(
+                edition_files::Column::ContentType,
+                Expr::value(none.clone()),
+            )
+            .col_expr(
+                edition_files::Column::BitrateKbps,
+                Expr::value(Option::<i32>::None),
+            )
+            .col_expr(edition_files::Column::SourceStore, Expr::value(none))
+            .col_expr(edition_files::Column::Lossless, Expr::value(0))
+            .filter(edition_files::Column::StorageKey.eq("A/Probed/Probed.m4b"))
+            .exec(store.db())
+            .await
+            .unwrap();
+    }
+    let (works, _) = person_books_page(&store, riley, &WindowCursor::start())
+        .await
+        .unwrap();
+    let after = copies(works);
+    let replaced = after["B0PROBED01"].clone().expect("still held");
+    assert_ne!(Some(replaced.version.clone()), version("B0PROBED01"));
+    assert_eq!(
+        (
+            replaced.content_type.as_str(),
+            replaced.bitrate_kbps,
+            replaced.lossless
+        ),
+        ("audio/mp4", None, false),
+        "the new file was not probed yet"
+    );
+}
+
+/// The window keeps the copy a library states for an edition: a later
+/// page of the same read that states none does not drop it, and the next
+/// read's word replaces it.
+#[tokio::test]
+async fn the_window_keeps_the_copy_a_library_states() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    link(&store, "alpha", false).await;
+    let copy = WindowCopy {
+        source_store: Some("audible".into()),
+        content_type: "audio/mp4".into(),
+        bitrate_kbps: Some(125),
+        lossless: false,
+        version: "v1".into(),
+    };
+    let held = |copy: Option<WindowCopy>| {
+        vec![WindowWork {
+            work: "w-1".into(),
+            identifiers: vec![asin("B0COPY0001")],
+            editions: vec![WindowEdition {
+                copy,
+                ..yours(edition("B0COPY0001", "Copied"))
+            }],
+        }]
+    };
+    let stated = |view: Vec<WindowEntry>| -> Vec<Option<WindowCopy>> {
+        view.into_iter()
+            .flat_map(|entry| entry.editions)
+            .map(|held| held.copy)
+            .collect()
+    };
+    let read = window_read_stamp();
+    record_window_page(&store, "alpha", &read, &held(Some(copy.clone())))
+        .await
+        .unwrap();
+    record_window_page(&store, "alpha", &read, &held(None))
+        .await
+        .unwrap();
+    finish_window_read(&store, "alpha", &read).await.unwrap();
+    assert_eq!(stated(window_view(&store).await.unwrap()), vec![Some(copy)]);
+
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let next = window_read_stamp();
+    record_window_page(&store, "alpha", &next, &held(None))
+        .await
+        .unwrap();
+    finish_window_read(&store, "alpha", &next).await.unwrap();
+    assert_eq!(stated(window_view(&store).await.unwrap()), vec![None]);
+}
+
 /// A work's overflow groups (`<work>-x<n>`) are stored under the work's own
 /// grouping key, so the window shows one entry even with no identifier to
 /// join them.
@@ -673,6 +881,7 @@ async fn whether_a_book_is_yours_is_kept_per_read() {
             editions: vec![WindowEdition {
                 edition: edition(asin_value, asin_value),
                 yours: mine,
+                copy: None,
             }],
         }]
     };
@@ -933,6 +1142,7 @@ fn json_is_cut_on_character_boundaries_and_joined_in_order() {
         identifiers: vec![],
         edition: edition("B0X", "Title"),
         yours: false,
+        copy: None,
     })
     .unwrap();
     let (a, b) = stored.split_at(10);

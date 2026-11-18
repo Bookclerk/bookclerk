@@ -44,7 +44,10 @@
 //!   finds nothing for the cursor it asked with) carries at most 100 works,
 //!   each once, with plain grouping keys, plain identifiers (a marketplace
 //!   exactly on an ASIN), 1 to 8 distinct owned editions with a non-blank
-//!   title, and a plain next cursor (1 to 64 letters, digits or `-`)
+//!   title and, where the library states the copy it holds, a copy with a
+//!   lowercase `type/subtype` content type of at most 64 bytes, a bitrate
+//!   of 1 to 20000 kbit/s when stated, a short lowercase source store when
+//!   stated and a plain version of at most 64 bytes, and a plain next cursor (1 to 64 letters, digits or `-`)
 //!   sorting byte-wise past the one asked with, so a window's paging
 //!   always moves forward. Checked byte by byte here, since the window
 //!   stores them.
@@ -411,6 +414,43 @@ fn check_window(body: &Body) {
                 work.editions.len()
             );
             let mut keys = BTreeSet::new();
+            for copy in work.editions.iter().filter_map(|e| e.copy.as_ref()) {
+                let token = |text: &str, extra: &[u8]| {
+                    !text.is_empty()
+                        && text.chars().all(|c| {
+                            c.is_ascii_lowercase()
+                                || c.is_ascii_digit()
+                                || u8::try_from(c).is_ok_and(|b| extra.contains(&b))
+                        })
+                };
+                let mut parts = copy.content_type.split('/');
+                assert!(
+                    copy.content_type.len() <= 64
+                        && parts.next().is_some_and(|kind| token(kind, b"+-."))
+                        && parts.next().is_some_and(|sub| token(sub, b"+-."))
+                        && parts.next().is_none(),
+                    "copy content type {:?} accepted",
+                    copy.content_type
+                );
+                assert!(
+                    copy.bitrate_kbps
+                        .is_none_or(|kbps| (1..=20_000).contains(&kbps)),
+                    "copy bitrate {:?} accepted",
+                    copy.bitrate_kbps
+                );
+                assert!(
+                    copy.source_store
+                        .as_deref()
+                        .is_none_or(|store| store.len() <= 64 && token(store, b"_-.")),
+                    "copy source store {:?} accepted",
+                    copy.source_store
+                );
+                assert!(
+                    plain(&copy.version, 64),
+                    "copy version {:?} accepted",
+                    copy.version
+                );
+            }
             for edition in work.editions.iter().map(|e| &e.edition) {
                 assert_eq!(
                     edition.availability,

@@ -178,7 +178,10 @@ pub use signature::{
     verify_auth, ArtifactRequest, AuthContext, AuthError, ARTIFACT_AUTH_SCHEME, ARTIFACT_DOMAIN,
     ARTIFACT_REQUEST_MAX_SKEW_SECS, AUTH_DOMAIN, NONCE_LEN,
 };
-pub use window::{window_page_problem, WindowCursor, WindowEdition, WindowWork, MAX_WINDOW_WORKS};
+pub use window::{
+    window_page_problem, WindowCopy, WindowCursor, WindowEdition, WindowWork,
+    MAX_COPY_CONTENT_TYPE_BYTES, MAX_COPY_VERSION_BYTES, MAX_WINDOW_WORKS,
+};
 
 /// Path prefix of the owner's artifact endpoint: `GET
 /// /api/node/v1/artifacts/<archive_sha256>` with a signed `Authorization`

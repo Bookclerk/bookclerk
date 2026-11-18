@@ -449,9 +449,9 @@ languages are the normalized languages of the taste books (the subject's own,
 with the household's blended in while those are few), or the default
 preferred language (`en`) when no taste book has one. A candidate whose store
 gave no language, or one `normalize_language` does not recognize, stays, as
-in catalog search. Editions in two different known languages are never merged
-into one candidate by a title-and-author match, so dropping one language never
-drops the other edition with it.
+in catalog search. Editions in two different languages are different
+expressions, so they are never merged into one candidate, and dropping one
+language never drops the other edition with it.
 
 Whether a wished title is already owned is decided by the library's
 resolver (`LibraryStore::owned_work_for`), the same way a scanned listing
@@ -691,16 +691,54 @@ Kind matching: `author` hides every `author:…` row; `from_store` hides all
 
 ## Store links and pricing
 
-Recommendations are consolidated by bibliographic identity (canonical ISBN when
-present, ASIN, soft title+author) so the same book from multiple storefronts
-appears as **one card** with `store_editions` for each catalog match.
+Discover shows **one card per work**, and every card shows one recording
+of it. Which cards belong together comes from the library's data model, never
+from comparing titles and authors:
+
+- Candidates read from the shared listing pool carry the work and the
+  expression (`expressions.id`: one recording or text) their listing resolved
+  into; a live store hit carries the work the library's resolver places it in
+  (`LibraryStore::work_for`), when there is one. Each wish carries its work,
+  and the queue entry carries the edition the newest wish names and that
+  edition's expression.
+- Listings of **one recording** (the same expression, or a shared ISBN or ASIN)
+  are one card, with `store_editions` and a price for each store that sells it.
+- Listings of **one work in different recordings** (a narration and a full-cast
+  dramatisation, or two narrators) are one card too, but it keeps the owning
+  recording's cover, text and prices; the other recording adds only its taste
+  signals (score, reasons, shelf tags). A wish always owns its work's card and
+  keeps the edition it names, so **On the wishlist** shows the wished edition.
+  Between store cards, the higher-scoring one owns the card.
+- Cards with no work and no shared identifier stay apart, even with the same
+  title.
 
 Live prices use **public** storefront endpoints (no auth). The Discover feed
 loads with `no_purchase_hints=true`; the GUI:
 
-1. Progressively reveals shelves/cards while scrolling
-2. **Viewport-gates** pricing (`IntersectionObserver`)
-3. **Batches** visible cards into `POST /api/discover/purchase-hints/batch`
+1. Progressively reveals shelves and cards while scrolling. A shelf adds
+   eight cards at a time and keeps at least a screen's width of cards past
+   the visible ones, adding the next eight once less than that is left.
+2. Prices **a shelf at a time**: once a shelf is within half a screen of
+   the viewport, every card it has added looks up its prices and details
+   together, and each new group of eight does the same as it is added.
+3. **Batches** those lookups into `POST /api/discover/purchase-hints/batch`
+   and `POST /api/discover/title-meta/batch` (24 titles at most per
+   request). Lookups asked within 60 ms share a batch, only one batch of
+   each kind is in flight at a time (lookups asked meanwhile go out
+   together in the next one), and a title already waiting is not asked
+   twice.
+4. Lets **covers go first**: each batch waits until the covers on screen
+   have loaded, for at most 2 seconds, so on a small machine covers never
+   queue behind store lookups. Only covers that are loading and on screen
+   count; one off screen or clipped by a shelf does not.
+5. Keeps each finished answer **per title** for the tab (prices 10
+   minutes, details 6 hours) in memory and `sessionStorage`, and puts only
+   the titles it lacks into a batch, so a reload or a return to Discover
+   asks nothing it already has. The batch routes are `POST`s and API JSON
+   is `no-store`, so the browser's HTTP cache never holds them. Signing out
+   clears this cache, since prices depend on the viewer's linked stores,
+   and an answer to a lookup still running then is neither kept nor shared
+   with the next viewer.
 
 The daemon still searches **all** stores, then highlights `best` using the
 caller’s associated accounts (portal account links, or all operator accounts)
@@ -713,7 +751,8 @@ sends every visible card's query to each deployed store's `purchaseHints`
 entrypoint together, with the product id the card already knows for that
 store, so Audible prices up to fifty titles in one catalog request and
 Chirp prices a page in one aliased GraphQL query; Libro.fm and GraphicAudio
-have no bulk endpoint and loop inside the guest. Audible and Chirp resolve
+have no bulk endpoint, so the SDK's default `purchaseHints` looks their
+titles up four at a time inside the guest. Audible and Chirp resolve
 the titles whose product id they already know first, then look the rest up
 by title for at most five seconds, so a slow search never costs a known
 title its price; Audible prices each query in its own marketplace. The batch answers within

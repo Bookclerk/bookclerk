@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { coverSrc, type CoverSize } from "@/lib/api";
 import { coverRetryDelay } from "@/lib/coverRetry";
+import { trackCoverLoad } from "@/lib/coverLoads";
 import { cn } from "@/lib/utils";
 
 const FALLBACK_COVER = "/bookclerk-mark.svg";
@@ -141,12 +142,17 @@ function CoverLayer({
 }) {
   const ref = useRef<HTMLImageElement>(null);
   const [shown, setShown] = useState(false);
+  // Ends this image's entry in the on-screen loading count (coverLoads.ts).
+  const settle = useRef<() => void>(() => {});
   useEffect(() => {
     const img = ref.current;
     // A remount (StrictMode runs effects twice) restores what the cleanup
     // below removed; React won't, since the `src` prop didn't change.
     if (img && img.getAttribute("src") !== src) img.setAttribute("src", src);
+    // While it loads on screen, Discover's lookups wait for it.
+    if (img && !img.complete) settle.current = trackCoverLoad(img);
     return () => {
+      settle.current();
       // Dropping `src` aborts a request the browser has not finished.
       if (img && !img.complete) img.removeAttribute("src");
     };
@@ -163,10 +169,14 @@ function CoverLayer({
         shown ? "opacity-100" : "opacity-0",
       )}
       onLoad={() => {
+        settle.current();
         setShown(true);
         onLoad();
       }}
-      onError={onError}
+      onError={() => {
+        settle.current();
+        onError();
+      }}
     />
   );
 }

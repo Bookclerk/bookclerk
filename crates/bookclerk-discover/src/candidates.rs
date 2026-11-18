@@ -12,8 +12,7 @@ use bookclerk_source::{CatalogHit, ExpandSeed, SourceRegistry};
 
 use crate::error::Result;
 use crate::identity::{
-    candidate_map_key, hard_work_key, identities_match, merge_candidate_metadata, push_edition,
-    StoreEdition, WorkIdentity,
+    candidate_map_key, hard_work_key, merge_candidate_metadata, push_edition, StoreEdition,
 };
 
 /// A purchase candidate discovered from a storefront catalog (not owned locally).
@@ -106,6 +105,11 @@ pub struct StorefrontCandidate {
     /// library holds by work identity without resolving the title again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_id: Option<String>,
+    /// The expression (`expressions.id`) the pool resolved this listing
+    /// into: two candidates with the same expression are the same recording
+    /// sold by different stores, so one card carries both prices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression_id: Option<String>,
 }
 
 /// Options for storefront candidate expansion.
@@ -327,6 +331,7 @@ pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCa
         is_abridged: hit.is_abridged,
         store_rank: None,
         work_id: None,
+        expression_id: None,
     }
 }
 
@@ -513,7 +518,11 @@ pub(crate) fn insert_candidate(
         StoreEdition::new(&c.source, &c.product_id),
     );
 
-    // Prefer merging into an existing hard- or soft-matched work.
+    // Merge only listings of one recording: the expression the shared
+    // listing pool resolved both into, or a shared ISBN or ASIN. Titles and
+    // authors are never compared here: listings of one work in different
+    // recordings stay apart, and the ranking makes them one card per work
+    // (see `rank_candidates`) without mixing their covers and prices.
     let match_key = map.iter().find_map(|(key, existing)| {
         if let Some(hard) = hard_work_key(c.asin.as_deref(), c.isbn.as_deref()) {
             if key == &hard
@@ -523,33 +532,13 @@ pub(crate) fn insert_candidate(
                 return Some(key.clone());
             }
         }
-        // Editions in two different known languages are different
-        // expressions even when their titles and authors match, and the
-        // language filter must be able to keep one and drop the other.
-        if languages_differ(c.language.as_deref(), existing.language.as_deref()) {
-            return None;
-        }
-        if identities_match(
-            WorkIdentity::new(
-                c.asin.as_deref(),
-                c.isbn.as_deref(),
-                &c.title,
-                c.authors.as_deref(),
-            )
-            .with_series(c.series.as_deref())
-            .with_series_index(c.series_index.as_deref()),
-            WorkIdentity::new(
-                existing.asin.as_deref(),
-                existing.isbn.as_deref(),
-                &existing.title,
-                existing.authors.as_deref(),
-            )
-            .with_series(existing.series.as_deref())
-            .with_series_index(existing.series_index.as_deref()),
-        ) {
-            return Some(key.clone());
-        }
-        None
+        let same_listing = c.source.eq_ignore_ascii_case(&existing.source)
+            && c.product_id.eq_ignore_ascii_case(&existing.product_id);
+        let same_expression = matches!(
+            (c.expression_id.as_deref(), existing.expression_id.as_deref()),
+            (Some(a), Some(b)) if !a.trim().is_empty() && a == b
+        );
+        (same_listing || same_expression).then(|| key.clone())
     });
 
     if let Some(old_key) = match_key {
@@ -568,13 +557,14 @@ pub(crate) fn insert_candidate(
     insert_keyed(map, c);
 }
 
-/// Inserts `c` under its map key, kept apart from a different-language
-/// edition already stored under the same key.
+/// Inserts `c` under its map key, kept apart from another candidate
+/// already stored under the same key.
 ///
-/// A soft key names only the title and authors, so an edition kept apart
-/// for its language would otherwise replace the other one. Both a new
-/// candidate and a merged one are reinserted through here, so a later hit
-/// for the qualified edition never falls back to the bare key.
+/// A key without an ISBN or ASIN names only the title and authors, and two
+/// listings with the same title are not merged on it (they may be different
+/// recordings, or different languages), so the later one is qualified with
+/// its store and product instead of replacing the first. Both a new
+/// candidate and a merged one are reinserted through here.
 ///
 /// # Arguments
 ///
@@ -582,41 +572,10 @@ pub(crate) fn insert_candidate(
 /// * `c` - The candidate to store.
 fn insert_keyed(map: &mut HashMap<String, StorefrontCandidate>, c: StorefrontCandidate) {
     let mut key = candidate_map_key(&c);
-    if map
-        .get(&key)
-        .is_some_and(|other| languages_differ(c.language.as_deref(), other.language.as_deref()))
-    {
-        if let Some(language) = c
-            .language
-            .as_deref()
-            .and_then(bookclerk_source::normalize_language)
-        {
-            key = format!("{key}|lang:{language}");
-        }
+    if map.contains_key(&key) {
+        key = format!("{key}|{}:{}", c.source, c.product_id);
     }
     map.insert(key, c);
-}
-
-/// Whether two candidates' languages are both known and name different
-/// languages.
-///
-/// # Arguments
-///
-/// * `a`, `b` - The candidates' raw language values; an absent value or
-///   one [`bookclerk_source::normalize_language`] does not recognize counts
-///   as unknown.
-///
-/// # Returns
-///
-/// `true` only when both normalize and the results differ.
-fn languages_differ(a: Option<&str>, b: Option<&str>) -> bool {
-    match (
-        a.and_then(bookclerk_source::normalize_language),
-        b.and_then(bookclerk_source::normalize_language),
-    ) {
-        (Some(a), Some(b)) => a != b,
-        _ => false,
-    }
 }
 
 /// Pick local seed books for storefront expansion (finished / high-rated first).
@@ -718,7 +677,9 @@ mod tests {
     }
 
     #[test]
-    fn insert_candidate_consolidates_isbn_and_soft_match() {
+    fn insert_candidate_consolidates_one_recording_across_stores() {
+        // The pool resolved all three listings into one expression (one
+        // recording), though only two share no identifier at all.
         let mut map = HashMap::new();
         let owned_asins = HashSet::new();
         let owned_isbns = HashSet::new();
@@ -757,6 +718,7 @@ mod tests {
                 is_abridged: None,
                 store_rank: None,
                 work_id: None,
+                expression_id: Some("x-hail".into()),
             },
             &owned_asins,
             &owned_isbns,
@@ -795,6 +757,7 @@ mod tests {
                 is_abridged: None,
                 store_rank: None,
                 work_id: None,
+                expression_id: Some("x-hail".into()),
             },
             &owned_asins,
             &owned_isbns,
@@ -833,6 +796,7 @@ mod tests {
                 is_abridged: None,
                 store_rank: None,
                 work_id: None,
+                expression_id: Some("x-hail".into()),
             },
             &owned_asins,
             &owned_isbns,
@@ -849,6 +813,63 @@ mod tests {
         assert_eq!(c.asin.as_deref(), Some("B00HAIL"));
         assert_eq!(c.isbn.as_deref(), Some("9781234567890"));
         assert_eq!(c.store_editions.len(), 3);
+    }
+
+    /// Two listings with the same title and author but no shared
+    /// identifier or expression (a narration and a full-cast
+    /// dramatisation) stay two candidates.
+    #[test]
+    fn same_title_without_shared_identity_stays_apart() {
+        let listing = |source: &str, product_id: &str, narrators: &str| StorefrontCandidate {
+            source: source.into(),
+            product_id: product_id.into(),
+            title: "The Sunlit Man".into(),
+            authors: Some("Brandon Sanderson".into()),
+            narrators: Some(narrators.into()),
+            series: None,
+            series_index: None,
+            asin: None,
+            isbn: None,
+            cover_url: None,
+            seed_categories: None,
+            origin: "search".into(),
+            seed_title: None,
+            starter_genre: None,
+            store_editions: Vec::new(),
+            subtitle: None,
+            description: None,
+            publisher: None,
+            length_minutes: None,
+            published_at: None,
+            categories: None,
+            language: None,
+            price_cents: None,
+            currency: None,
+            price_label: None,
+            rating_overall: None,
+            rating_count: None,
+            is_abridged: None,
+            store_rank: None,
+            work_id: Some("w-sunlit".into()),
+            expression_id: Some(format!("x-{product_id}")),
+        };
+        let none = HashSet::new();
+        let mut map = HashMap::new();
+        insert_candidate(
+            &mut map,
+            listing("chirp", "ga-1", "Full cast"),
+            &none,
+            &none,
+            &none,
+        );
+        insert_candidate(
+            &mut map,
+            listing("libro", "li-1", "William DeMeritt"),
+            &none,
+            &none,
+            &none,
+        );
+        assert_eq!(map.len(), 2, "{:?}", map.keys());
     }
 
     #[test]
@@ -884,6 +905,9 @@ mod tests {
             is_abridged: None,
             store_rank: None,
             work_id: None,
+            expression_id: language
+                .filter(|l| *l == "Spanish")
+                .map(|_| String::from("x-es")),
         };
         let none = HashSet::new();
         let mut map = HashMap::new();
@@ -895,10 +919,11 @@ mod tests {
         ] {
             insert_candidate(&mut map, c, &none, &none, &none);
         }
-        // The Spanish and English editions stay apart, a second Spanish hit
-        // merges into the Spanish one without displacing the English one,
-        // and the one with no language still merges into a match.
-        assert_eq!(map.len(), 2, "{:?}", map.keys());
+        // Same title and author, but only the two Spanish listings share an
+        // expression: they merge, and the English one and the one with no
+        // language stay their own candidates rather than replacing each
+        // other under the shared title key.
+        assert_eq!(map.len(), 3, "{:?}", map.keys());
         let languages: HashSet<Option<String>> = map.values().map(|c| c.language.clone()).collect();
         assert!(languages.contains(&Some("English".into())));
         assert!(languages.contains(&Some("Spanish".into())));

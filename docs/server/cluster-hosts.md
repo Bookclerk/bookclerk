@@ -1039,11 +1039,14 @@ With the setting off for library A, B:
   accounts, as A's own Library page lists them for a member, at most 100
   works per page, grouped by A's works with each work's identifiers. Each
   edition is marked `yours` when a store account linked to B's owner
-  holds it. Each page ends with an opaque cursor string, which B sends
+  holds it, and carries `copy` when A already holds its audio: the
+  file's media type, its bitrate and the store it came from when A has
+  probed it, whether it is lossless, and a version that changes when A's
+  file does. Each page ends with an opaque cursor string, which B sends
   back to get the next page. A answers only a branch it trusts, and the
   frame names no user, so the mark is always for B's own person.
 - **Keeps one copy of the list per library.** B stores each page as it
-  arrives. Once the last page is in, it drops the books A no longer
+  arrives, with the copy A stated for each edition. Once the last page is in, it drops the books A no longer
   named. A read cut short keeps the list from the last complete read.
   Turning the setting back on clears that library's list.
 

@@ -21,6 +21,7 @@ Outside the isolate (authoring / unit tests), lightweight stubs stand in for
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import inspect
 import json
@@ -1833,6 +1834,12 @@ before answering with what it has. Well under the host's 10 s batch
 deadline, so even a slow last lookup lands before it and a store without a
 bulk endpoint still returns the titles it priced."""
 
+PURCHASE_HINTS_CONCURRENCY = 4
+"""How many one-title lookups the default ``purchaseHints`` keeps in flight
+at once. A store without a bulk endpoint answers a page of cards in about a
+quarter of the time one lookup after another takes, while staying a polite
+handful of requests rather than a burst."""
+
 STOREFRONT_METHODS: tuple[str, ...] = (
     "login",
     "scan",
@@ -1903,8 +1910,9 @@ class StorefrontEntrypoint(NamedEntrypoint):
     async def purchaseHints(self, params: abi.PurchaseHintsParams):
         """Purchase links / price hints for several titles at once.
 
-        Asks :meth:`purchaseHint` for each query, those that already name a
-        product id first (one lookup each) and title searches after, and
+        Asks :meth:`purchaseHint` for each query,
+        :data:`PURCHASE_HINTS_CONCURRENCY` at a time, those that already name
+        a product id first (one lookup each) and title searches after, and
         starts nothing once :data:`PURCHASE_HINTS_BUDGET_SECONDS` has passed,
         so the host's batch gets what the store managed instead of nothing.
         A store whose catalog prices many products per request overrides
@@ -1925,10 +1933,25 @@ class StorefrontEntrypoint(NamedEntrypoint):
             range(len(queries)),
             key=lambda i: not (queries[i].get("productId") or "").strip(),
         )
-        for i in order:
-            if time.monotonic() - started >= PURCHASE_HINTS_BUDGET_SECONDS:
-                break
-            out[i] = await self.purchaseHint(queries[i])
+        pending = iter(order)
+
+        async def lane() -> None:
+            # Each lane takes the next query in order until the budget runs out.
+            for i in pending:
+                if time.monotonic() - started >= PURCHASE_HINTS_BUDGET_SECONDS:
+                    return
+                out[i] = await self.purchaseHint(queries[i])
+
+        lanes = [
+            asyncio.ensure_future(lane())
+            for _ in range(min(PURCHASE_HINTS_CONCURRENCY, len(order)))
+        ]
+        try:
+            # The first failure (a rate limit included) fails the batch.
+            await asyncio.gather(*lanes)
+        finally:
+            for task in lanes:
+                task.cancel()
         return out
 
     async def listDeals(self, _params: abi.ListDealsParams):

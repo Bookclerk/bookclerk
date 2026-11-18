@@ -29,6 +29,103 @@ use crate::{PluginError, Result};
 /// and a store without a bulk endpoint still returns the titles it priced.
 pub const PURCHASE_HINTS_BUDGET: std::time::Duration = std::time::Duration::from_secs(4);
 
+/// How many one-title lookups the default [`ContentSource::purchase_hints`]
+/// keeps in flight at once. A store without a bulk endpoint answers a page
+/// of cards in about a quarter of the time one lookup after another takes,
+/// while staying a polite handful of requests rather than a burst.
+pub const PURCHASE_HINTS_CONCURRENCY: usize = 4;
+
+/// The default [`ContentSource::purchase_hints`]: asks
+/// [`ContentSource::purchase_hint`] for each query,
+/// [`PURCHASE_HINTS_CONCURRENCY`] at a time, those naming a product id
+/// first, and starts no lookup once `budget` has passed (those answer
+/// `None`).
+///
+/// # Errors
+///
+/// The first lookup error, which fails the whole batch.
+async fn purchase_hints_one_by_one<S: ContentSource + ?Sized>(
+    source: &S,
+    params: PurchaseHintsParams,
+    budget: std::time::Duration,
+) -> Result<Vec<Option<PurchaseHint>>> {
+    use futures::stream::{StreamExt, TryStreamExt};
+
+    let started = std::time::Instant::now();
+    let mut out: Vec<Option<PurchaseHint>> = vec![None; params.queries.len()];
+    // Queries that already name a product id are one lookup each; title
+    // searches come after, and nothing starts past the budget.
+    let mut order: Vec<usize> = (0..params.queries.len()).collect();
+    order.sort_by_key(|&i| {
+        params.queries[i]
+            .product_id
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+    });
+    let queries = &params.queries;
+    let answers: Vec<(usize, Option<PurchaseHint>)> = futures::stream::iter(order)
+        .map(|i| async move {
+            // Checked as each lookup is about to start, not when it was
+            // queued, so a slow store stops taking on new titles.
+            if started.elapsed() >= budget {
+                return Ok((i, None));
+            }
+            Ok::<_, PluginError>((i, source.purchase_hint(queries[i].clone()).await?))
+        })
+        .buffer_unordered(PURCHASE_HINTS_CONCURRENCY)
+        .try_collect()
+        .await?;
+    for (i, hint) in answers {
+        out[i] = hint;
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod purchase_hints_tests {
+    use super::*;
+
+    /// Answers every lookup from its product id.
+    struct EchoStore;
+
+    #[async_trait::async_trait(?Send)]
+    impl ContentSource for EchoStore {
+        async fn purchase_hint(&self, params: PurchaseHintParams) -> Result<Option<PurchaseHint>> {
+            Ok(params.product_id.map(|product_id| PurchaseHint {
+                product_id,
+                ..PurchaseHint::default()
+            }))
+        }
+    }
+
+    /// Within the budget each query is looked up; past it no lookup starts
+    /// and every query answers `None`.
+    ///
+    /// # Panics
+    ///
+    /// When a batch fails or a lookup ran on the wrong side of the budget.
+    #[tokio::test(flavor = "current_thread")]
+    async fn nothing_starts_past_the_budget() {
+        let params = PurchaseHintsParams {
+            queries: vec![PurchaseHintParams {
+                product_id: Some("p".into()),
+                ..PurchaseHintParams::default()
+            }],
+        };
+        let within =
+            purchase_hints_one_by_one(&EchoStore, params.clone(), std::time::Duration::MAX)
+                .await
+                .expect("a batch");
+        assert_eq!(within[0].as_ref().map(|h| h.product_id.as_str()), Some("p"));
+        let past = purchase_hints_one_by_one(&EchoStore, params, std::time::Duration::ZERO)
+            .await
+            .expect("a batch");
+        assert_eq!(past.len(), 1);
+        assert!(past[0].is_none());
+    }
+}
+
 /// Inclusive byte range for a streamed read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ByteRange {
@@ -388,37 +485,20 @@ pub trait ContentSource {
     /// Purchase links / price hints for several titles in one call, one
     /// answer per query in order.
     ///
-    /// The default asks [`Self::purchase_hint`] for each query in turn,
-    /// queries that already name a product id first (one lookup each) and
-    /// title searches after, and stops at the first error. It stops
-    /// starting lookups once [`PURCHASE_HINTS_BUDGET`] has passed and
-    /// answers `None` for the rest, so the host's batch gets what the store
-    /// managed instead of nothing. A guest whose backend prices many
-    /// products per request overrides this to make one request. A
-    /// `rate_limited` error applies to the whole batch.
+    /// The default asks [`Self::purchase_hint`] for each query,
+    /// [`PURCHASE_HINTS_CONCURRENCY`] at a time, queries that already name
+    /// a product id first (one lookup each) and title searches after, and
+    /// stops at the first error. It starts no lookup once
+    /// [`PURCHASE_HINTS_BUDGET`] has passed and answers `None` for the rest,
+    /// so the host's batch gets what the store managed instead of nothing.
+    /// A guest whose backend prices many products per request overrides
+    /// this to make one request. A `rate_limited` error applies to the
+    /// whole batch.
     async fn purchase_hints(
         &self,
         params: PurchaseHintsParams,
     ) -> Result<Vec<Option<PurchaseHint>>> {
-        let started = std::time::Instant::now();
-        let mut out: Vec<Option<PurchaseHint>> = vec![None; params.queries.len()];
-        // Queries that already name a product id are one lookup each; title
-        // searches come after, and nothing starts past the budget.
-        let mut order: Vec<usize> = (0..params.queries.len()).collect();
-        order.sort_by_key(|&i| {
-            params.queries[i]
-                .product_id
-                .as_deref()
-                .map(str::trim)
-                .is_none_or(str::is_empty)
-        });
-        for i in order {
-            if started.elapsed() >= PURCHASE_HINTS_BUDGET {
-                break;
-            }
-            out[i] = self.purchase_hint(params.queries[i].clone()).await?;
-        }
-        Ok(out)
+        purchase_hints_one_by_one(self, params, PURCHASE_HINTS_BUDGET).await
     }
 
     /// Current storefront deals.
