@@ -376,6 +376,9 @@ deployment there is `desired = present`.
 | Change a setting | `bookclerk plugins config set s3 bucket my-audiobooks` |
 | Set a secret (from stdin, sealed) | `bookclerk plugins config set s3 secret_access_key --secret` |
 | Clear a setting | `bookclerk plugins config unset s3 prefix` |
+| Replace a table setting's rows | `bookclerk plugins config set audiobookshelf mappings '[{"library": "main"}]'` |
+| Add one row to a table setting, cells in column order | `bookclerk plugins config set audiobookshelf mappings 'main \| kids/' --append` |
+| Remove the second row of a table setting | `bookclerk plugins config unset audiobookshelf mappings --row 2` |
 | Add an instance | `bookclerk plugins instances create s3 --name "Backup bucket"` |
 | Add an instance on one node only | `bookclerk plugins instances create local --name "NAS disk" --node <node-id>` |
 
@@ -400,6 +403,10 @@ The daemon's operator API mirrors this:
   against the pinned schema. A stale write or an unknown key is rejected.
 - Secrets (`type = "secret"`) are sealed into `encrypted_secrets` and
   never shown again.
+- A `table` setting takes a JSON array of row objects, or one row typed
+  with its cells in column order and separated by `|`. An empty cell takes
+  the column's default, and `\|` is a literal bar. Settings → Plugins
+  shows it as an editable grid.
 - One plugin can have several instances, even on one host. A bare plugin
   key means the default instance; `library scan|acquire --instance` picks
   another.

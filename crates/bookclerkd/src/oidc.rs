@@ -2119,6 +2119,7 @@ mod tests {
             default: None,
             required: false,
             description: None,
+            columns: Vec::new(),
         }]);
         pin_plugin_schema(
             library,

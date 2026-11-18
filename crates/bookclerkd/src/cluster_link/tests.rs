@@ -1388,18 +1388,22 @@ mod results_and_uploads {
     use super::super::remote_bindings::HostJobBindings;
     use super::*;
 
-    /// The key an acquire names `book`'s audio with under `options`.
+    /// The key an acquire names a title's audio with under `options`.
+    ///
+    /// # Arguments
+    ///
+    /// * `title` - The title's product id, title and authors.
     fn planned_key(
-        book: &bookclerk_library::BookRecord,
+        (product_id, title, authors): (&str, &str, Option<&str>),
         library_id: Option<&str>,
         options: &DownloadOptions,
     ) -> String {
         let templates = options.naming_templates();
         bookclerk_acquire::storage_key(
             &bookclerk_acquire::NamingContext {
-                asin: book.product_id.clone(),
-                title: book.title.clone(),
-                authors: book.authors.clone(),
+                asin: product_id.to_string(),
+                title: title.to_string(),
+                authors: authors.map(str::to_string),
                 library_id: library_id.map(str::to_string),
                 ..Default::default()
             },
@@ -1508,7 +1512,7 @@ mod results_and_uploads {
         }
     }
 
-    /// An owner's title a [`StubGuests`] imported: the owner's book uuid and
+    /// An owner's title a [`StubGuests`] imported: the owner's holding id and
     /// the `(destination, key)` files kept.
     type ImportedTitle = (String, Vec<(bookclerk_config::DestinationId, String)>);
 
@@ -1592,7 +1596,11 @@ mod results_and_uploads {
             let mut keys = Vec::new();
             for (index, destination) in title.destinations.iter().enumerate() {
                 let key = planned_key(
-                    &title.book,
+                    (
+                        &title.book.product_id,
+                        &title.book.title,
+                        title.book.authors.as_deref(),
+                    ),
                     title.library_id.as_deref(),
                     &destination.options,
                 );
@@ -1633,10 +1641,10 @@ mod results_and_uploads {
         }
 
         async fn import_owner_title(&self, copy: super::super::host_jobs::OwnerTitleCopy<'_>) {
-            self.imported
-                .lock()
-                .unwrap()
-                .push((copy.book.uuid.clone(), copy.files.to_vec()));
+            self.imported.lock().unwrap().push((
+                copy.book.uuid.clone().unwrap_or_default(),
+                copy.files.to_vec(),
+            ));
         }
 
         fn work_dir(&self) -> PathBuf {
@@ -2189,10 +2197,11 @@ mod results_and_uploads {
             payload,
             "the host's own destination has its copy"
         );
+        let holding = holding_of(&world.owner, &book.uuid).await;
         assert_eq!(
             guests.imported.lock().unwrap().as_slice(),
             &[(
-                book.uuid.clone(),
+                holding,
                 vec![(
                     bookclerk_config::DestinationId::new("local").unwrap(),
                     key.clone()
@@ -4256,9 +4265,8 @@ mod results_and_uploads {
             .iter()
             .find(|t| t.holding_id == episode_holding)
             .expect("the episode is planned");
-        let parent: bookclerk_library::BookRecord =
-            serde_json::from_value(target.parent.clone().expect("its parent is sent")).unwrap();
-        assert_eq!(parent.uuid, show.uuid);
+        let parent = target.parent.as_ref().expect("its parent is sent");
+        assert_eq!(parent.product_id, show.product_id);
     }
 
     /// A title the owner refuses after this host copied it to its own
@@ -4304,7 +4312,11 @@ mod results_and_uploads {
         let short = bookclerk_acquire::library_id_of(&world.owner, &book.uuid)
             .await
             .unwrap();
-        let key = planned_key(&book, short.as_deref(), &options);
+        let key = planned_key(
+            (&book.product_id, &book.title, book.authors.as_deref()),
+            short.as_deref(),
+            &options,
+        );
         record_for_book(&world.owner, "local", &key, &other.uuid)
             .await
             .unwrap();

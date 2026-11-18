@@ -34,16 +34,21 @@ async fn connect(store: &LibraryStore, account: &str, user: Option<i64>) {
     }
 }
 
-/// The library's row of `product` on `account`, as the branch is handed
-/// it: written to a store of its own (the library's).
-async fn library_row(profile: Profile, account: &str, product: &str) -> BookRecord {
+/// The library's title `product` on `account`, as the branch is handed it:
+/// written to a store of its own (the library's), under that library's
+/// uuid.
+async fn library_row(profile: Profile, account: &str, product: &str) -> NewBook {
     let library = kit(profile).await;
     library
         .upsert_account(PLUGIN, account, "us", Some(account), true, PLUGIN)
         .await
         .unwrap();
     let new = NewBook::minimal(product, account, "us", format!("Title {product}"));
-    library.upsert_book(&new).await.unwrap()
+    let row = library.upsert_book(&new).await.unwrap();
+    NewBook {
+        uuid: Some(row.uuid),
+        ..new
+    }
 }
 
 /// The branch owner's book acquired for a library joins the branch's own
@@ -88,7 +93,11 @@ async fn the_owners_book_from_a_library_joins_the_branch() {
         else {
             panic!("{name}: the owner's book is imported");
         };
-        assert_ne!(book.uuid, row.uuid, "{name}: the branch's own uuid");
+        assert_ne!(
+            Some(&book.uuid),
+            row.uuid.as_ref(),
+            "{name}: the branch's own uuid"
+        );
         assert_eq!(book.acquire_status, AcquireStatus::Acquired, "{name}");
         assert_eq!(
             book.storage_key.as_deref(),

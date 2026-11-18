@@ -1039,14 +1039,14 @@ pub struct AcquireTarget {
     pub plugin_key: String,
     /// Store account that owns it.
     pub account_id: String,
-    /// The owner's library row (JSON), for naming and metadata.
-    pub book: serde_json::Value,
-    /// The owner's row for the title's podcast parent (JSON), when the
-    /// title is an episode whose parent is in the owner's library: a
-    /// destination that saves episodes to the parent's folder names them
-    /// from it, as an acquire on the owner would.
+    /// The title as the owner's library holds it, for naming and metadata.
+    pub title: TargetTitle,
+    /// The title's podcast parent as the owner's library holds it, when
+    /// the title is an episode whose show an account of the same store
+    /// holds there: a destination that saves episodes to the parent's
+    /// folder names them from it, as an acquire on the owner would.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<serde_json::Value>,
+    pub parent: Option<TargetTitle>,
     /// The title's library id on the owner (the short id of its edition
     /// there), which the `<library id>` naming tag writes. A host acquires
     /// into a scratch library whose edition ids differ, so it names with
@@ -1057,6 +1057,67 @@ pub struct AcquireTarget {
     /// saves episodes to the parent's folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_library_id: Option<LibraryId>,
+}
+
+/// A title an [`AcquireTarget`] names, as the owner's library holds it:
+/// the store listing's identity and the metadata a host names the title's
+/// files from and seeds its scratch library with. The store and account
+/// are the target's own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetTitle {
+    /// The store's product id of the listing (what the store fetches).
+    pub product_id: String,
+    /// The store's source name (`audible`, `librofm`, ...), as the
+    /// listing's plugin reports it.
+    pub source: String,
+    /// The store marketplace the listing is sold in (`us`, `uk`, ...).
+    pub marketplace: String,
+    /// The edition's ASIN, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asin: Option<String>,
+    /// The edition's ISBN, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isbn: Option<String>,
+    /// The listing's title.
+    pub title: String,
+    /// The listing's subtitle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    /// Authors, comma-separated, as the listing gives them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authors: Option<String>,
+    /// Narrators, comma-separated, as the listing gives them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrators: Option<String>,
+    /// The series name, when the title is in one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series: Option<String>,
+    /// The title's position in its series, as text (`1`, `2.5`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_index: Option<String>,
+    /// The store's product id of the series, or of an episode's show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_product_id: Option<String>,
+    /// The publisher.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    /// Categories, comma-separated, as the listing gives them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub categories: Option<String>,
+    /// Running time in whole minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_minutes: Option<i64>,
+    /// Whether the listing is abridged.
+    #[serde(default)]
+    pub is_abridged: bool,
+    /// `book`, `podcast` or `episode`.
+    pub content_kind: String,
+    /// When the account bought it, RFC 3339.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purchased_at: Option<String>,
+    /// When it was published, RFC 3339.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
 }
 
 /// Longest library id (see [`LibraryId`]).
@@ -1396,7 +1457,7 @@ mod tests {
                 "holding_id": "b",
                 "plugin_key": "store",
                 "account_id": "a",
-                "book": {},
+                "title": {"product_id": "p", "source": "store", "marketplace": "us", "title": "T", "content_kind": "book"},
                 "library_id": id,
             })
         };
@@ -1424,7 +1485,8 @@ mod tests {
             );
         }
         let absent: AcquireTarget = serde_json::from_value(serde_json::json!({
-            "holding_id": "b", "plugin_key": "store", "account_id": "a", "book": {},
+            "holding_id": "b", "plugin_key": "store", "account_id": "a",
+            "title": {"product_id": "p", "source": "store", "marketplace": "us", "title": "T", "content_kind": "book"},
         }))
         .unwrap();
         assert_eq!(absent.library_id, None);
@@ -1822,7 +1884,27 @@ mod tests {
                         holding_id: "b".into(),
                         plugin_key: "store".into(),
                         account_id: "a".into(),
-                        book: serde_json::json!({}),
+                        title: TargetTitle {
+                            product_id: "p1".into(),
+                            source: "store".into(),
+                            marketplace: "us".into(),
+                            asin: None,
+                            isbn: Some("9780000000001".into()),
+                            title: "Dune".into(),
+                            subtitle: None,
+                            authors: Some("Frank Herbert".into()),
+                            narrators: None,
+                            series: None,
+                            series_index: None,
+                            series_product_id: None,
+                            publisher: None,
+                            categories: None,
+                            length_minutes: Some(1260),
+                            is_abridged: false,
+                            content_kind: "book".into(),
+                            purchased_at: None,
+                            published_at: Some("1965-08-01T00:00:00+00:00".into()),
+                        },
                         parent: None,
                         library_id: Some(LibraryId::try_from("abc12345".to_string()).unwrap()),
                         parent_library_id: None,
