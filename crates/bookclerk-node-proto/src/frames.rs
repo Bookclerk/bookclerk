@@ -719,7 +719,7 @@ pub enum Body {
     },
     /// Reader → library: ask for the copy this library holds of one
     /// edition, named by its store listing, for the node's owner
-    /// ([`crate::copies`]). Answered with [`Body::CopyGranted`], or `error`
+    /// (`copy_grant_problem`). Answered with [`Body::CopyGranted`], or `error`
     /// with `refused` (not a branch this library trusts), `not_found` (the
     /// person cannot take the edition, or the library holds no copy of it),
     /// `invalid`, or `unavailable` (the library cannot read its storage

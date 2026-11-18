@@ -341,7 +341,7 @@ async fn files_of(
 /// `listing` names, and lists the copy's files.
 ///
 /// The holder must be one this library gives copies to ([`CopyHolder`]);
-/// the edition must be one the person may take ([`visible_to`]) and one
+/// the edition must be one the person may take (`visible_to`) and one
 /// this library has acquired, with its primary audio recorded on at least
 /// one destination.
 ///
@@ -522,7 +522,7 @@ pub struct CopyDownload {
 /// The token's hash must match and it must not have expired; and, read
 /// afresh on every call, the holder must still be one this library gives
 /// copies to for the same person, the person must still be allowed the
-/// edition ([`visible_to`]), and the edition's files on the granted
+/// edition (`visible_to`), and the edition's files on the granted
 /// destination must be the ones the grant listed. Every refusal is the
 /// same `None`.
 ///
