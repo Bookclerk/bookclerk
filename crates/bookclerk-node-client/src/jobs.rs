@@ -162,6 +162,76 @@ impl std::fmt::Debug for HostUpload {
     }
 }
 
+/// A copy of an edition the library granted this node
+/// ([`crate::HostClientHandle::copy_grant`]): what it is, its files, and
+/// the bearer token of its downloads. The token is zeroized on drop and
+/// never shown by `Debug`.
+pub struct GrantedCopy {
+    /// Copy id; file `n` is at `COPIES_PATH<copy_id>/files/<n>`.
+    pub copy_id: String,
+    /// Seconds the token stays valid from the grant.
+    pub expires_in_secs: u64,
+    /// What the copy is.
+    pub copy: bookclerk_node_proto::WindowCopy,
+    /// The copy's files, in download order.
+    pub files: Vec<bookclerk_node_proto::CopyFile>,
+    /// The bearer token, opened with this node's box key.
+    token: SecretValue,
+}
+
+impl GrantedCopy {
+    /// Wraps an opened grant.
+    pub(crate) fn new(
+        copy_id: String,
+        expires_in_secs: u64,
+        copy: bookclerk_node_proto::WindowCopy,
+        files: Vec<bookclerk_node_proto::CopyFile>,
+        token: SecretValue,
+    ) -> Self {
+        Self {
+            copy_id,
+            expires_in_secs,
+            copy,
+            files,
+            token,
+        }
+    }
+
+    /// The `Authorization` header value of this copy's downloads.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError::Unavailable`] when the token is not text.
+    pub fn authorization(&self) -> Result<zeroize::Zeroizing<String>, OwnerCallError> {
+        let token =
+            std::str::from_utf8(self.token.expose()).map_err(|_| OwnerCallError::Unavailable)?;
+        Ok(zeroize::Zeroizing::new(format!(
+            "{} {token}",
+            bookclerk_node_proto::COPY_AUTH_SCHEME
+        )))
+    }
+}
+
+impl Drop for GrantedCopy {
+    /// The token leaves the redaction registry (it was registered when
+    /// opened) and its local copy is zeroized with the handle.
+    fn drop(&mut self) {
+        if let Ok(token) = std::str::from_utf8(self.token.expose()) {
+            bookclerk_config::unregister_secret(token);
+        }
+    }
+}
+
+impl std::fmt::Debug for GrantedCopy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GrantedCopy")
+            .field("copy_id", &self.copy_id)
+            .field("files", &self.files.len())
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
 /// How a job failed: a stable kind and an operator-facing message. Neither
 /// may contain a secret.
 #[derive(Debug, Clone, PartialEq, Eq)]

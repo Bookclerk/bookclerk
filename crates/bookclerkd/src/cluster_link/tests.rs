@@ -4411,6 +4411,277 @@ mod results_and_uploads {
             "the rollback leaves a key it did not create"
         );
     }
+    /// One GET of a copy's file on the owner's listener: the status line
+    /// and headers as text, and the body.
+    async fn get_copy_file(
+        addr: SocketAddr,
+        path: &str,
+        authorization: Option<&str>,
+        range: Option<&str>,
+    ) -> (String, Vec<u8>) {
+        let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut head = format!(
+            "GET {path} HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n",
+            addr.port()
+        );
+        if let Some(authorization) = authorization {
+            head.push_str(&format!("Authorization: {authorization}\r\n"));
+        }
+        if let Some(range) = range {
+            head.push_str(&format!("Range: {range}\r\n"));
+        }
+        head.push_str("\r\n");
+        tcp.write_all(head.as_bytes()).await.unwrap();
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), tcp.read_to_end(&mut answer))
+            .await
+            .unwrap()
+            .unwrap();
+        let split = answer
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("a complete response head");
+        (
+            String::from_utf8_lossy(&answer[..split]).to_ascii_lowercase(),
+            answer[split + 4..].to_vec(),
+        )
+    }
+
+    /// A branch takes the copy its library already holds: `copy.grant`
+    /// answers what the copy is and its files with their sizes, each file
+    /// downloads whole or by range with the sealed token, and nothing
+    /// else opens them. The download stops with the branch's trust, and at
+    /// TRACE the token reaches no log.
+    #[tokio::test]
+    async fn a_branch_downloads_the_copy_its_library_holds() {
+        use bookclerk_node_proto::{CopyRole, COPIES_PATH};
+
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let logs = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(logs.clone())
+            .finish();
+        let _logging = tracing::subscriber::set_default(subscriber);
+        let _ = tracing_log::LogTracer::init();
+
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        // The library acquired t1: its audio and a cover lie on the
+        // destination and are recorded as the edition's files.
+        const KEY: &str = "Author/Title t1/Title t1.m4b";
+        const COVER: &str = "Author/Title t1/cover.jpg";
+        let audio: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::create_dir_all(owner_out.path().join("Author/Title t1")).unwrap();
+        std::fs::write(owner_out.path().join(KEY), &audio).unwrap();
+        std::fs::write(owner_out.path().join(COVER), b"").unwrap();
+        world
+            .owner
+            .set_acquire_status(
+                "t1",
+                "riley-acct",
+                bookclerk_library::AcquireStatus::Acquired,
+                Some(KEY),
+                None,
+            )
+            .await
+            .unwrap();
+        let owner_of = world
+            .owner
+            .file_owner_of_book(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        for (key, role) in [
+            (KEY, bookclerk_library::FileRole::Audio),
+            (COVER, bookclerk_library::FileRole::Cover),
+        ] {
+            assert!(world
+                .owner
+                .record_edition_file("local", key, &owner_of, role)
+                .await
+                .unwrap());
+        }
+
+        let guests = StubGuests {
+            work: world.host_files.path().join("cluster-work"),
+            ..StubGuests::default()
+        };
+        let (handle, _stop) = start(&world, guests).await;
+
+        // Not acquired, and not in the library at all: one answer.
+        assert!(handle
+            .copy_grant("test", "us", "t2")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(handle
+            .copy_grant("test", "us", "nope")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(handle
+            .copy_grant("test", "uk", "t1")
+            .await
+            .unwrap()
+            .is_none());
+        // A malformed ask is not answered as a copy.
+        assert!(matches!(
+            handle.copy_grant("Not A Store", "us", "t1").await,
+            Err(bookclerk_node_client::OwnerCallError::Unavailable)
+        ));
+
+        let granted = handle
+            .copy_grant("test", "us", "t1")
+            .await
+            .unwrap()
+            .expect("the library holds t1");
+        assert_eq!(granted.copy.content_type, "audio/mp4");
+        let listed: Vec<(&str, CopyRole, u64)> = granted
+            .files
+            .iter()
+            .map(|file| (file.name.as_str(), file.role, file.size))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("Title t1.m4b", CopyRole::Audio, 200_000),
+                ("cover.jpg", CopyRole::Cover, 0),
+            ]
+        );
+        let authorization = granted.authorization().unwrap();
+        let token = authorization
+            .strip_prefix("Bookclerk-Copy ")
+            .unwrap()
+            .to_string();
+        let file = |n: usize| format!("{COPIES_PATH}{}/files/{n}", granted.copy_id);
+
+        // The whole file, then ranges of it.
+        let (head, body) = get_copy_file(world.addr, &file(0), Some(&authorization), None).await;
+        assert!(head.starts_with("http/1.1 200"), "{head}");
+        assert!(head.contains("content-length: 200000"), "{head}");
+        assert!(head.contains("accept-ranges: bytes"), "{head}");
+        assert!(head.contains("cache-control: no-store"), "{head}");
+        assert_eq!(body, audio);
+        for (range, status, content_range, want) in [
+            ("bytes=5-9", "206", "bytes 5-9/200000", &audio[5..10]),
+            (
+                "bytes=199990-",
+                "206",
+                "bytes 199990-199999/200000",
+                &audio[199_990..],
+            ),
+            (
+                "bytes=-3",
+                "206",
+                "bytes 199997-199999/200000",
+                &audio[199_997..],
+            ),
+            (
+                "bytes=100000-999999",
+                "206",
+                "bytes 100000-199999/200000",
+                &audio[100_000..],
+            ),
+            // Not a range this endpoint reads: the whole file.
+            ("bytes=0-1,5-6", "200", "", &audio[..]),
+        ] {
+            let (head, body) =
+                get_copy_file(world.addr, &file(0), Some(&authorization), Some(range)).await;
+            assert!(
+                head.starts_with(&format!("http/1.1 {status}")),
+                "{range}: {head}"
+            );
+            assert_eq!(
+                head.contains("content-range"),
+                !content_range.is_empty(),
+                "{range}: {head}"
+            );
+            assert!(head.contains(content_range), "{range}: {head}");
+            assert_eq!(body, want, "{range}");
+        }
+        let (head, body) = get_copy_file(
+            world.addr,
+            &file(0),
+            Some(&authorization),
+            Some("bytes=200000-"),
+        )
+        .await;
+        assert!(head.starts_with("http/1.1 416"), "{head}");
+        assert!(head.contains("content-range: bytes */200000"), "{head}");
+        assert!(String::from_utf8_lossy(&body).contains("range_not_satisfiable"));
+        // The empty cover.
+        let (head, body) = get_copy_file(world.addr, &file(1), Some(&authorization), None).await;
+        assert!(head.starts_with("http/1.1 200"), "{head}");
+        assert!(head.contains("content-length: 0"), "{head}");
+        assert!(body.is_empty());
+
+        // No file of that index; no token, another scheme, another token,
+        // another copy's id.
+        let (head, body) = get_copy_file(world.addr, &file(2), Some(&authorization), None).await;
+        assert!(head.starts_with("http/1.1 404"), "{head}");
+        assert!(String::from_utf8_lossy(&body).contains("unknown_file"));
+        let (head, _) =
+            get_copy_file(world.addr, &file(usize::MAX), Some(&authorization), None).await;
+        assert!(head.starts_with("http/1.1 404"), "{head}");
+        let other = format!("{COPIES_PATH}00000000-0000-0000-0000-000000000000/files/0");
+        let upload_scheme = format!("Bookclerk-Upload {token}");
+        for (path, authorization) in [
+            (file(0), None),
+            (file(0), Some(upload_scheme.as_str())),
+            (file(0), Some("Bookclerk-Copy nope")),
+            (other, Some(authorization.as_str())),
+        ] {
+            let (head, body) = get_copy_file(world.addr, &path, authorization, None).await;
+            assert!(
+                head.starts_with("http/1.1 401"),
+                "{path} {authorization:?}: {head}"
+            );
+            assert!(!body.windows(8).any(|window| window == &audio[..8]));
+        }
+
+        // Granted by another node: this one does not serve it.
+        {
+            use sea_orm::ConnectionTrait as _;
+            world
+                .owner
+                .db()
+                .execute_unprepared("UPDATE copy_grants SET serving_node_id = 'another-node'")
+                .await
+                .unwrap();
+            let (head, _) = get_copy_file(world.addr, &file(0), Some(&authorization), None).await;
+            assert!(head.starts_with("http/1.1 421"), "{head}");
+            // The branch's trust ends: the same token opens nothing.
+            world
+                .owner
+                .db()
+                .execute_unprepared(
+                    "UPDATE node_credentials SET revoked_at = '2026-01-01T00:00:00Z'",
+                )
+                .await
+                .unwrap();
+        }
+        let (head, _) = get_copy_file(world.addr, &file(0), Some(&authorization), None).await;
+        assert!(head.starts_with("http/1.1 401"), "{head}");
+
+        let logged = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+        assert!(logged.contains("granted a copy of an edition"), "{logged}");
+        assert!(!logged.contains(&token), "the copy token reached a log");
+    }
 }
 
 /// A database swap stops the client of the previous store's link and
