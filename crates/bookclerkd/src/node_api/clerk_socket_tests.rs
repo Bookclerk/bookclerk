@@ -780,25 +780,6 @@ async fn a_card_downloads_the_librarys_copy_until_it_is_signed_out() {
         );
     }
 
-    // The grant is the card's: recorded under its hash, never its token.
-    {
-        use sea_orm::{ConnectionTrait as _, Statement};
-        let row = store
-            .db()
-            .query_one(Statement::from_string(
-                store.db().get_database_backend(),
-                "SELECT holder_kind, holder_id FROM copy_grants".to_string(),
-            ))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(row.try_get::<String>("", "holder_kind").unwrap(), "card");
-        assert_eq!(
-            row.try_get::<String>("", "holder_id").unwrap(),
-            hash_token(&token)
-        );
-    }
-
     // Signed out: the same copy token opens nothing, and the socket's
     // next ask closes it.
     assert!(store

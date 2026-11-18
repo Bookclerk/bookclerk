@@ -13,7 +13,8 @@
 //!    sizes them, then [`open_copy`] records the grant and mints the
 //!    token. Only the token's hash is stored.
 //! 3. Each download calls [`authorize_copy`], which runs [`plan_copy`]
-//!    again: a branch whose trust ended, a person no longer active, an
+//!    again: a branch whose trust ended, a library card signed out or
+//!    expired, a person no longer active, an
 //!    edition no longer visible or files replaced since the grant all stop
 //!    the next request, whatever the token's remaining life.
 //!

@@ -28833,7 +28833,7 @@
         "operationId": "get_clerk_connect",
         "responses": {
           "101": {
-            "description": "Switching to the clerk socket: `hello` and `changed` frames name the topics that changed, and each `books` frame is answered with one page of the card's person's books (`books.page`)."
+            "description": "Switching to the clerk socket: `hello` and `changed` frames name the topics that changed, each `books` frame is answered with one page of the card's person's books (`books.page`), and each `copy.grant` frame with the library's copy of that edition and a one-hour token for `GET /api/copies/v1/{copy_id}/files/{index}` (`copy.granted`)."
           },
           "400": {
             "description": "The request does not offer the `bookclerk-clerk.v1` subprotocol (`subprotocol_required`).",
@@ -29571,7 +29571,7 @@
           {
             "name": "copy_id",
             "in": "path",
-            "description": "Copy id from `copy.granted`.",
+            "description": "Copy id from `copy.granted`, on the node socket or the clerk socket.",
             "required": true,
             "schema": {
               "type": "string"
@@ -29621,7 +29621,7 @@
             }
           },
           "401": {
-            "description": "The copy token is missing, wrong or expired, or the grant no longer holds: the branch is no longer trusted, the person may no longer take the edition, or the library's files changed since the grant (`unauthorized`). Ask for a new grant.",
+            "description": "The copy token is missing, wrong or expired, or the grant no longer holds: the branch is no longer trusted or the library card is signed out, the person may no longer take the edition, or the library's files changed since the grant (`unauthorized`). Ask for a new grant.",
             "content": {
               "application/json": {
                 "schema": {
