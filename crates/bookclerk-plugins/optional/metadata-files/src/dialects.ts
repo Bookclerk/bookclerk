@@ -6,8 +6,13 @@
  * exactly for the rows with `writes = true`.
  */
 
-import type { MetadataField, MetadataFileRecord } from "@bookclerk/plugin-sdk/workerd";
+import type {
+  MetadataAudioFile,
+  MetadataField,
+  MetadataFileRecord,
+} from "@bookclerk/plugin-sdk/workerd";
 import { parseAlbumNfo, renderAlbumNfo } from "./album-nfo.ts";
+import { parseCue, renderCue } from "./cue.ts";
 import { parseLibationJson } from "./libation.ts";
 import { parseOpf, renderOpf } from "./opf.ts";
 import { MAX_FILE_BYTES, invalid } from "./text.ts";
@@ -28,6 +33,8 @@ export interface Dialect {
    * @param existing - The file as it is now; empty to create it.
    * @param record - Values to write.
    * @param fields - Fields to set.
+   * @param audioFiles - The book's audio files in playback order; empty
+   *   when the host does not know them.
    * @returns The new file.
    * @throws {DialectFailure} When `existing` cannot be read or the result is
    *   over the size cap.
@@ -36,6 +43,7 @@ export interface Dialect {
     existing: Uint8Array,
     record: MetadataFileRecord,
     fields: readonly MetadataField[],
+    audioFiles: readonly MetadataAudioFile[],
   ) => Uint8Array;
 }
 
@@ -44,6 +52,7 @@ export const DIALECTS: ReadonlyMap<string, Dialect> = new Map<string, Dialect>([
   ["libation_json", { parse: parseLibationJson }],
   ["opf", { parse: parseOpf, render: renderOpf }],
   ["kodi_album_nfo", { parse: parseAlbumNfo, render: renderAlbumNfo }],
+  ["cue", { parse: parseCue, render: renderCue }],
 ]);
 
 /**
@@ -87,6 +96,8 @@ export function parseFile(
  * @param existing - The file as it is now; empty to create it.
  * @param record - Values to write.
  * @param fields - Fields to set.
+ * @param audioFiles - The book's audio files in playback order; empty when
+ *   the host does not know them.
  * @param table - Dialects to look in; tests pass their own.
  * @returns The new file.
  * @throws {DialectFailure} For an unknown or read-only dialect, an existing
@@ -97,6 +108,7 @@ export function renderFile(
   existing: Uint8Array,
   record: MetadataFileRecord,
   fields: readonly MetadataField[],
+  audioFiles: readonly MetadataAudioFile[] = [],
   table: ReadonlyMap<string, Dialect> = DIALECTS,
 ): Uint8Array {
   const found = dialect(id, table);
@@ -104,5 +116,5 @@ export function renderFile(
   if (existing.length > MAX_FILE_BYTES) {
     throw invalid(`existing file is over the ${MAX_FILE_BYTES} byte cap`);
   }
-  return found.render(existing, record, fields);
+  return found.render(existing, record, fields, audioFiles);
 }

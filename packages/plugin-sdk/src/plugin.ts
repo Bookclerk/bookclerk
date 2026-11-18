@@ -183,6 +183,7 @@ export type {
   HealthOk,
   Invocation,
   JobInvocation,
+  MetadataAudioFile,
   MetadataChapter,
   MetadataChapters,
   MetadataChaptersParams,

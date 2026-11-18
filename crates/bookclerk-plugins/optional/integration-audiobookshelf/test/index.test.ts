@@ -257,6 +257,7 @@ test("metadataFiles parse and render route to the dialect", async () => {
     record: { ...empty(), present: ["description"], description: "New" },
     fields: ["description"],
     existing: utf8("Old"),
+    audioFiles: [],
   });
   assert.equal(new TextDecoder().decode(bytes), "New\n");
 });
@@ -267,7 +268,13 @@ test("a refused file or request becomes invalid_params", async () => {
     /not valid JSON/,
   );
   await invalidParams(
-    files.render({ dialect: "opf", record: empty(), fields: [], existing: utf8("") }),
+    files.render({
+      dialect: "opf",
+      record: empty(),
+      fields: [],
+      existing: utf8(""),
+      audioFiles: [],
+    }),
     /unknown dialect/,
   );
 });

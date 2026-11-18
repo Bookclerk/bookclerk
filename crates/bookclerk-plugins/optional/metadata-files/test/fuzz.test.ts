@@ -13,7 +13,10 @@
  *   host accepts, stating only the fields and roles the row declares;
  * - `render` over any existing file either refuses with `invalid_params`
  *   (only where `parse` refuses the same file) or returns a file within the
- *   size cap that parses back to the values it was asked to write.
+ *   size cap that parses back to the values it was asked to write. The
+ *   request carries a random list of the book's audio files; chapters laid
+ *   out across several files are not compared, because a sheet with
+ *   several files leaves its chapters unstated.
  *
  * `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run; a failure prints the
  * seed, iteration and input that reproduce it.
@@ -23,7 +26,12 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
 
-import type { CreditRole, MetadataField, MetadataFileRecord } from "@bookclerk/plugin-sdk/workerd";
+import type {
+  CreditRole,
+  MetadataAudioFile,
+  MetadataField,
+  MetadataFileRecord,
+} from "@bookclerk/plugin-sdk/workerd";
 import { DIALECTS, parseFile, renderFile } from "../src/dialects.ts";
 import { DialectFailure } from "../src/text.ts";
 
@@ -362,6 +370,62 @@ function phrases(rand: () => number, max: number): string[] {
 }
 
 /**
+ * Says whether a CUE render asks for something a sheet cannot hold, from
+ * the request alone: a double quote in an audio file name; chapters for a
+ * sheet with several `FILE` lines and no audio files; chapters past an
+ * audio file of unknown length; or a chapter that starts after the last
+ * file's known end.
+ *
+ * @param bytes - The existing sheet.
+ * @param record - The render request's record.
+ * @param fields - Fields the request sets.
+ * @param audio - The request's audio files.
+ * @returns True when a refusal is expected.
+ */
+function cueCannotHold(
+  bytes: Uint8Array,
+  record: MetadataFileRecord,
+  fields: readonly MetadataField[],
+  audio: readonly MetadataAudioFile[],
+): boolean {
+  if (audio.some((f) => f.name.includes('"'))) return true;
+  if (!fields.includes("chapters")) return false;
+  if (audio.length === 0) {
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      text = new TextDecoder("latin1").decode(bytes);
+    }
+    const files = text.split(/\r\n|\n|\r/).filter((l) => /^\s*file(?:\s|$)/i.test(l));
+    return files.length > 1;
+  }
+  const starts = record.chapters.map((c) => c.startMs);
+  if (starts.length === 0) return false;
+  if (audio.slice(0, -1).some((f) => f.durationMs === 0)) return true;
+  const last = audio[audio.length - 1];
+  const total = audio.reduce((sum, f) => sum + f.durationMs, 0);
+  return last !== undefined && last.durationMs > 0 && starts.some((ms) => ms >= total);
+}
+
+/**
+ * Builds a render request's audio files: none half the time, else one to
+ * three plain file names, some with a double quote, each with a length or
+ * none.
+ *
+ * @param rand - PRNG.
+ * @returns The audio files, in playback order.
+ */
+function audioFiles(rand: () => number): MetadataAudioFile[] {
+  if (rand() < 0.5) return [];
+  const names = ["book.m4b", "Part 1.mp3", "part2.flac", 'say "hi".mp3', "x"];
+  return Array.from({ length: 1 + Math.floor(rand() * 3) }, (_, i) => ({
+    name: `${i}-${names[Math.floor(rand() * names.length)] ?? "x"}`,
+    durationMs: rand() < 0.2 ? 0 : 1 + Math.floor(rand() * 10_000_000),
+  }));
+}
+
+/**
  * Builds a render request's record with clean values, each field empty or
  * set at random.
  *
@@ -456,7 +520,10 @@ function project(
       // Every writable dialect keeps one series.
       return r.seriesEntries.slice(0, 1).map((s) => [s.name, s.position]);
     case "chapters":
-      return r.chapters.map((c) => [c.title, c.startMs, c.lengthMs]);
+      // CUE times are whole 1/75 s frames and carry no lengths.
+      return row.id === "cue"
+        ? r.chapters.map((c) => [c.title, Math.round((c.startMs * 75) / 1000)])
+        : r.chapters.map((c) => [c.title, c.startMs, c.lengthMs]);
     case "genres":
     case "tags":
       return r[field];
@@ -502,11 +569,18 @@ function check(row: Row, bytes: Uint8Array, rand: () => number): void {
   if (!row.writes) return;
   const record = cleanRecord(rand, row);
   const fields = row.fields.filter(() => rand() < 0.6);
-  const rendered = attempt(() => renderFile(row.id, bytes, record, fields));
+  const audio = audioFiles(rand);
+  const rendered = attempt(() => renderFile(row.id, bytes, record, fields, audio));
   if ("refused" in rendered) {
     // A file parse reads may still be refused when the answer would pass
-    // the size cap.
-    const allowed = "refused" in parsed || /^rendered file is/.test(rendered.refused.message);
+    // the size cap, or when the format cannot hold what was asked for.
+    const message = rendered.refused.message;
+    const allowed =
+      "refused" in parsed ||
+      /^rendered file is \d+ bytes, over the /.test(message) ||
+      (/^cannot write /.test(message) &&
+        row.id === "cue" &&
+        cueCannotHold(bytes, record, fields, audio));
     assert.ok(allowed, `render refused a file parse reads: ${rendered.refused.message}`);
     return;
   }
@@ -514,6 +588,7 @@ function check(row: Row, bytes: Uint8Array, rand: () => number): void {
   const reread = parseFile(row.id, rendered.ok);
   assert.equal(hostRefusal(reread, row), undefined, "re-read record breaks the ABI rules");
   for (const field of fields) {
+    if (field === "chapters" && row.id === "cue" && audio.length > 1) continue;
     const roles = record.creditRoles;
     assert.deepEqual(
       project(reread, field, row, roles),

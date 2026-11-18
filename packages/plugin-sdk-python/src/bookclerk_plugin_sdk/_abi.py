@@ -96,6 +96,9 @@ MAX_METADATA_FILE_LIST_ENTRIES: int = 256
 MAX_METADATA_FILE_CHAPTERS: int = 2000
 """Most chapters in a `MetadataFileRecord`."""
 
+MAX_METADATA_AUDIO_FILES: int = 4096
+"""Most entries in `MetadataFileRenderParams.audioFiles`."""
+
 MAX_KV_KEY_BYTES: int = 512
 """Longest `KvNamespace` key in UTF-8 bytes."""
 
@@ -338,6 +341,7 @@ __all__ = [
     "MAX_METADATA_FILE_TEXT_BYTES",
     "MAX_METADATA_FILE_LIST_ENTRIES",
     "MAX_METADATA_FILE_CHAPTERS",
+    "MAX_METADATA_AUDIO_FILES",
     "MAX_KV_KEY_BYTES",
     "MAX_SOCKET_FRAME_BYTES",
     "MAX_SOCKET_ATTACHMENT_BYTES",

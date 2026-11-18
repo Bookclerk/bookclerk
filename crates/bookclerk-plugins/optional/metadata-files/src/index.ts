@@ -72,7 +72,9 @@ export class MetadataFiles extends MetadataFilesEntrypoint<Env> {
    *   the size cap.
    */
   override render(params: MetadataFileRenderParams): Promise<Uint8Array> {
-    return guarded(() => renderFile(params.dialect, params.existing, params.record, params.fields));
+    return guarded(() =>
+      renderFile(params.dialect, params.existing, params.record, params.fields, params.audioFiles),
+    );
   }
 }
 

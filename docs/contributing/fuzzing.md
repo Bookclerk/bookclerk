@@ -1173,20 +1173,26 @@ across every corpus, in `npm test` (the `workerd_guests` check);
 
 - **Parsing** (`parseFile` in each guest's `src/dialects.ts`, under
   `crates/bookclerk-plugins/optional/metadata-files` (`libation_json`,
-  `opf` and `kodi_album_nfo`) and `integration-audiobookshelf`). Oracle,
-  written from the ABI's record rules (`validate_metadata_file_record` and
+  `opf`, `kodi_album_nfo` and `cue`) and `integration-audiobookshelf`).
+  Oracle, written from the ABI's record rules (`validate_metadata_file_record` and
   `check_record_against_dialect`) and the dialect's manifest row: a file
   is refused only with `invalid_params`. Otherwise the record passes every
   rule the host applies, states only the row's fields and credit roles,
   and is the same on a second parse.
 - **Rendering** (`renderFile`), for every row with `writes = true` (`opf`,
-  `kodi_album_nfo` and all four Audiobookshelf dialects), over every
-  mutated file as the existing file, with a random record and field list.
-  Oracle: a refusal only for a file `parse` also refuses, an answer that
-  would pass the size cap, a `metadata.json` number whose exact value a
-  double cannot keep, an existing Audiobookshelf file with bytes that
-  decode only to U+FFFD, or an Audiobookshelf NFO description line it
-  would read as an underline. Otherwise the answer is within
+  `kodi_album_nfo`, `cue` and all four Audiobookshelf dialects), over every
+  mutated file as the existing file, with a random record and field list
+  (and, for `metadata_files`, a random list of audio files). Oracle: a
+  refusal only for a file `parse` also refuses, an answer that would pass
+  the size cap, a request the format cannot hold (chapters for a CUE sheet
+  with several files and no audio files, past a file of unknown length or
+  after the last file's known end;
+  an audio file name with a double quote), a `metadata.json` number whose
+  exact value a double cannot keep, an existing Audiobookshelf file with
+  bytes that decode only to U+FFFD, or an Audiobookshelf NFO description
+  line it would read as an underline. Chapters laid out across several
+  audio files are not compared, because the CUE reader leaves them
+  unstated. Otherwise the answer is within
   `MAX_METADATA_FILE_BYTES`, and a re-parse passes the same rules, reads
   back each field it was asked to write, and reads every other field (and
   every credit role the request does not state) as the existing file did.

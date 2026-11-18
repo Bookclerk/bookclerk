@@ -8710,6 +8710,34 @@
         }
       ]
     },
+    "MetadataAudioFile": {
+      "name": "MetadataAudioFile",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "durationMs",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "MetadataChapter": {
       "name": "MetadataChapter",
       "file": "plugin.capnp",
@@ -9172,7 +9200,7 @@
       "name": "MetadataFileRenderParams",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 4,
+      "pointerCount": 5,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -9216,6 +9244,19 @@
             "kind": "data"
           },
           "offset": 3
+        },
+        {
+          "name": "audioFiles",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "MetadataAudioFile"
+            }
+          },
+          "offset": 4
         }
       ]
     },
@@ -16122,6 +16163,11 @@
       "name": "maxListPage",
       "file": "plugin.capnp",
       "value": 256
+    },
+    "maxMetadataAudioFiles": {
+      "name": "maxMetadataAudioFiles",
+      "file": "plugin.capnp",
+      "value": 4096
     },
     "maxMetadataFileBytes": {
       "name": "maxMetadataFileBytes",

@@ -1405,7 +1405,7 @@ The typed methods on `MetadataFiles` and `MetadataFilesEntrypoint` are:
 | --- | --- |
 | `health` | Liveness and readiness |
 | `parse` | `({ dialect, fileName, bytes })` → `MetadataFileRecord`. Read one file and say what it states about its edition |
-| `render` | `({ dialect, record, fields, existing })` → the new file's bytes (`Uint8Array`, or a string written as UTF-8). Set each field in `fields` to the record's value and keep the rest of `existing` as it was |
+| `render` | `({ dialect, record, fields, existing, audioFiles })` → the new file's bytes (`Uint8Array`, or a string written as UTF-8). Set each field in `fields` to the record's value and keep the rest of `existing` as it was |
 
 A `MetadataFileRecord` lists in `present` every field the file states,
 including a field it states as empty. A field the file does not mention
@@ -1431,7 +1431,13 @@ The host checks both directions:
 - `render` is sent only to a dialect with `writes = true`, only for fields
   the dialect carries, and the answer is at most
   `MAX_METADATA_FILE_BYTES`. `existing` is empty when the host creates the
-  file. An empty answer means the dialect has nothing left to write; the
+  file. `audioFiles` lists the edition's audio files in playback order,
+  each a plain file name with its running time in milliseconds (0 when
+  unknown, never past 2^53 - 1), at most `MAX_METADATA_AUDIO_FILES`
+  (4096) of them; it is empty when the host does not know them. Chapter
+  starts in `record` count from the start of the first file, so a format
+  that names its audio, such as a CUE sheet, can place each chapter in
+  its file. An empty answer means the dialect has nothing left to write; the
   host decides whether to remove the file.
 - Throw `invalid_params` from `parse` for a file the dialect cannot read.
   The host records the file as unreadable and moves on. Any reply that
@@ -1455,8 +1461,7 @@ export class MetadataFiles extends MetadataFilesEntrypoint<Env> {
 
 The first-party `metadata_files` plugin
 (`crates/bookclerk-plugins/optional/metadata-files`) reads and writes OPF
-package documents and Kodi `album.nfo` files, and reads Libation's
-catalog record without writing it. A format that belongs to one tool
+package documents, Kodi `album.nfo` files and CUE sheets, and reads Libation's catalog record without writing it. A format that belongs to one tool
 lives in that tool's plugin. The plugin's README lists what each record
 maps to.
 

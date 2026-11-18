@@ -10,6 +10,7 @@ file's bytes.
 | Dialect          | Files             | Writes | Fields                                                                                                                                             |
 | ---------------- | ----------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `libation_json`  | `*.metadata.json` | no     | title, subtitle, description, publisher, date, language, genres, abridgement, ASIN and ISBN, authors and narrators, series, chapters, running time |
+| `cue`            | `*.cue`           | yes    | title, date, genres, authors, chapters                                                                                                             |
 | `kodi_album_nfo` | `album.nfo`       | yes    | title, description, publisher, date, genres, authors                                                                                               |
 | `opf`            | `*.opf`           | yes    | title, description, publisher, date, language, genres, ISBN and ASIN, authors, narrators, translators, editors and illustrators, series            |
 
@@ -69,6 +70,36 @@ Writing authors writes each one both ways, and replaces `artistdesc` (the
 artists as Kodi shows them) with the names joined by `/`, so Kodi does
 not show the old artists.
 
+## CUE sheets
+
+A CUE sheet lists an audio file's tracks, which the reader takes as the
+book's chapters. The commands before the first track give the book's
+`TITLE`, each `PERFORMER` as an author, `REM DATE` and each `REM GENRE`;
+each track's `TITLE` and `INDEX 01` (in 1/75 s frames) make a chapter. A
+sheet with several `FILE`s times each track from the start of its own
+file, so its chapters are left unstated.
+
+A write edits a sheet line by line: the book's details go just before the
+first `FILE`, and new chapters replace every track. When the host passes
+the book's audio files (`audioFiles` in the render request), a write can
+also create a sheet, and writing chapters rebuilds the `FILE` lines from
+those files:
+
+- each chapter goes into the file it starts in, timed from that file's
+  start, and track numbers run on across files;
+- a file that opens partway through a chapter starts with a track that
+  carries that chapter on;
+- with no chapters, the files get no tracks;
+- a file keeps the type the sheet gave it, else takes the type its
+  extension names (`MP3`, `AIFF`, `MP4`, otherwise `WAVE`).
+
+Without the audio files, a write cannot create a sheet or write chapters
+into a sheet with several files. Chapters past a file of unknown length
+are refused, since the write cannot tell where that file ends, and so is a
+chapter that starts after the last file's known end. CUE cannot
+escape `"`, so a value's double quotes are written as single quotes, and
+an audio file name with one is refused.
+
 ## XML
 
 XML is scanned without expanding anything but XML's five entities and
@@ -81,7 +112,7 @@ on a character boundary, repeats and blanks are dropped, and dates must be
 real `YYYY`, `YYYY-MM` or `YYYY-MM-DD` dates. A file is refused only when
 its structure is unreadable: not a JSON object for Libation, not a
 well-formed package for OPF, not a well-formed `<album>` for
-`album.nfo`.
+`album.nfo`, no `FILE` line for a CUE sheet.
 
 ## Develop
 

@@ -6,6 +6,7 @@
  * exactly for the rows with `writes = true`.
  */
 import { parseAlbumNfo, renderAlbumNfo } from "./album-nfo.js";
+import { parseCue, renderCue } from "./cue.js";
 import { parseLibationJson } from "./libation.js";
 import { parseOpf, renderOpf } from "./opf.js";
 import { MAX_FILE_BYTES, invalid } from "./text.js";
@@ -14,6 +15,7 @@ export const DIALECTS = new Map([
     ["libation_json", { parse: parseLibationJson }],
     ["opf", { parse: parseOpf, render: renderOpf }],
     ["kodi_album_nfo", { parse: parseAlbumNfo, render: renderAlbumNfo }],
+    ["cue", { parse: parseCue, render: renderCue }],
 ]);
 /**
  * Finds a dialect.
@@ -52,17 +54,19 @@ export function parseFile(id, bytes, table = DIALECTS) {
  * @param existing - The file as it is now; empty to create it.
  * @param record - Values to write.
  * @param fields - Fields to set.
+ * @param audioFiles - The book's audio files in playback order; empty when
+ *   the host does not know them.
  * @param table - Dialects to look in; tests pass their own.
  * @returns The new file.
  * @throws {DialectFailure} For an unknown or read-only dialect, an existing
  *   file over the cap or unreadable, or a result over the cap.
  */
-export function renderFile(id, existing, record, fields, table = DIALECTS) {
+export function renderFile(id, existing, record, fields, audioFiles = [], table = DIALECTS) {
     const found = dialect(id, table);
     if (found.render === undefined)
         throw invalid(`dialect \`${id}\` is read-only`);
     if (existing.length > MAX_FILE_BYTES) {
         throw invalid(`existing file is over the ${MAX_FILE_BYTES} byte cap`);
     }
-    return found.render(existing, record, fields);
+    return found.render(existing, record, fields, audioFiles);
 }

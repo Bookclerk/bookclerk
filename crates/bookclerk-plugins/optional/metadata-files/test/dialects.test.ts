@@ -117,13 +117,13 @@ describe("requests", () => {
   test("refuse files over the cap", () => {
     const big = new Uint8Array(MAX_FILE_BYTES + 1);
     refuses(() => parseFile("libation_json", big), /over the 262144 byte cap/);
-    refuses(() => renderFile("echo", big, record(), [], ECHO), /existing file is over/);
+    refuses(() => renderFile("echo", big, record(), [], [], ECHO), /existing file is over/);
     refuses(() => encodeFile("x".repeat(MAX_FILE_BYTES + 1)), /rendered file is 262145 bytes/);
     assert.equal(encodeFile("é").length, 2);
   });
 
   test("route a render to the dialect's writer", () => {
-    const out = renderFile("echo", utf8("old"), record({ title: "T" }), ["title"], ECHO);
+    const out = renderFile("echo", utf8("old"), record({ title: "T" }), ["title"], [], ECHO);
     assert.equal(str(out), "T title");
     assert.deepEqual(parseFile("echo", utf8("x"), ECHO).present, []);
   });
@@ -526,6 +526,216 @@ describe("kodi_album_nfo", () => {
       ["title"],
     );
     assert.equal(str(opened), "<album>\n  <title>T</title>\n</album>\n");
+  });
+});
+
+describe("cue", () => {
+  test("reads a sheet's details and chapters", () => {
+    const parsed = parseFile("cue", seed("cue/seed_00.cue"));
+    assert.equal(parsed.title, "The Name of the Wind");
+    assert.equal(parsed.publishedAt, "2009-04-07");
+    assert.deepEqual(parsed.genres, ["Audiobook", "Fantasy"]);
+    assert.deepEqual(
+      parsed.credits.map((c) => c.name),
+      ["Patrick Rothfuss"],
+    );
+    assert.deepEqual(
+      parsed.chapters.map((c) => [c.title, c.startMs]),
+      [
+        ["Prologue: A Silence of Three Parts", 0],
+        ["Chapter 1: A Place for Demons", 312_493],
+        ["Chapter 2: A Beautiful Day", 74_099_987],
+      ],
+    );
+  });
+
+  test("leaves chapters unstated across several files", () => {
+    const parsed = parseFile("cue", seed("cue/seed_01.cue"));
+    assert.deepEqual(parsed.present, ["title"]);
+  });
+
+  test("refuses a sheet with no audio file, and creating one without the audio files", () => {
+    refuses(() => parseFile("cue", utf8('TITLE "x"\n')), /names no audio file/);
+    refuses(() => renderFile("cue", new Uint8Array(), record(), ["title"]), /names no audio file/);
+  });
+
+  test("rewrites the details and tracks it is asked to", () => {
+    const out = str(
+      renderFile(
+        "cue",
+        seed("cue/seed_00.cue"),
+        record({
+          title: 'Say "hi"',
+          chapters: [
+            { title: "One", startMs: 0, depth: 0 },
+            { title: "", startMs: 61_234, depth: 0 },
+          ],
+        }),
+        ["title", "chapters"],
+      ),
+    );
+    assert.match(out, /^REM GENRE "Audiobook"\n/);
+    assert.match(out, /PERFORMER "Patrick Rothfuss"\nTITLE "Say 'hi'"\nFILE /);
+    assert.match(
+      out,
+      /MP4\n {2}TRACK 01 AUDIO\n {4}TITLE "One"\n {4}INDEX 01 00:00:00\n {2}TRACK 02 AUDIO\n {4}INDEX 01 01:01:18\n$/,
+    );
+    assert.deepEqual(
+      parseFile("cue", utf8(out)).chapters.map((c) => [c.title, c.startMs]),
+      [
+        ["One", 0],
+        ["", 61_240],
+      ],
+    );
+  });
+
+  test("keeps line breaks and refuses chapters across several files", () => {
+    const out = str(renderFile("cue", seed("cue/seed_01.cue"), record({ title: "T" }), ["title"]));
+    assert.equal(out, str(seed("cue/seed_01.cue")).replace("Two Files", "T"));
+    refuses(
+      () => renderFile("cue", seed("cue/seed_01.cue"), record(), ["chapters"]),
+      /cannot write chapters/,
+    );
+    const ended = str(renderFile("cue", seed("cue/seed_02.cue"), record(), ["chapters"]));
+    assert.equal(ended, "FILE book.wav WAVE");
+  });
+
+  test("creates a sheet from the book's audio files", () => {
+    const out = str(
+      renderFile(
+        "cue",
+        new Uint8Array(),
+        record({ title: "T" }),
+        ["title"],
+        [
+          { name: "Part 1.m4b", durationMs: 0 },
+          { name: "part2.flac", durationMs: 0 },
+        ],
+      ),
+    );
+    assert.equal(
+      out,
+      ['TITLE "T"', 'FILE "Part 1.m4b" MP4', 'FILE "part2.flac" WAVE', ""].join("\n"),
+    );
+    assert.deepEqual(parseFile("cue", utf8(out)).present, ["title"]);
+  });
+
+  test("lays chapters out across the audio files", () => {
+    const chapters = [
+      { title: "One", startMs: 0, depth: 0 },
+      { title: "Two", startMs: 50_000, depth: 0 },
+      { title: "Three", startMs: 260_000, depth: 0 },
+    ];
+    const audio = [
+      { name: "a.mp3", durationMs: 100_000 },
+      { name: "b.mp3", durationMs: 100_000 },
+      { name: "c.aiff", durationMs: 0 },
+    ];
+    const out = str(
+      renderFile("cue", seed("cue/seed_01.cue"), record({ chapters }), ["chapters"], audio),
+    );
+    assert.equal(
+      out,
+      [
+        'TITLE "Two Files"',
+        'FILE "a.mp3" MP3',
+        "  TRACK 01 AUDIO",
+        '    TITLE "One"',
+        "    INDEX 01 00:00:00",
+        "  TRACK 02 AUDIO",
+        '    TITLE "Two"',
+        "    INDEX 01 00:50:00",
+        'FILE "b.mp3" MP3',
+        "  TRACK 03 AUDIO",
+        '    TITLE "Two"',
+        "    INDEX 01 00:00:00",
+        'FILE "c.aiff" AIFF',
+        "  TRACK 04 AUDIO",
+        '    TITLE "Two"',
+        "    INDEX 01 00:00:00",
+        "  TRACK 05 AUDIO",
+        '    TITLE "Three"',
+        "    INDEX 01 01:00:00",
+        "",
+      ].join("\r\n"),
+    );
+  });
+
+  test("keeps a file's type and rebuilds a one-file sheet's tracks", () => {
+    const out = str(
+      renderFile(
+        "cue",
+        utf8('REM COMMENT "x"\nFILE "book.m4b" WAVE\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n'),
+        record({ chapters: [{ title: "Late", startMs: 1_000, depth: 0 }] }),
+        ["chapters"],
+        [{ name: "book.m4b", durationMs: 0 }],
+      ),
+    );
+    assert.equal(
+      out,
+      'REM COMMENT "x"\nFILE "book.m4b" WAVE\n  TRACK 01 AUDIO\n    TITLE "Late"\n    INDEX 01 00:01:00\n',
+    );
+    assert.deepEqual(
+      parseFile("cue", utf8(out)).chapters.map((c) => [c.title, c.startMs]),
+      [["Late", 1_000]],
+    );
+  });
+
+  test("reads the types a sheet gives its files and keeps the book's lines", () => {
+    const out = str(
+      renderFile(
+        "cue",
+        utf8('FILE "a.mp3\nTITLE "Kept"\nFILE b.wav\nFILE c d.aiff WAVE\n  TRACK 01 AUDIO\n'),
+        record(),
+        ["chapters"],
+        [
+          { name: "a.mp3", durationMs: 1 },
+          { name: "b.wav", durationMs: 1 },
+          { name: "c d.aiff", durationMs: 0 },
+        ],
+      ),
+    );
+    assert.equal(out, 'TITLE "Kept"\nFILE "a.mp3" MP3\nFILE "b.wav" WAVE\nFILE "c d.aiff" WAVE\n');
+  });
+
+  test("refuses audio files it cannot write", () => {
+    const chapters = [{ title: "One", startMs: 0, depth: 0 }];
+    refuses(
+      () =>
+        renderFile(
+          "cue",
+          new Uint8Array(),
+          record({ chapters }),
+          ["chapters"],
+          [
+            { name: "a.mp3", durationMs: 0 },
+            { name: "b.mp3", durationMs: 0 },
+          ],
+        ),
+      /cannot write chapters across audio files of unknown length/,
+    );
+    refuses(
+      () =>
+        renderFile(
+          "cue",
+          new Uint8Array(),
+          record({ chapters: [{ title: "Late", startMs: 2_000, depth: 0 }] }),
+          ["chapters"],
+          [{ name: "a.mp3", durationMs: 1_000 }],
+        ),
+      /starts after the book's audio files end/,
+    );
+    refuses(
+      () =>
+        renderFile(
+          "cue",
+          new Uint8Array(),
+          record(),
+          ["title"],
+          [{ name: 'a"b.mp3', durationMs: 0 }],
+        ),
+      /double quote/,
+    );
   });
 });
 

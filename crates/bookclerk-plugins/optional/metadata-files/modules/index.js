@@ -58,7 +58,7 @@ export class MetadataFiles extends MetadataFilesEntrypoint {
      *   the size cap.
      */
     render(params) {
-        return guarded(() => renderFile(params.dialect, params.existing, params.record, params.fields));
+        return guarded(() => renderFile(params.dialect, params.existing, params.record, params.fields, params.audioFiles));
     }
 }
 /** Identity the host merges over `plugin.toml`. */

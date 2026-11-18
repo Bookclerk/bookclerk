@@ -4850,12 +4850,31 @@ _metadata_file_parse_reply_codec = _Codec(1, 1, _write_metadata_file_parse_reply
 """Wire codec for ``MetadataFileParseReply`` (1 data words, 1 pointers)."""
 
 
+def _write_metadata_audio_file(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["name"])
+    s.set_u64(0, v["durationMs"])
+
+
+def _read_metadata_audio_file(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "name": s.get_text(0),
+        "durationMs": s.get_u64(0),
+    }
+
+
+_metadata_audio_file_codec = _Codec(1, 1, _write_metadata_audio_file, _read_metadata_audio_file)
+"""Wire codec for ``MetadataAudioFile`` (1 data words, 1 pointers)."""
+
+
 def _write_metadata_file_render_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["dialect"])
     if v.get("record") is not None:
         _metadata_file_record_codec.write(s.init_struct(1, 2, 14), v["record"], caps)
     s.set_u16_list(2, [_ord(A.METADATA_FIELDS, v, "MetadataField") for v in v["fields"]])
     s.set_data(3, v["existing"])
+    items = s.init_struct_list(4, len(v["audioFiles"]), 1, 1)
+    for item, elem in zip(items, v["audioFiles"], strict=True):
+        _metadata_audio_file_codec.write(item, elem, caps)
 
 
 def _read_metadata_file_render_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -4864,11 +4883,12 @@ def _read_metadata_file_render_params(s: _StructReader, caps: _CapTable) -> Any:
         "record": _metadata_file_record_codec.read(s.get_struct(1, 2, 14), caps),
         "fields": [_from_ord(A.METADATA_FIELDS, v, "MetadataField") for v in s.get_u16_list(2)],
         "existing": s.get_data(3),
+        "audioFiles": [_metadata_audio_file_codec.read(item, caps) for item in s.get_struct_list(4, 1, 1)],
     }
 
 
-_metadata_file_render_params_codec = _Codec(0, 4, _write_metadata_file_render_params, _read_metadata_file_render_params)
-"""Wire codec for ``MetadataFileRenderParams`` (0 data words, 4 pointers)."""
+_metadata_file_render_params_codec = _Codec(0, 5, _write_metadata_file_render_params, _read_metadata_file_render_params)
+"""Wire codec for ``MetadataFileRenderParams`` (0 data words, 5 pointers)."""
 
 
 def _write_metadata_file_rendered(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -8241,12 +8261,12 @@ _metadata_files_parse_results_codec = _Codec(0, 1, _write_metadata_files_parse_r
 
 def _write_metadata_files_render_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("params") is not None:
-        _metadata_file_render_params_codec.write(s.init_struct(0, 0, 4), v["params"], caps)
+        _metadata_file_render_params_codec.write(s.init_struct(0, 0, 5), v["params"], caps)
 
 
 def _read_metadata_files_render_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "params": _metadata_file_render_params_codec.read(s.get_struct(0, 0, 4), caps),
+        "params": _metadata_file_render_params_codec.read(s.get_struct(0, 0, 5), caps),
     }
 
 
