@@ -91,6 +91,7 @@ mod accounts;
 mod catalog;
 mod clerk;
 mod clerk_socket;
+mod copies;
 mod frames;
 mod join;
 mod keys;
@@ -129,6 +130,11 @@ pub use clerk_socket::{
     ClerkTopic, LibraryFrame, CLERK_CONNECT_PATH, CLERK_SOCKET_VERSION, CLERK_SUBPROTOCOL,
     MAX_CLERK_FRAME_BYTES, MAX_CLERK_TOPICS, MAX_CLERK_TOPIC_BYTES,
 };
+pub use copies::{
+    copy_grant_problem, copy_granted_problem, is_copy_id, parse_copy_range, CopyFile,
+    CopyGrantedFrame, CopyRange, CopyRole, COPIES_PATH, COPY_AUTH_SCHEME, MAX_COPY_FILES,
+    MAX_COPY_FILE_BYTES, MAX_COPY_NAME_BYTES, MAX_COPY_TOKEN_SECS,
+};
 pub use ed25519_dalek::SigningKey;
 pub use frames::{
     is_destination_id, is_storage_key, scan_pass_end_problem, scan_removed_problem, AcquireTarget,
@@ -160,10 +166,11 @@ pub use requests::{
     MAX_CLAIMED_REQUESTS, MAX_REQUEST_JOB_BYTES,
 };
 pub use sealed::{
-    instance_secrets_aad, open, open_instance_secrets, open_secret_update, open_secrets,
-    open_upload_token, seal, seal_instance_secrets, seal_secret_update, seal_secrets,
-    seal_upload_token, secret_update_aad, secrets_aad, upload_token_aad, SealError, SecretEntry,
-    SecretRef, SecretValue, INSTANCE_SECRETS_AAD_DOMAIN, SEALED_BOX_INFO, SEALED_BOX_OVERHEAD,
+    copy_token_aad, instance_secrets_aad, open, open_copy_token, open_instance_secrets,
+    open_secret_update, open_secrets, open_upload_token, seal, seal_copy_token,
+    seal_instance_secrets, seal_secret_update, seal_secrets, seal_upload_token, secret_update_aad,
+    secrets_aad, upload_token_aad, SealError, SecretEntry, SecretRef, SecretValue,
+    COPY_TOKEN_AAD_DOMAIN, INSTANCE_SECRETS_AAD_DOMAIN, SEALED_BOX_INFO, SEALED_BOX_OVERHEAD,
     SECRETS_AAD_DOMAIN, SECRET_UPDATE_AAD_DOMAIN, UPLOAD_TOKEN_AAD_DOMAIN,
 };
 pub use shared_branch::{

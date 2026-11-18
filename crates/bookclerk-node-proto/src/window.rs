@@ -170,7 +170,7 @@ pub struct WindowCopy {
 
 /// True for a media type token: `type/subtype` of lowercase letters,
 /// digits and `+ - .`, at most [`MAX_COPY_CONTENT_TYPE_BYTES`] bytes.
-fn is_media_type(text: &str) -> bool {
+pub(crate) fn is_media_type(text: &str) -> bool {
     let part = |part: &str| {
         !part.is_empty()
             && part

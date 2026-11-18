@@ -26,6 +26,7 @@ pub mod configuration_audit;
 pub mod configuration_changes;
 pub mod configuration_documents;
 pub mod contributors;
+pub mod copy_grants;
 pub mod credits;
 pub mod discover_candidates;
 pub mod discover_feeds;
