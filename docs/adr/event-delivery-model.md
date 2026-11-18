@@ -1,6 +1,8 @@
 # ADR: Event delivery follows the Workers model
 
-- **Status:** Accepted (decisions 1 to 13); later phases proposed
+- **Status:** Accepted (decisions 1 to 13); later phases proposed.
+  Amended 2026-11-18: decision 7 covers every storage-only plugin, not
+  only `local` and `s3`
 - **Date:** 2026-11-11
 
 ## Context
@@ -111,7 +113,10 @@ callers await a promise, and long work is a durable job.
    holds it the same way. The backend's name, instance id, scan placement
    and copy support are captured from the first guest, so placement and
    dedupe never wake it. Other storage guests have no host backend to
-   proxy and stay running.
+   proxy and stay running. (Amended 2026-11-18: every storage guest now
+   has a host backend and is a destination, so every storage-only guest
+   sleeps this way; a guest that also belongs to another family stays
+   running.)
 8. **Pushed sockets are host-brokered.** A plugin that listens on a
    WebSocket can still sleep, as with Durable Objects' hibernatable
    WebSockets. It opens sockets through a `[sockets]` binding; the host

@@ -1353,13 +1353,17 @@ pub(crate) async fn get_edition_cover(
         .map_err(|err| read_failed(ROUTE, &err))?
         .and_then(|acquisition| acquisition.storage_key)
         .ok_or_else(no_cover)?;
-    let local = state
+    // The acquisition's key is the primary destination's (the first one).
+    let primary = state
         .destinations
         .read()
         .await
-        .local()
+        .destinations()
+        .ok()
+        .and_then(|deployed| deployed.into_iter().next())
+        .map(|primary| primary.backend)
         .ok_or_else(no_cover)?;
-    let bytes = match local
+    let bytes = match primary
         .get(&bookclerk_acquire::sidecar_key(&storage_key, "jpg"))
         .await
     {

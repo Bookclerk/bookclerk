@@ -2306,12 +2306,14 @@ async fn the_local_destination_sleeps_when_idle_and_wakes_on_its_next_call() {
     let proxy = runtime
         .on_demand(instance.id.as_str())
         .expect("the local destination runs on demand");
-    let local = runtime
-        .destinations
-        .read()
-        .await
-        .local()
-        .expect("local backend published");
+    let deployed = runtime.destinations.read().await.destinations().unwrap();
+    assert_eq!(deployed.len(), 1);
+    assert!(deployed[0].id.is_local());
+    assert_eq!(
+        deployed[0].key_style,
+        bookclerk_config::DestinationKeyStyle::Filesystem
+    );
+    let local = std::sync::Arc::clone(&deployed[0].backend);
     local
         .put(
             "Author/Book/book.m4b",

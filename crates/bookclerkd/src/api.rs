@@ -4131,13 +4131,10 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
     let (listen, storage_backend) = {
         let cfg = state.config.read().await;
         let destinations = state.destinations.read().await;
-        let mut names = Vec::new();
-        if destinations.local().is_some() {
-            names.push("local");
-        }
-        if destinations.s3().is_some() {
-            names.push("s3");
-        }
+        let names: Vec<String> = destinations
+            .destinations()
+            .map(|deployed| deployed.into_iter().map(|d| d.id.to_string()).collect())
+            .unwrap_or_default();
         (
             cfg.daemon.listen.join_comma(),
             if names.is_empty() {

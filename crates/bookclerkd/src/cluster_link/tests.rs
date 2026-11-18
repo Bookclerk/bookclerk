@@ -1510,7 +1510,7 @@ mod results_and_uploads {
 
     /// An owner's title a [`StubGuests`] imported: the owner's book uuid and
     /// the `(destination, key)` files kept.
-    type ImportedTitle = (String, Vec<(&'static str, String)>);
+    type ImportedTitle = (String, Vec<(bookclerk_config::DestinationId, String)>);
 
     /// Sets its flag when dropped.
     struct DropFlag(Arc<AtomicBool>);
@@ -1624,7 +1624,7 @@ mod results_and_uploads {
                 .iter()
                 .map(|root| {
                     (
-                        "local",
+                        bookclerk_config::DestinationId::local(),
                         Box::new(bookclerk_storage::LocalFsBackend::new(root.clone()).unwrap())
                             as Box<dyn StorageBackend>,
                     )
@@ -2191,7 +2191,10 @@ mod results_and_uploads {
         );
         assert_eq!(
             guests.imported.lock().unwrap().as_slice(),
-            &[(book.uuid.clone(), vec![("local", key.clone())])],
+            &[(
+                book.uuid.clone(),
+                vec![(bookclerk_config::DestinationId::local(), key.clone())]
+            )],
             "the owner's own title joins the branch's library with its copy"
         );
         assert!(job(&world.owner, &job_id)
@@ -2551,7 +2554,7 @@ mod results_and_uploads {
     #[tokio::test]
     async fn each_owner_destination_gets_its_own_key() {
         use crate::node_api::uploads::{set_test_destinations, TestDestination};
-        use bookclerk_config::{DestinationNaming, OutputBackendKind};
+        use bookclerk_config::{DestinationId, DestinationKeyStyle, DestinationNaming};
 
         let _dek = crate::auth::tests::process_dek_lock().await;
         let world = linked().await;
@@ -2561,7 +2564,8 @@ mod results_and_uploads {
             world.owner_files.path(),
             vec![
                 TestDestination {
-                    kind: OutputBackendKind::Local,
+                    id: DestinationId::local(),
+                    key_style: DestinationKeyStyle::Filesystem,
                     root: local_out.path().to_path_buf(),
                     naming: DestinationNaming {
                         folder_template: Some("<author>/<title>".into()),
@@ -2570,7 +2574,8 @@ mod results_and_uploads {
                     },
                 },
                 TestDestination {
-                    kind: OutputBackendKind::S3,
+                    id: DestinationId::new("s3").unwrap(),
+                    key_style: DestinationKeyStyle::ObjectStore,
                     root: s3_out.path().to_path_buf(),
                     naming: DestinationNaming {
                         folder_template: Some("library/<asin>".into()),
@@ -2672,8 +2677,7 @@ mod results_and_uploads {
             ]
         );
         let destination = |id: &str| HostDestination {
-            id: id.into(),
-            kind: serde_json::from_value(serde_json::json!(id)).unwrap(),
+            id: bookclerk_config::DestinationId::new(id).unwrap(),
             options: Default::default(),
         };
         let destinations = vec![destination("local"), destination("s3")];
@@ -2732,8 +2736,7 @@ mod results_and_uploads {
                 .unwrap()],
         };
         let destinations = vec![HostDestination {
-            id: "local".into(),
-            kind: serde_json::from_value(serde_json::json!("local")).unwrap(),
+            id: bookclerk_config::DestinationId::local(),
             options: Default::default(),
         }];
         let in_process = bookclerk_media::MediaPool::in_process();
@@ -2896,7 +2899,7 @@ mod results_and_uploads {
     #[tokio::test]
     async fn an_upload_is_refused_after_the_destinations_change() {
         use crate::node_api::uploads::{set_test_destinations, TestDestination};
-        use bookclerk_config::{DestinationNaming, OutputBackendKind};
+        use bookclerk_config::{DestinationId, DestinationKeyStyle, DestinationNaming};
 
         let _dek = crate::auth::tests::process_dek_lock().await;
         let world = linked().await;
@@ -2906,12 +2909,14 @@ mod results_and_uploads {
             world.owner_files.path(),
             vec![
                 TestDestination {
-                    kind: OutputBackendKind::Local,
+                    id: DestinationId::local(),
+                    key_style: DestinationKeyStyle::Filesystem,
                     root: local_out.path().to_path_buf(),
                     naming: DestinationNaming::default(),
                 },
                 TestDestination {
-                    kind: OutputBackendKind::S3,
+                    id: DestinationId::new("s3").unwrap(),
+                    key_style: DestinationKeyStyle::ObjectStore,
                     root: s3_out.path().to_path_buf(),
                     naming: DestinationNaming::default(),
                 },
@@ -3029,7 +3034,7 @@ mod results_and_uploads {
     #[tokio::test]
     async fn a_commit_is_refused_after_the_destinations_change() {
         use crate::node_api::uploads::{set_test_destinations, TestDestination};
-        use bookclerk_config::{DestinationNaming, OutputBackendKind};
+        use bookclerk_config::{DestinationId, DestinationKeyStyle, DestinationNaming};
 
         let _dek = crate::auth::tests::process_dek_lock().await;
         let world = linked().await;
@@ -3056,12 +3061,14 @@ mod results_and_uploads {
             world.owner_files.path(),
             vec![
                 TestDestination {
-                    kind: OutputBackendKind::Local,
+                    id: DestinationId::local(),
+                    key_style: DestinationKeyStyle::Filesystem,
                     root: owner_out.path().to_path_buf(),
                     naming: DestinationNaming::default(),
                 },
                 TestDestination {
-                    kind: OutputBackendKind::S3,
+                    id: DestinationId::new("s3").unwrap(),
+                    key_style: DestinationKeyStyle::ObjectStore,
                     root: s3_out.path().to_path_buf(),
                     naming: DestinationNaming::default(),
                 },
@@ -4382,7 +4389,10 @@ mod results_and_uploads {
         let placed = copy_to_local_destinations(&guests, "t1", &outbox, &acquired, &copied)
             .await
             .unwrap();
-        assert_eq!(placed, vec![("local", key.clone())]);
+        assert_eq!(
+            placed,
+            vec![(bookclerk_config::DestinationId::local(), key.clone())]
+        );
         let copies = copied.into_inner().unwrap();
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].1, key);

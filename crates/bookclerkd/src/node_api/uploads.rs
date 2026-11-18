@@ -113,18 +113,12 @@ const MAX_DETAIL_BYTES: usize = 4 * 1024;
 
 /// One output destination deployed on this owner node.
 pub(crate) struct OwnerDestination {
-    /// Its id in plans and manifests ([`destination_id`]).
+    /// Its id in plans and manifests: its storage plugin's alias.
     pub id: String,
     /// Its storage backend (a guest's session, or a test stand-in).
     pub backend: Box<dyn StorageBackend>,
     /// Its naming and packaging options.
     pub options: DownloadOptions,
-}
-
-/// The id of the destination of `kind`: its lowercase kind name (a node
-/// deploys at most one destination per kind).
-pub(crate) fn destination_id(kind: bookclerk_config::OutputBackendKind) -> String {
-    bookclerk_acquire::destination_id(kind).to_string()
 }
 
 #[cfg(test)]
@@ -136,13 +130,16 @@ mod test_destinations {
     use std::path::{Path, PathBuf};
     use std::sync::{LazyLock, Mutex};
 
-    use bookclerk_config::{DestinationNaming, OutputBackendKind};
+    use bookclerk_config::{DestinationId, DestinationKeyStyle, DestinationNaming};
 
-    /// One stand-in destination: its kind, root and naming overrides.
+    /// One stand-in destination: its id, key style, root and naming
+    /// overrides.
     #[derive(Clone)]
     pub(crate) struct TestDestination {
-        /// The kind it stands in for.
-        pub kind: OutputBackendKind,
+        /// The destination id it stands in for.
+        pub id: DestinationId,
+        /// How the destination it stands in for names keys.
+        pub key_style: DestinationKeyStyle,
         /// Where its files go.
         pub root: PathBuf,
         /// Its naming overrides.
@@ -158,7 +155,8 @@ mod test_destinations {
         set_many(
             files_dir,
             vec![TestDestination {
-                kind: OutputBackendKind::Local,
+                id: DestinationId::local(),
+                key_style: DestinationKeyStyle::Filesystem,
                 root: root.to_path_buf(),
                 naming: DestinationNaming::default(),
             }],
@@ -188,7 +186,7 @@ pub(crate) use test_destinations::{
 ///
 /// # Errors
 ///
-/// Returns an error when none is deployed or two of one kind are.
+/// Returns an error when none is deployed or two instances serve one id.
 pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<OwnerDestination>> {
     let cfg = state.config.read().await.clone();
     #[cfg(test)]
@@ -196,11 +194,11 @@ pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<O
         let mut out = Vec::with_capacity(stand_ins.len());
         for stand_in in stand_ins {
             out.push(OwnerDestination {
-                id: destination_id(stand_in.kind),
+                id: stand_in.id.to_string(),
                 backend: Box::new(bookclerk_storage::LocalFsBackend::new(stand_in.root)?),
                 options: DownloadOptions::for_destination(
                     &cfg,
-                    stand_in.kind,
+                    stand_in.key_style,
                     &stand_in.naming,
                     "",
                 ),
@@ -215,7 +213,7 @@ pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<O
         .items
         .into_iter()
         .map(|item| OwnerDestination {
-            id: destination_id(item.kind),
+            id: item.id.to_string(),
             backend: item.backend,
             options: item.options,
         })
