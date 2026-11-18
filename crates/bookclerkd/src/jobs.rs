@@ -7,8 +7,8 @@ use bookclerk_acquire::{acquire_book_indexed, AcquireRequest, MatchStorageOption
 use bookclerk_config::BadBookAction;
 use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::{
-    is_downloadable, AcquireStatus, AcquireTitle, BookRecord, EnqueueJobSpec, EnqueueOutcome,
-    JobKind, JobPayload, JobTrigger,
+    is_downloadable, AcquireStatus, AcquireTitle, EnqueueJobSpec, EnqueueOutcome, JobKind,
+    JobPayload, JobTrigger,
 };
 use bookclerk_source::ScanOptions;
 use tracing::{error, info, warn};
@@ -1199,8 +1199,7 @@ fn downloadable_kind(content_kind: &str, download_episodes: bool) -> bool {
     is_downloadable(content_kind) && (download_episodes || content_kind != "episode")
 }
 
-/// The pending-work rule shared by [`acquire_job_includes_title`] and
-/// [`acquire_job_includes_book`].
+/// The pending-work rule of [`acquire_job_includes_title`].
 ///
 /// # Arguments
 ///
@@ -1243,23 +1242,6 @@ pub(crate) fn acquire_job_includes_title(
         title.content_kind,
         title.status,
         (title.pdf_status, title.pdf_storage_key.as_deref()),
-        download_pdf,
-        download_episodes,
-    )
-}
-
-/// [`acquire_job_includes_title`] for a flat library row: what a host's
-/// acquire plan still reads until the cluster readers move to the library
-/// model (book model step 6, PR 4e).
-pub(crate) fn acquire_job_includes_book(
-    book: &BookRecord,
-    download_pdf: bool,
-    download_episodes: bool,
-) -> bool {
-    pending_work(
-        &book.content_kind,
-        book.acquire_status,
-        (book.pdf_status, book.pdf_storage_key.as_deref()),
         download_pdf,
         download_episodes,
     )
@@ -1336,10 +1318,6 @@ mod tests {
             !acquire_job_includes_title(&book, false, true),
             "without download_pdf the acquired title stays skipped"
         );
-        // A host's plan reads the flat row by the same rule.
-        let row = store.get_book("B00TEST", "user-1").await.unwrap().unwrap();
-        assert!(acquire_job_includes_book(&row, true, true));
-        assert!(!acquire_job_includes_book(&row, false, true));
     }
 
     /// Audio another account's title acquired is already in the library:

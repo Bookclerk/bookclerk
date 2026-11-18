@@ -1534,7 +1534,8 @@ the handed credentials only. There is no in-process fallback.
   once as a full pass; tokens that name only store state (Audible's)
   carry over.
 - **Acquire plan.** `acquire.plan` answers `acquire.targets {targets,
-  destinations}`: the owner's pending titles the job covers and every
+  destinations}`: the titles the job covers whose edition is not acquired
+  yet (read from the account holdings, as a local acquire reads them) and every
   output destination deployed on the answering owner node, each with an
   id and its own naming options. The Host acquires each title into an
   outbox with one sub-directory per destination, so each destination's
