@@ -258,7 +258,7 @@ export function signInPage(
   privacy: string | null = null,
 ): SafeHtml {
   const start = next ? `/auth/github?next=${encodeURIComponent(next)}` : "/auth/github";
-  const policy = privacy ? html` <a href="${privacy}">Privacy</a>` : "";
+  const policy = privacy ? html` ${externalLink(privacy, "Privacy")}` : "";
   return layout({
     title: "Sign in",
     bodyClass: "center",
@@ -287,6 +287,25 @@ function ghUrl(cfg: { owner: string; repo: string }, kind: "issues" | "pull", n:
 }
 
 /**
+ * Link that leaves the dashboard, for example to GitHub or the website.
+ *
+ * It opens in a new tab so the dashboard page stays where it was, with
+ * `noopener` (the new page gets no `window.opener` handle on this one) and
+ * `noreferrer` (no `Referer` header, as the pages' `Referrer-Policy:
+ * no-referrer` already asks). A visually hidden note tells screen-reader
+ * users about the new tab.
+ *
+ * @param href - Absolute URL outside the dashboard.
+ * @param body - Link text or markup; text is escaped.
+ * @param className - Classes for the anchor, or "" for none.
+ * @returns The anchor.
+ */
+export function externalLink(href: string, body: unknown, className: string = ""): SafeHtml {
+  const cls = className ? html` class="${className}"` : "";
+  return html`<a${cls} href="${href}" target="_blank" rel="noopener noreferrer">${body}<span class="vh"> (opens in a new tab)</span></a>`;
+}
+
+/**
  * Chip after an issue's title saying what kind of issue it is: an untriaged
  * batch, or a regression issue linking the closed issue it goes back to.
  *
@@ -298,7 +317,7 @@ function ghUrl(cfg: { owner: string; repo: string }, kind: "issues" | "pull", n:
 function issueKindChip(cfg: Repo, i: Pick<IssueRow, "kind" | "regression_of">): SafeHtml | string {
   if (i.kind === "fallback") return html` <span class="chip none">untriaged batch</span>`;
   if (i.regression_of != null)
-    return html` <a class="chip crit" href="${ghUrl(cfg, "issues", i.regression_of)}">regression of #${i.regression_of}</a>`;
+    return html` ${externalLink(ghUrl(cfg, "issues", i.regression_of), `regression of #${i.regression_of}`, "chip crit")}`;
   return "";
 }
 
@@ -316,7 +335,11 @@ function issueChip(
   state: string | null | undefined,
 ): SafeHtml {
   if (!n) return html`<span class="chip none">Not filed</span>`;
-  return html`<a class="chip ${state === "open" ? "open" : "closed"}" href="${ghUrl(cfg, "issues", n)}">#${n}</a>`;
+  return externalLink(
+    ghUrl(cfg, "issues", n),
+    `#${n}`,
+    `chip ${state === "open" ? "open" : "closed"}`,
+  );
 }
 
 /**
@@ -800,14 +823,14 @@ export function reportPage(d: ReportData): SafeHtml {
           }
           ${d.issues.length === 0 && d.openIssues?.length ? html`<div class="link-item">${linkForm({ action: "attach", report: String(r.report_id), back: `/reports/${r.report_id}`, label: "Attach", options: d.openIssues, pickerLabel: "Attach to issue" })}</div>` : ""}
           ${d.issues.length > 1 ? html`<p class="fine"><span class="chip crit">Conflict</span> ${d.issues.length} issues list this report; it counts under #${d.issues[0]?.number} until a member detaches it from the others.</p>` : ""}
-          ${d.prs.map((pr) => html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span><a href="${ghUrl(d.cfg, "pull", pr.pr_number)}">#${pr.pr_number} ${pr.title}</a></div>`)}
-          ${fix && fixNote(fix) ? html`<div class="link-item"><span class="chip ${fix.fixedIn ? "merged" : "none"}">${fix.fixedIn ? "Fixed" : "Merged"}</span><span class="fine">${fixNote(fix)}${d.issues.some((i) => Number(i.number) === fix.issue) ? "" : html`, per <a href="${ghUrl(d.cfg, "issues", fix.issue)}">#${fix.issue}</a>, which tracks this signature`}</span></div>` : ""}
+          ${d.prs.map((pr) => html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span>${externalLink(ghUrl(d.cfg, "pull", pr.pr_number), `#${pr.pr_number} ${pr.title}`)}</div>`)}
+          ${fix && fixNote(fix) ? html`<div class="link-item"><span class="chip ${fix.fixedIn ? "merged" : "none"}">${fix.fixedIn ? "Fixed" : "Merged"}</span><span class="fine">${fixNote(fix)}${d.issues.some((i) => Number(i.number) === fix.issue) ? "" : html`, per ${externalLink(ghUrl(d.cfg, "issues", fix.issue), `#${fix.issue}`)}, which tracks this signature`}</span></div>` : ""}
           ${fix && (d.regression || fix.after > 0) ? html`<div class="link-item"><span class="chip crit">${d.regression ? "Regression" : "Seen after fix"}</span><span class="fine">${d.regression ? `this report runs ${r.version}, after the fix; ` : ""}${afterFixText(fix)}</span></div>` : ""}
         </div></section>
         <section class="panel s12"><h2>Event log <span class="note">secrets were redacted on the client before upload</span></h2>
           ${
             d.stored
-              ? html`<div class="filters" role="group" aria-label="Levels">${filters}</div><div class="log" id="log" role="log" aria-label="Report events">${log.rows}</div>`
+              ? html`<div class="log-tools"><div class="filters" role="group" aria-label="Levels">${filters}</div><div class="copy-tools" hidden><button type="button" class="log-copy" data-copy="shown">Copy shown</button><button type="button" class="log-copy" data-copy="all">Copy all</button><span class="fine" id="copy-status" role="status"></span></div></div><div class="log" id="log" role="log" aria-label="Report events" data-report="${r.report_id}" data-version="${r.version}" data-platform="${`${r.os} ${r.arch}`.trim()}" data-trigger="${r.trigger}">${log.rows}</div>`
               : html`<p class="banner">The stored report could not be read from storage. The index entry above is all that is available.</p>`
           }
         </section>
@@ -848,13 +871,13 @@ export function issuesPage(d: IssuesData): SafeHtml {
                 const open = i.prs.find((p) => p.state === "open");
                 const pr = merged ?? open;
                 return html`<tr>
-                <td class="issue-cell"><a href="/issues/${i.number}"><b>#${i.number}</b> ${i.title}</a>${issueKindChip(d.cfg, i)} <a class="quiet" href="${ghUrl(d.cfg, "issues", i.number)}">GitHub</a></td>
+                <td class="issue-cell"><a href="/issues/${i.number}"><b>#${i.number}</b> ${i.title}</a>${issueKindChip(d.cfg, i)} ${externalLink(ghUrl(d.cfg, "issues", i.number), "GitHub", "quiet")}</td>
                 <td><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span></td>
                 <td class="r num">${fmtInt(i.reports)}</td>
                 <td>${sparkline(dailySeries(d.now, 14, i.days), fix && fix.after > 0 ? "brick" : "teal")}</td>
                 <td class="num">${i.first_seen ? html`${fmtDay(i.first_seen)} · <span class="mono">${i.first_version}</span>` : ""}</td>
                 <td class="num">${i.last_seen ? html`${fmtDay(i.last_seen)} · <span class="mono">${i.last_version}</span>` : ""}</td>
-                <td>${pr ? html`<a class="chip ${pr.state}" href="${ghUrl(d.cfg, "pull", pr.pr_number)}">PR #${pr.pr_number} ${pr.state}</a>` : html`<span class="fine">none linked</span>`}${fixNote(fix) ? html` <span class="fine">${fixNote(fix)}</span>` : ""}</td>
+                <td>${pr ? html`${externalLink(ghUrl(d.cfg, "pull", pr.pr_number), `PR #${pr.pr_number} ${pr.state}`, `chip ${pr.state}`)}` : html`<span class="fine">none linked</span>`}${fixNote(fix) ? html` <span class="fine">${fixNote(fix)}</span>` : ""}</td>
                 <td class="r num">${!fix ? html`<span class="fine">no fix yet</span>` : fix.after > 0 ? html`<span class="chip crit" title="${afterFixText(fix)}">${fmtInt(fix.after)} ${fix.fixedIn ? "regressions" : "since merge"}</span>` : "0"}</td></tr>`;
               })
             : html`<tr><td colspan="8" class="empty">No diagnostics issues in this view.</td></tr>`
@@ -920,7 +943,7 @@ export function issuePage(d: IssueData): SafeHtml {
     body: html`<div class="wrap">
       <div class="toolbar column"><span class="crumb"><a href="/issues">Issues</a> / #${n}</span>
         <h1>#${n} ${i.title}</h1>
-        <span class="links-row"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span>${issueKindChip(d.cfg, i)} <a href="${ghUrl(d.cfg, "issues", n)}">Open on GitHub</a></span></div>
+        <span class="links-row"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span>${issueKindChip(d.cfg, i)} ${externalLink(ghUrl(d.cfg, "issues", n), "Open on GitHub")}</span></div>
       <div data-live="pending">${
         t.outdated || d.updateNote
           ? html`<div class="banner">${
@@ -946,7 +969,7 @@ export function issuePage(d: IssueData): SafeHtml {
             t.prs.length
               ? t.prs.map(
                   (pr) =>
-                    html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span><a href="${ghUrl(d.cfg, "pull", pr.pr_number)}">#${pr.pr_number} ${pr.title}</a></div>`,
+                    html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span>${externalLink(ghUrl(d.cfg, "pull", pr.pr_number), `#${pr.pr_number} ${pr.title}`)}</div>`,
                 )
               : html`<p class="fine">No pull request references this issue.</p>`
           }

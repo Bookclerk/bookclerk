@@ -21,6 +21,45 @@ document.addEventListener("DOMContentLoaded", () => {
       log?.classList.toggle(`hide-${button.dataset.level}`, !on);
     });
   }
+
+  // Event-log copy buttons put the rows on the clipboard as plain text, one
+  // event per line with its fields separated by spaces, under a line naming
+  // the report. "Copy shown" takes the rows the level toggles leave visible;
+  // "Copy all" takes every row. The buttons stay hidden without this script.
+  const tools = document.querySelector(".copy-tools");
+  const status = document.getElementById("copy-status");
+  if (log && tools && navigator.clipboard) {
+    tools.hidden = false;
+    const part = (row, cls) => row.querySelector(`.${cls}`)?.textContent?.trim() ?? "";
+    const line = (row) =>
+      [part(row, "t"), part(row, "lv").padEnd(5), part(row, "tg"), part(row, "msg")]
+        .filter((p) => p !== "")
+        .join(" ");
+    let clear = 0;
+    for (const button of tools.querySelectorAll(".log-copy")) {
+      button.addEventListener("click", async () => {
+        const all = button.dataset.copy === "all";
+        const rows = [...log.querySelectorAll(".row")].filter(
+          (row) => all || row.offsetParent !== null,
+        );
+        const d = log.dataset;
+        const head = `Report ${d.report} · ${d.version} · ${d.platform} · trigger ${d.trigger}`;
+        const text = [head, ...rows.map(line)].join("\n") + "\n";
+        let said;
+        try {
+          await navigator.clipboard.writeText(text);
+          said = `Copied ${rows.length} ${rows.length === 1 ? "event" : "events"}`;
+        } catch {
+          said = "Could not copy: the browser refused clipboard access";
+        }
+        if (status) status.textContent = said;
+        clearTimeout(clear);
+        clear = setTimeout(() => {
+          if (status) status.textContent = "";
+        }, 4000);
+      });
+    }
+  }
 });
 
 // Live updates. The page opens one WebSocket to /live; the server sends the

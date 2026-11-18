@@ -533,14 +533,15 @@ describe("routing", () => {
   });
 
   it("links the sign-in page to the website's privacy page only when the site is known", async () => {
-    const privacy = /<a href="https:\/\/bookclerk\.app\/privacy">Privacy<\/a>/;
+    const privacy =
+      /<a href="https:\/\/bookclerk\.app\/privacy" target="_blank" rel="noopener noreferrer">Privacy</;
     const linked = await call(
       { ...makeEnv(), SITE_URL: "https://bookclerk.app" },
       new Request(`${ORIGIN}/`),
     );
     assert.match(await linked.text(), privacy);
     const unset = await call(makeEnv(), new Request(`${ORIGIN}/`));
-    assert.doesNotMatch(await unset.text(), /Privacy<\/a>/);
+    assert.doesNotMatch(await unset.text(), />Privacy</);
     const slash = await call(
       { ...makeEnv(), SITE_URL: "https://Bookclerk.app/" },
       new Request(`${ORIGIN}/`),
@@ -555,7 +556,7 @@ describe("routing", () => {
       "javascript:alert(1)",
     ]) {
       const res = await call({ ...makeEnv(), SITE_URL: site }, new Request(`${ORIGIN}/`));
-      assert.doesNotMatch(await res.text(), /Privacy<\/a>/, String(site));
+      assert.doesNotMatch(await res.text(), />Privacy</, String(site));
     }
   });
 
@@ -1065,6 +1066,12 @@ describe("pages", () => {
     ).text();
     assert.match(report, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
     assert.match(report, /\[REDACTED\]/);
+    assert.match(
+      report,
+      /<div class="copy-tools" hidden><button type="button" class="log-copy" data-copy="shown">Copy shown<\/button><button type="button" class="log-copy" data-copy="all">Copy all<\/button>/,
+      "the event log offers copy buttons, hidden until the script shows them",
+    );
+    assert.match(report, new RegExp(`<div class="log" id="log" [^>]*data-report="${ID1}"`));
     const issues = await (
       await call(env, new Request(`${ORIGIN}/issues`, { headers: { cookie } }), b2)
     ).text();
@@ -1099,9 +1106,13 @@ describe("pages", () => {
     ).text();
     assert.match(
       list,
-      /issues\/400">#400<\/a> <a class="quiet" href="\/reports\/[^"]+" title="Listed in 2 issues">\+1<\/a>/,
+      /issues\/400" target="_blank" rel="noopener noreferrer">#400<span class="vh"> \(opens in a new tab\)<\/span><\/a> <a class="quiet" href="\/reports\/[^"]+" title="Listed in 2 issues">\+1<\/a>/,
     );
-    assert.match(list, /issues\/403">#403<\/a><\/td>/, "the report only #403 lists shows no +1");
+    assert.match(
+      list,
+      /issues\/403" target="_blank" rel="noopener noreferrer">#403<span class="vh"> \(opens in a new tab\)<\/span><\/a><\/td>/,
+      "the report only #403 lists shows no +1",
+    );
     const page = await (
       await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
     ).text();
@@ -1114,6 +1125,16 @@ describe("pages", () => {
       /#403 \[diagnostics\] batch 403<\/a> <span class="fine">also lists it<\/span>/,
     );
     assert.match(page, /Conflict<\/span> 2 issues list this report; it counts under #400/);
+    for (const [name, doc] of [
+      ["reports list", list],
+      ["report page", page],
+    ] as const) {
+      const offsite = doc.match(/<a [^>]*href="https?:[^>]*>/g) ?? [];
+      if (name === "reports list") assert.ok(offsite.length > 0, "the list links to GitHub");
+      for (const tag of offsite) {
+        assert.match(tag, / target="_blank" rel="noopener noreferrer">$/, `${name}: ${tag}`);
+      }
+    }
     const issues = await listIssues(env.DASHBOARD_DB, "all", 0, 10);
     assert.deepEqual(
       issues.map((i) => [i.number, Number(i.reports)]).sort(),

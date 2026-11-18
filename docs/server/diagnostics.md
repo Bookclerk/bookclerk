@@ -410,9 +410,12 @@ in with GitHub, and these pages are member-only:
 | --- | --- |
 | `/dash` | The overview |
 | `/reports` | A filterable list of reports |
-| `/reports/<report_id>` | One report, with its event log |
+| `/reports/<report_id>` | One report, with its event log, level toggles, and **Copy shown** / **Copy all** buttons that copy the log as plain text (one event per line under a line naming the report) |
 | `/issues` | Diagnostics issues, their pull requests, the version each fix shipped in, and reports that keep arriving from that version on |
 | `/issues/<number>` | One issue's reports, with the [corrections](#corrections) below |
+
+Links that leave the dashboard, such as issues and pull requests on
+GitHub, open in a new tab without an opener or a referrer.
 
 Without the credentials the routes stay off, and `/` answers like
 `/health`.
