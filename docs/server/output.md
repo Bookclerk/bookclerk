@@ -129,6 +129,35 @@ files, SSO, and EC2, ECS or EKS roles.
 The `endpoint` setting is granted to the plugin as a network endpoint.
 Nothing is read from `BOOKCLERK_S3_*` or `BOOKCLERK_AWS_*` variables.
 
+### Moves and conditional writes
+
+S3 has no rename, so a move copies the object inside the bucket and then
+deletes the original. Some S3-compatible services accept the `If-None-Match`
+and `If-Match` headers but ignore them, sometimes on only some kinds of
+request. So the first time the plugin needs them it checks the bucket once,
+with scratch objects under `.bookclerk-probe/`: it tries a plain upload, a
+multipart upload, a copy, a copy in parts and a delete that should each be
+refused, and then removes the scratch objects. Each kind of request is trusted only if
+the bucket refused it. The plugin remembers the answer until it restarts.
+
+When the bucket enforces the headers on every request an operation sends:
+
+- A write that must not replace an object, or must replace only the object
+  Bookclerk last read, sends the condition with the upload, and S3 refuses
+  it if another writer got there first.
+- A move copies only while the original is unchanged, and with
+  `noOverwrite` only while nothing is at the new name. It deletes the
+  original only while that is still the object it copied; if something
+  rewrote it meanwhile, the original is kept and the move reports a
+  conflict.
+
+When it does not, Bookclerk checks each condition just before the write or
+copy instead, and reports the result as not atomic. A writer outside
+Bookclerk can slip into that moment.
+
+Listings carry each object's ETag and modification time, so Bookclerk can
+tell which objects changed without reading them.
+
 ### Matching existing files
 
 Object user metadata, and the local `.bookclerk-meta.json` files, let
