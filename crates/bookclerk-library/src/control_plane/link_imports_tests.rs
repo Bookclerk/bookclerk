@@ -421,3 +421,37 @@ async fn a_primary_key_another_edition_holds_is_not_imported() {
         assert_eq!(book.pdf_storage_key, None, "{name}");
     }
 }
+
+/// A copy this install took from a library is recorded for that library
+/// alone, once however often it is taken, so the catalog sync never sends
+/// the book back to it.
+#[tokio::test]
+async fn a_copy_taken_from_a_library_is_recorded_once_for_that_library() {
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        let name = profile.name();
+        let book = TakenCopy {
+            plugin_key: PLUGIN,
+            account_id: "own-acct",
+            marketplace: "us",
+            product_id: "P9",
+        };
+        for _ in 0..2 {
+            record_copy_taken_from_link(&store, "lib-a", book)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            books_imported_from_link(&store, "lib-a").await.unwrap(),
+            BTreeSet::from([(PLUGIN.into(), "us".into(), "P9".into(), "own-acct".into())]),
+            "{name}"
+        );
+        assert!(
+            books_imported_from_link(&store, "lib-b")
+                .await
+                .unwrap()
+                .is_empty(),
+            "{name}"
+        );
+    }
+}

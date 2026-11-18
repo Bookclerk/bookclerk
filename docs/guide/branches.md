@@ -130,13 +130,17 @@ Library page, merged into one list.
   If a refresh fails, the last list stays with a **Try again** button.
 
 **Settings → Library** also has **Keep copies on this computer** for each
-library, on by default. It decides whether your server takes that
-library's copies of your books into its own storage. Your server runs the
-library's work and shows its books either way.
+library, on by default. With it on, when your server downloads one of
+your books and the library already has that book from the same store,
+your server copies the library's files instead of downloading from the
+store again. The copy is then converted and named by your own settings,
+like any other download. With it off, your server always downloads from
+the store. Your server runs the library's work and shows its books either
+way.
 
 > [!NOTE]
-> Taking the library's copies isn't built yet: the setting is stored and
-> used once it is.
+> If the library got its copy from a different store than yours, your
+> server downloads the book from your store.
 
 ## Sign in with a library card
 

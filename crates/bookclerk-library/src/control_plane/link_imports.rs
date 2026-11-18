@@ -190,13 +190,55 @@ fn new_book(book: &BookRecord) -> NewBook {
 ///
 /// Returns an error when the write fails.
 async fn record_import(store: &LibraryStore, cluster_id: &str, book: &BookRecord) -> Result<()> {
+    record_copy_taken_from_link(
+        store,
+        cluster_id,
+        TakenCopy {
+            plugin_key: &book.plugin_key,
+            account_id: &book.account_id,
+            marketplace: &book.marketplace,
+            product_id: &book.product_id,
+        },
+    )
+    .await
+}
+
+/// A book of this install whose files came from a library it joined, by
+/// its store identity here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TakenCopy<'a> {
+    /// Key of the plugin the book belongs to.
+    pub plugin_key: &'a str,
+    /// Store account that owns the book.
+    pub account_id: &'a str,
+    /// The book's marketplace as its row states it; empty for a store
+    /// without marketplaces.
+    pub marketplace: &'a str,
+    /// The store's product id.
+    pub product_id: &'a str,
+}
+
+/// Records that this install took its copy of `book` from the library
+/// `cluster_id`, so the catalog sync never sends that library a book it
+/// provided itself ([`books_imported_from_link`]). A book already
+/// recorded for that library is left as it is; one taken from several
+/// libraries is recorded once for each.
+///
+/// # Errors
+///
+/// Returns an error when the write fails.
+pub async fn record_copy_taken_from_link(
+    store: &LibraryStore,
+    cluster_id: &str,
+    book: TakenCopy<'_>,
+) -> Result<()> {
     let row = link_imports::ActiveModel {
         id: NotSet,
         cluster_id: Set(cluster_id.to_string()),
-        plugin_key: Set(book.plugin_key.clone()),
-        account_id: Set(book.account_id.clone()),
-        marketplace: Set(bookclerk_resolve::stored_marketplace(&book.marketplace)),
-        product_id: Set(bookclerk_resolve::stored_product_id(&book.product_id)),
+        plugin_key: Set(book.plugin_key.to_string()),
+        account_id: Set(book.account_id.to_string()),
+        marketplace: Set(bookclerk_resolve::stored_marketplace(book.marketplace)),
+        product_id: Set(bookclerk_resolve::stored_product_id(book.product_id)),
         created_at: Set(Utc::now().to_rfc3339()),
     };
     link_imports::Entity::insert(row)

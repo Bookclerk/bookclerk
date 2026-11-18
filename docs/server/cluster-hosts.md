@@ -792,6 +792,38 @@ it hands out the token: the branch is still trusted, it still belongs to
 the same person, that person may still see the edition, and the files
 are still the ones the grant listed. A token outlives none of them.
 
+### When a branch takes the copy
+
+A branch asks for a copy when it acquires one of its **own** titles: a
+book on a store account connected to the branch, found by the branch's
+own scan. Before it fetches the title from the store, it asks each
+library it joined, in turn, for the copy of that listing.
+
+- **Same store: the library's copy is used.** When the library downloaded
+  its copy from the same store as the branch's title, the branch
+  downloads the library's audio and cover and the store is not asked.
+  The files then go through the branch's own acquire like a store
+  download: converted to the branch's output format, named by its
+  templates, tagged, probed and recorded. Chapters and part titles are
+  read from the downloaded files in the confined media worker.
+- **Another store: the branch fetches its own.** When the library's copy
+  came from a different store, or the library doesn't know where it came
+  from, the branch downloads from its own store as usual.
+- **Any problem: the store.** If the copy doesn't arrive whole, is larger
+  than the acquire's scratch budget, or holds audio the media worker
+  can't read, the branch removes what it downloaded and fetches from the
+  store.
+
+Only audio and the cover are taken. The branch writes its own sidecars
+(`.cue`, chapter JSON), and a companion PDF still comes from the store.
+
+The branch asks a library only while that link's **Keep copies on this
+computer** setting is on and its connection is up; a library that is
+offline is skipped, not waited for. A book taken this way is recorded
+for that library, so the branch never shares it back to the library it
+came from (see [Shared catalog](#shared-catalog)). The job log line
+`acquired` carries `from_library=true` for such a title.
+
 A clerk asks the same way on its own socket, for the person its library
 card belongs to. Its token is not sealed (a clerk has no box key; the
 socket is the card's own connection, TLS except on loopback), and each download checks that the
@@ -882,9 +914,13 @@ all on by default:
 - **List my members' books to <library>.** Off: B answers A's catalog
   questions with its owner's books only (see
   [Shared catalog](#shared-catalog)).
-- **Keep copies on this computer.** Off: B leaves A's copies of its
-  person's books at A. B still takes A's work, lists its books to A and
-  shows A's books (see [Books in other libraries](#books-in-other-libraries)).
+- **Keep copies on this computer.** On: when B acquires one of its own
+  titles and A already holds a copy from the same store, B takes A's copy
+  instead of downloading from the store (see
+  [When a branch takes the copy](#when-a-branch-takes-the-copy)). Off: B
+  leaves A's copies at A and downloads its own titles from their stores.
+  B still takes A's work, lists its books to A and shows A's books (see
+  [Books in other libraries](#books-in-other-libraries)).
 
 B's operator or an Owner of B may change them. An Owner sees only the
 libraries, these settings and each library's job cap (see
@@ -1168,9 +1204,10 @@ shared stay in the library, marked as from a branch that left (see
   (the operator or an Owner). There is no CLI command for them yet.
 - A branch answers only from its own library, not from other libraries it
   joined.
-- **Keep copies on this computer** is stored but doesn't copy anything
-  yet: taking a library's copy into a branch's own storage arrives with
-  the branch side of library copies.
+- A branch takes a library's copy only for a title its own scan found on
+  a store account connected to the branch, and only when the library's
+  copy came from the same store. It doesn't yet compare a copy from
+  another store with its own download.
 - The library's name is the host of its public origin. There is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the

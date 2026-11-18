@@ -473,7 +473,6 @@ impl HostGuests for GuestHost {
             outbox,
             &title_cache_dir(outbox),
             metadata,
-            library_copies: bookclerk_acquire::LibraryCopySource::default(),
         )
         .await;
         drop(scratch);
