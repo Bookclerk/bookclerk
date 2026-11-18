@@ -243,8 +243,9 @@ function fileType(name: string): string {
  * @param chapters - Chapters timed from the start of the first file.
  * @param types - Types the sheet already gives files, by name.
  * @returns The lines, without line breaks.
- * @throws {DialectFailure} When a file name has a double quote, or when
- *   chapters must be placed past a file of unknown length.
+ * @throws {DialectFailure} When a file name has a double quote, when
+ *   chapters must be placed past a file of unknown length, or when a
+ *   chapter starts after the last file's known end.
  */
 function fileBlocks(
   audio: readonly MetadataAudioFile[],
@@ -276,6 +277,9 @@ function fileBlocks(
     while (next < chapters.length) {
       const chapter = chapters[next];
       if (chapter === undefined || (!last && chapter.startMs >= fileEnd)) break;
+      if (last && file.durationMs > 0 && chapter.startMs >= fileEnd) {
+        throw invalid("cannot write a chapter that starts after the book's audio files end");
+      }
       if (!opened && chapter.startMs > fileStart && playing !== undefined) add(playing, 0);
       add(chapter.title, Math.max(0, chapter.startMs - fileStart));
       opened = true;

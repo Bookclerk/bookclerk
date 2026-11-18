@@ -370,6 +370,45 @@ function phrases(rand: () => number, max: number): string[] {
 }
 
 /**
+ * Says whether a CUE render asks for something a sheet cannot hold, from
+ * the request alone: a double quote in an audio file name; chapters for a
+ * sheet with several `FILE` lines and no audio files; chapters past an
+ * audio file of unknown length; or a chapter that starts after the last
+ * file's known end.
+ *
+ * @param bytes - The existing sheet.
+ * @param record - The render request's record.
+ * @param fields - Fields the request sets.
+ * @param audio - The request's audio files.
+ * @returns True when a refusal is expected.
+ */
+function cueCannotHold(
+  bytes: Uint8Array,
+  record: MetadataFileRecord,
+  fields: readonly MetadataField[],
+  audio: readonly MetadataAudioFile[],
+): boolean {
+  if (audio.some((f) => f.name.includes('"'))) return true;
+  if (!fields.includes("chapters")) return false;
+  if (audio.length === 0) {
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      text = new TextDecoder("latin1").decode(bytes);
+    }
+    const files = text.split(/\r\n|\n|\r/).filter((l) => /^\s*file(?:\s|$)/i.test(l));
+    return files.length > 1;
+  }
+  const starts = record.chapters.map((c) => c.startMs);
+  if (starts.length === 0) return false;
+  if (audio.slice(0, -1).some((f) => f.durationMs === 0)) return true;
+  const last = audio[audio.length - 1];
+  const total = audio.reduce((sum, f) => sum + f.durationMs, 0);
+  return last !== undefined && last.durationMs > 0 && starts.some((ms) => ms >= total);
+}
+
+/**
  * Builds a render request's audio files: none half the time, else one to
  * three plain file names, some with a double quote, each with a length or
  * none.
@@ -535,8 +574,11 @@ function check(row: Row, bytes: Uint8Array, rand: () => number): void {
   if ("refused" in rendered) {
     // A file parse reads may still be refused when the answer would pass
     // the size cap, or when the format cannot hold what was asked for.
+    const message = rendered.refused.message;
     const allowed =
-      "refused" in parsed || /^(?:rendered file is|cannot write )/.test(rendered.refused.message);
+      "refused" in parsed ||
+      /^rendered file is \d+ bytes, over the /.test(message) ||
+      (/^cannot write /.test(message) && cueCannotHold(bytes, record, fields, audio));
     assert.ok(allowed, `render refused a file parse reads: ${rendered.refused.message}`);
     return;
   }

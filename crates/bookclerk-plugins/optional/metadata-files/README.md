@@ -95,7 +95,8 @@ those files:
 
 Without the audio files, a write cannot create a sheet or write chapters
 into a sheet with several files. Chapters past a file of unknown length
-are refused, since the write cannot tell where that file ends. CUE cannot
+are refused, since the write cannot tell where that file ends, and so is a
+chapter that starts after the last file's known end. CUE cannot
 escape `"`, so a value's double quotes are written as single quotes, and
 an audio file name with one is refused.
 

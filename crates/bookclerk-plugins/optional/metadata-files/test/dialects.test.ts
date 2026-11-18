@@ -719,6 +719,17 @@ describe("cue", () => {
         renderFile(
           "cue",
           new Uint8Array(),
+          record({ chapters: [{ title: "Late", startMs: 2_000, depth: 0 }] }),
+          ["chapters"],
+          [{ name: "a.mp3", durationMs: 1_000 }],
+        ),
+      /starts after the book's audio files end/,
+    );
+    refuses(
+      () =>
+        renderFile(
+          "cue",
+          new Uint8Array(),
           record(),
           ["title"],
           [{ name: 'a"b.mp3', durationMs: 0 }],

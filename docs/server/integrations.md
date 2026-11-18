@@ -462,10 +462,12 @@ that tools without a plugin of their own keep next to a book's audio:
   authors, as Kodi and Jellyfin read them. Bookclerk can write it the same
   way.
 - **CUE sheets** (`*.cue`): title, date, genres, authors and the track
-  list as chapters. Bookclerk can write it: it creates a sheet from the
-  book's audio files and places each chapter in the file it starts in.
-  When a book has several files, Bookclerk writes their chapters but does
-  not read them back from the sheet.
+  list as chapters. Bookclerk can update a sheet that exists. The plugin
+  can also create a sheet from the book's audio files, placing each
+  chapter in the file it starts in, but only once Bookclerk passes it
+  those files, which it does not do yet. When a book has several files,
+  Bookclerk writes their chapters but does not read them back from the
+  sheet.
 - **Libation's catalog record** (`<book name>.metadata.json`): the
   Audible product Libation saves at download. It is read-only, because it
   is the store's record rather than the library's.

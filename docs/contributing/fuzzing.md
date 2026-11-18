@@ -1183,7 +1183,8 @@ across every corpus, in `npm test` (the `workerd_guests` check);
   (and, for `metadata_files`, a random list of audio files). Oracle: a
   refusal only for a file `parse` also refuses, an answer that would pass
   the size cap, a request the format cannot hold (chapters for a CUE sheet
-  with several files and no audio files, or past a file of unknown length;
+  with several files and no audio files, past a file of unknown length or
+  after the last file's known end;
   an audio file name with a double quote), a `metadata.json` number whose
   exact value a double cannot keep, an existing Audiobookshelf file with
   bytes that decode only to U+FFFD, or an Audiobookshelf NFO description
