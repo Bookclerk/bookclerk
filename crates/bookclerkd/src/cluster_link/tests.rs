@@ -1624,7 +1624,7 @@ mod results_and_uploads {
                 .iter()
                 .map(|root| {
                     (
-                        bookclerk_config::DestinationId::local(),
+                        bookclerk_config::DestinationId::new("local").unwrap(),
                         Box::new(bookclerk_storage::LocalFsBackend::new(root.clone()).unwrap())
                             as Box<dyn StorageBackend>,
                     )
@@ -2193,7 +2193,10 @@ mod results_and_uploads {
             guests.imported.lock().unwrap().as_slice(),
             &[(
                 book.uuid.clone(),
-                vec![(bookclerk_config::DestinationId::local(), key.clone())]
+                vec![(
+                    bookclerk_config::DestinationId::new("local").unwrap(),
+                    key.clone()
+                )]
             )],
             "the owner's own title joins the branch's library with its copy"
         );
@@ -2564,7 +2567,7 @@ mod results_and_uploads {
             world.owner_files.path(),
             vec![
                 TestDestination {
-                    id: DestinationId::local(),
+                    id: DestinationId::new("local").unwrap(),
                     key_style: DestinationKeyStyle::Filesystem,
                     root: local_out.path().to_path_buf(),
                     naming: DestinationNaming {
@@ -2736,7 +2739,7 @@ mod results_and_uploads {
                 .unwrap()],
         };
         let destinations = vec![HostDestination {
-            id: bookclerk_config::DestinationId::local(),
+            id: bookclerk_config::DestinationId::new("local").unwrap(),
             options: Default::default(),
         }];
         let in_process = bookclerk_media::MediaPool::in_process();
@@ -2909,7 +2912,7 @@ mod results_and_uploads {
             world.owner_files.path(),
             vec![
                 TestDestination {
-                    id: DestinationId::local(),
+                    id: DestinationId::new("local").unwrap(),
                     key_style: DestinationKeyStyle::Filesystem,
                     root: local_out.path().to_path_buf(),
                     naming: DestinationNaming::default(),
@@ -3061,7 +3064,7 @@ mod results_and_uploads {
             world.owner_files.path(),
             vec![
                 TestDestination {
-                    id: DestinationId::local(),
+                    id: DestinationId::new("local").unwrap(),
                     key_style: DestinationKeyStyle::Filesystem,
                     root: owner_out.path().to_path_buf(),
                     naming: DestinationNaming::default(),
@@ -4391,7 +4394,10 @@ mod results_and_uploads {
             .unwrap();
         assert_eq!(
             placed,
-            vec![(bookclerk_config::DestinationId::local(), key.clone())]
+            vec![(
+                bookclerk_config::DestinationId::new("local").unwrap(),
+                key.clone()
+            )]
         );
         let copies = copied.into_inner().unwrap();
         assert_eq!(copies.len(), 1);

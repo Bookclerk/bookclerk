@@ -329,24 +329,30 @@ impl DestinationKeyStyle {
             Self::ObjectStore => true,
         }
     }
+
+    /// True for file-system paths.
+    #[must_use]
+    pub fn is_filesystem(self) -> bool {
+        !self.is_object_store()
+    }
 }
 
-/// Id of one output destination on a node: the manifest alias of the
-/// deployed storage plugin (`local`, `s3`, `r2`, ...).
+/// Id of one output destination: the plugin instance id of the deployed
+/// storage plugin instance that serves it.
 ///
-/// Plans, upload manifests and `edition_files` name destinations by it. A
-/// node deploys at most one instance of each storage plugin, so the alias
-/// names one destination there.
+/// Plans, upload manifests and `edition_files` name destinations by it.
+/// Several instances of one storage plugin are separate destinations
+/// (`docs/adr/storage-destinations.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct DestinationId(String);
 
 impl DestinationId {
-    /// The id of the first-party `local` plugin's destination.
-    pub const LOCAL: &'static str = "local";
+    /// Longest destination id in bytes; a hyphenated UUID is 36.
+    pub const MAX_LEN: usize = 64;
 
-    /// Checks `id`: 1 to 32 lowercase ASCII letters, digits or `_`, the
-    /// characters a plugin id may use.
+    /// Checks `id`: 1 to [`Self::MAX_LEN`] lowercase ASCII letters, digits,
+    /// `_` or `-`, the characters a plugin instance id uses.
     ///
     /// # Errors
     ///
@@ -354,10 +360,10 @@ impl DestinationId {
     pub fn new(id: impl Into<String>) -> Result<Self, String> {
         let id = id.into();
         let valid = !id.is_empty()
-            && id.len() <= 32
+            && id.len() <= Self::MAX_LEN
             && id
                 .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
         if valid {
             Ok(Self(id))
         } else {
@@ -365,22 +371,10 @@ impl DestinationId {
         }
     }
 
-    /// The `local` destination's id.
-    #[must_use]
-    pub fn local() -> Self {
-        Self(Self::LOCAL.to_string())
-    }
-
     /// The id as text.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    /// True for the `local` destination.
-    #[must_use]
-    pub fn is_local(&self) -> bool {
-        self.0 == Self::LOCAL
     }
 }
 
@@ -423,16 +417,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn destination_ids_take_plugin_ids_only() {
-        for good in ["local", "s3", "r2", "b2", "my_store"] {
+    fn destination_ids_take_plugin_instance_ids() {
+        for good in ["local", "my_store", "0d6f1c2e-8a4b-4c3d-9e2f-1a2b3c4d5e6f"] {
             let id = DestinationId::new(good).unwrap();
             assert_eq!(id.as_str(), good);
             assert_eq!(id.to_string(), good);
         }
-        assert!(DestinationId::local().is_local());
-        assert!(!DestinationId::new("s3").unwrap().is_local());
-        let long = "a".repeat(33);
-        for bad in ["", "S3", "my-store", "a/b", "a b", long.as_str()] {
+        let long = "a".repeat(DestinationId::MAX_LEN + 1);
+        for bad in ["", "S3", "a/b", "a b", "a.b", long.as_str()] {
             assert!(DestinationId::new(bad).is_err(), "{bad:?}");
         }
         let parsed: DestinationId = serde_json::from_str("\"r2\"").unwrap();
@@ -444,6 +436,8 @@ mod tests {
     fn key_styles_say_which_is_an_object_store() {
         assert!(!DestinationKeyStyle::Filesystem.is_object_store());
         assert!(DestinationKeyStyle::ObjectStore.is_object_store());
+        assert!(DestinationKeyStyle::Filesystem.is_filesystem());
+        assert!(!DestinationKeyStyle::ObjectStore.is_filesystem());
         assert_eq!(
             DestinationKeyStyle::default(),
             DestinationKeyStyle::Filesystem

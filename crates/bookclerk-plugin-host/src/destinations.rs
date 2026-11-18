@@ -17,20 +17,17 @@ const NO_DESTINATION: &str =
 
 /// Build destination backends for acquire from the deployed output plugins.
 ///
-/// Every deployed storage plugin is a destination, `local` first (the
-/// primary when present) and the rest by id.
+/// Every deployed storage plugin instance is a destination; path
+/// destinations come first, and the first destination is the primary.
 ///
 /// # Errors
 ///
-/// Returns an error when no destination is deployed on this host or two
-/// instances serve one destination id.
+/// Returns an error when no destination is deployed on this host.
 pub fn build_acquire_destinations(
     config: &Config,
     destinations: &DestinationRegistry,
 ) -> Result<AcquireDestinations> {
-    let deployed = destinations
-        .destinations()
-        .map_err(|err| AcquireError::Other(anyhow::anyhow!(err)))?;
+    let deployed = destinations.destinations();
     let primary = deployed
         .first()
         .map(|dest| dest.id.clone())
@@ -59,8 +56,7 @@ pub fn build_acquire_destinations(
 ///
 /// # Errors
 ///
-/// Returns an error when no destination is deployed or two instances serve
-/// one destination id.
+/// Returns an error when no destination is deployed.
 pub fn build_storage_backend(
     destinations: &DestinationRegistry,
 ) -> bookclerk_storage::Result<Box<dyn StorageBackend>> {
@@ -68,7 +64,6 @@ pub fn build_storage_backend(
 
     let mut backends: Vec<Box<dyn StorageBackend>> = destinations
         .destinations()
-        .map_err(StorageError::InvalidKey)?
         .into_iter()
         .map(|dest| dest.backend.clone_box())
         .collect();

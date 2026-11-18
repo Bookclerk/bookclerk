@@ -4133,8 +4133,9 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
         let destinations = state.destinations.read().await;
         let names: Vec<String> = destinations
             .destinations()
-            .map(|deployed| deployed.into_iter().map(|d| d.id.to_string()).collect())
-            .unwrap_or_default();
+            .into_iter()
+            .map(|d| d.id.to_string())
+            .collect();
         (
             cfg.daemon.listen.join_comma(),
             if names.is_empty() {

@@ -1699,7 +1699,7 @@ async fn spawn_storage(
             &request.plugin_instance_id,
             &parts.session,
             Arc::clone(&proxy),
-            parts.identity,
+            parts.key_style,
             parts.settings,
         );
         if let Err(detail) = published {

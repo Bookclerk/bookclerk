@@ -537,13 +537,7 @@ async fn an_edition_cover_is_a_404_unless_this_node_holds_one() {
         )
         .await
         .expect("acquired");
-    assert!(state
-        .destinations
-        .read()
-        .await
-        .destinations()
-        .unwrap()
-        .is_empty());
+    assert!(state.destinations.read().await.destinations().is_empty());
     assert_eq!(cover_refusal(&state, &edition).await, no_cover);
 }
 

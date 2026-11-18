@@ -3720,14 +3720,14 @@ mod tests {
         };
         AcquireDestinations {
             items: vec![AcquireDestination {
-                id: DestinationId::local(),
+                id: DestinationId::new("local").unwrap(),
                 backend: Box::new(CountingBackend {
                     inner: bookclerk_storage::LocalFsBackend::new(root.to_path_buf()).unwrap(),
                     puts,
                 }),
                 options,
             }],
-            primary: DestinationId::local(),
+            primary: DestinationId::new("local").unwrap(),
             multi_destination: MultiDestinationMode::RefetchAll,
         }
     }

@@ -155,7 +155,7 @@ mod test_destinations {
         set_many(
             files_dir,
             vec![TestDestination {
-                id: DestinationId::local(),
+                id: DestinationId::new("local").unwrap(),
                 key_style: DestinationKeyStyle::Filesystem,
                 root: root.to_path_buf(),
                 naming: DestinationNaming::default(),

@@ -2306,9 +2306,9 @@ async fn the_local_destination_sleeps_when_idle_and_wakes_on_its_next_call() {
     let proxy = runtime
         .on_demand(instance.id.as_str())
         .expect("the local destination runs on demand");
-    let deployed = runtime.destinations.read().await.destinations().unwrap();
+    let deployed = runtime.destinations.read().await.destinations();
     assert_eq!(deployed.len(), 1);
-    assert!(deployed[0].id.is_local());
+    assert_eq!(deployed[0].id.as_str(), instance.id.as_str());
     assert_eq!(
         deployed[0].key_style,
         bookclerk_config::DestinationKeyStyle::Filesystem

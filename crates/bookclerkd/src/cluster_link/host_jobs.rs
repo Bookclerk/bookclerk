@@ -478,7 +478,6 @@ impl HostGuests for GuestHost {
         let registry = self.state.destinations.read().await;
         Ok(registry
             .destinations()
-            .map_err(|err| anyhow::anyhow!(err))?
             .into_iter()
             .map(|dest| (dest.id, dest.backend.clone_box()))
             .collect())

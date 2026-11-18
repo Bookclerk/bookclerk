@@ -1359,8 +1359,8 @@ pub(crate) async fn get_edition_cover(
         .read()
         .await
         .destinations()
-        .ok()
-        .and_then(|deployed| deployed.into_iter().next())
+        .into_iter()
+        .next()
         .map(|primary| primary.backend)
         .ok_or_else(no_cover)?;
     let bytes = match primary

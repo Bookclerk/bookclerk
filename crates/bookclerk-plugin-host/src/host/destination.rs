@@ -18,31 +18,16 @@ use crate::protocol::OutputS3ContextDto;
 use crate::rpc_session::{PluginSession, PluginStorage};
 use crate::Result as PluginResult;
 
-/// What acquire knows a deployed destination by: its id and how it names keys.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DestinationIdentity {
-    /// The destination's id: its plugin's manifest alias.
-    pub id: DestinationId,
-    /// How the destination names keys: file-system paths for the
-    /// first-party `local` plugin, object-store keys for every other one.
-    pub key_style: DestinationKeyStyle,
-}
-
-impl DestinationIdentity {
-    /// The identity of a destination served by `plugin`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the plugin's alias is not a valid destination
-    /// id.
-    pub(crate) fn of(plugin: &DiscoveredPlugin) -> std::result::Result<Self, String> {
-        let id = DestinationId::new(plugin.manifest.id.as_str())?;
-        let key_style = if crate::is_first_party_local_output(plugin) {
-            DestinationKeyStyle::Filesystem
-        } else {
-            DestinationKeyStyle::ObjectStore
-        };
-        Ok(Self { id, key_style })
+/// How a destination served by `plugin` names keys: file-system paths for
+/// the first-party `local` plugin, object-store keys for every other one.
+///
+/// The destination's id is its plugin instance id, given when the guest is
+/// published, so several instances of one plugin are separate destinations.
+pub(crate) fn key_style_of(plugin: &DiscoveredPlugin) -> DestinationKeyStyle {
+    if crate::is_first_party_local_output(plugin) {
+        DestinationKeyStyle::Filesystem
+    } else {
+        DestinationKeyStyle::ObjectStore
     }
 }
 
@@ -52,8 +37,8 @@ pub(crate) struct SpawnedDestination {
     pub session: Arc<PluginSession>,
     /// Storage backend over `session`.
     backend: Arc<dyn StorageBackend>,
-    /// The destination's id and key style.
-    identity: DestinationIdentity,
+    /// How the destination names keys.
+    key_style: DestinationKeyStyle,
     /// Key layout from the instance document.
     settings: DestinationSettings,
 }
@@ -64,8 +49,8 @@ pub(crate) struct OnDemandParts {
     pub session: Arc<PluginSession>,
     /// Storage backend over `session`.
     pub backend: Arc<dyn StorageBackend>,
-    /// The destination's id and key style.
-    pub identity: DestinationIdentity,
+    /// How the destination names keys.
+    pub key_style: DestinationKeyStyle,
     /// Key layout from the instance document.
     pub settings: DestinationSettings,
 }
@@ -77,7 +62,7 @@ impl SpawnedDestination {
         OnDemandParts {
             session: self.session,
             backend: self.backend,
-            identity: self.identity,
+            key_style: self.key_style,
             settings: self.settings,
         }
     }
@@ -86,7 +71,7 @@ impl SpawnedDestination {
 /// One deployed destination as acquire sees it.
 #[derive(Clone)]
 pub struct DeployedDestination {
-    /// The destination's id: its plugin's manifest alias.
+    /// The destination's id: its plugin instance id.
     pub id: DestinationId,
     /// How the destination names keys.
     pub key_style: DestinationKeyStyle,
@@ -253,8 +238,10 @@ struct DeployedSlot {
     guest: SlotGuest,
     /// Storage backend over the guest.
     backend: Arc<dyn StorageBackend>,
-    /// The destination's id and key style.
-    identity: DestinationIdentity,
+    /// The destination's id: the plugin instance id the slot is keyed by.
+    id: DestinationId,
+    /// How the destination names keys.
+    key_style: DestinationKeyStyle,
     /// Key layout from the instance document.
     settings: DestinationSettings,
 }
@@ -270,34 +257,29 @@ pub struct DestinationRegistry {
 }
 
 impl DestinationRegistry {
-    /// Every deployed destination, `local` first and the rest by id.
+    /// Every deployed destination, one per plugin instance: destinations
+    /// that name files as paths first, then the rest, each group by id.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when two deployed instances share a destination id,
-    /// rather than picking one.
-    pub fn destinations(&self) -> std::result::Result<Vec<DeployedDestination>, String> {
-        let mut out: Vec<DeployedDestination> = Vec::new();
-        for slot in self.deployed.values() {
-            if out.iter().any(|seen| seen.id == slot.identity.id) {
-                return Err(format!(
-                    "more than one {} destination instance is deployed; refusing to pick one",
-                    slot.identity.id
-                ));
-            }
-            out.push(DeployedDestination {
-                id: slot.identity.id.clone(),
-                key_style: slot.identity.key_style,
+    /// Several instances of one plugin are separate destinations.
+    #[must_use]
+    pub fn destinations(&self) -> Vec<DeployedDestination> {
+        let mut out: Vec<DeployedDestination> = self
+            .deployed
+            .values()
+            .map(|slot| DeployedDestination {
+                id: slot.id.clone(),
+                key_style: slot.key_style,
                 backend: Arc::clone(&slot.backend),
                 settings: slot.settings.clone(),
-            });
-        }
+            })
+            .collect();
         out.sort_by(|a, b| {
-            b.id.is_local()
-                .cmp(&a.id.is_local())
+            b.key_style
+                .is_filesystem()
+                .cmp(&a.key_style.is_filesystem())
                 .then_with(|| a.id.cmp(&b.id))
         });
-        Ok(out)
+        out
     }
 
     /// Plugin session for `plugin_id` and `account_id`, when that guest was loaded.
@@ -353,29 +335,33 @@ impl DestinationRegistry {
         }
     }
 
-    /// Records a reconciler-spawned guest under `plugin_instance_id`.
+    /// Records a reconciler-spawned guest under `plugin_instance_id`, which
+    /// is also the destination's id.
     ///
-    /// A second instance of the same plugin key does not replace this slot.
+    /// # Errors
+    ///
+    /// Returns an error when `plugin_instance_id` is not a valid
+    /// destination id; nothing is recorded then.
     fn note_deployed_instance(
         &mut self,
         plugin_instance_id: &str,
         guest: SlotGuest,
         backend: Arc<dyn StorageBackend>,
-        identity: DestinationIdentity,
+        key_style: DestinationKeyStyle,
         settings: DestinationSettings,
-    ) {
-        if plugin_instance_id.is_empty() {
-            return;
-        }
+    ) -> std::result::Result<(), String> {
+        let id = DestinationId::new(plugin_instance_id)?;
         self.deployed.insert(
             plugin_instance_id.to_string(),
             DeployedSlot {
                 guest,
                 backend,
-                identity,
+                id,
+                key_style,
                 settings,
             },
         );
+        Ok(())
     }
 
     /// Drops the deployed slot for `plugin_instance_id`.
@@ -386,29 +372,30 @@ impl DestinationRegistry {
         self.deployed.remove(plugin_instance_id);
     }
 
-    /// Records `spawned` unless another deployed instance already serves
-    /// the same destination id.
+    /// Records `spawned` as the destination `plugin_instance_id`.
     ///
-    /// The second instance is not stored. Its session is dropped
-    /// so the process exits, and the error becomes the observation.
+    /// # Errors
+    ///
+    /// Returns an error when `plugin_instance_id` is not a valid
+    /// destination id. The session is dropped then, so the process exits,
+    /// and the error becomes the observation.
     pub(crate) fn publish_spawned(
         &mut self,
         plugin_instance_id: &str,
         spawned: SpawnedDestination,
     ) -> std::result::Result<Arc<PluginSession>, String> {
-        let id = spawned.identity.id.clone();
         self.note_deployed_instance(
             plugin_instance_id,
             SlotGuest::Resident(Arc::clone(&spawned.session)),
             spawned.backend,
-            spawned.identity,
+            spawned.key_style,
             spawned.settings,
-        );
-        self.refuse_second_backend(plugin_instance_id, &id)?;
+        )?;
         Ok(spawned.session)
     }
 
-    /// Records an on-demand storage proxy under `plugin_instance_id`.
+    /// Records an on-demand storage proxy as the destination
+    /// `plugin_instance_id`.
     ///
     /// `first` is the guest the deployment started; its session identity is
     /// kept for session lookups while the guest sleeps, and the slot keeps
@@ -416,18 +403,17 @@ impl DestinationRegistry {
     ///
     /// # Errors
     ///
-    /// Returns an error when another instance already serves the same
+    /// Returns an error when `plugin_instance_id` is not a valid
     /// destination id.
     pub(crate) fn publish_on_demand(
         &mut self,
         plugin_instance_id: &str,
         first: &PluginSession,
         proxy: Arc<OnDemandStorage>,
-        identity: DestinationIdentity,
+        key_style: DestinationKeyStyle,
         settings: DestinationSettings,
     ) -> std::result::Result<(), String> {
         let backend: Arc<dyn StorageBackend> = Arc::clone(&proxy) as Arc<dyn StorageBackend>;
-        let id = identity.id.clone();
         self.note_deployed_instance(
             plugin_instance_id,
             SlotGuest::OnDemand {
@@ -435,31 +421,9 @@ impl DestinationRegistry {
                 identity: Arc::new(SessionIdentity::of(first)),
             },
             backend,
-            identity,
+            key_style,
             settings,
-        );
-        self.refuse_second_backend(plugin_instance_id, &id)
-    }
-
-    /// Removes `plugin_instance_id` again when another instance already
-    /// serves destination `id`.
-    fn refuse_second_backend(
-        &mut self,
-        plugin_instance_id: &str,
-        id: &DestinationId,
-    ) -> std::result::Result<(), String> {
-        let count = self
-            .deployed
-            .values()
-            .filter(|slot| &slot.identity.id == id)
-            .count();
-        if count > 1 {
-            self.deployed.remove(plugin_instance_id);
-            return Err(format!(
-                "another {id} destination instance is already deployed; refusing to pick one"
-            ));
-        }
-        Ok(())
+        )
     }
 
     /// Copies deployed sessions from this registry onto `candidate`.
@@ -502,7 +466,7 @@ pub(crate) async fn spawn_deployed_storage(
     prepared: crate::instance_bindings::PreparedOpen,
 ) -> PluginResult<SpawnedDestination> {
     let settings = DestinationSettings::from_granted_config(&prepared.granted_config);
-    let identity = DestinationIdentity::of(plugin).map_err(crate::PluginError::message)?;
+    let key_style = key_style_of(plugin);
     // First-party identity is the PluginKey plus verified provenance, never
     // the manifest alias: an `s3` or `local` alias twin spawns as a generic
     // storage guest with no implied endpoint grant or typed context.
@@ -511,7 +475,7 @@ pub(crate) async fn spawn_deployed_storage(
         return Ok(SpawnedDestination {
             session,
             backend: Arc::new(storage_backend),
-            identity,
+            key_style,
             settings,
         });
     }
@@ -521,7 +485,7 @@ pub(crate) async fn spawn_deployed_storage(
         return Ok(SpawnedDestination {
             session,
             backend: Arc::new(storage),
-            identity,
+            key_style,
             settings,
         });
     }
@@ -540,7 +504,7 @@ pub(crate) async fn spawn_deployed_storage(
     Ok(SpawnedDestination {
         backend: Arc::new(PluginStorage::new(Arc::clone(&session))),
         session,
-        identity,
+        key_style,
         settings,
     })
 }
@@ -912,36 +876,32 @@ mode = "outbound"
 
 #[cfg(test)]
 mod registry_tests {
-    //! Every deployed storage guest is a destination: ids, order, key
-    //! styles and the one-instance-per-id rule.
+    //! Every deployed storage guest is a destination named by its plugin
+    //! instance: ids, order, key styles and several instances of one plugin.
 
     use std::sync::Arc;
     use std::time::Duration;
 
-    use bookclerk_config::{DestinationId, DestinationKeyStyle};
+    use bookclerk_config::DestinationKeyStyle;
 
     use super::{
-        DestinationIdentity, DestinationRegistry, DestinationSettings, SessionIdentity, SlotGuest,
+        key_style_of, DestinationRegistry, DestinationSettings, SessionIdentity, SlotGuest,
     };
     use crate::discover::DiscoveredPlugin;
     use bookclerk_plugin_catalog::{PluginKey, PluginProvenance};
     use bookclerk_plugin_manifest::PluginManifest;
 
-    /// Records an on-demand slot for destination `id` under `instance`,
+    /// Records an on-demand slot of plugin `plugin` under `instance`,
     /// storing into `dir`.
     fn deploy(
         registry: &mut DestinationRegistry,
         instance: &str,
-        id: &str,
+        plugin: &str,
         key_style: DestinationKeyStyle,
         dir: &tempfile::TempDir,
     ) -> std::result::Result<(), String> {
         let (proxy, _first, _started) =
             crate::on_demand_storage::tests::proxy(dir, Duration::from_secs(60));
-        let identity = DestinationIdentity {
-            id: DestinationId::new(id).unwrap(),
-            key_style,
-        };
         let backend: Arc<dyn bookclerk_storage::StorageBackend> = proxy.clone();
         registry.note_deployed_instance(
             instance,
@@ -950,28 +910,27 @@ mod registry_tests {
                 identity: Arc::new(SessionIdentity {
                     account_id: crate::OPERATOR_ACCOUNT.into(),
                     instance_key: instance.into(),
-                    id: id.into(),
-                    alias: id.into(),
+                    id: plugin.into(),
+                    alias: plugin.into(),
                 }),
             },
             backend,
-            identity.clone(),
+            key_style,
             DestinationSettings {
-                prefix: format!("{id}/"),
+                prefix: format!("{instance}/"),
                 ..DestinationSettings::default()
             },
-        );
-        registry.refuse_second_backend(instance, &identity.id)
+        )
     }
 
     #[tokio::test]
-    async fn every_storage_guest_is_a_destination_local_first() {
+    async fn every_storage_instance_is_a_destination_paths_first() {
         let dirs: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
         let mut registry = DestinationRegistry::default();
-        assert!(registry.destinations().unwrap().is_empty());
+        assert!(registry.destinations().is_empty());
         deploy(
             &mut registry,
-            "i-r2",
+            "a-r2",
             "r2",
             DestinationKeyStyle::ObjectStore,
             &dirs[0],
@@ -979,7 +938,7 @@ mod registry_tests {
         .unwrap();
         deploy(
             &mut registry,
-            "i-local",
+            "z-local",
             "local",
             DestinationKeyStyle::Filesystem,
             &dirs[1],
@@ -987,19 +946,23 @@ mod registry_tests {
         .unwrap();
         deploy(
             &mut registry,
-            "i-b2",
-            "b2",
+            "b-r2",
+            "r2",
             DestinationKeyStyle::ObjectStore,
             &dirs[2],
         )
         .unwrap();
 
-        let deployed = registry.destinations().unwrap();
+        let deployed = registry.destinations();
         let ids: Vec<&str> = deployed.iter().map(|d| d.id.as_str()).collect();
-        assert_eq!(ids, ["local", "b2", "r2"], "local first, the rest by id");
+        assert_eq!(
+            ids,
+            ["z-local", "a-r2", "b-r2"],
+            "path destinations first, then by instance id; two r2 instances are two destinations"
+        );
         assert_eq!(deployed[0].key_style, DestinationKeyStyle::Filesystem);
         assert_eq!(deployed[2].key_style, DestinationKeyStyle::ObjectStore);
-        assert_eq!(deployed[2].settings.prefix, "r2/");
+        assert_eq!(deployed[2].settings.prefix, "b-r2/");
 
         // A third-party destination stores through its backend like any other.
         deployed[2]
@@ -1011,59 +974,31 @@ mod registry_tests {
             )
             .await
             .unwrap();
-        assert!(dirs[0].path().join("a/b.m4b").exists());
+        assert!(dirs[2].path().join("a/b.m4b").exists());
+
+        registry.remove_deployed("a-r2");
+        let ids: Vec<String> = registry
+            .destinations()
+            .iter()
+            .map(|d| d.id.to_string())
+            .collect();
+        assert_eq!(ids, ["z-local", "b-r2"]);
     }
 
     #[tokio::test]
-    async fn a_second_instance_of_one_destination_is_refused() {
-        let a = tempfile::tempdir().unwrap();
-        let b = tempfile::tempdir().unwrap();
+    async fn an_instance_id_that_is_not_a_destination_id_is_not_recorded() {
+        let dir = tempfile::tempdir().unwrap();
         let mut registry = DestinationRegistry::default();
-        deploy(
-            &mut registry,
-            "i-1",
-            "r2",
-            DestinationKeyStyle::ObjectStore,
-            &a,
-        )
-        .unwrap();
         let err = deploy(
             &mut registry,
-            "i-2",
+            "Not/An/Id",
             "r2",
             DestinationKeyStyle::ObjectStore,
-            &b,
+            &dir,
         )
         .unwrap_err();
-        assert!(err.contains("another r2 destination"), "{err}");
-        let deployed = registry.destinations().unwrap();
-        assert_eq!(deployed.len(), 1, "the second instance is not stored");
-
-        // A slot that slipped in anyway makes the whole set fail closed.
-        let (proxy, _first, _started) =
-            crate::on_demand_storage::tests::proxy(&b, Duration::from_secs(60));
-        registry.note_deployed_instance(
-            "i-3",
-            SlotGuest::OnDemand {
-                proxy: proxy.clone(),
-                identity: Arc::new(SessionIdentity {
-                    account_id: crate::OPERATOR_ACCOUNT.into(),
-                    instance_key: "i-3".into(),
-                    id: "r2".into(),
-                    alias: "r2".into(),
-                }),
-            },
-            proxy,
-            DestinationIdentity {
-                id: DestinationId::new("r2").unwrap(),
-                key_style: DestinationKeyStyle::ObjectStore,
-            },
-            DestinationSettings::default(),
-        );
-        let Err(err) = registry.destinations() else {
-            panic!("two r2 slots must not both be destinations");
-        };
-        assert!(err.contains("more than one r2 destination"), "{err}");
+        assert!(err.contains("invalid destination id"), "{err}");
+        assert!(registry.destinations().is_empty());
     }
 
     /// A storage plugin's manifest under `root`, with `id`.
@@ -1090,17 +1025,14 @@ mod registry_tests {
         local.identity.plugin_key = key.clone();
         local.identity.artifact.plugin_key = key;
         local.identity.provenance = PluginProvenance::VerifiedStaged;
-        let identity = DestinationIdentity::of(&local).unwrap();
-        assert!(identity.id.is_local());
-        assert_eq!(identity.key_style, DestinationKeyStyle::Filesystem);
+        assert_eq!(key_style_of(&local), DestinationKeyStyle::Filesystem);
 
         // An alias twin of `local` stores object keys: it is not the
         // first-party package.
-        let twin = DestinationIdentity::of(&discovered(&dir.path().join("b"), "local")).unwrap();
-        assert_eq!(twin.key_style, DestinationKeyStyle::ObjectStore);
+        let twin = discovered(&dir.path().join("b"), "local");
+        assert_eq!(key_style_of(&twin), DestinationKeyStyle::ObjectStore);
 
-        let r2 = DestinationIdentity::of(&discovered(&dir.path().join("c"), "r2")).unwrap();
-        assert_eq!(r2.id.as_str(), "r2");
-        assert_eq!(r2.key_style, DestinationKeyStyle::ObjectStore);
+        let r2 = discovered(&dir.path().join("c"), "r2");
+        assert_eq!(key_style_of(&r2), DestinationKeyStyle::ObjectStore);
     }
 }
