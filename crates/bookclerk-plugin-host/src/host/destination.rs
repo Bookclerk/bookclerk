@@ -1001,6 +1001,59 @@ mod registry_tests {
         assert!(registry.destinations().is_empty());
     }
 
+    #[tokio::test]
+    async fn acquire_and_listing_use_every_deployed_destination() {
+        let config = bookclerk_config::Config::default();
+        let empty = DestinationRegistry::default();
+        let Err(err) = crate::build_acquire_destinations(&config, &empty) else {
+            panic!("no destination must refuse an acquire");
+        };
+        assert!(err.to_string().contains("no output destination"), "{err}");
+        let Err(err) = crate::build_storage_backend(&empty) else {
+            panic!("no destination must refuse listing");
+        };
+        assert!(err.to_string().contains("no output destination"), "{err}");
+
+        let dirs: Vec<_> = (0..2).map(|_| tempfile::tempdir().unwrap()).collect();
+        let mut registry = DestinationRegistry::default();
+        deploy(
+            &mut registry,
+            "a-r2",
+            "r2",
+            DestinationKeyStyle::ObjectStore,
+            &dirs[0],
+        )
+        .unwrap();
+        let single = crate::build_storage_backend(&registry).unwrap();
+        single
+            .put(
+                "one.m4b",
+                bytes::Bytes::from_static(b"audio"),
+                bookclerk_storage::ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        assert!(dirs[0].path().join("one.m4b").exists());
+
+        deploy(
+            &mut registry,
+            "z-local",
+            "local",
+            DestinationKeyStyle::Filesystem,
+            &dirs[1],
+        )
+        .unwrap();
+        let acquire = crate::build_acquire_destinations(&config, &registry).unwrap();
+        assert_eq!(
+            acquire.primary.as_str(),
+            "z-local",
+            "path destinations lead"
+        );
+        let ids: Vec<&str> = acquire.items.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["z-local", "a-r2"]);
+        assert!(crate::build_storage_backend(&registry).is_ok());
+    }
+
     /// A storage plugin's manifest under `root`, with `id`.
     fn discovered(root: &std::path::Path, id: &str) -> DiscoveredPlugin {
         let toml = format!(
