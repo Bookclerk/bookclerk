@@ -1011,16 +1011,41 @@ pub async fn search_similar_products(
     asin: &str,
     num_results: usize,
 ) -> Result<Vec<CatalogProduct>> {
+    let region = normalize_region(region);
+    let origin = format!("https://api.audible{}", region_tld(&region));
+    search_similar_products_at(http, &origin, asin, num_results).await
+}
+
+/// [`search_similar_products`] against a given catalog origin, such as a
+/// test server.
+///
+/// # Arguments
+///
+/// * `http` - Client from [`public_http_client`].
+/// * `origin` - Catalog origin without a trailing slash
+///   (`https://api.audible.com`).
+/// * `asin` - ASIN of the title to find neighbours of.
+/// * `num_results` - Most titles to ask for (1 to 50).
+///
+/// # Returns
+///
+/// The similar titles in the store's order, without the title itself; none
+/// when `asin` is not an ASIN.
+///
+/// # Errors
+///
+/// Returns an error when the request fails or the answer is not JSON.
+pub async fn search_similar_products_at(
+    http: &Client,
+    origin: &str,
+    asin: &str,
+    num_results: usize,
+) -> Result<Vec<CatalogProduct>> {
     let asin = asin.trim().to_ascii_uppercase();
     if !is_valid_asin(&asin) {
         return Ok(Vec::new());
     }
-    let region = normalize_region(region);
-    let url = format!(
-        "https://api.audible{}/1.0/catalog/products/{}/sims",
-        region_tld(&region),
-        asin
-    );
+    let url = format!("{origin}/1.0/catalog/products/{asin}/sims");
     let num = num_results.clamp(1, 50).to_string();
     let req = http.get(&url).query(&[
         ("similarity_type", "RawSimilarities"),

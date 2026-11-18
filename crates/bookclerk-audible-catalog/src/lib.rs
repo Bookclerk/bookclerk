@@ -21,8 +21,8 @@ pub use public_meta::{
     search_catalog_by_narrator, search_catalog_by_series_asin, search_catalog_by_series_name,
     search_catalog_keywords, search_catalog_products, search_catalog_products_ex,
     search_catalog_products_ex2, search_catalog_products_paged, search_catalog_products_rich,
-    search_catalog_storefront, search_similar_products, CatalogList, CatalogProduct, CatalogRating,
-    CatalogReview, CatalogReviewsPage, CatalogReviewsSort,
+    search_catalog_storefront, search_similar_products, search_similar_products_at, CatalogList,
+    CatalogProduct, CatalogRating, CatalogReview, CatalogReviewsPage, CatalogReviewsSort,
 };
 
 /// True when `s` (trimmed) has the shape of an Audible ASIN: ten ASCII
