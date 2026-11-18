@@ -38,6 +38,7 @@ const {
   PluginError,
   QueueBatch,
   QueueMessage,
+  PURCHASE_HINTS_CONCURRENCY,
   StorefrontEntrypoint,
   cliArgs,
   decodeExtensibleConfig,
@@ -596,6 +597,55 @@ const jobInvocation = {
     (err) => err instanceof PluginError && err.wireCode === "unsupported",
     "declared-but-unimplemented methods report unsupported",
   );
+
+  // The default `purchaseHints` overlaps a few one-title lookups and keeps
+  // each answer in its query's place.
+  class SlowStore extends StorefrontEntrypoint {
+    running = 0;
+    peak = 0;
+    async purchaseHint(params) {
+      this.running += 1;
+      this.peak = Math.max(this.peak, this.running);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      this.running -= 1;
+      return params.productId ? { productId: params.productId } : null;
+    }
+  }
+  const slow = new SlowStore({}, {});
+  const queries = Array.from({ length: 10 }, (_, n) =>
+    n % 3 === 0 ? { title: `t${n}` } : { productId: `p${n}` },
+  );
+  const hints = await slow.purchaseHints({ queries });
+  assert.deepEqual(
+    hints.map((h) => h?.productId ?? null),
+    queries.map((q) => q.productId ?? null),
+  );
+  assert.equal(slow.peak, PURCHASE_HINTS_CONCURRENCY);
+  class LimitedStore extends StorefrontEntrypoint {
+    async purchaseHint() {
+      throw new PluginError("rate_limited", "slow down");
+    }
+  }
+  await assert.rejects(
+    () => new LimitedStore({}, {}).purchaseHints({ queries }),
+    (err) => err instanceof PluginError && err.wireCode === "rate_limited",
+    "a failed lookup rejects the whole batch",
+  );
+  // After one lane fails, the lanes still waiting finish but start nothing new.
+  class OneFailsStore extends StorefrontEntrypoint {
+    asked = 0;
+    async purchaseHint(params) {
+      this.asked += 1;
+      if (params.productId === "p1") throw new PluginError("rate_limited", "slow down");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return { productId: params.productId };
+    }
+  }
+  const oneFails = new OneFailsStore({}, {});
+  const named = Array.from({ length: 10 }, (_, n) => ({ productId: `p${n}` }));
+  await assert.rejects(() => oneFails.purchaseHints({ queries: named }));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(oneFails.asked, PURCHASE_HINTS_CONCURRENCY, "no lookup starts after a failure");
 }
 
 // --- Native-behind-workerd control plane (dist + bundled embed) ---

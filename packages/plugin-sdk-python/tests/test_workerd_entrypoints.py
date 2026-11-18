@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
 from unittest import mock
 
@@ -264,6 +265,35 @@ class PurchaseHintsDefaultTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(workerd_module, "PURCHASE_HINTS_BUDGET_SECONDS", 0.0):
             out = await store.purchaseHints({"queries": [{"title": "late"}]})
         self.assertEqual(out, [None])
+
+    async def test_a_few_lookups_overlap_and_a_failure_fails_the_batch(self) -> None:
+        running = 0
+        peak = 0
+
+        class Store(StorefrontEntrypoint):
+            async def purchaseHint(self, params):
+                nonlocal running, peak
+                running += 1
+                peak = max(peak, running)
+                await asyncio.sleep(0.01)
+                running -= 1
+                return {"productId": params["productId"]} if params.get("productId") else None
+
+        queries = [{"productId": f"p{n}"} if n % 3 else {"title": f"t{n}"} for n in range(10)]
+        out = await Store.__new__(Store).purchaseHints({"queries": queries})
+        self.assertEqual(
+            [h["productId"] if h else None for h in out],
+            [q.get("productId") for q in queries],
+        )
+        self.assertEqual(peak, workerd_module.PURCHASE_HINTS_CONCURRENCY)
+
+        class Limited(StorefrontEntrypoint):
+            async def purchaseHint(self, params):
+                raise PluginError("rate_limited", "slow down")
+
+        with self.assertRaises(PluginError) as ctx:
+            await Limited.__new__(Limited).purchaseHints({"queries": queries})
+        self.assertEqual(ctx.exception.code, "rate_limited")
 
 
 class NamedEntrypointTests(unittest.IsolatedAsyncioTestCase):
