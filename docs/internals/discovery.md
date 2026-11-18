@@ -746,6 +746,18 @@ as a **membership** signal: linked stores are compared at member price; other
 stores at list / non-member price; the shelf shows the global cheapest of those
 effective prices. Client-supplied `preferred_sources` are ignored.
 
+A store answers a price lookup by searching its catalog, and its answer
+carries only a product id, a title and prices, so a title search can return
+another recording of the book (a full-cast dramatisation for a narration).
+Before answering, the purchase-hint routes and the wishlist's own price
+lookup drop every price whose product the
+[shared listing pool](#shared-listing-pool) places only in another
+expression (recording) than the card's own store editions
+(`retain_card_recording` in `bookclerk-discover`, reading
+`LibraryStore::listing_expressions`). A price for a product the pool never
+listed stays, and so does every price when the pool knows none of the
+card's editions.
+
 A page of cards is priced with **one call per store**: the batch route
 sends every visible card's query to each deployed store's `purchaseHints`
 entrypoint together, with the product id the card already knows for that

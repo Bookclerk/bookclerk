@@ -500,6 +500,117 @@ async fn resolve_purchase_hints_uncached(
     })
 }
 
+/// Drops live purchase hints that sell another recording than the card's.
+///
+/// A store answers a price lookup by searching its catalog, and the host can
+/// only check the answer's title, so a store whose first hit is another
+/// recording of the book (a full-cast dramatisation for a narration) would
+/// price the card with it. The shared listing pool knows which expression
+/// (recording) each listed product is: when it knows the card's own
+/// editions, a hint whose product the pool placed only in other expressions
+/// is dropped, and `best` is picked again. A hint for a product the pool
+/// never listed stays, as does every hint when the pool knows none of the
+/// card's editions.
+///
+/// # Arguments
+///
+/// * `library` - The library whose listing pool is read.
+/// * `registry` - Storefronts, to name each hint's store by its PluginKey.
+/// * `query` - The card's lookup: its candidate edition and store editions.
+/// * `response` - The resolved hints, filtered in place.
+///
+/// # Errors
+///
+/// Returns the library read error.
+pub async fn retain_card_recording(
+    library: &bookclerk_library::LibraryStore,
+    registry: &SourceRegistry,
+    query: &PurchaseHintsQuery,
+    response: &mut PurchaseHintsResponse,
+) -> Result<()> {
+    let key_of = |source: &str| -> Option<String> {
+        registry.get(source).map(|s| s.plugin_key().to_string())
+    };
+    let card: Vec<(String, String)> = card_editions(query)
+        .into_iter()
+        .filter_map(|(source, product)| Some((key_of(&source)?, product)))
+        .collect();
+    if card.is_empty() {
+        return Ok(());
+    }
+    let hints: Vec<Option<(String, String)>> = response
+        .hints
+        .iter()
+        .map(|h| Some((key_of(&h.source)?, h.product_id.clone())))
+        .collect();
+    let mut pairs = card.clone();
+    pairs.extend(hints.iter().flatten().cloned());
+    let expressions = library.listing_expressions(&pairs).await?;
+    let card_expressions: std::collections::BTreeSet<&String> = card
+        .iter()
+        .filter_map(|pair| expressions.get(pair))
+        .flatten()
+        .collect();
+    if card_expressions.is_empty() {
+        return Ok(());
+    }
+    let keep: Vec<bool> = hints
+        .iter()
+        .map(|pair| {
+            pair.as_ref()
+                .and_then(|pair| expressions.get(pair))
+                .is_none_or(|own| own.iter().any(|x| card_expressions.contains(x)))
+        })
+        .collect();
+    if keep.iter().all(|k| *k) {
+        return Ok(());
+    }
+    let mut kept = keep.into_iter();
+    response.hints.retain(|hint| {
+        let keep = kept.next().unwrap_or(true);
+        if !keep {
+            tracing::debug!(
+                source = %hint.source,
+                product_id = %hint.product_id,
+                "dropping purchase hint for another recording than the card's"
+            );
+        }
+        keep
+    });
+    let preferred = preferred_source_set(&query.preferred_sources);
+    response.best = best_purchase_hint_preferring(&response.hints, &preferred)
+        .map(|h| best_hint_for_caller(h, &preferred));
+    Ok(())
+}
+
+/// The card's own store editions, as `(source, product_id)`: its candidate
+/// edition first, then its other store editions, without repeats.
+fn card_editions(query: &PurchaseHintsQuery) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut push = |source: &str, product: &str| {
+        let (source, product) = (source.trim(), product.trim());
+        if source.is_empty() || product.is_empty() {
+            return;
+        }
+        if !out
+            .iter()
+            .any(|(s, p)| s.eq_ignore_ascii_case(source) && p == product)
+        {
+            out.push((source.to_string(), product.to_string()));
+        }
+    };
+    if let (Some(source), Some(product)) = (
+        query.candidate_source.as_deref(),
+        query.candidate_product_id.as_deref(),
+    ) {
+        push(source, product);
+    }
+    for edition in &query.store_editions {
+        push(&edition.source, &edition.product_id);
+    }
+    out
+}
+
 /// Pick the lowest-priced hint (ties keep earlier order). Unpriced sort after priced.
 ///
 /// # Arguments
@@ -1500,6 +1611,102 @@ mod tests {
             batches: std::sync::Arc::clone(&batches),
         }));
         (registry, batches)
+    }
+
+    /// A price for a product the listing pool placed in another recording
+    /// than the card's is dropped and `best` is picked again; a price for
+    /// the card's own recording, or for a product the pool never listed,
+    /// stays.
+    #[tokio::test]
+    async fn prices_for_another_recording_are_dropped() {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let hit = |product: &str, kind| bookclerk_source::CatalogHit {
+            product_id: product.into(),
+            title: "The Sunlit Man".into(),
+            is_abridged: Some(false),
+            work_kind: bookclerk_source::records::WorkKind::Book,
+            expression_kind: kind,
+            media_kind: bookclerk_source::records::MediaKind::Audio,
+            ..bookclerk_source::CatalogHit::default()
+        };
+        let now = chrono::Utc::now();
+        let narration = crate::pool::catalog_listing(
+            "libro",
+            "us",
+            &hit("L1", bookclerk_source::records::ExpressionKind::Narration),
+            now,
+        );
+        let drama = crate::pool::catalog_listing(
+            "chirp",
+            "us",
+            &hit("G1", bookclerk_source::records::ExpressionKind::Dramatisation),
+            now,
+        );
+        library
+            .record_catalog_listings(&[narration, drama])
+            .await
+            .unwrap();
+        let mut registry = SourceRegistry::new();
+        for id in ["libro", "chirp"] {
+            registry.register(std::sync::Arc::new(BatchStore {
+                id,
+                answer: Answer::Priced,
+                batches: std::sync::Arc::default(),
+            }));
+        }
+        let priced = |source: &str, product: &str, cents: i64| PurchaseHint {
+            source: source.into(),
+            product_id: product.into(),
+            price_cents: Some(cents),
+            ..PurchaseHint::default()
+        };
+        let query = PurchaseHintsQuery {
+            title: "The Sunlit Man".into(),
+            candidate_source: Some("libro".into()),
+            candidate_product_id: Some("L1".into()),
+            ..PurchaseHintsQuery::default()
+        };
+        let mut response = PurchaseHintsResponse {
+            hints: vec![
+                priced("libro", "L1", 2_000),
+                priced("chirp", "G1", 1_499),
+                priced("chirp", "unlisted", 1_800),
+            ],
+            best: Some(priced("chirp", "G1", 1_499)),
+            incomplete: false,
+        };
+        retain_card_recording(&library, &registry, &query, &mut response)
+            .await
+            .unwrap();
+        let kept: Vec<&str> = response
+            .hints
+            .iter()
+            .map(|h| h.product_id.as_str())
+            .collect();
+        assert_eq!(kept, vec!["L1", "unlisted"]);
+        assert_eq!(
+            response.best.map(|b| b.product_id),
+            Some(String::from("unlisted"))
+        );
+
+        // A card whose editions the pool does not know keeps every price.
+        let unknown = PurchaseHintsQuery {
+            title: "The Sunlit Man".into(),
+            candidate_source: Some("chirp".into()),
+            candidate_product_id: Some("unlisted".into()),
+            ..PurchaseHintsQuery::default()
+        };
+        let mut all = PurchaseHintsResponse {
+            hints: vec![priced("chirp", "G1", 1_499), priced("libro", "L1", 2_000)],
+            best: None,
+            incomplete: false,
+        };
+        retain_card_recording(&library, &registry, &unknown, &mut all)
+            .await
+            .unwrap();
+        assert_eq!(all.hints.len(), 2);
     }
 
     /// A page of cards is one call per store; member prices only reach a
