@@ -818,14 +818,16 @@ library it joined, in turn, for the copy of that listing.
   M4A or MP4 file; otherwise it fetches from the store.
 - **Another store: the better copy is kept.** When no library has a copy
   from the title's store but one has a copy of the same edition from a
-  different store, the branch downloads from its own store first and
-  probes that download. If the library's probe says its copy is better
+  different store, the branch downloads from its own store first,
+  probes that download and asks its libraries again (a store download
+  can outlast the hour a library's answer is good for). If the library's probe says its copy is better
   (lossless beats lossy, then the higher bitrate wins), the branch
   downloads the library's copy too, probes it itself, and stores it in
   place of its own download only when its own probe agrees. Otherwise it
   keeps its own. The comparison runs once, in that acquire. The stored
   file's row names the store the audio really came from, and the cover
-  and companion PDF of the branch's own download are kept.
+  and companion PDF of the branch's own download are kept (the library's
+  cover is used only when the store sent none).
 - **Unknown store: the branch fetches its own.** A copy whose store the
   library doesn't know is never offered.
 - **Any problem: the store.** If the copy doesn't arrive whole, is larger

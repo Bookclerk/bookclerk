@@ -1190,7 +1190,14 @@ async fn run_source_pipeline(
         None => {
             let own = fetch_title_enforcing_quota(library, req, source, &work_dir).await?;
             // A copy from another store is compared with the download it
-            // would replace, so the store is always asked first.
+            // would replace, so the store is always asked first. The
+            // libraries are asked again once the download is here: what
+            // they offered before it may no longer be downloadable after
+            // a long store download.
+            let offer = match offer {
+                Some(_) => offered_copy(library, req).await,
+                None => None,
+            };
             match offer.filter(|offer| !offer.same_store) {
                 Some(offer) => {
                     match replace_with_better_copy(library, req, &work_dir, &offer, own).await {
@@ -1345,8 +1352,8 @@ enum Compared {
     /// The store's download: it is at least as good, or the library's
     /// copy could not be used.
     Own(PlainFetch),
-    /// The library's copy, with the store download's companion PDF and,
-    /// when the copy has no cover, its cover.
+    /// The library's audio, with the store download's companion PDF and
+    /// cover (the library's cover only when the store sent none).
     Library(PlainFetch),
 }
 
@@ -1433,8 +1440,10 @@ async fn replace_with_better_copy(
         let _ = tokio::fs::remove_file(path).await;
     }
     req.library_copies.stored_from().set(&offer.store);
+    // Only the audio is replaced: the store's cover stays, and the
+    // library's stands in when the store sent none.
     let mut better = taken.fetch;
-    if better.cover_path.is_none() {
+    if own.cover_path.is_some() {
         better.cover_path = own.cover_path;
     }
     better.pdf_url = own.pdf_url;
@@ -4065,19 +4074,27 @@ mod tests {
 
         // A copy the library downloaded from another store, or from a
         // store it does not know, is left alone: this title's own store
-        // is asked, and nothing is downloaded from the library.
+        // is asked, and nothing is downloaded from the library. What a
+        // library offers from another store is asked for again once the
+        // store's download is here, since the first answer may have
+        // lapsed by then.
         for (n, theirs) in [Some("libro"), None].into_iter().enumerate() {
             let product = format!("B00OTHER{n}");
             let uuid = edition_book(&store, &product, "user-1", "Twin", None).await;
             let copy = MemoryCopy::new(theirs, vec![("Twin.m4b", FileRole::Audio, audio.clone())]);
             let (copy_fetches, taken) = (copy.fetched.clone(), copy.taken.clone());
             let before = fetches.load(Ordering::SeqCst);
-            let req = copy_req(&cache, job.clone(), &product, &uuid, OneCopy::of(copy));
+            let copies = OneCopy::of(copy);
+            let req = copy_req(&cache, job.clone(), &product, &uuid, copies.clone());
             let result = acquire_book(&store, &destinations, req, &source)
                 .await
                 .unwrap();
             assert!(!result.from_library);
             assert_eq!(fetches.load(Ordering::SeqCst), before + 1);
+            assert_eq!(
+                copies.asked.lock().unwrap().len(),
+                if theirs.is_some() { 2 } else { 1 }
+            );
             assert_eq!(copy_fetches.load(Ordering::SeqCst), 0);
             assert_eq!(taken.load(Ordering::SeqCst), 0);
             assert!(
@@ -4373,6 +4390,39 @@ mod tests {
             Some("libro")
         );
         remove_library_copy(&work_dir.join(LIBRARY_COPY_DIR)).await;
+
+        // Only the audio is replaced: the download's cover stays when the
+        // library sends one too, and the library's stands in when the
+        // store sent none.
+        for own_cover in [true, false] {
+            let mut copy = MemoryCopy::new(
+                Some("libro"),
+                vec![
+                    ("Twin.flac", FileRole::Audio, tagged_flac()),
+                    ("cover.png", FileRole::Cover, b"png".to_vec()),
+                ],
+            );
+            copy.claims = (Some(700), true);
+            let req = copy_req(&cache, job.clone(), "B00CMP", &uuid, OneCopy::of(copy));
+            let offer = offered_copy(&store, &req).await.unwrap();
+            let mut own_fetch = own(&work_dir);
+            if !own_cover {
+                own_fetch.cover_path = None;
+            }
+            let Compared::Library(better) =
+                replace_with_better_copy(&store, &req, &work_dir, &offer, own_fetch).await
+            else {
+                panic!("the lossless copy is kept");
+            };
+            let cover = better.cover_path.unwrap();
+            if own_cover {
+                assert_eq!(cover, work_dir.join("own.jpg"));
+            } else {
+                assert!(cover.starts_with(work_dir.join(LIBRARY_COPY_DIR)));
+                assert_eq!(std::fs::read(&cover).unwrap(), b"png");
+            }
+            remove_library_copy(&work_dir.join(LIBRARY_COPY_DIR)).await;
+        }
 
         // A copy the library says is no better is not even downloaded.
         let (req, fetched, taken) = compare((None, false), tagged_flac(), "Twin.flac");
