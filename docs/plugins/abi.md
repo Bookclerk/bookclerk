@@ -1549,10 +1549,13 @@ feed comes from a file-system watcher when the instance's `watch` setting
 is on and the root is on a local disk; otherwise every page has `complete`
 false (see [Watching the folder](../server/output.md#watching-the-folder)).
 
-The optional `s3` destination declares the same set except
-`storage.changes`. It cannot see its
-bucket's settings when it is described, so it declares them for every store
-and finds out once, on first use, which request kinds (plain upload,
+The optional `s3` destination declares the same set. It cannot see its
+bucket's settings when it is described, so it declares them for every store.
+Its `changes` feed drains the bucket's Amazon SQS notification queue when
+the instance's `notification_queue_url` setting names one, and otherwise
+every page has `complete` false (see
+[Following changes in the bucket](../server/output.md#following-changes-in-the-bucket)).
+It finds out once, on first use, which request kinds (plain upload,
 multipart completion, copy, part copy, delete) enforce their conditions
 (see
 [Moves and conditional writes](../server/output.md#moves-and-conditional-writes)).
@@ -1587,7 +1590,11 @@ the fallback writes the target with `ifNoneMatch` when the guest declares
 the copy (so `atomic` is false).
 
 `changes` is a hint, not a ledger. The first call, with an empty cursor,
-returns the current position and no changes. A page with `complete` false
+returns the current position and no changes. A feed drained from a queue
+treats a call's cursor as the receipt for the pages up to it: their
+messages are deleted then, and pages handed out after it are offered again,
+so a retried cursor gets those changes once more. Such a feed has one
+reader, so the host calls it from one place. A page with `complete` false
 means the guest may have missed changes since the cursor (a watcher
 restarted, a queue dropped messages), and the host backs it with a full
 listing. A change kind added after an SDK was built reads as `changed`. A scheduled listing stays the backstop either way.

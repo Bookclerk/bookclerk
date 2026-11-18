@@ -213,6 +213,12 @@ aws-sdk-s3 = { version = "1", default-features = false, features = [
     "default-https-client",
     "rt-tokio",
 ] }
+# Same client stack as aws-sdk-s3: the s3 destination drains its bucket's
+# notification queue.
+aws-sdk-sqs = { version = "1", default-features = false, features = [
+    "default-https-client",
+    "rt-tokio",
+] }
 aws-config = "1"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }

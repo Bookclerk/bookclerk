@@ -208,6 +208,7 @@ async fn open_s3(session: &PluginSession, endpoint: &str) {
         region: "us-east-1".into(),
         endpoint: Some(endpoint.into()),
         force_path_style: true,
+        notification_queue_url: None,
         credentials: Some(S3CredentialsDto {
             access_key_id: "test-key".into(),
             secret_access_key: "test-secret".into(),

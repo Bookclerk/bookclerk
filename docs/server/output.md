@@ -117,6 +117,7 @@ The `s3` plugin writes to an S3 bucket or any S3-compatible service.
 | `endpoint` | none | MinIO or another S3-compatible host; a bare hostname gets `https://` |
 | `force_path_style` | `false` | |
 | `prefix` | `library/` | |
+| `notification_queue_url` | none | Amazon SQS queue that receives the bucket's object events (see [Following changes in the bucket](#following-changes-in-the-bucket)) |
 | `naming_profile`, `folder_template`, `file_template`, `chapter_file_template` | from `core.output` | Naming for this destination only |
 | `access_key_id`, `secret_access_key`, `session_token` | none | Secrets, sealed in the database |
 
@@ -186,6 +187,59 @@ Bookclerk can slip into that moment.
 
 Listings carry each object's ETag and modification time, so Bookclerk can
 tell which objects changed without reading them.
+
+### Following changes in the bucket
+
+Bookclerk finds files that other programs add, change or remove by listing
+the bucket on a schedule. On Amazon S3 it can also follow the bucket's
+event notifications, so it only reads what changed.
+
+1. Create an Amazon SQS standard queue for this bucket, and let the bucket
+   send to it (the queue's access policy allows `s3.amazonaws.com` to call
+   `sqs:SendMessage` for the bucket).
+2. Send the bucket's `s3:ObjectCreated:*` and `s3:ObjectRemoved:*` events
+   to the queue in one of these ways:
+   - An event notification on the bucket that targets the queue.
+   - An event notification that targets an SNS topic the queue subscribes
+     to. The topic's access policy allows `s3.amazonaws.com` to call
+     `sns:Publish`, and the queue's policy allows `sns.amazonaws.com` to
+     call `sqs:SendMessage` for the topic.
+   - EventBridge: turn on **Send notifications to Amazon EventBridge** in
+     the bucket's event notification settings, then add a rule for the
+     bucket's `Object Created` and `Object Deleted` events that targets the
+     queue. The queue's policy allows `events.amazonaws.com` to call
+     `sqs:SendMessage` for the rule.
+3. Let the plugin's credentials call `sqs:ReceiveMessage`,
+   `sqs:DeleteMessage` and `sqs:ChangeMessageVisibility` on the queue.
+4. Give the plugin the queue's URL:
+
+   ```sh
+   bookclerk plugins config set s3 notification_queue_url \
+     https://sqs.us-east-1.amazonaws.com/123456789012/my-audiobooks-events
+   ```
+
+Things to know:
+
+- **One reader per queue.** Each message goes to whoever receives it, so
+  nothing else may read the queue, and only one destination on one node
+  should name it. A queue can carry events for several buckets; the plugin
+  skips other buckets and keys outside its `prefix`. Its receipts are kept
+  per queue, bucket and prefix, so changing either setting starts over
+  with one listing.
+- **Messages wait for Bookclerk.** The plugin deletes a message only after
+  Bookclerk has taken the changes in it. Until then the message stays
+  hidden for 12 hours, after which the queue offers it again. It keeps the
+  receipts it needs to delete messages under its `HOME`, so they survive
+  the plugin sleeping between checks.
+- **Listing stays the backstop.** After the queue is first set, after the
+  plugin loses its receipts, when a message cannot be read, or when the
+  plugin could not hand a message back to the queue (or stopped in the
+  middle of receiving), Bookclerk
+  lists the bucket once and carries on from there. Messages that the queue
+  drops (its retention ran out, or a dead-letter queue took them) are found
+  by the next scheduled listing.
+- Only Amazon SQS queues are read for now. MinIO and other S3-compatible
+  services deliver their events elsewhere, so Bookclerk lists those buckets.
 
 ### Matching existing files
 

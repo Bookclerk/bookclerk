@@ -29,6 +29,7 @@ tracing.workspace = true
 # skip the AWS SDK.
 aws-config = { workspace = true, optional = true }
 aws-sdk-s3 = { workspace = true, optional = true }
+aws-sdk-sqs = { workspace = true, optional = true }
 aws-smithy-runtime-api = { version = "1", default-features = false, features = ["client", "http-1x"], optional = true }
 aws-smithy-types = { version = "1", default-features = false, features = ["http-body-1-x"], optional = true }
 bookclerk-plugin-sdk.workspace = true
@@ -39,10 +40,12 @@ chrono = { workspace = true, optional = true }
 notify = { version = "8", optional = true, default-features = false, features = ["macos_fsevent"] }
 
 [features]
-# The S3 / MinIO backend (`S3Backend`), for the `s3` destination plugin.
+# The S3 / MinIO backend (`S3Backend`) and its notification-queue change
+# feed, for the `s3` destination plugin.
 s3 = [
   "dep:aws-config",
   "dep:aws-sdk-s3",
+  "dep:aws-sdk-sqs",
   "dep:aws-smithy-runtime-api",
   "dep:aws-smithy-types",
   "dep:http-body-util",

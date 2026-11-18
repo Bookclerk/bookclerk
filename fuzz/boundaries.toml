@@ -147,6 +147,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.s3_event]
+crate = "bookclerk-storage"
+boundary = "Messages on an S3 bucket's notification queue (S3 event notifications, SNS envelopes, EventBridge events), read by the s3 guest into change-feed entries"
+input_from = "storage"
+side = "guest"
+artifacts = ["bookclerk"]
+
 [targets.socket_request]
 crate = "bookclerk-plugin-abi"
 boundary = "A guest's host-brokered socket request: the Sockets.connect URL, headers, subprotocols, heartbeat pairs and attachment, and the SocketMessage the host delivers to a SocketHandler"

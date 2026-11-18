@@ -102,6 +102,12 @@ pub struct S3Backend {
     /// Which conditional requests the store enforces, learned once by
     /// [`S3Backend::conditional_support`] and shared by clones.
     conditional: std::sync::Arc<tokio::sync::OnceCell<ConditionalSupport>>,
+    /// The shared AWS configuration (region, credentials) the client was
+    /// built from; the notification queue's client reuses it.
+    sdk: aws_config::SdkConfig,
+    /// The change feed drained from the bucket's notification queue, set by
+    /// [`S3Backend::with_notification_queue`].
+    queue: Option<std::sync::Arc<crate::s3_queue::QueueFeed>>,
 }
 
 /// Which conditional requests a store enforces.
@@ -163,6 +169,7 @@ impl std::fmt::Debug for S3Backend {
             .field("region", &self.region)
             .field("endpoint", &self.endpoint)
             .field("part_size", &self.part_size)
+            .field("notification_queue", &self.queue.is_some())
             .field(
                 "journal",
                 &self
@@ -283,7 +290,45 @@ impl S3Backend {
             journal: None,
             part_size: MULTIPART_PART_SIZE,
             conditional: std::sync::Arc::default(),
+            sdk: shared,
+            queue: None,
         })
+    }
+
+    /// Serves `changes` from the bucket's notification queue.
+    ///
+    /// The bucket must send its object-created and object-removed events to
+    /// `queue` (directly, through SNS, or through an EventBridge rule), and
+    /// nothing else may drain the queue. The feed keeps the receipts of the
+    /// messages it has handed out in `state_dir` (the guest's `HOME`) until
+    /// the host's next call says it has read them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the queue client cannot be built or
+    /// `state_dir` cannot be created.
+    pub fn with_notification_queue(
+        mut self,
+        queue: crate::s3_queue::QueueUrl,
+        state_dir: &Path,
+    ) -> Result<Self> {
+        let id = queue.as_str().to_string();
+        let client = crate::s3_queue::SqsQueue::new(&self.sdk, queue)?;
+        let feed = crate::s3_queue::QueueFeed::open(
+            Box::new(client),
+            &id,
+            &self.bucket,
+            &self.prefix,
+            state_dir,
+        )?;
+        self.queue = Some(std::sync::Arc::new(feed));
+        Ok(self)
+    }
+
+    /// True when `changes` is served from a notification queue.
+    #[must_use]
+    pub fn has_notification_queue(&self) -> bool {
+        self.queue.is_some()
     }
 
     /// Prepends the destination prefix to `key` (no-op when the prefix is empty).
@@ -1540,7 +1585,23 @@ impl StorageBackend for S3Backend {
     }
 
     fn capabilities(&self) -> StorageCapabilities {
-        Self::CAPABILITIES
+        StorageCapabilities {
+            changes: self.queue.is_some(),
+            ..Self::CAPABILITIES
+        }
+    }
+
+    /// Drains the bucket's notification queue when one is configured
+    /// ([`S3Backend::with_notification_queue`]); otherwise there is no feed.
+    async fn changes(
+        &self,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<Option<crate::ChangeFeedPage>> {
+        match &self.queue {
+            Some(queue) => queue.changes(cursor, limit).await.map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Server-side copies the source, only while it still has the ETag the

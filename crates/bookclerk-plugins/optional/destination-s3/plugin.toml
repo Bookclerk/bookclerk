@@ -49,6 +49,12 @@ type = "string"
 default = "library/"
 
 [[settings]]
+key = "notification_queue_url"
+label = "Notification queue URL"
+type = "string"
+description = "Amazon SQS queue that receives this bucket's object events; when set, changes made outside Bookclerk are picked up from it. Only this destination may read the queue."
+
+[[settings]]
 key = "naming_profile"
 label = "Naming profile"
 type = "enum"

@@ -182,6 +182,14 @@ paths = [
 ]
 
 [[test_input]]
+package = "bookclerk-storage"
+# The S3 notification oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/s3_event/**",
+    "fuzz/oracles/s3_event.rs",
+]
+
+[[test_input]]
 package = "bookclerk-tags"
 # The tag oracles are shared with the replay test through `#[path]`.
 paths = [

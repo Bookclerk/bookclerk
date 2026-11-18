@@ -7,16 +7,17 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    Bindings, ByteRange, CopyResult, Destination, Entrypoints, ExtensibleConfig, Invocation,
-    KeyOutcome, ListOptions, ListPage, MoveManyPage, MoveManyRequest, MoveOptions, MoveResult,
-    ObjectMetadata, PluginDescribe, PluginWorker, PutResult, ReadResult, ScalarLimits,
-    StreamCopyHandler, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY, FEATURE_STREAMS,
-    PRODUCT_API_VERSION,
+    Bindings, ByteRange, ChangesPage, ChangesRequest, CopyResult, Destination, Entrypoints,
+    ExtensibleConfig, Invocation, KeyOutcome, ListOptions, ListPage, MoveManyPage, MoveManyRequest,
+    MoveOptions, MoveResult, ObjectMetadata, PluginDescribe, PluginWorker, PutResult, ReadResult,
+    ScalarLimits, StreamCopyHandler, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY,
+    FEATURE_STREAMS, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_sdk::{OutputS3ContextDto, PluginError, S3CredentialsDto};
 use bookclerk_storage::guest::{self, object_metadata, plugin_error as map_storage};
 use bookclerk_storage::{
-    ObjectMeta, S3Backend, S3Credentials, S3Settings, StorageBackend, StorageError,
+    ObjectMeta, QueueUrl, S3Backend, S3Credentials, S3Settings, StorageBackend,
+    StorageCapabilities, StorageError,
 };
 use tokio::io::AsyncRead;
 
@@ -97,6 +98,16 @@ fn secret_text(value: &serde_json::Value, keys: &[&str]) -> String {
     String::new()
 }
 
+/// What the guest declares: every native operation of [`S3Backend`], and
+/// `storage.changes`. The features are declared before the instance is
+/// opened, so they cannot depend on its settings: an instance without a
+/// notification queue answers `changes` with an incomplete page and the
+/// host lists instead.
+const CAPABILITIES: StorageCapabilities = StorageCapabilities {
+    changes: true,
+    ..S3Backend::CAPABILITIES
+};
+
 /// Builds an [`S3Backend`] from the host-injected bucket/region/endpoint context.
 async fn backend_from_ctx(ctx: &OutputS3ContextDto) -> Result<S3Backend> {
     let cfg = S3Settings {
@@ -106,6 +117,16 @@ async fn backend_from_ctx(ctx: &OutputS3ContextDto) -> Result<S3Backend> {
         force_path_style: ctx.force_path_style,
     };
     let creds = ctx.credentials.as_ref().map(credentials_from_dto);
+    // The operator's setting is checked before anything about the guest's
+    // own environment, so a bad URL is always reported as such.
+    let queue = ctx
+        .notification_queue_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(QueueUrl::parse)
+        .transpose()
+        .map_err(|err| PluginError::invalid_params(err.to_string()))?;
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
@@ -113,9 +134,15 @@ async fn backend_from_ctx(ctx: &OutputS3ContextDto) -> Result<S3Backend> {
             PluginError::internal("s3 destination has no HOME for multipart recovery")
         })?;
     let journal = home.join("multipart-journal");
-    S3Backend::from_parts_with_journal(&cfg, &ctx.prefix, creds.as_ref(), &journal)
+    let backend = S3Backend::from_parts_with_journal(&cfg, &ctx.prefix, creds.as_ref(), &journal)
         .await
-        .map_err(|err| PluginError::internal(err.to_string()))
+        .map_err(|err| PluginError::internal(err.to_string()))?;
+    match queue {
+        Some(queue) => backend
+            .with_notification_queue(queue, &home.join("notification-queue"))
+            .map_err(|err| PluginError::internal(err.to_string())),
+        None => Ok(backend),
+    }
 }
 
 /// Copies ABI credential fields into the storage crate's credential struct.
@@ -293,6 +320,10 @@ impl Destination for S3Destination {
         guest::head_many(&self.backend, keys).await
     }
 
+    async fn changes(&self, request: ChangesRequest) -> Result<ChangesPage> {
+        guest::changes(&self.backend, request).await
+    }
+
     async fn abort_stage(&self, key: &str, commit_token: &str) -> Result<()> {
         let staged = stage_object_key(Some(commit_token), key)?;
         match self.backend.delete(&staged).await {
@@ -316,14 +347,15 @@ impl PluginWorker for S3Root {
             // The features are declared without the bucket's configuration,
             // so they cover every store: on one that does not enforce
             // conditional requests, the backend runs the host's algorithm
-            // for each operation itself and reports `atomic: false`.
+            // for each operation itself and reports `atomic: false`, and an
+            // instance without a notification queue has no change feed.
             rpc_features: [
                 FEATURE_SCALAR_LIMITS.into(),
                 FEATURE_STREAMS.into(),
                 FEATURE_STORAGE_COPY.into(),
             ]
             .into_iter()
-            .chain(guest::storage_features(S3Backend::CAPABILITIES))
+            .chain(guest::storage_features(CAPABILITIES))
             .collect(),
             scalar_limits: ScalarLimits::default().into(),
             capabilities: manifest_capabilities(include_str!("../plugin.toml"))?,
@@ -353,6 +385,7 @@ mod tests {
             bookclerk_plugin_sdk::FEATURE_STORAGE_DELETE_MANY,
             bookclerk_plugin_sdk::FEATURE_STORAGE_HEAD_MANY,
             bookclerk_plugin_sdk::FEATURE_STORAGE_CONDITIONAL_WRITE,
+            bookclerk_plugin_sdk::FEATURE_STORAGE_CHANGES,
         ] {
             assert!(
                 described.rpc_features.iter().any(|f| f == feature),
@@ -360,9 +393,20 @@ mod tests {
                 described.rpc_features
             );
         }
-        assert!(!described
-            .rpc_features
-            .iter()
-            .any(|f| f == bookclerk_plugin_sdk::FEATURE_STORAGE_CHANGES));
+    }
+
+    #[tokio::test]
+    async fn a_queue_url_that_is_not_sqs_is_refused_at_open() {
+        let config = ExtensibleConfig::json(&serde_json::json!({
+            "bucket": "library",
+            "prefix": "",
+            "region": "us-east-1",
+            "notificationQueueUrl": "https://example.com/123456789012/q",
+        }));
+        let err = S3Destination::from_config(&config)
+            .await
+            .err()
+            .expect("refused");
+        assert!(err.to_string().contains("notification queue URL"), "{err}");
     }
 }

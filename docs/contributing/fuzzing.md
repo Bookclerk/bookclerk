@@ -44,6 +44,7 @@ boundary extends it.
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
 | `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany` and `changes` pages and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
+| `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL, headers, subprotocols, heartbeat pairs and attachment, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
 | `socket_route` | A workerd plugin's `env.SOCKETS` calls on the granted reverse channel: the `POST /sockets/<op>` JSON body for `connect`, `send`, `close`, `attachment` and `list` | `bookclerk-workerd::granted_sockets` |
@@ -248,6 +249,19 @@ only that. The others check:
   per-key error whose code is unreadable decodes as an `unknown` failure,
   never as success. The shared oracle is `fuzz/oracles/storage_reply.rs`,
   replayed from `bookclerk-plugin-abi`.
+- **`s3_event`**: byte 0 picks the destination's key prefix (even: none,
+  odd: `library/`) and the rest is one queue message. Parsing never panics
+  and answers the same twice; a body over 1 MiB is refused as too large;
+  every reported change has a non-empty key without NUL, within 1,024
+  bytes, with listing fields only on an upsert. Whenever the parser accepts
+  a message, an independent walk of the same JSON, with its own
+  percent-decoder, finds exactly the same changes in the same order. Keys
+  are form-decoded only in S3 event records (direct or inside an SNS
+  envelope); EventBridge keys arrive decoded. A key outside the bucket or
+  prefix is skipped before it is checked, so a broken key elsewhere in the
+  bucket does not fail the message. The
+  shared oracle is `fuzz/oracles/s3_event.rs`, replayed from
+  `bookclerk-storage`.
 - **`socket_request`**: byte 0 modulo 3 picks a socket URL (0), a Cap'n
   Proto `SocketConnectRequest` (1) or a `SocketMessage` (2). Every URL the
   parser accepts is one a WHATWG URL parser (the `url` crate) reads as the
