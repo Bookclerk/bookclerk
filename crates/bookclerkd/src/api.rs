@@ -5589,11 +5589,51 @@ async fn discover_purchase_hints(
     validate_purchase_hints_query(&body)?;
     // Always derive linked stores server-side (ignore client-supplied overrides).
     body.preferred_sources = preferred_sources_for_caller(&state, &headers).await;
+    let library = state.library_snapshot().await;
     let sources = state.sources.read().await;
-    let response = bookclerk_discover::resolve_purchase_hints(&sources, &body)
+    let mut response = bookclerk_discover::resolve_purchase_hints(&sources, &body)
         .await
         .map_err(internal_err)?;
+    let deadline = tokio::time::Instant::now() + bookclerk_discover::BATCH_DEADLINE;
+    check_card_recording(&library, &sources, &body, &mut response, deadline).await;
     Ok(Json(response))
+}
+
+/// Drops the prices `response` holds for another recording than the card's
+/// (see [`bookclerk_discover::retain_card_recording`]).
+///
+/// A store's title search can answer with another recording of the book.
+/// When the listing pool read fails or does not finish by `deadline`, the
+/// hints stay unchecked and the response is marked incomplete, so the
+/// client shows them for now but asks again rather than keep them.
+///
+/// # Arguments
+///
+/// * `library` - The library holding the shared listing pool.
+/// * `sources` - Maps each hint's store to its plugin key.
+/// * `query` - The card the prices are for.
+/// * `response` - The resolved prices, filtered in place.
+/// * `deadline` - When the route must answer.
+async fn check_card_recording(
+    library: &LibraryStore,
+    sources: &bookclerk_source::SourceRegistry,
+    query: &bookclerk_discover::PurchaseHintsQuery,
+    response: &mut bookclerk_discover::PurchaseHintsResponse,
+    deadline: tokio::time::Instant,
+) {
+    let mut checked = response.clone();
+    let check = bookclerk_discover::retain_card_recording(library, sources, query, &mut checked);
+    match tokio::time::timeout_at(deadline, check).await {
+        Ok(Ok(())) => *response = checked,
+        Ok(Err(err)) => {
+            tracing::debug!(error = %err, "purchase-hint recording check failed");
+            response.incomplete = true;
+        }
+        Err(_) => {
+            tracing::debug!("purchase-hint recording check ran past the deadline");
+            response.incomplete = true;
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
@@ -5643,13 +5683,16 @@ async fn discover_purchase_hints_batch(
         q.preferred_sources = preferred.clone();
         queries.push(q);
     }
-    let resolved = {
-        let sources = state.sources.read().await;
-        bookclerk_discover::resolve_purchase_hints_batch(&sources, &queries, 4).await
-    };
+    // One deadline covers the store lookups and the recording checks.
+    let deadline = tokio::time::Instant::now() + bookclerk_discover::BATCH_DEADLINE;
+    let library = state.library_snapshot().await;
+    let sources = state.sources.read().await;
+    let resolved = bookclerk_discover::resolve_purchase_hints_batch(&sources, &queries, 4).await;
     let mut results = Vec::with_capacity(resolved.len().min(MAX_PURCHASE_HINT_QUERIES));
-    for item in resolved {
-        results.push(item.map_err(internal_err)?);
+    for (item, query) in resolved.into_iter().zip(&queries) {
+        let mut response = item.map_err(internal_err)?;
+        check_card_recording(&library, &sources, query, &mut response, deadline).await;
+        results.push(response);
     }
     Ok(Json(PurchaseHintsBatchResponse { results }))
 }
@@ -6227,7 +6270,15 @@ async fn create_request_inner(
         let registry = state.sources.read().await;
         let resolve = bookclerk_discover::resolve_purchase_hints(&registry, &hint_query);
         let hints = match tokio::time::timeout_at(deadline, resolve).await {
-            Ok(Ok(resolved)) => resolved.hints,
+            Ok(Ok(mut resolved)) => {
+                // Keep only prices for the recording the wish names, when the
+                // listing pool already knows it.
+                // The check shares the stores' deadline; when it fails or
+                // runs out the wish keeps the resolved hints.
+                check_card_recording(&library, &registry, &hint_query, &mut resolved, deadline)
+                    .await;
+                resolved.hints
+            }
             Ok(Err(err)) => {
                 tracing::debug!(error = %err, "wishlist purchase-hint resolve soft-failed");
                 Vec::new()

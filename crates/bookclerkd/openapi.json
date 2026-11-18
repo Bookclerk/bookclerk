@@ -40973,7 +40973,7 @@
           },
           "incomplete": {
             "type": "boolean",
-            "description": "True when the batch deadline cut this lookup short: the hints are the\nquery's trusted seeds alone, so a client should not keep the answer\nand asks again later. Omitted (false) for a finished lookup.",
+            "description": "True when the batch deadline cut this lookup short (the hints are the\nquery's trusted seeds alone), or when the hints could not be checked\nagainst the card's recording in time: a client should not keep the\nanswer and asks again later. Omitted (false) for a finished lookup.",
             "example": false
           }
         }
