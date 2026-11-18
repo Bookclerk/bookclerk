@@ -279,21 +279,20 @@ pub(super) async fn acquire_plan(
             .iter()
             .map(|destination| (destination.id.as_str(), destination.backend.as_ref()))
             .collect();
-        let shared = match library
+        // The host's upload names the title by its account holding; a book
+        // with no holding is not one this node can grant an upload for.
+        let Some(title) = library
             .acquire_title(
                 &book.plugin_key,
                 &book.account_id,
                 &book.marketplace,
                 &book.product_id,
             )
-            .await
-        {
-            Ok(Some(title)) => {
-                bookclerk_acquire::share_acquired_sibling(library, &backends, &title).await
-            }
-            Ok(None) => Ok(None),
-            Err(err) => Err(err.into()),
+            .await?
+        else {
+            continue;
         };
+        let shared = bookclerk_acquire::share_acquired_sibling(library, &backends, &title).await;
         match shared {
             Ok(Some(_)) => continue,
             Ok(None) => {}
@@ -311,7 +310,7 @@ pub(super) async fn acquire_plan(
             None => None,
         };
         targets.push(AcquireTarget {
-            book_uuid: book.uuid.clone(),
+            holding_id: title.holding_id.clone(),
             plugin_key: book.plugin_key.clone(),
             account_id: book.account_id.clone(),
             book: serde_json::to_value(&book).unwrap_or_default(),
@@ -362,28 +361,23 @@ async fn owner_library_id(
         .and_then(|id| LibraryId::try_from(id).ok()))
 }
 
-/// This node's destinations with the key scope of the title `book_uuid`
-/// on each: the folders a local acquire of the title would write under,
-/// named with that destination's own options from this node's library row,
+/// This node's destinations with the key scope of the title `book` on
+/// each: the folders a local acquire of the title would write under, named
+/// with that destination's own options from this node's library row,
 /// and, where that folder is shared with other titles or is the root, the
 /// title's own planned names there
 /// ([`bookclerk_acquire::planned_title_names`]). A title this node does not
 /// have gets an empty scope, so nothing of it is granted.
-///
-/// # Errors
-///
-/// Returns an error when the title cannot be read.
 async fn title_destinations(
     library: &LibraryStore,
     host: &HostContext,
-    book_uuid: &str,
+    book: Option<&bookclerk_library::BookRecord>,
     destinations: &[super::uploads::OwnerDestination],
-) -> bookclerk_library::Result<Vec<UploadDestination>> {
-    let book = library.get_book_by_uuid(book_uuid).await?;
+) -> Vec<UploadDestination> {
     let cfg = host.state.config.read().await.clone();
     let mut out = Vec::with_capacity(destinations.len());
     for destination in destinations {
-        let (title_folders, title_names) = match &book {
+        let (title_folders, title_names) = match book {
             Some(book) => {
                 let request = crate::cluster_link::host_jobs::acquire_request(
                     &cfg,
@@ -405,7 +399,7 @@ async fn title_destinations(
             title_names,
         });
     }
-    Ok(out)
+    out
 }
 
 /// `upload.grant`: opens an upload of one title and seals its token to the
@@ -424,29 +418,36 @@ pub(super) async fn upload_grant(
     // The manifest must cover exactly the destinations deployed here now
     // (the upload endpoint re-checks them for every file), each only under
     // the title's own keys there, computed here from this node's row.
-    let scoped = if request.book_uuid.is_empty() {
+    let scoped = if request.holding_id.is_empty() {
         Vec::new()
     } else {
+        let book = match library.acquire_title_of_holding(request.holding_id).await? {
+            Some(title) => match title.book_uuid {
+                Some(book_uuid) => library.get_book_by_uuid(&book_uuid).await?,
+                None => None,
+            },
+            None => None,
+        };
         // Only a title `acquire.plan` would hand out now: one whose audio
         // is already acquired, or that the plan leaves out otherwise, is
         // never uploaded again, whatever the host asks.
-        if let Some(book) = library.get_book_by_uuid(request.book_uuid).await? {
+        if let Some(book) = &book {
             let download_episodes = host.state.config.read().await.library.download_episodes;
-            if !crate::jobs::acquire_job_includes_book(&book, false, download_episodes) {
+            if !crate::jobs::acquire_job_includes_book(book, false, download_episodes) {
                 if live_remote_job(library, &host.node_id, &job_id, fence)
                     .await?
                     .is_none()
                 {
                     return Ok(lost(id, job_id, fence));
                 }
-                return Ok(error(id, "refused", "book_not_planned"));
+                return Ok(error(id, "refused", "title_not_planned"));
             }
         }
         let destinations = match super::uploads::owner_destinations(&host.state).await {
             Ok(destinations) if !destinations.is_empty() => destinations,
             _ => return Ok(error(id, "unavailable", "no_destination")),
         };
-        title_destinations(library, host, request.book_uuid, &destinations).await?
+        title_destinations(library, host, book.as_ref(), &destinations).await
     };
     let request = UploadGrantRequest {
         destinations: &scoped,

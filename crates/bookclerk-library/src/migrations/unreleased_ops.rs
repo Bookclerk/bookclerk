@@ -1513,7 +1513,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         job_id TEXT NOT NULL,
         lease_generation INTEGER NOT NULL,
         receiving_node_id TEXT NOT NULL,
-        book_uuid TEXT NOT NULL,
+        holding_id TEXT NOT NULL,
         primary_key TEXT NOT NULL,
         manifest_json TEXT NOT NULL,
         received_json TEXT NOT NULL DEFAULT '[]',

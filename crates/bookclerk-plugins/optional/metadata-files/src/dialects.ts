@@ -8,6 +8,7 @@
 
 import type { MetadataField, MetadataFileRecord } from "@bookclerk/plugin-sdk/workerd";
 import { parseLibationJson } from "./libation.ts";
+import { parseOpf, renderOpf } from "./opf.ts";
 import { MAX_FILE_BYTES, invalid } from "./text.ts";
 
 /** One file format. */
@@ -40,6 +41,7 @@ export interface Dialect {
 /** Every dialect, by id. */
 export const DIALECTS: ReadonlyMap<string, Dialect> = new Map<string, Dialect>([
   ["libation_json", { parse: parseLibationJson }],
+  ["opf", { parse: parseOpf, render: renderOpf }],
 ]);
 
 /**

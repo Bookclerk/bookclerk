@@ -416,6 +416,14 @@ MACOS_JOB = "macOS (sandbox, gateway, tray)"
 MACOS_JOB_ID = 126203811708
 
 
+def macos_ran() -> bytes:
+    """The stranded-macOS jobs listing, except that the macOS job got a runner and ran a step."""
+    doc = json.loads(seed("jobs__macos_stranded.json"))
+    job = next(j for j in doc["jobs"] if j["id"] == MACOS_JOB_ID)
+    job.update(runner_name="GitHub Actions 1000000001", steps=[{"name": "Set up job", "status": "completed", "conclusion": "success"}])
+    return json.dumps(doc).encode()
+
+
 def stranded_bodies(attempt: int = 2) -> dict[str, bytes]:
     """A pull request run whose CI Gate is deciding on attempt ``attempt``.
 
@@ -459,8 +467,10 @@ class StrandedJobTests(unittest.TestCase):
         branch = "gh-readonly-queue/main/pr-604-9bc9f97b61370d35f573f5f1dc23b99d75eb155b"
         self.assertEqual(mq.gate_run(queue, REPO), ("merge_group", branch, 3500))
         self.assertIsNone(mq.gate_run(seed("run__pr604.json"), REPO), "no base repository")
+        main_push = edited("run__pr_gate_attempt2.json", event="push", head_branch="main")
+        self.assertEqual(mq.gate_run(main_push, REPO), ("push", "main", 3541))
         for name, bad in {
-            "push": edited("run__pr_gate_attempt2.json", event="push"),
+            "push to another branch": edited("run__pr_gate_attempt2.json", event="push"),
             "other workflow": edited("run__pr_gate_attempt2.json", path=".github/workflows/osv-remediate.yml"),
             "no branch": edited("run__pr_gate_attempt2.json", head_branch=""),
             "not json": b"{",
@@ -589,7 +599,15 @@ class StrandedJobTests(unittest.TestCase):
     def test_refusals(self) -> None:
         base = f"repos/{REPO}"
         cases = {
-            "main push": {f"{base}/actions/runs/{PR_RUN_ID}": edited("run__pr_gate_attempt2.json", event="push")},
+            "push to another branch": {f"{base}/actions/runs/{PR_RUN_ID}": edited("run__pr_gate_attempt2.json", event="push")},
+            "main push, job ran": {
+                f"{base}/actions/runs/{PR_RUN_ID}": edited("run__pr_gate_attempt2.json", event="push", head_branch="main"),
+                f"{base}/actions/runs/{PR_RUN_ID}/attempts/2/jobs": macos_ran(),
+            },
+            "main push, cancelled by hand": {
+                f"{base}/actions/runs/{PR_RUN_ID}": edited("run__pr_gate_attempt2.json", event="push", head_branch="main"),
+                f"{base}/check-runs/{MACOS_JOB_ID}/annotations": seed("annotations__notice_only.json"),
+            },
             "job ran": {f"{base}/actions/runs/{PR_RUN_ID}/attempts/2/jobs": seed("jobs__all_green.json")},
             "cancelled by hand": {f"{base}/check-runs/{MACOS_JOB_ID}/annotations": seed("annotations__notice_only.json")},
             "api failure": {f"{base}/check-runs/{MACOS_JOB_ID}/annotations": None},
@@ -607,6 +625,18 @@ class StrandedJobTests(unittest.TestCase):
                 self.assertTrue(reason)
         passes, _ = mq.decide_stranded(REPO, PR_RUN_ID, 0, MACOS_JOB, FakeGh({}))
         self.assertFalse(passes)
+
+    def test_a_build_only_main_push_passes_on_its_first_miss(self) -> None:
+        """A main push only saves caches, so its first stranded macOS job passes."""
+        base = f"repos/{REPO}"
+        bodies = {
+            f"{base}/actions/runs/{PR_RUN_ID}": edited("run__pr_gate_attempt2.json", event="push", head_branch="main", run_attempt=1),
+            f"{base}/actions/runs/{PR_RUN_ID}/attempts/1/jobs": seed("jobs__macos_stranded.json"),
+            f"{base}/check-runs/{MACOS_JOB_ID}/annotations": seed("annotations__not_acquired.json"),
+        }
+        passes, reason = mq.decide_stranded(REPO, PR_RUN_ID, 1, MACOS_JOB, FakeGh(bodies))
+        self.assertTrue(passes, reason)
+        self.assertIn("build-only main push", reason)
 
     def test_recovery_leaves_a_run_whose_gate_passed(self) -> None:
         """A run CI Gate let through is never re-run or re-enqueued."""
@@ -845,7 +875,7 @@ def oracle_gate_run(raw: bytes) -> tuple[str, str] | None:
     branch = run.get("head_branch")
     number = run.get("run_number")
     if (
-        event in ("pull_request", "merge_group")
+        (event in ("pull_request", "merge_group") or (event == "push" and branch == "main"))
         and run.get("path") == ".github/workflows/ci.yml"
         and run["repository"].get("full_name") == REPO
         and type(branch) is str

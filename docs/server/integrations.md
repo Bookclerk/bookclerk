@@ -450,13 +450,21 @@ bookclerk nodes set --cluster-cache-budget           # back to the cluster's
 
 ## Metadata files
 
-The optional `metadata_files` plugin reads the metadata files that tools
-without a plugin of their own keep next to a book's audio. Today that is
-Libation's catalog record (`<book name>.metadata.json`): the Audible
-product Libation saves at download. It is read-only, because it is the
-store's record rather than the library's. Formats that belong to a tool
-with its own plugin, such as Audiobookshelf's `metadata.json`, live in
-that tool's plugin (see [What it does](#what-it-does)).
+The optional `metadata_files` plugin reads and writes the metadata files
+that tools without a plugin of their own keep next to a book's audio:
+
+- **OPF** (`*.opf`, such as Calibre's `metadata.opf`): title,
+  description, publisher, date, language, genres, ISBN and ASIN,
+  contributors by role, and one series. Bookclerk can write it: a change
+  rewrites only the elements of the fields it sets and leaves the rest of
+  the file as it was.
+- **Libation's catalog record** (`<book name>.metadata.json`): the
+  Audible product Libation saves at download. It is read-only, because it
+  is the store's record rather than the library's.
+
+Formats that belong to a tool with its own plugin, such as
+Audiobookshelf's `metadata.json`, live in that tool's plugin (see
+[What it does](#what-it-does)).
 
 It has no network or file access. Bookclerk hands it one file at a time
 and checks every answer, so a damaged or hostile file can at most be

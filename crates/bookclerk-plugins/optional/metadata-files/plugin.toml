@@ -35,8 +35,23 @@ path = "text.js"
 type = "js"
 
 [[modules]]
+name = "html.js"
+path = "html.js"
+type = "js"
+
+[[modules]]
 name = "libation.js"
 path = "libation.js"
+type = "js"
+
+[[modules]]
+name = "xml.js"
+path = "xml.js"
+type = "js"
+
+[[modules]]
+name = "opf.js"
+path = "opf.js"
 type = "js"
 
 [capabilities.network]
@@ -50,5 +65,13 @@ name = "Libation catalog record"
 suffixes = [".metadata.json"]
 fields = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "abridgement", "identifiers", "credits", "series", "chapters", "duration"]
 credit_roles = ["author", "narrator"]
+
+[[metadata_files.dialects]]
+id = "opf"
+name = "OPF package document"
+suffixes = [".opf"]
+fields = ["title", "description", "publisher", "publishedAt", "language", "genres", "identifiers", "credits", "series"]
+credit_roles = ["author", "narrator", "translator", "editor", "illustrator"]
+writes = true
 
 [vars]

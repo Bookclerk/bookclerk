@@ -379,7 +379,7 @@ impl HostJobCtx {
             .await
     }
 
-    /// Opens an upload of one title's `files` (an empty `book_uuid` and no
+    /// Opens an upload of one title's `files` (an empty `holding_id` and no
     /// files for the job's closing upload).
     ///
     /// # Errors
@@ -387,7 +387,7 @@ impl HostJobCtx {
     /// Returns [`OwnerCallError`]; `Lost` also cancels the job.
     pub async fn grant_upload(
         &self,
-        book_uuid: &str,
+        holding_id: &str,
         primary_key: &str,
         pdf_key: Option<&str>,
         files: Vec<UploadFile>,
@@ -396,7 +396,7 @@ impl HostJobCtx {
             .upload_grant(
                 &self.job.job.id,
                 self.job.fence,
-                book_uuid,
+                holding_id,
                 primary_key,
                 pdf_key,
                 files,

@@ -620,8 +620,9 @@ A host never writes library SQL.
 2. The answer, `acquire.targets`, lists the titles and every output
    destination deployed on the owner node that answered, each with its own
    naming options (templates, replacement characters, path limits). Each
-   title carries its library id on the owner, so the `<library id>` naming
-   tag writes the owner's id rather than the host's scratch one.
+   title carries its store account's holding id on the owner, which its
+   upload names, and its library id on the owner, so the `<library id>`
+   naming tag writes the owner's id rather than the host's scratch one.
 3. The host acquires each title into a per-title outbox, with one
    sub-directory per owner destination. So each destination's file names
    come out exactly as a local acquire on the owner would name them.
@@ -710,8 +711,8 @@ node would be trusted to claim.
 Files stream **through** the owner to its destinations. Nothing is staged
 on an owner node's disk.
 
-1. **Grant.** The host sends `upload.grant` over the node socket, with a
-   manifest. The manifest lists each distinct file content once (`size`,
+1. **Grant.** The host sends `upload.grant` over the node socket, with
+   the title's holding id from the plan and a manifest. The manifest lists each distinct file content once (`size`,
    `sha256`, `content_type`), with a list of **copies**, one
    `{destination, key}` per owner destination. The owner answers
    `upload.granted` with an upload id and a bearer token **sealed to the

@@ -487,7 +487,7 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
         Body::UploadGrant {
             job_id,
             fence,
-            book_uuid,
+            holding_id,
             primary_key,
             pdf_key,
             files,
@@ -499,7 +499,7 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 job_id,
                 fence,
                 bookclerk_library::control_plane::UploadGrantRequest {
-                    book_uuid: &book_uuid,
+                    holding_id: &holding_id,
                     primary_key: &primary_key,
                     pdf_key: pdf_key.as_deref(),
                     files: &files,

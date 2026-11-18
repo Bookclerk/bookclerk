@@ -8,7 +8,8 @@ import { readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 
 import type { MetadataFileRecord } from "@bookclerk/plugin-sdk/workerd";
-import { htmlToText } from "../src/libation.ts";
+import { htmlToText } from "../src/html.ts";
+import { MAX_XML_DEPTH, applyEdits, attribute, parseXml } from "../src/xml.ts";
 import { DIALECTS, parseFile, renderFile, type Dialect } from "../src/dialects.ts";
 import {
   DialectFailure,
@@ -105,7 +106,7 @@ const ECHO: ReadonlyMap<string, Dialect> = new Map<string, Dialect>([
 
 describe("requests", () => {
   test("refuse an unknown dialect", () => {
-    refuses(() => parseFile("opf", utf8("")), /unknown dialect `opf`/);
+    refuses(() => parseFile("epub", utf8("")), /unknown dialect `epub`/);
     refuses(() => renderFile("__proto__", utf8(""), record(), []), /unknown dialect/);
   });
 
@@ -259,6 +260,152 @@ describe("libation_json", () => {
     assert.equal(htmlToText("&#65;&#x42;&#0;&#xD800;&amp;&unknown;"), "AB��&&unknown;");
     assert.equal(htmlToText("x  \n\n\n\ny"), "x\n\ny");
     assert.equal(htmlToText("a<scr<script>ipt>b <i c &lt;d&gt;"), "aipt>b i c <d>");
+  });
+});
+
+describe("xml", () => {
+  test("keeps source offsets and decodes only XML's own references", () => {
+    const source = '<a x="1&amp;2"><b>t&lt;&custom;&#x41;</b><![CDATA[<c>]]><d/></a>';
+    const doc = parseXml(source);
+    assert.equal(doc.root.children.length, 2);
+    const [b, d] = doc.root.children;
+    assert.equal(attribute(doc.root, "x"), "1&2");
+    assert.equal(b?.text, "t<&custom;A");
+    assert.equal(doc.root.text, "t<&custom;A<c>");
+    assert.equal(source.slice(b?.start, b?.end), "<b>t&lt;&custom;&#x41;</b>");
+    assert.equal(d?.selfClosing, true);
+  });
+
+  test("refuses what is not well-formed", () => {
+    refuses(() => parseXml(""), /no root/);
+    refuses(() => parseXml("<a><b></a>"), /does not match/);
+    refuses(() => parseXml("<a></a><b/>"), /second root/);
+    refuses(() => parseXml("x<a/>"), /outside the root/);
+    refuses(() => parseXml("<a"), /malformed tag|not closed/);
+    refuses(() => parseXml("<a b=c/>"), /unquoted/);
+    refuses(() => parseXml('<!DOCTYPE a [<!ENTITY e "x">]><a>&e;</a>'), /internal DTD subset/);
+    refuses(() => parseXml("<a>".repeat(MAX_XML_DEPTH + 1)), /nests too deeply/);
+    assert.equal(parseXml('<!DOCTYPE a SYSTEM "a.dtd"><a/>').root.name, "a");
+  });
+
+  test("applies edits in source order", () => {
+    assert.equal(
+      applyEdits("abcdef", [
+        { start: 4, end: 5, text: "E" },
+        { start: 1, end: 1, text: "+" },
+        { start: 1, end: 1, text: "-" },
+      ]),
+      "a+-bcdEf",
+    );
+  });
+});
+
+describe("opf", () => {
+  test("reads a Calibre package", () => {
+    const parsed = parseFile("opf", seed("opf/seed_00.opf"));
+    assert.equal(parsed.title, "The Hobbit");
+    assert.equal(parsed.publishedAt, "2020-09-24");
+    assert.equal(
+      parsed.description,
+      "Bilbo Baggins is a hobbit who enjoys a comfortable life.\n\nThen Gandalf & thirteen dwarves arrive.",
+    );
+    assert.deepEqual(parsed.genres, ["Fantasy", "Classics"]);
+    assert.deepEqual(parsed.identifiers, [
+      { scheme: "isbn", value: "9780008376109" },
+      { scheme: "asin", value: "B08GXXLC6J" },
+    ]);
+    assert.deepEqual(
+      parsed.credits.map((c) => [c.role, c.name]),
+      [
+        ["author", "J. R. R. Tolkien"],
+        ["narrator", "Andy Serkis"],
+      ],
+    );
+    assert.deepEqual(parsed.seriesEntries, [{ name: "Middle-earth", position: "1" }]);
+  });
+
+  test("reads EPUB 3 refinements", () => {
+    const parsed = parseFile("opf", seed("opf/seed_01.opf"));
+    assert.deepEqual(parsed.creditRoles, ["author", "narrator", "translator"]);
+    assert.equal(parsed.publishedAt, "2021-05");
+    assert.deepEqual(parsed.identifiers, [{ scheme: "isbn", value: "9781250313195" }]);
+    assert.deepEqual(parsed.seriesEntries, [{ name: "Standalone", position: "3" }]);
+    assert.deepEqual(parseFile("opf", seed("opf/seed_02.opf")).present, []);
+  });
+
+  test("refuses a file that is not a package", () => {
+    refuses(() => parseFile("opf", utf8("<html/>")), /not a package/);
+    refuses(() => renderFile("opf", utf8("<package>"), record(), ["title"]), /not closed/);
+  });
+
+  test("changes only the fields and roles it is asked to", () => {
+    const before = str(seed("opf/seed_00.opf"));
+    const out = str(
+      renderFile(
+        "opf",
+        seed("opf/seed_00.opf"),
+        record({
+          title: "A & B",
+          credits: [{ name: "New Narrator", role: "narrator", level: "roleDefault" }],
+          creditRoles: ["narrator"],
+        }),
+        ["title", "credits"],
+      ),
+    );
+    assert.equal(
+      out,
+      before
+        .replace("        <dc:title>The Hobbit</dc:title>\n", "")
+        .replace('        <dc:creator opf:role="nrt">Andy Serkis</dc:creator>\n', "")
+        .replace(
+          '<meta name="calibre:timestamp" content="2024-03-01T12:00:00+00:00"/>',
+          '<meta name="calibre:timestamp" content="2024-03-01T12:00:00+00:00"/>\n' +
+            "        <dc:title>A &amp; B</dc:title>\n" +
+            '        <dc:creator opf:role="nrt">New Narrator</dc:creator>',
+        ),
+    );
+    const reread = parseFile("opf", utf8(out));
+    assert.equal(reread.title, "A & B");
+    assert.deepEqual(
+      reread.credits.map((c) => c.name),
+      ["J. R. R. Tolkien", "New Narrator"],
+    );
+  });
+
+  test("writes a description as escaped HTML and drops refinements it orphans", () => {
+    const out = str(
+      renderFile(
+        "opf",
+        seed("opf/seed_01.opf"),
+        record({ description: "1 < 2 & 3\n\nnext", seriesEntries: [] }),
+        ["description", "series"],
+      ),
+    );
+    assert.match(out, /<dc:description>1 &amp;lt; 2 &amp;amp; 3\n\nnext<\/dc:description>/);
+    assert.doesNotMatch(out, /#s1|belongs-to-collection/);
+    const reread = parseFile("opf", utf8(out));
+    assert.equal(reread.description, "1 < 2 & 3\n\nnext");
+    assert.deepEqual(reread.seriesEntries, []);
+  });
+
+  test("keeps a file's CRLF line breaks", () => {
+    const crlf = str(seed("opf/seed_00.opf")).replace(/\n/g, "\r\n");
+    const out = str(renderFile("opf", utf8(crlf), record({ title: "T" }), ["title"]));
+    assert.doesNotMatch(out, /[^\r]\n/);
+    assert.equal(parseFile("opf", utf8(out)).title, "T");
+  });
+
+  test("creates a package, or the metadata element it lacks", () => {
+    const fresh = renderFile("opf", new Uint8Array(), record({ language: "en" }), ["language"]);
+    assert.equal(parseFile("opf", fresh).language, "en");
+    for (const existing of [
+      "<package/>",
+      "<package></package>",
+      "<package><metadata/></package>",
+    ]) {
+      const out = renderFile("opf", utf8(existing), record({ title: "T" }), ["title"]);
+      assert.equal(parseFile("opf", out).title, "T", existing);
+    }
   });
 });
 

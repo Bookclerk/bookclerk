@@ -1454,10 +1454,10 @@ export class MetadataFiles extends MetadataFilesEntrypoint<Env> {
 ```
 
 The first-party `metadata_files` plugin
-(`crates/bookclerk-plugins/optional/metadata-files`) reads Libation's
-catalog record and never writes it. A format that belongs to one tool
-lives in that tool's plugin. The plugin's README lists what the record
-maps to.
+(`crates/bookclerk-plugins/optional/metadata-files`) reads and writes OPF
+package documents, and reads Libation's catalog record without writing
+it. A format that belongs to one tool lives in that tool's plugin. The
+plugin's README lists what each record maps to.
 
 The host does not call the entrypoint yet beyond health probes. Finding
 the files, matching them to editions and writing changes back come with
@@ -1532,6 +1532,12 @@ The rules every operation follows:
   prefix `moveMany` may not contain each other, after `.` and empty path
   segments are dropped and `\` is read as `/`, because a nested object could overwrite one that
   has not moved yet.
+
+The platform `local` destination declares every operation except
+`storage.changes`: moves are renames, `noOverwrite` and `ifNoneMatch`
+publish through a hard link that fails when the target exists, and
+`ifMatch` is checked just before the rename (see
+[Local filesystem](../server/output.md#local-filesystem)).
 
 The host checks every reply against the request before acting on it: the
 outcomes must name the keys it sent, in order, a prefix page may only name

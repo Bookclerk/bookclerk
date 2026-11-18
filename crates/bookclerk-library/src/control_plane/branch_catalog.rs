@@ -53,7 +53,7 @@ use super::batch::{self, exec, request, text};
 use super::enrollment::load_node_credential;
 use super::trust::accounts_owned_by;
 use super::uploads::{
-    claims_another_books_key, granted_key_count, open_upload_session, upload_holds_its_keys,
+    claims_another_titles_key, granted_key_count, open_upload_session, upload_holds_its_keys,
     UploadDestination, UploadGrant, UploadGrantRequest, UploadSession,
 };
 use crate::entities::{
@@ -949,7 +949,7 @@ async fn edition_has_other_audio(
                 Query::select()
                     .column(node_upload_sessions::Column::UploadId)
                     .from(node_upload_sessions::Entity)
-                    .and_where(node_upload_sessions::Column::BookUuid.eq(holding_id))
+                    .and_where(node_upload_sessions::Column::HoldingId.eq(holding_id))
                     .to_owned(),
             ),
         )
@@ -957,7 +957,7 @@ async fn edition_has_other_audio(
             edition_files::Column::Writer.not_in_subquery(
                 catalog_uploads_of(node_id)
                     .and_where(
-                        node_upload_sessions::Column::BookUuid.not_in_subquery(
+                        node_upload_sessions::Column::HoldingId.not_in_subquery(
                             Query::select()
                                 .column(holdings::Column::Id)
                                 .from(holdings::Entity)
@@ -991,7 +991,7 @@ pub async fn pending_deliveries(
     limit: usize,
 ) -> Result<Vec<CatalogRef>> {
     // A title whose upload is refused for good (`key_in_use`,
-    // `key_of_another_book`, `folder_of_another_book`) is still asked for
+    // `key_of_another_title`, `folder_of_another_book`) is still asked for
     // on every session: no per-title refusal is recorded to skip it by.
     let mut out = Vec::new();
     let mut after = String::new();
@@ -1089,7 +1089,7 @@ async fn shared_holding(
 /// shared manifest, the title's edition has no audio here from another
 /// writer (`edition_has_files`), no key is one another title here already
 /// uses (`key_in_use`: another edition's file, or a file beside one of its
-/// audio files with the same stem; `key_of_another_book`: any of a
+/// audio files with the same stem; `key_of_another_title`: any of a
 /// library book's keys or their sidecars), and no key lies in or below a
 /// folder holding another title's audio (`folder_of_another_book`). The
 /// keys are then claimed for this upload as the edition's in
@@ -1148,8 +1148,8 @@ pub async fn grant_catalog_upload(
     // another title's cover, `.cue`, chapter JSON or metadata file, or that
     // title's audio or PDF itself, even where no `edition_files` record says
     // who wrote it.
-    if claims_another_books_key(store, &BTreeSet::from([row.id.clone()]), files).await? {
-        return Ok(UploadGrant::Refused("key_of_another_book"));
+    if claims_another_titles_key(store, None, files).await? {
+        return Ok(UploadGrant::Refused("key_of_another_title"));
     }
     // The branch's own keys are the title's scope on every destination:
     // the folders they lie in, each key checked against the shared
@@ -1175,7 +1175,7 @@ pub async fn grant_catalog_upload(
         .collect();
     let digest = row.share_digest.clone().unwrap_or_default();
     let request = UploadGrantRequest {
-        book_uuid: &row.id,
+        holding_id: &row.id,
         primary_key: &shared.primary_key,
         pdf_key: shared.pdf_key.as_deref(),
         files,
@@ -1431,7 +1431,7 @@ pub(super) async fn commit_catalog_upload(
     // sold at grant; once the listing sells another, those files are not
     // the holding's and nothing is recorded as delivered. The batch
     // re-checks this in its gate.
-    if !holding_sells_edition(store, &session.book_uuid, edition).await? {
+    if !holding_sells_edition(store, &session.holding_id, edition).await? {
         return Ok(UploadCommit::Refused("edition_changed"));
     }
     // A key another title (or an acquire) took since the grant is not
@@ -1464,7 +1464,7 @@ pub(super) async fn commit_catalog_upload(
                 text(&session.node_id),
                 batch::int(session.generation),
                 text(&session.node_id),
-                text(&session.book_uuid),
+                text(&session.holding_id),
                 text(edition),
                 text(&session.upload_id),
                 batch::int(i64::try_from(granted_keys).unwrap_or(i64::MAX)),
@@ -1479,7 +1479,7 @@ pub(super) async fn commit_catalog_upload(
                 text(digest),
                 text(&now),
                 text(&now),
-                text(&session.book_uuid),
+                text(&session.holding_id),
                 text(digest),
                 text(&session.upload_id),
                 text(&now),
@@ -1507,7 +1507,7 @@ pub(super) async fn commit_catalog_upload(
             }
             Some(row)
                 if catalog_fence_live(store, &row.node_id, row.generation).await?
-                    && !holding_sells_edition(store, &row.book_uuid, edition).await? =>
+                    && !holding_sells_edition(store, &row.holding_id, edition).await? =>
             {
                 Ok(UploadCommit::Refused("edition_changed"))
             }
@@ -1663,7 +1663,7 @@ pub async fn remove_detached_branch_titles(
 /// One title a branch shares, as the owner's Settings → Branches lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BranchTitle {
-    /// The node holding's id (a catalog upload's `book_uuid`).
+    /// The node holding's id (a catalog upload's `holding_id`).
     pub uuid: String,
     /// `node:<node_id>`.
     pub provenance: String,

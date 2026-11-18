@@ -10,6 +10,7 @@ file's bytes.
 | Dialect | Files | Writes | Fields |
 | --- | --- | --- | --- |
 | `libation_json` | `*.metadata.json` | no | title, subtitle, description, publisher, date, language, genres, abridgement, ASIN and ISBN, authors and narrators, series, chapters, running time |
+| `opf` | `*.opf` | yes | title, description, publisher, date, language, genres, ISBN and ASIN, authors, narrators, translators, editors and illustrators, series |
 
 ## Libation's catalog record
 
@@ -29,11 +30,39 @@ or under `product` or `item`:
 
 It is read-only: the file is the store's record, not the library's.
 
+## OPF package documents
+
+An OPF is an EPUB's package document; Calibre and other tools also save
+one next to a book as `metadata.opf`. The reader takes the first
+`<metadata>` of the `<package>` root:
+
+- `dc:title`, `dc:publisher`, `dc:language`, and `dc:subject` as genres;
+- `dc:description`, turned from HTML into text;
+- the first `dc:date` with no `opf:event` (or the publication event);
+- `dc:identifier` with an `ISBN` or `ASIN` scheme, or a `urn:isbn:` value;
+- `dc:creator` and `dc:contributor` by MARC relator role (`aut`, `nrt`,
+  `trl`, `edt`, `ill`), on the element or in a
+  `<meta refines="#id" property="role">`; a creator with no role is an
+  author;
+- one series: Calibre's `calibre:series` and `calibre:series_index`, else
+  EPUB 3's `belongs-to-collection` with its `group-position`.
+
+A write edits the file in place. For each field it sets, it removes the
+elements that field reads from (and the refinements they leave behind) and
+appends new ones at the end of `<metadata>`, in Calibre's style; every
+other byte stays as it was. Credits change only for the roles the request
+states. With no file yet, it writes a new OPF 2 package.
+
+XML is scanned without expanding anything but XML's five entities and
+numeric references: a document type with an internal subset, nesting past
+64 levels or a file that is not well-formed is refused.
+
 Every value is cleaned before it reaches the host: control characters
 are dropped, labels stay on one line, text is cut to the ABI's byte caps
 on a character boundary, repeats and blanks are dropped, and dates must be
 real `YYYY`, `YYYY-MM` or `YYYY-MM-DD` dates. A file is refused only when
-it is not a JSON object.
+its structure is unreadable: not a JSON object for Libation, not a
+well-formed package for OPF.
 
 ## Develop
 
