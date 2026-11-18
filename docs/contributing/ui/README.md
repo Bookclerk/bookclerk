@@ -93,22 +93,16 @@ network can reach this host's web API.
 
 #### First run in the window
 
-On a fresh install the window opens on **Join your library**: the person
-enters the library's address (with its port, if it has one) and signs in on
-the library as a member, through the same join flow a server uses (see
-[Branches](../../guide/branches.md)). The library must let new branches join.
+On a fresh install the window opens on **Sign in to your library**: the
+person enters the library's address (with its port, if it has one) and
+signs in on the library with their account there, through the same library
+card sign-in a server uses (see
+[Signing in with a library card](../../server/sign-in.md#signing-in-with-a-library-card)).
+The computer becomes a **clerk** of the library: it shows the library's
+books, the person's own marked, and takes none of the library's work. It
+is not a branch, so nothing the library deploys ever runs there.
 **Host a library on this computer instead** sets up a library here, as
 `bookclerkd`'s first run does.
-
-A computer that joins from the window becomes a **window** of the library:
-as soon as the join finishes, the app turns off **Use this computer to
-download** for that library, so the computer shows the library's books
-and takes none of the library's work (see
-[Window mode](../../server/cluster-hosts.md#window-mode)). Turning the setting
-on in Settings → Library makes it a branch that downloads. Nothing the library
-deploys runs there before that, or before the window's operator approves it.
-If the setting can't be stored, the page says the computer is a branch that
-downloads and points at Settings → Library.
 
 Not there yet: the tray, uploads (when
 they come, through the native file picker), opening external links in the

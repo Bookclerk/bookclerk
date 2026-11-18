@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use bookclerk_library::control_plane::{
     ask_branches, books_requested_by_link, load_cluster_link_keys, plan_branch_request,
-    set_cluster_link_download, set_cluster_link_listing, ClusterLink, OwnerShareFilter,
+    set_cluster_link_keep_copies, set_cluster_link_listing, ClusterLink, OwnerShareFilter,
     REQUEST_ACCEPTED, REQUEST_NOT_LISTED,
 };
 use bookclerk_library::{
@@ -255,29 +255,31 @@ async fn a_branch_takes_its_librarys_request_for_a_members_book() {
     assert_eq!(ended.error_kind.as_deref(), Some(REQUEST_NOT_LISTED));
     assert_eq!(recorder.0.lock().unwrap().len(), 1, "nothing more queued");
 
-    // Members' books back on, but B becomes a window of A (download off):
-    // a window is a client of A, not one of its nodes, and refuses the
-    // work.
+    // Members' books back on and "Keep copies on this computer" off: B is
+    // still one of A's branches and takes the request; Sam's copy is
+    // already here, so nothing more is queued.
     assert!(set_cluster_link_listing(&b, &link.owner_cluster_id, true)
         .await
         .unwrap());
-    assert!(set_cluster_link_download(&b, &link.owner_cluster_id, false)
-        .await
-        .unwrap());
+    assert!(
+        set_cluster_link_keep_copies(&b, &link.owner_cluster_id, false)
+            .await
+            .unwrap()
+    );
     let job = request(&a, &work).await;
     assert_eq!(
         taker.take_once().await.unwrap(),
         TakeReport {
-            not_listed: 1,
+            accepted: 1,
             ..TakeReport::default()
         }
     );
-    let refused = a.get_job(&job).await.unwrap().unwrap();
-    assert_eq!(refused.error_kind.as_deref(), Some(REQUEST_NOT_LISTED));
+    let taken = a.get_job(&job).await.unwrap().unwrap();
+    assert_eq!(taken.progress.as_deref(), Some(REQUEST_ACCEPTED));
     assert_eq!(
         recorder.0.lock().unwrap().len(),
         1,
-        "a window queues nothing"
+        "the copy already here is not queued again"
     );
 }
 

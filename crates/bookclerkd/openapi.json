@@ -15019,11 +15019,11 @@
         "tags": [
           "Cluster"
         ],
-        "summary": "`GET /api/config/join/window`: the window view for the operator or an\nOwner: every book of each library this install is a window of, or\nholds a library card for, merged by work, each edition marked when it\nis this install's person's (`{clusters, cards, books}`).",
+        "summary": "`GET /api/config/join/window`: \"Books in other libraries\" for the\noperator or an Owner: every book of each library this install is a\nbranch of, or holds a library card for, merged by work, each edition marked when it\nis this install's person's (`{clusters, cards, books}`).",
         "operationId": "get_join_window",
         "responses": {
           "200": {
-            "description": "The libraries this install is a window of or holds a card for, and their books.",
+            "description": "The libraries this install is a branch of or holds a card for, and their books.",
             "content": {
               "application/json": {
                 "schema": {
@@ -32809,7 +32809,7 @@
           "work_for_members",
           "keep_member_copies",
           "list_members_books",
-          "download"
+          "keep_copies"
         ],
         "properties": {
           "cluster_id": {
@@ -32886,9 +32886,9 @@
             "description": "\"List my members' books to the library\": the library's catalog\nlookups are answered with members' books (except those who opted\nout) as well as the owner's.",
             "example": true
           },
-          "download": {
+          "keep_copies": {
             "type": "boolean",
-            "description": "\"Use this computer to download\": the link takes the library's jobs\nand runs its plugins here. Off makes this install a window of the\nlibrary: no jobs, no plugins, and the books the library holds for\nthis install's person are shown instead.",
+            "description": "\"Keep copies on this computer\": the branch takes the library's\ncopies of its person's books into its own storage. The branch takes\nthe library's work and shows its books whether or not this is on.",
             "example": true
           },
           "running": {
@@ -35699,7 +35699,7 @@
         "properties": {
           "fresh": {
             "type": "boolean",
-            "description": "Whether this install has no users and no libraries yet.",
+            "description": "Whether this install has no users, no libraries and no library cards\nyet.",
             "example": false
           },
           "has_owner": {
@@ -42745,12 +42745,12 @@
             "description": "\"Keep copies of other members' books\": also write a book acquired\nhere for another member to this install's own destinations. Absent\nor `null` keeps the stored setting.",
             "example": false
           },
-          "download": {
+          "keep_copies": {
             "type": [
               "boolean",
               "null"
             ],
-            "description": "\"Use this computer to download\": off makes this install a window of\nthe library (it runs none of the library's work and shows the books\nthe library holds for its person instead). Absent or `null` keeps\nthe stored setting.",
+            "description": "\"Keep copies on this computer\": take the library's copies of this\ninstall's person's books into its own storage. Absent or `null`\nkeeps the stored setting.",
             "example": true
           }
         },
@@ -45003,7 +45003,7 @@
             "items": {
               "$ref": "#/components/schemas/ClusterLinkView"
             },
-            "description": "The libraries this install is a window of (active links with \"Use\nthis computer to download\" off)."
+            "description": "The libraries this install is an active branch of."
           },
           "cards": {
             "type": "array",

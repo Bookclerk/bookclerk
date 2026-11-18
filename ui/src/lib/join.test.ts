@@ -23,8 +23,7 @@ import {
   looksLikeBranchInvite,
   parseJoinCallback,
   windowEntryFormats,
-  setLinkDownload,
-  makeWindowOf,
+  setLinkKeepCopies,
   filterWindowBooks,
   shownWindowBooks,
   windowEntryIsYours,
@@ -591,57 +590,25 @@ describe("setMembersListing", () => {
   });
 });
 
-describe("setLinkDownload", () => {
+describe("setLinkKeepCopies", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("sends the download setting with the link's current sharing settings", async () => {
+  it("sends the keep copies setting with the link's current sharing settings", async () => {
     const fetchMock = vi.fn(
       async (_url: string, _init: RequestInit) =>
         new Response(JSON.stringify({ cluster: { cluster_id: "c1" } }), { status: 200 }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    await setLinkDownload({ cluster_id: "c1", share_books: false, include_branches: true }, false);
+    await setLinkKeepCopies(
+      { cluster_id: "c1", share_books: false, include_branches: true },
+      false,
+    );
     const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
     expect(body).toEqual({
       cluster_id: "c1",
       share_books: false,
       include_branches: true,
-      download: false,
+      keep_copies: false,
     });
-  });
-});
-
-describe("makeWindowOf", () => {
-  afterEach(() => vi.unstubAllGlobals());
-
-  it("turns downloading off for the joined link", async () => {
-    const fetchMock = vi.fn(
-      async (_url: string, _init: RequestInit) =>
-        new Response(JSON.stringify({ cluster: { cluster_id: "c1" } }), { status: 200 }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    expect(await makeWindowOf({ cluster_id: "c1", share_books: true, download: true })).toBe(true);
-    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
-    expect(body).toEqual({
-      cluster_id: "c1",
-      share_books: true,
-      include_branches: true,
-      download: false,
-    });
-  });
-
-  it("sends nothing when the link is already a window", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-    expect(await makeWindowOf({ cluster_id: "c1", download: false })).toBe(true);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("answers false when the setting could not be stored", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 500 })),
-    );
-    expect(await makeWindowOf({ cluster_id: "c1" })).toBe(false);
   });
 });

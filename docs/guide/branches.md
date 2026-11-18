@@ -116,34 +116,27 @@ this branch's books** is off, no member's book while **List my members'
 books** is off, and nothing of a member who opted out. Your branch doesn't
 download anything extra for this.
 
-## See your books without downloading them
+## See the books of the libraries you joined
 
-A server can show the books of each library you joined without keeping
-copies. Open **Settings → Library** and turn off **Use this
-computer to download** for that library. Your server is then a window of
-it:
+**Library** shows **Books in other libraries**: every book in each
+library your server joined, as you would see it on that library's own
+Library page, merged into one list.
 
-- It runs none of that library's work, and anything in progress is handed
-  back.
-- **Library** shows **Books in other libraries**: every book in each
-  library, as you would see it on that library's own Library page, merged
-  into one list. Books on your own store accounts there are marked
-  **Yours**, and **Only yours** shows just those. The same book in two
-  libraries shows once, with both libraries named.
+- Books on your own store accounts there are marked **Yours**, and
+  **Only yours** shows just those.
+- The same book in two libraries shows once, with both libraries named.
 - The search box on **Library** narrows this list too.
-- The list is refreshed when your server connects, every 30 minutes, and
-  when you change the setting. If a refresh fails, the last list stays
-  with a **Try again** button.
+- The list is refreshed when your server connects and every 30 minutes.
+  If a refresh fails, the last list stays with a **Try again** button.
 
-Turn the setting back on to download again. The list for that library is
-then cleared, even while the library can't be reached.
-
-The desktop app starts this way: a library you join from it has the
-setting off from the start, so the computer is a window of that library
-until you turn downloading on.
+**Settings → Library** also has **Keep copies on this computer** for each
+library, on by default. It decides whether your server takes that
+library's copies of your books into its own storage. Your server runs the
+library's work and shows its books either way.
 
 > [!NOTE]
-> Asking a library to send you one of these books isn't possible yet.
+> Taking the library's copies isn't built yet: the setting is stored and
+> used once it is.
 
 ## Sign in with a library card
 
@@ -166,7 +159,7 @@ the library's books, yours marked, and never takes its work.
 The library sends you back to your server, which says **Signed in to**
 *library*. Within a minute, **Library** shows that library's books under
 **Books in other libraries**, yours marked, beside the books of any library
-your server is a window of.
+your server is a branch of.
 
 To stop, choose **Sign out** beside the library in the same list. Your
 server forgets the card and the books, and asks the library to end the

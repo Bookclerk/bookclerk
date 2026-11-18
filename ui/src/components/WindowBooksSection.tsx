@@ -63,8 +63,8 @@ function WindowRow({ entry }: { entry: WindowEntryView }) {
 }
 
 /**
- * Library on a window: every book of each library this server is a window
- * of ("Use this computer to download" off) or holds a library card for,
+ * Books in other libraries: every book of each library this server is a
+ * branch of or holds a library card for,
  * merged by work, the person's own marked Yours, narrowed by the Library
  * search and, when asked, to the person's own. Renders
  * nothing when this server reads no other library, or the caller may not
@@ -133,13 +133,7 @@ export function WindowBooksSection({ query = "" }: { query?: string }) {
         </div>
         <p className="text-xs text-ink/55">
           Every book in {libraries.join(", ")}; the ones on your own store accounts there are marked
-          Yours. This server doesn&apos;t download them
-          {view.clusters.length > 0 ? (
-            <>
-              ; turn on &ldquo;Use this computer to download&rdquo; in Settings to keep copies here
-            </>
-          ) : null}
-          .
+          Yours.
         </p>
       </div>
       {stale ? (

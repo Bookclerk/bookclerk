@@ -1,6 +1,6 @@
-//! SeaORM entity for `window_books`: on a window (a link with "Use this
-//! computer to download" off), the books each library holds for this
-//! install's person (`control_plane::window_books`).
+//! SeaORM entity for `window_books`: on a branch or a clerk, the books of
+//! each library it reads, one row per edition
+//! (`control_plane::window_books`).
 
 use sea_orm::entity::prelude::*;
 

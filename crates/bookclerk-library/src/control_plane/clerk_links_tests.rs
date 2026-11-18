@@ -10,8 +10,8 @@ use bookclerk_node_proto::{
 
 use super::*;
 use crate::control_plane::{
-    record_cluster_link, record_window_page, set_cluster_link_download, window_read_stamp,
-    window_view, ClusterLinkKeys, NewClusterLink,
+    record_cluster_link, record_window_page, window_read_stamp, window_view, ClusterLinkKeys,
+    NewClusterLink,
 };
 use crate::master_key::master_key_test_lock_async;
 
@@ -199,9 +199,6 @@ async fn merged_view(store: &LibraryStore) {
     )
     .await
     .unwrap();
-    assert!(set_cluster_link_download(store, "beta", false)
-        .await
-        .unwrap());
     // A card for a library this install already joined is refused.
     assert!(matches!(
         record_clerk_link(store, &sign_in("beta", 3), &card('c')).await,
