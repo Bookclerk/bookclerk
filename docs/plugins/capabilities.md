@@ -102,10 +102,10 @@ reason = "Libro.fm's sign-in, library and download API answers the HTTP client o
   them. A grant approved before this permission existed keeps the hosts
   the plugin lists, because those plugins already sent their own agents
   everywhere.
-- A remote cluster's request lists the same hosts. The operator approves
+- A remote library's request lists the same hosts. The operator approves
   them with the request or refuses some of them with
-  `bookclerk clusters approve --deny-own-user-agent <HOST>` (or the
-  **Deny** boxes in the cluster consents panel).
+  `bookclerk libraries approve --deny-own-user-agent <HOST>` (or the
+  **Deny** boxes in the library consents panel).
 
 Where the rule is applied depends on the runtime:
 
@@ -402,8 +402,8 @@ meanwhile. What is pending is shown the same way everywhere:
   false until it is empty.
 
 A destination the operator leaves unticked is recorded as a denial, so it
-is answered and no longer pending. Owner plugins on a cluster host follow
-the same rule through [host consent](../server/cluster-hosts.md#consent-rules).
+is answered and no longer pending. Owner plugins on a library host follow
+the same rule through [host consent](../server/branches.md#consent-rules).
 
 A different provenance, even with the same manifest alias, doesn't
 inherit grants.

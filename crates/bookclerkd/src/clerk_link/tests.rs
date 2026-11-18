@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use bookclerk_library::control_plane::{
-    list_clerk_links, load_clerk_link, record_cluster_link, window_view, ClerkLinkState,
-    ClusterLinkKeys, LiveTopic, NewClusterLink,
+    list_clerk_links, load_clerk_link, record_library_link, window_view, ClerkLinkState,
+    LibraryLinkKeys, LiveTopic, NewLibraryLink,
 };
 use bookclerk_library::{AcquireStatus, LibraryStore, NewBook, UserRole};
 use serde_json::{json, Value};
@@ -87,11 +87,11 @@ fn clerk_routes(state: &Arc<AppState>, caller: UserCaller) -> axum::Router {
         )
         .route(
             "/api/config/join/window",
-            get(crate::cluster_link::join::get_join_window),
+            get(crate::library_link::join::get_join_window),
         )
         .route(
             "/api/config/join",
-            get(crate::cluster_link::join::get_join_status),
+            get(crate::library_link::join::get_join_status),
         )
         .layer(axum::Extension(caller))
         .with_state(Arc::clone(state))
@@ -211,7 +211,7 @@ async fn titles(store: &LibraryStore) -> Vec<String> {
 }
 
 /// Signs `clerk` in to `origin` as `member` through the card routes;
-/// answers the library's cluster id.
+/// answers the library's library id.
 async fn sign_in(
     clerk: &axum::Router,
     library_state: &Arc<AppState>,
@@ -261,7 +261,7 @@ async fn sign_in(
     )
     .await;
     assert_eq!(status, StatusCode::GONE, "{again}");
-    signed_in["card"]["cluster_id"]
+    signed_in["card"]["library_id"]
         .as_str()
         .unwrap()
         .to_string()
@@ -279,7 +279,7 @@ async fn a_card_signs_in_reads_the_books_and_signs_out_when_the_library_ends_it(
     let (_, _, status) = call(&clerk, "GET", "/api/config/join", None).await;
     assert_eq!(status["fresh"], true, "{status}");
 
-    let cluster_id = sign_in(&clerk, &library_state, &origin, member).await;
+    let library_id = sign_in(&clerk, &library_state, &origin, member).await;
     // A card is enough for the welcome screen not to come back.
     let (_, _, status) = call(&clerk, "GET", "/api/config/join", None).await;
     assert_eq!(status["fresh"], false, "{status}");
@@ -291,7 +291,7 @@ async fn a_card_signs_in_reads_the_books_and_signs_out_when_the_library_ends_it(
     let reader = tokio::spawn(
         ClerkReader {
             library: clerk_store.clone(),
-            cluster_id: cluster_id.clone(),
+            library_id: library_id.clone(),
         }
         .run(shutdown),
     );
@@ -301,7 +301,7 @@ async fn a_card_signs_in_reads_the_books_and_signs_out_when_the_library_ends_it(
     .await;
     let (status, _, window) = call(&clerk, "GET", "/api/config/join/window", None).await;
     assert_eq!(status, StatusCode::OK, "{window}");
-    assert_eq!(window["cards"][0]["cluster_id"], cluster_id.as_str());
+    assert_eq!(window["cards"][0]["library_id"], library_id.as_str());
     assert_eq!(window["books"].as_array().unwrap().len(), 1);
 
     // A change at the library is read again.
@@ -329,7 +329,7 @@ async fn a_card_signs_in_reads_the_books_and_signs_out_when_the_library_ends_it(
             .unwrap());
     }
     eventually("the sign-out", 30, || async {
-        load_clerk_link(&clerk_store, &cluster_id)
+        load_clerk_link(&clerk_store, &library_id)
             .await
             .unwrap()
             .is_some_and(|link| link.state == ClerkLinkState::SignedOut)
@@ -348,7 +348,7 @@ async fn a_card_signs_in_reads_the_books_and_signs_out_when_the_library_ends_it(
         &clerk,
         "POST",
         "/api/config/clerk/sign-out",
-        Some(json!({ "cluster_id": cluster_id })),
+        Some(json!({ "library_id": library_id })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{out}");
@@ -358,7 +358,7 @@ async fn a_card_signs_in_reads_the_books_and_signs_out_when_the_library_ends_it(
         &clerk,
         "POST",
         "/api/config/clerk/sign-out",
-        Some(json!({ "cluster_id": cluster_id })),
+        Some(json!({ "library_id": library_id })),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -385,19 +385,19 @@ async fn a_library_this_install_joined_is_refused_and_members_cannot_sign_in() {
     assert_eq!(expired["error"], "join_expired");
 
     // An active branch link to the library refuses a card for it.
-    let cluster = bookclerk_library::control_plane::load_cluster_row(&library_store)
+    let library = bookclerk_library::control_plane::load_library_row(&library_store)
         .await
         .unwrap()
         .unwrap();
-    record_cluster_link(
+    record_library_link(
         &clerk_store,
-        &NewClusterLink {
-            owner_cluster_id: cluster.cluster_id.clone(),
+        &NewLibraryLink {
+            parent_library_id: library.library_id.clone(),
             owner_origin: origin.clone(),
             remote_node_id: "node-1".into(),
             spki_pin: None,
         },
-        &ClusterLinkKeys::generate(),
+        &LibraryLinkKeys::generate(),
     )
     .await
     .unwrap();
@@ -438,7 +438,7 @@ async fn a_library_this_install_joined_is_refused_and_members_cannot_sign_in() {
         (
             "POST",
             "/api/config/clerk/sign-out",
-            Some(json!({ "cluster_id": "x" })),
+            Some(json!({ "library_id": "x" })),
         ),
     ] {
         let (status, _, _) = call(&as_member, method, uri, body).await;
@@ -454,7 +454,7 @@ async fn signing_out_here_ends_the_card_at_the_library() {
     let clerk_files = tempfile::tempdir().unwrap();
     let (clerk_state, clerk_store) = crate::node_api::tests::test_state(&clerk_files).await;
     let clerk = clerk_routes(&clerk_state, UserCaller::Operator);
-    let cluster_id = sign_in(&clerk, &library_state, &origin, member).await;
+    let library_id = sign_in(&clerk, &library_state, &origin, member).await;
     let identity = library_store
         .ensure_local_portal_identity(member, None)
         .await
@@ -472,7 +472,7 @@ async fn signing_out_here_ends_the_card_at_the_library() {
         &clerk,
         "POST",
         "/api/config/clerk/sign-out",
-        Some(json!({ "cluster_id": cluster_id })),
+        Some(json!({ "library_id": library_id })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{out}");
@@ -616,7 +616,7 @@ async fn close(socket: &mut FakeSocket, code: u16) {
 }
 
 /// A clerk install holding an active card for the library at `origin`;
-/// answers its state, store and the library's cluster id.
+/// answers its state, store and the library's library id.
 async fn clerk_with_card(
     files: &tempfile::TempDir,
     origin: &str,
@@ -625,7 +625,7 @@ async fn clerk_with_card(
     bookclerk_library::control_plane::record_clerk_link(
         &store,
         &bookclerk_library::control_plane::NewClerkLink {
-            library_cluster_id: "fake-library".into(),
+            library_id: "fake-library".into(),
             origin: origin.into(),
             spki_pin: None,
             library_name: "fake".into(),
@@ -640,18 +640,18 @@ async fn clerk_with_card(
     (state, store, "fake-library".into())
 }
 
-/// As [`clerk_with_card`], for a library with cluster id `cluster_id`, so
+/// As [`clerk_with_card`], for a library with library id `library_id`, so
 /// its reader is the only one this process lists under that id.
 async fn clerk_with_card_of(
     files: &tempfile::TempDir,
     origin: &str,
-    cluster_id: &str,
+    library_id: &str,
 ) -> LibraryStore {
     let (_state, store) = crate::node_api::tests::test_state(files).await;
     bookclerk_library::control_plane::record_clerk_link(
         &store,
         &bookclerk_library::control_plane::NewClerkLink {
-            library_cluster_id: cluster_id.into(),
+            library_id: library_id.into(),
             origin: origin.into(),
             spki_pin: None,
             library_name: "fake".into(),
@@ -708,14 +708,14 @@ fn granted_copy(product_id: &str, source_store: &str) -> bookclerk_node_proto::C
     }
 }
 
-/// Runs one session of a reader for `cluster_id` on `store`.
-async fn one_session(store: &LibraryStore, cluster_id: &str) -> anyhow::Result<super::SessionEnd> {
+/// Runs one session of a reader for `library_id` on `store`.
+async fn one_session(store: &LibraryStore, library_id: &str) -> anyhow::Result<super::SessionEnd> {
     let (_stop, mut shutdown) = watch::channel(false);
     tokio::time::timeout(
         Duration::from_secs(20),
         ClerkReader {
             library: store.clone(),
-            cluster_id: cluster_id.into(),
+            library_id: library_id.into(),
         }
         .session(&mut shutdown),
     )
@@ -767,9 +767,9 @@ async fn a_read_pages_through_and_a_lost_socket_keeps_the_books() {
     })
     .await;
     let files = tempfile::tempdir().unwrap();
-    let (_state, store, cluster) = clerk_with_card(&files, &origin).await;
+    let (_state, store, library) = clerk_with_card(&files, &origin).await;
     assert_eq!(
-        one_session(&store, &cluster).await.unwrap(),
+        one_session(&store, &library).await.unwrap(),
         super::SessionEnd::Lost
     );
     assert_eq!(
@@ -787,16 +787,16 @@ async fn a_library_that_ends_the_card_signs_it_out() {
         })
         .await;
         let files = tempfile::tempdir().unwrap();
-        let (_state, store, cluster) = clerk_with_card(&files, &origin).await;
+        let (_state, store, library) = clerk_with_card(&files, &origin).await;
         assert_eq!(
-            one_session(&store, &cluster).await.unwrap(),
+            one_session(&store, &library).await.unwrap(),
             super::SessionEnd::SignedOut
         );
-        let link = load_clerk_link(&store, &cluster).await.unwrap().unwrap();
+        let link = load_clerk_link(&store, &library).await.unwrap().unwrap();
         assert_eq!(link.state, ClerkLinkState::SignedOut);
         // A signed-out link is not dialed again.
         assert_eq!(
-            one_session(&store, &cluster).await.unwrap(),
+            one_session(&store, &library).await.unwrap(),
             super::SessionEnd::Inactive
         );
     }
@@ -895,9 +895,9 @@ async fn a_misbehaving_library_ends_the_session_with_an_error() {
         })
         .await;
         let files = tempfile::tempdir().unwrap();
-        let (_state, store, cluster) = clerk_with_card(&files, &origin).await;
+        let (_state, store, library) = clerk_with_card(&files, &origin).await;
         assert!(
-            one_session(&store, &cluster).await.is_err(),
+            one_session(&store, &library).await.is_err(),
             "{what} was accepted"
         );
     }
@@ -922,13 +922,13 @@ async fn the_supervisor_starts_and_stops_readers_and_shutdown_ends_a_session() {
     })
     .await;
     let files = tempfile::tempdir().unwrap();
-    let (state, store, cluster) = clerk_with_card(&files, &origin).await;
+    let (state, store, library) = clerk_with_card(&files, &origin).await;
 
     // A session ends when it is told to stop.
     let (stop, mut shutdown) = watch::channel(false);
     let reader = ClerkReader {
         library: store.clone(),
-        cluster_id: cluster.clone(),
+        library_id: library.clone(),
     };
     let session = tokio::spawn(async move { reader.session(&mut shutdown).await });
     eventually("a read", 20, || async {
@@ -940,7 +940,7 @@ async fn the_supervisor_starts_and_stops_readers_and_shutdown_ends_a_session() {
 
     // The supervisor starts a reader for the active card and stops it once
     // the card is signed out here.
-    bookclerk_library::control_plane::clear_window_books(&store, &cluster)
+    bookclerk_library::control_plane::clear_window_books(&store, &library)
         .await
         .unwrap();
     super::spawn_clerk_links(Arc::clone(&state));
@@ -948,7 +948,7 @@ async fn the_supervisor_starts_and_stops_readers_and_shutdown_ends_a_session() {
         titles(&store).await == vec!["Title B0SUPER001"]
     })
     .await;
-    bookclerk_library::control_plane::sign_out_clerk_link(&store, &cluster)
+    bookclerk_library::control_plane::sign_out_clerk_link(&store, &library)
         .await
         .unwrap();
     super::notify_clerk_links_changed();
@@ -1144,7 +1144,7 @@ async fn a_grant_is_answered_in_order_and_a_copy_of_another_edition_ends_the_ses
         tokio::spawn(async move {
             ClerkReader {
                 library: store,
-                cluster_id: "fake-grants".into(),
+                library_id: "fake-grants".into(),
             }
             .session(&mut shutdown)
             .await
@@ -1254,7 +1254,7 @@ async fn a_grant_answered_after_a_new_sign_in_is_not_used() {
         tokio::spawn(async move {
             ClerkReader {
                 library: store,
-                cluster_id: "fake-late-grant".into(),
+                library_id: "fake-late-grant".into(),
             }
             .session(&mut shutdown)
             .await
@@ -1278,7 +1278,7 @@ async fn a_grant_answered_after_a_new_sign_in_is_not_used() {
     bookclerk_library::control_plane::record_clerk_link(
         &store,
         &bookclerk_library::control_plane::NewClerkLink {
-            library_cluster_id: link.library_cluster_id.clone(),
+            library_id: link.library_id.clone(),
             origin: link.origin.clone(),
             spki_pin: link.spki_pin.clone(),
             library_name: link.library_name.clone(),
@@ -1379,17 +1379,17 @@ async fn a_card_takes_the_librarys_copy_of_its_persons_book() {
     let clerk_files = tempfile::tempdir().unwrap();
     let (clerk_state, clerk_store) = crate::node_api::tests::test_state(&clerk_files).await;
     let clerk = clerk_routes(&clerk_state, UserCaller::Operator);
-    let cluster_id = sign_in(&clerk, &library_state, &origin, member).await;
+    let library_id = sign_in(&clerk, &library_state, &origin, member).await;
     let (stop, shutdown) = watch::channel(false);
     let reader = tokio::spawn(
         ClerkReader {
             library: clerk_store.clone(),
-            cluster_id: cluster_id.clone(),
+            library_id: library_id.clone(),
         }
         .run(shutdown),
     );
     eventually("the reader to connect", 20, || async {
-        reader_of(&cluster_id).is_some()
+        reader_of(&library_id).is_some()
     })
     .await;
 
@@ -1415,7 +1415,7 @@ async fn a_card_takes_the_librarys_copy_of_its_persons_book() {
         .unwrap();
     copy.taken().await.unwrap();
     assert_eq!(
-        books_imported_from_link(&clerk_store, &cluster_id)
+        books_imported_from_link(&clerk_store, &library_id)
             .await
             .unwrap()
             .into_iter()
@@ -1435,14 +1435,14 @@ async fn a_card_takes_the_librarys_copy_of_its_persons_book() {
 
     // Signed in again (a new card): the session dialed with the old card
     // grants nothing and makes way for one with the new card.
-    let link = load_clerk_link(&clerk_store, &cluster_id)
+    let link = load_clerk_link(&clerk_store, &library_id)
         .await
         .unwrap()
         .unwrap();
     bookclerk_library::control_plane::record_clerk_link(
         &clerk_store,
         &bookclerk_library::control_plane::NewClerkLink {
-            library_cluster_id: cluster_id.clone(),
+            library_id: library_id.clone(),
             origin: link.origin.clone(),
             spki_pin: link.spki_pin.clone(),
             library_name: link.library_name.clone(),

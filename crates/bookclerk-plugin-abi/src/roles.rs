@@ -350,7 +350,7 @@ pub trait QueueProducer {
 
 /// Durable key/value namespace: Workers `KVNamespace`-shaped binding the host
 /// serves from the library database, scoped to the plugin and the namespace a
-/// `[[kv_namespaces]]` row names. Values live in the cluster, so an instance
+/// `[[kv_namespaces]]` row names. Values live in the library, so an instance
 /// moved to another host reads its own keys.
 #[async_trait::async_trait(?Send)]
 pub trait KvNamespace {

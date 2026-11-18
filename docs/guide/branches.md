@@ -224,4 +224,4 @@ The library's operator or an Owner can also remove a branch from
 A branch can also share another install's database instead of keeping one
 of its own. It is then an extra copy of that library, so the
 library runs on more than one machine. Setting one up is an operator task; see
-[Shared branches](../server/cluster-hosts.md#shared-branches).
+[Shared branches](../server/branches.md#shared-branches).

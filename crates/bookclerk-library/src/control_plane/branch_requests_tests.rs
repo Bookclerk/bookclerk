@@ -36,7 +36,7 @@ async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) {
     let now = Utc::now().to_rfc3339();
     nodes::ActiveModel {
         node_id: Set(node_id.into()),
-        cluster_id: Set("cluster".into()),
+        library_id: Set("library".into()),
         created_at: Set(now.clone()),
         incarnation: Set("test".into()),
         heartbeat_at: Set(now.clone()),
@@ -460,8 +460,8 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
         let members = hold(&store, member.id, "riley-acct", "B0MEMBOOK1").await;
         // The link to library-x, sharing and listing members' books (its
         // keys don't matter here).
-        crate::entities::cluster_links::ActiveModel {
-            owner_cluster_id: Set("library-x".into()),
+        crate::entities::library_links::ActiveModel {
+            parent_library_id: Set("library-x".into()),
             owner_origin: Set("https://x.example".into()),
             remote_node_id: Set("node-x".into()),
             spki_pin: Set(None),
@@ -596,7 +596,7 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
             .await
             .unwrap();
         assert!(
-            crate::control_plane::set_cluster_link_listing(&store, "library-x", false)
+            crate::control_plane::set_library_link_listing(&store, "library-x", false)
                 .await
                 .unwrap(),
             "{name}"
@@ -645,8 +645,8 @@ async fn a_library_that_acquires_all_members_books_is_sent_every_listed_one() {
                 .await
                 .unwrap();
         }
-        crate::entities::cluster_links::ActiveModel {
-            owner_cluster_id: Set("library-x".into()),
+        crate::entities::library_links::ActiveModel {
+            parent_library_id: Set("library-x".into()),
             owner_origin: Set("https://x.example".into()),
             remote_node_id: Set("node-x".into()),
             spki_pin: Set(None),
@@ -711,7 +711,7 @@ async fn a_library_that_acquires_all_members_books_is_sent_every_listed_one() {
         crate::control_plane::set_catalog_listing_opt_out(&store, member.id, false)
             .await
             .unwrap();
-        crate::control_plane::set_cluster_link_listing(&store, "library-x", false)
+        crate::control_plane::set_library_link_listing(&store, "library-x", false)
             .await
             .unwrap();
         let members_off = OwnerShareFilter::load(&store, "library-x", true)
@@ -721,7 +721,7 @@ async fn a_library_that_acquires_all_members_books_is_sent_every_listed_one() {
             !members_off.admits(&members),
             "{name}: not once members' books are off"
         );
-        crate::control_plane::set_cluster_link_listing(&store, "library-x", true)
+        crate::control_plane::set_library_link_listing(&store, "library-x", true)
             .await
             .unwrap();
         let other_library = OwnerShareFilter::load(&store, "library-y", true)

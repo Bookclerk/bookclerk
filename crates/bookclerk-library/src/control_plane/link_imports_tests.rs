@@ -63,7 +63,7 @@ async fn the_owners_book_from_a_library_joins_the_branch() {
         let name = profile.name();
         let row = library_row(profile, "own-acct", "P1").await;
         let import = LinkImport {
-            cluster_id: "lib-a",
+            library_id: "lib-a",
             book: &row,
             primary_key: "Author/Title P1/Title P1.m4b",
             pdf_key: None,
@@ -204,7 +204,7 @@ async fn only_the_owners_own_books_are_shared_upward() {
         let LinkImportOutcome::Imported(_) = import_link_title(
             &store,
             LinkImport {
-                cluster_id: "lib-a",
+                library_id: "lib-a",
                 book: &imported,
                 primary_key: "a/FROM-A.m4b",
                 pdf_key: None,
@@ -289,7 +289,7 @@ async fn imports_are_kept_per_library_and_read_in_pages() {
         for product in ["P1", "P2", "P3"] {
             rows.push(library_row(profile, "own-acct", product).await);
         }
-        for (cluster_id, row) in rows
+        for (library_id, row) in rows
             .iter()
             .map(|row| ("lib-a", row))
             .chain(std::iter::once(("lib-b", &rows[0])))
@@ -297,7 +297,7 @@ async fn imports_are_kept_per_library_and_read_in_pages() {
             let LinkImportOutcome::Imported(book) = import_link_title(
                 &store,
                 LinkImport {
-                    cluster_id,
+                    library_id,
                     book: row,
                     primary_key: "k.m4b",
                     pdf_key: Some("k.pdf"),
@@ -306,7 +306,7 @@ async fn imports_are_kept_per_library_and_read_in_pages() {
             )
             .await
             .unwrap() else {
-                panic!("{name}: {cluster_id} {} imported", row.product_id);
+                panic!("{name}: {library_id} {} imported", row.product_id);
             };
             assert_eq!(book.plugin_key, PLUGIN, "{name}");
             assert_eq!(book.acquire_status, AcquireStatus::Acquired, "{name}");
@@ -370,7 +370,7 @@ async fn a_primary_key_another_edition_holds_is_not_imported() {
                 import_link_title(
                     &store,
                     LinkImport {
-                        cluster_id: "lib-a",
+                        library_id: "lib-a",
                         book: &row,
                         primary_key: "shared.m4b",
                         pdf_key: None,
@@ -427,7 +427,7 @@ async fn a_primary_key_another_edition_holds_is_not_imported() {
         let LinkImportOutcome::Imported(book) = import_link_title(
             &store,
             LinkImport {
-                cluster_id: "lib-a",
+                library_id: "lib-a",
                 book: &row,
                 primary_key: "P9/P9.m4b",
                 pdf_key: Some("shared.pdf"),

@@ -13,7 +13,7 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub account_id: String,
     /// The other instance: `node:<node_id>` for a branch this library sent
-    /// the account to, `link:<cluster_id>` for a library it came from.
+    /// the account to, `link:<library_id>` for a library it came from.
     #[sea_orm(primary_key, auto_increment = false)]
     pub peer: String,
     /// `sent` or `received`.

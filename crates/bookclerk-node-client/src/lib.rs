@@ -1,14 +1,14 @@
 //! The host side of the node API (H-4 design, sections 2 to 4; step 7).
 //!
 //! A branch node is a separate Bookclerk install that enrolled into an owner
-//! cluster with a single-use link ([`join_cluster`]) or a sign-in at the
+//! library with a single-use link ([`join_library`]) or a sign-in at the
 //! owner ([`inspect_library`], [`authorize_branch`],
 //! [`redeem_branch_code`]); it tells the owner when it leaves
 //! ([`announce_leaving`]). An empty install may instead join as a shared branch, an
 //! shared node that shares the library's database and DEK
 //! ([`redeem_shared_branch_code`], [`apply_shared_branch_bootstrap`]). Its node keys are
 //! sealed in its own database
-//! (`bookclerk_library::control_plane::record_cluster_link`). For every
+//! (`bookclerk_library::control_plane::record_library_link`). For every
 //! active link, [`HostClient`] keeps one socket to the owner's
 //! `/api/node/v1/connect`:
 //!
@@ -78,7 +78,7 @@ pub use endpoint::{
     CopyStreamError, DialError, OwnerEndpoint, OwnerIo, OwnerSocket, SocketMessage, TlsProbe,
     CONNECT_PATH, ENROLL_OAUTH_PATH, ENROLL_PATH, INFO_PATH,
 };
-pub use enroll::{check_join_ancestry, join_cluster, refuse_cycle, JoinError};
+pub use enroll::{check_join_ancestry, join_library, refuse_cycle, JoinError};
 pub use jobs::{
     GrantedCopy, HandedSecrets, HostJob, HostJobCtx, HostJobError, HostJobRunner, HostUpload,
     OwnerCallError, WriteBackError,

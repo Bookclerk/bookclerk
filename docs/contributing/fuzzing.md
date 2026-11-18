@@ -51,7 +51,7 @@ boundary extends it.
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
-| `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
+| `node_frame` | Node-to-node frames on the library socket | `bookclerk-node-proto::Frame` |
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
@@ -335,7 +335,7 @@ only that. The others check:
 - **`node_frame`**: an accepted frame is within the size limit and the
   frame version, and serializes and parses back to an equal frame (unless
   its serialized text grows past the limit, as `1e9` written out does). Every
-  library id in `acquire.targets` is 1 to 16 ASCII letters and digits,
+  call number in `acquire.targets` is 1 to 16 ASCII letters and digits,
   checked byte by byte. A `catalog.ask` or `catalog.found` that passes
   its validator names at most 100 works, each once, by plain correlation
   keys; its identifiers are plain ASCII with a marketplace exactly on an
@@ -368,7 +368,7 @@ only that. The others check:
   `scan.removed`, `scan.pass_end` and a `work` frame with scan tokens. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
-  has the bundle version and names the cluster and node it was opened
+  has the bundle version and names the library and node it was opened
   for. It carries at most the account and secret limits; every text field
   is non-empty, within its limit, free of control characters and
   surrounding whitespace; every secret is 1 byte to its limit; no account,
@@ -418,7 +418,7 @@ only that. The others check:
 - **`clerk_token_answer`**: the input is the answer body, checked
   against the body read as an untyped JSON value. It parses exactly when
   it is at most 8 KiB and one object, no field it reads is written twice,
-  `token` is 43 base64url characters, `cluster_id` is a cluster id,
+  `token` is 43 base64url characters, `library_id` is a library id,
   `user.id` is a positive integer, `user.display_name` (optional) is at
   most 128 bytes with no control characters, and `idle_secs` is from 1
   second to a year; other keys are ignored, and each field is the value
@@ -498,7 +498,7 @@ only that. The others check:
   replayed from `bookclerk-library`.
 - **`job_cap_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
-  besides `cluster_id` (a string) and `max_jobs` (`null` or a whole number
+  besides `library_id` (a string) and `max_jobs` (`null` or a whole number
   from 0 to 16), both present; the parser then returns the trimmed id and
   that cap, and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/job_cap_request.rs`, replayed from `bookclerk-library`.
@@ -527,9 +527,9 @@ only that. The others check:
   replayed from `bookclerk-library`.
 - **`sharing_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
-  besides `cluster_id`, `share_books`, `include_branches`,
+  besides `library_id`, `share_books`, `include_branches`,
   `list_members_books`, `work_for_members`, `keep_member_copies` and
-  `keep_copies`, with a string `cluster_id` and booleans for `share_books`
+  `keep_copies`, with a string `library_id` and booleans for `share_books`
   and `include_branches`, and each of the other four absent, `null` or a
   boolean. The parser then returns the trimmed id and those values, with
   an absent or `null` setting left unset (kept as stored) rather than read
@@ -537,7 +537,7 @@ only that. The others check:
   `fuzz/oracles/sharing_request.rs`, replayed from `bookclerk-library`.
 - **`connections_request`**: feeds each input to both parsers and reads it
   as an untyped JSON value. An add body is accepted exactly when it is one
-  object with no repeated keys anywhere and only `cluster_id` (a string)
+  object with no repeated keys anywhere and only `library_id` (a string)
   and `accounts`, an array of 1 to 64 objects that each hold exactly a
   string `plugin_key` and a string `account_id`; the parser then returns
   the trimmed id and the accounts as sent. A disconnect body is accepted

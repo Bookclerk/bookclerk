@@ -12,7 +12,7 @@
 //! - on each connection, on every `changed` frame naming the `library`
 //!   topic, and every [`READ_POLL`], it reads every page of the person's
 //!   books (`books` → `books.page`) into the window books rows
-//!   (`control_plane::window_books`), keyed by the library's cluster id,
+//!   (`control_plane::window_books`), keyed by the library's library id,
 //!   so "Your books in other libraries" merges them with those of window
 //!   links. Once the last page is in, the books the read no longer named
 //!   are dropped; a read cut short drops nothing.
@@ -131,7 +131,7 @@ async fn supervise_clerk_links(state: Arc<AppState>) {
                     let active: Vec<String> = links
                         .into_iter()
                         .filter(|link| link.is_active())
-                        .map(|link| link.library_cluster_id)
+                        .map(|link| link.library_id)
                         .collect();
                     let gone: Vec<String> = running
                         .keys()
@@ -151,7 +151,7 @@ async fn supervise_clerk_links(state: Arc<AppState>) {
                         let (stop, shutdown) = watch::channel(false);
                         let reader = ClerkReader {
                             library: library.clone(),
-                            cluster_id: id.clone(),
+                            library_id: id.clone(),
                         };
                         let task = tokio::spawn(reader.run(shutdown));
                         running.insert(id, Running { stop, task });
@@ -195,7 +195,7 @@ pub struct ClerkReader {
     /// This install's library.
     pub library: LibraryStore,
     /// The library the card is for.
-    pub cluster_id: String,
+    pub library_id: String,
 }
 
 /// A frame sent to the library that waits for its answer.
@@ -233,14 +233,14 @@ impl ClerkReader {
                 Ok(SessionEnd::Shutdown | SessionEnd::Inactive) => return,
                 Ok(SessionEnd::SignedOut) => {
                     tracing::info!(
-                        cluster_id = %self.cluster_id,
+                        library_id = %self.library_id,
                         "the library ended this install's library card; signed out"
                     );
                     return;
                 }
                 Ok(SessionEnd::Lost) => delay = RECONNECT_MIN,
                 Err(err) => tracing::warn!(
-                    cluster_id = %self.cluster_id,
+                    library_id = %self.library_id,
                     error = %err,
                     "could not read the library's books with the library card; retrying later"
                 ),
@@ -259,8 +259,8 @@ impl ClerkReader {
 
     /// Signs the link out here and tells the web app.
     async fn sign_out(&self) -> anyhow::Result<SessionEnd> {
-        sign_out_clerk_link(&self.library, &self.cluster_id).await?;
-        crate::live::poke(LiveTopic::Clusters);
+        sign_out_clerk_link(&self.library, &self.library_id).await?;
+        crate::live::poke(LiveTopic::Libraries);
         Ok(SessionEnd::SignedOut)
     }
 
@@ -275,7 +275,7 @@ impl ClerkReader {
         &self,
         shutdown: &mut watch::Receiver<bool>,
     ) -> anyhow::Result<SessionEnd> {
-        let Some(link) = load_clerk_link(&self.library, &self.cluster_id).await? else {
+        let Some(link) = load_clerk_link(&self.library, &self.library_id).await? else {
             return Ok(SessionEnd::Inactive);
         };
         if !link.is_active() {
@@ -312,7 +312,7 @@ impl ClerkReader {
         shutdown: &mut watch::Receiver<bool>,
     ) -> anyhow::Result<SessionEnd> {
         let (asks_tx, mut asks) = mpsc::channel(copies::ASK_QUEUE);
-        let _registered = copies::register(&self.cluster_id, asks_tx);
+        let _registered = copies::register(&self.library_id, asks_tx);
         // Frames sent and not yet answered, oldest first.
         let mut waiting: VecDeque<Asked> = VecDeque::new();
         let mut read: Option<Read> = None;
@@ -407,7 +407,7 @@ impl ClerkReader {
                     }
                     current.stored += record_window_page(
                         &self.library,
-                        &self.cluster_id,
+                        &self.library_id,
                         &current.seen_at,
                         &works,
                     )
@@ -457,7 +457,7 @@ impl ClerkReader {
                     Some(Asked::Books) => {
                         read = None;
                         tracing::debug!(
-                            cluster_id = %self.cluster_id,
+                            library_id = %self.library_id,
                             ?code,
                             "the library could not answer a page of books; reading again later"
                         );
@@ -465,7 +465,7 @@ impl ClerkReader {
                     }
                     Some(Asked::Grant(ask)) => {
                         tracing::debug!(
-                            cluster_id = %self.cluster_id,
+                            library_id = %self.library_id,
                             ?code,
                             "the library granted no copy"
                         );
@@ -502,19 +502,19 @@ impl ClerkReader {
 
     /// Ends a complete read: drops the rows it no longer named.
     async fn finish(&self, read: Read) -> anyhow::Result<()> {
-        let dropped = finish_window_read(&self.library, &self.cluster_id, &read.seen_at).await?;
+        let dropped = finish_window_read(&self.library, &self.library_id, &read.seen_at).await?;
         if !self.still_active().await? {
             self.discard(&read).await;
             return Ok(());
         }
         tracing::debug!(
-            cluster_id = %self.cluster_id,
+            library_id = %self.library_id,
             stored = read.stored,
             dropped,
             "read the books the library holds for this install's person"
         );
         if read.stored > 0 || dropped > 0 {
-            crate::live::poke(LiveTopic::Clusters);
+            crate::live::poke(LiveTopic::Libraries);
         }
         Ok(())
     }
@@ -525,10 +525,10 @@ impl ClerkReader {
     /// (re-stamped or new) are kept until the next complete read, which
     /// drops what it no longer names. A failure is only logged.
     async fn discard(&self, read: &Read) {
-        if let Err(err) = discard_window_read(&self.library, &self.cluster_id, &read.seen_at).await
+        if let Err(err) = discard_window_read(&self.library, &self.library_id, &read.seen_at).await
         {
             tracing::warn!(
-                cluster_id = %self.cluster_id,
+                library_id = %self.library_id,
                 error = %err,
                 "could not drop an unfinished read of the library's books"
             );
@@ -538,14 +538,14 @@ impl ClerkReader {
     /// True while the link is active here with the card signed in at
     /// `signed_in_at`.
     async fn same_card(&self, signed_in_at: &str) -> anyhow::Result<bool> {
-        Ok(load_clerk_link(&self.library, &self.cluster_id)
+        Ok(load_clerk_link(&self.library, &self.library_id)
             .await?
             .is_some_and(|link| link.is_active() && link.created_at == signed_in_at))
     }
 
     /// True while the link is still active here.
     async fn still_active(&self) -> anyhow::Result<bool> {
-        Ok(load_clerk_link(&self.library, &self.cluster_id)
+        Ok(load_clerk_link(&self.library, &self.library_id)
             .await?
             .is_some_and(|link| link.is_active()))
     }

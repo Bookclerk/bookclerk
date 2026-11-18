@@ -87,9 +87,9 @@ pub struct ClerkTokenAnswer {
     /// Shown once; the library keeps only its hash.
     #[schema(example = "Zm9vYmFyYmF6cXV4cXV1eGNvcmdlZ3JhdWx0Z2FycGx5")]
     pub token: String,
-    /// The library's cluster id.
+    /// The library id.
     #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
-    pub cluster_id: String,
+    pub library_id: String,
     /// The signed-in person on that library.
     pub user: ClerkUser,
     /// Seconds the session stays signed in unused; each use resets it.
@@ -296,27 +296,27 @@ mod tests {
     #[test]
     fn a_token_answer_is_checked_before_it_is_kept() {
         let good = format!(
-            r#"{{"token":"{TOKEN}","cluster_id":"c-1","user":{{"id":7,"display_name":"Riley"}},"idle_secs":7776000,"later":true}}"#
+            r#"{{"token":"{TOKEN}","library_id":"c-1","user":{{"id":7,"display_name":"Riley"}},"idle_secs":7776000,"later":true}}"#
         );
         let answer = parse_clerk_token_answer(good.as_bytes()).expect("a good answer");
         assert_eq!(answer.token, TOKEN);
-        assert_eq!(answer.cluster_id, "c-1");
+        assert_eq!(answer.library_id, "c-1");
         assert_eq!(answer.user.id, 7);
         assert_eq!(answer.user.display_name.as_deref(), Some("Riley"));
         let bad = [
             format!(r#"[{TOKEN:?}]"#),
-            r#"{"token":"short","cluster_id":"c-1","user":{"id":7},"idle_secs":1}"#.to_string(),
-            format!(r#"{{"token":"{TOKEN}","cluster_id":"","user":{{"id":7}},"idle_secs":1}}"#),
-            format!(r#"{{"token":"{TOKEN}","cluster_id":"c-1","user":{{"id":0}},"idle_secs":1}}"#),
-            format!(r#"{{"token":"{TOKEN}","cluster_id":"c-1","user":{{"id":7}},"idle_secs":0}}"#),
+            r#"{"token":"short","library_id":"c-1","user":{"id":7},"idle_secs":1}"#.to_string(),
+            format!(r#"{{"token":"{TOKEN}","library_id":"","user":{{"id":7}},"idle_secs":1}}"#),
+            format!(r#"{{"token":"{TOKEN}","library_id":"c-1","user":{{"id":0}},"idle_secs":1}}"#),
+            format!(r#"{{"token":"{TOKEN}","library_id":"c-1","user":{{"id":7}},"idle_secs":0}}"#),
             format!(
-                r#"{{"token":"{TOKEN}","cluster_id":"c-1","user":{{"id":7,"display_name":"a\nb"}},"idle_secs":1}}"#
+                r#"{{"token":"{TOKEN}","library_id":"c-1","user":{{"id":7,"display_name":"a\nb"}},"idle_secs":1}}"#
             ),
             format!(
-                r#"{{"token":"{TOKEN}","token":"{TOKEN}","cluster_id":"c-1","user":{{"id":7}},"idle_secs":1}}"#
+                r#"{{"token":"{TOKEN}","token":"{TOKEN}","library_id":"c-1","user":{{"id":7}},"idle_secs":1}}"#
             ),
             format!(
-                r#"{{"token":"{TOKEN}","cluster_id":"c-1","user":{{"id":7}},"idle_secs":1{}}}"#,
+                r#"{{"token":"{TOKEN}","library_id":"c-1","user":{{"id":7}},"idle_secs":1{}}}"#,
                 " ".repeat(MAX_CLERK_ANSWER_BYTES)
             ),
         ];
@@ -407,7 +407,7 @@ const MAX_CLERK_IDLE_SECS: i64 = 366 * 24 * 60 * 60;
 /// The answer comes from another machine, so it is checked before any of
 /// it is kept: at most [`MAX_CLERK_ANSWER_BYTES`] of UTF-8 (all of it,
 /// unknown keys included), one JSON object with no known key written twice, `token` a session token ([`is_clerk_token`]),
-/// `cluster_id` a cluster id ([`crate::is_cluster_id`]), `user.id` a
+/// `library_id` a library id ([`crate::is_library_id`]), `user.id` a
 /// positive integer, `user.display_name` (optional) at most
 /// [`MAX_CLERK_DISPLAY_NAME_BYTES`] bytes with no control characters, and
 /// `idle_secs` from 1 second to a year. Keys it does not know are ignored,
@@ -439,7 +439,7 @@ pub fn parse_clerk_token_answer(body: &[u8]) -> Option<ClerkTokenAnswer> {
         name.len() <= MAX_CLERK_DISPLAY_NAME_BYTES && !name.chars().any(char::is_control)
     });
     (is_clerk_token(&answer.token)
-        && crate::is_cluster_id(&answer.cluster_id)
+        && crate::is_library_id(&answer.library_id)
         && answer.user.id > 0
         && name_ok
         && (1..=MAX_CLERK_IDLE_SECS).contains(&answer.idle_secs))

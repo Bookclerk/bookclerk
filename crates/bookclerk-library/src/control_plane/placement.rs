@@ -2,7 +2,7 @@
 //!
 //! An operator writes intent per instance in `plugin_placements`: a replica
 //! count and label constraints. The scheduler, a singleton that holds the
-//! [`SCHEDULER_LEASE`] cluster lease, turns that intent into
+//! [`SCHEDULER_LEASE`] library lease, turns that intent into
 //! `plugin_deployments` rows (the same rows `plugins deploy` writes by
 //! hand), and each node's reconciler converges on its own rows as before.
 //! An instance with no placement row is managed by hand; the scheduler never
@@ -46,7 +46,7 @@ use crate::entities::{nodes, plugin_placements};
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
-/// Name of the cluster lease the scheduler runs under.
+/// Name of the library lease the scheduler runs under.
 pub const SCHEDULER_LEASE: &str = "scheduler";
 
 /// How long a scheduler lease lasts without renewal.
@@ -243,7 +243,7 @@ fn authorize(actor: &ConfigActor) -> Result<()> {
         | ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
         | ConfigActor::NodeOwner(_)
-        | ConfigActor::ClusterOwner(_) => Err(LibraryError::Forbidden(
+        | ConfigActor::LibraryOwner(_) => Err(LibraryError::Forbidden(
             "unauthorized configuration write: operator authority is required".into(),
         )),
     }
@@ -424,7 +424,7 @@ pub async fn put_plugin_placement(
             instance_id,
         ));
     };
-    // H-2: a node-local instance is never scheduled across the cluster.
+    // H-2: a node-local instance is never scheduled across the library.
     if let Some(owner) = instance.owner_node_id.as_deref() {
         return Err(invalid(&format!(
             "plugin instance {instance_id} is local to node {owner}; it cannot be placed"
@@ -813,7 +813,7 @@ pub struct PlacementPlan {
 /// memory fits the budget. A scale-down drops the replicas on the nodes
 /// with the least room first. When a replica's node is over its memory
 /// budget and another qualifying node has room, the replica moves there
-/// (one move per pass, so the cluster does not thrash).
+/// (one move per pass, so the library does not thrash).
 #[must_use]
 pub fn plan_placement(
     spec: &PlacementSpec,

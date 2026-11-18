@@ -36,8 +36,8 @@ These options work with every command. Some commands have their own option of th
 - [`bookclerk db`](#bookclerk-db): Host schema version, backups, and explicit migrate
 - [`bookclerk daemon`](#bookclerk-daemon): Talk to a running bookclerkd control plane
 - [`bookclerk events`](#bookclerk-events): Durable domain-event outbox and deliveries
-- [`bookclerk clusters`](#bookclerk-clusters): Owner clusters this install hosts for, and consent to their plugins
-- [`bookclerk nodes`](#bookclerk-nodes): Cluster nodes: liveness, capacity, budgets, and placement labels
+- [`bookclerk libraries`](#bookclerk-libraries): Owner libraries this install hosts for, and consent to their plugins
+- [`bookclerk nodes`](#bookclerk-nodes): Library nodes: liveness, capacity, budgets, and placement labels
 - [`bookclerk queues`](#bookclerk-queues): Plugin-owned queues on the outbox: counters, consumers, messages
 - [`bookclerk login`](#bookclerk-login): Print a loopback operator sign-in URL (requires a running daemon)
 - [`bookclerk diagnostics`](#bookclerk-diagnostics): Diagnostics ring buffer and opt-in upload
@@ -534,7 +534,7 @@ Commands:
 
 - [`bookclerk plugins list`](#bookclerk-plugins-list): List plugins found under plugin search directories
 - [`bookclerk plugins search`](#bookclerk-plugins-search): Search configured registries (and crates.io) for Bookclerk plugins
-- [`bookclerk plugins install`](#bookclerk-plugins-install): Install a plugin version into the cluster from a source-qualified coordinate or a local archive. The first installed version (or `--activate`) becomes the active version every node runs; deploy it with `plugins deploy`
+- [`bookclerk plugins install`](#bookclerk-plugins-install): Install a plugin version into the library from a source-qualified coordinate or a local archive. The first installed version (or `--activate`) becomes the active version every node runs; deploy it with `plugins deploy`
 - [`bookclerk plugins update`](#bookclerk-plugins-update): Install and activate a newer version of an installed plugin (or update a staged package by its receipt)
 - [`bookclerk plugins rollback`](#bookclerk-plugins-rollback): Activate an earlier installed version of a plugin
 - [`bookclerk plugins versions`](#bookclerk-plugins-versions): List installed versions (the active one is starred)
@@ -542,7 +542,7 @@ Commands:
 - [`bookclerk plugins info`](#bookclerk-plugins-info): Show details for one discovered plugin (local + receipt)
 - [`bookclerk plugins diagnose`](#bookclerk-plugins-diagnose): Run diagnose probes for one (or all) plugins that support it
 - [`bookclerk plugins doctor`](#bookclerk-plugins-doctor): Check install integrity, target, jail, and describe/health status
-- [`bookclerk plugins deploy`](#bookclerk-plugins-deploy): Deploy a plugin instance. With no flags it runs on this node (or on `--node`) by hand: the instance's deployment there is `present`. With `--replicas` the cluster scheduler (one daemon, under a cluster lease) places it on that many nodes carrying every `--on` label and writes the deployments itself; `--manual` hands those deployments back to be managed by hand
+- [`bookclerk plugins deploy`](#bookclerk-plugins-deploy): Deploy a plugin instance. With no flags it runs on this node (or on `--node`) by hand: the instance's deployment there is `present`. With `--replicas` the library scheduler (one daemon, under a library lease) places it on that many nodes carrying every `--on` label and writes the deployments itself; `--manual` hands those deployments back to be managed by hand
 - [`bookclerk plugins undeploy`](#bookclerk-plugins-undeploy): Undeploy a plugin instance from this node (or `--node`): its deployment there becomes `absent` and the guest is retired
 - [`bookclerk plugins instances`](#bookclerk-plugins-instances): Plugin instances: one per plugin by default, more when an operator wants several configurations of one plugin
 - [`bookclerk plugins config`](#bookclerk-plugins-config): Instance settings, validated against the plugin's declared schema
@@ -576,7 +576,7 @@ Options:
 
 ### `bookclerk plugins install`
 
-Install a plugin version into the cluster from a source-qualified coordinate or a local archive. The first installed version (or `--activate`) becomes the active version every node runs; deploy it with `plugins deploy`
+Install a plugin version into the library from a source-qualified coordinate or a local archive. The first installed version (or `--activate`) becomes the active version every node runs; deploy it with `plugins deploy`
 
 ```text
 bookclerk plugins install [OPTIONS] <COORDINATE>
@@ -696,7 +696,7 @@ Arguments:
 
 ### `bookclerk plugins deploy`
 
-Deploy a plugin instance. With no flags it runs on this node (or on `--node`) by hand: the instance's deployment there is `present`. With `--replicas` the cluster scheduler (one daemon, under a cluster lease) places it on that many nodes carrying every `--on` label and writes the deployments itself; `--manual` hands those deployments back to be managed by hand.
+Deploy a plugin instance. With no flags it runs on this node (or on `--node`) by hand: the instance's deployment there is `present`. With `--replicas` the library scheduler (one daemon, under a library lease) places it on that many nodes carrying every `--on` label and writes the deployments itself; `--manual` hands those deployments back to be managed by hand.
 
 Database adapters are the bootstrap exception and still select `[database].plugin` in `config.toml`.
 
@@ -1539,40 +1539,40 @@ Arguments:
 
 - `<ID>`: Delivery id (`{event_id}:{plugin_id}`)
 
-## `bookclerk clusters`
+## `bookclerk libraries`
 
-Owner clusters this install hosts for, and consent to their plugins
+Owner libraries this install hosts for, and consent to their plugins
 
 ```text
-bookclerk clusters [OPTIONS] <COMMAND>
+bookclerk libraries [OPTIONS] <COMMAND>
 ```
 
 Commands:
 
-- [`bookclerk clusters list`](#bookclerk-clusters-list): The owner clusters this install is enrolled in as a host
-- [`bookclerk clusters join`](#bookclerk-clusters-join): Enroll this install as a host (a branch) of an owner library
-- [`bookclerk clusters leave`](#bookclerk-clusters-leave): Leave an owner cluster: the owner is told (and revokes this node when it hears), the link stops being dialed and its node keys are deleted
-- [`bookclerk clusters consents`](#bookclerk-clusters-consents): What each owner cluster asks to run here, and whether it may
-- [`bookclerk clusters approve`](#bookclerk-clusters-approve): Approve an owner plugin's request to run here, optionally narrowed. Name the request you reviewed by the digest `clusters consents` shows (it covers the version, the grant, the archive URL, the archive digest and the payload digest); it is refused when the cluster has changed the request since. Only what the request asks for can be approved; a later version that asks for more needs approval again
-- [`bookclerk clusters scan`](#bookclerk-clusters-scan): Ask an owner cluster to scan its library for this node's owner
-- [`bookclerk clusters revoke`](#bookclerk-clusters-revoke): Withdraw an approval: held jobs of the plugin are cancelled and given back, and nothing of it is claimed until this host's operator approves it again (a platform plugin is not approved automatically)
+- [`bookclerk libraries list`](#bookclerk-libraries-list): The libraries this install is enrolled in as a host
+- [`bookclerk libraries join`](#bookclerk-libraries-join): Enroll this install as a host (a branch) of an owner library
+- [`bookclerk libraries leave`](#bookclerk-libraries-leave): Leave a library: the owner is told (and revokes this node when it hears), the link stops being dialed and its node keys are deleted
+- [`bookclerk libraries consents`](#bookclerk-libraries-consents): What each library asks to run here, and whether it may
+- [`bookclerk libraries approve`](#bookclerk-libraries-approve): Approve an owner plugin's request to run here, optionally narrowed. Name the request you reviewed by the digest `libraries consents` shows (it covers the version, the grant, the archive URL, the archive digest and the payload digest); it is refused when the library has changed the request since. Only what the request asks for can be approved; a later version that asks for more needs approval again
+- [`bookclerk libraries scan`](#bookclerk-libraries-scan): Ask a library to scan its library for this node's owner
+- [`bookclerk libraries revoke`](#bookclerk-libraries-revoke): Withdraw an approval: held jobs of the plugin are cancelled and given back, and nothing of it is claimed until this host's operator approves it again (a platform plugin is not approved automatically)
 
-### `bookclerk clusters list`
+### `bookclerk libraries list`
 
-The owner clusters this install is enrolled in as a host
+The libraries this install is enrolled in as a host
 
 ```text
-bookclerk clusters list [OPTIONS]
+bookclerk libraries list [OPTIONS]
 ```
 
-### `bookclerk clusters join`
+### `bookclerk libraries join`
 
 Enroll this install as a host (a branch) of an owner library.
 
 With `--url`, prints a sign-in link (and opens a browser when it can): a user of that library signs in and approves, and the answer comes back to a loopback listener this command opens. Without it, reads a branch invite (`https://<owner>/enroll#bcn1...`) from stdin, or prompts for it; an invite is never taken from the command line.
 
 ```text
-bookclerk clusters join [OPTIONS]
+bookclerk libraries join [OPTIONS]
 ```
 
 Options:
@@ -1582,36 +1582,36 @@ Options:
 - `--fingerprint <FINGERPRINT>`: The library's certificate fingerprint as Settings → Branches shows it (a `sha256:` prefix is accepted), confirming a self-signed library without a prompt
 - `--as <JOIN_AS>`: How to join: `branch` (default; keeps this install's own database) or `shared_branch` (shares the library's database and key; only an empty install, and only when an Owner of the library chooses it after a fresh second factor) (one of `branch`, `shared-branch`)
 
-### `bookclerk clusters leave`
+### `bookclerk libraries leave`
 
-Leave an owner cluster: the owner is told (and revokes this node when it hears), the link stops being dialed and its node keys are deleted
+Leave a library: the owner is told (and revokes this node when it hears), the link stops being dialed and its node keys are deleted
 
 ```text
-bookclerk clusters leave [OPTIONS]
+bookclerk libraries leave [OPTIONS]
 ```
 
 Options:
 
-- `--cluster <CLUSTER>`: Owner cluster id (default: the only enrolled cluster)
+- `--library <LIBRARY>`: Library id (default: the only enrolled library)
 
-### `bookclerk clusters consents`
+### `bookclerk libraries consents`
 
-What each owner cluster asks to run here, and whether it may
+What each library asks to run here, and whether it may
 
 ```text
-bookclerk clusters consents [OPTIONS]
+bookclerk libraries consents [OPTIONS]
 ```
 
 Options:
 
-- `--cluster <CLUSTER>`: Only this owner cluster
+- `--library <LIBRARY>`: Only this library
 
-### `bookclerk clusters approve`
+### `bookclerk libraries approve`
 
-Approve an owner plugin's request to run here, optionally narrowed. Name the request you reviewed by the digest `clusters consents` shows (it covers the version, the grant, the archive URL, the archive digest and the payload digest); it is refused when the cluster has changed the request since. Only what the request asks for can be approved; a later version that asks for more needs approval again
+Approve an owner plugin's request to run here, optionally narrowed. Name the request you reviewed by the digest `libraries consents` shows (it covers the version, the grant, the archive URL, the archive digest and the payload digest); it is refused when the library has changed the request since. Only what the request asks for can be approved; a later version that asks for more needs approval again
 
 ```text
-bookclerk clusters approve [OPTIONS] --request <DIGEST> <PLUGIN>
+bookclerk libraries approve [OPTIONS] --request <DIGEST> <PLUGIN>
 ```
 
 Arguments:
@@ -1620,36 +1620,36 @@ Arguments:
 
 Options:
 
-- `--cluster <CLUSTER>`: Owner cluster id (default: the only enrolled cluster)
-- `--request <DIGEST>`: The `request_digest` of the request you reviewed, from `clusters consents` (refused when the cluster now asks for anything else) (required)
+- `--library <LIBRARY>`: Library id (default: the only enrolled library)
+- `--request <DIGEST>`: The `request_digest` of the request you reviewed, from `libraries consents` (refused when the library now asks for anything else) (required)
 - `--deny-domain <DOMAIN>`: Take a domain out of the request. Repeatable
 - `--deny-binding <BINDING>`: Take a binding out of the request (`secrets`, `kv`, ...). Repeatable
 - `--deny-own-user-agent <HOST>`: Refuse the plugin's own User-Agent on a host it asks for; its requests there carry Bookclerk's agent. Repeatable
 - `--deny-network`: Deny all network access
 
-### `bookclerk clusters scan`
+### `bookclerk libraries scan`
 
-Ask an owner cluster to scan its library for this node's owner.
+Ask a library to scan its library for this node's owner.
 
-Goes through this install's running daemon, over its link to the owner. The owner plans it as that user: an Owner or Administrator scanning every account gets one job per account, spread over the cluster's nodes and hosts; anyone else scans only their own accounts. Waits for the jobs unless `--no-wait`.
+Goes through this install's running daemon, over its link to the owner. The owner plans it as that user: an Owner or Administrator scanning every account gets one job per account, spread over the library's nodes and hosts; anyone else scans only their own accounts. Waits for the jobs unless `--no-wait`.
 
 ```text
-bookclerk clusters scan [OPTIONS]
+bookclerk libraries scan [OPTIONS]
 ```
 
 Options:
 
-- `--cluster <CLUSTER>`: Owner cluster id (default: the only enrolled cluster)
-- `--account <ACCOUNT>`: Scan only this store account of the owner cluster
+- `--library <LIBRARY>`: Library id (default: the only enrolled library)
+- `--account <ACCOUNT>`: Scan only this store account of the library
 - `--instance <INSTANCE>`: Pin the scan to one owner plugin instance
 - `--no-wait`: Print the queued job ids without waiting for them
 
-### `bookclerk clusters revoke`
+### `bookclerk libraries revoke`
 
 Withdraw an approval: held jobs of the plugin are cancelled and given back, and nothing of it is claimed until this host's operator approves it again (a platform plugin is not approved automatically)
 
 ```text
-bookclerk clusters revoke [OPTIONS] <PLUGIN>
+bookclerk libraries revoke [OPTIONS] <PLUGIN>
 ```
 
 Arguments:
@@ -1658,11 +1658,11 @@ Arguments:
 
 Options:
 
-- `--cluster <CLUSTER>`: Owner cluster id (default: the only enrolled cluster)
+- `--library <LIBRARY>`: Library id (default: the only enrolled library)
 
 ## `bookclerk nodes`
 
-Cluster nodes: liveness, capacity, budgets, and placement labels
+Library nodes: liveness, capacity, budgets, and placement labels
 
 ```text
 bookclerk nodes [OPTIONS] <COMMAND>
@@ -1705,8 +1705,8 @@ Options:
 - `--drain`: Place nothing new here and move scheduled replicas away
 - `--undrain`: Accept scheduled replicas again
 - `--label <LABEL>`: Operator label for the node
-- `--cache-budget <BYTES>`: Disk space, in bytes, this node's image caches may use, overriding the cluster's `cache.budget_bytes` (16 MiB to 1 TiB)
-- `--cluster-cache-budget`: Drop this node's cache budget override and follow the cluster's
+- `--cache-budget <BYTES>`: Disk space, in bytes, this node's image caches may use, overriding the library's `cache.budget_bytes` (16 MiB to 1 TiB)
+- `--library-cache-budget`: Drop this node's cache budget override and follow the library's
 
 ### `bookclerk nodes label`
 

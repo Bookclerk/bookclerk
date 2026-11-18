@@ -1,4 +1,4 @@
-//! Routed job claims and cluster semaphores: two nodes, one database.
+//! Routed job claims and library semaphores: two nodes, one database.
 //!
 //! Each scenario runs on two SQLite connections to one file and, when
 //! `BOOKCLERK_TEST_POSTGRES_URL` is set, on two PostgreSQL pools.
@@ -13,7 +13,7 @@ use sea_orm::{ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, Quer
 
 use super::tests::{postgres_stores, postgres_tests_enabled};
 use super::*;
-use crate::entities::{accounts, cluster_leases, jobs};
+use crate::entities::{accounts, jobs, library_leases};
 use crate::models::{EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload, JobResourceClass};
 use crate::store::LibraryStore;
 
@@ -374,12 +374,12 @@ async fn crashed_holder_is_reclaimed_and_fenced(store_a: LibraryStore, store_b: 
         .await
         .unwrap();
     for permit in &held.permits {
-        cluster_leases::Entity::update_many()
+        library_leases::Entity::update_many()
             .col_expr(
-                cluster_leases::Column::ExpiresAtMs,
+                library_leases::Column::ExpiresAtMs,
                 Expr::value(chrono::Utc::now().timestamp_millis() - 5_000),
             )
-            .filter(cluster_leases::Column::Name.eq(permit.lease.name.as_str()))
+            .filter(library_leases::Column::Name.eq(permit.lease.name.as_str()))
             .exec(store_a.db())
             .await
             .unwrap();

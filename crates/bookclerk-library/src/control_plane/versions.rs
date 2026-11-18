@@ -1,4 +1,4 @@
-//! Plugin versions: what is "installed" is a cluster record, not a node
+//! Plugin versions: what is "installed" is a library record, not a node
 //! directory.
 //!
 //! A [`PluginVersion`] row per `(plugin_key, version)` carries the manifest,
@@ -134,7 +134,7 @@ fn authorize(actor: &ConfigActor) -> Result<()> {
         | ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
         | ConfigActor::NodeOwner(_)
-        | ConfigActor::ClusterOwner(_) => Err(LibraryError::Forbidden(
+        | ConfigActor::LibraryOwner(_) => Err(LibraryError::Forbidden(
             "unauthorized configuration write: operator authority is required".into(),
         )),
     }

@@ -60,14 +60,14 @@ export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
         if (isSharedBranchJoined(joined)) {
           setPhase({
             kind: "shared_branch",
-            library: joined.library_name || joined.cluster_id,
+            library: joined.library_name || joined.library_id,
             wrapped: joined.master_key_wrapped,
           });
           return;
         }
         setPhase({
           kind: "connected",
-          library: joined.library_name || joined.cluster.owner_origin,
+          library: joined.library_name || joined.library.owner_origin,
           running: joined.running,
           connections: broughtConnectionsSummary(joined.connections),
         });

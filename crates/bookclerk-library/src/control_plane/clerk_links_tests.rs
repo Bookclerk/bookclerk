@@ -1,5 +1,5 @@
 //! Clerk links: a library card is sealed and read back only while the link
-//! is active, a sign-in is refused where a cluster link already reads that
+//! is active, a sign-in is refused where a library link already reads that
 //! library, signing out drops the card and the books read through it, and
 //! the merged view shows a card's books beside a window link's.
 
@@ -10,8 +10,8 @@ use bookclerk_node_proto::{
 
 use super::*;
 use crate::control_plane::{
-    record_cluster_link, record_window_page, window_read_stamp, window_view, ClusterLinkKeys,
-    NewClusterLink,
+    record_library_link, record_window_page, window_read_stamp, window_view, LibraryLinkKeys,
+    NewLibraryLink,
 };
 use crate::master_key::master_key_test_lock_async;
 
@@ -20,13 +20,13 @@ fn card(fill: char) -> LibraryCard {
     LibraryCard::new(std::iter::repeat_n(fill, 43).collect()).expect("a card")
 }
 
-/// A sign-in to `cluster` as user `user`.
-fn sign_in(cluster: &str, user: i64) -> NewClerkLink {
+/// A sign-in to `library` as user `user`.
+fn sign_in(library: &str, user: i64) -> NewClerkLink {
     NewClerkLink {
-        library_cluster_id: cluster.into(),
-        origin: format!("HTTPS://{cluster}.Example:443/"),
+        library_id: library.into(),
+        origin: format!("HTTPS://{library}.Example:443/"),
         spki_pin: None,
-        library_name: format!("  {cluster} library "),
+        library_name: format!("  {library} library "),
         remote_user_id: user,
         display_name: Some("Pat".into()),
         clerk_name: "Laptop".into(),
@@ -161,7 +161,7 @@ async fn validation(store: &LibraryStore) {
         link
     };
     for link in [
-        bad(|l| l.library_cluster_id = "has space".into()),
+        bad(|l| l.library_id = "has space".into()),
         bad(|l| l.origin = "ftp://alpha.example".into()),
         bad(|l| l.spki_pin = Some("not-a-pin".into())),
         bad(|l| l.library_name = "tab\there".into()),
@@ -187,15 +187,15 @@ async fn a_card_reads_into_the_merged_view_beside_a_window() {
 
 async fn merged_view(store: &LibraryStore) {
     // A window link to beta, and a card for alpha.
-    record_cluster_link(
+    record_library_link(
         store,
-        &NewClusterLink {
-            owner_cluster_id: "beta".into(),
+        &NewLibraryLink {
+            parent_library_id: "beta".into(),
             owner_origin: "https://beta.example".into(),
             remote_node_id: "node-b".into(),
             spki_pin: None,
         },
-        &ClusterLinkKeys::generate(),
+        &LibraryLinkKeys::generate(),
     )
     .await
     .unwrap();

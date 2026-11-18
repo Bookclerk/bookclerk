@@ -1,16 +1,16 @@
 //! SeaORM entity for `remote_plugin_consents`: on a branch node, this
-//! install's operator consent for each owner plugin an owner cluster wants
+//! install's operator consent for each owner plugin a library wants
 //! to run here (written by `control_plane::remote_consents`).
 
 use sea_orm::entity::prelude::*;
 
-/// Row shape for one owner plugin of one owner cluster.
+/// Row shape for one owner plugin of one library.
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "remote_plugin_consents")]
 pub struct Model {
-    /// Owner cluster id the plugin belongs to.
+    /// Library id the plugin belongs to.
     #[sea_orm(primary_key, auto_increment = false)]
-    pub owner_cluster_id: String,
+    pub parent_library_id: String,
     /// Canonical plugin key.
     #[sea_orm(primary_key, auto_increment = false)]
     pub plugin_key: String,

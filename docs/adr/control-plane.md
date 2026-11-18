@@ -11,9 +11,9 @@
   [library catalog network](library-catalog-network.md): a branch keeps
   its owner's titles, and other members' titles only when its operator
   turns on "Keep copies of other members' books" (see
-  [Work settings on the branch](../server/cluster-hosts.md#work-settings-on-the-branch)).
+  [Work settings on the branch](../server/branches.md#work-settings-on-the-branch)).
 - **Date:** 2026-09-29 (Phase 2 and the Phase 3 decision: 2026-10-13; the
-  cluster-install decision, the Phase 3 implementation, and the node and
+  library-install decision, the Phase 3 implementation, and the node and
   install/deploy terminology: 2026-10-14)
 - **Related:** [SQL database contract](sql-database-contract.md),
   [schema versioning](schema-versioning.md),
@@ -28,7 +28,7 @@ stable host identity, and secret-root joining on the existing SQL stack.
 The sections before [Phase 2](#phase-2-plugin-instances-declared-schemas-pluginkey-keyed-accounts)
 describe that first step, and their "Phase 0 did not" notes are its limits
 at the time. Later phases lifted several of them: installs and deployments
-are reconciled cluster-wide ([Installs and materialization](#installs-and-materialization)),
+are reconciled library-wide ([Installs and materialization](#installs-and-materialization)),
 and work is scheduled across hosts
 ([Resource-aware scheduling and routing](#resource-aware-scheduling-and-routing)).
 
@@ -57,8 +57,8 @@ database and unlock its secret root:
 | --- | --- | --- |
 | Database target | `[database]` in `config.toml`, or `BOOKCLERK_DATABASE_*` / D1 / Postgres env | The process needs it to open the connection that would store later configuration |
 | Auth password | `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` | Unwraps `master.key`; not itself a library secret |
-| Secret root | `$BOOKCLERK_FILES_DIR/master.key` (`BCK1` or `BCK2`) | Decrypts `encrypted_secrets` and is the cluster DEK |
-| Host enrollment | `$BOOKCLERK_FILES_DIR/node-identity.json` | Stable `HostId` and the cluster id this files directory has joined |
+| Secret root | `$BOOKCLERK_FILES_DIR/master.key` (`BCK1` or `BCK2`) | Decrypts `encrypted_secrets` and is the library DEK |
+| Host enrollment | `$BOOKCLERK_FILES_DIR/node-identity.json` | Stable `HostId` and the library id this files directory has joined |
 
 `[database].plugin`, the SQLite path, the D1 account/database ids, the D1 API
 token, and the Postgres URL stay bootstrap. Moving them into the database
@@ -85,7 +85,7 @@ it serves HTTP. It is transitional, not a second copy of `core.events`.
 2. Open the database plugin and apply the host schema. This does not require
    the DEK.
 3. Align the secret root (below). Only then cache the DEK.
-4. Load or create `node-identity.json`, bind it to the database cluster id,
+4. Load or create `node-identity.json`, bind it to the database library id,
    and heartbeat.
 5. Import `core.events` when the row is absent, using the TOML/environment
    seed. When the row exists, keep it and overlay it onto the in-memory
@@ -96,10 +96,10 @@ A reload repeats steps 3–5 against the library it is about to publish and
 aborts the reload when alignment fails. It does not publish a config that
 still prefers the TOML events table.
 
-### Cluster, host, and incarnation
+### Library, host, and incarnation
 
-- **Cluster** — one logical Bookclerk service, identified by `cluster_id` in
-  the singleton `cluster_identity` row. The cluster is the database that holds
+- **Library** — one logical Bookclerk service, identified by `library_id` in
+  the singleton `library_identity` row. The library is the database that holds
   that row, not a hostname and not a particular SQLite file path.
 - **HostId** — a UUID stored in `node-identity.json`. It is not derived from
   the hostname. Restart reads the same file. A new file is a new host.
@@ -112,12 +112,12 @@ still prefers the TOML events table.
   `logical_cpus`, `cpu_max_quota_us`, `cpu_max_period_us`, `memory_max_bytes`,
   `memory_current_bytes`, `memory_anon_bytes`, `files_dir_free_bytes`, and
   `scratch_bytes`. Missing cgroup files stay null. `created_at` and
-  `cluster_id` are identity and are not refreshed.
+  `library_id` are identity and are not refreshed.
 
-Connecting a files directory whose `cluster_id` does not match
-`cluster_identity.cluster_id` fails. The identity file and the database row
-are left unchanged. An empty database may adopt the cluster id already
-written in the identity file; a database that already has a different cluster
+Connecting a files directory whose `library_id` does not match
+`library_identity.library_id` fails. The identity file and the database row
+are left unchanged. An empty database may adopt the library id already
+written in the identity file; a database that already has a different library
 id is not overwritten.
 
 Heartbeat updates only the caller's row. Another host's observation is not
@@ -135,7 +135,7 @@ Physical table `configuration_documents`, one row per
 
 | Column | Role |
 | --- | --- |
-| `scope_type` | `cluster` or `host` |
+| `scope_type` | `library` or `host` |
 | `scope_id` | `singleton`, or a HostId |
 | `namespace` | Domain name. Not a plugin capability and not a `PluginKey` |
 | `schema_version` | Domain schema, starting at 1. Independent of library `SCHEMA_VERSION` |
@@ -150,8 +150,8 @@ service.
 
 Namespaces added in Phase 0:
 
-- `core.events` — cluster scope. The migrated `[events]` domain.
-- `core.output` — cluster scope. The migrated shared `[output]` table (see
+- `core.events` — library scope. The migrated `[events]` domain.
+- `core.output` — library scope. The migrated shared `[output]` table (see
   *`core.output`* below).
 - `node.runtime` — host scope, one `label` field. Effective runtime for a
   process is that host's row only. Another host's label is readable by
@@ -209,13 +209,13 @@ That split was deliberate in Phase 0.
 
 ### `core.output`
 
-The second cluster domain (2026-10-15) is the shared `[output]` table:
+The second library domain (2026-10-15) is the shared `[output]` table:
 format, Widevine and CDM provider, naming profile and templates, sidecars,
 cover and chapter options, LAME knobs, timestamps, path sanitization and
 replacement rules, filename length, and the multi-destination policy, as
 `OutputSettingsV1` (schema 1, unknown fields rejected). It uses the same
 import-once, compare-and-swap, audit, change-notice, and wakeup path as
-`core.events`; a host overlays a newer revision of its cluster onto
+`core.events`; a host overlays a newer revision of its library onto
 `Config.output`, and each acquire or convert reads the overlaid value when it
 starts. Writes are operator-only and validated before SQL (bounded sizes,
 template length and control characters, replacement rules that cannot inject
@@ -243,10 +243,10 @@ Every process:
 - reads the document revision at startup (an offline process catches up by
   reading the current row, not by replaying notices);
 - re-reads when its host queue wakes it, and on a 60 second backstop pass,
-  and overlays a newer revision of the **same cluster id** onto
+  and overlays a newer revision of the **same library id** onto
   `Config.events` (and, for `core.output`, `Config.output`). A stale read cannot replace a newer body. Revisions from
-  a different cluster are not compared. Switching databases is an explicit
-  swap and installs that cluster's document even when its revision number
+  a different library are not compared. Switching databases is an explicit
+  swap and installs that library's document even when its revision number
   is lower;
 - applies its own successful write immediately, under the same monotonic rule.
 
@@ -266,12 +266,12 @@ capacity columns (`logical_cpus`, `cpu_max_quota_us`, `cpu_max_period_us`,
 heartbeat. They are not a `node.runtime` document and they are not a second
 copy of `media.workers`. In Phase 0, physical plugin install files and the
 host install ledger stayed on the host, and desired plugin deployments were
-not reconciled; Phase 3 records installs cluster-wide
+not reconciled; Phase 3 records installs library-wide
 ([Installs and materialization](#installs-and-materialization)).
 
 ### Secret root
 
-`cluster_identity.secret_fingerprint` is the SHA-256 of the unwrapped DEK.
+`library_identity.secret_fingerprint` is the SHA-256 of the unwrapped DEK.
 Wrapping `master.key` with a password (`BCK1` to `BCK2`) does not change the
 fingerprint.
 
@@ -295,7 +295,7 @@ Library schema behavior is unchanged: unreleased checksum, fail closed on
 mismatch, `SCHEMA_VERSION = 0`. A database newer than the binary (a frozen
 version past its plan, or an unreleased pack with another checksum) is
 refused, never migrated. A start that has DDL to apply does it under the
-`schema.migrate` cluster lease (see *Singleton maintenance and the
+`schema.migrate` library lease (see *Singleton maintenance and the
 migration lease* below), so concurrent starters produce one migrator. A host heartbeats only when
 `current_schema_state` is the unreleased pack this binary applies. Document
 schema versions are per namespace and start at 1. A document this binary does
@@ -303,7 +303,7 @@ not understand is not applied and is not rewritten.
 
 ### Authorization
 
-Cluster and host configuration writes require an operator
+Library and host configuration writes require an operator
 principal (the local CLI or the daemon operator token on
 `PUT /api/config/domains/core.events`, `PUT /api/config/domains/core.output`,
 and `PATCH /api/settings` for `events.*` / `output.*`). Administrators and
@@ -412,7 +412,7 @@ absent until an operator approves and enables them.
 ### One bootstrap
 
 `bookclerk_plugin_host::open_host_control_plane` is the single path both
-binaries use: open the database, align the cluster secret root, load or mint
+binaries use: open the database, align the library secret root, load or mint
 the host identity, heartbeat, import `core.events`, enrol local plugins, then
 load sources, destinations, and integrations from this host's present
 deployments only. A plugin with no present deployment here is not loaded;
@@ -426,7 +426,7 @@ the healthy default" degrades to "route to the present default" there.
 and `account_links` carry `plugin_key` with composite foreign keys; `source`
 remains the display alias. `SourceScope` carries the plugin key (isolation)
 and the source id (display). Any instance of that plugin on any host may scan
-or acquire for any of its accounts, which is what lets a cluster assign work
+or acquire for any of its accounts, which is what lets a library assign work
 freely. An `account_id` is unique per plugin, not globally: the same email is
 a legitimate account on two stores that both use email as the id. Paths that
 must pick one row (`find_account`, `library set-scan`, `library
@@ -466,7 +466,7 @@ Bootstrap stays in TOML and env: `[database]`, `master.key`,
 `node-identity.json`, `daemon.listen`. Database-adapter plugins are not
 instances in this phase. The shared `[output]` table (format, Widevine,
 naming profile, sidecars, multi-destination policy) has since moved to the
-`core.output` cluster document; only its host-local `in_progress` scratch
+`core.output` library document; only its host-local `in_progress` scratch
 directory stays in TOML (see *`core.output`* under *Decision*).
 
 KV and Queues are unchanged. Named SQL bindings do not replace them.
@@ -521,7 +521,7 @@ second way to declare interest.
   destination is bound to a disk, a workerd-only plugin to a host with the
   pinned runtime). Enrollment stops writing "this host, present" once a
   scheduler exists; until then it keeps doing so.
-- **Cluster installs, not host installs.** "Installed" is a cluster
+- **Library installs, not host installs.** "Installed" is a library
   record, the way a Workers version is a record and every colo materializes
   it on demand. A `plugin_versions` row per `(plugin_key, version)` carries
   the manifest, the settings schema, one artifact per target with its
@@ -581,10 +581,10 @@ local mutation lock still serializes materialization and sweeping on one
 host; `require_mutable_child` keeps guarding every path under `plugins/`.
 
 Schema pinning simplifies: the pinned schema is the active version's schema.
-A node no longer has "an installed version" independent of the cluster, so
+A node no longer has "an installed version" independent of the library, so
 the newer-re-pins / older-is-stale comparison from Phase 2 reduces to
 "materialize the active version". The comparison code stays until the
-cluster install path lands, then goes.
+library install path lands, then goes.
 
 `bookclerk plugins update` installs a new version and activates it;
 `bookclerk plugins rollback <plugin> <version>` activates an earlier one,
@@ -625,7 +625,7 @@ depends on hosts agreeing on a schema.
    is a singleton maintenance lease (already listed under Phase 3) that
    writes deployments; each host's reconciler converges as today.
 6. **Docs and ADR.** `plugins.md` loses "not implemented yet" for KV and
-   Queues and describes cluster installs instead of host installs; this section records
+   Queues and describes library installs instead of host installs; this section records
    any deviation.
 
 Steps 1, 2, and 4 are independent of each other and of 3; 5 needs 3 and 4.
@@ -658,9 +658,9 @@ section is the record.
   leading dot keeps discovery and alias scanning, which walk `plugins/`,
   from treating a cache entry as an installed plugin.
 - **Host-local trees remain (step 4).** The ledger, receipts, and
-  `plugin-grants.json` retire for cluster-installed plugins only. Platform
+  `plugin-grants.json` retire for library-installed plugins only. Platform
   guests, development trees staged by `cargo stage-plugins`, and host-local
-  installs made before cluster installs still run from `plugins/<fs-id>`
+  installs made before library installs still run from `plugins/<fs-id>`
   with a host grant. No
   operator command writes a host-local install any more. The reconciler
   persists a verified platform guest's grant before its first spawn
@@ -685,7 +685,7 @@ section is the record.
   `config`, and `db` are reserved `plugins` verbs so a plugin CLI cannot
   shadow them.
 - **Terminology.** The first cut said "release" and "publish" for a
-  cluster install and "host" for a cluster member. Both read as
+  library install and "host" for a library member. Both read as
   infrastructure jargon, so the code, schema, API, and CLI say *install* (a
   `plugin_versions` row; `plugin_installs` names the active one;
   `plugin_artifacts` holds small archives), *deploy* (a deployment row on a
@@ -712,7 +712,7 @@ section is the record.
   matches every host). Labels are set with `bookclerk nodes label` and
   `PUT /api/config/nodes/{node_id}/labels`.
 - **Scheduler lease (step 5).** The singleton is the `scheduler` row in a
-  new `cluster_leases` table (holder, fencing token, expiry). Renewal keeps
+  new `library_leases` table (holder, fencing token, expiry). Renewal keeps
   the token; takeover after expiry bumps it. Deployment writes stay
   compare-and-swap, so a holder whose lease lapsed mid-pass can at worst
   add one replica that the next pass removes.
@@ -721,7 +721,7 @@ section is the record.
   and renew (compare-and-swap on holder and token), a fencing renew that
   also requires the lease to be unexpired, release, a list for status, a
   `LeaseFence` that destructive work checks before each step, and
-  `SingletonDuty` ("one live node runs this every interval"). Cluster
+  `SingletonDuty` ("one live node runs this every interval"). Library
   cleanup that every daemon used to run on its own now runs under one lease
   per duty: `maintenance.jobs` (terminal jobs; previously pruned on every
   job-claim loop), `maintenance.events` (delivery and event retention,
@@ -737,15 +737,15 @@ section is the record.
   Schema migration runs under `schema.migrate`. A start whose database
   already matches only reads the state and takes no lease. One that needs
   DDL (uninitialized, or a frozen step pending) first creates
-  `cluster_leases` (the same `IF NOT EXISTS` statement as in the pack),
+  `library_leases` (the same `IF NOT EXISTS` statement as in the pack),
   then takes the lease with a per-attempt holder (`pid<pid>-<nonce>`; the
   node id does not exist yet at that point), re-reads the state, renews the
   lease every 40 s, and checks it before every DDL batch. Other starters
   poll until the schema matches, take over when the migrator's 120 s lease
   expires, and fail closed after 300 s. The released row keeps the last
-  migrator's holder and token. `GET /api/cluster/status` reports every
-  lease (`cluster.leases`) and the database schema state with whether this
-  binary matches it (`cluster.schema`). There is no drain-then-migrate
+  migrator's holder and token. `GET /api/library-status` reports every
+  lease (`library.leases`) and the database schema state with whether this
+  binary matches it (`library.schema`). There is no drain-then-migrate
   flow: a starter does not stop other nodes before it migrates, which is
   safe today only because unreleased schema changes require a new
   database.
@@ -765,14 +765,14 @@ section is the record.
   hands the deployments back unchanged (`placed` → `present`, `unplaced` →
   `absent`). Uninstalling a plugin drops its placements first.
 - **Jobs (after step 5).** Durable jobs record the instances they need and
-  are claimed only by a node that runs them, under counted cluster
-  semaphores built from `cluster_leases` slot rows. See *Job routing and
-  cluster semaphores* below.
+  are claimed only by a node that runs them, under counted library
+  semaphores built from `library_leases` slot rows. See *Job routing and
+  library semaphores* below.
 
 ### Resource-aware scheduling and routing
 
 The first placement pass spread replicas by how many deployments each node
-already ran, and nothing routed calls. A cluster of unequal nodes (a small
+already ran, and nothing routed calls. A library of unequal nodes (a small
 always-on VPS and desktops that are often off, none able to reach another)
 needs the scheduler to know each node's capacity, what is committed there,
 and how reliably it is up, and needs calls to land on the best node
@@ -830,7 +830,7 @@ running a plugin. Nodes still only share the database.
   dispatcher would have to choose, and a dead target needs reassignment
   logic) and forwarding between nodes (they cannot connect).
 
-### Job routing and cluster semaphores
+### Job routing and library semaphores
 
 Built 2026-10-15 (#192 Phase 3). Durable jobs were claimed by whichever
 daemon got to the row first, which ran them with its own sources and
@@ -854,12 +854,12 @@ across nodes.
   and its guest atomic plan skip any job with requirements. A lost-response
   replay can leave a claimed row unexecuted; it expires and is reclaimed,
   which is the fallback the unrouted claim already documented.
-- **Counted semaphores on `cluster_leases`.** A semaphore of limit `N` is
+- **Counted semaphores on `library_leases`.** A semaphore of limit `N` is
   `N` slot rows `sem:<name>#<i>` of the existing lease table, each a fenced
   lease; taking a permit is taking a free or expired slot below the limit.
   No table was added and the singleton scheduler lease is the `N = 1` case.
   Job claims take `jobs:<class>` (`[jobs.concurrency].network`, which is now
-  also the cluster-wide count), `plugin-instance:<id>`
+  also the library-wide count), `plugin-instance:<id>`
   (`[jobs.concurrency].plugin_instance`, default 1), and
   `account:<plugin_key>:<account_id>` (1). Permits are renewed with the job
   heartbeat (a failed renewal is fence loss) and released after
@@ -882,18 +882,18 @@ across nodes.
 
 ### Node kinds, ownership, and the Host role
 
-Decided 2026-10-14 with the owner. A cluster has two kinds of node:
+Decided 2026-10-14 with the owner. A library has two kinds of node:
 
 - **Shared nodes** share the library database and `master.key` and give the
-  cluster its HA. Every node described above is one; `nodes.kind` is
+  library its HA. Every node described above is one; `nodes.kind` is
   `owner`.
 - **Branch nodes** are independent Bookclerk installs with their own database
-  and their own operator, who enroll in an owner cluster to contribute
-  work. They reach a shared node over HTTPS and never hold the cluster's
+  and their own operator, who enroll in a library to contribute
+  work. They reach a shared node over HTTPS and never hold the library's
   database credentials or DEK. Enrollment, the transport policy, the
   node socket, the work frames, the host client, host consent, and
   results and uploads are built (sections below; operator guide in
-  [Libraries and branches](../server/cluster-hosts.md)). A redeemed
+  [Libraries and branches](../server/branches.md)). A redeemed
   enrollment link records the node with `nodes.kind = branch`.
 
 Who may administer a node is separate from its kind. `nodes.owner_user_id`
@@ -912,13 +912,13 @@ by someone else return the same 403, so a non-owner cannot probe node ids.
 A **Host** user role marks a Member who runs nodes; owning a node does not
 require it. Hosts, Administrators, Owners, and any other user who owns at
 least one node reach `GET /api/config/nodes`,
-`PUT /api/config/nodes/{id}/runtime`, and `GET /api/cluster/status` through
+`PUT /api/config/nodes/{id}/runtime`, and `GET /api/library-status` through
 `require_operator_or_node_owner_auth`, which scopes them to their own
-nodes. The cluster summary in `/api/cluster/status` (node counts, committed
+nodes. The library summary in `/api/library-status` (node counts, committed
 capacity, active jobs, delivery backlog) is visible to every node
 administrator. Only an Owner or the operator assigns the Host role.
 
-- Trust follows the role. A Host's node receives only cluster work whose
+- Trust follows the role. A Host's node receives only library work whose
   secrets belong to that Host (accounts linked to the user); promoting the
   user to Administrator lets the node receive any job. The check runs per
   work item at the owner when the node claims it. Built for jobs (H-4
@@ -928,13 +928,13 @@ administrator. Only an Owner or the operator assigns the Host role.
 Decided then, built since in H-4 steps 3 and 8-10 (sections below):
 
 - A node may configure its own `local` output, an instance owned by that
-  node and deployed only there. It adds to the cluster's outputs rather
+  node and deployed only there. It adds to the library's outputs rather
   than replacing them; writes stay mirrored.
 - Outputs that need the owner's credentials (S3 keys, the owner's own
   `local` disk) are not run on a Host's node. When a Host's work finishes
   there, the node writes its own local output and uploads the result
   through a secure upload endpoint on a shared node, which writes the
-  cluster's outputs with credentials the Host never holds. Both nodes end
+  library's outputs with credentials the Host never holds. Both nodes end
   up with a local copy.
 - Branch nodes and the SPA use WebSockets rather than polling.
 - Shared nodes serve the node API over Let's Encrypt TLS, behind a detected
@@ -963,7 +963,7 @@ Decided 2026-10-15 with the owner, for the H-4 design:
 4. **Uploads.** Streamed through the owner to each output destination,
    never staged on a shared node's disk.
 5. **Enrollment.** The operator or an Owner turns host enrollment on or off
-   for the cluster (`core.host_enrollment`, on by default). While it is on,
+   for the library (`core.host_enrollment`, on by default). While it is on,
    any active user may mint a link for themselves and enroll their own
    host; the operator or an Owner may mint for any active user. The node's
    owner is that user. Owning a node no longer requires the Host role;
@@ -974,11 +974,11 @@ Built in the first H-4 slice:
 
 - Owner-database tables `node_enrollment_links` (only `hash_token(secret)`
   is stored) and `node_credentials` (Ed25519 sign key, X25519 box key,
-  `revoked_at`), and the host-database table `cluster_links` (written by
+  `revoked_at`), and the host-database table `library_links` (written by
   the host client, below). All are canonical SQL-v1 with SeaORM entities.
-- `core.host_enrollment` (`{ "enabled": bool }`), a cluster document that
+- `core.host_enrollment` (`{ "enabled": bool }`), a library document that
   defaults to enabled while absent. Only the operator or a verified Owner
-  (`ConfigActor::ClusterOwner`, built by `verify_cluster_owner` from the
+  (`ConfigActor::LibraryOwner`, built by `verify_library_owner` from the
   stored role) may write it; that actor writes no other document.
 - Mint, list, and revoke links (`bookclerk nodes invite --user <id|login>
   [--ttl 24h]`, `bookclerk nodes invites list|revoke`, and
@@ -1014,8 +1014,8 @@ Built in the first H-4 slice:
   before the upgrade. The `bookclerk-node-proto` crate holds the JSON
   frames (`{v:1, id, type, ...}`, 1 MiB, text only) and the handshake:
   `hello {node_id, incarnation, software_version, resume}` → `challenge
-  {nonce, cluster_id}` → `auth {sig}`, an Ed25519 `verify_strict`
-  signature over `bookclerk-node-auth-v1` and length-prefixed cluster id,
+  {nonce, library_id}` → `auth {sig}`, an Ed25519 `verify_strict`
+  signature over `bookclerk-node-auth-v1` and length-prefixed library id,
   node id, incarnation, 32-byte nonce, and the owner's canonical origin
   (its configured `public_origin`, so a signature relayed through another
   server fails). The owner always sends a challenge, so an unknown node and
@@ -1247,16 +1247,16 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
 ### Host client
 
 Built 2026-10-18 (H-4 step 7), the Host side of the socket above, in the
-`bookclerk-node-client` crate (so the CLI can reuse it for `clusters
-join`) and `bookclerkd/src/cluster_link.rs`.
+`bookclerk-node-client` crate (so the CLI can reuse it for `libraries
+join`) and `bookclerkd/src/library_link.rs`.
 
-- **Joining** (`join_cluster`). The whole link is required: its origin is
+- **Joining** (`join_library`). The whole link is required: its origin is
   the one the Host dials and signs from then on. Fresh Ed25519 and X25519
   keys are generated, the link is redeemed under the transport policy
   below, and only then are both private keys sealed with the Host's DEK
-  into one `encrypted_secrets` row (`kind = cluster_link`, `provider` =
-  owner cluster id, `account_type = operator`, `account_id` = the minted
-  node id) and the `cluster_links` row written (`active`; a re-enrollment
+  into one `encrypted_secrets` row (`kind = library_link`, `provider` =
+  parent library id, `account_type = operator`, `account_id` = the minted
+  node id) and the `library_links` row written (`active`; a re-enrollment
   replaces both). A crash between redeem and write loses the keys and
   needs a new link. The link secret goes once into the request body and
   is never logged.
@@ -1269,8 +1269,8 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   the webpki roots and match the name. The upgrade must select
   `bookclerk-node.v1`.
 - **Handshake.** The hello lists every fence still held. The Host signs
-  only a challenge naming the cluster it enrolled into, and accepts only a
-  welcome naming its own node and cluster with a valid owner box key; the
+  only a challenge naming the library it enrolled into, and accepts only a
+  welcome naming its own node and library with a valid owner box key; the
   `resumed` answer cancels work under lost fences.
 - **Session.** One writer task behind a 64-frame queue; requests matched
   to answers by frame id; heartbeats every 15 s from the Host's own
@@ -1325,7 +1325,7 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   rows) to the owner; library SQL for owner plugins on a Host is a
   non-goal. Decided in step 9: fenced `scan.results` batches (*Host
   results and uploads*, below).
-- **Tests** (`cluster_link/tests.rs`, owner and Host in one process): a
+- **Tests** (`library_link/tests.rs`, owner and Host in one process): a
   member's Host enrolls over loopback, heartbeats into `node_status`,
   claims its owner's scan, runs it through the daemon's job transport
   with the opened token, writes a refreshed token back, completes under
@@ -1350,15 +1350,15 @@ operator approves it, and only with what was approved.
   target the node and should run; empty for a node trusted with nothing)
   carries each instance's plugin key, whether it is the default instance,
   and the plugin's active version: manifest, settings schema, artifacts,
-  and the cluster operator's approved grant. The Host records that grant,
+  and the library operator's approved grant. The Host records that grant,
   with the URL, archive digest and payload digest of the artifact for its
   own target, as
-  the request in `remote_plugin_consents` (keyed by owner cluster and
+  the request in `remote_plugin_consents` (keyed by library and
   plugin key). An unchanged request writes nothing; a changed one keeps
   any stored approval, which is then re-evaluated.
-- **Approval.** `bookclerk clusters approve <plugin> --request <DIGEST>
-  [--cluster] [--deny-domain]… [--deny-binding]… [--deny-network]` or
-  operator-only `POST /api/config/cluster-consents/approve` (body
+- **Approval.** `bookclerk libraries approve <plugin> --request <DIGEST>
+  [--library] [--deny-domain]… [--deny-binding]… [--deny-network]` or
+  operator-only `POST /api/config/library-consents/approve` (body
   `request_digest`, required) stores the request as reviewed plus the
   consent (the request minus the denials; naming something the request
   does not ask for is refused). The digest is the `request_digest` the
@@ -1373,9 +1373,9 @@ operator approves it, and only with what was approved.
   the owner changed after the operator looked, even under the same
   version, is never approved unseen; the write is also a compare-and-swap
   on the recorded request. `revoke` clears the approval, keeps the
-  request, and records `revoked_at`. `bookclerk clusters consents`
+  request, and records `revoked_at`. `bookclerk libraries consents`
   shows the digest and the state (its `--format json` output, like
-  `GET /api/config/cluster-consents`, also carries `revoked_at`; both
+  `GET /api/config/library-consents`, also carries `revoked_at`; both
   answer one shared view of the row). The state is one of `consented`,
   `awaiting_host_consent`, `awaiting_host_reapproval` (a new version asks
   for something outside what was reviewed: a domain, TCP target, CIDR,
@@ -1415,7 +1415,7 @@ operator approves it, and only with what was approved.
 - **Fetch.** For a consented instance the Host materializes the version:
   a `blob:` archive comes from `GET /api/node/v1/artifacts/{sha256}` with
   `Authorization: Bookclerk-Node <node_id> <issued_at> <sig>` (Ed25519 over
-  cluster, node, owner origin, digest and time; 5 minutes of skew either
+  library, node, owner origin, digest and time; 5 minutes of skew either
   way; served only for archives of versions deployed to that node; every
   refusal is the same 404), is checked against its digest before it is
   stored in the Host's own library, and extracted by the
@@ -1455,7 +1455,7 @@ operator approves it, and only with what was approved.
   step 9 (below) gave scans and acquires a way back. The in-process job
   transport refuses a handed job outright, since it would run against the
   Host's own library.
-- **Tests** (`cluster_link/tests.rs`): an Administrator's Host records the
+- **Tests** (`library_link/tests.rs`): an Administrator's Host records the
   request, reports `awaiting_host_consent`, fetches nothing and never
   claims the queued scan; unsigned, malformed and forged artifact requests
   get 404; after approval the archive comes over the endpoint and the scan
@@ -1649,7 +1649,7 @@ the handed credentials only. There is no in-process fallback.
   the title and completes the job; manifests that skip or invent a
   destination, repeat a key, or put the primary elsewhere are refused; a
   node-local instance runs only on its node. Daemon
-  (`cluster_link/tests.rs`): a Host's scan rows land in the owner's
+  (`library_link/tests.rs`): a Host's scan rows land in the owner's
   library; a Member's Host cannot write rows for an account it does not
   own; a streamed acquire reaches the owner's destination without
   staging; a fence lost mid-upload aborts it; two destinations with
@@ -1663,7 +1663,7 @@ polling"). `GET /api/live` (subprotocol `bookclerk-live.v1`) tells the SPA
 which topics changed; the SPA then re-reads its ordinary routes.
 
 - **Only topic names travel**: `library`, `jobs`, `deliveries`, `nodes`,
-  `config`, `consents`, `clusters`, `users`, in `{"v":1,"type":"hello"|"changed",
+  `config`, `consents`, `libraries`, `users`, in `{"v":1,"type":"hello"|"changed",
   "topics":[…]}`. No rows, ids or secrets, so the socket needs no
   authorization model of its own beyond who may hear which topic: the
   operator hears all; an Owner or Administrator hears `library`, `jobs`,
@@ -1682,9 +1682,9 @@ which topics changed; the SPA then re-reads its ordinary routes.
   (`live_revisions`: row count plus newest `updated_at` of `books`,
   `jobs`, `event_deliveries`, `remote_plugin_consents` and `users`, the
   newest `node_status.heartbeat_at`, the newest
-  `configuration_changes` id, and for `cluster_links`, which has no
+  `configuration_changes` id, and for `library_links`, which has no
   change stamp, a digest of its rows), so a change made on any shared node
-  or by `bookclerk clusters join|leave` is seen; in-process pokes
+  or by `bookclerk libraries join|leave` is seen; in-process pokes
   (consent approve/revoke, a link revoked by its owner) are immediate.
   The baseline is read before `hello` is sent, so a write after the
   client hears `hello` is never absorbed into it. Rejected:
@@ -1705,17 +1705,17 @@ which topics changed; the SPA then re-reads its ordinary routes.
   ages with time). Reconnects back off from 1 s to 30 s with jitter, and
   a reconnect refreshes every subscribed topic once.
 - **Consent screen.** Settings → Library (operator only; first shipped as
-  Settings → Clusters) lists the links
+  Settings → Libraries) lists the links
   and each owner plugin's request with its state, a deny checkbox per
   requested domain and binding, a deny-network switch, Approve (sending
   the `request_digest` shown, so a changed request is refused rather than
   approved unseen) and Revoke, over the existing
-  `/api/config/cluster-consents` routes; a 409 shows the daemon's reason.
+  `/api/config/library-consents` routes; a 409 shows the daemon's reason.
   This step shipped no invite or join screen, so that an enrollment link
   never passed through the SPA; [Join a library](#join-a-library-sign-in-and-branch-invites)
   below adds both, at the owner's request.
-- **CLI.** `bookclerk clusters join` (link from stdin or a prompt with
-  echo off, never argv) and `bookclerk clusters leave [--cluster]` (marks
+- **CLI.** `bookclerk libraries join` (link from stdin or a prompt with
+  echo off, never argv) and `bookclerk libraries leave [--library]` (marks
   the link `left`, deletes its node keys; a running daemon stops the
   link's client within 5 s). Join a library adds `join --url` and tells the owner of a leave.
 - **Tests.** Daemon: Origin matching for both modes; a foreign origin or
@@ -1725,7 +1725,7 @@ which topics changed; the SPA then re-reads its ordinary routes.
   frame closes with 1003; the consent routes are operator-only, approve
   narrowed for the reviewed version, refuse another version or an unasked
   domain, deny the network, and revoke; leaving stops a running client.
-  Library: joining, a revoke and leaving each change the `clusters`
+  Library: joining, a revoke and leaving each change the `libraries`
   revision. CLI (real binary): list, consents, approve with narrowing and
   refusals, revoke, leave, and join refusing a link on argv, an empty
   stdin and a non-link without echoing it, and reading the link from a
@@ -1734,12 +1734,12 @@ which topics changed; the SPA then re-reads its ordinary routes.
   after reconnect, the sign-out delay, and polling only while the socket
   is down.
 
-Step 11 is the operator guide, [Libraries and branches](../server/cluster-hosts.md).
+Step 11 is the operator guide, [Libraries and branches](../server/branches.md).
 
 ### Join a library (sign-in) and branch invites
 
 A later step (decided 2026-10-18) makes joining UI-first. The UI calls an
-owner cluster a **library** and a branch node a **branch**; code, API and CLI
+library a **library** and a branch node a **branch**; code, API and CLI
 names are unchanged.
 
 - **Sign-in instead of a link.** The owner's OAuth server (`oidc.rs`) gains
@@ -1769,7 +1769,7 @@ names are unchanged.
   `redeem_enrollment_link` batch: one node, `node_credentials`, a
   receipt, replay for a retry of the same exchange, one node under
   concurrency. `GET /api/node/v1/info` tells the joining daemon the
-  cluster id, a library name (the public origin's host), the canonical
+  library id, a library name (the public origin's host), the canonical
   origin, the transport mode, whether enrollment is on, and in
   `self_signed` mode the SPKI fingerprint; the joining daemon requires that
   fingerprint to equal the certificate it was shown, and the origin to
@@ -1777,7 +1777,7 @@ names are unchanged.
 - **The verifier stays on the host.** `POST /api/config/join/start`
   (operator) makes the verifier, `state` and node keys and keeps them in a
   `pending_joins` row (SQL-v1 and SeaORM; 10 minutes; the verifier and
-  private keys sealed in `encrypted_secrets` as `cluster_join`). The SPA
+  private keys sealed in `encrypted_secrets` as `library_join`). The SPA
   relays only `code` and `state` to `POST /api/config/join/callback`; the
   daemon takes the pending row once, redeems, records the link and starts
   its client at once. A running daemon also starts clients for links
@@ -1792,14 +1792,14 @@ names are unchanged.
 - **Leave tells the owner.** A new JSON node frame, `node.leaving`
   (`bookclerk-node-proto`; not part of the plugin ABI), makes the owner
   revoke the node's credential, drop its `node_status` row and close with
-  4403. Settings → Library → Leave library and `clusters leave` send it
+  4403. Settings → Library → Leave library and `libraries leave` send it
   (over the running client, or a short-lived one, 10 s at most), then mark
   the link `left` and delete the keys either way.
 - **First start.** A fresh install (no Owner or Administrator, no link)
   shows its operator a welcome screen: Start a new library (today's
   bootstrap) or Join a library. Settings → Branches (operator or Owner)
   holds "Let new branches join" and the fingerprint.
-- **CLI.** `bookclerk clusters join --url <owner>` prints the authorize URL,
+- **CLI.** `bookclerk libraries join --url <owner>` prints the authorize URL,
   opens a browser when it can, and takes the answer on a loopback
   listener; without `--url` the stdin path is unchanged.
 - **Not built here.** The peer ("shared branch") connection type that shares the
@@ -1828,7 +1828,7 @@ this library" or "Join as a branch with its own database"; Settings → **Shared
 shared node and branch node.
 
 - **Who may choose.** Only an Owner of the library (the stored role,
-  `verify_cluster_owner`, read at consent and again at redeem) is offered
+  `verify_library_owner`, read at consent and again at redeem) is offered
   the choice; everyone else gets branch only. Branch is always the default.
   The joining install must offer it (`shared_branch_offer=1` on the authorize
   request), which it does only when it is empty: no users, store accounts,
@@ -1861,7 +1861,7 @@ shared node and branch node.
   within the same timeout, and keeps the pending join for a retryable
   failure (`join_retry`); it ends it once the redeem's outcome is final.
   A failure to write the bootstrap after the redeem names the node, so
-  the library's owner can remove that shared branch. `clusters join --as shared-branch`
+  the library's owner can remove that shared branch. `libraries join --as shared-branch`
   retries a retryable redeem as a branch join does.
 - **Redeem.** The same canonical batch records a `nodes` row with `kind =
   owner` and no `node_credentials` row (a shared branch never dials the node
@@ -1869,7 +1869,7 @@ shared node and branch node.
   connection and the 32-byte DEK, never the passphrase-wrapped
   `master.key` file) sealed with the H-4 sealed box (X25519, HKDF-SHA256,
   XChaCha20-Poly1305) to the joining node's box key, with associated data
-  binding the cluster and node ids. It is answered `no-store`, never logged
+  binding the library and node ids. It is answered `no-store`, never logged
   (`Debug` redacts), and never passes through the browser: the joining
   daemon redeems with the verifier only it holds.
 - **Applying it.** The joining daemon opens the box with its node key,
@@ -1881,7 +1881,7 @@ shared node and branch node.
   otherwise). `config.toml` is written last. It then restarts cleanly: the
   listeners drain as on SIGTERM and the binary re-execs itself with the
   same arguments and environment (same PID on Unix). It comes back as an
-  shared node of the library. `clusters join --as shared-branch` writes the same
+  shared node of the library. `libraries join --as shared-branch` writes the same
   files and asks the operator to restart `bookclerkd`.
 - **Removing a shared branch.** Settings → Shared branches lists the shared nodes
   (`GET /api/config/shared-branches`: all of them for the operator or an Owner,
@@ -1912,7 +1912,7 @@ Built 2026-10-18. Library work no longer runs where it is asked for.
   requirements, and insert the rows; any live node or trusted host claims
   them through the routed claim. The CLI waits for every job and prints
   progress (the first Ctrl-C asks them to cancel). Waiting fails closed
-  when no `bookclerkd` node of the cluster is live; `--no-wait` only
+  when no `bookclerkd` node of the library is live; `--no-wait` only
   queues. The live-store rule holds: `--account <id>` is exactly one scan
   job and `--asin <ASIN>` exactly one acquire job. No guest runs in the CLI
   for either; `--dry-run` still plans locally. Rejected: a CLI fallback
@@ -1945,7 +1945,7 @@ Built 2026-10-18. Library work no longer runs where it is asked for.
   them. A forced or PDF-only acquire runs only on a shared node
   (`claimant_may_run`): the host acquire path does neither.
 - **Scan All from any node** (decision 2). A host's operator runs
-  `bookclerk clusters scan`, which its daemon sends over the link as
+  `bookclerk libraries scan`, which its daemon sends over the link as
   `scan.request`; the owner plans it as the node's owner
   (`remote_node_requester`): an Owner or Administrator gets one job per
   scan-enabled account, distributed by the routed claim, and anyone else
@@ -2009,7 +2009,7 @@ it: a tree, A ← B ← C.
   `edition_changed`, and the branch offers the title again). The files
   are the holding's edition's (`edition_files`), so an edition already in A's
   outputs from another writer (an acquire, another branch) is not asked
-  for and its upload is refused (`edition_has_files`): the cluster
+  for and its upload is refused (`edition_has_files`): the library
   delivers each edition once. Files keep the branch's own keys on every
   destination (A's naming templates are not applied again), so a grant is
   refused (`key_in_use`) when a key is one of A's own books' (its audio,
@@ -2023,20 +2023,20 @@ it: a tree, A ← B ← C.
   restart from the start; a full pass (`done`) removes B's holdings it no
   longer named (each holding is stamped with the pass), which is how "Include books from my own branches" off, a
   removed book or a sub-branch that left reaches A.
-- **Two settings on `cluster_links`** (`share_books`, `include_branches`,
+- **Two settings on `library_links`** (`share_books`, `include_branches`,
   both on by default), set in Settings → Library on the branch
   (`GET` / `POST /api/config/join/sharing`, the operator or an Owner of
   the branch: a signed-in user's stored role and status are read on every
-  call, as for `core.host_enrollment` (`verify_cluster_owner`), and anyone
+  call, as for `core.host_enrollment` (`verify_library_owner`), and anyone
   else gets 403; an Owner's change is recorded in the security audit) and
   reported to the library at once; the library keeps what was reported on the node row
   (`nodes.share_books`, `nodes.include_branches`) and shows it read-only in
   Settings → Branches (`GET /api/config/branches` → `branches`).
 - **Cycles.** `GET /api/node/v1/info` returns `ancestry`: the library's own
-  cluster id, then each active link's owner and the ancestry it reported
-  (`cluster_links.ancestry_json`, refreshed on every catalog session), at
+  library id, then each active link's owner and the ancestry it reported
+  (`library_links.ancestry_json`, refreshed on every catalog session), at
   most 64 ids. Inspect, start, and the invite and branch sign-in redeems
-  refuse a parent whose ancestry contains the joining install's own cluster
+  refuse a parent whose ancestry contains the joining install's own library
   id (`409 join_cycle`), so A ← B ← A and A ← B ← C ← A are refused, and
   one whose ancestry together with the joining install's would pass 64 ids
   (`409 ancestry_too_deep`) rather than cutting the list short. A shared branch shares
@@ -2130,7 +2130,7 @@ already processed.
 
 ## Consequences
 
-- New unreleased tables: `cluster_identity`, `nodes`,
+- New unreleased tables: `library_identity`, `nodes`,
   `configuration_documents`, `configuration_audit`,
   `configuration_changes`, `plugin_instances`, `plugin_instance_defaults`,
   `plugin_deployments`, `plugin_deployment_observations`, and
@@ -2141,16 +2141,16 @@ already processed.
   `plugin_kv`, `plugin_versions`, `plugin_installs`,
   `plugin_artifacts` with its `plugin_artifact_chunks`,
   `plugin_placements` (with nullable `replicas`
-  for "all"), `cluster_leases`, and `node_status`;
+  for "all"), `library_leases`, and `node_status`;
   `plugin_deployments.desired` allows `placed` and `unplaced`;
   `plugin_deployment_observations` gains the guest's reserved memory and
   CPU;
   `domain_events` gains `queue_name`, `content_type`, and `deliver_after`
   (dedup is unique per queue); `event_deliveries` gains `queue_name`;
   `nodes` gains `target`, `labels_json`, `kind`, and `owner_user_id`.
-  H-4 adds `node_enrollment_links`, `node_credentials`, `cluster_links`,
+  H-4 adds `node_enrollment_links`, `node_credentials`, `library_links`,
   `job_secret_handoffs`, and `remote_plugin_consents` (branches of
-  branches keep their titles as node holdings); `cluster_links` gains `share_books`,
+  branches keep their titles as node holdings); `library_links` gains `share_books`,
   `include_branches` and `ancestry_json`, and `nodes` the reported
   settings and the catalog fence, cursor and pass times.
   Checksum of the
@@ -2180,18 +2180,18 @@ Not in this phase, and not claimed as production HA:
   of that. (`core.output` is done; its host-local `in_progress` scratch path
   stays TOML until a node-scoped document carries host paths.)
 - Job routing beyond plugin instances. Jobs now carry the instances they
-  need and take cluster semaphores (*Job routing and cluster semaphores*
+  need and take library semaphores (*Job routing and library semaphores*
   above), and the requirements sweep re-resolves pending jobs when
   deployments move, but requirements only name instances: jobs are not
   ranked by headroom the way deliveries are, and acquire still writes the
   claiming node's own destinations rather than mirroring node-local outputs
   across nodes. `[jobs]` limits are read from each node's `config.toml`.
-- Singleton maintenance and schema migration run under `cluster_leases`
+- Singleton maintenance and schema migration run under `library_leases`
   (see the implementation notes); other work is not leased.
 - Synchronous calls other than scans and acquires (portal actions, the
   rest of the HTTP API and CLI) run on the node that receives them. Scans
   and acquires are queued and routed (*Routed library work (H-5)* above);
-  `clusters scan` covers only scans from a host, not acquires.
+  `libraries scan` covers only scans from a host, not acquires.
 - Per-guest measured usage is not sampled. Reservations are jail ceilings,
   so a guest that idles well below its ceiling still occupies it in the
   scheduler's view. Free disk is reported but not placed on.
@@ -2220,8 +2220,8 @@ Not in this phase, and not claimed as production HA:
   settings change, or a day after the last one).
   Everything else in H-4 steps 1-11, Join a library, joining as a shared branch
   and branches of branches is built (see the
-  sections above and [Libraries and branches](../server/cluster-hosts.md)).
-- Rolling upgrades and a cluster dashboard beyond the Status page and
+  sections above and [Libraries and branches](../server/branches.md)).
+- Rolling upgrades and a library dashboard beyond the Status page and
   Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`), but there
   is no drain-then-migrate flow: the migration lease serializes migrators,
   it does not stop older binaries on other nodes from using the database
@@ -2239,9 +2239,9 @@ Not in this phase, and not claimed as production HA:
 - A general key-management provider. Operators copy `master.key`.
 - The host-local install path (receipts, `install-ledger.json`, in-place
   replace of `plugins/<fs-id>`) remains for platform guests, development
-  staging, and host-local installs made before cluster installs. It keeps
+  staging, and host-local installs made before library installs. It keeps
   its stage-and-commit crash window, but no operator command writes it any
-  more; cluster installs and the digest cache replaced it for everything an
+  more; library installs and the digest cache replaced it for everything an
   operator installs. #255 (a
   stage-and-commit installer) was closed for that reason.
 - D1 multi-host execution. The executing D1 tests in this repository are an

@@ -65,9 +65,9 @@ pub struct Config {
     /// [`Self::events_authority`].
     #[serde(skip)]
     pub events_revision: Option<i64>,
-    /// Cluster id that produced [`Self::events_revision`].
+    /// Library id that produced [`Self::events_revision`].
     ///
-    /// A revision from another cluster is not newer or older; a database swap
+    /// A revision from another library is not newer or older; a database swap
     /// replaces this authority explicitly. Not serialized to `config.toml`.
     #[serde(skip)]
     pub events_authority: Option<String>,
@@ -76,7 +76,7 @@ pub struct Config {
     /// it; compared only with [`Self::output_authority`]. Not serialized.
     #[serde(skip)]
     pub output_revision: Option<i64>,
-    /// Cluster id that produced [`Self::output_revision`]. Not serialized.
+    /// Library id that produced [`Self::output_revision`]. Not serialized.
     #[serde(skip)]
     pub output_authority: Option<String>,
 }

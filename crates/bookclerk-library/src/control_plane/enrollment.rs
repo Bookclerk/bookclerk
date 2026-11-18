@@ -1,13 +1,13 @@
 //! Branch-node enrollment: single-use links, redeem, and revocation.
 //!
 //! A link enrolls one independent Bookclerk install (a *branch node*) into this
-//! cluster. The owner keeps only `hash_token(secret)`; the secret travels in
+//! library. The owner keeps only `hash_token(secret)`; the secret travels in
 //! the URL fragment of `https://<origin>/enroll#bcn1.<link_id>.<secret>`,
 //! which proxies and access logs never see.
 //!
 //! Who may mint (decision 5 of the H-4 design):
 //!
-//! - nobody, while the cluster's `core.host_enrollment` switch is off;
+//! - nobody, while the library's `core.host_enrollment` switch is off;
 //! - the operator, or an active Owner, for any active user;
 //! - any other active user, for themselves only.
 //!
@@ -34,7 +34,7 @@ use zeroize::Zeroizing;
 use super::batch::{self, exec, int, query, request, text};
 use super::documents::{
     import_if_absent, load_document, replace_document, ConfigActor, DocumentKey, ReplaceOutcome,
-    StoredDocument, VerifiedClusterOwner, CLUSTER_SCOPE_ID, CLUSTER_SCOPE_TYPE,
+    StoredDocument, VerifiedLibraryOwner, LIBRARY_SCOPE_ID, LIBRARY_SCOPE_TYPE,
 };
 use super::node_queue::{notify_all_nodes, NodeMessage};
 use super::{document, ConfigurationDocument};
@@ -44,7 +44,7 @@ use crate::models::{UserRecord, UserRole, UserStatus};
 use crate::store::LibraryStore;
 use crate::token_hash::hash_token;
 
-/// Namespace of the cluster's host-enrollment switch.
+/// Namespace of the library's host-enrollment switch.
 pub const HOST_ENROLLMENT_NAMESPACE: &str = "core.host_enrollment";
 
 /// Schema version of [`HostEnrollmentSettingsV1`].
@@ -86,9 +86,9 @@ fn redeem_refused() -> LibraryError {
     LibraryError::Forbidden("enrollment link is invalid, expired, revoked, or already used".into())
 }
 
-/// Refusal while the cluster's switch is off.
+/// Refusal while the library's switch is off.
 fn enrollment_disabled() -> LibraryError {
-    LibraryError::Forbidden("host enrollment is disabled for this cluster".into())
+    LibraryError::Forbidden("host enrollment is disabled for this library".into())
 }
 
 /// Fixed-width UTC timestamp, so stored times compare correctly as text.
@@ -119,7 +119,7 @@ pub struct HostEnrollmentSettings {
     pub revision: Option<i64>,
 }
 
-/// Reads the cluster's host-enrollment switch. A missing document means the
+/// Reads the library's host-enrollment switch. A missing document means the
 /// default: enabled.
 ///
 /// # Errors
@@ -127,7 +127,7 @@ pub struct HostEnrollmentSettings {
 /// Returns an error when the read fails or the stored document has an
 /// unsupported schema or an invalid body.
 pub async fn load_host_enrollment(store: &LibraryStore) -> Result<HostEnrollmentSettings> {
-    match load_document(store, &DocumentKey::cluster(HOST_ENROLLMENT_NAMESPACE)).await? {
+    match load_document(store, &DocumentKey::library(HOST_ENROLLMENT_NAMESPACE)).await? {
         None => Ok(HostEnrollmentSettings {
             body: HostEnrollmentSettingsV1::default(),
             revision: None,
@@ -142,9 +142,9 @@ pub async fn load_host_enrollment(store: &LibraryStore) -> Result<HostEnrollment
     }
 }
 
-/// Turns host enrollment on or off for the cluster.
+/// Turns host enrollment on or off for the library.
 ///
-/// Only the operator or a verified Owner ([`verify_cluster_owner`]) may write
+/// Only the operator or a verified Owner ([`verify_library_owner`]) may write
 /// it. Retries a few times on a concurrent edit.
 ///
 /// # Errors
@@ -158,13 +158,13 @@ pub async fn set_host_enrollment_enabled(
 ) -> Result<ConfigurationDocument<HostEnrollmentSettingsV1>> {
     if !matches!(
         actor,
-        ConfigActor::Operator { .. } | ConfigActor::ClusterOwner(_)
+        ConfigActor::Operator { .. } | ConfigActor::LibraryOwner(_)
     ) {
         return Err(LibraryError::Forbidden(
             "only the operator or an Owner may change host enrollment".into(),
         ));
     }
-    let key = DocumentKey::cluster(HOST_ENROLLMENT_NAMESPACE);
+    let key = DocumentKey::library(HOST_ENROLLMENT_NAMESPACE);
     let body = HostEnrollmentSettingsV1 { enabled };
     let json = serde_json::to_string(&body)
         .map_err(|err| LibraryError::Invalid(format!("invalid configuration: {err}")))?;
@@ -230,16 +230,16 @@ fn parse_host_enrollment(
     Ok(document(stored, body))
 }
 
-/// Returns a [`ConfigActor::ClusterOwner`] when `user_id` is an active Owner.
+/// Returns a [`ConfigActor::LibraryOwner`] when `user_id` is an active Owner.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::Forbidden`] for anyone else (including an unknown
 /// user), and the read error when the lookup fails.
-pub async fn verify_cluster_owner(store: &LibraryStore, user_id: i64) -> Result<ConfigActor> {
+pub async fn verify_library_owner(store: &LibraryStore, user_id: i64) -> Result<ConfigActor> {
     match store.get_user(user_id).await? {
         Some(user) if user.status == UserStatus::Active && user.role == UserRole::Owner => {
-            Ok(ConfigActor::ClusterOwner(VerifiedClusterOwner {
+            Ok(ConfigActor::LibraryOwner(VerifiedLibraryOwner {
                 user_id,
                 audit: format!("owner:{user_id}"),
             }))
@@ -598,8 +598,8 @@ pub(super) async fn insert_link_while_switch_holds(
         text(row.created_by),
         text(row.created_at),
         text(row.expires_at),
-        text(CLUSTER_SCOPE_TYPE),
-        text(CLUSTER_SCOPE_ID),
+        text(LIBRARY_SCOPE_TYPE),
+        text(LIBRARY_SCOPE_ID),
         text(HOST_ENROLLMENT_NAMESPACE),
     ];
     binds.append(&mut switch_binds);
@@ -965,7 +965,7 @@ pub async fn record_node_left(store: &LibraryStore, node_id: &str) -> Result<boo
         let _ = store
             .insert_security_audit_event(&format!("node:{node_id}"), "node_left", None)
             .await;
-        tracing::info!(node_id, "branch node left the cluster");
+        tracing::info!(node_id, "branch node left the library");
     }
     notify_all_nodes(
         store,
@@ -1005,8 +1005,8 @@ impl std::fmt::Debug for RedeemRequest {
 /// Result of a successful redeem.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EnrolledNode {
-    /// Owner cluster id.
-    pub cluster_id: String,
+    /// Library id.
+    pub library_id: String,
     /// Node id minted for the host.
     pub node_id: String,
     /// User who owns the node.
@@ -1018,8 +1018,8 @@ pub struct EnrolledNode {
 /// Receipt payload of a redeem.
 #[derive(Debug, Serialize, Deserialize)]
 struct RedeemReceipt {
-    /// Owner cluster id.
-    cluster_id: String,
+    /// Library id.
+    library_id: String,
     /// Node id minted for the host.
     node_id: String,
     /// Owning user.
@@ -1113,10 +1113,10 @@ pub async fn redeem_enrollment_link_as(
     if !enrollment.body.enabled {
         return Err(enrollment_disabled());
     }
-    let cluster_id = super::load_cluster_row(store)
+    let library_id = super::load_library_row(store)
         .await?
-        .ok_or_else(|| LibraryError::Unavailable("cluster identity is not initialized".into()))?
-        .cluster_id;
+        .ok_or_else(|| LibraryError::Unavailable("library identity is not initialized".into()))?
+        .library_id;
     // The link's user decides the owner; read it for the receipt. The batch
     // re-checks everything this read implies.
     let Some(link) = load_link(store, &req.link_id).await? else {
@@ -1126,7 +1126,7 @@ pub async fn redeem_enrollment_link_as(
     let now = Utc::now();
     let now_text = stamp(now);
     let receipt = serde_json::to_string(&RedeemReceipt {
-        cluster_id: cluster_id.clone(),
+        library_id: library_id.clone(),
         node_id: node_id.clone(),
         owner_user_id: link.for_user_id,
     })
@@ -1139,8 +1139,8 @@ pub async fn redeem_enrollment_link_as(
         text(&token_hash),
         text(&now_text),
         int(link.for_user_id),
-        text(CLUSTER_SCOPE_TYPE),
-        text(CLUSTER_SCOPE_ID),
+        text(LIBRARY_SCOPE_TYPE),
+        text(LIBRARY_SCOPE_ID),
         text(HOST_ENROLLMENT_NAMESPACE),
     ];
     claim_binds.append(&mut switch_binds);
@@ -1161,7 +1161,7 @@ pub async fn redeem_enrollment_link_as(
                 exec(&claim_sql, claim_binds),
                 exec(
                     "INSERT INTO nodes (
-                        node_id, cluster_id, created_at, incarnation, heartbeat_at,
+                        node_id, library_id, created_at, incarnation, heartbeat_at,
                         software_version, schema_state, compatible, target, labels_json,
                         kind, owner_user_id
                      ) SELECT ?, ?, ?, '', ?, ?, '', 0, '', '[]', ?, for_user_id
@@ -1169,7 +1169,7 @@ pub async fn redeem_enrollment_link_as(
                         WHERE link_id = ? AND redeemed_node_id = ?",
                     vec![
                         text(&node_id),
-                        text(&cluster_id),
+                        text(&library_id),
                         text(&now_text),
                         text(&now_text),
                         text(software_version),
@@ -1230,7 +1230,7 @@ pub async fn redeem_enrollment_link_as(
             "node enrolled"
         );
         return Ok(EnrolledNode {
-            cluster_id,
+            library_id,
             node_id,
             owner_user_id: link.for_user_id,
             replayed: false,
@@ -1282,7 +1282,7 @@ async fn redeem_replay(
     let receipt: RedeemReceipt = serde_json::from_str(row.payload.as_deref().unwrap_or(""))
         .map_err(|err| LibraryError::Other(anyhow::anyhow!("invalid redeem receipt: {err}")))?;
     Ok(Some(EnrolledNode {
-        cluster_id: receipt.cluster_id,
+        library_id: receipt.library_id,
         node_id: receipt.node_id,
         owner_user_id: receipt.owner_user_id,
         replayed: true,

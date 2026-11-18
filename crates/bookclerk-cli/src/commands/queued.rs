@@ -6,7 +6,7 @@
 //! `plan_acquire`, as operator authority, since the CLI holds the library
 //! database), record each job's routing requirements
 //! (`control_plane::resolve_job_requirements`), and write the rows with
-//! `enqueue_job`. Any live `bookclerkd` node of the cluster, or a branch node
+//! `enqueue_job`. Any live `bookclerkd` node of the library, or a branch node
 //! trusted with the job, claims them through the routed claim. The CLI then
 //! waits for every job, printing progress as it changes; Ctrl-C asks each
 //! unfinished job to cancel.
@@ -138,7 +138,7 @@ pub(crate) async fn admit(
     Ok(out)
 }
 
-/// Fails closed when no daemon of the cluster is live to run queued work.
+/// Fails closed when no daemon of the library is live to run queued work.
 ///
 /// # Errors
 ///
@@ -146,7 +146,7 @@ pub(crate) async fn admit(
 pub(crate) async fn require_live_node(store: &LibraryStore) -> anyhow::Result<()> {
     if live_node_ids(store).await?.is_empty() {
         anyhow::bail!(
-            "no bookclerkd node of this cluster is running to execute queued jobs; \
+            "no bookclerkd node of this library is running to execute queued jobs; \
              start bookclerkd (`cargo dev` in development), or pass --no-wait to only queue"
         );
     }

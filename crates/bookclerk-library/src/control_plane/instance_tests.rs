@@ -940,7 +940,7 @@ async fn two_connections_observe_one_instance_document() {
     .unwrap();
     let store_b = file_store(&path).await;
     let session_b = bootstrap(&store_b, files_b.path()).await;
-    assert_eq!(session_a.cluster_id, session_b.cluster_id);
+    assert_eq!(session_a.library_id, session_b.library_id);
     assert_ne!(session_a.node.node_id, session_b.node.node_id);
 
     // Node A enrols the plugin: one default instance, seeded from defaults.
@@ -1501,7 +1501,7 @@ async fn a_version_installed_through_one_connection_is_active_on_another() {
     let active = load_active_version(&node_b, &key)
         .await
         .unwrap()
-        .expect("the pointer is a cluster record");
+        .expect("the pointer is a library record");
     assert_eq!(active.version, "2.0.0");
     assert_eq!(active.artifact_for("linux-x64-gnu").unwrap().target, "any");
     assert_eq!(

@@ -8,7 +8,7 @@
 //! accounts linked to the signing-in user travel, never another member's,
 //! and only those whose storefront declares `credentials = "shareable"`.
 //!
-//! The box is bound to the library's cluster id and the node id it minted
+//! The box is bound to the library id and the node id it minted
 //! ([`account_bundle_aad`]), so it cannot be replayed into another join.
 //! The branch opens it with [`open_account_bundle`], which runs
 //! [`parse_account_bundle`]: a sans-IO check over the opened bytes that
@@ -68,8 +68,8 @@ pub const MAX_CARRIED_FIELD_BYTES: usize = 128;
 pub struct AccountBundle {
     /// [`ACCOUNT_BUNDLE_VERSION`].
     pub v: u32,
-    /// The library's cluster id.
-    pub cluster_id: String,
+    /// The library id.
+    pub library_id: String,
     /// The node id the library minted for the branch.
     pub node_id: String,
     /// The person's accounts, each with its secrets.
@@ -109,26 +109,26 @@ pub struct CarriedSecret {
     pub value: SecretValue,
 }
 
-/// Associated data of the account bundle for `node_id` of `cluster_id`:
+/// Associated data of the account bundle for `node_id` of `library_id`:
 /// the domain tag, then each field as a 4-byte big-endian length and its
 /// bytes.
 #[must_use]
-pub fn account_bundle_aad(cluster_id: &str, node_id: &str) -> Vec<u8> {
-    bound_aad(ACCOUNT_BUNDLE_AAD_DOMAIN, cluster_id, node_id)
+pub fn account_bundle_aad(library_id: &str, node_id: &str) -> Vec<u8> {
+    bound_aad(ACCOUNT_BUNDLE_AAD_DOMAIN, library_id, node_id)
 }
 
 /// Associated data of an account offer from `node_id` to its library
-/// `cluster_id`: [`ACCOUNT_OFFER_AAD_DOMAIN`], then the two ids as in
+/// `library_id`: [`ACCOUNT_OFFER_AAD_DOMAIN`], then the two ids as in
 /// [`account_bundle_aad`].
 #[must_use]
-pub fn account_offer_aad(cluster_id: &str, node_id: &str) -> Vec<u8> {
-    bound_aad(ACCOUNT_OFFER_AAD_DOMAIN, cluster_id, node_id)
+pub fn account_offer_aad(library_id: &str, node_id: &str) -> Vec<u8> {
+    bound_aad(ACCOUNT_OFFER_AAD_DOMAIN, library_id, node_id)
 }
 
 /// `domain`, then each id as a 4-byte big-endian length and its bytes.
-fn bound_aad(domain: &[u8], cluster_id: &str, node_id: &str) -> Vec<u8> {
+fn bound_aad(domain: &[u8], library_id: &str, node_id: &str) -> Vec<u8> {
     let mut out = domain.to_vec();
-    for field in [cluster_id.as_bytes(), node_id.as_bytes()] {
+    for field in [library_id.as_bytes(), node_id.as_bytes()] {
         out.extend_from_slice(&u32::try_from(field.len()).unwrap_or(u32::MAX).to_be_bytes());
         out.extend_from_slice(field);
     }
@@ -153,11 +153,11 @@ fn is_field(value: &str, max: usize) -> bool {
 /// account, or a repeated secret within an account.
 pub fn check_account_bundle(
     bundle: &AccountBundle,
-    cluster_id: &str,
+    library_id: &str,
     node_id: &str,
 ) -> Result<(), SealError> {
     if bundle.v != ACCOUNT_BUNDLE_VERSION
-        || bundle.cluster_id != cluster_id
+        || bundle.library_id != library_id
         || bundle.node_id != node_id
         || bundle.accounts.len() > MAX_BUNDLE_ACCOUNTS
     {
@@ -195,7 +195,7 @@ pub fn check_account_bundle(
 }
 
 /// Parses the opened bytes of an account bundle for `node_id` of
-/// `cluster_id` and checks it ([`check_account_bundle`]). Sans-IO: the
+/// `library_id` and checks it ([`check_account_bundle`]). Sans-IO: the
 /// branch runs it on what [`open`] returns, and the fuzz target runs it on
 /// arbitrary bytes.
 ///
@@ -206,14 +206,14 @@ pub fn check_account_bundle(
 /// the check refuses.
 pub fn parse_account_bundle(
     plaintext: &[u8],
-    cluster_id: &str,
+    library_id: &str,
     node_id: &str,
 ) -> Result<AccountBundle, SealError> {
     if plaintext.len() > MAX_ACCOUNT_BUNDLE_BYTES {
         return Err(SealError::Bundle);
     }
     let bundle: AccountBundle = serde_json::from_slice(plaintext).map_err(|_| SealError::Bundle)?;
-    check_account_bundle(&bundle, cluster_id, node_id)?;
+    check_account_bundle(&bundle, library_id, node_id)?;
     Ok(bundle)
 }
 
@@ -234,7 +234,7 @@ pub fn seal_account_bundle(
         recipient,
         ephemeral_secret,
         bundle,
-        &account_bundle_aad(&bundle.cluster_id, &bundle.node_id),
+        &account_bundle_aad(&bundle.library_id, &bundle.node_id),
     )
 }
 
@@ -255,7 +255,7 @@ pub fn seal_account_offer(
         recipient,
         ephemeral_secret,
         bundle,
-        &account_offer_aad(&bundle.cluster_id, &bundle.node_id),
+        &account_offer_aad(&bundle.library_id, &bundle.node_id),
     )
 }
 
@@ -267,7 +267,7 @@ fn seal_bound(
     bundle: &AccountBundle,
     aad: &[u8],
 ) -> Result<String, SealError> {
-    check_account_bundle(bundle, &bundle.cluster_id, &bundle.node_id)?;
+    check_account_bundle(bundle, &bundle.library_id, &bundle.node_id)?;
     let plaintext = Zeroizing::new(serde_json::to_vec(bundle).map_err(|_| SealError::Bundle)?);
     if plaintext.len() > MAX_ACCOUNT_BUNDLE_BYTES {
         return Err(SealError::Bundle);
@@ -277,30 +277,30 @@ fn seal_bound(
 }
 
 /// Opens a bundle made by [`seal_account_bundle`] with the joining node's
-/// box secret, for the cluster and node ids the redeem answered.
+/// box secret, for the library and node ids the redeem answered.
 ///
 /// # Errors
 ///
 /// Returns [`SealError::Open`] when the box was sealed to another key, for
-/// another cluster or node, or was altered, and [`SealError::Bundle`] when
+/// another library or node, or was altered, and [`SealError::Bundle`] when
 /// its content is refused by [`parse_account_bundle`].
 pub fn open_account_bundle(
     recipient_secret: &[u8; PUBLIC_KEY_LEN],
-    cluster_id: &str,
+    library_id: &str,
     node_id: &str,
     sealed: &str,
 ) -> Result<AccountBundle, SealError> {
     open_bound(
         recipient_secret,
-        cluster_id,
+        library_id,
         node_id,
         sealed,
-        &account_bundle_aad(cluster_id, node_id),
+        &account_bundle_aad(library_id, node_id),
     )
 }
 
 /// Opens an offer made by [`seal_account_offer`] with the library's owner
-/// box secret, for the cluster id and the node id of the authenticated
+/// box secret, for the library id and the node id of the authenticated
 /// connection it arrived on.
 ///
 /// # Errors
@@ -308,16 +308,16 @@ pub fn open_account_bundle(
 /// As [`open_account_bundle`].
 pub fn open_account_offer(
     recipient_secret: &[u8; PUBLIC_KEY_LEN],
-    cluster_id: &str,
+    library_id: &str,
     node_id: &str,
     sealed: &str,
 ) -> Result<AccountBundle, SealError> {
     open_bound(
         recipient_secret,
-        cluster_id,
+        library_id,
         node_id,
         sealed,
-        &account_offer_aad(cluster_id, node_id),
+        &account_offer_aad(library_id, node_id),
     )
 }
 
@@ -325,7 +325,7 @@ pub fn open_account_offer(
 /// two ids.
 fn open_bound(
     recipient_secret: &[u8; PUBLIC_KEY_LEN],
-    cluster_id: &str,
+    library_id: &str,
     node_id: &str,
     sealed: &str,
     aad: &[u8],
@@ -334,7 +334,7 @@ fn open_bound(
         .decode(sealed.trim().as_bytes())
         .map_err(|_| SealError::Open)?;
     let plaintext = open(recipient_secret, aad, &raw)?;
-    parse_account_bundle(&plaintext, cluster_id, node_id)
+    parse_account_bundle(&plaintext, library_id, node_id)
 }
 
 #[cfg(test)]
@@ -342,11 +342,11 @@ mod tests {
     use super::*;
     use crate::keys::box_public_key;
 
-    /// A bundle for `node-1` of `cluster-1` with one account.
+    /// A bundle for `node-1` of `library-1` with one account.
     fn bundle() -> AccountBundle {
         AccountBundle {
             v: ACCOUNT_BUNDLE_VERSION,
-            cluster_id: "cluster-1".into(),
+            library_id: "library-1".into(),
             node_id: "node-1".into(),
             accounts: vec![CarriedAccount {
                 plugin_key: "platform:bookclerk/bookclerk-plugin-source-libro#libro".into(),
@@ -370,47 +370,47 @@ mod tests {
     }
 
     #[test]
-    fn a_bundle_opens_only_for_its_cluster_and_node() {
+    fn a_bundle_opens_only_for_its_library_and_node() {
         let (secret, public) = recipient();
         let sealed = seal_account_bundle(&public, &[9u8; 32], &bundle()).unwrap();
         assert_eq!(
-            open_account_bundle(&secret, "cluster-1", "node-1", &sealed).unwrap(),
+            open_account_bundle(&secret, "library-1", "node-1", &sealed).unwrap(),
             bundle()
         );
         assert_eq!(
-            open_account_bundle(&secret, "cluster-2", "node-1", &sealed),
+            open_account_bundle(&secret, "library-2", "node-1", &sealed),
             Err(SealError::Open)
         );
         assert_eq!(
-            open_account_bundle(&secret, "cluster-1", "node-2", &sealed),
+            open_account_bundle(&secret, "library-1", "node-2", &sealed),
             Err(SealError::Open)
         );
         assert_eq!(
-            open_account_bundle(&[8u8; 32], "cluster-1", "node-1", &sealed),
+            open_account_bundle(&[8u8; 32], "library-1", "node-1", &sealed),
             Err(SealError::Open)
         );
     }
 
     #[test]
-    fn an_offer_opens_only_as_an_offer_for_its_cluster_and_node() {
+    fn an_offer_opens_only_as_an_offer_for_its_library_and_node() {
         let (secret, public) = recipient();
         let offer = seal_account_offer(&public, &[9u8; 32], &bundle()).unwrap();
         assert_eq!(
-            open_account_offer(&secret, "cluster-1", "node-1", &offer).unwrap(),
+            open_account_offer(&secret, "library-1", "node-1", &offer).unwrap(),
             bundle()
         );
         assert_eq!(
-            open_account_offer(&secret, "cluster-1", "node-2", &offer),
+            open_account_offer(&secret, "library-1", "node-2", &offer),
             Err(SealError::Open)
         );
         // Neither direction opens as the other.
         assert_eq!(
-            open_account_bundle(&secret, "cluster-1", "node-1", &offer),
+            open_account_bundle(&secret, "library-1", "node-1", &offer),
             Err(SealError::Open)
         );
         let joining = seal_account_bundle(&public, &[9u8; 32], &bundle()).unwrap();
         assert_eq!(
-            open_account_offer(&secret, "cluster-1", "node-1", &joining),
+            open_account_offer(&secret, "library-1", "node-1", &joining),
             Err(SealError::Open)
         );
     }
@@ -427,7 +427,7 @@ mod tests {
         let refused = |edit: &dyn Fn(&mut AccountBundle)| {
             let mut b = bundle();
             edit(&mut b);
-            check_account_bundle(&b, "cluster-1", "node-1")
+            check_account_bundle(&b, "library-1", "node-1")
         };
         assert_eq!(refused(&|_| {}), Ok(()));
         assert!(refused(&|b| b.v = 2).is_err());
@@ -479,7 +479,7 @@ mod tests {
         let mut text = serde_json::to_value(bundle()).unwrap();
         text["extra"] = serde_json::json!(true);
         assert_eq!(
-            parse_account_bundle(&serde_json::to_vec(&text).unwrap(), "cluster-1", "node-1"),
+            parse_account_bundle(&serde_json::to_vec(&text).unwrap(), "library-1", "node-1"),
             Err(SealError::Bundle)
         );
     }

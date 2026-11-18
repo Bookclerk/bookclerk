@@ -1,7 +1,7 @@
 //! Join a library with a sign-in: the owner side of the OAuth code + PKCE
 //! flow of the built-in public client [`BRANCH_CLIENT_ID`].
 //!
-//! - `GET /api/node/v1/info` ([`get_info`]): the cluster id, a library
+//! - `GET /api/node/v1/info` ([`get_info`]): the library id, a library
 //!   name, the canonical origin, the node API transport mode, whether new
 //!   branches may join, and in `self_signed` mode the SPKI fingerprint the
 //!   joining operator confirms. Outside the cookie and auth layers, after
@@ -62,10 +62,10 @@ use bookclerk_config::DatabasePluginKind;
 use bookclerk_config::NodeApiMode;
 use bookclerk_library::control_plane::{
     accounts_to_carry_where, authorized_enrollment_link, branch_title_counts, check_redeem_request,
-    enrollment_link_brings_accounts, library_ancestry, list_nodes, load_cluster_row,
-    load_host_enrollment, load_node_credential, member_accounts, record_accounts_sent,
+    enrollment_link_brings_accounts, library_ancestry, list_nodes, load_host_enrollment,
+    load_library_row, load_node_credential, member_accounts, record_accounts_sent,
     record_authorized_enrollment_link, redeem_enrollment_link_as, remove_detached_branch_titles,
-    set_branch_members_books, set_host_enrollment_enabled, verify_cluster_owner, ConfigActor,
+    set_branch_members_books, set_host_enrollment_enabled, verify_library_owner, ConfigActor,
     EnrolledNode, NodeKind, RedeemRequest,
 };
 use bookclerk_library::{hash_token, LibraryError, UserStatus};
@@ -138,12 +138,12 @@ pub(crate) fn shared_database(
 /// What `info` and Settings → Branches report.
 pub(super) async fn owner_info(state: &Arc<AppState>) -> Result<OwnerInfo, Response> {
     let library = state.library_snapshot().await;
-    let cluster_id = load_cluster_row(&library)
+    let library_id = load_library_row(&library)
         .await
         .ok()
         .flatten()
-        .map(|row| row.cluster_id)
-        .ok_or_else(|| enroll_error(StatusCode::SERVICE_UNAVAILABLE, "cluster_unavailable"))?;
+        .map(|row| row.library_id)
+        .ok_or_else(|| enroll_error(StatusCode::SERVICE_UNAVAILABLE, "library_unavailable"))?;
     let enrollment = load_host_enrollment(&library)
         .await
         .map(|settings| settings.body.enabled)
@@ -151,7 +151,7 @@ pub(super) async fn owner_info(state: &Arc<AppState>) -> Result<OwnerInfo, Respo
     // A joining library refuses a parent whose ancestry names it.
     let ancestry = library_ancestry(&library)
         .await
-        .map_err(|_| enroll_error(StatusCode::SERVICE_UNAVAILABLE, "cluster_unavailable"))?;
+        .map_err(|_| enroll_error(StatusCode::SERVICE_UNAVAILABLE, "library_unavailable"))?;
     let cfg = state.config.read().await;
     let origin = canonical_origin(&crate::origin::effective_origin_from_config(&cfg, None))
         .ok_or_else(|| enroll_error(StatusCode::SERVICE_UNAVAILABLE, "origin_unavailable"))?;
@@ -160,7 +160,7 @@ pub(super) async fn owner_info(state: &Arc<AppState>) -> Result<OwnerInfo, Respo
         .then(|| bookclerk_config::read_node_api_spki_pin(&cfg.paths().files_dir))
         .flatten();
     Ok(OwnerInfo {
-        cluster_id,
+        library_id,
         library_name: library_name(&origin),
         origin,
         transport: mode.as_str().to_string(),
@@ -179,8 +179,8 @@ pub(super) async fn owner_info(state: &Arc<AppState>) -> Result<OwnerInfo, Respo
         (status = 200, description = "What this library says about itself to a joining install.", body = bookclerk_node_proto::OwnerInfo),
         (status = 403, description = "The connection failed the transport policy (`transport_insecure`, with the check in `reason`).", body = crate::http_error::TransportRefused, example = json!({"error": "transport_insecure", "reason": "plain_http"})),
         (status = 404, description = "The node API is not mounted on this listener (`node_api_unmounted`).", body = crate::http_error::ErrorMessage, example = json!({"error": "node_api_unmounted"})),
-        (status = 503, description = "This library's cluster row (`cluster_unavailable`) or origin (`origin_unavailable`) is not available yet.", body = crate::http_error::ErrorMessage, examples(
-            ("cluster_unavailable" = (summary = "The cluster row could not be read.", value = json!({"error": "cluster_unavailable"}))),
+        (status = 503, description = "This library's identity row (`library_unavailable`) or origin (`origin_unavailable`) is not available yet.", body = crate::http_error::ErrorMessage, examples(
+            ("library_unavailable" = (summary = "The library row could not be read.", value = json!({"error": "library_unavailable"}))),
             ("origin_unavailable" = (summary = "The library's origin is not known yet.", value = json!({"error": "origin_unavailable"}))),
         )),
     ),
@@ -200,7 +200,7 @@ pub async fn get_info(State(state): State<Arc<AppState>>, request: Request) -> R
 const MAX_OAUTH_ENROLL_BODY_BYTES: usize = 16 * 1024;
 
 /// `POST /api/node/v1/enroll/oauth`: redeem an approved branch sign-in.
-/// Answers `{cluster_id, node_id}` for a branch, plus `connection` and the
+/// Answers `{library_id, node_id}` for a branch, plus `connection` and the
 /// sealed `bootstrap` for a shared branch; 403 `transport_insecure` for a refused
 /// connection, 403 `enrollment_refused` for a code that does not redeem
 /// (unknown, used, expired, another client's, a wrong verifier or
@@ -210,9 +210,9 @@ const MAX_OAUTH_ENROLL_BODY_BYTES: usize = 16 * 1024;
     path = "/api/node/v1/enroll/oauth",
     request_body = bookclerk_node_proto::OAuthEnrollRequest,
     responses(
-        (status = 200, description = "The install is enrolled: its cluster and node ids for a branch, and for a shared branch join also `connection` and the bootstrap sealed to its box key.", body = bookclerk_node_proto::OAuthEnrollAnswer, examples(
-            ("branch" = (summary = "A branch joined.", value = json!({"cluster_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"}))),
-            ("shared_branch" = (summary = "A shared branch joined; its bootstrap is sealed to its box key.", value = json!({"cluster_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c", "connection": "shared_branch", "bootstrap": "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0"}))),
+        (status = 200, description = "The install is enrolled: its library and node ids for a branch, and for a shared branch join also `connection` and the bootstrap sealed to its box key.", body = bookclerk_node_proto::OAuthEnrollAnswer, examples(
+            ("branch" = (summary = "A branch joined.", value = json!({"library_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"}))),
+            ("shared_branch" = (summary = "A shared branch joined; its bootstrap is sealed to its box key.", value = json!({"library_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c", "connection": "shared_branch", "bootstrap": "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0"}))),
         )),
         (status = 400, description = "The body is not an enroll request, or its keys are not base64url.", body = crate::http_error::ErrorMessage, examples(
             ("malformed" = (summary = "The body does not parse as an enroll request.", value = json!({"error": "invalid enroll request"}))),
@@ -536,7 +536,7 @@ pub(crate) async fn travelling_accounts(
     travelling
 }
 
-/// The answer to a branch redeem: its cluster and node ids, and when the
+/// The answer to a branch redeem: its library and node ids, and when the
 /// user who approved it chose "Bring my store connections to this
 /// branch", the user's own shareable store accounts sealed to the node's
 /// box key ([`seal_account_bundle`]). A retry of the same exchange answers
@@ -560,7 +560,7 @@ async fn branch_answer(
         None
     };
     Json(OAuthEnrollAnswer {
-        cluster_id: enrolled.cluster_id,
+        library_id: enrolled.library_id,
         node_id: enrolled.node_id,
         connection: ConnectionType::Branch,
         bootstrap: None,
@@ -620,7 +620,7 @@ async fn sealed_connections(
     };
     let bundle = AccountBundle {
         v: ACCOUNT_BUNDLE_VERSION,
-        cluster_id: enrolled.cluster_id.clone(),
+        library_id: enrolled.library_id.clone(),
         node_id: enrolled.node_id.clone(),
         accounts,
     };
@@ -676,7 +676,7 @@ async fn shared_branch_still_allowed(
     library: &bookclerk_library::LibraryStore,
     user_id: i64,
 ) -> Result<SharedBranchDatabase, Response> {
-    if verify_cluster_owner(library, user_id).await.is_err() {
+    if verify_library_owner(library, user_id).await.is_err() {
         tracing::warn!(
             user_id,
             "shared branch enrollment refused: the user is not an Owner"
@@ -702,7 +702,7 @@ async fn shared_branch_still_allowed(
 
 /// The answer to a shared branch redeem: the `[database]` bootstrap and this
 /// process's DEK sealed to the node's enrolled box key, bound to the
-/// cluster and node ids. Re-checked on every answer (a retry too): the
+/// library and node ids. Re-checked on every answer (a retry too): the
 /// node's owner must still be an Owner and the database shareable.
 async fn shared_branch_answer(
     state: &Arc<AppState>,
@@ -724,7 +724,7 @@ async fn shared_branch_answer(
     };
     let bootstrap = SharedBranchBootstrap {
         v: SHARED_BRANCH_BOOTSTRAP_VERSION,
-        cluster_id: enrolled.cluster_id.clone(),
+        library_id: enrolled.library_id.clone(),
         node_id: enrolled.node_id.clone(),
         database,
         dek: SecretValue::new(dek.as_bytes().to_vec()),
@@ -765,7 +765,7 @@ async fn shared_branch_answer(
     }
     no_store(
         Json(OAuthEnrollAnswer {
-            cluster_id: enrolled.cluster_id.clone(),
+            library_id: enrolled.library_id.clone(),
             node_id: enrolled.node_id.clone(),
             connection: ConnectionType::SharedBranch,
             bootstrap: Some(sealed),
@@ -1320,9 +1320,9 @@ pub(super) async fn consenting_user(
             ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
-        (status = 503, description = "The library could not be read; try again (`unavailable`), or this library's cluster row or origin is not available yet (`cluster_unavailable`, `origin_unavailable`).", body = crate::http_error::ErrorAnswer, examples(
+        (status = 503, description = "The library could not be read; try again (`unavailable`), or this library's identity row or origin is not available yet (`library_unavailable`, `origin_unavailable`).", body = crate::http_error::ErrorAnswer, examples(
             ("unavailable" = (summary = "A read failed; try again.", value = json!({"error": "unavailable", "detail": "try again"}))),
-            ("cluster_unavailable" = (summary = "This library's cluster row is not available yet.", value = json!({"error": "cluster_unavailable"}))),
+            ("library_unavailable" = (summary = "This library's identity row is not available yet.", value = json!({"error": "library_unavailable"}))),
         )),
     ),
 )]
@@ -1392,7 +1392,7 @@ async fn connection_view(
     params: &BranchAuthorizeParams,
 ) -> Result<ConnectionChoice, Response> {
     let library = state.library_snapshot().await;
-    let owner = verify_cluster_owner(&library, user.id).await.is_ok();
+    let owner = verify_library_owner(&library, user.id).await.is_ok();
     if !owner {
         return Ok(ConnectionChoice::BranchOnly(BranchOnlyChoice {
             choice: false,
@@ -1560,9 +1560,9 @@ pub struct BranchConsentBody {
         (status = 413, description = "The body is larger than 8 KiB.", body = crate::http_error::ErrorMessage, example = json!({"error": "request too large"})),
         (status = 415, description = "The request is not `application/json`.", body = crate::http_error::ErrorMessage, example = json!({"error": "expected application/json"})),
         (status = 429, description = "Too many wrong step-up codes; wait a few minutes (`step_up_locked`).", body = crate::http_error::ErrorDetail, example = json!({"error": "step_up_locked", "detail": "too many wrong codes; wait a few minutes"})),
-        (status = 503, description = "The library could not be read; try again (`unavailable`), or this library's cluster row or origin is not available yet (`cluster_unavailable`, `origin_unavailable`).", body = crate::http_error::ErrorAnswer, examples(
+        (status = 503, description = "The library could not be read; try again (`unavailable`), or this library's identity row or origin is not available yet (`library_unavailable`, `origin_unavailable`).", body = crate::http_error::ErrorAnswer, examples(
             ("unavailable" = (summary = "A read failed; try again.", value = json!({"error": "unavailable", "detail": "try again"}))),
-            ("cluster_unavailable" = (summary = "This library's cluster row is not available yet.", value = json!({"error": "cluster_unavailable"}))),
+            ("library_unavailable" = (summary = "This library's identity row is not available yet.", value = json!({"error": "library_unavailable"}))),
         )),
     ),
 )]
@@ -1739,7 +1739,7 @@ async fn check_shared_branch_consent(
         )
         .await);
     }
-    if verify_cluster_owner(&library, user.id).await.is_err() {
+    if verify_library_owner(&library, user.id).await.is_err() {
         return Err(refuse(
             StatusCode::FORBIDDEN,
             "owner_required",
@@ -1844,7 +1844,7 @@ pub async fn post_branch_consent_step_up(
         Err(refused) => return refused,
     };
     let library = state.library_snapshot().await;
-    if verify_cluster_owner(&library, user.id).await.is_err() {
+    if verify_library_owner(&library, user.id).await.is_err() {
         return consent_error(
             StatusCode::FORBIDDEN,
             "owner_required",
@@ -1874,7 +1874,7 @@ pub(crate) fn no_store(mut response: Response) -> Response {
 
 /// Settings → Branches (and Settings → Library's sharing settings), for the
 /// operator or an Owner: a signed-in user's stored role and status are read
-/// ([`verify_cluster_owner`]); anyone else gets 403.
+/// ([`verify_library_owner`]); anyone else gets 403.
 pub(crate) async fn require_branch_admin(
     state: &Arc<AppState>,
     caller: UserCaller,
@@ -1885,7 +1885,7 @@ pub(crate) async fn require_branch_admin(
         }),
         UserCaller::User { user_id } => {
             let library = state.library_snapshot().await;
-            verify_cluster_owner(&library, user_id).await.map_err(|_| {
+            verify_library_owner(&library, user_id).await.map_err(|_| {
                 (
                     StatusCode::FORBIDDEN,
                     Json(crate::http_error::ErrorMessage::new("forbidden")),
@@ -1911,8 +1911,8 @@ pub(crate) async fn require_branch_admin(
             ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
         (status = 500, description = "The library database could not be read.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
-        (status = 503, description = "This library's cluster row (`cluster_unavailable`) or origin (`origin_unavailable`) is not available yet.", body = crate::http_error::ErrorMessage, examples(
-            ("cluster_unavailable" = (summary = "The cluster row could not be read.", value = json!({"error": "cluster_unavailable"}))),
+        (status = 503, description = "This library's identity row (`library_unavailable`) or origin (`origin_unavailable`) is not available yet.", body = crate::http_error::ErrorMessage, examples(
+            ("library_unavailable" = (summary = "The library row could not be read.", value = json!({"error": "library_unavailable"}))),
             ("origin_unavailable" = (summary = "The library's origin is not known yet.", value = json!({"error": "origin_unavailable"}))),
         )),
     ),
@@ -2050,7 +2050,7 @@ pub struct BranchMembersBooks {
 /// The audit actor of a branch administrator ([`require_branch_admin`]).
 fn admin_audit_actor(actor: &ConfigActor) -> String {
     match actor {
-        ConfigActor::ClusterOwner(owner) => format!("user:{}", owner.user_id()),
+        ConfigActor::LibraryOwner(owner) => format!("user:{}", owner.user_id()),
         ConfigActor::Operator { id } => id.clone(),
         ConfigActor::Administrator { id } | ConfigActor::Member { id } => format!("user:{id}"),
         ConfigActor::NodeOwner(_) | ConfigActor::Bootstrap | ConfigActor::Scheduler => {

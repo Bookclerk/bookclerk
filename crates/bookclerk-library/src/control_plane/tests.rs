@@ -9,7 +9,7 @@ use sea_orm::{ActiveModelTrait, ActiveValue::Set, ConnectionTrait, EntityTrait};
 use tempfile::tempdir;
 use uuid::Uuid;
 
-use super::secret::align_cluster_root;
+use super::secret::align_library_root;
 use super::*;
 use crate::entities::configuration_documents;
 use crate::master_key::{master_key_fingerprint, master_key_path, master_key_test_lock_async};
@@ -93,18 +93,18 @@ async fn restart_keeps_node_id_and_distinct_nodes_stay_distinct() {
     let restarted = bootstrap_pair(&store, dir_a.path()).await;
     assert_eq!(first.node.node_id, restarted.node.node_id);
     assert_eq!(first.node.created_at, restarted.node.created_at);
-    assert_eq!(first.cluster_id, restarted.cluster_id);
+    assert_eq!(first.library_id, restarted.library_id);
 
     std::fs::copy(master_key_path(dir_a.path()), master_key_path(dir_b.path())).unwrap();
     let second = bootstrap_pair(&store, dir_b.path()).await;
     assert_ne!(first.node.node_id, second.node.node_id);
-    assert_eq!(first.cluster_id, second.cluster_id);
+    assert_eq!(first.library_id, second.library_id);
     let ids = super::identity::list_node_ids(&store).await.unwrap();
     assert_eq!(ids.len(), 2);
 }
 
 #[tokio::test]
-async fn copied_identity_rejects_a_different_cluster() {
+async fn copied_identity_rejects_a_different_library() {
     let _guard = master_key_test_lock_async().await;
     let store_a = memory_store().await;
     let store_b = memory_store().await;
@@ -112,8 +112,8 @@ async fn copied_identity_rejects_a_different_cluster() {
     let dir_b = tempdir().unwrap();
     let session_a = bootstrap_pair(&store_a, dir_a.path()).await;
     let session_b = bootstrap_pair(&store_b, dir_b.path()).await;
-    assert_ne!(session_a.cluster_id, session_b.cluster_id);
-    let fingerprint = super::secret::load_cluster_row(&store_b)
+    assert_ne!(session_a.library_id, session_b.library_id);
+    let fingerprint = super::secret::load_library_row(&store_b)
         .await
         .unwrap()
         .unwrap()
@@ -132,23 +132,23 @@ async fn copied_identity_rejects_a_different_cluster() {
         &bookclerk_config::Config::default(),
     )
     .await
-    .expect_err("copied identity must not join a different cluster");
-    assert!(err.to_string().contains("cluster mismatch"), "{err}");
-    let after = super::secret::load_cluster_row(&store_b)
+    .expect_err("copied identity must not join a different library");
+    assert!(err.to_string().contains("library mismatch"), "{err}");
+    let after = super::secret::load_library_row(&store_b)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(after.cluster_id, session_b.cluster_id);
+    assert_eq!(after.library_id, session_b.library_id);
     assert_eq!(after.secret_fingerprint, fingerprint);
     let file = load_or_create_node_identity(dir_b.path()).unwrap();
     assert_eq!(
-        file.cluster_id.as_deref(),
-        Some(session_a.cluster_id.as_str())
+        file.library_id.as_deref(),
+        Some(session_a.library_id.as_str())
     );
 }
 
 #[tokio::test]
-async fn independent_connections_share_cluster_events_and_isolate_nodes() {
+async fn independent_connections_share_library_events_and_isolate_nodes() {
     let _guard = master_key_test_lock_async().await;
     let dir = tempdir().unwrap();
     let path = dir.path().join("library.db");
@@ -163,7 +163,7 @@ async fn independent_connections_share_cluster_events_and_isolate_nodes() {
     )
     .unwrap();
     let session_b = bootstrap_pair(&store_b, files_b.path()).await;
-    assert_eq!(session_a.cluster_id, session_b.cluster_id);
+    assert_eq!(session_a.library_id, session_b.library_id);
     assert_eq!(session_a.events.body, session_b.events.body);
 
     let label_a = NodeRuntimeSettingsV1 {
@@ -368,12 +368,12 @@ async fn import_is_idempotent_and_later_seeds_do_not_overwrite() {
 
     let mut config = bookclerk_config::Config::default();
     config.events.retention_days = 11;
-    overlay_events(&mut config, &again, &session.cluster_id);
+    overlay_events(&mut config, &again, &session.library_id);
     assert_eq!(config.events.retention_days, 7);
     assert_eq!(config.events_revision, Some(1));
     assert_eq!(
         config.events_authority.as_deref(),
-        Some(session.cluster_id.as_str())
+        Some(session.library_id.as_str())
     );
 }
 
@@ -823,18 +823,18 @@ async fn committed_revision_is_visible_to_a_later_connection() {
 }
 
 #[tokio::test]
-async fn missing_and_wrong_secret_roots_do_not_replace_the_cluster_key() {
+async fn missing_and_wrong_secret_roots_do_not_replace_the_library_key() {
     let _guard = master_key_test_lock_async().await;
     let store = memory_store().await;
     let files = tempdir().unwrap();
     let session = bootstrap_pair(&store, files.path()).await;
-    let fingerprint = super::secret::load_cluster_row(&store)
+    let fingerprint = super::secret::load_library_row(&store)
         .await
         .unwrap()
         .unwrap()
         .secret_fingerprint;
     std::fs::remove_file(master_key_path(files.path())).unwrap();
-    let missing = align_cluster_root(&store, files.path(), None)
+    let missing = align_library_root(&store, files.path(), None)
         .await
         .expect_err("missing key");
     assert!(
@@ -843,7 +843,7 @@ async fn missing_and_wrong_secret_roots_do_not_replace_the_cluster_key() {
     );
     assert!(!master_key_path(files.path()).exists());
     assert_eq!(
-        super::secret::load_cluster_row(&store)
+        super::secret::load_library_row(&store)
             .await
             .unwrap()
             .unwrap()
@@ -854,7 +854,7 @@ async fn missing_and_wrong_secret_roots_do_not_replace_the_cluster_key() {
     let other = tempdir().unwrap();
     crate::configure_master_key(other.path()).unwrap();
     std::fs::copy(master_key_path(other.path()), master_key_path(files.path())).unwrap();
-    let wrong = align_cluster_root(&store, files.path(), None)
+    let wrong = align_library_root(&store, files.path(), None)
         .await
         .expect_err("wrong key");
     assert!(
@@ -862,15 +862,15 @@ async fn missing_and_wrong_secret_roots_do_not_replace_the_cluster_key() {
         "{wrong}"
     );
     assert_eq!(
-        super::secret::load_cluster_row(&store)
+        super::secret::load_library_row(&store)
             .await
             .unwrap()
             .unwrap()
-            .cluster_id,
-        session.cluster_id
+            .library_id,
+        session.library_id
     );
     assert_eq!(
-        super::secret::load_cluster_row(&store)
+        super::secret::load_library_row(&store)
             .await
             .unwrap()
             .unwrap()
@@ -887,15 +887,15 @@ async fn first_and_concurrent_secret_initialization_keep_one_root() {
     let files = tempdir().unwrap();
     assert!(!master_key_path(files.path()).exists());
     let session = bootstrap_pair(&store, files.path()).await;
-    let fingerprint = super::secret::load_cluster_row(&store)
+    let fingerprint = super::secret::load_library_row(&store)
         .await
         .unwrap()
         .unwrap()
         .secret_fingerprint;
-    let again = align_cluster_root(&store, files.path(), None)
+    let again = align_library_root(&store, files.path(), None)
         .await
         .unwrap();
-    assert_eq!(again.cluster_id, session.cluster_id);
+    assert_eq!(again.library_id, session.library_id);
     assert_eq!(again.secret_fingerprint, fingerprint);
     assert_eq!(
         master_key_fingerprint(&require_master_key(Some(files.path())).unwrap()),
@@ -909,12 +909,12 @@ async fn first_and_concurrent_secret_initialization_keep_one_root() {
     let left = {
         let store = Arc::clone(&store);
         let path = dir_a.path().to_path_buf();
-        tokio::spawn(async move { align_cluster_root(&store, &path, None).await })
+        tokio::spawn(async move { align_library_root(&store, &path, None).await })
     };
     let right = {
         let store = Arc::clone(&store);
         let path = dir_b.path().to_path_buf();
-        tokio::spawn(async move { align_cluster_root(&store, &path, None).await })
+        tokio::spawn(async move { align_library_root(&store, &path, None).await })
     };
     let left = left
         .await
@@ -928,7 +928,7 @@ async fn first_and_concurrent_secret_initialization_keep_one_root() {
         .map_err(|err| err.to_string());
     let wins = u32::from(left.is_ok()) + u32::from(right.is_ok());
     assert_eq!(wins, 1, "left={left:?} right={right:?}");
-    let row = super::secret::load_cluster_row(&store)
+    let row = super::secret::load_library_row(&store)
         .await
         .unwrap()
         .unwrap();
@@ -947,7 +947,7 @@ async fn first_and_concurrent_secret_initialization_keep_one_root() {
         !master_key_path(loser_dir).exists(),
         "losing initializer must not keep a second master.key"
     );
-    let winner = align_cluster_root(&store, winner_dir, None).await.unwrap();
+    let winner = align_library_root(&store, winner_dir, None).await.unwrap();
     assert_eq!(winner.secret_fingerprint, row.secret_fingerprint);
     assert_eq!(
         master_key_fingerprint(&require_master_key(Some(winner_dir)).unwrap()),
@@ -964,8 +964,8 @@ async fn single_node_sqlite_bootstrap_is_one_node_and_one_events_document() {
     assert!(session.node.compatible);
     assert!(session.node.schema_state.starts_with("unreleased@base0+"));
     assert_eq!(session.events.namespace, EVENTS_NAMESPACE);
-    assert_eq!(session.events.scope_type, CLUSTER_SCOPE_TYPE);
-    assert_eq!(session.events.scope_id, CLUSTER_SCOPE_ID);
+    assert_eq!(session.events.scope_type, LIBRARY_SCOPE_TYPE);
+    assert_eq!(session.events.scope_id, LIBRARY_SCOPE_ID);
     assert_eq!(session.node_runtime.scope_id, session.node.node_id);
     assert_eq!(
         super::identity::list_node_ids(&store).await.unwrap().len(),
@@ -1053,7 +1053,7 @@ async fn postgres_control_plane_two_pools_share_events_and_reject_one_cas() {
     )
     .unwrap();
     let other = bootstrap_pair(&store_b, files_b.path()).await;
-    assert_eq!(session.cluster_id, other.cluster_id);
+    assert_eq!(session.library_id, other.library_id);
     assert_ne!(session.node.node_id, other.node.node_id);
 
     let expected = session.events.revision;
@@ -1225,7 +1225,7 @@ async fn heartbeat_persists_fake_cgroup_observations() {
     let node = super::identity::register_and_heartbeat(
         &store,
         &session.node.node_id,
-        &session.cluster_id,
+        &session.library_id,
         "incarnation-obs",
         &observation,
     )
@@ -1286,7 +1286,7 @@ async fn postgres_two_pools_observe_one_instance_document() {
     )
     .unwrap();
     let session_b = bootstrap_pair(&store_b, files_b.path()).await;
-    assert_eq!(session_a.cluster_id, session_b.cluster_id);
+    assert_eq!(session_a.library_id, session_b.library_id);
     assert_ne!(session_a.node.node_id, session_b.node.node_id);
 
     let key = "platform:bookclerk/pg-shared-fixture";

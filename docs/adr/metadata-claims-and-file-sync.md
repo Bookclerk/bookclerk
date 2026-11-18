@@ -148,7 +148,7 @@ compatibility check.
 ### 3. Ids stay local; a catalog assigns shared numbers later
 
 Work and edition ids stay as they are: made by the instance, used in links,
-per-person state and the `<library id>` in file names, and never changed by
+per-person state and the `<call number>` in file names, and never changed by
 metadata. Works and editions gain an empty `catalog_id` slot for a number a
 future Bookclerk catalog service assigns. That number carries no meaning, so
 correcting a match never changes it.
@@ -162,7 +162,7 @@ service is a separate decision.
 
 A paged scan lists a destination, groups objects into candidate books, reads
 embedded tags and any metadata file a dialect recognises, and identifies
-each candidate: by Bookclerk's own `<library id>` in the path, then by a
+each candidate: by Bookclerk's own `<call number>` in the path, then by a
 strong identifier, then through the matcher with file tags as lower-trust
 evidence. An imported book that no store account owns gets its files and an
 acquired state and no holding. A book that cannot be identified still plays

@@ -7,16 +7,16 @@
 //! settings for one library ([`parse_sharing_request`]). The invariant,
 //! checked against this file's own reading of the bytes as an untyped JSON
 //! value rather than the typed body: a body is accepted exactly when it is
-//! one JSON object with no repeated keys, no keys besides `cluster_id`,
+//! one JSON object with no repeated keys, no keys besides `library_id`,
 //! `share_books`, `include_branches`, `list_members_books`,
 //! `work_for_members`, `keep_member_copies` and `keep_copies`, a string
-//! `cluster_id`, and booleans for `share_books` and `include_branches`;
+//! `library_id`, and booleans for `share_books` and `include_branches`;
 //! each of the other four is absent, `null` or a boolean. An accepted body yields the
-//! trimmed `cluster_id` and those values, with an absent or `null` setting
+//! trimmed `library_id` and those values, with an absent or `null` setting
 //! left unset (kept as stored), never read as `false`. A refused one is
 //! `Invalid`, never another error.
 
-use bookclerk_library::control_plane::{parse_sharing_request, ClusterLinkSettings};
+use bookclerk_library::control_plane::{parse_sharing_request, LibraryLinkSettings};
 use bookclerk_library::LibraryError;
 use serde::de::{Deserializer as _, IgnoredAny, MapAccess, Visitor};
 use serde_json::{Map, Value};
@@ -27,7 +27,7 @@ pub const MAX_INPUT_BYTES: usize = 1024;
 /// The keys the route documents, written out rather than read from the
 /// parser.
 const KEYS: [&str; 7] = [
-    "cluster_id",
+    "library_id",
     "share_books",
     "include_branches",
     "list_members_books",
@@ -42,7 +42,7 @@ enum Expected {
     /// Refused as `Invalid`.
     Refused,
     /// Accepted with this trimmed library id and these settings.
-    Accepted(String, ClusterLinkSettings),
+    Accepted(String, LibraryLinkSettings),
 }
 
 /// Runs the oracle on one input.
@@ -72,11 +72,11 @@ pub fn check(data: &[u8]) -> bool {
             );
             false
         }
-        Expected::Accepted(cluster_id, settings) => {
+        Expected::Accepted(library_id, settings) => {
             let request = got.unwrap_or_else(|err| {
                 panic!("{:?} refused: {err:?}", String::from_utf8_lossy(data))
             });
-            assert_eq!(request.cluster_id, cluster_id);
+            assert_eq!(request.library_id, library_id);
             assert_eq!(request.settings, settings);
             true
         }
@@ -97,7 +97,7 @@ fn expected(data: &[u8]) -> Expected {
     if fields.keys().any(|key| !KEYS.contains(&key.as_str())) {
         return Expected::Refused;
     }
-    let Some(Value::String(cluster_id)) = fields.get("cluster_id") else {
+    let Some(Value::String(library_id)) = fields.get("library_id") else {
         return Expected::Refused;
     };
     let (Some(Value::Bool(share_books)), Some(Value::Bool(include_branches))) =
@@ -120,8 +120,8 @@ fn expected(data: &[u8]) -> Expected {
         return Expected::Refused;
     };
     Expected::Accepted(
-        cluster_id.trim().to_string(),
-        ClusterLinkSettings {
+        library_id.trim().to_string(),
+        LibraryLinkSettings {
             share_books: *share_books,
             include_branches: *include_branches,
             list_members_books,

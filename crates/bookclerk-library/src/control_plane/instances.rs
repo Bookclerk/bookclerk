@@ -69,7 +69,7 @@ pub struct PluginInstance {
     /// Audit identity of the creator.
     pub created_by: String,
     /// The node that owns this instance (a node-local output, H-2); it may
-    /// be deployed only there. `None` for cluster instances.
+    /// be deployed only there. `None` for library instances.
     pub owner_node_id: Option<String>,
 }
 
@@ -97,7 +97,7 @@ pub async fn create_plugin_instance(
 }
 
 /// Inserts a node-local instance of `plugin_key` owned by `node_id` (H-2):
-/// it adds to the cluster's outputs on that node only, and a deployment of
+/// it adds to the library's outputs on that node only, and a deployment of
 /// it to any other node, or a placement, is refused.
 ///
 /// # Errors
@@ -518,7 +518,7 @@ fn authorize_create(actor: &ConfigActor) -> Result<()> {
         | ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
         | ConfigActor::NodeOwner(_)
-        | ConfigActor::ClusterOwner(_) => Err(LibraryError::Forbidden(
+        | ConfigActor::LibraryOwner(_) => Err(LibraryError::Forbidden(
             "unauthorized configuration write: operator authority is required".into(),
         )),
     }

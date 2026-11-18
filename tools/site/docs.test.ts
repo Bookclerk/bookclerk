@@ -219,7 +219,7 @@ test("every doc renders, and every link between docs resolves", () => {
 });
 
 test("raw HTML in a doc is shown as text", () => {
-  const out = renderDoc("Let **<branch>** join <script>alert(1)</script>", "cluster-hosts", {
+  const out = renderDoc("Let **<branch>** join <script>alert(1)</script>", "branches", {
     blobBase: BLOB,
   });
   assert.match(out.html, /&lt;branch&gt;/);
@@ -229,7 +229,7 @@ test("raw HTML in a doc is shown as text", () => {
 test("code blocks get syntax colors and a language label when highlight.ts knows the language", () => {
   const out = renderDoc(
     "```toml\n[library]\nauto_acquire = false # off\n```\n\n```text\n<plain>\n```\n",
-    "cluster-hosts",
+    "branches",
     { blobBase: BLOB },
   );
   assert.match(
@@ -274,7 +274,7 @@ test("every Mermaid fence in docs/ is drawn as a diagram", () => {
 test("diagrams keep their ids apart and leave the source's styling out", () => {
   const source =
     "```mermaid\nflowchart LR\n  A --> B\n```\n\n```mermaid\nstateDiagram-v2\n  [*] --> A\n```\n";
-  const out = renderDoc(source, "cluster-hosts", { blobBase: BLOB });
+  const out = renderDoc(source, "branches", { blobBase: BLOB });
   const ids = [...out.html.matchAll(/ id="(Diagram[^"]+)"/g)].map((m) => m[1]);
   assert.ok(ids.length >= 2);
   assert.equal(new Set(ids).size, ids.length);
@@ -291,18 +291,18 @@ test("diagrams keep their ids apart and leave the source's styling out", () => {
 
 test("a page draws at most twelve diagrams, and fences it cannot draw spend none of its budget", () => {
   const small = (n: number): string => `\`\`\`mermaid\nflowchart LR\n  A${n} --> B\n\`\`\`\n\n`;
-  const many = renderDoc(Array.from({ length: 14 }, (_, n) => small(n)).join(""), "cluster-hosts", {
+  const many = renderDoc(Array.from({ length: 14 }, (_, n) => small(n)).join(""), "branches", {
     blobBase: BLOB,
   });
   assert.equal((many.html.match(/<figure class="diagram"/g) ?? []).length, 12);
   const long = `\`\`\`mermaid\nflowchart LR\n${"  A --> B\n".repeat(500)}\`\`\`\n\n`;
-  const after = renderDoc(long.repeat(5) + small(1), "cluster-hosts", { blobBase: BLOB });
+  const after = renderDoc(long.repeat(5) + small(1), "branches", { blobBase: BLOB });
   assert.equal((after.html.match(/<figure class="diagram"/g) ?? []).length, 1);
 });
 
 test("a page draws diagrams only up to its budget, then shows code", () => {
   const fence = `\`\`\`mermaid\nflowchart LR\n${"  A --> B\n".repeat(300)}\`\`\`\n\n`;
-  const out = renderDoc(fence.repeat(6), "cluster-hosts", { blobBase: BLOB });
+  const out = renderDoc(fence.repeat(6), "branches", { blobBase: BLOB });
   assert.equal((out.html.match(/<figure class="diagram"/g) ?? []).length, 5);
   assert.equal((out.html.match(/<code class="language-mermaid">/g) ?? []).length, 1);
 });
@@ -319,7 +319,7 @@ test("a Mermaid fence the site cannot draw stays a code block", () => {
     `flowchart LR\n${"  A --> B\n".repeat(500)}`,
     ...colored,
   ]) {
-    const out = renderDoc(`\`\`\`mermaid\n${body}\n\`\`\`\n`, "cluster-hosts", { blobBase: BLOB });
+    const out = renderDoc(`\`\`\`mermaid\n${body}\n\`\`\`\n`, "branches", { blobBase: BLOB });
     assert.ok(!out.html.includes("<svg"), body.slice(0, 40));
     assert.match(out.html, /<code class="language-mermaid">/);
   }
@@ -380,7 +380,7 @@ test("highlight colors each language's own names and leaves the rest plain", () 
 test("a doc's section headings are collected for the On this page list", () => {
   const out = renderDoc(
     "# Title\n\n## First `step`\n\n### Detail\n\n#### Deeper\n\n## First step\n",
-    "cluster-hosts",
+    "branches",
     { blobBase: BLOB },
   );
   assert.deepEqual(out.headings, [
@@ -543,7 +543,7 @@ test("the sidebar nests a group's pages by folder and the breadcrumb follows the
 test("code blocks and tables can be scrolled from the keyboard", () => {
   const out = renderDoc(
     "```sh\ncargo build\n```\n\n    indented\n\n| a | b |\n| - | - |\n| 1 | 2 |\n",
-    "cluster-hosts",
+    "branches",
     { blobBase: BLOB },
   );
   assert.equal(out.html.match(/<pre tabindex="0">/g)?.length, 2);
@@ -876,7 +876,7 @@ test("a page back from the cache keeps its request language unless another is ke
 
 test("GitHub alert blockquotes render as callouts, other blockquotes stay quotes", () => {
   const html = (source: string): string =>
-    renderDoc(source, "cluster-hosts", { blobBase: BLOB }).html;
+    renderDoc(source, "branches", { blobBase: BLOB }).html;
   assert.equal(
     html("> [!WARNING]\n> Leave **Auto acquire** off.\n"),
     '<div class="callout callout-warning" role="note"><p class="callout-title">Warning</p>\n<p>Leave <strong>Auto acquire</strong> off.</p>\n</div>\n',

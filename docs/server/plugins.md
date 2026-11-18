@@ -11,7 +11,7 @@ is in [The guest jail](../internals/guest-jail.md).
 
 ## Installing plugins
 
-A third-party plugin is **installed** into the cluster once. A package
+A third-party plugin is **installed** into the library once. A package
 version is resolved and verified once, recorded in the library database,
 and run byte-for-byte the same on every node.
 
@@ -63,7 +63,7 @@ version answers to.
   nodes that see that path (shared storage) can materialize it; the others
   record an `error` observation.
 
-A branch node of another cluster fetches an owner's `https:` artifact only
+A branch node of another library fetches an owner's `https:` artifact only
 when both are true:
 
 - its host operator approved that exact URL, archive digest and payload
@@ -127,7 +127,7 @@ activate an earlier version.
 
 Platform guests (`local`, `sqlite`) ship with the node, and
 `cargo stage-plugins` stages development trees under `plugins/<fs-id>`.
-Those are staged on one machine, not installed into the cluster. Their
+Those are staged on one machine, not installed into the library. Their
 provenance is `platform_bundled`, `verified_staged` or
 `local_development`, while an installed version is `installed`.
 
@@ -178,8 +178,8 @@ is:
 | --- | --- | --- |
 | `present` | An operator (`plugins deploy`, the Settings switch) | Runs it |
 | `absent` | An operator (`plugins undeploy`) | Retires it |
-| `placed` | The cluster scheduler ([placement](#placement)) | Runs it |
-| `unplaced` | The cluster scheduler | Retires it |
+| `placed` | The library scheduler ([placement](#placement)) | Runs it |
+| `unplaced` | The library scheduler | Retires it |
 
 Only an operator writes `present` and `absent`, and only the scheduler
 writes `placed` and `unplaced`. The library refuses anything else.
@@ -197,7 +197,7 @@ running, and records observations (`materialized`, `running`, `healthy`,
 bookclerk plugins list                                  # instances + deployments
 bookclerk plugins approve echo --yes                    # consent (third-party)
 bookclerk plugins deploy echo                           # desired = present on this host
-bookclerk plugins deploy echo --node <node-id>          # … on another cluster host
+bookclerk plugins deploy echo --node <node-id>          # … on another library host
 bookclerk plugins undeploy echo
 bookclerk plugins instances list --plugin s3
 bookclerk plugins instances create s3 --name "Backup bucket"
@@ -233,7 +233,7 @@ The daemon offers the same operations to an operator session:
 ### The pinned schema
 
 Writes are checked against the schema pinned in `plugin_schemas` at
-enrollment. So a plugin can be configured from any host in the cluster,
+enrollment. So a plugin can be configured from any host in the library,
 including hosts where it isn't installed.
 
 The pin carries the package version. The newest installed version wins,
@@ -340,7 +340,7 @@ Each node consumes its own queue, `node.<node_id>`, on the outbox.
 
 - Every committed deployment write (create, desired-state change, delete)
   publishes a `deployment.changed` message to the deployment's node.
-- Every committed configuration document (cluster settings and instance
+- Every committed configuration document (library settings and instance
   documents) publishes `configuration.changed` to every registered node.
 - The daemon's delivery worker claims those messages under the catalog id
   `node:<node_id>`, and wakes the deployment and configuration
@@ -368,7 +368,7 @@ plugin, on every host, serves the same connected accounts.
 ## Placement
 
 By default an operator deploys an instance node by node with
-`plugins deploy --node`. **Placement** hands that job to the cluster
+`plugins deploy --node`. **Placement** hands that job to the library
 scheduler:
 
 1. The operator says how many nodes should run the instance, and which
@@ -484,7 +484,7 @@ full, and a node that is never on counts half. Then:
 - A scale-down drops the replicas on the nodes with the least room first.
 - When a replica's node is over its memory budget and another qualifying
   node has room, the replica moves there. At most one moves per instance
-  per pass, so the cluster doesn't thrash.
+  per pass, so the library doesn't thrash.
 - `--replicas all` runs the instance on every qualifying node where it
   fits.
 
@@ -526,7 +526,7 @@ aren't routed.
 ### One scheduler
 
 Every daemon runs the scheduler loop, but only the holder of the
-`scheduler` row in `cluster_leases` acts.
+`scheduler` row in `library_leases` acts.
 
 - The holder renews the lease (60 s) on every pass. When it stops, the
   next daemon to try takes over, with a larger fencing token.
@@ -557,7 +557,7 @@ placements first.
 | `PUT` | `/api/config/nodes/{node_id}/runtime` | Any of `{label, cpu_budget_percent, memory_budget_percent, schedulable}`. A node owner may edit only its own nodes |
 | `PUT` | `/api/config/nodes/{node_id}/labels` | `{labels}`: the node's complete operator label set (operator only) |
 | `PUT` | `/api/config/nodes/{node_id}/owner` | `{user_id}` (or `null`): the user who administers the node (operator only) |
-| `GET` | `/api/cluster/status` | Node counts, committed CPU and memory across live nodes, active jobs, delivery backlog, and the nodes the caller may see |
+| `GET` | `/api/library-status` | Node counts, committed CPU and memory across live nodes, active jobs, delivery backlog, and the nodes the caller may see |
 
 In the web app:
 
@@ -578,14 +578,14 @@ node, typically a node's own `local` output.
 
 - It deploys only on that node. A deployment to any other node, and any
   placement, are refused.
-- It adds to the cluster's outputs on that node, rather than replacing
+- It adds to the library's outputs on that node, rather than replacing
   them. Acquires a branch node uploads reach every destination deployed on
   the shared node that received them, node-local ones included.
 
 ### Running on branch nodes
 
-A branch node (a separate install that joined the cluster, see
-[Libraries and branches](cluster-hosts.md)) runs an owner's plugin only
+A branch node (a separate install that joined the library, see
+[Libraries and branches](branches.md)) runs an owner's plugin only
 after **its own** operator approves it. The narrowing is the same as on
 any host (see
 [Consent before enable](../plugins/capabilities.md#consent-before-enable-and-every-spawn)).
@@ -593,11 +593,11 @@ any host (see
 To approve, use **Settings → Library** on the host, or:
 
 ```sh
-bookclerk clusters approve <plugin_key> --request <DIGEST> [--deny-domain …] [--deny-binding …] [--deny-network]
+bookclerk libraries approve <plugin_key> --request <DIGEST> [--deny-domain …] [--deny-binding …] [--deny-network]
 ```
 
 `<DIGEST>` is the digest of the request being approved, from
-`bookclerk clusters consents`.
+`bookclerk libraries consents`.
 
 - The owner's grant is the request. The host's approval may only remove
   from it.
@@ -622,7 +622,7 @@ A platform plugin is approved automatically only when all of these hold:
 
 What a plugin *is* (its installed versions, consent, instances, settings,
 and where it is deployed) lives in the library database, shared by every
-host in the cluster (see [Installing plugins](#installing-plugins)). What
+host in the library (see [Installing plugins](#installing-plugins)). What
 a host *runs* is host-local: `$BOOKCLERK_FILES_DIR` holds the
 materialized trees, guest state and the mutation lock for that host only.
 
@@ -651,14 +651,14 @@ $FILES_DIR/
   database, never by walking `plugins/`.
 - `.plugin-mutation.lock` is scoped to the files directory. Two hosts that
   share one PostgreSQL or D1 database each take their own lock and never
-  block each other. Cluster coordination goes through database rows and
+  block each other. Library coordination goes through database rows and
   compare-and-swap, not a shared-database advisory lock.
 
 Host-local trees remain for three cases:
 
 - platform guests that ship with the host (`sqlite`, `local`);
 - development trees staged by `cargo stage-plugins` or `cargo dev`;
-- installs committed before cluster installs existed.
+- installs committed before library installs existed.
 
 Those use `plugin-grants.json` for consent and `install-ledger.json` for
 identity. `receipt.json` inside such a tree is metadata only. Remove and
@@ -782,6 +782,6 @@ consent (see [Upgrades](../plugins/capabilities.md#upgrades)).
   may ask for.
 - [The guest jail](../internals/guest-jail.md#the-guest-jail): how the
   jail is built.
-- [Libraries and branches](cluster-hosts.md): running plugins on branches.
+- [Libraries and branches](branches.md): running plugins on branches.
 - [Stores reference](stores.md) and [Output and destinations](output.md):
   the first-party plugins' settings.

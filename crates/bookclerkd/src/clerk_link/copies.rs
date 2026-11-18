@@ -10,7 +10,7 @@
 //! then downloads the files through [`CardCopy`] with the grant's token
 //! (sent to the granting library alone). Once the copy is downloaded,
 //! before the title is stored, it is recorded in `link_imports` under the
-//! library's cluster id (again harmlessly when already recorded), so a
+//! library's library id (again harmlessly when already recorded), so a
 //! clerk that later becomes a branch never shares the book back.
 //!
 //! A copy the library downloaded from another store than the title's is
@@ -38,7 +38,7 @@ use bookclerk_node_client::{fetch_copy_file, CopyFetchError, OwnerEndpoint};
 use bookclerk_node_proto::{ClerkCopy, COPY_AUTH_SCHEME};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::cluster_link::library_copies::{listed, LinkCopies};
+use crate::library_link::library_copies::{listed, LinkCopies};
 
 /// Times one file's download is tried before the copy is given up: a cut
 /// transfer keeps what arrived, so each further try resumes it.
@@ -73,27 +73,27 @@ impl GrantAsk {
 }
 
 /// Where the reader of each library card takes `copy.grant` asks, by the
-/// library's cluster id; only a reader whose socket is welcomed is here.
+/// library's library id; only a reader whose socket is welcomed is here.
 static READERS: LazyLock<Mutex<BTreeMap<String, mpsc::Sender<GrantAsk>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
 /// A connected reader's place in [`READERS`]; dropping it takes the reader
 /// out again (unless a newer reader of the same library replaced it).
 pub(super) struct Registered {
-    /// The library's cluster id.
-    cluster_id: String,
+    /// The library's library id.
+    library_id: String,
     /// The reader's own sender, to tell it from a newer one.
     asks: mpsc::Sender<GrantAsk>,
 }
 
-/// Lists a connected reader of `cluster_id`, so acquires can ask it for
+/// Lists a connected reader of `library_id`, so acquires can ask it for
 /// copies, until the answered value is dropped.
-pub(super) fn register(cluster_id: &str, asks: mpsc::Sender<GrantAsk>) -> Registered {
+pub(super) fn register(library_id: &str, asks: mpsc::Sender<GrantAsk>) -> Registered {
     if let Ok(mut readers) = READERS.lock() {
-        readers.insert(cluster_id.to_string(), asks.clone());
+        readers.insert(library_id.to_string(), asks.clone());
     }
     Registered {
-        cluster_id: cluster_id.to_string(),
+        library_id: library_id.to_string(),
         asks,
     }
 }
@@ -102,21 +102,21 @@ impl Drop for Registered {
     fn drop(&mut self) {
         if let Ok(mut readers) = READERS.lock() {
             if readers
-                .get(&self.cluster_id)
+                .get(&self.library_id)
                 .is_some_and(|asks| asks.same_channel(&self.asks))
             {
-                readers.remove(&self.cluster_id);
+                readers.remove(&self.library_id);
             }
         }
     }
 }
 
-/// The connected reader of `cluster_id`, if there is one.
-pub(super) fn reader_of(cluster_id: &str) -> Option<mpsc::Sender<GrantAsk>> {
+/// The connected reader of `library_id`, if there is one.
+pub(super) fn reader_of(library_id: &str) -> Option<mpsc::Sender<GrantAsk>> {
     READERS
         .lock()
         .ok()
-        .and_then(|readers| readers.get(cluster_id).cloned())
+        .and_then(|readers| readers.get(library_id).cloned())
 }
 
 /// Asks the libraries this install holds a card for for their copy of a
@@ -201,14 +201,14 @@ impl LibraryCopies for CardCopies {
             }
         };
         for link in links.into_iter().filter(ClerkLink::is_active) {
-            let Some(reader) = reader_of(&link.library_cluster_id) else {
+            let Some(reader) = reader_of(&link.library_id) else {
                 continue;
             };
             let endpoint = match OwnerEndpoint::new(&link.origin, link.spki_pin.as_deref()) {
                 Ok(endpoint) => endpoint,
                 Err(err) => {
                     tracing::warn!(
-                        library = %link.library_cluster_id,
+                        library = %link.library_id,
                         error = %err,
                         "a library card's address cannot be dialed"
                     );
@@ -229,7 +229,7 @@ impl LibraryCopies for CardCopies {
                 granted,
                 endpoint,
                 library: self.library.clone(),
-                cluster_id: link.library_cluster_id,
+                library_id: link.library_id,
                 plugin_key: listing.plugin_key.to_string(),
                 account_id: listing.account_id.to_string(),
                 marketplace: listing.marketplace.to_string(),
@@ -251,8 +251,8 @@ struct CardCopy {
     endpoint: OwnerEndpoint,
     /// This install's own library.
     library: LibraryStore,
-    /// Cluster id of the granting library.
-    cluster_id: String,
+    /// Library id of the granting library.
+    library_id: String,
     /// Plugin key of the title here.
     plugin_key: String,
     /// Store account of the title here.
@@ -309,7 +309,7 @@ impl LibraryCopy for CardCopy {
                 // What arrived is kept, so trying again resumes it.
                 Err(CopyFetchError::Transfer(err)) if tries < FETCH_TRIES => {
                     tracing::debug!(
-                        library = %self.cluster_id,
+                        library = %self.library_id,
                         index,
                         error = %err,
                         "a copy download was cut; resuming"
@@ -323,7 +323,7 @@ impl LibraryCopy for CardCopy {
     async fn taken(&self) -> Result<(), LibraryCopyError> {
         record_copy_taken_from_link(
             &self.library,
-            &self.cluster_id,
+            &self.library_id,
             TakenCopy {
                 plugin_key: &self.plugin_key,
                 account_id: &self.account_id,

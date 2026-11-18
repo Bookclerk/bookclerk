@@ -15,7 +15,7 @@ import {
 import { JoinApiError, windowLibraries } from "./join";
 
 const CARD: ClerkCardView = {
-  cluster_id: "lib-1",
+  library_id: "lib-1",
   origin: "https://books.example.com",
   library_name: "books.example.com",
   pinned: false,
@@ -120,16 +120,16 @@ describe("card requests", () => {
     const { card } = await finishClerkSignIn({ code: "c1", state: "s1", error: null });
     expect(fetchMock.mock.calls[0][0]).toBe("/api/config/clerk/callback");
     expect(sent(fetchMock)).toEqual({ code: "c1", state: "s1" });
-    expect(card.cluster_id).toBe("lib-1");
+    expect(card.library_id).toBe("lib-1");
     await finishClerkSignIn({ code: "", state: "s1", error: "access_denied" });
     expect(sent(fetchMock, 1)).toEqual({ code: "", state: "s1", error: "access_denied" });
   });
 
   it("sign a card out", async () => {
-    const fetchMock = stubFetch({ cluster_id: "lib-1", library_signed_out: false });
+    const fetchMock = stubFetch({ library_id: "lib-1", library_signed_out: false });
     const done = await signOutClerkCard("lib-1");
     expect(fetchMock.mock.calls[0][0]).toBe("/api/config/clerk/sign-out");
-    expect(sent(fetchMock)).toEqual({ cluster_id: "lib-1" });
+    expect(sent(fetchMock)).toEqual({ library_id: "lib-1" });
     expect(done.library_signed_out).toBe(false);
   });
 
@@ -193,15 +193,15 @@ describe("windowLibraries", () => {
   it("lists window libraries, then card libraries, each host once", () => {
     const link = { owner_origin: "https://books.example.com" } as Parameters<
       typeof windowLibraries
-    >[0]["clusters"][number];
+    >[0]["libraries"][number];
     expect(
       windowLibraries({
-        clusters: [link],
-        cards: [CARD, { ...CARD, cluster_id: "lib-2", origin: "https://other.example:8443" }],
+        libraries: [link],
+        cards: [CARD, { ...CARD, library_id: "lib-2", origin: "https://other.example:8443" }],
       }),
     ).toEqual(["books.example.com", "other.example:8443"]);
-    expect(windowLibraries({ clusters: [], cards: [] })).toEqual([]);
-    expect(windowLibraries({ clusters: [], cards: [{ ...CARD, origin: "not a url" }] })).toEqual([
+    expect(windowLibraries({ libraries: [], cards: [] })).toEqual([]);
+    expect(windowLibraries({ libraries: [], cards: [{ ...CARD, origin: "not a url" }] })).toEqual([
       "not a url",
     ]);
   });

@@ -1,5 +1,3 @@
-pub mod clusters;
-mod clusters_join;
 pub mod config_cmd;
 pub mod copydb;
 pub mod daemon_cmd;
@@ -11,6 +9,8 @@ pub mod export;
 pub mod export_cmd;
 pub mod import_cmd;
 pub mod integrations;
+pub mod libraries;
+mod libraries_join;
 pub mod library;
 pub mod migrate;
 pub mod nodes;

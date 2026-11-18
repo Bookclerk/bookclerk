@@ -5118,7 +5118,7 @@ pub(crate) mod tests {
     /// retry can HMAC with a different DEK and get 400.
     ///
     /// Bootstrapping the control plane replaces the process DEK too
-    /// (`align_cluster_root` installs the files dir's key), and so does a config
+    /// (`align_library_root` installs the files dir's key), and so does a config
     /// reload, which re-enrolls the node. Tests that do either hold this lock
     /// for their whole run, or they can swap the key between another test's
     /// seal and unseal.
@@ -5210,7 +5210,7 @@ pub(crate) mod tests {
             library: Arc::new(RwLock::new(library.clone())),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
-            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
+            capacity: Arc::new(crate::library_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -6471,7 +6471,7 @@ pub(crate) mod tests {
                 library: Arc::new(RwLock::new(library.clone())),
                 database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
                 job_notify: Arc::new(Notify::new()),
-                capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
+                capacity: Arc::new(crate::library_link::capacity::CapacityShares::new()),
                 job_runtime: Arc::new(RwLock::new(())),
                 work_lock: Mutex::new(()),
                 discover_gate: Arc::new(Semaphore::new(1)),
@@ -8404,7 +8404,7 @@ pub(crate) mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/cluster")
+                    .uri("/library-status")
                     .body(Body::empty())
                     .unwrap(),
             )

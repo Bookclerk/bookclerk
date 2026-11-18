@@ -301,7 +301,7 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(
             check_argv(p, "release"), [["cargo", "build", "--release", "-p", "bookclerk-cli"]]
         )
-        # cluster_secret_startup launches the jailed sqlite guest through workerd.
+        # library_secret_startup launches the jailed sqlite guest through workerd.
         self.assertEqual(
             p.prereqs("rust_test"),
             [
@@ -1412,7 +1412,7 @@ class DesktopTests(unittest.TestCase):
 
 
 class WindowsClusterTests(unittest.TestCase):
-    """windows-latest run of cluster_secret_startup and the identity library tests."""
+    """windows-latest run of library_secret_startup and the identity library tests."""
 
     def test_paths_select_the_job_and_keep_guest_prerequisites(self) -> None:
         for path in RELATIONS.windows_cluster_paths:
@@ -1427,7 +1427,7 @@ class WindowsClusterTests(unittest.TestCase):
                         {
                             "kind": "build",
                             "why": [
-                                "cluster_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd"
+                                "library_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd"
                             ],
                             "packages": [
                                 "bookclerk-plugin-database-sqlite",
@@ -1437,7 +1437,7 @@ class WindowsClusterTests(unittest.TestCase):
                         },
                         {
                             "kind": "ensure_workerd",
-                            "why": ["cluster_secret_startup spawns through pinned workerd"],
+                            "why": ["library_secret_startup spawns through pinned workerd"],
                         },
                     ],
                 )
@@ -1455,7 +1455,7 @@ class WindowsClusterTests(unittest.TestCase):
                 {
                     "kind": "build",
                     "why": [
-                        "cluster_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd"
+                        "library_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd"
                     ],
                     "packages": [
                         "bookclerk-plugin-database-sqlite",
@@ -1465,7 +1465,7 @@ class WindowsClusterTests(unittest.TestCase):
                 },
                 {
                     "kind": "ensure_workerd",
-                    "why": ["cluster_secret_startup spawns through pinned workerd"],
+                    "why": ["library_secret_startup spawns through pinned workerd"],
                 },
             ],
         )
@@ -1476,7 +1476,7 @@ class WindowsClusterTests(unittest.TestCase):
         self.assertFalse(p.jobs["windows-cluster"])
 
     def test_commands_preserve_the_cli_target_and_identity_filters(self) -> None:
-        p = plan("crates/bookclerk-cli/tests/cluster_secret_startup.rs")
+        p = plan("crates/bookclerk-cli/tests/library_secret_startup.rs")
         art = artifact(p)
         for os_name, exe in (("Linux", "workerd"), ("Windows", "workerd.exe")):
             with self.subTest(os=os_name):
@@ -1528,7 +1528,7 @@ class WindowsClusterTests(unittest.TestCase):
                             "-p",
                             "bookclerk-library",
                             "--lib",
-                            "copied_identity_rejects_a_different_cluster",
+                            "copied_identity_rejects_a_different_library",
                             "--",
                             "--nocapture",
                         ],
@@ -1538,7 +1538,7 @@ class WindowsClusterTests(unittest.TestCase):
                             "-p",
                             "bookclerk-cli",
                             "--test",
-                            "cluster_secret_startup",
+                            "library_secret_startup",
                             "--",
                             "--nocapture",
                         ],

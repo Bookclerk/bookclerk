@@ -36,7 +36,7 @@ use crate::cli_plugin::{
 use crate::format_out::{emit, OutputFormat};
 
 #[derive(Debug, Subcommand)]
-/// `bookclerk plugins` subcommands: install plugins into the cluster, deploy
+/// `bookclerk plugins` subcommands: install plugins into the library, deploy
 /// them onto nodes, configure instances, and manage registries.
 pub enum PluginsCommand {
     /// List plugins found under plugin search directories.
@@ -49,7 +49,7 @@ pub enum PluginsCommand {
         #[arg(long, default_value_t = 25)]
         limit: u32,
     },
-    /// Install a plugin version into the cluster from a source-qualified
+    /// Install a plugin version into the library from a source-qualified
     /// coordinate or a local archive. The first installed version (or
     /// `--activate`) becomes the active version every node runs; deploy it
     /// with `plugins deploy`.
@@ -142,7 +142,7 @@ pub enum PluginsCommand {
     },
     /// Deploy a plugin instance. With no flags it runs on this node (or on
     /// `--node`) by hand: the instance's deployment there is `present`.
-    /// With `--replicas` the cluster scheduler (one daemon, under a cluster
+    /// With `--replicas` the library scheduler (one daemon, under a library
     /// lease) places it on that many nodes carrying every `--on` label and
     /// writes the deployments itself; `--manual` hands those deployments
     /// back to be managed by hand.
@@ -1746,7 +1746,7 @@ async fn set_plugin_deployed(
             bookclerk_plugin_host::version_grant(version)
                 .map_err(|err| anyhow::anyhow!("{err}"))?;
             if node_id != plane.node_id() && !list_node_ids(store).await?.contains(&node_id) {
-                anyhow::bail!("node `{node_id}` is not registered with this cluster");
+                anyhow::bail!("node `{node_id}` is not registered with this library");
             }
         } else if node_id == plane.node_id() {
             let plugin = installed.ok_or_else(|| {
@@ -1762,7 +1762,7 @@ async fn set_plugin_deployed(
                 )
             })?;
         } else if !list_node_ids(store).await?.contains(&node_id) {
-            anyhow::bail!("node `{node_id}` is not registered with this cluster");
+            anyhow::bail!("node `{node_id}` is not registered with this library");
         }
     }
     let desired = bookclerk_library::control_plane::DesiredState::operator(enabled);

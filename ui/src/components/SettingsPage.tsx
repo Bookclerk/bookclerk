@@ -8,7 +8,7 @@ import { BranchesPanel } from "@/components/BranchesPanel";
 import { canChangeBranchSharing } from "@/lib/join";
 import { SharedBranchesPanel } from "@/components/SharedBranchesPanel";
 import { ClerkCardsPanel } from "@/components/ClerkCardsPanel";
-import { ClusterConsentsPanel } from "@/components/ClusterConsentsPanel";
+import { LibraryConsentsPanel } from "@/components/LibraryConsentsPanel";
 import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
 import { OutputSettingsPanel } from "@/components/OutputSettingsPanel";
@@ -70,7 +70,7 @@ const DEFAULT_DAEMON_PORT = "8787";
 
 type ListenExposure = "localhost" | "all" | "custom";
 type ListenRow = { host: string; port: string };
-/** A Settings section. `clusters` is shown as "Library" (this server as a branch). */
+/** A Settings section. `libraries` is shown as "Library" (this server as a branch). */
 export type SettingsTab =
   | "account"
   | "users"
@@ -81,7 +81,7 @@ export type SettingsTab =
   | "nodes"
   | "branches"
   | "shared_branches"
-  | "clusters";
+  | "libraries";
 
 const ISOLATION_OPTIONS = [
   ["required", "Required"],
@@ -547,7 +547,7 @@ export function SettingsPage({
     ) {
       setActiveTab("account");
     }
-    if (!showLibrary && activeTab === "clusters") {
+    if (!showLibrary && activeTab === "libraries") {
       setActiveTab("account");
     }
     if (!showNodes && activeTab === "nodes") {
@@ -1007,7 +1007,7 @@ export function SettingsPage({
    * Flips this node's deployment of an instance and reloads the snapshot.
    *
    * The write is immediate (not part of the Save form): enablement is a
-   * cluster fact, not a draft value.
+   * library fact, not a draft value.
    */
   async function setDeployment(plugin: PluginSettingsGroup, desired: "present" | "absent") {
     const instanceId = plugin.plugin_instance_id;
@@ -1438,14 +1438,14 @@ export function SettingsPage({
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={activeTab === "clusters"}
+                  aria-selected={activeTab === "libraries"}
                   className={cn(
                     "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                    activeTab === "clusters"
+                    activeTab === "libraries"
                       ? "bg-ink text-paper shadow-sm"
                       : "text-ink/60 hover:text-ink",
                   )}
-                  onClick={() => selectTab("clusters")}
+                  onClick={() => selectTab("libraries")}
                 >
                   Library
                 </button>
@@ -1553,9 +1553,9 @@ export function SettingsPage({
             <OutputSettingsPanel onSessionExpired={onSessionExpired} />
           ) : null}
 
-          {activeTab === "clusters" && showLibrary ? (
+          {activeTab === "libraries" && showLibrary ? (
             <div className="space-y-10">
-              <ClusterConsentsPanel
+              <LibraryConsentsPanel
                 onSessionExpired={onSessionExpired}
                 sharingOnly={!showOperatorChrome}
               />
@@ -2036,7 +2036,7 @@ export function SettingsPage({
                                           aria-label={`${plugin.display_name?.trim() || plugin.id} ${instanceGroup ? "deployed" : "enabled"}`}
                                           title={
                                             plugin.placement
-                                              ? "Placed by the cluster scheduler; change its placement instead"
+                                              ? "Placed by the library scheduler; change its placement instead"
                                               : undefined
                                           }
                                           checked={enabled}

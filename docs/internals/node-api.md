@@ -2,7 +2,7 @@
 
 The wire protocols between the hosts of one library, and between the web app
 and its daemon. Setting up branches (including shared branches) is in
-[Libraries and branches](../server/cluster-hosts.md); the decision
+[Libraries and branches](../server/branches.md); the decision
 record is the [control-plane ADR](../adr/control-plane.md).
 
 ## The node API
@@ -12,22 +12,22 @@ operator-auth layers, and every request first passes the transport policy.
 
 | Route | Purpose |
 | --- | --- |
-| `GET info` | The library: `{cluster_id, library_name, origin, transport, enrollment, spki_fingerprint?, software_version, ancestry}` |
-| `POST enroll` | Redeem an invite: `{link_id, secret, sign_pk, box_pk, software_version}` → `{cluster_id, node_id}` |
-| `POST enroll/oauth` | Redeem an approved sign-in: `{code, code_verifier, redirect_uri, sign_pk, box_pk, branch_name, software_version, connection?}` → `{cluster_id, node_id}`; for `connection: "shared_branch"` also `{connection, bootstrap}` (sealed to `box_pk`); for a branch whose user chose to bring their store connections, also `accounts`, the user's shareable store accounts and secrets sealed to `box_pk` |
+| `GET info` | The library: `{library_id, library_name, origin, transport, enrollment, spki_fingerprint?, software_version, ancestry}` |
+| `POST enroll` | Redeem an invite: `{link_id, secret, sign_pk, box_pk, software_version}` → `{library_id, node_id}` |
+| `POST enroll/oauth` | Redeem an approved sign-in: `{code, code_verifier, redirect_uri, sign_pk, box_pk, branch_name, software_version, connection?}` → `{library_id, node_id}`; for `connection: "shared_branch"` also `{connection, bootstrap}` (sealed to `box_pk`); for a branch whose user chose to bring their store connections, also `accounts`, the user's shareable store accounts and secrets sealed to `box_pk` |
 | `GET connect` | The node socket (WebSocket, subprotocol `bookclerk-node.v1`) |
 | `GET artifacts/{sha256}` | An owner plugin archive, for a request signed `Authorization: Bookclerk-Node <node_id> <issued_at> <sig>` |
-| `PUT uploads/{id}/files/{n}`, `POST uploads/{id}/commit` | Uploads (see [Uploads](../server/cluster-hosts.md#uploads)) |
+| `PUT uploads/{id}/files/{n}`, `POST uploads/{id}/commit` | Uploads (see [Uploads](../server/branches.md#uploads)) |
 
 One route sits beside the node API, under `/api/copies/v1/`, with the same
 transport policy and its own bearer token:
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/copies/v1/{copy_id}/files/{n}` | One file of a copy the library granted, for `Authorization: Bookclerk-Copy <token>`. A branch gets the token from `copy.grant` on the node socket, a clerk from `copy.grant` on [the clerk socket](../server/sign-in.md#the-clerk-socket) (see [Taking a copy from the library](../server/cluster-hosts.md#taking-a-copy-from-the-library)) |
+| `GET /api/copies/v1/{copy_id}/files/{n}` | One file of a copy the library granted, for `Authorization: Bookclerk-Copy <token>`. A branch gets the token from `copy.grant` on the node socket, a clerk from `copy.grant` on [the clerk socket](../server/sign-in.md#the-clerk-socket) (see [Taking a copy from the library](../server/branches.md#taking-a-copy-from-the-library)) |
 
 **Handshake.** `hello {node_id, incarnation, software_version, resume}` →
-`challenge {nonce, cluster_id}` → `auth {sig}` (Ed25519 over the cluster,
+`challenge {nonce, library_id}` → `auth {sig}` (Ed25519 over the library,
 node, incarnation, nonce and the owner's canonical origin, so a signature
 relayed through another server fails) → `welcome`. An unknown node or a bad
 signature closes with 4401, a revoked node with 4403, a newer connection
@@ -48,20 +48,20 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `instance.config` | `CONFIG`, and `SECRETS` sealed to the node only for a node trusted with every job |
 | `observation` | `ok` (`materialized` or `error` for its own deployments) |
 | `secret.update` | `ok` (a refreshed store token, sealed to the owner, only for a ref handed with a live job), or `error` `refused` `kept_by_branch` for a single-keeper account a branch keeps and has pushed a sign-in for |
-| `accounts.update {sealed, revision}` | `accounts.updated {outcome}`: `applied`, `stale` (not newer than the last one applied) or `not_shared` (not an account this branch keeps there); see [One refresh keeper](../server/cluster-hosts.md#one-refresh-keeper) |
+| `accounts.update {sealed, revision}` | `accounts.updated {outcome}`: `applied`, `stale` (not newer than the last one applied) or `not_shared` (not an account this branch keeps there); see [One refresh keeper](../server/branches.md#one-refresh-keeper) |
 | `scan.results` | `scan.accepted {batch, upserted}` |
 | `scan.removed {account_id, batch, product_ids}` (at most 500 ids, after the job's rows) | `scan.accepted {batch, upserted}` (holdings removed), `lost`, or `error` `refused` |
 | `scan.pass_end {account_id, sync_token, complete, full}` (one per account, last) | `scan.accepted {batch: 0, upserted}` (holdings a complete full pass pruned), `lost`, or `error` `refused` |
-| `acquire.plan` | `acquire.targets {targets, destinations}`: each target is `{holding_id, plugin_key, account_id, title, library_id?, parent?, parent_library_id?}`, where `title` and `parent` are store listings `{product_id, source, marketplace, title, content_kind, is_abridged, asin?, isbn?, subtitle?, authors?, narrators?, series?, series_index?, series_product_id?, publisher?, categories?, length_minutes?, purchased_at?, published_at?}` (dates in RFC 3339) |
+| `acquire.plan` | `acquire.targets {targets, destinations}`: each target is `{holding_id, plugin_key, account_id, title, call_number?, parent?, parent_call_number?}`, where `title` and `parent` are store listings `{product_id, source, marketplace, title, content_kind, is_abridged, asin?, isbn?, subtitle?, authors?, narrators?, series?, series_index?, series_product_id?, publisher?, categories?, length_minutes?, purchased_at?, published_at?}` (dates in RFC 3339) |
 | `upload.grant` (each file of the manifest may carry `probe {bitrate_kbps, lossless, source_store}`, as may `catalog.upload`'s) | `upload.granted {upload_id, sealed_token, expires_in_secs}` |
-| `catalog.begin {share_books, include_branches}` | `catalog.session {fence, cursor, ancestry, destinations, wanted, members_books}`; `members_books` (absent reads as false) is the library's "Acquire all of this branch's members' books": the branch then also sends the members' books it lists (see [Acquiring all of a branch's members' books](../server/cluster-hosts.md#acquiring-all-of-a-branchs-members-books)) |
+| `catalog.begin {share_books, include_branches}` | `catalog.session {fence, cursor, ancestry, destinations, wanted, members_books}`; `members_books` (absent reads as false) is the library's "Acquire all of this branch's members' books": the branch then also sends the members' books it lists (see [Acquiring all of a branch's members' books](../server/branches.md#acquiring-all-of-a-branchs-members-books)) |
 | `catalog.sync {fence, batch, cursor, done, titles}` | `catalog.accepted {batch, upserted, skipped, wanted}`, or `lost` |
 | `catalog.upload {fence, store, product_id, files}` | `upload.granted` (then the upload routes above, job id `catalog`) |
 | `catalog.questions` | `catalog.ask {works}`: up to 100 questions `{work, identifiers}` waiting for this branch, or `error` `refused` |
-| `catalog.found {answers, missing}` | `ok`, or `error` `invalid` / `refused` (see [Shared catalog](../server/cluster-hosts.md#shared-catalog)) |
+| `catalog.found {answers, missing}` | `ok`, or `error` `invalid` / `refused` (see [Shared catalog](../server/branches.md#shared-catalog)) |
 | `requests.claim` | `requests.claimed {requests}`: up to 16 interlibrary requests `{job, generation, work, store, marketplace, product_id}` leased to this branch for 5 minutes, or `error` `refused` |
-| `requests.finish {job, generation, outcome}` | `ok`, `lost` when the lease moved on, or `error` `invalid` for a malformed job id or generation; `outcome` is `accepted`, `not_listed` or `failed` (see [Requesting a book from a branch](../server/cluster-hosts.md#requesting-a-book-from-a-branch)) |
-| `window.books {after}` | `window.page {works, next?}`: up to 100 works `{work, identifiers, editions}` of the library's books, or `error` `refused` / `invalid` (see [Books in other libraries](../server/cluster-hosts.md#books-in-other-libraries)). Each edition is `{edition, yours?, copy?}`; `copy` `{source_store?, content_type, bitrate_kbps?, lossless?, version}` describes the audio file the library holds of it (a lowercase `type/subtype` media type of at most 64 bytes, 1 to 20000 kbit/s, and a version of 1 to 64 letters, digits and `-` that changes when the file does) and is absent when it holds none. `after` and `next` are opaque cursor strings: empty or absent for the first page, otherwise up to 64 letters, digits and `-`. Each `next` sorts after the `after` it answers. |
+| `requests.finish {job, generation, outcome}` | `ok`, `lost` when the lease moved on, or `error` `invalid` for a malformed job id or generation; `outcome` is `accepted`, `not_listed` or `failed` (see [Requesting a book from a branch](../server/branches.md#requesting-a-book-from-a-branch)) |
+| `window.books {after}` | `window.page {works, next?}`: up to 100 works `{work, identifiers, editions}` of the library's books, or `error` `refused` / `invalid` (see [Books in other libraries](../server/branches.md#books-in-other-libraries)). Each edition is `{edition, yours?, copy?}`; `copy` `{source_store?, content_type, bitrate_kbps?, lossless?, version}` describes the audio file the library holds of it (a lowercase `type/subtype` media type of at most 64 bytes, 1 to 20000 kbit/s, and a version of 1 to 64 letters, digits and `-` that changes when the file does) and is absent when it holds none. `after` and `next` are opaque cursor strings: empty or absent for the first page, otherwise up to 64 letters, digits and `-`. Each `next` sorts after the `after` it answers. |
 | `copy.grant {store, marketplace?, product_id}` | `copy.granted {copy_id, sealed_token, expires_in_secs, copy, files}`: the copy the library holds of that listing's edition, for the node's owner. `copy` is the same object a `window.page` edition carries. `files` lists 1 to 1000 files `{name, role, size, content_type?, probe?}` with distinct names, the primary audio (`role` `audio`) first and exactly once; the other roles are `part`, `chapter`, `pdf`, `cover`, `sidecar`, `transcript` and `epub`. A file's place in the list is its `{n}` in the download route. The token is sealed to the node's box key and lives `expires_in_secs` (one hour). Otherwise `error` `refused` (not a branch this library trusts), `not_found` (the person may not take the edition, or the library holds no copy of it; one code for both), `invalid`, or `unavailable` (the library can't read its storage right now). |
 | `node.leaving` | `accepted`, then close 4403 (the node is revoked) |
 | `scan.request {account, plugin_instance_id}` | `scan.planned {created, duplicates, queue_full}`, or `error` `forbidden` / `invalid` |
@@ -95,7 +95,7 @@ The web UI holds one WebSocket to `GET /api/live` (subprotocol
 `bookclerk-live.v1`) and re-reads a panel's ordinary routes when the daemon
 says its topic changed, instead of polling on timers. The socket carries
 topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
-`consents`, `clusters`, `users`, `discover`), never rows, ids or secrets:
+`consents`, `libraries`, `users`, `discover`), never rows, ids or secrets:
 
 ```json
 {"v":1,"type":"hello","topics":["jobs","nodes"]}
@@ -115,7 +115,7 @@ topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
   session is re-checked every 30 s, and a signed-out user's socket closes
   with 4401.
 - Changes are found by reading revisions from the shared database every
-  2 s (so a change made on any shared node, or by `bookclerk clusters
+  2 s (so a change made on any shared node, or by `bookclerk libraries
   join|leave`, is seen) and by in-process notices for immediate updates.
   Each topic has one counter row in `live_topic_revisions`, and every
   write to a topic's tables adds one to it in the same atomic batch as

@@ -75,13 +75,13 @@ pub struct AcquireRequest {
     pub job_id: Option<String>,
     /// Refuse a new scratch dir when registered temps already exceed this.
     pub temp_quota_bytes: Option<u64>,
-    /// The `<library id>` to name the title by instead of its edition in
+    /// The `<call number>` to name the title by instead of its edition in
     /// `library`: a host acquiring for a shared node names the title as the
     /// owner does, since its scratch library's edition ids are its own.
-    pub library_id: Option<String>,
+    pub call_number: Option<String>,
     /// Likewise for the title's podcast parent, whose folder an episode
     /// may be saved in.
-    pub parent_library_id: Option<String>,
+    pub parent_call_number: Option<String>,
     /// Metadata providers asked for the plain-audio catalog and chapter
     /// overlay. The default has none, so plain audio keeps its store tags.
     pub metadata: AcquireMetadata,
@@ -224,23 +224,23 @@ pub async fn acquire_book_indexed(
     source: &dyn ContentSource,
 ) -> Result<AcquireResult> {
     let owner = file_owner_of_request(library, &req).await?;
-    pin_library_id(&mut req, owner.as_ref());
+    pin_call_number(&mut req, owner.as_ref());
     let recorded = recording_destinations(library, destinations, owner.as_ref(), &req.source);
     acquire_book_recorded(library, &recorded, req, index, source).await
 }
 
-/// Names the whole acquire with the library id of the edition `owner`
+/// Names the whole acquire with the call number of the edition `owner`
 /// read once at its start, so no later naming step re-reads the edition
 /// and, on a failed read, names a file differently from the others.
-/// A library id the request already carries (an owner's, for a host) is
+/// A call number the request already carries (an owner's, for a host) is
 /// kept.
-fn pin_library_id(req: &mut AcquireRequest, owner: Option<&FileOwner>) {
-    if req.library_id.is_some() {
+fn pin_call_number(req: &mut AcquireRequest, owner: Option<&FileOwner>) {
+    if req.call_number.is_some() {
         return;
     }
     match owner {
         Some(FileOwner::Edition(edition)) => {
-            req.library_id = bookclerk_library::library_id(edition)
+            req.call_number = bookclerk_library::call_number(edition)
         }
         None => {}
     }
@@ -1123,11 +1123,11 @@ async fn planned_plain_part_storage_key(
     let mut part_ctx = file_ctx;
     part_ctx.title = format!("{} — {}", req.title, file.title);
     part_ctx.asin = format!("{}-p{:03}", req.asin, idx + 1);
-    // The default file templates name a title by `<library id>`, not
+    // The default file templates name a title by `<call number>`, not
     // `<asin>`, so the part number goes on the id too: two parts with one
     // title must not share a name.
-    part_ctx.library_id = part_ctx
-        .library_id
+    part_ctx.call_number = part_ctx
+        .call_number
         .map(|id| format!("{id}-p{:03}", idx + 1));
     part_ctx.chapter_number = Some(u32::try_from(idx + 1).unwrap_or(1));
     part_ctx.chapter_title = Some(file.title.clone());
@@ -2612,13 +2612,13 @@ fn probe_audio_duration_ms(path: &Path) -> Option<u64> {
 /// Builds a naming context from the request, filling gaps from the library row.
 async fn base_naming_ctx(library: &LibraryStore, req: &AcquireRequest) -> NamingContext {
     let book = resolve_title(library, req).await;
-    let library_id = match (&req.library_id, &book) {
+    let call_number = match (&req.call_number, &book) {
         (Some(id), _) => Some(id.clone()),
-        (None, Some(title)) => bookclerk_library::library_id(&title.edition_id),
+        (None, Some(title)) => bookclerk_library::call_number(&title.edition_id),
         (None, None) => None,
     };
     NamingContext {
-        library_id,
+        call_number,
         asin: book
             .as_ref()
             .map(|b| b.asin_or_isbn().to_string())
@@ -2688,16 +2688,16 @@ async fn base_folder_naming_ctx(
         length_minutes: parent.length_minutes,
         is_abridged: parent.is_abridged,
         content_kind: Some(parent.content_kind.clone()),
-        library_id: match &req.parent_library_id {
+        call_number: match &req.parent_call_number {
             Some(id) => Some(id.clone()),
-            None => library_id_or_none(library, &parent.uuid).await,
+            None => call_number_or_none(library, &parent.uuid).await,
         },
         ..Default::default()
     }
 }
 
 /// The short Bookclerk id of the edition `book_uuid` resolves to, for
-/// `<library id>` ([`bookclerk_library::library_id`]).
+/// `<call number>` ([`bookclerk_library::call_number`]).
 ///
 /// # Returns
 ///
@@ -2706,22 +2706,22 @@ async fn base_folder_naming_ctx(
 /// # Errors
 ///
 /// Returns an error when the edition cannot be read.
-pub async fn library_id_of(
+pub async fn call_number_of(
     library: &LibraryStore,
     book_uuid: &str,
 ) -> bookclerk_library::Result<Option<String>> {
     Ok(library
         .edition_of_book(book_uuid)
         .await?
-        .and_then(|edition| bookclerk_library::library_id(&edition)))
+        .and_then(|edition| bookclerk_library::call_number(&edition)))
 }
 
-/// [`library_id_of`] for naming outside an acquire's pinned id
-/// ([`pin_library_id`]): a planned key a caller only compares (a preview,
+/// [`call_number_of`] for naming outside an acquire's pinned id
+/// ([`pin_call_number`]): a planned key a caller only compares (a preview,
 /// a scan pattern). A failed read is logged and names by product id; an
 /// acquire never reaches here for its own title, whose id it pinned.
-async fn library_id_or_none(library: &LibraryStore, book_uuid: &str) -> Option<String> {
-    library_id_of(library, book_uuid)
+async fn call_number_or_none(library: &LibraryStore, book_uuid: &str) -> Option<String> {
+    call_number_of(library, book_uuid)
         .await
         .unwrap_or_else(|err| {
             tracing::warn!(error = %err, "could not read a title's edition for naming");
@@ -2730,8 +2730,8 @@ async fn library_id_or_none(library: &LibraryStore, book_uuid: &str) -> Option<S
 }
 
 /// The folder and file naming contexts of `req`. Both carry the edition's
-/// `<library id>`, which the templates must write
-/// ([`bookclerk_naming::require_library_id`]), so two editions of one work
+/// `<call number>`, which the templates must write
+/// ([`bookclerk_naming::require_call_number`]), so two editions of one work
 /// never share a path.
 async fn naming_contexts(
     library: &LibraryStore,
@@ -2930,7 +2930,7 @@ pub async fn planned_title_names(
             variant.options.path_limits,
         );
         // The folder is the title's own only when every other title probed
-        // (other product and library id, title and subtitle) would be filed
+        // (other product and call number, title and subtitle) would be filed
         // elsewhere: one
         // wholly different, and one that only extends this title's fields
         // (`Dune: Messiah: …`), which a template using part of a field
@@ -2942,7 +2942,7 @@ pub async fn planned_title_names(
         let filed_apart = probes.iter().all(|probe| {
             let mut other = folder_ctx.clone();
             other.asin = probe(&folder_ctx.asin);
-            other.library_id = folder_ctx.library_id.as_deref().map(probe);
+            other.call_number = folder_ctx.call_number.as_deref().map(probe);
             other.title = probe(&folder_ctx.title);
             other.subtitle = Some(probe(folder_ctx.subtitle.as_deref().unwrap_or_default()));
             let other_key = storage_key_with_contexts(
@@ -2965,13 +2965,13 @@ pub async fn planned_title_names(
             names.audio_stems.push(stem);
         }
         // Plain parts: the file template with the part's title and a
-        // `-pNNN` product and library id (as `planned_plain_part_storage_key`
+        // `-pNNN` product and call number (as `planned_plain_part_storage_key`
         // names them).
         let mut part_ctx = file_ctx.clone();
         part_ctx.title = format!("{} — {TITLE_SENTINEL}", variant.title);
         part_ctx.asin = format!("{}-p{NUMBER_SENTINEL}", variant.asin);
-        part_ctx.library_id = part_ctx
-            .library_id
+        part_ctx.call_number = part_ctx
+            .call_number
             .map(|id| format!("{id}-p{NUMBER_SENTINEL}"));
         part_ctx.chapter_number = Some(NUMBER_SENTINEL);
         part_ctx.chapter_title = Some(TITLE_SENTINEL.into());
@@ -3022,14 +3022,14 @@ pub async fn acquire_pdf_only(
 ) -> Result<AcquireResult> {
     let owner = file_owner_of_request(library, req).await?;
     let mut req = req.clone();
-    pin_library_id(&mut req, owner.as_ref());
+    pin_call_number(&mut req, owner.as_ref());
     let recorded = recording_destinations(library, destinations, owner.as_ref(), &req.source);
     acquire_pdf_only_recorded(library, &recorded, &req, source).await
 }
 
 /// Refuses an acquire whose files could land on another edition's: every
-/// destination's templates must write `<library id>`
-/// ([`bookclerk_naming::require_library_id`]), and the planned audio name
+/// destination's templates must write `<call number>`
+/// ([`bookclerk_naming::require_call_number`]), and the planned audio name
 /// must not already hold another edition's file (two edition ids that share
 /// their short id). Nothing is fetched or overwritten when either fails.
 ///
@@ -3049,7 +3049,7 @@ async fn check_edition_paths(
     for item in &destinations.items {
         let dest_req = request_for_destination(req, item);
         let templates = dest_req.options.naming_templates();
-        bookclerk_naming::require_library_id(
+        bookclerk_naming::require_call_number(
             &templates.folder,
             &templates.file,
             &templates.chapter_file,
@@ -3238,7 +3238,7 @@ async fn sibling_pdf_is_present(
 /// Returns an error when the library lookup fails, and refuses a book whose
 /// row has no edition yet (a listing the resolver refused or has not
 /// resolved): its files would be written without an ownership record and
-/// named without a library id, so it waits for a scan to resolve it.
+/// named without a call number, so it waits for a scan to resolve it.
 async fn file_owner_of_request(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -3501,8 +3501,8 @@ mod tests {
             write_destinations: None,
             job_id,
             temp_quota_bytes: quota,
-            library_id: None,
-            parent_library_id: None,
+            call_number: None,
+            parent_call_number: None,
             metadata: AcquireMetadata::default(),
             library_copies: LibraryCopySource::default(),
         }
@@ -4443,26 +4443,26 @@ mod tests {
     }
 
     /// Destinations writing to `root` with titles named
-    /// `<title> [<library id>]/<title>`.
+    /// `<title> [<call number>]/<title>`.
     fn title_named_destinations(
         root: &Path,
         puts: Arc<std::sync::atomic::AtomicUsize>,
     ) -> AcquireDestinations {
         let mut destinations = counting_destinations(root, puts);
         for item in &mut destinations.items {
-            item.options.folder_template = Some("<title> [<library id>]".into());
+            item.options.folder_template = Some("<title> [<call number>]".into());
             item.options.file_template = Some("<title>".into());
         }
         destinations
     }
 
-    /// The `<library id>` of `uuid`'s edition.
+    /// The `<call number>` of `uuid`'s edition.
     async fn short_id(store: &LibraryStore, uuid: &str) -> String {
         store
             .edition_of_book(uuid)
             .await
             .unwrap()
-            .map(|edition| bookclerk_library::library_id(&edition).unwrap())
+            .map(|edition| bookclerk_library::call_number(&edition).unwrap())
             .unwrap()
     }
 
@@ -4710,7 +4710,7 @@ mod tests {
         let store = test_store().await;
         let tmp = tempfile::tempdir().unwrap();
         let mut req = dummy_req(tmp.path(), None, None);
-        req.library_id = Some("hd4j63pc".into());
+        req.call_number = Some("hd4j63pc".into());
         let part = |n: &str| PreparedAudioFile {
             path: tmp.path().join(n),
             title: "Introduction".into(),
@@ -4741,12 +4741,12 @@ mod tests {
         let job = job_id(&store).await;
         // Two editions whose short ids collide plan one name.
         let mut first = edition_req(&cache, job.clone(), "B00ONE", "user-1", &first_uuid);
-        first.library_id = Some("samesame".into());
+        first.call_number = Some("samesame".into());
         acquire_book(&store, &destinations, first, &source)
             .await
             .unwrap();
         let mut second = edition_req(&cache, job, "B00TWO", "user-1", &second_uuid);
-        second.library_id = Some("samesame".into());
+        second.call_number = Some("samesame".into());
         let refused = acquire_book(&store, &destinations, second, &source).await;
         assert!(
             refused.is_err(),
@@ -4803,7 +4803,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn templates_without_the_library_id_acquire_nothing() {
+    async fn templates_without_the_call_number_acquire_nothing() {
         let store = test_store().await;
         let uuid = edition_book(&store, "B00ONE", "user-1", "Twin", None).await;
         let tmp = tempfile::tempdir().unwrap();
@@ -4823,13 +4823,13 @@ mod tests {
         let err = acquire_book(&store, &destinations, req.clone(), &source)
             .await
             .expect_err("a template that can share a path is refused");
-        assert!(err.to_string().contains("<library id>"), "{err}");
+        assert!(err.to_string().contains("<call number>"), "{err}");
         assert!(err.to_string().contains("local"), "{err}");
         // The companion PDF alone is refused the same way.
         let err = acquire_pdf_only(&store, &destinations, &req, &source)
             .await
             .expect_err("a PDF-only acquire with such a template is refused");
-        assert!(err.to_string().contains("<library id>"), "{err}");
+        assert!(err.to_string().contains("<call number>"), "{err}");
         assert_eq!(fetches.load(Ordering::SeqCst), 0);
         assert_eq!(puts.load(Ordering::SeqCst), 0);
     }
@@ -4976,7 +4976,7 @@ mod tests {
         let mut destinations = title_named_destinations(&local, puts.clone());
         let mut second_destination = title_named_destinations(&archive, puts).items.remove(0);
         second_destination.id = DestinationId::new("s3").unwrap();
-        second_destination.options.folder_template = Some("Archive/<title> [<library id>]".into());
+        second_destination.options.folder_template = Some("Archive/<title> [<call number>]".into());
         destinations.items.push(second_destination);
         let source = CountingSource {
             fetches: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -5275,8 +5275,8 @@ mod tests {
         assert_eq!(names.folders, vec!["Ann Author/One".to_string()]);
         assert!(names.own_folder, "a folder named for the title is its own");
         // So is one named only for the edition.
-        let mut by_id = upload_naming_req(tmp.path(), "B00ONE", "One", "<library id>");
-        by_id.library_id = Some("hd4j63pc".into());
+        let mut by_id = upload_naming_req(tmp.path(), "B00ONE", "One", "<call number>");
+        by_id.call_number = Some("hd4j63pc".into());
         let names = planned_title_names(&store, &by_id).await;
         assert_eq!(names.folders, vec!["hd4j63pc".to_string()]);
         assert!(

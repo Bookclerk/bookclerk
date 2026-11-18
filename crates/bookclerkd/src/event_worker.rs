@@ -361,7 +361,7 @@ async fn deployed_subscribers(library: &LibraryStore, node_id: &str) -> Vec<Depl
     if deployments.is_empty() {
         return Vec::new();
     }
-    // One point read per deployed instance, not a cluster-wide instance
+    // One point read per deployed instance, not a library-wide instance
     // list, so the read stays within an adapter's result-row limit.
     let mut instances = Vec::with_capacity(deployments.len());
     for row in deployments.iter().filter(|row| row.desired.runs()) {
@@ -384,10 +384,10 @@ async fn deployed_subscribers(library: &LibraryStore, node_id: &str) -> Vec<Depl
 /// What the active installed version of a plugin key subscribes to.
 #[derive(Debug, PartialEq)]
 enum ActiveVersion {
-    /// The key has a cluster install; these are its granted subscriptions
+    /// The key has a library install; these are its granted subscriptions
     /// (empty when the install would not spawn).
     Subscriptions(Vec<EventCatalogSubscription>),
-    /// The key has no cluster install, so a host-local tree is what runs.
+    /// The key has no library install, so a host-local tree is what runs.
     NotInstalled,
     /// The install could not be read; deployment reconcile stops on the
     /// same error, so nothing is known to run.
@@ -538,7 +538,7 @@ fn granted_catalog_subscriptions(
 }
 
 /// [`granted_catalog_subscriptions`] for a manifest that is not on disk,
-/// such as the active installed version of a cluster install.
+/// such as the active installed version of a library install.
 fn granted_manifest_subscriptions(
     manifest: &bookclerk_plugin_host::PluginManifest,
     plugin_key: &bookclerk_plugin_catalog::PluginKey,
@@ -2147,7 +2147,7 @@ queue = "other"
         );
     }
 
-    /// Key of the echo plugin installed as a cluster version in tests.
+    /// Key of the echo plugin installed as a library version in tests.
     const INSTALLED_ECHO_KEY: &str = "cargo:https://index.crates.io/#bookclerk-plugin-echo";
 
     /// The echo manifest as an installed version row, with `grant_json`.
