@@ -310,10 +310,11 @@ struct FeedState {
     next_seq: u64,
     /// Pages not yet known to be read, oldest first.
     pending: VecDeque<PendingPage>,
-    /// Set before receiving and cleared when the page is handed out: still
-    /// set means a receive was interrupted or failed, and messages it took
-    /// stay hidden until the visibility timeout, so the next page is
-    /// incomplete.
+    /// Set before receiving, or when a release fails, and cleared when the
+    /// page is handed out: still set means a receive was interrupted or
+    /// failed, or a release failed before the page reporting it was saved,
+    /// and messages stay hidden until the visibility timeout, so the next
+    /// page is incomplete.
     #[serde(default)]
     receiving: bool,
     /// The last page handed out as incomplete. Until a cursor at or past
@@ -587,6 +588,9 @@ impl QueueFeed {
         let later: Vec<String> = later.into_iter().flat_map(|page| page.receipts).collect();
         let released = self.release_all(&later).await;
         state.pending.clear();
+        // The receipts are forgotten here, so a failed release must be
+        // remembered in the same write, before the page reporting it exists.
+        state.receiving |= !released;
         self.persist(state)?;
         Ok(released)
     }
@@ -1111,6 +1115,38 @@ mod tests {
         assert!(!lost.complete);
         let acknowledged = feed.changes(Some(&lost.cursor), 0).await.expect("ack");
         assert!(acknowledged.complete, "a cursor past the gap clears it");
+    }
+
+    #[tokio::test]
+    async fn a_failed_release_survives_a_stop_before_the_page_is_saved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let queue = Arc::new(FakeQueue::default());
+        let first_feed = feed(&queue, dir.path());
+        let start = first_feed.changes(None, 0).await.expect("start");
+        queue.send(put("a", "t"));
+        let first = first_feed
+            .changes(Some(&start.cursor), 0)
+            .await
+            .expect("first");
+        assert_eq!(keys(&first), ["a"]);
+        queue.state.lock().unwrap().fail_release = true;
+        // Settle alone, as if the guest stopped right after it.
+        let (_, start_seq) = parse_cursor(&start.cursor).expect("cursor");
+        let released = {
+            let mut state = first_feed.state.lock().await;
+            first_feed
+                .settle(&mut state, start_seq)
+                .await
+                .expect("settle")
+        };
+        assert!(!released);
+        drop(first_feed);
+        queue.state.lock().unwrap().fail_release = false;
+        let page = feed(&queue, dir.path())
+            .changes(Some(&start.cursor), 0)
+            .await
+            .expect("after restart");
+        assert!(!page.complete, "the hidden message is not forgotten");
     }
 
     #[tokio::test]
