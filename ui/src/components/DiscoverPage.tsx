@@ -1442,8 +1442,21 @@ function ShelfSection({
       obs = next;
     };
     watch();
-    window.addEventListener("resize", watch);
+    // Re-measured when the scroll area changes height, which can happen
+    // without a window resize (the header wrapping, for one).
+    let lastHeight = root?.clientHeight;
+    const resized =
+      root && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            if (root.clientHeight === lastHeight) return;
+            lastHeight = root.clientHeight;
+            watch();
+          })
+        : null;
+    if (resized && root) resized.observe(root);
+    else window.addEventListener("resize", watch);
     return () => {
+      resized?.disconnect();
       window.removeEventListener("resize", watch);
       obs?.disconnect();
     };
