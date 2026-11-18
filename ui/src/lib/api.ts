@@ -825,14 +825,21 @@ export async function fetchSigninMethods(): Promise<{
  * @throws {ApiError} When the library answers anything else.
  */
 export async function logout(): Promise<void> {
-  // What a viewer pays depends on their linked store accounts.
+  // What a viewer pays depends on their linked store accounts. Cleared
+  // again once the library answers: a lookup asked while the old session
+  // cookie still worked must not reach the next viewer either.
   clearLookupCaches();
-  const res = await fetch("/api/auth/logout", {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
-  });
+  let res: Response;
+  try {
+    res = await fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+  } finally {
+    clearLookupCaches();
+  }
   if (!res.ok) {
     throw new ApiError(res.status, `Sign-out failed (${res.status})`);
   }
@@ -2891,14 +2898,19 @@ export async function portalLoginIntegration(body: {
  * @returns Resolves when logout finishes (best-effort).
  */
 export async function portalLogout(): Promise<void> {
-  // What a viewer pays depends on their linked store accounts.
+  // What a viewer pays depends on their linked store accounts. Cleared
+  // again once the library answers (see `logout`).
   clearLookupCaches();
-  await fetch("/api/portal/logout", {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
-  });
+  try {
+    await fetch("/api/portal/logout", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+  } finally {
+    clearLookupCaches();
+  }
 }
 
 /**

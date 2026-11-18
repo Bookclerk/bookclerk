@@ -1419,20 +1419,34 @@ function ShelfSection({
   useEffect(() => {
     const el = sectionRef.current;
     if (!el || active) return;
-    const obs = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          setActive(true);
-          obs.disconnect();
-        }
-      },
+    // Measured against Discover's own scroll area, which would otherwise
+    // clip the shelf before the margin applies.
+    const root = el.closest<HTMLElement>("[data-discover-scroll]");
+    let obs: IntersectionObserver | null = null;
+    const watch = () => {
+      obs?.disconnect();
       // Half a screen below the fold: the next shelf down is priced before
-      // the viewer reaches it. Measured against Discover's own scroll area,
-      // which would otherwise clip the shelf before the margin applies.
-      { root: el.closest("[data-discover-scroll]"), rootMargin: "50% 0px" },
-    );
-    obs.observe(el);
-    return () => obs.disconnect();
+      // the viewer reaches it. In pixels, because a percentage margin is
+      // taken from the root's width, not its height.
+      const half = Math.round((root?.clientHeight || window.innerHeight) / 2);
+      const next = new IntersectionObserver(
+        (entries) => {
+          if (entries.some((e) => e.isIntersecting)) {
+            setActive(true);
+            next.disconnect();
+          }
+        },
+        { root, rootMargin: `${half}px 0px` },
+      );
+      next.observe(el);
+      obs = next;
+    };
+    watch();
+    window.addEventListener("resize", watch);
+    return () => {
+      window.removeEventListener("resize", watch);
+      obs?.disconnect();
+    };
   }, [active]);
 
   const orderedItems = useMemo(() => preferCatalogLanguageOrder(shelf.items), [shelf.items]);
