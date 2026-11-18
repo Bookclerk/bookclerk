@@ -253,7 +253,9 @@ pub(crate) fn plan_files(files: &[LibraryCopyFile]) -> Option<Vec<TakenFile>> {
 /// A single audio file keeps the chapters the confined tag reader finds in
 /// it. Several audio files become parts in listed order, each titled by
 /// its one chapter when it has exactly one (a chapter file), and are
-/// packaged by the pipeline as a store's parts are.
+/// packaged by the pipeline as a store's parts are; when a part holds
+/// several chapters, the parts' chapters are carried on the joined
+/// timeline ([`joined_chapters`]).
 ///
 /// # Arguments
 ///
@@ -295,6 +297,7 @@ pub(crate) async fn fetch_library_copy(
         .iter()
         .filter(|file| file.kind != Taken::Cover)
         .count();
+    let mut part_tags = Vec::new();
     for file in &taken {
         let path = dir.join(format!("{:03}.{}", file.index, file.ext));
         copy.fetch_file(file.index, &path).await?;
@@ -323,8 +326,91 @@ pub(crate) async fn fetch_library_copy(
             }
         }
         fetch.parts.push(audio_part(path, &tags));
+        part_tags.push(tags);
+    }
+    if audio_files > 1 {
+        let parts: Vec<PartChapters> = part_tags.iter().map(PartChapters::of).collect();
+        fetch.chapters = joined_chapters(&parts);
     }
     Ok(fetch)
+}
+
+/// What the tag reader found in one part of a copy with several audio
+/// files, for [`joined_chapters`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PartChapters {
+    /// The part's own chapters: title and start within the part, in
+    /// milliseconds.
+    pub chapters: Vec<(String, u64)>,
+    /// The part's running time in milliseconds, when its container states
+    /// it exactly; an estimate is not enough to place later chapters.
+    pub exact_ms: Option<u64>,
+}
+
+impl PartChapters {
+    /// The chapters and exact running time of one part's tags.
+    fn of(tags: &bookclerk_media::TagRecord) -> Self {
+        Self {
+            chapters: tags
+                .chapters
+                .iter()
+                .map(|chapter| (chapter.title.clone(), chapter.start_ms))
+                .collect(),
+            exact_ms: tags
+                .duration
+                .filter(|duration| {
+                    duration.ms > 0
+                        && match duration.precision {
+                            bookclerk_tags::DurationPrecision::Exact => true,
+                            bookclerk_tags::DurationPrecision::Estimated => false,
+                        }
+                })
+                .map(|duration| duration.ms),
+        }
+    }
+}
+
+/// The chapters of a book held as several audio files, on the timeline of
+/// the files joined in order: each part's own chapters moved by the
+/// running time of the parts before it.
+///
+/// A part without chapters of its own is one chapter, `Part <n>`, at its
+/// start. A chapter that a part before the last places at or past that
+/// part's own end is left out, so the starts never go backwards.
+///
+/// # Returns
+///
+/// Empty when no part has more than one chapter (the pipeline then makes
+/// one chapter per part from the part titles, timed by the audio it
+/// joins), or when a part before the last states no exact running time,
+/// so later chapters could not be placed.
+#[must_use]
+pub(crate) fn joined_chapters(parts: &[PartChapters]) -> Vec<(String, u64)> {
+    if !parts.iter().any(|part| part.chapters.len() > 1) {
+        return Vec::new();
+    }
+    let mut joined = Vec::new();
+    let mut offset = 0u64;
+    for (n, part) in parts.iter().enumerate() {
+        if part.chapters.is_empty() {
+            joined.push((format!("Part {}", n + 1), offset));
+        }
+        let last = n + 1 == parts.len();
+        if !last && part.exact_ms.is_none() {
+            return Vec::new();
+        }
+        for (title, start_ms) in &part.chapters {
+            // A chapter a part places at or past its own end would land
+            // inside a later part: it is left out, so starts never go
+            // backwards.
+            if part.exact_ms.is_some_and(|ms| *start_ms >= ms) && !last {
+                continue;
+            }
+            joined.push((title.clone(), offset.saturating_add(*start_ms)));
+        }
+        offset = offset.saturating_add(part.exact_ms.unwrap_or(0));
+    }
+    joined
 }
 
 /// One downloaded audio file as a part: titled by its one chapter when it
@@ -607,8 +693,7 @@ pub(crate) mod tests {
         assert_eq!(fetch.parts.len(), 1);
         assert_eq!(fetch.parts[0].path, dir.join("000.mp3"));
 
-        // Several files are parts in listed order and state no book-wide
-        // chapters: the pipeline builds those from the parts.
+        // Several files are parts in listed order.
         let copy = MemoryCopy::new(
             Some("libro"),
             vec![
@@ -621,7 +706,12 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(fetch.m4b_path, None);
-        assert!(fetch.chapters.is_empty());
+        // The second part holds several chapters: they are carried, moved
+        // past the first part's running time.
+        let first_ms = fetch.parts[0].duration_ms.expect("the MP3 states its time");
+        assert!(fetch.chapters.len() >= 2, "{:?}", fetch.chapters);
+        assert!(fetch.chapters.windows(2).all(|pair| pair[0].1 <= pair[1].1));
+        assert!(fetch.chapters.iter().any(|(_, start)| *start >= first_ms));
         assert_eq!(
             fetch
                 .parts
@@ -682,6 +772,77 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no audio"), "{err}");
+    }
+
+    /// A part with `chapters` (`(title, start)`) and an exact running time.
+    fn part(chapters: &[(&str, u64)], exact_ms: Option<u64>) -> PartChapters {
+        PartChapters {
+            chapters: chapters
+                .iter()
+                .map(|(title, start)| ((*title).to_string(), *start))
+                .collect(),
+            exact_ms,
+        }
+    }
+
+    #[test]
+    fn chapters_inside_parts_are_carried_on_the_joined_timeline() {
+        let titled = |chapters: Vec<(String, u64)>| -> Vec<(String, u64)> { chapters };
+        // Two parts with chapters of their own, and one with none.
+        let joined = joined_chapters(&[
+            part(&[("One", 0), ("Two", 40_000)], Some(100_000)),
+            part(&[], Some(50_000)),
+            part(&[("Three", 5_000), ("Four", 60_000)], None),
+        ]);
+        assert_eq!(
+            titled(joined),
+            [
+                ("One".to_string(), 0),
+                ("Two".to_string(), 40_000),
+                ("Part 2".to_string(), 100_000),
+                ("Three".to_string(), 155_000),
+                ("Four".to_string(), 210_000),
+            ]
+        );
+
+        // Chapter files (one chapter each) and untagged parts are left to
+        // the pipeline, which times one chapter per part from the audio.
+        assert!(joined_chapters(&[
+            part(&[("One", 0)], Some(1_000)),
+            part(&[("Two", 0)], Some(1_000))
+        ])
+        .is_empty());
+        assert!(joined_chapters(&[part(&[], None), part(&[], None)]).is_empty());
+        assert!(joined_chapters(&[]).is_empty());
+
+        // A part before the last without an exact running time: later
+        // chapters cannot be placed, so none are stated.
+        assert!(joined_chapters(&[
+            part(&[("One", 0), ("Two", 9)], None),
+            part(&[("Three", 0)], Some(1_000))
+        ])
+        .is_empty());
+        // A chapter placed past its own part's end is left out.
+        assert_eq!(
+            joined_chapters(&[
+                part(&[("One", 0), ("Two", 500), ("Stray", 1_000)], Some(1_000)),
+                part(&[("Three", 0)], Some(1_000))
+            ]),
+            [
+                ("One".to_string(), 0),
+                ("Two".to_string(), 500),
+                ("Three".to_string(), 1_000)
+            ]
+        );
+        // The last part's running time is never needed.
+        assert_eq!(
+            joined_chapters(&[
+                part(&[("One", 0)], Some(1_000)),
+                part(&[("Two", 0), ("Three", 7)], None)
+            ])
+            .len(),
+            3
+        );
     }
 
     #[test]

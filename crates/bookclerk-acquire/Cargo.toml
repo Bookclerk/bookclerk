@@ -22,6 +22,7 @@ bookclerk-plugin-manifest.workspace = true
 bookclerk-naming.workspace = true
 bookclerk-source.workspace = true
 bookclerk-storage.workspace = true
+bookclerk-tags.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
