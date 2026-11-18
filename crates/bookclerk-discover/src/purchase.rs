@@ -1,10 +1,12 @@
 //! Suggest storefronts where a title might be purchased (with live pricing).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use bookclerk_enrich::normalize_region;
-use bookclerk_source::{PriceLookup, PurchaseHintOpts, SourcePurchaseHint, SourceRegistry};
+use bookclerk_source::{
+    PriceLookup, PricedAnswer, PurchaseHintOpts, SourcePurchaseHint, SourceRegistry,
+};
 
 use crate::error::Result;
 use crate::identity::works_match;
@@ -321,10 +323,16 @@ fn purchase_hints_cache_key(query: &PurchaseHintsQuery, region: &str) -> String 
 
 /// Resolve every catalog match and attach live prices (view-time).
 ///
+/// One query through [`resolve_purchase_hints_batch`], so a single card
+/// is priced the same way as a page of them: the same lookups, the same
+/// evaluation of title-search records, and the same cache.
+///
 /// # Arguments
 ///
 /// * `registry` - Configured content-source or integration registry.
-/// * `query` - Query vector or free-text search string.
+/// * `library` - The library whose listing pool places title-search
+///   records; `None` keeps only records that carry the card's ISBN or ASIN.
+/// * `query` - The card to price.
 ///
 /// # Returns
 ///
@@ -335,173 +343,14 @@ fn purchase_hints_cache_key(query: &PurchaseHintsQuery, region: &str) -> String 
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn resolve_purchase_hints(
     registry: &SourceRegistry,
+    library: Option<&bookclerk_library::LibraryStore>,
     query: &PurchaseHintsQuery,
 ) -> Result<PurchaseHintsResponse> {
-    let region = normalize_region(query.region.as_deref().unwrap_or("us"));
-    let cache_key = purchase_hints_cache_key(query, &region);
-    if let Some(cached) = purchase_hints_cache().get(&cache_key) {
-        return Ok(cached);
-    }
-    let response = resolve_purchase_hints_uncached(registry, query, &region).await?;
-    purchase_hints_cache().insert(cache_key, response.clone());
-    Ok(response)
-}
-
-/// Live catalog + pricing lookup: seed trusted ids, then merge title-matched storefront hints.
-async fn resolve_purchase_hints_uncached(
-    registry: &SourceRegistry,
-    query: &PurchaseHintsQuery,
-    region: &str,
-) -> Result<PurchaseHintsResponse> {
-    let region = region.to_string();
-    let title = query.title.trim();
-    let authors = query
-        .authors
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let asin = query
-        .asin
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let isbn = query
-        .isbn
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-
-    let mut hints: Vec<PurchaseHint> = Vec::new();
-
-    // Only seed Audible from ASIN/product id. Libro ISBN≠catalog membership
-    // (Audible exclusives often carry a bibliographic ISBN that 404s on
-    // libro.fm) — Libro rows come only from a live purchase_hint that verified
-    // the product page. Chirp/GA Magento ids stay soft (title-matched).
-    for ed in &query.store_editions {
-        if !seed_source_is_trusted(&ed.source) {
-            continue;
-        }
-        if let Some(seed) =
-            seed_purchase_hint(&ed.source, &ed.product_id, Some(title.to_string()), &region)
-        {
-            push_dedupe(&mut hints, seed);
-        }
-    }
-
-    if let (Some(source), Some(pid)) = (
-        query.candidate_source.as_deref(),
-        query.candidate_product_id.as_deref(),
-    ) {
-        if seed_source_is_trusted(source) {
-            if let Some(seed) = seed_purchase_hint(source, pid, Some(title.to_string()), &region) {
-                push_dedupe(&mut hints, seed);
-            }
-        }
-        // Candidate ASIN may differ from product id.
-        if source.eq_ignore_ascii_case("audible") {
-            // already seeded
-        } else if let Some(a) = asin {
-            push_dedupe(
-                &mut hints,
-                audible_hint(a, Some(title.to_string()), &region),
-            );
-        }
-    } else if let Some(a) = asin {
-        push_dedupe(
-            &mut hints,
-            audible_hint(a, Some(title.to_string()), &region),
-        );
-    }
-
-    // One parallel priced pass across storefronts (replaces the old URL-only
-    // expand + sequential priced expand, which doubled wall time).
-    let priced_opts = PurchaseHintOpts {
-        product_id: query.candidate_product_id.clone(),
-        title: Some(title.to_string()).filter(|s| !s.is_empty()),
-        authors: authors.map(str::to_string),
-        asin: asin.map(str::to_string),
-        isbn: isbn.map(str::to_string),
-        region: region.clone(),
-        with_price: true,
-        lookup: PriceLookup::Unspecified,
-    };
-    append_registry_hints(
-        registry,
-        &mut hints,
-        &priced_opts,
-        query.candidate_source.as_deref(),
-    )
-    .await;
-
-    // Price known editions that the registry pass did not already cover.
-    let mut edition_set = tokio::task::JoinSet::new();
-    for ed in &query.store_editions {
-        let source_id = ed.source.trim().to_ascii_lowercase();
-        let product_id = ed.product_id.trim().to_string();
-        if product_id.is_empty() {
-            continue;
-        }
-        if hints.iter().any(|h| {
-            h.source.eq_ignore_ascii_case(&source_id)
-                && h.product_id == product_id
-                && h.price_cents.is_some()
-        }) {
-            continue;
-        }
-        let Some(source) = registry.get(&ed.source) else {
-            continue;
-        };
-        let opts = PurchaseHintOpts {
-            product_id: Some(product_id),
-            title: Some(title.to_string()).filter(|s| !s.is_empty()),
-            authors: authors.map(str::to_string),
-            asin: asin.map(str::to_string),
-            isbn: isbn.map(str::to_string),
-            region: region.clone(),
-            with_price: true,
-            lookup: PriceLookup::Unspecified,
-        };
-        let trusted = seed_source_is_trusted(&ed.source);
-        let q_title = title.to_string();
-        let q_authors = authors.map(str::to_string);
-        edition_set.spawn(async move {
-            let mapped = match source.purchase_hint(&opts).await {
-                Ok(Some(hint)) => PurchaseHint::from_source_hint(source.id(), hint),
-                Ok(None) => return None,
-                Err(err) => {
-                    tracing::debug!(source = %source.id(), error = %err, "purchase_hint failed");
-                    return None;
-                }
-            };
-            if trusted || catalog_hint_matches_query(&q_title, q_authors.as_deref(), &mapped) {
-                Some(mapped)
-            } else {
-                tracing::debug!(
-                    source = %mapped.source,
-                    product_id = %mapped.product_id,
-                    hint_title = ?mapped.title,
-                    query_title = %q_title,
-                    "dropping stored edition purchase hint that failed title match"
-                );
-                None
-            }
-        });
-    }
-    while let Some(joined) = edition_set.join_next().await {
-        if let Ok(Some(mapped)) = joined {
-            merge_or_push(&mut hints, mapped);
-        }
-    }
-
-    let preferred = preferred_source_set(&query.preferred_sources);
-    sort_hints_for_display(&mut hints, &preferred);
-    let best = best_purchase_hint_preferring(&hints, &preferred)
-        .map(|h| best_hint_for_caller(h, &preferred));
-    Ok(PurchaseHintsResponse {
-        hints,
-        best,
-        incomplete: false,
-    })
+    resolve_purchase_hints_batch(registry, library, std::slice::from_ref(query), 1)
+        .await
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| Ok(PurchaseHintsResponse::default()))
 }
 
 /// Drops live purchase hints that sell another recording than the card's.
@@ -750,9 +599,17 @@ pub const BATCH_DEADLINE: Duration = Duration::from_secs(10);
 /// ([`bookclerk_source::SourceError::RateLimited`]) is left alone for the
 /// time it said (see [`RATE_LIMIT_FIRST_PAUSE`]).
 ///
+/// Each store is asked the strongest way it supports ([`store_query_opts`]):
+/// by the product it already sells, by the card's exact ISBN or ASIN when it
+/// declared that lookup, else by title. A title search's records are
+/// stored in the listing pool and kept only for the card's recording.
+///
 /// # Arguments
 ///
 /// * `registry` - Configured content-source or integration registry.
+/// * `library` - The library whose listing pool places title-search
+///   records (see [`evaluate_answer`]); `None` keeps only records that
+///   carry the card's ISBN or ASIN.
 /// * `queries` - Batch of purchase-hint queries.
 /// * `max_concurrent` - Unused since each store is asked once; kept for
 ///   the route's call shape.
@@ -762,6 +619,7 @@ pub const BATCH_DEADLINE: Duration = Duration::from_secs(10);
 /// One result per query, in request order.
 pub async fn resolve_purchase_hints_batch(
     registry: &SourceRegistry,
+    library: Option<&bookclerk_library::LibraryStore>,
     queries: &[PurchaseHintsQuery],
     max_concurrent: usize,
 ) -> Vec<Result<PurchaseHintsResponse>> {
@@ -801,15 +659,17 @@ pub async fn resolve_purchase_hints_batch(
         }
         let opts: Vec<PurchaseHintOpts> = pending
             .iter()
-            .map(|&i| store_query_opts(&queries[i], &regions[i], &id))
+            .map(|&i| store_query_opts(&queries[i], &regions[i], source.as_ref()))
             .collect();
         set.spawn(async move {
-            let outcome = tokio::time::timeout_at(deadline, source.purchase_hints(&opts)).await;
-            (id, opts, outcome)
+            let outcome =
+                tokio::time::timeout_at(deadline, source.purchase_hint_answers(&opts)).await;
+            (id, source.plugin_key().to_string(), opts, outcome)
         });
     }
+    let mut stores: Vec<StoreAnswers> = Vec::new();
     while let Some(joined) = set.join_next().await {
-        let (id, opts, outcome) = match joined {
+        let (id, plugin_key, opts, outcome) = match joined {
             Ok(v) => v,
             Err(err) => {
                 tracing::debug!(error = %err, "purchase_hints task join failed");
@@ -837,34 +697,46 @@ pub async fn resolve_purchase_hints_batch(
                 continue;
             }
         };
-        for ((&i, query_opts), answer) in pending.iter().zip(&opts).zip(answers) {
+        stores.push(StoreAnswers {
+            id,
+            plugin_key,
+            opts,
+            answers,
+        });
+    }
+
+    // Title-search records go to the listing pool, which says which
+    // recording each one is, within what is left of the batch's time.
+    let placed = match library {
+        Some(library) => {
+            let place = place_records(library, registry, queries, &pending, &regions, &stores);
+            match tokio::time::timeout_at(deadline, place).await {
+                Ok(Ok(placed)) => Some(placed),
+                Ok(Err(err)) => {
+                    tracing::debug!(error = %err, "purchase-hint records not placed");
+                    None
+                }
+                Err(_) => {
+                    tracing::debug!("purchase-hint records not placed before the deadline");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
+    for store in &stores {
+        for ((&i, query_opts), answer) in pending.iter().zip(&store.opts).zip(&store.answers) {
             // `None` is no proof the store lacks the title: a guest that
             // ran out of its own time budget answers `None` for every title
-            // it never tried. Only a hint counts as an answer.
-            let Some(hint) = answer else { continue };
+            // it never tried. Only a hint or a record counts as an answer.
+            if answer.hint.is_none() && answer.records.is_empty() {
+                continue;
+            }
             answered[i] = true;
-            let mapped = PurchaseHint::from_source_hint(&id, hint);
-            let trusted_product = seed_source_is_trusted(&id)
-                && query_opts
-                    .product_id
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|s| !s.is_empty());
-            if trusted_product
-                || catalog_hint_matches_query(
-                    query_opts.title.as_deref().unwrap_or(""),
-                    query_opts.authors.as_deref(),
-                    &mapped,
-                )
-            {
-                merge_or_push(&mut hints[i], mapped);
-            } else {
-                tracing::debug!(
-                    source = %id,
-                    product_id = %mapped.product_id,
-                    hint_title = ?mapped.title,
-                    "dropping batch purchase hint that failed title match"
-                );
+            let pool = placed.as_ref().map(|p| p.view(i, &store.plugin_key));
+            for hint in evaluate_answer(&store.id, &queries[i], query_opts, answer, pool) {
+                merge_or_push(&mut hints[i], hint);
             }
         }
     }
@@ -892,36 +764,324 @@ pub async fn resolve_purchase_hints_batch(
     out.into_iter().map(|r| Ok(r.unwrap_or_default())).collect()
 }
 
-/// What one store is asked about one query in a batch: the query's title,
-/// people and identifiers, plus the product id the query already knows for
-/// that store (its own card, or a listed edition), so the store needs no
-/// search.
-fn store_query_opts(query: &PurchaseHintsQuery, region: &str, store: &str) -> PurchaseHintOpts {
+/// What one store answered for a batch: its queries and answers, in order.
+struct StoreAnswers {
+    /// Store (plugin) id the hints are shown under.
+    id: String,
+    /// The store's PluginKey, which names its listings in the pool.
+    plugin_key: String,
+    /// What the store was asked, one per pending query.
+    opts: Vec<PurchaseHintOpts>,
+    /// Its answers, one per query in order.
+    answers: Vec<PricedAnswer>,
+}
+
+/// What the listing pool says about a batch's cards and records.
+#[derive(Debug, Default)]
+struct Placement {
+    /// The recordings (expression ids) of each card's own editions, by
+    /// query index; a card the pool knows nothing of is left out.
+    cards: HashMap<usize, BTreeSet<String>>,
+    /// The recordings the pool placed each `(plugin_key, product_id)` in.
+    expressions: HashMap<(String, String), BTreeSet<String>>,
+}
+
+/// One card's view of a [`Placement`], for one store's answer.
+#[derive(Clone, Copy)]
+struct PoolView<'a> {
+    /// The card's recordings; `None` when the pool knows none of its editions.
+    card: Option<&'a BTreeSet<String>>,
+    /// Every placed product's recordings.
+    expressions: &'a HashMap<(String, String), BTreeSet<String>>,
+    /// The answering store's PluginKey.
+    plugin_key: &'a str,
+}
+
+impl Placement {
+    /// Query `index`'s view, for an answer from the store `plugin_key`.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The query's position in the batch.
+    /// * `plugin_key` - The answering store's PluginKey.
+    fn view<'a>(&'a self, index: usize, plugin_key: &'a str) -> PoolView<'a> {
+        PoolView {
+            card: self.cards.get(&index),
+            expressions: &self.expressions,
+            plugin_key,
+        }
+    }
+}
+
+impl PoolView<'_> {
+    /// Whether the pool placed `product_id` (from this view's store) in
+    /// the card's recording. `false` when the pool knows the card's
+    /// recording or the product not.
+    ///
+    /// # Arguments
+    ///
+    /// * `product_id` - The store's product id for the record.
+    fn same_recording(&self, product_id: &str) -> bool {
+        let Some(card) = self.card else {
+            return false;
+        };
+        self.expressions
+            .get(&(self.plugin_key.to_string(), product_id.to_string()))
+            .is_some_and(|own| own.iter().any(|x| card.contains(x)))
+    }
+}
+
+/// Stores every title-search record of a batch in the listing pool and
+/// reads which recording each record and each card's own editions are.
+///
+/// # Arguments
+///
+/// * `library` - The library holding the pool.
+/// * `registry` - Maps each card edition's store to its PluginKey.
+/// * `queries` - The batch's queries.
+/// * `pending` - The indexes of the queries the stores were asked about.
+/// * `regions` - Each query's marketplace, by index.
+/// * `stores` - What each store answered.
+///
+/// # Errors
+///
+/// Returns the library error from storing the records or reading the pool.
+async fn place_records(
+    library: &bookclerk_library::LibraryStore,
+    registry: &SourceRegistry,
+    queries: &[PurchaseHintsQuery],
+    pending: &[usize],
+    regions: &[String],
+    stores: &[StoreAnswers],
+) -> Result<Placement> {
+    let now = chrono::Utc::now();
+    let mut listings = Vec::new();
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for store in stores {
+        for (&i, answer) in pending.iter().zip(&store.answers) {
+            for priced in &answer.records {
+                let region = regions.get(i).map_or("us", String::as_str);
+                listings.push(crate::pool::catalog_listing(
+                    &store.plugin_key,
+                    region,
+                    &priced.record,
+                    now,
+                ));
+                pairs.push((store.plugin_key.clone(), priced.record.product_id.clone()));
+            }
+        }
+    }
+    if listings.is_empty() {
+        return Ok(Placement::default());
+    }
+    library.record_catalog_listings(&listings).await?;
+    let key_of = |source: &str| registry.get(source).map(|s| s.plugin_key().to_string());
+    let card_pairs: Vec<(usize, Vec<(String, String)>)> = pending
+        .iter()
+        .filter_map(|&i| queries.get(i).map(|q| (i, q)))
+        .map(|(i, query)| {
+            let own = card_editions(query)
+                .into_iter()
+                .filter_map(|(source, product)| Some((key_of(&source)?, product)))
+                .collect();
+            (i, own)
+        })
+        .collect();
+    pairs.extend(card_pairs.iter().flat_map(|(_, own)| own.iter().cloned()));
+    pairs.sort();
+    pairs.dedup();
+    let expressions = library.listing_expressions(&pairs).await?;
+    let cards = card_pairs
+        .into_iter()
+        .filter_map(|(i, own)| {
+            let recordings: BTreeSet<String> = own
+                .iter()
+                .filter_map(|pair| expressions.get(pair))
+                .flatten()
+                .cloned()
+                .collect();
+            (!recordings.is_empty()).then_some((i, recordings))
+        })
+        .collect();
+    Ok(Placement { cards, expressions })
+}
+
+/// Whether a record carries the card's own ISBN or ASIN.
+///
+/// # Arguments
+///
+/// * `record` - A listing a store's title search returned.
+/// * `query` - The card being priced.
+fn record_names_card(record: &bookclerk_source::CatalogHit, query: &PurchaseHintsQuery) -> bool {
+    let isbn = query
+        .isbn
+        .as_deref()
+        .map(bookclerk_enrich::canonicalize_isbn)
+        .filter(|s| !s.is_empty());
+    let asin = query
+        .asin
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_uppercase);
+    record.identifiers.iter().any(|id| match id.scheme {
+        bookclerk_source::records::IdentifierScheme::Isbn => isbn
+            .as_deref()
+            .is_some_and(|isbn| bookclerk_enrich::canonicalize_isbn(&id.value) == isbn),
+        bookclerk_source::records::IdentifierScheme::Asin => asin
+            .as_deref()
+            .is_some_and(|asin| id.value.trim().eq_ignore_ascii_case(asin)),
+        // A card names no Open Library id to compare.
+        bookclerk_source::records::IdentifierScheme::OpenLibraryEdition
+        | bookclerk_source::records::IdentifierScheme::OpenLibraryWork => false,
+    })
+}
+
+/// The hints one store's answer adds to a card.
+///
+/// - Records (a title search's listings): each one that carries the card's
+///   ISBN or ASIN, or that the pool placed in the card's recording. The
+///   store's own pick is not used, and titles are never compared.
+/// - An exact ISBN or ASIN lookup the store declared: its hint.
+/// - A bare hint for the product the card already names at a trusted
+///   store: that hint.
+/// - Any other bare hint (a store that returns no records): kept when its
+///   title and authors match the card's, as before records existed.
+///
+/// # Arguments
+///
+/// * `store` - The store's id, which the hints are shown under.
+/// * `query` - The card being priced.
+/// * `opts` - What the store was asked.
+/// * `answer` - What it answered.
+/// * `pool` - Where the listing pool placed the card and the records;
+///   `None` when there is no pool or it could not be read in time.
+///
+/// # Returns
+///
+/// The hints to merge into the card's response.
+fn evaluate_answer(
+    store: &str,
+    query: &PurchaseHintsQuery,
+    opts: &PurchaseHintOpts,
+    answer: &PricedAnswer,
+    pool: Option<PoolView<'_>>,
+) -> Vec<PurchaseHint> {
+    if !answer.records.is_empty() {
+        let kept: Vec<PurchaseHint> = answer
+            .records
+            .iter()
+            .filter(|priced| {
+                record_names_card(&priced.record, query)
+                    || pool.is_some_and(|pool| pool.same_recording(&priced.record.product_id))
+            })
+            .map(|priced| PurchaseHint::from_source_hint(store, priced.hint.clone()))
+            .collect();
+        if kept.len() < answer.records.len() {
+            tracing::debug!(
+                source = %store,
+                kept = kept.len(),
+                returned = answer.records.len(),
+                "dropping title-search records for another recording than the card's"
+            );
+        }
+        return kept;
+    }
+    let Some(hint) = answer.hint.clone() else {
+        return Vec::new();
+    };
+    let mapped = PurchaseHint::from_source_hint(store, hint);
+    let exact = matches!(opts.lookup, PriceLookup::Isbn | PriceLookup::Asin);
+    let trusted_product = seed_source_is_trusted(store)
+        && opts
+            .product_id
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|s| !s.is_empty());
+    if exact
+        || trusted_product
+        || catalog_hint_matches_query(
+            opts.title.as_deref().unwrap_or(""),
+            opts.authors.as_deref(),
+            &mapped,
+        )
+    {
+        vec![mapped]
+    } else {
+        tracing::debug!(
+            source = %store,
+            product_id = %mapped.product_id,
+            hint_title = ?mapped.title,
+            "dropping batch purchase hint that failed title match"
+        );
+        Vec::new()
+    }
+}
+
+/// What one store is asked about one query in a batch, the strongest way
+/// the store supports.
+///
+/// 1. The product the query already knows for that store (its own card,
+///    or a listed edition): `lookup = product`, so the store needs no search.
+/// 2. The card's ISBN, when the store declared exact ISBN lookups.
+/// 3. The card's ASIN, when the store declared exact ASIN lookups.
+/// 4. Otherwise a title search (`lookup = title`), whose records the host
+///    evaluates (see [`evaluate_answer`]).
+///
+/// Every field the query has is still sent, for guests that predate
+/// `lookup`.
+///
+/// # Arguments
+///
+/// * `query` - The card.
+/// * `region` - The card's marketplace.
+/// * `store` - The store being asked.
+fn store_query_opts(
+    query: &PurchaseHintsQuery,
+    region: &str,
+    store: &dyn bookclerk_source::ContentSource,
+) -> PurchaseHintOpts {
+    let id = store.id();
     let own = query
         .candidate_source
         .as_deref()
-        .is_some_and(|s| s.eq_ignore_ascii_case(store))
+        .is_some_and(|s| s.eq_ignore_ascii_case(id))
         .then(|| query.candidate_product_id.clone())
         .flatten();
     let edition = query
         .store_editions
         .iter()
-        .find(|e| e.source.eq_ignore_ascii_case(store))
+        .find(|e| e.source.eq_ignore_ascii_case(id))
         .map(|e| e.product_id.clone());
     let clean = |v: Option<&str>| {
         v.map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string)
     };
+    let product_id = clean(own.as_deref()).or_else(|| clean(edition.as_deref()));
+    let isbn = clean(query.isbn.as_deref());
+    let asin = clean(query.asin.as_deref());
+    let title = clean(Some(&query.title));
+    let lookup = if product_id.is_some() {
+        PriceLookup::Product
+    } else if isbn.is_some() && store.answers_price_by_isbn() {
+        PriceLookup::Isbn
+    } else if asin.is_some() && store.answers_price_by_asin() {
+        PriceLookup::Asin
+    } else if title.is_some() {
+        PriceLookup::Title
+    } else {
+        PriceLookup::Unspecified
+    };
     PurchaseHintOpts {
-        product_id: clean(own.as_deref()).or_else(|| clean(edition.as_deref())),
-        title: clean(Some(&query.title)),
+        product_id,
+        title,
         authors: clean(query.authors.as_deref()),
-        asin: clean(query.asin.as_deref()),
-        isbn: clean(query.isbn.as_deref()),
+        asin,
+        isbn,
         region: region.to_string(),
         with_price: true,
-        lookup: PriceLookup::Unspecified,
+        lookup,
     }
 }
 
@@ -1493,12 +1653,65 @@ mod tests {
         answer: Answer,
         /// `purchase_hints` calls received.
         batches: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        /// Declares exact ASIN lookups.
+        by_asin: bool,
+        /// What a title search returns as records (none: a bare hint).
+        records: Vec<bookclerk_source::PricedListing>,
+    }
+
+    impl BatchStore {
+        /// A store answering every batch with `answer`, counting its calls
+        /// in `batches`, declaring no identifier lookup and returning no
+        /// records.
+        fn new(
+            id: &'static str,
+            answer: Answer,
+            batches: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        ) -> Self {
+            Self {
+                id,
+                answer,
+                batches,
+                by_asin: false,
+                records: Vec::new(),
+            }
+        }
     }
 
     #[async_trait::async_trait]
     impl bookclerk_source::ContentSource for BatchStore {
         fn id(&self) -> &str {
             self.id
+        }
+
+        fn answers_price_by_asin(&self) -> bool {
+            self.by_asin
+        }
+
+        async fn purchase_hint_answers(
+            &self,
+            opts: &[PurchaseHintOpts],
+        ) -> bookclerk_source::Result<Vec<PricedAnswer>> {
+            if self.records.is_empty() {
+                let hints = self.purchase_hints(opts).await?;
+                return Ok(hints.into_iter().map(PricedAnswer::from).collect());
+            }
+            self.batches
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(opts
+                .iter()
+                .map(|o| match o.lookup {
+                    PriceLookup::Title => PricedAnswer {
+                        // The store's own pick is its first hit.
+                        hint: self.records.first().map(|r| r.hint.clone()),
+                        records: self.records.clone(),
+                    },
+                    PriceLookup::Unspecified
+                    | PriceLookup::Product
+                    | PriceLookup::Isbn
+                    | PriceLookup::Asin => PricedAnswer::default(),
+                })
+                .collect())
         }
 
         fn portal_auth_mode(&self) -> bookclerk_source::PortalAuthMode {
@@ -1618,11 +1831,11 @@ mod tests {
     ) {
         let batches = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut registry = SourceRegistry::new();
-        registry.register(std::sync::Arc::new(BatchStore {
+        registry.register(std::sync::Arc::new(BatchStore::new(
             id,
             answer,
-            batches: std::sync::Arc::clone(&batches),
-        }));
+            std::sync::Arc::clone(&batches),
+        )));
         (registry, batches)
     }
 
@@ -1675,11 +1888,11 @@ mod tests {
             .unwrap();
         let mut registry = SourceRegistry::new();
         for id in ["libro", "chirp", "audible"] {
-            registry.register(std::sync::Arc::new(BatchStore {
+            registry.register(std::sync::Arc::new(BatchStore::new(
                 id,
-                answer: Answer::Priced,
-                batches: std::sync::Arc::default(),
-            }));
+                Answer::Priced,
+                std::sync::Arc::default(),
+            )));
         }
         let priced = |source: &str, product: &str, cents: i64| PurchaseHint {
             source: source.into(),
@@ -1756,6 +1969,144 @@ mod tests {
         assert!(!kept.contains(&"L1"), "kept {kept:?}");
     }
 
+    /// A Sunlit Man listing `product` of `kind`, credited like the
+    /// narration, with `isbn` when given.
+    fn sunlit_record(
+        product: &str,
+        kind: bookclerk_source::records::ExpressionKind,
+        isbn: Option<&str>,
+        cents: i64,
+    ) -> bookclerk_source::PricedListing {
+        use bookclerk_source::records::{credit, CreditRole, Identifier, IdentifierScheme};
+        bookclerk_source::PricedListing {
+            record: bookclerk_source::CatalogHit {
+                product_id: product.into(),
+                title: "The Sunlit Man".into(),
+                language: Some("en".into()),
+                is_abridged: Some(false),
+                work_kind: bookclerk_source::records::WorkKind::Book,
+                expression_kind: kind,
+                media_kind: bookclerk_source::records::MediaKind::Audio,
+                credits: [
+                    ("Brandon Sanderson", CreditRole::Author),
+                    ("William DeMeritt", CreditRole::Narrator),
+                ]
+                .into_iter()
+                .filter_map(|(name, role)| credit(name, role))
+                .collect(),
+                identifiers: isbn
+                    .map(|value| Identifier {
+                        scheme: IdentifierScheme::Isbn,
+                        value: value.into(),
+                        marketplace: None,
+                    })
+                    .into_iter()
+                    .collect(),
+                ..bookclerk_source::CatalogHit::default()
+            },
+            hint: SourcePurchaseHint {
+                product_id: product.into(),
+                title: Some("The Sunlit Man".into()),
+                price_cents: Some(cents),
+                currency: Some("USD".into()),
+                ..SourcePurchaseHint::default()
+            },
+        }
+    }
+
+    /// A title search's records price a card only with the recording the
+    /// card names: by its ISBN without a pool, by the pool's placement with
+    /// one. The cheaper dramatisation of the same title never prices it.
+    #[tokio::test]
+    async fn title_records_price_only_the_cards_recording() {
+        use bookclerk_source::records::ExpressionKind;
+        let records = vec![
+            sunlit_record("D1", ExpressionKind::Dramatisation, None, 500),
+            sunlit_record(
+                "N1",
+                ExpressionKind::Narration,
+                Some("9781250890009"),
+                1_500,
+            ),
+        ];
+        let mut registry = SourceRegistry::new();
+        registry.register(std::sync::Arc::new(BatchStore {
+            records,
+            ..BatchStore::new("records-a", Answer::Priced, std::sync::Arc::default())
+        }));
+        let by_isbn = PurchaseHintsQuery {
+            title: "Records by ISBN".into(),
+            isbn: Some("978-1-250-89000-9".into()),
+            ..PurchaseHintsQuery::default()
+        };
+        let results = resolve_purchase_hints_batch(&registry, None, &[by_isbn], 4).await;
+        let response = results[0].as_ref().unwrap();
+        let kept: Vec<&str> = response
+            .hints
+            .iter()
+            .map(|h| h.product_id.as_str())
+            .collect();
+        assert_eq!(kept, vec!["N1"]);
+        assert_eq!(response.best.as_ref().unwrap().price_cents, Some(1_500));
+        assert!(!response.incomplete);
+
+        // With a pool: the card is a narration the pool already lists at
+        // another store; a record with no shared identifier is kept because
+        // the pool places it in that narration, and the dramatisation goes.
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let card = sunlit_record("L1", ExpressionKind::Narration, None, 0);
+        library
+            .record_catalog_listings(&[crate::pool::catalog_listing(
+                "records-libro",
+                "us",
+                &card.record,
+                chrono::Utc::now(),
+            )])
+            .await
+            .unwrap();
+        let mut registry = SourceRegistry::new();
+        registry.register(std::sync::Arc::new(BatchStore::new(
+            "records-libro",
+            Answer::Untried,
+            std::sync::Arc::default(),
+        )));
+        registry.register(std::sync::Arc::new(BatchStore {
+            records: vec![
+                sunlit_record("D2", ExpressionKind::Dramatisation, None, 500),
+                sunlit_record("N2", ExpressionKind::Narration, None, 1_400),
+            ],
+            ..BatchStore::new("records-b", Answer::Priced, std::sync::Arc::default())
+        }));
+        let by_pool = PurchaseHintsQuery {
+            title: "Records by pool".into(),
+            candidate_source: Some("records-libro".into()),
+            candidate_product_id: Some("L1".into()),
+            ..PurchaseHintsQuery::default()
+        };
+        let without_pool =
+            resolve_purchase_hints_batch(&registry, None, std::slice::from_ref(&by_pool), 4).await;
+        assert!(
+            without_pool[0].as_ref().unwrap().hints.is_empty(),
+            "no pool and no shared identifier keeps no record"
+        );
+        // Another title, so the answer above is not read from the cache.
+        let by_pool = PurchaseHintsQuery {
+            title: "Records by pool, placed".into(),
+            ..by_pool
+        };
+        let results = resolve_purchase_hints_batch(&registry, Some(&library), &[by_pool], 4).await;
+        let kept: Vec<&str> = results[0]
+            .as_ref()
+            .unwrap()
+            .hints
+            .iter()
+            .map(|h| h.product_id.as_str())
+            .collect();
+        assert_eq!(kept, vec!["N2"]);
+    }
+
     /// A page of cards is one call per store; member prices only reach a
     /// viewer with an account there; answered queries come from the cache.
     #[tokio::test]
@@ -1765,7 +2116,7 @@ mod tests {
             batch_query("member", &["batch-priced"]),
             batch_query("stranger", &[]),
         ];
-        let results = resolve_purchase_hints_batch(&registry, &queries, 4).await;
+        let results = resolve_purchase_hints_batch(&registry, None, &queries, 4).await;
         assert_eq!(batches.load(std::sync::atomic::Ordering::SeqCst), 1);
         let member = results[0].as_ref().unwrap().best.clone().unwrap();
         assert_eq!(member.price_cents, Some(500));
@@ -1773,7 +2124,7 @@ mod tests {
         assert_eq!(stranger.price_cents, Some(1_000));
         assert!(stranger.member_price_cents.is_none());
 
-        let again = resolve_purchase_hints_batch(&registry, &queries, 4).await;
+        let again = resolve_purchase_hints_batch(&registry, None, &queries, 4).await;
         assert_eq!(batches.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(again[0].as_ref().unwrap().best.is_some());
     }
@@ -1784,14 +2135,14 @@ mod tests {
     async fn a_rate_limited_store_is_paused_for_the_next_batch() {
         let (registry, batches) = one_store("batch-limited", Answer::Limited);
         let first = vec![batch_query("limited-1", &[])];
-        let results = resolve_purchase_hints_batch(&registry, &first, 4).await;
+        let results = resolve_purchase_hints_batch(&registry, None, &first, 4).await;
         assert!(results[0].as_ref().unwrap().hints.is_empty());
         assert!(store_breaker_open(
             "batch-limited",
             std::time::Instant::now()
         ));
         let second = vec![batch_query("limited-2", &[])];
-        resolve_purchase_hints_batch(&registry, &second, 4).await;
+        resolve_purchase_hints_batch(&registry, None, &second, 4).await;
         assert_eq!(batches.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
@@ -1801,7 +2152,7 @@ mod tests {
         let (registry, batches) = one_store("batch-broken", Answer::Broken);
         let mut query = batch_query("broken", &[]);
         query.asin = Some("B000000009".into());
-        let results = resolve_purchase_hints_batch(&registry, &[query.clone()], 4).await;
+        let results = resolve_purchase_hints_batch(&registry, None, &[query.clone()], 4).await;
         assert_eq!(batches.load(std::sync::atomic::Ordering::SeqCst), 1);
         let response = results[0].as_ref().unwrap();
         assert_eq!(response.hints[0].source, "audible");
@@ -1819,15 +2170,15 @@ mod tests {
     async fn an_untried_query_is_incomplete_and_asked_again() {
         let (registry, batches) = one_store("batch-untried", Answer::Untried);
         let queries = vec![batch_query("untried", &[])];
-        let first = resolve_purchase_hints_batch(&registry, &queries, 4).await;
+        let first = resolve_purchase_hints_batch(&registry, None, &queries, 4).await;
         assert!(first[0].as_ref().unwrap().incomplete);
-        let again = resolve_purchase_hints_batch(&registry, &queries, 4).await;
+        let again = resolve_purchase_hints_batch(&registry, None, &queries, 4).await;
         assert!(again[0].as_ref().unwrap().incomplete);
         assert_eq!(batches.load(std::sync::atomic::Ordering::SeqCst), 2);
 
         let (registry, _) = one_store("batch-complete", Answer::Priced);
         let priced =
-            resolve_purchase_hints_batch(&registry, &[batch_query("complete", &[])], 4).await;
+            resolve_purchase_hints_batch(&registry, None, &[batch_query("complete", &[])], 4).await;
         assert!(!priced[0].as_ref().unwrap().incomplete);
     }
 
@@ -1865,22 +2216,31 @@ mod tests {
             region: None,
             preferred_sources: Vec::new(),
         };
+        let store = |id| BatchStore::new(id, Answer::Priced, std::sync::Arc::default());
+        let chirp = store_query_opts(&query, "us", &store("chirp"));
+        assert_eq!(chirp.product_id.as_deref(), Some("12345"));
+        assert_eq!(chirp.lookup, PriceLookup::Product);
         assert_eq!(
-            store_query_opts(&query, "us", "chirp")
-                .product_id
-                .as_deref(),
-            Some("12345")
-        );
-        assert_eq!(
-            store_query_opts(&query, "us", "libro")
+            store_query_opts(&query, "us", &store("libro"))
                 .product_id
                 .as_deref(),
             Some("9780441172719")
         );
-        let audible = store_query_opts(&query, "us", "audible");
+        // A store with no product for the card searches by title, unless
+        // it declared exact lookups by an identifier the card has.
+        let audible = store_query_opts(&query, "us", &store("audible"));
         assert!(audible.product_id.is_none());
         assert_eq!(audible.asin.as_deref(), Some("B002V1OF70"));
+        assert_eq!(audible.lookup, PriceLookup::Title);
         assert!(audible.with_price);
+        let by_asin = BatchStore {
+            by_asin: true,
+            ..store("audible")
+        };
+        assert_eq!(
+            store_query_opts(&query, "us", &by_asin).lookup,
+            PriceLookup::Asin
+        );
     }
 
     #[test]

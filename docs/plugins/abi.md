@@ -1029,9 +1029,11 @@ and keeps only the recording the card is about, so a store never has to
 tell a narration from a dramatisation of the same title. A bare hint is
 still accepted and carries no records.
 
-The host plumbs the declarations and records through today. Choosing the
-strongest declared method per store and evaluating title records follows
-in a later change, so until then it sends `unspecified` as before.
+The host asks each store the strongest way it declared: by the store's
+own product when the card names one, then by exact ISBN, then by exact
+ASIN, then by title (see
+[Discovery](../internals/discovery.md#store-links-and-pricing) for how
+it evaluates the answers).
 
 When the store answers **429**, return a `PluginError` with code
 `rate_limited` and, when the store sent `Retry-After`, `details.retryAfterMs`
