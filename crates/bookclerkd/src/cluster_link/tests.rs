@@ -2682,7 +2682,7 @@ mod results_and_uploads {
             pdf_key: None,
             keys,
         };
-        let manifest = upload_manifest(&destinations, outbox.path(), &acquired)
+        let manifest = upload_manifest(&destinations, outbox.path(), &acquired, None)
             .await
             .unwrap();
         assert_eq!(manifest.len(), 2, "{manifest:?}");
@@ -2699,11 +2699,84 @@ mod results_and_uploads {
             ..acquired.clone()
         };
         assert!(
-            upload_manifest(&destinations, outbox.path(), &missing)
+            upload_manifest(&destinations, outbox.path(), &missing, None)
                 .await
                 .is_err(),
             "a destination with no file fails the title"
         );
+    }
+
+    /// The manifest states what a probe found in each audio file (media
+    /// type from the bytes, bitrate, the store it came from); a file the
+    /// probe cannot read and a file that is not audio carry none and keep
+    /// the media type of their extension.
+    #[tokio::test]
+    async fn the_upload_manifest_carries_each_audio_files_probe() {
+        use super::super::host_jobs::{outbox_keys, upload_manifest_probed_by, HostDestination};
+
+        let outbox = tempfile::tempdir().unwrap();
+        let write = |key: &str, body: &[u8]| {
+            let path = destination_outbox(outbox.path(), 0).join(key);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        };
+        let tagged = bookclerk_tags::fixtures::tagged_m4b();
+        write("A/T/T.m4b", &tagged);
+        write("A/T/T - Part 2.mp3", b"not audio at all");
+        write("A/T/cover.jpg", b"cover");
+        let acquired = AcquiredTitle {
+            primary_key: "A/T/T.m4b".into(),
+            pdf_key: None,
+            keys: vec![outbox_keys(&destination_outbox(outbox.path(), 0))
+                .await
+                .unwrap()],
+        };
+        let destinations = vec![HostDestination {
+            id: "local".into(),
+            kind: serde_json::from_value(serde_json::json!("local")).unwrap(),
+            options: Default::default(),
+        }];
+        let in_process = bookclerk_media::MediaPool::in_process();
+        let manifest = |store: &'static str, media: bookclerk_media::MediaPool| {
+            let (destinations, acquired) = (&destinations, &acquired);
+            let outbox = outbox.path();
+            async move {
+                upload_manifest_probed_by(destinations, outbox, acquired, Some(store), &media)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|(file, _)| file)
+                    .collect::<Vec<_>>()
+            }
+        };
+        let files = manifest("audible", in_process).await;
+        let of = |key: &str| {
+            files
+                .iter()
+                .find(|file| file.key_on("local") == Some(key))
+                .unwrap_or_else(|| panic!("{key} is in the manifest"))
+        };
+        let audio = of("A/T/T.m4b");
+        assert_eq!(audio.content_type.as_deref(), Some("audio/mp4"));
+        let probe = audio.probe.as_ref().expect("the audio file was probed");
+        assert_eq!(probe.source_store.as_deref(), Some("audible"));
+        assert!(!probe.lossless);
+        assert!(probe.bitrate_kbps.is_some_and(|kbps| kbps > 0));
+        assert!(audio.is_well_formed());
+        let unreadable = of("A/T/T - Part 2.mp3");
+        assert_eq!(unreadable.content_type.as_deref(), Some("audio/mpeg"));
+        assert_eq!(unreadable.probe, None);
+        let cover = of("A/T/cover.jpg");
+        assert_eq!(cover.content_type.as_deref(), Some("image/jpeg"));
+        assert_eq!(cover.probe, None);
+
+        // A store name that is not a plain id is left out, not sent.
+        let files = manifest("Not A Store", bookclerk_media::MediaPool::in_process()).await;
+        let probe = files
+            .iter()
+            .find_map(|file| file.probe.as_ref())
+            .expect("the audio file was probed");
+        assert_eq!(probe.source_store, None);
     }
 
     /// A key an upload was granted, then written by a local acquire of
@@ -2763,6 +2836,7 @@ mod results_and_uploads {
                 .map(|b| format!("{b:02x}"))
                 .collect(),
             content_type: None,
+            probe: None,
         };
         let UploadGrant::Granted {
             upload_id, token, ..
@@ -2890,6 +2964,7 @@ mod results_and_uploads {
                 .map(|b| format!("{b:02x}"))
                 .collect(),
             content_type: None,
+            probe: None,
         };
         let UploadGrant::Granted {
             upload_id, token, ..
@@ -3057,6 +3132,7 @@ mod results_and_uploads {
                 .map(|b| format!("{b:02x}"))
                 .collect(),
             content_type: Some("audio/mp4".into()),
+            probe: None,
         };
         let owner_node = bookclerk_library::control_plane::load_or_create_node_identity(
             world.owner_files.path(),
@@ -3374,6 +3450,7 @@ mod results_and_uploads {
                 .map(|b| format!("{b:02x}"))
                 .collect(),
             content_type: None,
+            probe: None,
         }
     }
 

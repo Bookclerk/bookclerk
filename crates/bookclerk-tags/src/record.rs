@@ -33,6 +33,11 @@ pub struct TagRecord {
     pub chapter_source: Option<ChapterSource>,
     /// The running time, when the container states or implies one.
     pub duration: Option<Duration>,
+    /// How the audio is encoded, when the container names an encoding the
+    /// reader knows; `None` for an MP4 file with no audio track or with one
+    /// in another encoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<AudioCodec>,
     /// The embedded cover picture, when there is one.
     pub cover: Option<EmbeddedCover>,
     /// Digest of the bytes that hold the metadata.
@@ -54,6 +59,69 @@ pub enum Container {
     Mp3,
     /// FLAC: Vorbis comments, pictures and `STREAMINFO`.
     Flac,
+}
+
+/// The audio encodings the reader tells apart.
+///
+/// The encoding decides whether a file is a lossless copy of its source,
+/// which is what lets a library keep the better of two copies of one
+/// edition (library data model ADR, section 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioCodec {
+    /// MPEG-4 AAC (`mp4a` sample entry), lossy.
+    Aac,
+    /// Apple Lossless (`alac` sample entry).
+    Alac,
+    /// FLAC, in its own container or in MP4 (`fLaC` sample entry).
+    Flac,
+    /// MPEG audio layer I, II or III, lossy.
+    Mp3,
+    /// Opus in MP4 (`Opus` sample entry), lossy.
+    Opus,
+    /// Dolby Digital Plus (`ec-3` sample entry), lossy.
+    Eac3,
+    /// Dolby AC-4 (`ac-4` sample entry), lossy.
+    Ac4,
+}
+
+impl AudioCodec {
+    /// True when decoding gives back the source audio bit for bit.
+    #[must_use]
+    pub fn is_lossless(self) -> bool {
+        match self {
+            Self::Alac | Self::Flac => true,
+            Self::Aac | Self::Mp3 | Self::Opus | Self::Eac3 | Self::Ac4 => false,
+        }
+    }
+
+    /// The codec an MP4 audio sample entry of type `format` holds, when the
+    /// reader knows it.
+    #[must_use]
+    pub fn from_sample_entry(format: [u8; 4]) -> Option<Self> {
+        match &format {
+            b"mp4a" => Some(Self::Aac),
+            b"alac" => Some(Self::Alac),
+            b"fLaC" => Some(Self::Flac),
+            b".mp3" => Some(Self::Mp3),
+            b"Opus" => Some(Self::Opus),
+            b"ec-3" => Some(Self::Eac3),
+            b"ac-4" => Some(Self::Ac4),
+            _ => None,
+        }
+    }
+}
+
+impl Container {
+    /// The media type files of this container are stored and served as.
+    #[must_use]
+    pub fn content_type(self) -> &'static str {
+        match self {
+            Self::Mp4 => "audio/mp4",
+            Self::Mp3 => "audio/mpeg",
+            Self::Flac => "audio/flac",
+        }
+    }
 }
 
 /// One text value from the file.
@@ -331,6 +399,10 @@ pub enum RecordError {
     /// A duration over [`MAX_DURATION_MS`].
     #[error("duration is out of range")]
     Duration,
+    /// A codec the container cannot hold (an MP3 or FLAC file always holds
+    /// its own).
+    #[error("codec does not match the container")]
+    Codec,
     /// A cover span outside the file or of the wrong length.
     #[error("cover span is outside the file")]
     CoverSpan,
@@ -415,6 +487,16 @@ impl TagRecord {
             if cover.len > file_size {
                 return Err(RecordError::CoverSpan);
             }
+        }
+        let codec_fits = match (self.container, self.codec) {
+            (Container::Mp3, Some(AudioCodec::Mp3)) | (Container::Flac, Some(AudioCodec::Flac)) => {
+                true
+            }
+            (Container::Mp4, _) => true,
+            (Container::Mp3 | Container::Flac, _) => false,
+        };
+        if !codec_fits {
+            return Err(RecordError::Codec);
         }
         if self.region.version != REGION_HASH_VERSION {
             return Err(RecordError::RegionVersion(self.region.version));

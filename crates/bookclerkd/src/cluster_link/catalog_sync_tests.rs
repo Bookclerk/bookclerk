@@ -289,7 +289,31 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
         .unwrap();
     let b_out = tempfile::tempdir().unwrap();
     crate::node_api::uploads::set_test_destination(b_files.path(), b_out.path());
-    own_book(&b, b_out.path(), "libro", "b-store-acct", "b1").await;
+    let b1_key = own_book(&b, b_out.path(), "libro", "b-store-acct", "b1").await;
+    // B probed b1 when it stored it; the values travel with the upload.
+    let b1_probe = bookclerk_library::FileProbe {
+        content_type: "audio/mp4".into(),
+        bitrate_kbps: Some(64),
+        lossless: false,
+        source_store: Some("libro".into()),
+    };
+    {
+        let plugin = "path:file:///tmp/libro";
+        let b1 = b
+            .scope(plugin, "libro")
+            .upsert_book(&new_book(plugin, "libro", "b-store-acct", "b1"))
+            .await
+            .unwrap();
+        let owner = b.file_owner_of_book(&b1.uuid).await.unwrap().unwrap();
+        assert!(b
+            .record_edition_file("local", &b1_key, &owner, bookclerk_library::FileRole::Audio)
+            .await
+            .unwrap());
+        assert!(b
+            .set_edition_file_probe("local", &b1_key, &owner, &b1_probe)
+            .await
+            .unwrap());
+    }
     // A title B holds that A also holds for Riley: it came from A.
     own_book(&b, b_out.path(), "test", "riley-acct", "echo1").await;
     a.scope(super::super::tests::PLUGIN, "test")
@@ -411,6 +435,15 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
             std::fs::read(a_out.path().join(key)).unwrap(),
             std::fs::read(b_out.path().join(key)).unwrap()
         );
+    }
+    // B's probe of b1 is on A's row for it; c1, which B never probed, and
+    // the cover have none.
+    assert_eq!(
+        a.edition_file_probe("local", &b1_key).await.unwrap(),
+        Some(b1_probe)
+    );
+    for key in ["Author/c1/c1.m4b", "Author/b1/b1.jpg"] {
+        assert_eq!(a.edition_file_probe("local", key).await.unwrap(), None);
     }
     // Upload reuse: every file went through the upload endpoint under the
     // catalog item (C's to B, B's two to A), and nothing was staged under

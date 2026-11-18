@@ -1,0 +1,1 @@
+{"v":1,"id":"u1","type":"upload.grant","job_id":"j1","fence":2,"holding_id":"h1","primary_key":"A/T/T.m4b","files":[{"copies":[{"destination":"local","key":"A/T/T.m4b"}],"size":3,"sha256":"abababababababababababababababababababababababababababababababab","content_type":"audio/mp4","probe":{"lossless":false,"codec":"aac"}}]}

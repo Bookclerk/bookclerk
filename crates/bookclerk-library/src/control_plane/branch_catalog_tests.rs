@@ -604,6 +604,7 @@ async fn a_catalog_upload_commits_only_under_the_live_fence() {
         size,
         sha256: "ab".repeat(32),
         content_type: None,
+        probe: None,
     };
     let key = "Author/p1/p1.m4b";
     let grant = |files: Vec<UploadFile>, fence: i64| {
@@ -937,6 +938,7 @@ async fn a_catalog_upload_never_overwrites_another_titles_files() {
                 size: 1,
                 sha256: "ab".repeat(32),
                 content_type: None,
+                probe: None,
             }];
             grant_catalog_upload(
                 &store,
@@ -1076,6 +1078,7 @@ fn local_files(keys: &[&str]) -> Vec<UploadFile> {
             size: 1,
             sha256: "ab".repeat(32),
             content_type: None,
+            probe: None,
         })
         .collect()
 }
@@ -2091,6 +2094,7 @@ async fn a_catalog_upload_is_refused_once_its_listing_sells_another_edition() {
         size: 3,
         sha256: "ab".repeat(32),
         content_type: None,
+        probe: None,
     }];
     let UploadGrant::Granted { upload_id, .. } = grant_catalog_upload(
         &store,

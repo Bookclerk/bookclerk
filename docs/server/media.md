@@ -76,6 +76,8 @@ daemon. For each file it reports:
   frames or Vorbis `CHAPTERnnn` comments;
 - the running time, and whether the container states it or it was
   estimated;
+- the audio encoding (AAC, ALAC, FLAC, MP3, Opus, E-AC-3 or AC-4), from
+  the audio track's sample description in an MP4 file;
 - where the cover picture lies in the file, its format and its SHA-256,
   without the picture itself;
 - a SHA-256 digest of the metadata region (versioned), which changes when
@@ -99,6 +101,40 @@ alone. With `media.isolation = "off"` tags are read in the daemon.
 
 The reader lives in `bookclerk-tags` and is fuzzed by the `tags_read` and
 `tags_wire` targets (see [Fuzzing](../contributing/fuzzing.md)).
+
+### What a stored file's row says
+
+Every audio file an acquire writes is probed once it is on its
+destination, through the same tag process, and the result is kept on the
+file's row in the database (`edition_files`):
+
+| Value | Meaning |
+| --- | --- |
+| Media type | `audio/mp4`, `audio/mpeg` or `audio/flac`, from the container the reader found, not from the file name |
+| Bitrate | The file's size over its running time, in kbps: an average that includes the cover and tags. Empty when the running time is unknown |
+| Lossless | Whether the audio track's encoding is lossless (FLAC, or ALAC in an MP4 file) |
+| Source store | The store the copy was downloaded from, such as `audible` or `libro` |
+
+The row answers "what copy do we hold?" without opening the file again,
+so comparing two copies of one edition, or telling another install what
+is on offer, is a database read.
+
+A probe never decides whether a file is kept. When the tag process is
+missing and `media.isolation` is `required`, or the reader cannot parse
+the file, the file is stored as before and its row stays unprobed.
+
+A host or a branch that acquires a book probes it the same way before
+uploading, and sends the bitrate, lossless flag and source store beside
+the file's media type. The library checks them with the manifest (a
+bitrate up to 20,000 kbps, a plain store id) and stores them when the
+upload commits, so an upload that is aborted or never finishes describes
+nothing. The values are the sender's word about its own file. They come
+from a node the library already trusts with the title, and they are only
+used to choose between two copies of the same edition.
+
+> [!NOTE]
+> Files stored before probes were recorded have unprobed rows. They are
+> not probed again by this change.
 
 ## Install the worker
 

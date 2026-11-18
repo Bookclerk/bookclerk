@@ -716,7 +716,11 @@ on an owner node's disk.
 1. **Grant.** The host sends `upload.grant` over the node socket, with
    the title's holding id from the plan and a manifest. The manifest lists each distinct file content once (`size`,
    `sha256`, `content_type`), with a list of **copies**, one
-   `{destination, key}` per owner destination. The owner answers
+   `{destination, key}` per owner destination. An audio file the host
+   could probe also carries `probe` (`bitrate_kbps`, `lossless`,
+   `source_store`), which the owner keeps on the file's row once the
+   upload commits (see [What a stored file's row
+   says](media.md#what-a-stored-files-row-says)). The owner answers
    `upload.granted` with an upload id and a bearer token **sealed to the
    host's box key**. Only its hash is stored, and it lives one hour.
 2. **Send.** The host sends

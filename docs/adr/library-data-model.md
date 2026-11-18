@@ -1,6 +1,6 @@
 # ADR: Library data model (works, expressions, editions, holdings)
 
-- **Status:** Accepted; steps 1 to 4 implemented, and step 5's holdings and branch titles (file quality, moved to step 5, still to come); the naming discriminator replaced by a required `<library id>` tag (see [Status of the work](#status-of-the-work)). Amended 2026-11-13: the kind enums were reshaped for mixed media and every kind became required (decisions 1 and 5). A later record, [Metadata claims and file sync](metadata-claims-and-file-sync.md), decides to replace the work-level matcher of decision 4 with weighed evidence and to add a `catalog_id` slot; that work has not started
+- **Status:** Accepted; steps 1 to 4 implemented, and step 5's holdings and branch titles (of file quality, moved to step 5, the probe of each stored file is recorded and the comparison is still to come); the naming discriminator replaced by a required `<library id>` tag (see [Status of the work](#status-of-the-work)). Amended 2026-11-13: the kind enums were reshaped for mixed media and every kind became required (decisions 1 and 5). A later record, [Metadata claims and file sync](metadata-claims-and-file-sync.md), decides to replace the work-level matcher of decision 4 with weighed evidence and to add a `catalog_id` slot; that work has not started
 - **Date:** 2026-11-04
 - **Related:** [Schema versioning](schema-versioning.md),
   [SQL database contract](sql-database-contract.md),
@@ -367,8 +367,17 @@ random id instead.
 
 Step 5 takes the quality comparison, because node frames do not carry a
 file's quality yet: storefronts may declare a file's format and quality,
-and the media worker probes each file and records it (`lossless`,
-`bitrate_kbps` stay empty until then). The same edition from another
+and the media worker probes each file and records it. The probe is in
+place: each audio file's row holds its media type, bitrate, whether it is
+lossless and the store it came from, written by the acquire that stored
+it or carried by the upload that delivered it. The comparison is not: it
+will follow one rule for where a copy comes from. When a library already
+holds a copy of the edition from the same store, another install of that
+library takes the library's copy whatever its format, and the media
+worker converts it to the format that install prefers. When the
+library's copy came from a different store, the install downloads its
+own from its store, probes it, and keeps whichever of the two is better.
+The same edition from another
 store is then acquired anyway, the better audio kept and the sidecars
 merged, and both copies marked acquired. `edition_files_written` comes
 with step 5 too.

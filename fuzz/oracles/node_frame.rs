@@ -14,6 +14,12 @@
 //! - every library id an `acquire.targets` frame carries is 1 to 16 ASCII
 //!   letters and digits, checked byte by byte here rather than through the
 //!   parser's own rule, since a host names storage keys with it;
+//! - every probe on a file an `upload.grant` or `catalog.upload` frame the
+//!   library would accept (`UploadFile::is_well_formed`) states a bitrate
+//!   of 1 to 20000 kbit/s when it states one, and names a storefront of 1
+//!   to 64 lowercase letters, digits, `_`, `-` or `.` when it names one,
+//!   checked byte by byte here, since the library stores them on the
+//!   file's row and compares two copies of an edition by them;
 //! - every marketplace a `catalog.sync` title the library would accept
 //!   carries is at most 16 lowercase ASCII letters and digits, checked byte
 //!   by byte here, since the library scopes ASIN identifiers to it.
@@ -81,6 +87,31 @@ pub fn check(data: &[u8]) {
                         && id.len() <= MAX_LIBRARY_ID_BYTES
                         && id.bytes().all(|b| b.is_ascii_alphanumeric()),
                     "library id {id:?} accepted"
+                );
+            }
+        }
+    }
+    if let Body::UploadGrant { files, .. } | Body::CatalogUpload { files, .. } = &frame.body {
+        for probe in files
+            .iter()
+            .filter(|file| file.is_well_formed())
+            .filter_map(|file| file.probe.as_ref())
+        {
+            assert!(
+                probe
+                    .bitrate_kbps
+                    .is_none_or(|kbps| (1..=20_000).contains(&kbps)),
+                "probe bitrate {:?} accepted",
+                probe.bitrate_kbps
+            );
+            if let Some(store) = &probe.source_store {
+                assert!(
+                    !store.is_empty()
+                        && store.len() <= 64
+                        && store.bytes().all(|b| b.is_ascii_lowercase()
+                            || b.is_ascii_digit()
+                            || matches!(b, b'_' | b'-' | b'.')),
+                    "probe store {store:?} accepted"
                 );
             }
         }

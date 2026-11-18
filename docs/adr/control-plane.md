@@ -1587,7 +1587,9 @@ the handed credentials only. There is no in-process fallback.
   `edition_files`, for the title's edition: an acquire on a node records
   each key (audio, chapter or part files, sidecars, PDF) just before
   writing it, and a grant claims every key of its manifest for the
-  edition. A key recorded for another edition on that destination is
+  edition. An audio file's row also holds its probe (media type, bitrate,
+  lossless, source store): the acquire's own on a node, and the one the
+  manifest states for an upload, stored at the commit. A key recorded for another edition on that destination is
   refused (`key_of_another_title`), so a folder several titles share (a
   template without the title, podcast episodes in the parent's folder, a
   flat layout) never lets one title overwrite another's files. A key its

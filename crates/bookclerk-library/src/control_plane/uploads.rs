@@ -54,7 +54,7 @@ use crate::error::{LibraryError, Result};
 use crate::models::{is_downloadable, AcquireStatus, JobRecord};
 use crate::models::{JobKind, JobState};
 use crate::store::event_outbox::{book_acquired_spec, prepare_publish_domain_event};
-use crate::store::{AcquireTitle, EditionFile, FileOwner, FileRole, LibraryStore};
+use crate::store::{AcquireTitle, EditionFile, FileOwner, FileProbe, FileRole, LibraryStore};
 
 /// How long a granted upload's token is accepted past its latest
 /// extension (the grant, an accepted file, or a renewal of the job's
@@ -779,6 +779,54 @@ async fn claim_upload_keys<'a>(
         return Ok(false);
     }
     Ok(true)
+}
+
+/// Stores the probes a committed upload stated for its audio files on the
+/// rows it wrote ([`LibraryStore::set_uploaded_file_probe`]), so the
+/// library knows what copy it holds without reading the files back.
+///
+/// Done once the upload is committed, when every file has arrived whole:
+/// an open or aborted upload's rows stay unprobed. A file with no probe or
+/// no media type, a copy that is not audio, and a key a later write has
+/// since claimed are left alone. The manifest was checked at the grant, so
+/// a probe the store would still refuse is skipped, not an error: the
+/// commit has already happened and does not depend on it.
+///
+/// # Errors
+///
+/// Returns an error when a read or write fails.
+async fn store_committed_probes(store: &LibraryStore, upload_id: &str) -> Result<()> {
+    let Some(session) = load_upload(store, upload_id).await? else {
+        return Ok(());
+    };
+    for file in &session.files {
+        let (Some(stated), Some(content_type)) = (&file.probe, &file.content_type) else {
+            continue;
+        };
+        let probe = FileProbe {
+            content_type: content_type.clone(),
+            bitrate_kbps: stated.bitrate_kbps,
+            lossless: stated.lossless,
+            source_store: stated.source_store.clone(),
+        };
+        if !probe.is_well_formed() {
+            continue;
+        }
+        for copy in &file.copies {
+            match FileRole::for_key(&copy.key, Some(&session.primary_key)) {
+                FileRole::Audio | FileRole::Part | FileRole::Chapter => {}
+                FileRole::Pdf
+                | FileRole::Cover
+                | FileRole::Sidecar
+                | FileRole::Transcript
+                | FileRole::Epub => continue,
+            }
+            store
+                .set_uploaded_file_probe(&copy.destination, &copy.key, upload_id, &probe)
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// Gives back every key in `claimed` that `upload_id` still holds, newest
@@ -1571,6 +1619,25 @@ pub(super) fn commit_trust_gate(
 ///
 /// Returns an error when a read or the batch fails.
 pub async fn commit_upload(
+    store: &LibraryStore,
+    upload_id: &str,
+    finish: Option<UploadFinish<'_>>,
+    limits: JobClaimLimits,
+) -> Result<UploadCommit> {
+    let outcome = commit_upload_checked(store, upload_id, finish, limits).await?;
+    if matches!(outcome, UploadCommit::Committed { .. }) {
+        store_committed_probes(store, upload_id).await?;
+    }
+    Ok(outcome)
+}
+
+/// [`commit_upload`] without the probes: every check, and the batch that
+/// commits the title.
+///
+/// # Errors
+///
+/// As [`commit_upload`].
+async fn commit_upload_checked(
     store: &LibraryStore,
     upload_id: &str,
     finish: Option<UploadFinish<'_>>,

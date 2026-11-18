@@ -92,8 +92,18 @@ pub fn tagged_m4b() -> Vec<u8> {
         full(b"hdlr", 0, &body)
     };
 
-    // Audio track: a big stbl the reader must skip unread.
-    let audio_stbl = mp4_box(b"stbl", &vec![0u8; 200_000]);
+    // Audio track: an AAC sample description, then a big sample table the
+    // reader must skip unread.
+    let mut stsd = 1u32.to_be_bytes().to_vec();
+    stsd.extend_from_slice(&mp4_box(b"mp4a", &[0u8; 28]));
+    let audio_stbl = mp4_box(
+        b"stbl",
+        &[
+            full(b"stsd", 0, &stsd),
+            mp4_box(b"stsz", &vec![0u8; 200_000]),
+        ]
+        .concat(),
+    );
     let audio_minf = mp4_box(b"minf", &audio_stbl);
     let audio_mdia = mp4_box(b"mdia", &[mdhd(44_100), hdlr(b"soun"), audio_minf].concat());
     let tref = mp4_box(b"tref", &mp4_box(b"chap", &2u32.to_be_bytes()));

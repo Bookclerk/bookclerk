@@ -2989,6 +2989,92 @@ mod store_tests {
     }
 
     #[tokio::test]
+    async fn a_probe_is_stored_on_the_owners_file_row_only() {
+        use crate::{FileOwner, FileProbe, FileRole};
+        let store = self::store().await;
+        let owner = FileOwner::Edition("an-edition".into());
+        assert!(store
+            .record_edition_file("local", "A/T.m4b", &owner, FileRole::Audio)
+            .await
+            .unwrap());
+        assert_eq!(
+            store.edition_file_probe("local", "A/T.m4b").await.unwrap(),
+            None
+        );
+        let probe = FileProbe {
+            content_type: "audio/mp4".into(),
+            bitrate_kbps: Some(125),
+            lossless: false,
+            source_store: Some("audible".into()),
+        };
+        // Another edition's probe of the same key describes nothing.
+        let other = FileOwner::Edition("another-edition".into());
+        assert!(!store
+            .set_edition_file_probe("local", "A/T.m4b", &other, &probe)
+            .await
+            .unwrap());
+        assert!(!store
+            .set_edition_file_probe("local", "A/Missing.m4b", &owner, &probe)
+            .await
+            .unwrap());
+        assert_eq!(
+            store.edition_file_probe("local", "A/T.m4b").await.unwrap(),
+            None
+        );
+        assert!(store
+            .set_edition_file_probe("local", "A/T.m4b", &owner, &probe)
+            .await
+            .unwrap());
+        assert_eq!(
+            store.edition_file_probe("local", "A/T.m4b").await.unwrap(),
+            Some(probe.clone())
+        );
+        // A later probe replaces the earlier one.
+        let lossless = FileProbe {
+            content_type: "audio/flac".into(),
+            bitrate_kbps: None,
+            lossless: true,
+            source_store: None,
+        };
+        assert!(store
+            .set_edition_file_probe("local", "A/T.m4b", &owner, &lossless)
+            .await
+            .unwrap());
+        assert_eq!(
+            store.edition_file_probe("local", "A/T.m4b").await.unwrap(),
+            Some(lossless)
+        );
+        // A malformed probe is refused before any write.
+        for bad in [
+            FileProbe {
+                content_type: String::new(),
+                ..probe.clone()
+            },
+            FileProbe {
+                content_type: "audio/mp4\n".into(),
+                ..probe.clone()
+            },
+            FileProbe {
+                bitrate_kbps: Some(0),
+                ..probe.clone()
+            },
+            FileProbe {
+                bitrate_kbps: Some(FileProbe::MAX_BITRATE_KBPS + 1),
+                ..probe.clone()
+            },
+            FileProbe {
+                source_store: Some("Audible Store".into()),
+                ..probe.clone()
+            },
+        ] {
+            assert!(store
+                .set_edition_file_probe("local", "A/T.m4b", &owner, &bad)
+                .await
+                .is_err());
+        }
+    }
+
+    #[tokio::test]
     async fn only_a_live_editions_file_holds_a_name() {
         use crate::{FileOwner, FileRole};
         let store = self::store().await;
