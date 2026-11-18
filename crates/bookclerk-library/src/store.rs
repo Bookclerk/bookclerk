@@ -7908,7 +7908,7 @@ pub use edition_enrichment::{
     EditionAsin, EditionEnrichment, EnrichCandidate, EnrichCandidatePage,
 };
 pub use edition_files::{
-    EditionAcquisition, EditionFile, FileOwner, FileRole, TitleHolding, ACQUIRE_WRITER,
+    EditionAcquisition, EditionFile, FileOwner, FileProbe, FileRole, TitleHolding, ACQUIRE_WRITER,
 };
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};

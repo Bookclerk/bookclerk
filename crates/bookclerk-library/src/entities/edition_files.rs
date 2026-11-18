@@ -28,8 +28,17 @@ pub struct Model {
     /// 1 for a lossless audio encoding; 0 otherwise or unknown (an integer,
     /// as every flag column is, so each database adapter decodes it alike).
     pub lossless: i64,
-    /// Audio bitrate in kilobits per second, when known.
+    /// Average audio bitrate in kilobits per second, once probed.
     pub bitrate_kbps: Option<i64>,
+    /// Media type of the file (`audio/mp4`, `audio/mpeg`, `audio/flac`),
+    /// once probed.
+    pub content_type: Option<String>,
+    /// Plain id of the storefront the copy was downloaded from (`audible`,
+    /// `libro`), when the writer knew it.
+    pub source_store: Option<String>,
+    /// RFC 3339 time the probe result was stored; `None` until the file has
+    /// been probed.
+    pub probed_at: Option<String>,
     /// Lowercase hex SHA-256 of the content, when known (host uploads).
     pub sha256: Option<String>,
     /// The host upload id that claimed the key last, or

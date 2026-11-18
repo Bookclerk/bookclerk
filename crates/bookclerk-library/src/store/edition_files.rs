@@ -177,6 +177,72 @@ pub struct EditionFile {
     pub sha256: Option<String>,
 }
 
+/// What a probe found in one stored audio file, and where the copy came
+/// from (`edition_files`).
+///
+/// The same values decide which of two copies of one edition is kept
+/// ([`FileProbe::is_better_than`]), wherever the comparison runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileProbe {
+    /// Media type of the file (`audio/mp4`, `audio/mpeg`, `audio/flac`).
+    pub content_type: String,
+    /// Average audio bitrate in kilobits per second; `None` when the file
+    /// states no running time to divide its size by.
+    pub bitrate_kbps: Option<u32>,
+    /// True for a lossless encoding (FLAC, ALAC).
+    pub lossless: bool,
+    /// Plain id of the storefront the copy was downloaded from, when known.
+    pub source_store: Option<String>,
+}
+
+impl FileProbe {
+    /// Longest media type a probe may carry, in bytes.
+    pub const MAX_CONTENT_TYPE_BYTES: usize = 64;
+
+    /// Highest bitrate a probe may carry, in kilobits per second: above any
+    /// audiobook encoding, so a forged value cannot win by size alone.
+    pub const MAX_BITRATE_KBPS: u32 = 20_000;
+
+    /// True when a copy with this probe should replace one with `other`
+    /// (library data model ADR, section 3): a lossless copy beats a lossy
+    /// one, and within the same kind the higher bitrate wins. A copy whose
+    /// bitrate is unknown never replaces one whose bitrate is known, and
+    /// equal copies do not replace each other.
+    #[must_use]
+    pub fn is_better_than(&self, other: &Self) -> bool {
+        if self.lossless != other.lossless {
+            return self.lossless;
+        }
+        match (self.bitrate_kbps, other.bitrate_kbps) {
+            (Some(mine), Some(theirs)) => mine > theirs,
+            (Some(_), None) => true,
+            (None, Some(_) | None) => false,
+        }
+    }
+
+    /// True when the values are ones an honest probe can produce: a short
+    /// media type of visible ASCII and a bitrate within
+    /// [`Self::MAX_BITRATE_KBPS`].
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        let type_ok = !self.content_type.is_empty()
+            && self.content_type.len() <= Self::MAX_CONTENT_TYPE_BYTES
+            && self.content_type.bytes().all(|b| b.is_ascii_graphic());
+        let store_ok = self.source_store.as_deref().is_none_or(|store| {
+            !store.is_empty()
+                && store.len() <= Self::MAX_CONTENT_TYPE_BYTES
+                && store
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+        });
+        type_ok
+            && store_ok
+            && self
+                .bitrate_kbps
+                .is_none_or(|kbps| kbps > 0 && kbps <= Self::MAX_BITRATE_KBPS)
+    }
+}
+
 /// An edition's acquire state (`edition_acquisitions`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditionAcquisition {
@@ -437,6 +503,9 @@ impl LibraryStore {
             role: Set(role.as_str().to_string()),
             lossless: Set(0),
             bitrate_kbps: Set(None),
+            content_type: Set(None),
+            source_store: Set(None),
+            probed_at: Set(None),
             sha256: Set(None),
             writer: Set(ACQUIRE_WRITER.to_string()),
             written_at: Set(now.clone()),
@@ -555,6 +624,9 @@ impl LibraryStore {
                 role: Set(role.as_str().to_string()),
                 lossless: Set(0),
                 bitrate_kbps: Set(None),
+                content_type: Set(None),
+                source_store: Set(None),
+                probed_at: Set(None),
                 sha256: Set(sha256.map(str::to_string)),
                 writer: Set(writer.to_string()),
                 written_at: Set(now.clone()),
@@ -751,6 +823,87 @@ impl LibraryStore {
         }))
     }
 
+    /// Stores what a probe found in `owner`'s file at `key` on
+    /// `destination`, stamped with the time of the write.
+    ///
+    /// The row is changed only while `owner` still holds the key, so a
+    /// probe that finishes after another edition took the key over
+    /// describes nothing.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the row was `owner`'s and now carries `probe`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `probe` is not well formed
+    /// ([`FileProbe::is_well_formed`]) or the write fails.
+    pub async fn set_edition_file_probe(
+        &self,
+        destination: &str,
+        key: &str,
+        owner: &FileOwner,
+        probe: &FileProbe,
+    ) -> Result<bool> {
+        if !probe.is_well_formed() {
+            return Err(LibraryError::Invalid(
+                "a file probe has a malformed media type, store or bitrate".to_string(),
+            ));
+        }
+        let updated = edition_files::Entity::update_many()
+            .col_expr(
+                edition_files::Column::ContentType,
+                Expr::value(probe.content_type.clone()),
+            )
+            .col_expr(
+                edition_files::Column::BitrateKbps,
+                Expr::value(probe.bitrate_kbps.map(i64::from)),
+            )
+            .col_expr(
+                edition_files::Column::Lossless,
+                Expr::value(i64::from(probe.lossless)),
+            )
+            .col_expr(
+                edition_files::Column::SourceStore,
+                Expr::value(probe.source_store.clone()),
+            )
+            .col_expr(edition_files::Column::ProbedAt, Expr::value(now_str()))
+            .filter(edition_files::Column::Destination.eq(destination))
+            .filter(edition_files::Column::StorageKey.eq(key))
+            .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
+            .filter(edition_files::Column::OwnerId.eq(owner.id()))
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(updated.rows_affected > 0)
+    }
+
+    /// What the last probe found in the file at `key` on `destination`;
+    /// `None` when the key is unrecorded or was never probed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn edition_file_probe(
+        &self,
+        destination: &str,
+        key: &str,
+    ) -> Result<Option<FileProbe>> {
+        let row = edition_files::Entity::find_by_id((destination.to_string(), key.to_string()))
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(row.and_then(|row| {
+            row.probed_at.as_ref()?;
+            Some(FileProbe {
+                content_type: row.content_type?,
+                bitrate_kbps: row.bitrate_kbps.and_then(|kbps| u32::try_from(kbps).ok()),
+                lossless: row.lossless != 0,
+                source_store: row.source_store,
+            })
+        }))
+    }
+
     /// The audio keys (primary audio, parts and chapters) recorded for
     /// `owner` on `destination`, in key order: every file a copy of the
     /// edition's recording there needs.
@@ -869,6 +1022,28 @@ mod tests {
         assert_eq!(FileRole::for_key("A/T/T.epub", None), FileRole::Epub);
         assert_eq!(FileRole::for_key("A/T/T.cue", None), FileRole::Sidecar);
         assert_eq!(FileRole::for_key("A/T/README", None), FileRole::Sidecar);
+    }
+
+    #[test]
+    fn the_better_copy_is_lossless_then_higher_bitrate() {
+        let probe = |lossless, bitrate_kbps| FileProbe {
+            content_type: "audio/mp4".into(),
+            bitrate_kbps,
+            lossless,
+            source_store: None,
+        };
+        // Lossless beats lossy whatever the bitrates say.
+        assert!(probe(true, Some(700)).is_better_than(&probe(false, Some(900))));
+        assert!(!probe(false, Some(900)).is_better_than(&probe(true, Some(700))));
+        assert!(probe(true, None).is_better_than(&probe(false, Some(64))));
+        // Within a kind the higher bitrate wins, and equals keep what is there.
+        assert!(probe(false, Some(128)).is_better_than(&probe(false, Some(64))));
+        assert!(!probe(false, Some(64)).is_better_than(&probe(false, Some(128))));
+        assert!(!probe(false, Some(64)).is_better_than(&probe(false, Some(64))));
+        // An unknown bitrate never replaces a known one.
+        assert!(probe(false, Some(32)).is_better_than(&probe(false, None)));
+        assert!(!probe(false, None).is_better_than(&probe(false, Some(32))));
+        assert!(!probe(false, None).is_better_than(&probe(false, None)));
     }
 
     #[test]

@@ -204,7 +204,7 @@ pub use store::{
     },
     AcquireTitle, AcquireTitlePage, AcquiredBookKey, BookPage, CandidateRef,
     CatalogEnrichmentFields, DiscoverSubject, EditionAcquisition, EditionAsin, EditionEnrichment,
-    EditionFile, EnrichCandidate, EnrichCandidatePage, FileOwner, FileRole, HeldIdentifiers,
+    EditionFile, EnrichCandidate, EnrichCandidatePage, FileOwner, FileProbe, FileRole, HeldIdentifiers,
     HoldingSelection, LibraryStore, NewBook, NewListeningProgress, NewTitleRequest,
     NewTitleRequestSource, NodeHoldingSelection, QueueRank, SavedFilterRecord, ScannedTitle,
     SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste, StoredFeed, StoredQueueRank,

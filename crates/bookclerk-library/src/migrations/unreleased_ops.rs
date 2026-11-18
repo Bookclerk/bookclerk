@@ -1532,9 +1532,11 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // titles share. A title a branch shares here is a node holding, so its
     // keys are its edition's too. `writer` is the host upload id that
     // claimed the key last (a branch's catalog upload included), or
-    // `acquire` for an acquire run on the node itself. `role` says what the file is; audio quality
-    // (`lossless`, `bitrate_kbps`) decides whether a later copy of the same
-    // edition replaces it.
+    // `acquire` for an acquire run on the node itself. `role` says what the file is. The probe
+    // result (`content_type`, `bitrate_kbps`, `lossless`, set at
+    // `probed_at`) and the storefront the copy came from (`source_store`)
+    // decide whether a later copy of the same edition replaces it, and tell
+    // a branch what the library's copy is before it asks for it.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS edition_files (
         destination TEXT NOT NULL,
@@ -1544,6 +1546,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         role TEXT NOT NULL CHECK (role IN ('audio', 'part', 'chapter', 'pdf', 'cover', 'sidecar', 'transcript', 'epub')),
         lossless INTEGER NOT NULL DEFAULT 0,
         bitrate_kbps INTEGER,
+        content_type TEXT,
+        source_store TEXT,
+        probed_at TEXT,
         sha256 TEXT,
         writer TEXT NOT NULL,
         written_at TEXT NOT NULL,
