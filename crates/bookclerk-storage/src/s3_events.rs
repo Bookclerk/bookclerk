@@ -160,6 +160,9 @@ struct RecordObject {
 /// The `detail` member of an EventBridge event.
 #[derive(Deserialize)]
 struct BridgeDetail {
+    /// For `Object Deleted`: `Delete Marker Created` or `Permanently Deleted`.
+    #[serde(rename = "deletion-type", default)]
+    deletion_type: Option<String>,
     /// The bucket.
     bucket: RecordBucket,
     /// The object.
@@ -311,7 +314,11 @@ fn bridge_events(
     if detail.object.key.len() > MAX_EVENT_KEY_BYTES || detail.object.key.contains('\0') {
         return Err(EventParseError::BadKey);
     }
-    let effect = bridge_effect(&event.detail_type);
+    let effect = bridge_effect(
+        &event.detail_type,
+        detail.deletion_type.as_deref(),
+        detail.object.version_id.as_deref(),
+    );
     Ok(event_for(
         detail.object.key,
         effect,
@@ -419,9 +426,22 @@ fn record_effect(event_name: &str, object: &RecordObject) -> Effect {
 }
 
 /// What an EventBridge `detail-type` means.
-fn bridge_effect(detail_type: &str) -> Effect {
+///
+/// As with notifications, permanently deleting one version of a versioned
+/// object may leave another current, so that is a `Changed`.
+fn bridge_effect(
+    detail_type: &str,
+    deletion_type: Option<&str>,
+    version_id: Option<&str>,
+) -> Effect {
     match detail_type {
         "Object Created" => Effect::Upserted,
+        "Object Deleted"
+            if deletion_type == Some("Permanently Deleted")
+                && version_id.is_some_and(|v| !v.is_empty()) =>
+        {
+            Effect::Changed
+        }
         "Object Deleted" => Effect::Removed,
         "Object Tags Added"
         | "Object Tags Deleted"
@@ -601,6 +621,20 @@ mod tests {
         let deleted = br#"{"source":"aws.s3","detail-type":"Object Deleted","detail":{"bucket":{"name":"books"},"object":{"key":"library/a"}}}"#;
         assert_eq!(
             parse_event_message(deleted, SCOPE).expect("parse")[0]
+                .change
+                .kind,
+            ObjectChangeKind::Removed
+        );
+        let version = br#"{"source":"aws.s3","detail-type":"Object Deleted","detail":{"deletion-type":"Permanently Deleted","bucket":{"name":"books"},"object":{"key":"library/a","version-id":"v1"}}}"#;
+        assert_eq!(
+            parse_event_message(version, SCOPE).expect("parse")[0]
+                .change
+                .kind,
+            ObjectChangeKind::Changed
+        );
+        let marker = br#"{"source":"aws.s3","detail-type":"Object Deleted","detail":{"deletion-type":"Delete Marker Created","bucket":{"name":"books"},"object":{"key":"library/a","version-id":"v1"}}}"#;
+        assert_eq!(
+            parse_event_message(marker, SCOPE).expect("parse")[0]
                 .change
                 .kind,
             ObjectChangeKind::Removed

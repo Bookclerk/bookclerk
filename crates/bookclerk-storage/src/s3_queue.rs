@@ -416,8 +416,15 @@ impl QueueFeed {
         let mut receipts = Vec::new();
         let mut first = true;
         let mut full = false;
+        // Messages count against the page too, so a backlog of skipped or
+        // unreadable messages cannot make one call drain the whole queue.
+        let mut taken = 0;
         while events.len() < limit {
-            let want = (limit - events.len()).min(RECEIVE_BATCH);
+            if taken >= limit {
+                full = true;
+                break;
+            }
+            let want = (limit - events.len().max(taken)).min(RECEIVE_BATCH);
             let wait = if first { RECEIVE_WAIT_SECS } else { 0 };
             first = false;
             let messages = match self.queue.receive(want, wait).await {
@@ -428,6 +435,7 @@ impl QueueFeed {
                 }
             };
             let received = messages.len();
+            taken += received;
             let mut overflow = Vec::new();
             for message in messages {
                 let parsed = parse_event_message(
@@ -577,14 +585,14 @@ fn order_events(events: &mut [ParsedEvent]) {
 }
 
 /// Compares two sequencers: the shorter one is padded with zeros on the
-/// right, as S3 documents.
+/// left, as S3 documents, so they compare as hex numbers.
 fn sequencer_cmp(a: Option<&str>, b: Option<&str>) -> std::cmp::Ordering {
     match (a, b) {
         (Some(a), Some(b)) => {
             let width = a.len().max(b.len());
-            format!("{a:0<width$}")
+            format!("{a:0>width$}")
                 .to_ascii_uppercase()
-                .cmp(&format!("{b:0<width$}").to_ascii_uppercase())
+                .cmp(&format!("{b:0>width$}").to_ascii_uppercase())
         }
         _ => std::cmp::Ordering::Equal,
     }
@@ -881,6 +889,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn skipped_messages_count_against_the_page() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let queue = Arc::new(FakeQueue::default());
+        let feed = feed(&queue, dir.path());
+        let start = feed.changes(None, 5).await.expect("start");
+        for i in 0..30 {
+            queue.send(put(&format!("k{i}"), "t").replace("\"books\"", "\"other\""));
+        }
+        let page = feed.changes(Some(&start.cursor), 5).await.expect("page");
+        assert!(page.changes.is_empty());
+        assert!(page.more, "the backlog is drained over several calls");
+        assert_eq!(queue.hidden(), 5);
+        assert_eq!(queue.waiting(), 25);
+    }
+
+    #[tokio::test]
     async fn unreadable_messages_are_dropped_and_mark_the_page_incomplete() {
         let dir = tempfile::tempdir().expect("tempdir");
         let queue = Arc::new(FakeQueue::default());
@@ -927,8 +951,9 @@ mod tests {
     #[test]
     fn sequencers_compare_padded() {
         use std::cmp::Ordering;
-        assert_eq!(sequencer_cmp(Some("0A"), Some("0A00")), Ordering::Equal);
-        assert_eq!(sequencer_cmp(Some("0B"), Some("0A99")), Ordering::Greater);
+        assert_eq!(sequencer_cmp(Some("0A"), Some("000A")), Ordering::Equal);
+        assert_eq!(sequencer_cmp(Some("FF"), Some("100")), Ordering::Less);
+        assert_eq!(sequencer_cmp(Some("0B"), Some("0A")), Ordering::Greater);
         assert_eq!(sequencer_cmp(Some("0a"), Some("0B")), Ordering::Less);
         assert_eq!(sequencer_cmp(None, Some("0B")), Ordering::Equal);
         let event = |key: &str, seq: &str| ParsedEvent {

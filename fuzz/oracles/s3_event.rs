@@ -140,8 +140,12 @@ fn restate(value: &Value, prefix: &str, depth: u8) -> Option<Vec<Expected>> {
         }
         let item = detail.get("object")?;
         let key = item.get("key")?.as_str()?.to_string();
+        let version = text(item, "version-id");
+        let permanent =
+            detail.get("deletion-type").and_then(Value::as_str) == Some("Permanently Deleted");
         let kind = match object.get("detail-type")?.as_str()? {
             "Object Created" => Some(ObjectChangeKind::Upserted),
+            "Object Deleted" if permanent && version.is_some() => Some(ObjectChangeKind::Changed),
             "Object Deleted" => Some(ObjectChangeKind::Removed),
             "Object Tags Added"
             | "Object Tags Deleted"
@@ -152,7 +156,6 @@ fn restate(value: &Value, prefix: &str, depth: u8) -> Option<Vec<Expected>> {
             | "Object Restore Expired" => None,
             _ => Some(ObjectChangeKind::Changed),
         };
-        let version = text(item, "version-id");
         let mut out = Vec::new();
         push(&mut out, &key, kind, item, "etag", version, prefix);
         return Some(out);
