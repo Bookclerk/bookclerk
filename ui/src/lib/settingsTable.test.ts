@@ -65,6 +65,31 @@ describe("table settings", () => {
 
   it("starts new rows from column defaults", () => {
     expect(newRow(columns)).toEqual({ watch: true });
+    const strict: PluginSettingColumn = {
+      key: "strict",
+      label: "Strict",
+      value_type: "boolean",
+      required: true,
+    };
+    expect(newRow([library, strict])).toEqual({ strict: false });
+    expect(rowsProblem([library, strict], [{ ...newRow([library, strict]), library: "a" }])).toBe(
+      null,
+    );
+  });
+
+  it("keeps an empty string that overrides a default", () => {
+    const prefix: PluginSettingColumn = {
+      key: "prefix",
+      label: "Prefix",
+      value_type: "string",
+      default: "books/",
+    };
+    expect(cellValue(prefix, "")).toBe("");
+    expect(withCell({ library: "a", prefix: "x" }, prefix, "")).toEqual({
+      library: "a",
+      prefix: "",
+    });
+    expect(withCell({ library: "a", prefix: "x" }, library, "")).toEqual({ prefix: "x" });
   });
 
   it("reports missing required cells and invalid choices", () => {

@@ -64,8 +64,10 @@ export function cellText(value: SettingCellValue | undefined): string {
  * @param column - Column the cell belongs to.
  * @param text - Text from the input.
  * @returns A boolean for a boolean column, a number for a number column, the
- *   text otherwise; `undefined` when the text is empty or not a finite number,
- *   so the row leaves the column out.
+ *   text otherwise; `undefined` when the text is not a finite number, or is
+ *   empty and the column has no non-empty default, so the row leaves the
+ *   column out. An empty string column with a non-empty default keeps `""`,
+ *   since leaving it out would bring the default back.
  */
 export function cellValue(column: PluginSettingColumn, text: string): SettingCellValue | undefined {
   if (column.value_type === "boolean") {
@@ -74,7 +76,11 @@ export function cellValue(column: PluginSettingColumn, text: string): SettingCel
       normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on"
     );
   }
-  if (!text.trim()) return undefined;
+  if (!text.trim()) {
+    const overridesDefault =
+      column.value_type === "string" && !column.choices?.length && !!column.default;
+    return overridesDefault ? "" : undefined;
+  }
   if (column.value_type === "number") {
     const number = Number(text);
     return Number.isFinite(number) ? number : undefined;
@@ -102,12 +108,15 @@ export function withCell(row: SettingRow, column: PluginSettingColumn, text: str
  * A new row filled with each column's default.
  *
  * @param columns - Columns of the table.
- * @returns A row holding the columns that declare a default.
+ * @returns A row holding the columns that declare a default, and `false`
+ *   for each boolean column without one, so the row holds the value its
+ *   unchecked box shows.
  */
 export function newRow(columns: PluginSettingColumn[]): SettingRow {
   let row: SettingRow = {};
   for (const column of columns) {
     if (column.default !== undefined) row = withCell(row, column, column.default);
+    else if (column.value_type === "boolean") row = withCell(row, column, "false");
   }
   return row;
 }
