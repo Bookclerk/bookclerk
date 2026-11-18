@@ -2086,8 +2086,17 @@ already processed.
   digest of the file rows the grant listed. It lives one hour and the
   record-retention pass deletes it after that; deleting a user deletes
   their grants.
+- **A clerk asks on its own socket.** `copy.grant` on the clerk socket is
+  the same grant for the card's person, through the same plan and
+  destination choice. A clerk has no box key, so `copy.granted` carries
+  the token as text (`token`, with the listing echoed, since clerk frames
+  have no ids); the socket is the card's TLS session, and the token is
+  worth no more than the card that asked. The grant's holder is the
+  card's token hash, as `portal_sessions` already stores it: unique,
+  never reused, and gone with the session.
 - **Authorized on every request.** The token alone proves nothing after
-  the grant: each GET reads afresh that the holder is still trusted and
+  the grant: each GET reads afresh that the holder is still trusted (a
+  branch) or still signed in with a user who is not disabled (a card) and
   still belongs to the person, that the person may still see the edition
   (one function, `visible_to`, which patron scopes will narrow), and that
   the files' digest is unchanged. Every failure is the same `401`, and
@@ -2097,7 +2106,7 @@ already processed.
   folder; files outside it, or whose names cannot be framed, are left
   out. The reader places files under its own naming and never writes to
   a name as given.
-- **The route is outside the session layers**, like uploads: the sealed
+- **The route is outside the session layers**, like uploads: the copy
   token is the credential, and the transport policy runs first. The
   hosted demo denies it.
 

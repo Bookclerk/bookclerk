@@ -541,3 +541,289 @@ async fn a_page_is_not_served_once_the_card_ends() {
         "the page request closes the socket instead of reading books"
     );
 }
+
+/// Log output captured in memory.
+#[derive(Clone, Default)]
+struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// One GET of a copy's file: the status line and headers as lowercase
+/// text, and the body.
+async fn get_copy_file(
+    addr: SocketAddr,
+    path: &str,
+    authorization: Option<&str>,
+    range: Option<&str>,
+) -> (String, Vec<u8>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut head = format!(
+        "GET {path} HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n",
+        addr.port()
+    );
+    if let Some(authorization) = authorization {
+        head.push_str(&format!("Authorization: {authorization}\r\n"));
+    }
+    if let Some(range) = range {
+        head.push_str(&format!("Range: {range}\r\n"));
+    }
+    head.push_str("\r\n");
+    tcp.write_all(head.as_bytes()).await.unwrap();
+    let mut answer = Vec::new();
+    tokio::time::timeout(Duration::from_secs(20), tcp.read_to_end(&mut answer))
+        .await
+        .unwrap()
+        .unwrap();
+    let split = answer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("a complete response head");
+    (
+        String::from_utf8_lossy(&answer[..split]).to_ascii_lowercase(),
+        answer[split + 4..].to_vec(),
+    )
+}
+
+/// Sends `frame` and answers what came back.
+async fn ask(socket: &mut Socket, frame: &ClerkFrame) -> Next {
+    socket
+        .send(Message::Text(frame.encode().into()))
+        .await
+        .unwrap();
+    next(socket, Duration::from_secs(10)).await
+}
+
+/// A card takes the copy the library holds of an edition another member
+/// provided: `copy.grant` answers what the copy is, its files with their
+/// sizes and a token; each file downloads whole or by range with it and
+/// with nothing else; an edition without a copy is `not_found`; signing
+/// the card out stops the downloads at once; and at TRACE neither the
+/// token nor the card reaches a log.
+#[tokio::test]
+async fn a_card_downloads_the_librarys_copy_until_it_is_signed_out() {
+    use bookclerk_node_proto::{CopyRole, COPIES_PATH};
+
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let logs = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
+        .with_writer(logs.clone())
+        .finish();
+    let _logging = tracing::subscriber::set_default(subscriber);
+
+    let files = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let (_state, store, addr) = served(&files).await;
+    crate::node_api::uploads::set_test_destination(files.path(), out.path());
+    let (riley, _) = member_with_card(&store, "riley").await;
+    let (_, token) = member_with_card(&store, "sam").await;
+    hold(&store, riley, "riley-acct", "B0RILEY001").await;
+    hold(&store, riley, "riley-acct", "B0RILEY002").await;
+
+    // The library acquired the first: its audio and a cover lie on the
+    // destination and are recorded as the edition's files.
+    const KEY: &str = "Ann Author/Title/Title.m4b";
+    const COVER: &str = "Ann Author/Title/cover.jpg";
+    let audio: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::create_dir_all(out.path().join("Ann Author/Title")).unwrap();
+    std::fs::write(out.path().join(KEY), &audio).unwrap();
+    std::fs::write(out.path().join(COVER), b"cover").unwrap();
+    store
+        .set_acquire_status(
+            "B0RILEY001",
+            "riley-acct",
+            AcquireStatus::Acquired,
+            Some(KEY),
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .set_acquire_status(
+            "B0RILEY002",
+            "riley-acct",
+            AcquireStatus::NotAcquired,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let book = store
+        .get_book("B0RILEY001", "riley-acct")
+        .await
+        .unwrap()
+        .unwrap();
+    let owner = store.file_owner_of_book(&book.uuid).await.unwrap().unwrap();
+    for (key, role) in [
+        (KEY, bookclerk_library::FileRole::Audio),
+        (COVER, bookclerk_library::FileRole::Cover),
+    ] {
+        assert!(store
+            .record_edition_file("local", key, &owner, role)
+            .await
+            .unwrap());
+    }
+
+    let header = card(&token);
+    let mut socket = open(
+        addr,
+        &[
+            ("authorization", &header),
+            ("sec-websocket-protocol", CLERK_SUBPROTOCOL),
+        ],
+    )
+    .await
+    .expect("a card is admitted");
+    assert!(matches!(
+        next(&mut socket, Duration::from_secs(5)).await,
+        Next::Frame(LibraryFrame::Hello { .. })
+    ));
+    let grant = |product_id: &str| ClerkFrame::CopyGrant {
+        store: "audible".into(),
+        marketplace: "us".into(),
+        product_id: product_id.into(),
+    };
+
+    // Not acquired, and not in the library at all: one answer.
+    for product in ["B0RILEY002", "B0NOBODY01"] {
+        assert_eq!(
+            ask(&mut socket, &grant(product)).await,
+            Next::Frame(LibraryFrame::Error {
+                code: ClerkSocketError::NotFound,
+            }),
+            "{product}"
+        );
+    }
+    // A malformed ask is not answered as a copy.
+    socket
+        .send(Message::Text(
+            r#"{"v":1,"type":"copy.grant","store":"Not A Store","product_id":"B0RILEY001"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        next(&mut socket, Duration::from_secs(5)).await,
+        Next::Frame(LibraryFrame::Error {
+            code: ClerkSocketError::Invalid,
+        })
+    );
+
+    let Next::Frame(LibraryFrame::CopyGranted(granted)) =
+        ask(&mut socket, &grant("B0RILEY001")).await
+    else {
+        panic!("a copy.grant for a held copy is answered with copy.granted");
+    };
+    assert_eq!(
+        (
+            granted.store.as_str(),
+            granted.marketplace.as_str(),
+            granted.product_id.as_str(),
+            granted.expires_in_secs
+        ),
+        ("audible", "us", "B0RILEY001", 3600)
+    );
+    let listed: Vec<(&str, CopyRole, u64)> = granted
+        .files
+        .iter()
+        .map(|file| (file.name.as_str(), file.role, file.size))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            ("Title.m4b", CopyRole::Audio, 100_000),
+            ("cover.jpg", CopyRole::Cover, 5),
+        ]
+    );
+    let copy_token = granted.token.expose().to_owned();
+    let authorization = format!("Bookclerk-Copy {copy_token}");
+    let file = |n: usize| format!("{COPIES_PATH}{}/files/{n}", granted.copy_id);
+
+    let (head, body) = get_copy_file(addr, &file(0), Some(&authorization), None).await;
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    assert_eq!(body, audio);
+    let (head, body) =
+        get_copy_file(addr, &file(0), Some(&authorization), Some("bytes=10-19")).await;
+    assert!(head.starts_with("http/1.1 206"), "{head}");
+    assert_eq!(body, &audio[10..20]);
+    let (head, body) = get_copy_file(addr, &file(1), Some(&authorization), None).await;
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    assert_eq!(body, b"cover");
+
+    // The card itself, in either scheme, is not a copy token, and nor is
+    // no token.
+    let as_copy = format!("Bookclerk-Copy {token}");
+    for authorization in [None, Some(header.as_str()), Some(as_copy.as_str())] {
+        let (head, _) = get_copy_file(addr, &file(0), authorization, None).await;
+        assert!(
+            head.starts_with("http/1.1 401"),
+            "{authorization:?}: {head}"
+        );
+    }
+
+    // The grant is the card's: recorded under its hash, never its token.
+    {
+        use sea_orm::{ConnectionTrait as _, Statement};
+        let row = store
+            .db()
+            .query_one(Statement::from_string(
+                store.db().get_database_backend(),
+                "SELECT holder_kind, holder_id FROM copy_grants".to_string(),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.try_get::<String>("", "holder_kind").unwrap(), "card");
+        assert_eq!(
+            row.try_get::<String>("", "holder_id").unwrap(),
+            hash_token(&token)
+        );
+    }
+
+    // Signed out: the same copy token opens nothing, and the socket's
+    // next ask closes it.
+    assert!(store
+        .delete_clerk_session(&hash_token(&token))
+        .await
+        .unwrap());
+    let (head, _) = get_copy_file(addr, &file(0), Some(&authorization), None).await;
+    assert!(head.starts_with("http/1.1 401"), "{head}");
+    assert_eq!(
+        ask(&mut socket, &grant("B0RILEY001")).await,
+        Next::Closed(CLOSE_UNAUTHORIZED)
+    );
+
+    let logged = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+    assert!(
+        logged.contains("granted a copy of an edition to a library card"),
+        "{logged}"
+    );
+    assert!(
+        !logged.contains(&copy_token),
+        "the copy token reached a log"
+    );
+    assert!(!logged.contains(&token), "the card reached a log");
+    assert!(
+        !logged.contains(&hash_token(&token)),
+        "the card's hash reached a log"
+    );
+}

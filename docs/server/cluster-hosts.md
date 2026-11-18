@@ -783,12 +783,18 @@ it hands out the token: the branch is still trusted, it still belongs to
 the same person, that person may still see the edition, and the files
 are still the ones the grant listed. A token outlives none of them.
 
+A clerk asks the same way on its own socket, for the person its library
+card belongs to. Its token is not sealed (a clerk has no box key; the
+socket is the card's TLS connection), and each download checks that the
+card is still signed in instead of a branch's trust. See
+[The clerk socket](sign-in.md#the-clerk-socket).
+
 | Refusal | Meaning |
 | --- | --- |
 | `error` `refused` (socket) | Not a branch this library trusts |
-| `error` `not_found` (socket) | The person may not take the edition, or the library holds no copy of it. The two are not told apart |
+| `error` `not_found` (socket) | The person may not take the edition, or the library holds no copy of it. The two are not told apart. The only refusal a clerk gets besides `invalid` and `unavailable` |
 | `error` `unavailable` (socket), `503 unavailable` | The library's storage can't be read right now. Try again later |
-| `401 unauthorized` | Unknown copy, a wrong or expired token, or a grant that no longer holds |
+| `401 unauthorized` | Unknown copy, a wrong or expired token, or a grant that no longer holds (for a clerk: its card was signed out or expired, or its user disabled) |
 | `421 misdirected` | Another library node granted it |
 | `404 unknown_file` | The copy has no file `{n}` |
 | `416 range_not_satisfiable` | The range starts at or past the end of the file |
@@ -798,8 +804,8 @@ it expires.
 
 > [!NOTE]
 > This is the library's side. A branch doesn't yet take copies by itself
-> when it acquires a book the library already holds, and a clerk can't
-> ask for one yet.
+> when it acquires a book the library already holds, and the clerk app
+> doesn't yet download them.
 
 ## Node-local instances
 

@@ -54,6 +54,10 @@ const MAX_PRODUCT_HOLDINGS: u64 = 64;
 pub enum CopyHolder<'a> {
     /// A branch node, on its node socket; the person is its owner.
     Node(&'a str),
+    /// A clerk, on its clerk socket, named by the SHA-256 hex of its
+    /// library card (`portal_sessions.token_hash`); the person is the
+    /// card's.
+    Card(&'a str),
 }
 
 impl CopyHolder<'_> {
@@ -61,13 +65,14 @@ impl CopyHolder<'_> {
     fn kind(self) -> &'static str {
         match self {
             Self::Node(_) => "node",
+            Self::Card(_) => "card",
         }
     }
 
     /// The stored `copy_grants.holder_id`.
     fn id(&self) -> &str {
         match self {
-            Self::Node(id) => id,
+            Self::Node(id) | Self::Card(id) => id,
         }
     }
 }
@@ -160,6 +165,7 @@ async fn person_of(store: &LibraryStore, holder: CopyHolder<'_>) -> Result<Optio
             }
             Ok(node.owner_user_id)
         }
+        CopyHolder::Card(token_hash) => store.clerk_session_person(token_hash).await,
     }
 }
 
@@ -584,6 +590,7 @@ pub async fn authorize_copy(
     }
     let holder = match row.holder_kind.as_str() {
         "node" => CopyHolder::Node(row.holder_id.as_str()),
+        "card" => CopyHolder::Card(row.holder_id.as_str()),
         _ => return Ok(None),
     };
     if person_of(store, holder).await? != Some(row.user_id) {

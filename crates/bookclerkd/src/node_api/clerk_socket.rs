@@ -28,8 +28,11 @@
 //! SPA's live socket reads them (the shared revision read every
 //! [`crate::live::POLL_INTERVAL`] and in-process pokes). It answers each
 //! `books` frame, in order, with `books.page` from
-//! [`person_books_page`] for the card's person, or `error`; the card is
-//! checked again in the library snapshot each page is read from, and a
+//! [`person_books_page`] for the card's person, or `error`, and each
+//! `copy.grant` with `copy.granted` (the library's copy of that edition
+//! and the token its files are downloaded with, from
+//! `GET /api/copies/v1/{copy_id}/files/{n}`) or `error`; the card is
+//! checked again in the library snapshot each answer is read from, and a
 //! card that no longer names that person closes the socket. Nothing on it
 //! claims work, names a node, or reads another person's books.
 //!
@@ -49,7 +52,7 @@ use axum::extract::{FromRequestParts as _, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use bookclerk_library::control_plane::{changed_topics, person_books_page, LiveTopic};
+use bookclerk_library::control_plane::{changed_topics, person_books_page, CopyListing, LiveTopic};
 use bookclerk_node_proto::{
     parse_clerk_frame, ClerkFrame, ClerkSocketError, ClerkTopic, LibraryFrame, CLERK_CONNECT_PATH,
     CLERK_SUBPROTOCOL, MAX_CLERK_FRAME_BYTES,
@@ -121,7 +124,7 @@ fn refusal(status: StatusCode, error: &str) -> Response {
     path = "/api/clerk/v1/connect",
     security(("clerkToken" = [])),
     responses(
-        (status = 101, description = "Switching to the clerk socket: `hello` and `changed` frames name the topics that changed, and each `books` frame is answered with one page of the card's person's books (`books.page`)."),
+        (status = 101, description = "Switching to the clerk socket: `hello` and `changed` frames name the topics that changed, each `books` frame is answered with one page of the card's person's books (`books.page`), and each `copy.grant` frame with the library's copy of that edition and a one-hour token for `GET /api/copies/v1/{copy_id}/files/{index}` (`copy.granted`)."),
         (status = 400, description = "The request does not offer the `bookclerk-clerk.v1` subprotocol (`subprotocol_required`)."),
         (status = 401, description = "No library card, or the card is not signed in (`unauthorized`)."),
         (status = 403, description = "The transport is not allowed (`transport_insecure`), or the card's person must enroll a second factor first (`mfa_enrollment_required`)."),
@@ -192,8 +195,8 @@ fn close(code: u16, reason: &'static str) -> Message {
 /// The answer to one clerk frame.
 ///
 /// The card is checked again in the same library snapshot the page is
-/// read from, so a page is never read for an id the card named in a
-/// library that has since been replaced.
+/// read from or the copy is granted in, so neither is done for an id the
+/// card named in a library that has since been replaced.
 ///
 /// # Arguments
 ///
@@ -207,7 +210,7 @@ fn close(code: u16, reason: &'static str) -> Message {
 /// The frame to send, or `None` when the card no longer names `person`
 /// and the socket must close.
 async fn answer(state: &AppState, token: &str, person: i64, frame: &[u8]) -> Option<LibraryFrame> {
-    let Some(ClerkFrame::Books { after }) = parse_clerk_frame(frame) else {
+    let Some(asked) = parse_clerk_frame(frame) else {
         return Some(LibraryFrame::Error {
             code: ClerkSocketError::Invalid,
         });
@@ -222,13 +225,32 @@ async fn answer(state: &AppState, token: &str, person: i64, frame: &[u8]) -> Opt
         }
         CardLookup::Person(_) | CardLookup::SignedOut | CardLookup::Refused(_) => return None,
     }
-    Some(match person_books_page(&library, person, &after).await {
-        Ok((works, next)) => LibraryFrame::BooksPage { after, works, next },
-        Err(err) => {
-            tracing::warn!(error = %err, "clerk socket could not read a page of books");
-            LibraryFrame::Error {
-                code: ClerkSocketError::Unavailable,
+    Some(match asked {
+        ClerkFrame::Books { after } => match person_books_page(&library, person, &after).await {
+            Ok((works, next)) => LibraryFrame::BooksPage { after, works, next },
+            Err(err) => {
+                tracing::warn!(error = %err, "clerk socket could not read a page of books");
+                LibraryFrame::Error {
+                    code: ClerkSocketError::Unavailable,
+                }
             }
+        },
+        ClerkFrame::CopyGrant {
+            store,
+            marketplace,
+            product_id,
+        } => {
+            super::copies::grant_to_card(
+                &library,
+                state,
+                token,
+                CopyListing {
+                    store: &store,
+                    marketplace: &marketplace,
+                    product_id: &product_id,
+                },
+            )
+            .await
         }
     })
 }

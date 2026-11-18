@@ -243,8 +243,37 @@ never sends work on it.
    A cursor is an opaque string of up to 64 letters, digits and `-`. The
    clerk sends it back unchanged as the next `after`.
    A frame it cannot read gets `error` with code `invalid`.
+4. The clerk asks for the library's copy of an edition with
+   `{"v":1,"type":"copy.grant","store":"…","marketplace":"…","product_id":"…"}`,
+   naming the edition by a store listing from a page (`marketplace` is
+   left out for a store without marketplaces). The library answers
+   `copy.granted` with the same listing, a `copy_id`, a `token`,
+   `expires_in_secs` (one hour), `copy` (as on a page) and `files`: each
+   file's `name`, `role` and `size`, the primary audio first. The clerk
+   downloads file `n` of that list with
+   `GET /api/copies/v1/{copy_id}/files/{n}` and
+   `Authorization: Bookclerk-Copy <token>`; one `Range` is honoured, so a
+   broken download resumes. An edition the person may not take, or one
+   the library holds no copy of, gets `error` with code `not_found`; the
+   two are not told apart. `unavailable` means try again later.
 
-The library checks the card again every 30 seconds, and before every page,
+Answers come in the order the frames were asked.
+
+The copy token is good only while the card is: the library checks on every
+download that the card is still signed in and its user is not disabled,
+that the person may still see the edition and that the files are the ones
+it listed. Signing the card out stops its downloads at once. See
+[Taking a copy from the library](cluster-hosts.md#taking-a-copy-from-the-library)
+for the download route's answers.
+
+> [!NOTE]
+> The token is frame text on this socket, where a branch's is sealed to
+> its key: a clerk has no key of its own, and the socket is the card's own
+> TLS connection. Treat it like the card. The library stores only its hash
+> and keeps it out of its logs.
+
+The library checks the card again every 30 seconds, and before every page
+and every copy it grants,
 and closes the socket with code 4401 once the card is signed out, revoked,
 expired, its user disabled, or its person must enroll a second factor (a
 new socket then gets 403 `mfa_enrollment_required`). A socket the clerk

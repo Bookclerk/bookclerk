@@ -24,7 +24,7 @@ transport policy and its own bearer token:
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/copies/v1/{copy_id}/files/{n}` | One file of a copy the library granted, for `Authorization: Bookclerk-Copy <token>` (see [Taking a copy from the library](../server/cluster-hosts.md#taking-a-copy-from-the-library)) |
+| `GET /api/copies/v1/{copy_id}/files/{n}` | One file of a copy the library granted, for `Authorization: Bookclerk-Copy <token>`. A branch gets the token from `copy.grant` on the node socket, a clerk from `copy.grant` on [the clerk socket](../server/sign-in.md#the-clerk-socket) (see [Taking a copy from the library](../server/cluster-hosts.md#taking-a-copy-from-the-library)) |
 
 **Handshake.** `hello {node_id, incarnation, software_version, resume}` →
 `challenge {nonce, cluster_id}` → `auth {sig}` (Ed25519 over the cluster,

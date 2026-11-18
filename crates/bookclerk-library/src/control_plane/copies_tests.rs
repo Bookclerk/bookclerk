@@ -407,7 +407,7 @@ async fn a_grant_is_checked_afresh_on_every_download() {
             "UPDATE users SET status = 'disabled'".to_string(),
         ),
         (
-            "a holder kind this version does not know",
+            "the grant read as a card's, which no card holds",
             "UPDATE copy_grants SET holder_kind = 'card'".to_string(),
         ),
     ] {
@@ -415,6 +415,173 @@ async fn a_grant_is_checked_afresh_on_every_download() {
         assert!(live(&store, &opened).await, "{what}: live before");
         raw(&store, &change).await;
         assert!(!live(&store, &opened).await, "{what}");
+    }
+}
+
+/// A library card is planned and granted the library's copy for its
+/// person, another member's edition included, and the grant opens
+/// downloads only while that card is signed in: signing the card out, its
+/// expiry, a disabled person, an identity that no longer names the person
+/// or a session that is not a card's all end it. Under every database
+/// profile.
+#[tokio::test]
+async fn a_library_card_is_granted_a_copy_while_it_is_signed_in_under_every_profile() {
+    /// A library where Morgan, who holds no book, has a live card;
+    /// answers Morgan's user id and the card's token hash.
+    async fn with_a_card(profile: Profile) -> (LibraryStore, i64, String) {
+        let store = memory(profile).await.into_store();
+        library_with_a_copy(&store).await;
+        let morgan = store
+            .create_user(UserRole::Member, Some("Morgan"), None)
+            .await
+            .unwrap()
+            .id;
+        let identity = store
+            .ensure_local_portal_identity(morgan, Some("Morgan"))
+            .await
+            .unwrap();
+        let card = crate::hash_token("morgans-card");
+        store
+            .insert_clerk_session(
+                &card,
+                identity.id,
+                Utc::now() + Duration::hours(1),
+                "Morgan's phone",
+            )
+            .await
+            .unwrap();
+        (store, morgan, card)
+    }
+    /// The grant of [`ASIN`] to the card.
+    async fn granted(store: &LibraryStore, card: &str) -> (CopyPlan, OpenedCopy) {
+        let CopyPlanned::Planned(plan) = plan_copy(store, CopyHolder::Card(card), listing(ASIN))
+            .await
+            .unwrap()
+        else {
+            panic!("the card was not planned a copy");
+        };
+        let opened = open_copy(store, CopyHolder::Card(card), &plan, "local", "owner-1")
+            .await
+            .unwrap()
+            .unwrap();
+        (plan, opened)
+    }
+
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let (store, morgan, card) = with_a_card(profile).await;
+        let (plan, opened) = granted(&store, &card).await;
+        assert_eq!(plan.person, morgan, "{name}");
+        let row = copy_grants::Entity::find_by_id(opened.copy_id.clone())
+            .one(store.db())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                row.holder_kind.as_str(),
+                row.holder_id.as_str(),
+                row.user_id
+            ),
+            ("card", card.as_str(), morgan),
+            "{name}"
+        );
+        let download = authorize_copy(&store, &opened.copy_id, &opened.token)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("{name}: the grant opens no download"));
+        assert_eq!(download.destination, "local", "{name}");
+
+        // A card nobody holds, and a node id where a card is expected.
+        for holder in [
+            CopyHolder::Card("0000"),
+            CopyHolder::Card(BRANCH),
+            CopyHolder::Node(card.as_str()),
+        ] {
+            assert_eq!(
+                plan_copy(&store, holder, listing(ASIN)).await.unwrap(),
+                CopyPlanned::Refused,
+                "{name}: {holder:?}"
+            );
+        }
+        // The same answer for an edition the library has no copy of.
+        assert_eq!(
+            plan_copy(&store, CopyHolder::Card(&card), listing("B0NOCOPY00"))
+                .await
+                .unwrap(),
+            CopyPlanned::NotFound,
+            "{name}"
+        );
+
+        // Signing the card out ends the grant at once.
+        assert!(store.delete_clerk_session(&card).await.unwrap());
+        assert_eq!(
+            authorize_copy(&store, &opened.copy_id, &opened.token)
+                .await
+                .unwrap(),
+            None,
+            "{name}: signed out"
+        );
+        assert_eq!(
+            plan_copy(&store, CopyHolder::Card(&card), listing(ASIN))
+                .await
+                .unwrap(),
+            CopyPlanned::Refused,
+            "{name}: signed out"
+        );
+
+        // Each other ending, on a fresh library.
+        for (what, change) in [
+            (
+                "the card expired",
+                "UPDATE portal_sessions SET expires_at = '2020-01-01T00:00:00+00:00'",
+            ),
+            (
+                "a browser session with that hash",
+                "UPDATE portal_sessions SET kind = 'browser'",
+            ),
+            (
+                "the person disabled",
+                "UPDATE users SET status = 'disabled'",
+            ),
+            (
+                "the identity names nobody",
+                "UPDATE portal_identities SET user_id = NULL",
+            ),
+        ] {
+            let (store, _, card) = with_a_card(profile).await;
+            let (_, opened) = granted(&store, &card).await;
+            raw(&store, change).await;
+            assert_eq!(
+                authorize_copy(&store, &opened.copy_id, &opened.token)
+                    .await
+                    .unwrap(),
+                None,
+                "{name}: {what}"
+            );
+        }
+
+        // A card that now names another person does not carry the grant
+        // over to them.
+        let (store, _, card) = with_a_card(profile).await;
+        let (_, opened) = granted(&store, &card).await;
+        let other = store
+            .create_user(UserRole::Member, Some("Sam"), None)
+            .await
+            .unwrap()
+            .id;
+        raw(
+            &store,
+            &format!("UPDATE portal_identities SET user_id = {other} WHERE user_id IS NOT NULL"),
+        )
+        .await;
+        assert_eq!(
+            authorize_copy(&store, &opened.copy_id, &opened.token)
+                .await
+                .unwrap(),
+            None,
+            "{name}: another person"
+        );
     }
 }
 

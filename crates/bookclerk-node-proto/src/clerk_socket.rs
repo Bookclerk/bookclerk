@@ -15,10 +15,19 @@
 //! | library → clerk | `changed` | `topics` | those topics changed; read again |
 //! | clerk → library | `books` | `after` | the page of the library's books after this cursor ([`WindowCursor`]; empty for the first) |
 //! | library → clerk | `books.page` | `after`, `works`, `next?` | that page ([`WindowWork`]); no `next` on the last page |
-//! | library → clerk | `error` | `code` | a `books` frame was not answered ([`ClerkSocketError`]) |
+//! | clerk → library | `copy.grant` | `store`, `marketplace?`, `product_id` | ask for the library's copy of the edition that store listing names ([`crate::copy_grant_problem`]) |
+//! | library → clerk | `copy.granted` | `store`, `marketplace?`, `product_id`, `copy_id`, `token`, `expires_in_secs`, `copy`, `files` | the copy may be downloaded ([`ClerkCopy`]) |
+//! | library → clerk | `error` | `code` | a `books` or `copy.grant` frame was not answered ([`ClerkSocketError`]) |
 //!
-//! Pages answer in the order they were asked, and each echoes the `after`
-//! it answers. A page carries what a window's `window.page` carries: works
+//! Answers come in the order the frames were asked. A page echoes the
+//! `after` it answers and a granted copy echoes its listing.
+//!
+//! A clerk has no box key, so the copy token is frame text here, where a
+//! node's is sealed: the socket is the card's own TLS session (the
+//! transport policy admits plain HTTP on loopback only), and the token is
+//! good for one hour, for that card's person and that edition.
+//!
+//! A page carries what a window's `window.page` carries: works
 //! grouped by the library's own work id, each with its identifiers and
 //! owned editions, and no account, user or library field.
 //!
@@ -33,7 +42,10 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{window_page_problem, WindowCursor, WindowWork, MAX_FRAME_BYTES};
+use crate::{
+    copy_grant_problem, copy_granted_problem, window_page_problem, CopyFile, CopyGrantedFrame,
+    WindowCopy, WindowCursor, WindowWork, MAX_FRAME_BYTES,
+};
 
 /// Path of the clerk socket.
 pub const CLERK_CONNECT_PATH: &str = "/api/clerk/v1/connect";
@@ -97,14 +109,97 @@ pub fn is_topic_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.')
 }
 
-/// Why the library did not answer a `books` frame.
+/// Why the library did not answer a `books` or `copy.grant` frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum ClerkSocketError {
     /// The clerk sent a frame the library could not read.
     Invalid,
     /// The library could not read the books just now; ask again later.
     Unavailable,
+    /// `copy.grant` only: the person may not take that edition, or the
+    /// library holds no copy of it. One code for both.
+    NotFound,
+}
+
+/// A copy token as a clerk socket frame carries it: the bearer of the
+/// download endpoint ([`crate::COPY_AUTH_SCHEME`]). Its `Debug` prints no
+/// token, and the text is zeroized when dropped.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CopyToken(zeroize::Zeroizing<String>);
+
+impl CopyToken {
+    /// Wraps `token`.
+    #[must_use]
+    pub fn new(token: &str) -> Self {
+        Self(zeroize::Zeroizing::new(token.to_owned()))
+    }
+
+    /// The token text, for the `Authorization` header.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Serialize for CopyToken {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.expose())
+    }
+}
+
+impl<'de> Deserialize<'de> for CopyToken {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // The string's buffer moves into the zeroizing wrapper; no second
+        // copy of the token is made.
+        String::deserialize(deserializer).map(|token| Self(zeroize::Zeroizing::new(token)))
+    }
+}
+
+impl std::fmt::Debug for CopyToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CopyToken(<redacted>)")
+    }
+}
+
+/// What a `copy.granted` frame carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClerkCopy {
+    /// Store id of the listing the clerk asked with.
+    pub store: String,
+    /// That listing's marketplace; empty for a store without marketplaces.
+    pub marketplace: String,
+    /// That listing's product id.
+    pub product_id: String,
+    /// Copy id; the files are at `COPIES_PATH<copy_id>/files/<n>`.
+    pub copy_id: String,
+    /// The bearer token for the download endpoint.
+    pub token: CopyToken,
+    /// Seconds the token stays valid.
+    pub expires_in_secs: u64,
+    /// What the copy is, as the library's page states it.
+    pub copy: WindowCopy,
+    /// The copy's files; a file's index here is its `<n>`.
+    pub files: Vec<CopyFile>,
+}
+
+impl ClerkCopy {
+    /// Why the grant is malformed, or `None`: a listing that passes
+    /// [`copy_grant_problem`] and the rest passing
+    /// [`copy_granted_problem`], the token held to the same rule as a
+    /// node's sealed one (1 to 1024 base64url characters).
+    #[must_use]
+    pub fn problem(&self) -> Option<&'static str> {
+        copy_grant_problem(&self.store, &self.marketplace, &self.product_id).or_else(|| {
+            copy_granted_problem(&CopyGrantedFrame {
+                copy_id: &self.copy_id,
+                sealed_token: self.token.expose(),
+                expires_in_secs: self.expires_in_secs,
+                copy: &self.copy,
+                files: &self.files,
+            })
+        })
+    }
 }
 
 /// A frame from a clerk to a library.
@@ -115,6 +210,17 @@ pub enum ClerkFrame {
     Books {
         /// The cursor of the previous page.
         after: WindowCursor,
+    },
+    /// `copy.grant`: ask for the library's copy of one edition, named by
+    /// its store listing; the person is the card's.
+    CopyGrant {
+        /// Store id of the edition's listing.
+        store: String,
+        /// The listing's marketplace; empty for a store without
+        /// marketplaces.
+        marketplace: String,
+        /// The listing's product id.
+        product_id: String,
     },
 }
 
@@ -141,7 +247,9 @@ pub enum LibraryFrame {
         /// The cursor of the next page; `None` on the last page.
         next: Option<WindowCursor>,
     },
-    /// `error`: a `books` frame was not answered.
+    /// `copy.granted`: the copy may be downloaded.
+    CopyGranted(Box<ClerkCopy>),
+    /// `error`: a `books` or `copy.grant` frame was not answered.
     Error {
         /// Why.
         code: ClerkSocketError,
@@ -155,11 +263,21 @@ pub enum LibraryFrame {
 struct ClerkWire {
     /// Protocol version; must be [`CLERK_SOCKET_VERSION`].
     v: u8,
-    /// Frame type; must be `books`.
+    /// Frame type; `books` or `copy.grant`.
     #[serde(rename = "type")]
     kind: String,
-    /// The cursor of the previous page.
-    after: WindowCursor,
+    /// `books`: the cursor of the previous page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    after: Option<WindowCursor>,
+    /// `copy.grant`: the listing's store id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    store: Option<String>,
+    /// `copy.grant`: the listing's marketplace, absent when empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    marketplace: Option<String>,
+    /// `copy.grant`: the listing's product id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    product_id: Option<String>,
 }
 
 /// A library frame as written; every field is checked by
@@ -187,6 +305,35 @@ struct LibraryWire {
     /// `error`: why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     code: Option<ClerkSocketError>,
+    /// `copy.granted`: the listing's store id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    store: Option<String>,
+    /// `copy.granted`: the listing's marketplace, absent when empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    marketplace: Option<String>,
+    /// `copy.granted`: the listing's product id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    product_id: Option<String>,
+    /// `copy.granted`: the copy id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    copy_id: Option<String>,
+    /// `copy.granted`: the download token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token: Option<CopyToken>,
+    /// `copy.granted`: seconds the token stays valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_in_secs: Option<u64>,
+    /// `copy.granted`: what the copy is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    copy: Option<WindowCopy>,
+    /// `copy.granted`: the copy's files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    files: Option<Vec<CopyFile>>,
+}
+
+/// A marketplace as a wire field: absent when empty.
+fn marketplace_field(marketplace: &str) -> Option<String> {
+    (!marketplace.is_empty()).then(|| marketplace.to_owned())
 }
 
 impl ClerkFrame {
@@ -197,10 +344,25 @@ impl ClerkFrame {
             Self::Books { after } => ClerkWire {
                 v: CLERK_SOCKET_VERSION,
                 kind: "books".into(),
-                after: after.clone(),
+                after: Some(after.clone()),
+                store: None,
+                marketplace: None,
+                product_id: None,
+            },
+            Self::CopyGrant {
+                store,
+                marketplace,
+                product_id,
+            } => ClerkWire {
+                v: CLERK_SOCKET_VERSION,
+                kind: "copy.grant".into(),
+                after: None,
+                store: Some(store.clone()),
+                marketplace: marketplace_field(marketplace),
+                product_id: Some(product_id.clone()),
             },
         };
-        // A struct of an integer and two strings always serializes.
+        // A struct of an integer and strings always serializes.
         serde_json::to_string(&wire).unwrap_or_default()
     }
 }
@@ -220,6 +382,14 @@ impl LibraryFrame {
             works: None,
             next: None,
             code: None,
+            store: None,
+            marketplace: None,
+            product_id: None,
+            copy_id: None,
+            token: None,
+            expires_in_secs: None,
+            copy: None,
+            files: None,
         };
         match self {
             Self::Hello { topics } => {
@@ -236,19 +406,35 @@ impl LibraryFrame {
                 wire.works = Some(works.clone());
                 wire.next = next.clone();
             }
+            Self::CopyGranted(granted) => {
+                wire.kind = "copy.granted".into();
+                wire.store = Some(granted.store.clone());
+                wire.marketplace = marketplace_field(&granted.marketplace);
+                wire.product_id = Some(granted.product_id.clone());
+                wire.copy_id = Some(granted.copy_id.clone());
+                wire.token = Some(granted.token.clone());
+                wire.expires_in_secs = Some(granted.expires_in_secs);
+                wire.copy = Some(granted.copy.clone());
+                wire.files = Some(granted.files.clone());
+            }
             Self::Error { code } => {
                 wire.kind = "error".into();
                 wire.code = Some(*code);
             }
         }
-        // Strings, integers and the derived works always serialize.
+        // Strings, integers and the derived works and files always
+        // serialize.
         serde_json::to_string(&wire).unwrap_or_default()
     }
 }
 
 /// Reads a frame a clerk sent: at most [`MAX_CLERK_FRAME_BYTES`], one JSON
-/// object with exactly `v` (1), `type` (`books`) and `after` (a string
-/// [`WindowCursor`]), each once.
+/// object with `v` (1), a known `type`, and exactly that type's fields,
+/// each once (a field written as `null` counts as absent).
+///
+/// - `books`: `after`, a string [`WindowCursor`].
+/// - `copy.grant`: `store`, `product_id` and, for a store with
+///   marketplaces, `marketplace`, passing [`copy_grant_problem`].
 ///
 /// # Arguments
 ///
@@ -263,10 +449,41 @@ pub fn parse_clerk_frame(text: &[u8]) -> Option<ClerkFrame> {
         return None;
     }
     let wire: ClerkWire = serde_json::from_slice(text).ok()?;
-    if wire.v != CLERK_SOCKET_VERSION || wire.kind != "books" {
+    if wire.v != CLERK_SOCKET_VERSION {
         return None;
     }
-    Some(ClerkFrame::Books { after: wire.after })
+    let ClerkWire {
+        kind,
+        after,
+        store,
+        marketplace,
+        product_id,
+        ..
+    } = wire;
+    match kind.as_str() {
+        "books" => {
+            if store.is_some() || marketplace.is_some() || product_id.is_some() {
+                return None;
+            }
+            Some(ClerkFrame::Books { after: after? })
+        }
+        "copy.grant" => {
+            if after.is_some() {
+                return None;
+            }
+            let (store, product_id) = (store?, product_id?);
+            let marketplace = marketplace.unwrap_or_default();
+            if copy_grant_problem(&store, &marketplace, &product_id).is_some() {
+                return None;
+            }
+            Some(ClerkFrame::CopyGrant {
+                store,
+                marketplace,
+                product_id,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Reads a frame a library sent: at most [`crate::MAX_FRAME_BYTES`], one
@@ -277,6 +494,9 @@ pub fn parse_clerk_frame(text: &[u8]) -> Option<ClerkFrame> {
 ///   each [`is_topic_name`]; names this version does not know are dropped.
 /// - `books.page`: `after` (a [`WindowCursor`]), `works`, and `next` unless it is
 ///   the last page, passing [`crate::window_page_problem`].
+/// - `copy.granted`: `store`, `product_id`, `copy_id`, `token`,
+///   `expires_in_secs`, `copy`, `files` and, for a store with
+///   marketplaces, `marketplace`, passing [`ClerkCopy::problem`].
 /// - `error`: a [`ClerkSocketError`] `code`.
 ///
 /// # Arguments
@@ -302,11 +522,28 @@ pub fn parse_library_frame(text: &[u8]) -> Option<LibraryFrame> {
         works,
         next,
         code,
+        store,
+        marketplace,
+        product_id,
+        copy_id,
+        token,
+        expires_in_secs,
+        copy,
+        files,
         ..
     } = wire;
+    let page = after.is_some() || works.is_some() || next.is_some();
+    let granted = store.is_some()
+        || marketplace.is_some()
+        || product_id.is_some()
+        || copy_id.is_some()
+        || token.is_some()
+        || expires_in_secs.is_some()
+        || copy.is_some()
+        || files.is_some();
     match kind.as_str() {
         "hello" | "changed" => {
-            if after.is_some() || works.is_some() || next.is_some() || code.is_some() {
+            if page || granted || code.is_some() {
                 return None;
             }
             let topics = known_topics(topics?)?;
@@ -317,7 +554,7 @@ pub fn parse_library_frame(text: &[u8]) -> Option<LibraryFrame> {
             })
         }
         "books.page" => {
-            if topics.is_some() || code.is_some() {
+            if topics.is_some() || code.is_some() || granted {
                 return None;
             }
             let (after, works) = (after?, works?);
@@ -326,8 +563,27 @@ pub fn parse_library_frame(text: &[u8]) -> Option<LibraryFrame> {
             }
             Some(LibraryFrame::BooksPage { after, works, next })
         }
+        "copy.granted" => {
+            if topics.is_some() || code.is_some() || page {
+                return None;
+            }
+            let granted = ClerkCopy {
+                store: store?,
+                marketplace: marketplace.unwrap_or_default(),
+                product_id: product_id?,
+                copy_id: copy_id?,
+                token: token?,
+                expires_in_secs: expires_in_secs?,
+                copy: copy?,
+                files: files?,
+            };
+            if granted.problem().is_some() {
+                return None;
+            }
+            Some(LibraryFrame::CopyGranted(Box::new(granted)))
+        }
         "error" => {
-            if topics.is_some() || after.is_some() || works.is_some() || next.is_some() {
+            if topics.is_some() || page || granted {
                 return None;
             }
             Some(LibraryFrame::Error { code: code? })
@@ -422,6 +678,118 @@ mod tests {
             " ".repeat(MAX_CLERK_FRAME_BYTES)
         );
         assert_eq!(parse_clerk_frame(padded.as_bytes()), None);
+    }
+
+    fn granted() -> ClerkCopy {
+        ClerkCopy {
+            store: "audible".into(),
+            marketplace: "us".into(),
+            product_id: "B0TEST".into(),
+            copy_id: "6f1c2b7e-0d4a-4e8b-9a51-2c3d4e5f6a7b".into(),
+            token: CopyToken::new("dG9rZW4"),
+            expires_in_secs: 3600,
+            copy: WindowCopy {
+                source_store: None,
+                content_type: "audio/mp4".into(),
+                bitrate_kbps: Some(64),
+                lossless: false,
+                version: "v1".into(),
+            },
+            files: vec![CopyFile {
+                name: "book.m4b".into(),
+                role: crate::CopyRole::Audio,
+                size: 10,
+                content_type: Some("audio/mp4".into()),
+                probe: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn a_copy_grant_round_trips_and_is_held_to_the_listing_rules() {
+        let frame = ClerkFrame::CopyGrant {
+            store: "audible".into(),
+            marketplace: "us".into(),
+            product_id: "B0TEST".into(),
+        };
+        assert_eq!(
+            frame.encode(),
+            r#"{"v":1,"type":"copy.grant","store":"audible","marketplace":"us","product_id":"B0TEST"}"#
+        );
+        assert_eq!(parse_clerk_frame(frame.encode().as_bytes()), Some(frame));
+        let bare = ClerkFrame::CopyGrant {
+            store: "libro".into(),
+            marketplace: String::new(),
+            product_id: "9781".into(),
+        };
+        assert_eq!(
+            bare.encode(),
+            r#"{"v":1,"type":"copy.grant","store":"libro","product_id":"9781"}"#
+        );
+        assert_eq!(parse_clerk_frame(bare.encode().as_bytes()), Some(bare));
+        for refused in [
+            r#"{"v":1,"type":"copy.grant","store":"audible"}"#,
+            r#"{"v":1,"type":"copy.grant","product_id":"B0TEST"}"#,
+            r#"{"v":1,"type":"copy.grant","store":"","product_id":"B0TEST"}"#,
+            r#"{"v":1,"type":"copy.grant","store":"audible","product_id":"B0TEST","after":""}"#,
+            r#"{"v":1,"type":"copy.grant","store":"audible","product_id":"B0TEST","user":"u"}"#,
+            r#"{"v":1,"type":"copy.grant","store":"audible","product_id":7}"#,
+            r#"{"v":1,"type":"books","after":"","store":"audible"}"#,
+        ] {
+            assert_eq!(parse_clerk_frame(refused.as_bytes()), None, "{refused}");
+        }
+    }
+
+    #[test]
+    fn a_granted_copy_round_trips_and_a_malformed_one_is_refused() {
+        let frame = LibraryFrame::CopyGranted(Box::new(granted()));
+        let text = frame.encode();
+        assert!(text.contains(r#""token":"dG9rZW4""#), "{text}");
+        assert_eq!(parse_library_frame(text.as_bytes()), Some(frame));
+
+        let not_found = LibraryFrame::Error {
+            code: ClerkSocketError::NotFound,
+        };
+        assert_eq!(
+            not_found.encode(),
+            r#"{"v":1,"type":"error","code":"not_found"}"#
+        );
+        assert_eq!(
+            parse_library_frame(not_found.encode().as_bytes()),
+            Some(not_found)
+        );
+
+        let broken: [fn(&mut ClerkCopy); 5] = [
+            |copy| copy.store.clear(),
+            |copy| copy.copy_id = "short".into(),
+            |copy| copy.token = CopyToken::new(""),
+            |copy| copy.expires_in_secs = 0,
+            |copy| copy.files.clear(),
+        ];
+        for breaks in broken {
+            let mut copy = granted();
+            breaks(&mut copy);
+            let text = LibraryFrame::CopyGranted(Box::new(copy)).encode();
+            assert_eq!(parse_library_frame(text.as_bytes()), None, "{text}");
+        }
+        // A grant's fields on another frame, and another frame's on a grant.
+        let with = |extra: &str| text.replacen('{', &format!("{{{extra},"), 1);
+        assert_eq!(parse_library_frame(with(r#""after":"""#).as_bytes()), None);
+        assert_eq!(
+            parse_library_frame(with(r#""code":"invalid""#).as_bytes()),
+            None
+        );
+        assert_eq!(
+            parse_library_frame(br#"{"v":1,"type":"error","code":"invalid","copy_id":"x"}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn a_copy_token_prints_no_token() {
+        let shown = format!("{:?}", granted());
+        assert!(!shown.contains("dG9rZW4"), "{shown}");
+        assert!(shown.contains("<redacted>"), "{shown}");
     }
 
     #[test]

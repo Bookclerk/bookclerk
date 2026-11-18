@@ -385,6 +385,10 @@ impl ClerkReader {
                         None => self.finish(current).await?,
                     }
                 }
+                // This clerk asks for no copy yet, so none is an answer.
+                LibraryFrame::CopyGranted(_) => {
+                    anyhow::bail!("the library sent a copy nobody asked for");
+                }
                 LibraryFrame::Error { code } => {
                     read = None;
                     tracing::debug!(
