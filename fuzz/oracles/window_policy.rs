@@ -20,27 +20,29 @@
 //!   `Origin: http://localhost`; `Authorization` only when a token was given,
 //!   and then exactly `Bearer <token>` (or none, when that is not a valid
 //!   header value); and every other header the page sent, unchanged.
-//! - **Navigation.** An app URL is always allowed. With no join open nothing
-//!   else is. With one open, a loopback `http` URL on the join callback path
-//!   returns that path and query (always starting with the callback path, so
-//!   the window stays on its own origin), other `https` and loopback `http`
-//!   URLs are a sign-in, and the rest is refused.
+//! - **Navigation.** An app URL is always allowed. With no sign-in open
+//!   (a join's or a library card's) nothing else is. With one open, a
+//!   loopback `http` URL on the join or library card callback path returns
+//!   that path and query (always starting with that callback path, so the
+//!   window stays on its own origin), other `https` and loopback `http` URLs
+//!   are a sign-in, and the rest is refused.
 //! - **Live updates.** The `live` command answers exactly when the calling
 //!   webview's label is byte for byte `main` and the page URL parses onto
 //!   an app origin; a wrong label is reported before a foreign page.
-//! - **Sign-in time.** A join start answer opens the sign-in exactly when it
+//! - **Sign-in time.** A start answer opens the sign-in exactly when it
 //!   is a JSON object with a string `authorize_url` and an unsigned
 //!   `expires_in_secs`, for that many seconds up to an hour.
 //!
-//! Input layout: the first byte holds flags (bit 0: a join is open, bit 1:
+//! Input layout: the first byte holds flags (bit 0: a sign-in is open, bit 1:
 //! a token is given, bit 2: the `live` caller is labelled `main`, otherwise
 //! its label is the method's text); the rest splits on `0x00` into the
 //! method, the path, the navigation URL (also the `live` caller's page),
-//! the join start body, the token, and then header lines `name: value`.
+//! the start route's answer body, the token, and then header lines
+//! `name: value`.
 
 use bookclerk_window_policy::{
-    classify_navigation, join_sign_in_ttl, live_refusal, refusal, rewrite_request_headers,
-    LiveRefusal, Navigation, Refusal,
+    classify_navigation, live_refusal, refusal, rewrite_request_headers, sign_in_ttl, LiveRefusal,
+    Navigation, Refusal,
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Method};
 
@@ -50,21 +52,21 @@ pub const MAX_INPUT_BYTES: usize = 4096;
 /// The two app origins, written out rather than read from the policy.
 const APP: [&[u8]; 2] = [b"bookclerk://localhost", b"http://bookclerk.localhost"];
 
-/// The join callback path, written out.
-const CALLBACK: &str = "/join/callback";
+/// The join and library card callback paths, written out.
+const CALLBACKS: [&str; 2] = ["/join/callback", "/clerk/callback"];
 
 /// One decoded input.
 struct Case<'a> {
-    /// Whether a join is open.
-    join_open: bool,
+    /// Whether a sign-in is open.
+    sign_in_open: bool,
     /// The request method.
     method: Method,
     /// The request path.
     path: &'a str,
     /// The URL the window is asked to open.
     navigation: &'a str,
-    /// A join start answer's body.
-    join_body: &'a [u8],
+    /// A start route's answer body.
+    start_body: &'a [u8],
     /// The operator token, when one is given.
     token: Option<&'a str>,
     /// The headers the page sent.
@@ -81,7 +83,7 @@ fn decode(data: &[u8]) -> Option<Case<'_>> {
     let method = Method::from_bytes(parts.next().unwrap_or_default()).unwrap_or(Method::GET);
     let path = std::str::from_utf8(parts.next().unwrap_or_default()).unwrap_or("/");
     let navigation = std::str::from_utf8(parts.next().unwrap_or_default()).unwrap_or("");
-    let join_body = parts.next().unwrap_or_default();
+    let start_body = parts.next().unwrap_or_default();
     let token = std::str::from_utf8(parts.next().unwrap_or_default()).unwrap_or("");
     let mut headers = HeaderMap::new();
     for line in parts {
@@ -97,11 +99,11 @@ fn decode(data: &[u8]) -> Option<Case<'_>> {
         }
     }
     Some(Case {
-        join_open: flags & 1 != 0,
+        sign_in_open: flags & 1 != 0,
         method,
         path,
         navigation,
-        join_body,
+        start_body,
         token: (flags & 2 != 0).then_some(token),
         headers,
         main_label: flags & 4 != 0,
@@ -269,34 +271,38 @@ pub fn check(data: &[u8]) -> bool {
     }
 
     // Navigation.
-    let nav = classify_navigation(case.navigation, case.join_open);
+    let nav = classify_navigation(case.navigation, case.sign_in_open);
     let parsed = url::Url::parse(case.navigation).ok();
     let app = on_app_origin(case.navigation);
     match &nav {
         Navigation::App => assert!(app, "{} is not an app page", case.navigation),
-        Navigation::JoinSignIn => {
-            assert!(case.join_open && !app, "sign-in with no join open");
+        Navigation::SignIn => {
+            assert!(case.sign_in_open && !app, "sign-in with none open");
             let url = parsed.as_ref().expect("a sign-in URL parses");
             assert!(url.scheme() == "https" || loopback_http(url));
         }
-        Navigation::JoinReturn(path_and_query) => {
-            assert!(case.join_open && !app, "return with no join open");
+        Navigation::SignInReturn(path_and_query) => {
+            assert!(case.sign_in_open && !app, "return with no sign-in open");
             let url = parsed.as_ref().expect("a return URL parses");
-            assert!(loopback_http(url) && url.path() == CALLBACK);
+            let callback = CALLBACKS
+                .into_iter()
+                .find(|callback| url.path() == *callback)
+                .expect("a return is on a callback path");
+            assert!(loopback_http(url));
             assert!(
-                path_and_query.starts_with(CALLBACK),
+                path_and_query.starts_with(callback),
                 "return {path_and_query} leaves the callback path"
             );
-            let rest = &path_and_query[CALLBACK.len()..];
+            let rest = &path_and_query[callback.len()..];
             assert!(rest.is_empty() || rest.starts_with('?'));
         }
         Navigation::Refuse => {
             assert!(!app, "an app page was refused");
-            if case.join_open {
+            if case.sign_in_open {
                 if let Some(url) = parsed.as_ref() {
                     assert!(
                         url.scheme() != "https" && !loopback_http(url),
-                        "{} was refused during a join",
+                        "{} was refused during a sign-in",
                         case.navigation
                     );
                 }
@@ -325,8 +331,8 @@ pub fn check(data: &[u8]) -> bool {
     );
 
     // Sign-in time.
-    let ttl = join_sign_in_ttl(case.join_body);
-    let want = serde_json::from_slice::<serde_json::Value>(case.join_body)
+    let ttl = sign_in_ttl(case.start_body);
+    let want = serde_json::from_slice::<serde_json::Value>(case.start_body)
         .ok()
         .and_then(|value| {
             let object = value.as_object()?;

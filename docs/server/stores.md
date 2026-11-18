@@ -100,6 +100,11 @@ has stays with that edition, and the marked edition is not matched again.
 An edition that already has an ASIN, such as one an Audible scan
 reported with its ASIN, is skipped.
 
+Genres from Audible's catalog are its genre categories (such as *Science
+Fiction & Fantasy*, *Fantasy*, *Epic*). The subject keywords the catalog
+also sends are never used: they mix a few subjects with Audible's internal
+labels, such as `AI_edition_inclusion`.
+
 - It is on while `library.enrich_from_audible = true` (the default).
 - `library.enrich_min_confidence` sets how sure a match must be (default
   `90`).

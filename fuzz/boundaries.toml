@@ -294,6 +294,13 @@ input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.copy_answer]
+crate = "bookclerk-node-proto"
+boundary = "A library's answer to a copy download, GET /api/copies/v1/{copy_id}/files/{n}: where its head ends, and what the head says of how many bytes a branch or clerk takes and where in the file it writes them"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.clerk_socket_frame]
 crate = "bookclerk-node-proto"
 boundary = "The clerk socket's frames, GET /api/clerk/v1/connect: what a library reads from a clerk (pages asked for, a copy asked for) and what a clerk reads back (topics, pages, a granted copy and its token)"
@@ -355,6 +362,15 @@ crate = "bookclerk-plugin-source-libro"
 boundary = "Libro.fm catalog search pages and audiobook details from the store's app API"
 input_from = "store"
 side = "guest"
+artifacts = ["bookclerk"]
+
+[targets.audible_catalog]
+crate = "bookclerk-audible-catalog"
+boundary = "Audible public catalog answers: search results and a title's similar titles"
+input_from = "store"
+# The audible guest parses them for Discover, and host enrichment links the
+# same crate.
+side = "host"
 artifacts = ["bookclerk"]
 
 [targets.graphicaudio_catalog]

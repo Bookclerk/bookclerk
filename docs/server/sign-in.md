@@ -219,8 +219,8 @@ The clerk then sends `Authorization: Bookclerk-Clerk <token>`:
 
 With its library card, a clerk keeps one WebSocket open to the library at
 `GET /api/clerk/v1/connect`, so it hears about changes instead of polling.
-It is a window onto the person's own books, not a branch link: the library
-never sends work on it.
+It shows the library's books to the person, and is not a branch link: the
+library never sends work on it.
 
 1. The clerk connects with `Authorization: Bookclerk-Clerk <token>` and
    the subprotocol `bookclerk-clerk.v1`, over TLS except on loopback.
@@ -309,7 +309,7 @@ Then the daemon keeps the library's clerk socket open with the card:
   short drops nothing.
 - The books show in **Books in other libraries**
   (`GET /api/config/join/window`, which lists the libraries in `cards`),
-  merged with the books of any library this install is a window of. Each
+  merged with the books of any library this install is a branch of. Each
   edition there carries `yours`, and the person's own are marked **Yours**.
 - A lost connection is dialed again after 5 seconds, doubling up to 5
   minutes.
@@ -324,7 +324,7 @@ and the library from the list. The answer's `library_signed_out` says
 whether the library ended its session too; when it is `false`, the
 person can revoke the session from their session list there.
 
-An install that is already an active branch or window of a library reads
+An install that is already an active branch of a library reads
 that library's books through its link, so a card for it is refused
 (409 `already_joined`). These routes are for the operator or an Owner.
 
@@ -574,7 +574,9 @@ join, and the fingerprint a joining operator checks.
 - Branch invites come from **Add a branch** in User Management (and each
   user's own menu), and are shown once.
 - On a fresh install, the operator first sees a welcome screen: **Start a
-  new library** or **Join a library**.
+  new library** or **Join a library**. In the desktop app it opens on
+  **Sign in to your library** with a library card instead. An install
+  that holds a library card is no longer fresh.
 
 See [Libraries and branches](cluster-hosts.md).
 

@@ -89,6 +89,10 @@ fn clerk_routes(state: &Arc<AppState>, caller: UserCaller) -> axum::Router {
             "/api/config/join/window",
             get(crate::cluster_link::join::get_join_window),
         )
+        .route(
+            "/api/config/join",
+            get(crate::cluster_link::join::get_join_status),
+        )
         .layer(axum::Extension(caller))
         .with_state(Arc::clone(state))
 }
@@ -272,8 +276,13 @@ async fn a_card_signs_in_reads_the_books_and_signs_out_when_the_library_ends_it(
     let clerk_files = tempfile::tempdir().unwrap();
     let (clerk_state, clerk_store) = crate::node_api::tests::test_state(&clerk_files).await;
     let clerk = clerk_routes(&clerk_state, UserCaller::Operator);
+    let (_, _, status) = call(&clerk, "GET", "/api/config/join", None).await;
+    assert_eq!(status["fresh"], true, "{status}");
 
     let cluster_id = sign_in(&clerk, &library_state, &origin, member).await;
+    // A card is enough for the welcome screen not to come back.
+    let (_, _, status) = call(&clerk, "GET", "/api/config/join", None).await;
+    assert_eq!(status["fresh"], false, "{status}");
     let (_, _, cards) = call(&clerk, "GET", "/api/config/clerk", None).await;
     assert_eq!(cards["cards"].as_array().unwrap().len(), 1, "{cards}");
     assert_eq!(cards["cards"][0]["clerk_name"], "Laptop");

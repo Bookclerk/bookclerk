@@ -9,12 +9,10 @@ import {
   joinErrorMessage,
   joinWithInvite,
   looksLikeBranchInvite,
-  makeWindowOf,
   startJoin,
   type BranchLinkView,
   type LibraryInfoView,
 } from "@/lib/join";
-import { isDesktopWindow } from "@/lib/desktop";
 import { cn } from "@/lib/utils";
 
 type Tab = "signin" | "invite";
@@ -25,13 +23,9 @@ export interface JoinWizardProps {
   defaultBranchName?: string;
   /**
    * Called after an invite joined (the sign-in path leaves the page), with
-   * the library's origin and the link the join recorded. `asWindow` is,
-   * in the desktop window, whether downloading was turned off for the new
-   * link (`null` elsewhere).
+   * the library's origin and the link the join recorded.
    */
-  onJoined?: (libraryOrigin: string, link: BranchLinkView, asWindow: boolean | null) => void;
-  /** Whether the app runs in the desktop window (defaults to detecting it). */
-  desktop?: boolean;
+  onJoined?: (libraryOrigin: string, link: BranchLinkView) => void;
   /** Shows a Back button that calls this. */
   onCancel?: () => void;
 }
@@ -39,9 +33,7 @@ export interface JoinWizardProps {
 /**
  * Join a library: address → fingerprint (self-signed libraries) → sign in
  * on the library, which sends the browser back to `/join/callback`. The
- * "I have an invite" tab takes a pasted branch invite instead; in the
- * desktop window an invite join makes a window of the library, as
- * `/join/callback` does for a sign-in.
+ * "I have an invite" tab takes a pasted branch invite instead.
  *
  * Nothing secret is kept here: the daemon holds the PKCE verifier and the
  * node keys, and an invite goes straight to it in a POST body.
@@ -51,12 +43,7 @@ export interface JoinWizardProps {
  * library's Owner makes the final choice on the consent page; the daemon
  * checks again that this install is empty before it applies anything.
  */
-export function JoinWizard({
-  defaultBranchName,
-  onJoined,
-  onCancel,
-  desktop = isDesktopWindow(),
-}: JoinWizardProps) {
+export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizardProps) {
   const [tab, setTab] = useState<Tab>("signin");
   const [address, setAddress] = useState("");
   const [branchName, setBranchName] = useState(defaultBranchName ?? "");
@@ -136,11 +123,8 @@ export function JoinWizard({
     setBusy(true);
     try {
       const joined = await joinWithInvite(invite);
-      // In the desktop window a join makes a window of the library. The
-      // form stays busy until that is stored.
-      const asWindow = desktop ? await makeWindowOf(joined.cluster) : null;
       setInvite("");
-      onJoined?.(joined.cluster.owner_origin, joined.cluster, asWindow);
+      onJoined?.(joined.cluster.owner_origin, joined.cluster);
     } catch (err) {
       setError(joinErrorMessage(err, "Could not join with that invite."));
     } finally {

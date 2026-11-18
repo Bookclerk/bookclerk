@@ -941,6 +941,82 @@ impl LibraryStore {
         Ok(unique.iter().filter_map(|id| rows.remove(id)).collect())
     }
 
+    /// The expressions (recordings) the shared listing pool placed each
+    /// store product in, in any marketplace.
+    ///
+    /// A store's product id names one edition per marketplace, so a product
+    /// usually has one expression; a product listed in two marketplaces
+    /// under different editions has each of their expressions. A product
+    /// the pool never listed is left out.
+    ///
+    /// # Arguments
+    ///
+    /// * `products` - `(plugin_key, product_id)` pairs, as stores report
+    ///   them (the product id is compared in its stored spelling).
+    ///
+    /// # Returns
+    ///
+    /// Each pooled product's expression ids, keyed by the pair as given.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    pub async fn listing_expressions(
+        &self,
+        products: &[(String, String)],
+    ) -> Result<HashMap<(String, String), BTreeSet<String>>> {
+        let stored: Vec<(String, String, &(String, String))> = products
+            .iter()
+            .map(|pair| (pair.0.clone(), resolve::stored_product_id(&pair.1), pair))
+            .filter(|(key, product, _)| !key.trim().is_empty() && !product.is_empty())
+            .collect();
+        let ids: Vec<String> = stored
+            .iter()
+            .map(|(_, product, _)| product.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        // Several stores can share a product id (an ISBN), so the read is
+        // paged by result rows, not only by bind count.
+        let rows = super::library_model::find_chunked_paged::<store_listings::Entity, _>(
+            self,
+            &ids,
+            |part| {
+                store_listings::Entity::find()
+                    .filter(store_listings::Column::ProductId.is_in(part.iter().cloned()))
+                    .order_by_asc(store_listings::Column::Id)
+            },
+        )
+        .await?;
+        let mut editions_of: HashMap<(String, String), BTreeSet<String>> = HashMap::new();
+        for row in rows {
+            editions_of
+                .entry((row.plugin_key, row.product_id))
+                .or_default()
+                .insert(row.edition_id);
+        }
+        let all_editions: BTreeSet<String> = editions_of.values().flatten().cloned().collect();
+        let placement_of = self.placements_of_editions(all_editions).await?;
+        let mut out = HashMap::new();
+        for (key, product, pair) in stored {
+            let Some(editions) = editions_of.get(&(key, product)) else {
+                continue;
+            };
+            let expressions: BTreeSet<String> = editions
+                .iter()
+                .filter_map(|edition| placement_of.get(edition))
+                .map(|placement| placement.expression_id.clone())
+                .collect();
+            if !expressions.is_empty() {
+                out.insert(pair.clone(), expressions);
+            }
+        }
+        Ok(out)
+    }
+
     /// Deletes catalog listings nothing refers to any more.
     ///
     /// A listing is deleted when no store reported it since `cutoff` and
@@ -1045,6 +1121,49 @@ mod tests {
                 currency: Some(String::from("USD")),
                 observed_at: Utc::now(),
             }],
+        }
+    }
+
+    /// The pool says which recording each listed product is: a narration
+    /// and a full-cast dramatisation of one title are different
+    /// expressions, a product listed nowhere has none.
+    #[tokio::test]
+    async fn listed_products_name_their_recordings() {
+        for profile in crate::test_support::Profile::ALL {
+            let store = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let narration = title("9780000000011");
+            let mut drama = title("9780000000012");
+            drama.draft.plugin_key = String::from("chirp");
+            drama.draft.product_id = String::from("ga-12");
+            drama.draft.title = narration.draft.title.clone();
+            drama.draft.expression_kind = Some(resolve::ExpressionKind::Dramatisation);
+            drama.draft.credits.truncate(1);
+            // More listings than the tightest profile reads in one page.
+            let mut listings = vec![narration, drama];
+            listings.extend((20..26).map(|n| title(&format!("97800000000{n}"))));
+            let ids = store.record_catalog_listings(&listings).await.unwrap().ids;
+            assert!(ids.iter().all(Option::is_some), "{profile:?}");
+            let pair = |key: &str, product: &str| (key.to_string(), product.to_string());
+            let mut asked = vec![
+                pair("libro", "9780000000011"),
+                pair("chirp", "ga-12"),
+                pair("chirp", "never-listed"),
+                pair("libro", " 9780000000011 "),
+            ];
+            asked.extend((20..26).map(|n| pair("libro", &format!("97800000000{n}"))));
+            let got = store.listing_expressions(&asked).await.unwrap();
+            let narration = &got[&pair("libro", "9780000000011")];
+            let drama = &got[&pair("chirp", "ga-12")];
+            assert_eq!(narration.len(), 1, "{profile:?}");
+            assert_eq!(drama.len(), 1, "{profile:?}");
+            assert_ne!(narration, drama, "two recordings, two expressions");
+            assert!(!got.contains_key(&pair("chirp", "never-listed")));
+            // The product id is compared in its stored spelling.
+            assert_eq!(&got[&pair("libro", " 9780000000011 ")], narration);
+            assert_eq!(got.len(), 9, "every listed product answers ({profile:?})");
+            assert!(store.listing_expressions(&[]).await.unwrap().is_empty());
         }
     }
 

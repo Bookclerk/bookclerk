@@ -6,7 +6,7 @@ use bookclerk_audible_catalog::{
     is_valid_asin, normalize_region, public_http_client, region_tld, search_catalog_asins,
     search_catalog_by_genre_name, search_catalog_by_narrator, search_catalog_by_series_asin,
     search_catalog_keywords, search_catalog_products, search_catalog_products_paged,
-    search_catalog_storefront, CatalogProduct,
+    search_catalog_storefront, search_similar_products, CatalogProduct,
 };
 use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_storefront::{
@@ -142,6 +142,61 @@ pub async fn search_catalog(
     Ok(hits)
 }
 
+/// How many similar titles to ask Audible for per seed.
+const SIMILAR_TITLES: usize = 20;
+
+/// Expansion hits in the order they were found, one per ASIN.
+#[derive(Default)]
+struct OrderedHits {
+    /// Upper-cased ASINs already kept.
+    seen: std::collections::HashSet<String>,
+    /// Kept hits, first found first.
+    hits: Vec<CatalogHit>,
+}
+
+impl OrderedHits {
+    /// Number of hits kept so far.
+    fn len(&self) -> usize {
+        self.hits.len()
+    }
+
+    /// Keeps `p` as a hit found by `origin`, unless it has no ASIN or an
+    /// earlier source already found it (the earlier, stronger origin wins).
+    fn push(&mut self, p: CatalogProduct, origin: impl FnOnce() -> String) {
+        if p.asin.trim().is_empty() {
+            return;
+        }
+        if self.seen.insert(p.asin.to_ascii_uppercase()) {
+            self.hits.push(product_to_hit(p, origin()));
+        }
+    }
+
+    /// The first `limit` hits, in the order they were found.
+    fn into_hits(self, limit: usize) -> Vec<CatalogHit> {
+        let mut hits = self.hits;
+        hits.truncate(limit);
+        hits
+    }
+}
+
+/// The seed's Audible ASIN: its own ASIN, or its product id when the seed is
+/// an Audible title whose id has an ASIN's shape.
+fn seed_audible_asin(seed: &ExpandSeed) -> Option<&str> {
+    seed.asin
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| is_valid_asin(s))
+        .or_else(|| {
+            let pid = seed.product_id.trim();
+            (seed.source.eq_ignore_ascii_case("audible") && is_valid_asin(pid)).then_some(pid)
+        })
+}
+
+/// Origin shown for a title Audible lists as similar to `seed_title`.
+fn similar_origin(seed_title: &str) -> String {
+    format!("audible related titles (“{seed_title}”)")
+}
+
 /// Expand author / series / narrator / series-ASIN candidates from a taste seed.
 ///
 /// Soft-fails individual HTTP calls; budgets returned hits by `limit`.
@@ -165,17 +220,10 @@ pub async fn expand_candidates(
     } else {
         normalize_region(&seed.region)
     };
-    let mut by_asin = std::collections::HashMap::new();
+    let mut by_asin = OrderedHits::default();
 
-    let push = |by_asin: &mut std::collections::HashMap<String, CatalogHit>,
-                p: CatalogProduct,
-                origin: String| {
-        if p.asin.trim().is_empty() {
-            return;
-        }
-        by_asin
-            .entry(p.asin.to_ascii_uppercase())
-            .or_insert_with(|| product_to_hit(p, origin));
+    let push = |by_asin: &mut OrderedHits, p: CatalogProduct, origin: String| {
+        by_asin.push(p, || origin);
     };
 
     // Exact series ASIN listing (strongest series signal).
@@ -278,50 +326,28 @@ pub async fn expand_candidates(
         }
     }
 
-    // When the seed is an Audible ASIN (or product_id looks like one) and we still
-    // have room, keyword-search the title for near-neighbors.
+    // When the seed is an Audible ASIN (or product_id looks like one) and we
+    // still have room, add the titles Audible's listeners also enjoyed. A
+    // keyword search on the seed's title matched words, not books (*The Great
+    // Hunt* brought *Turkey Hunting for Kids*).
     if by_asin.len() < limit {
-        let seed_asin = seed
-            .asin
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| is_valid_asin(s))
-            .or_else(|| {
-                let pid = seed.product_id.trim();
-                if seed.source.eq_ignore_ascii_case("audible") && is_valid_asin(pid) {
-                    Some(pid)
-                } else {
-                    None
+        if let Some(seed_asin) = seed_audible_asin(seed) {
+            match search_similar_products(&http, &region, seed_asin, SIMILAR_TITLES).await {
+                Ok(products) => {
+                    for p in products {
+                        by_asin.push(p, || similar_origin(&seed.title));
+                    }
                 }
-            });
-        if seed_asin.is_some() {
-            let title = seed.title.trim();
-            if !title.is_empty() {
-                match search_catalog_products(&http, &region, title, None, Some(title)).await {
-                    Ok(products) => {
-                        for p in products {
-                            // Skip the seed itself.
-                            if seed_asin.is_some_and(|a| p.asin.eq_ignore_ascii_case(a)) {
-                                continue;
-                            }
-                            push(
-                                &mut by_asin,
-                                p,
-                                format!("audible related search (“{}”)", seed.title),
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        tracing::debug!(error = %err, "audible related title search failed");
-                    }
+                Err(err) => {
+                    tracing::debug!(error = %err, "audible similar titles lookup failed");
                 }
             }
         }
     }
 
-    let mut hits: Vec<_> = by_asin.into_values().collect();
-    hits.truncate(limit);
-    Ok(hits)
+    // Keep the order the sources were asked in (series, author, narrator,
+    // similar titles), so the cut drops the weakest signals first.
+    Ok(by_asin.into_hits(limit))
 }
 
 /// Resolve a purchase / catalog URL (optionally with live price).
@@ -893,6 +919,88 @@ fn format_money_label(cents: i64, currency: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{seed_audible_asin, similar_origin, CatalogProduct, ExpandSeed, OrderedHits};
+
+    /// A catalog product with only an ASIN and a title.
+    fn titled(asin: &str, title: &str) -> CatalogProduct {
+        CatalogProduct {
+            asin: asin.into(),
+            title: Some(title.into()),
+            authors: None,
+            narrators: None,
+            series: None,
+            series_asin: None,
+            series_sequence: None,
+            cover_url: None,
+            subtitle: None,
+            description: None,
+            publisher: None,
+            length_minutes: None,
+            published_at: None,
+            categories: None,
+            language: None,
+            price_cents: None,
+            currency: None,
+            price_label: None,
+            rating_overall: None,
+            rating_count: None,
+        }
+    }
+
+    #[test]
+    fn expansion_hits_keep_the_first_source_and_its_order() {
+        let mut hits = OrderedHits::default();
+        hits.push(titled("B0SERIES01", "Book Two"), || "series".into());
+        hits.push(titled("B0AUTHOR01", "Other Book"), || "author".into());
+        hits.push(titled("b0series01", "Book Two"), || "similar".into());
+        hits.push(titled("  ", "No ASIN"), || "similar".into());
+        hits.push(titled("B0SIMILAR1", "Neighbour"), || {
+            similar_origin("The Great Hunt")
+        });
+        assert_eq!(hits.len(), 3);
+        let kept: Vec<(String, String)> = hits
+            .into_hits(2)
+            .into_iter()
+            .map(|h| (h.product_id, h.origin))
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                ("B0SERIES01".to_string(), "series".to_string()),
+                ("B0AUTHOR01".to_string(), "author".to_string()),
+            ]
+        );
+    }
+
+    /// The Discover "Because you wishlisted" shelf claims "related" origins.
+    #[test]
+    fn similar_titles_are_filed_as_related() {
+        assert!(similar_origin("Dune").contains("related"));
+    }
+
+    #[test]
+    fn the_seed_asin_comes_from_its_asin_or_an_audible_product_id() {
+        let mut seed = ExpandSeed {
+            source: "libro".into(),
+            product_id: "9780000000001".into(),
+            title: "The Great Hunt".into(),
+            authors: None,
+            narrators: None,
+            series: None,
+            series_asin: None,
+            asin: Some(" B002UP1LXS ".into()),
+            isbn: None,
+            region: "us".into(),
+        };
+        assert_eq!(seed_audible_asin(&seed), Some("B002UP1LXS"));
+        seed.asin = None;
+        assert_eq!(seed_audible_asin(&seed), None);
+        seed.product_id = "B002UP1LXS".into();
+        assert_eq!(seed_audible_asin(&seed), None);
+        seed.source = "Audible".into();
+        assert_eq!(seed_audible_asin(&seed), Some("B002UP1LXS"));
+    }
+
     /// Empty requests answer without any catalog HTTP.
     #[tokio::test]
     async fn empty_requests_answer_without_calling_the_store() {

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ClerkSignInForm } from "@/components/ClerkCardsPanel";
 import { JoinShell } from "@/components/JoinShell";
 import { JoinWizard } from "@/components/JoinWizard";
 import { Button } from "@/components/ui/button";
@@ -6,7 +7,7 @@ import { isDesktopWindow } from "@/lib/desktop";
 
 /** Props for {@link WelcomeScreen}. */
 export interface WelcomeScreenProps {
-  /** Suggested branch name for Join a library. */
+  /** Suggested branch name for Join a library, and this computer's name for a library card. */
   defaultBranchName?: string;
   /** "Start a new library": carry on to the first-run setup. */
   onStartNew: () => void;
@@ -20,11 +21,12 @@ export interface WelcomeScreenProps {
  * First start of a fresh install (operator only): start a new library, or
  * join an existing one as a branch.
  *
- * In the desktop window joining comes first: the window opens on the join
- * form (the library's address, then signing in as a member), and hosting a
- * library on this computer is the alternative below it. A join there makes
- * this computer a window of the library (downloading off): the sign-in
- * path does that on `/join/callback`, an invite in {@link JoinWizard}.
+ * In the desktop window joining comes first: the window opens on signing
+ * in to the library with a library card (the library's address, then
+ * signing in as a patron there), and hosting a library on this computer is
+ * the alternative below it. A card makes this computer a clerk of that
+ * library: it shows the books there and runs none of the library's work.
+ * The library sends the browser back to `/clerk/callback`.
  */
 export function WelcomeScreen({
   defaultBranchName,
@@ -34,35 +36,6 @@ export function WelcomeScreen({
 }: WelcomeScreenProps) {
   const [joining, setJoining] = useState(desktop);
   const [joinedTo, setJoinedTo] = useState<string | null>(null);
-  // Desktop window only: whether the invite join became a window.
-  const [asWindow, setAsWindow] = useState<boolean | null>(null);
-
-  if (joinedTo && asWindow != null) {
-    return (
-      <JoinShell
-        title="Connected"
-        lead={
-          asWindow ? (
-            <>
-              This computer is now a window of <strong>{joinedTo}</strong>: it shows your books
-              there and downloads nothing. To keep copies here too, turn on "Use this computer to
-              download" in Settings → Library.
-            </>
-          ) : (
-            <>
-              This computer joined <strong>{joinedTo}</strong>, but downloading could not be turned
-              off, so it is a branch that downloads. Turn off "Use this computer to download" in
-              Settings → Library to make it a window.
-            </>
-          )
-        }
-      >
-        <Button type="button" onClick={onJoined}>
-          Open Settings → Library
-        </Button>
-      </JoinShell>
-    );
-  }
 
   if (joinedTo) {
     return (
@@ -85,17 +58,10 @@ export function WelcomeScreen({
   if (joining && desktop) {
     return (
       <JoinShell
-        title="Join your library"
-        lead="Enter your library's address, with its port if it has one, then sign in as a member. This computer becomes a window of that library: it shows your books there and downloads nothing until you turn downloading on."
+        title="Sign in to your library"
+        lead="Enter your library's address, with its port if it has one, then sign in with your account there. This computer gets a library card: it shows the library's books, yours marked, and runs none of its work."
       >
-        <JoinWizard
-          defaultBranchName={defaultBranchName}
-          desktop
-          onJoined={(origin, _link, asWindow) => {
-            setAsWindow(asWindow);
-            setJoinedTo(origin);
-          }}
-        />
+        <ClerkSignInForm defaultName={defaultBranchName ?? ""} />
         <div className="mt-6 border-t border-ink/10 pt-4">
           <Button type="button" variant="secondary" onClick={onStartNew}>
             Host a library on this computer instead
