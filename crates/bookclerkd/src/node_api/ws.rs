@@ -1,4 +1,4 @@
-//! The host-node socket: `GET /api/node/v1/connect` (H-4 design, section 3).
+//! The branch-node socket: `GET /api/node/v1/connect` (H-4 design, section 3).
 //!
 //! The route sits outside the cookie and operator auth layers and is never
 //! disabled by `auth.enabled = false`: the node's enrolled Ed25519 key is
@@ -366,14 +366,14 @@ fn offers_subprotocol(headers: &axum::http::HeaderMap) -> bool {
         .any(|proto| proto.trim() == SUBPROTOCOL)
 }
 
-/// `GET /api/node/v1/connect`: upgrade to the host-node socket after the
+/// `GET /api/node/v1/connect`: upgrade to the branch-node socket after the
 /// transport check. 403 `transport_insecure` for a refused connection,
 /// 400 `subprotocol_required` without [`SUBPROTOCOL`].
 #[utoipa::path(
     get,
     path = "/api/node/v1/connect",
     responses(
-        (status = 101, description = "Switching to the host-node WebSocket. The node's signature is checked in the first frames; a wrong one closes the socket."),
+        (status = 101, description = "Switching to the branch-node WebSocket. The node's signature is checked in the first frames; a wrong one closes the socket."),
         (status = 400, description = "The request does not offer the node subprotocol (`subprotocol_required`)."),
         (status = 403, description = "The transport is not allowed."),
         (status = 404, description = "The node API is not mounted."),

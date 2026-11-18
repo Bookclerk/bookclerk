@@ -1,4 +1,4 @@
-//! Work frames on the host-node socket (H-4 design, sections 3 and 5).
+//! Work frames on the branch-node socket (H-4 design, sections 3 and 5).
 //!
 //! Each request frame maps onto the library's remote-work calls
 //! (`bookclerk_library::control_plane::claim_remote_job` and friends), which

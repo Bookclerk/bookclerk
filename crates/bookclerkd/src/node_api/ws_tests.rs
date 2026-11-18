@@ -1,4 +1,4 @@
-//! The host-node socket: handshake, revocation, transport checks, work
+//! The branch-node socket: handshake, revocation, transport checks, work
 //! frames, sealed secrets, resume, and wake forwarding.
 
 use std::net::SocketAddr;

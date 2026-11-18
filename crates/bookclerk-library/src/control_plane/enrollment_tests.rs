@@ -1,4 +1,4 @@
-//! Host-node enrollment: mint, redeem, revoke, and the enrollment switch.
+//! Branch-node enrollment: mint, redeem, revoke, and the enrollment switch.
 
 use std::time::Duration;
 

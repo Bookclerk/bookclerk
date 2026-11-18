@@ -942,7 +942,7 @@ Decided then, built since in H-4 steps 3 and 8-10 (sections below):
   (Amended 2026-10-15: plain HTTP is allowed on loopback only; a private
   network uses a pinned self-signed certificate.)
 
-### Host-node enrollment and transport
+### Branch-node enrollment and transport
 
 Decided 2026-10-15 with the owner, for the H-4 design:
 

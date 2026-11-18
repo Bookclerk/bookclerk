@@ -34,7 +34,7 @@ the older names:
 | "Let new branches join" | `core.host_enrollment` |
 
 The design record is
-[ADR: Control plane](../adr/control-plane.md#host-node-enrollment-and-transport)
+[ADR: Control plane](../adr/control-plane.md#branch-node-enrollment-and-transport)
 (H-4).
 
 ## First start
@@ -60,7 +60,7 @@ same wizard.
    use (the same one people open the library at), and choose a
    `[daemon.node_api]` mode: `acme`, `proxy`, `self_signed` or `loopback`.
    The modes, their required settings and what each refuses are in
-   [Configuration → Branch nodes](configuration.md#host-nodes).
+   [Configuration → Branch nodes](configuration.md#branch-nodes).
 2. **Let new branches join.** **Settings → Branches** (operator or Owner)
    has the switch, on by default, and shows the address to join. In
    `self_signed` mode it also shows the certificate fingerprint that a
@@ -1193,7 +1193,7 @@ shared stay in the library, marked as from a branch that left (see
 - [Node API and the live socket](../internals/node-api.md): the
   `/api/node/v1/` routes, the node socket's handshake and frames, and the
   web app's `/api/live` socket.
-- [Configuration → Branch nodes](configuration.md#host-nodes): the
+- [Configuration → Branch nodes](configuration.md#branch-nodes): the
   transport modes.
 - [Managing plugins](plugins.md): deploy plugins to nodes.
 - [Branches](../guide/branches.md) on the Use Bookclerk shelf: joining a

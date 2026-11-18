@@ -1,5 +1,5 @@
 //! `bookclerk nodes`: the cluster's nodes, their placement labels, their
-//! owners, and host-node enrollment links.
+//! owners, and branch-node enrollment links.
 //!
 //! Reads and writes the library database directly, like `plugins`. Label
 //! changes wake the cluster scheduler through every node's queue.

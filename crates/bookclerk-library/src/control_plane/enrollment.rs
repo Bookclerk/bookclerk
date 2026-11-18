@@ -1,4 +1,4 @@
-//! Host-node enrollment: single-use links, redeem, and revocation.
+//! Branch-node enrollment: single-use links, redeem, and revocation.
 //!
 //! A link enrolls one independent Bookclerk install (a *branch node*) into this
 //! cluster. The owner keeps only `hash_token(secret)`; the secret travels in

@@ -1496,7 +1496,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             .split_for_parts();
         app = app.merge(routes);
     }
-    // Host-node enrollment and socket: never behind the cookie/auth
+    // Branch-node enrollment and socket: never behind the cookie/auth
     // layers; the transport policy runs first.
     app = app.merge(crate::node_api::node_router(state.clone()));
     app = app.merge(

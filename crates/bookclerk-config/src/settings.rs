@@ -233,7 +233,7 @@ pub struct DaemonConfig {
     /// one whose `X-Forwarded-Proto` the node API believes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trusted_proxies: Vec<String>,
-    /// Transport policy for the host-node API (`[daemon.node_api]`).
+    /// Transport policy for the branch-node API (`[daemon.node_api]`).
     /// Bootstrap configuration, like [`Self::listen`].
     #[serde(default, skip_serializing_if = "NodeApiConfig::is_default")]
     pub node_api: NodeApiConfig,

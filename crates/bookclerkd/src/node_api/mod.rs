@@ -1,4 +1,4 @@
-//! Host-node enrollment over HTTP.
+//! Branch-node enrollment over HTTP.
 //!
 //! `/api/config/node-invites` lets a signed-in user mint, list, and revoke
 //! enrollment links (the library decides who may act for whom). A minted
@@ -24,7 +24,7 @@
 //! `GET /api/clerk/v1/connect` is a clerk's live link ([`clerk_socket`]),
 //! held with a library card rather than a node key.
 //!
-//! `GET /api/node/v1/connect` is the host-node WebSocket ([`ws`]); it also
+//! `GET /api/node/v1/connect` is the branch-node WebSocket ([`ws`]); it also
 //! sits outside those layers and authenticates with the node's enrolled
 //! Ed25519 key. `GET /api/node/v1/artifacts/{sha256}` ([`artifacts`])
 //! serves owner plugin archives to nodes on a node-signed request.
@@ -459,7 +459,7 @@ pub(crate) fn node_routes() -> OpenApiRouter<Arc<AppState>> {
         // A clerk's live link: its library card is the credential, after
         // the transport policy.
         .routes(routes!(clerk_socket::get_clerk_connect))
-        // Host-node socket: the node's Ed25519 key is the credential.
+        // Branch-node socket: the node's Ed25519 key is the credential.
         .routes(routes!(ws::get_connect))
         // Owner plugin archives: a node-signed request is the credential.
         .routes(routes!(artifacts::get_artifact))

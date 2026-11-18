@@ -226,7 +226,7 @@ editing TOML.
   matching `Origin` (or `Referer`) host. Sign-in, redeem and password
   paths are exempt.
 - The web app's live socket (`GET /api/live`) is a WebSocket, as is the
-  host-node socket (`GET /api/node/v1/connect`) in `proxy` mode. The proxy
+  branch-node socket (`GET /api/node/v1/connect`) in `proxy` mode. The proxy
   must forward the upgrade.
 - The live socket also needs `Origin` to equal `public_origin` exactly.
   Without a working socket, the web app falls back to polling.
