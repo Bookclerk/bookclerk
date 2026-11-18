@@ -7,6 +7,13 @@
 //! no call has been in flight for the idle timeout. The proxies in
 //! [`crate::on_demand`] and [`crate::on_demand_source`] wrap one each and
 //! forward their trait methods through it.
+//!
+//! A proxy can also keep one guest awake between calls with
+//! [`Activation::hold_awake`], when the guest holds state that would be lost
+//! if it stopped (a storage guest's live file-system watch; see decision 13
+//! of `docs/adr/event-delivery-model.md`). The hold is a [`Busy`] guard tied
+//! to that guest: [`Activation::release_hold`] drops it, and so does the
+//! sweep once that guest has exited or been replaced.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
@@ -136,6 +143,25 @@ pub(crate) struct Activation<G: ?Sized> {
     retired: AtomicBool,
     /// Guests started on demand, for logs and tests.
     wakes: AtomicU64,
+    /// The guest [`Self::hold_awake`] keeps up and the guard that does it.
+    hold: std::sync::Mutex<Option<Hold<G>>>,
+}
+
+/// A [`Busy`] guard kept on behalf of one guest between calls.
+struct Hold<G: ?Sized> {
+    /// The guest the hold is for; the hold lapses once it is gone.
+    guest: Weak<G>,
+    /// Counts as a call in flight while held.
+    _busy: Busy,
+}
+
+/// Locks the hold slot; a poisoned lock still yields it, since it holds
+/// only an optional guard.
+fn lock_hold<G: ?Sized>(
+    hold: &std::sync::Mutex<Option<Hold<G>>>,
+) -> std::sync::MutexGuard<'_, Option<Hold<G>>> {
+    hold.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl<G: ?Sized + Guest + 'static> Activation<G> {
@@ -165,6 +191,7 @@ impl<G: ?Sized + Guest + 'static> Activation<G> {
             })),
             retired: AtomicBool::new(false),
             wakes: AtomicU64::new(0),
+            hold: std::sync::Mutex::new(None),
         });
         spawn_idle_sweep(Arc::downgrade(&activation), idle_timeout);
         activation
@@ -220,10 +247,7 @@ impl<G: ?Sized + Guest + 'static> Activation<G> {
     pub(crate) async fn awake(&self) -> std::result::Result<(Arc<G>, Busy), WakeError> {
         // Counted before taking the slot so a sweep that wins the slot
         // first sees the call and leaves the guest running.
-        lock_activity(&self.activity).in_flight += 1;
-        let busy = Busy {
-            activity: Arc::clone(&self.activity),
-        };
+        let busy = self.busy();
         if self.is_retired() {
             return Err(WakeError::Retired);
         }
@@ -257,6 +281,62 @@ impl<G: ?Sized + Guest + 'static> Activation<G> {
         );
         *slot = Some(Arc::clone(&guest));
         Ok((guest, busy))
+    }
+
+    /// Marks one call in flight until the returned guard drops.
+    fn busy(&self) -> Busy {
+        lock_activity(&self.activity).in_flight += 1;
+        Busy {
+            activity: Arc::clone(&self.activity),
+        }
+    }
+
+    /// Keeps `guest` awake between calls until [`Self::release_hold`], or
+    /// until it exits or another guest replaces it.
+    ///
+    /// Holding the same guest again changes nothing; holding a new one
+    /// replaces the old hold.
+    pub(crate) fn hold_awake(&self, guest: &Arc<G>) {
+        let mut hold = lock_hold(&self.hold);
+        if hold
+            .as_ref()
+            .is_some_and(|held| std::ptr::addr_eq(held.guest.as_ptr(), Arc::as_ptr(guest)))
+        {
+            return;
+        }
+        let first = hold.is_none();
+        *hold = Some(Hold {
+            guest: Arc::downgrade(guest),
+            _busy: self.busy(),
+        });
+        if first {
+            tracing::debug!(plugin_instance_id = %self.instance, "plugin held awake");
+        }
+    }
+
+    /// Drops the hold [`Self::hold_awake`] took, if any; the guest then
+    /// sleeps after the idle timeout like any other.
+    pub(crate) fn release_hold(&self) {
+        if lock_hold(&self.hold).take().is_some() {
+            tracing::debug!(plugin_instance_id = %self.instance, "plugin hold released");
+        }
+    }
+
+    /// Drops a hold whose guest has exited or been dropped.
+    fn drop_stale_hold(&self) {
+        let mut hold = lock_hold(&self.hold);
+        let stale = hold.as_ref().is_some_and(|held| {
+            held.guest
+                .upgrade()
+                .is_none_or(|guest| !guest.guest_running())
+        });
+        if stale {
+            *hold = None;
+            tracing::debug!(
+                plugin_instance_id = %self.instance,
+                "plugin hold released: the guest exited"
+            );
+        }
     }
 
     /// Stops the guest when no call is in flight and the last one finished
@@ -304,6 +384,7 @@ impl<G: ?Sized + Guest + 'static> Activation<G> {
     /// Returns the running guest's stop failure as text.
     pub(crate) async fn retire(&self) -> std::result::Result<(), String> {
         self.retired.store(true, Ordering::SeqCst);
+        self.release_hold();
         // Held until the guest has stopped, like the idle sweep.
         let mut slot = self.guest.lock().await;
         match slot.take() {
@@ -363,6 +444,7 @@ fn spawn_idle_sweep<G: ?Sized + Guest + 'static>(
             if activation.is_retired() {
                 continue;
             }
+            activation.drop_stale_hold();
             activation.sleep_if_idle().await;
         }
     });

@@ -146,6 +146,10 @@ pub struct ChangeFeedPage {
     pub more: bool,
     /// False when the feed may have missed changes: back it with a listing.
     pub complete: bool,
+    /// True when the backend's own running process produces the feed (a
+    /// file-system watcher), so stopping it loses changes; durable feeds
+    /// leave it false.
+    pub live_watch: bool,
 }
 
 /// Moves one object with the required primitives: probe, copy (server-side

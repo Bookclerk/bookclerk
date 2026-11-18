@@ -1,6 +1,6 @@
 # ADR: Event delivery follows the Workers model
 
-- **Status:** Accepted (decisions 1 to 12); later phases proposed
+- **Status:** Accepted (decisions 1 to 13); later phases proposed
 - **Date:** 2026-11-11
 
 ## Context
@@ -175,6 +175,28 @@ callers await a promise, and long work is a durable job.
     `remoteLibrary` guest still sleeps only when its databases are granted.
     The first start of a new plugin version still takes the slow path
     while it saves the snapshot.
+13. **A live watch keeps the local destination awake.** One process may
+    stay up while idle: the `local` destination with its `watch` setting
+    on. Its change feed is a file-system watcher whose journal lives in the
+    guest's memory, so stopping the guest would lose the changes it has
+    not handed out yet. A `changes` page carries `liveWatch` for such a
+    feed. While the latest page from the running guest has `complete` and
+    `liveWatch` both true, the on-demand proxy holds one call's worth of
+    activity on that guest (a `Busy` guard from the activation core), so
+    the idle sweep leaves it running. An incomplete or non-live page, a
+    `changes` error, or the guest exiting drops the hold, and the guest
+    then sleeps after the usual idle timeout. The watcher runs only on a
+    local disk; on a network share or FUSE mount, or when the operating
+    system refuses or overflows the watch, its pages say `complete: false`
+    and the guest sleeps like any other. The host honours `liveWatch` only
+    from the first-party storage plugins it starts on demand, and only the
+    `local` package sets it; a durable feed, such as a queue an
+    object-store plugin drains, leaves it false. Measured on Linux with
+    release builds: the idle guest is resident at about 3.7 MiB; a watch
+    over a 1,000-book library (1,201 folders) adds about 0.6 MiB, one over
+    10,000 books (12,001 folders) about 3 MiB, and a full journal (16,384
+    unread changes) about 3 MiB more. The kernel also keeps roughly 1 KiB
+    per watched folder for inotify, outside the guest.
 
 The following phases are proposed and get their own pull requests and
 updates to this record:
@@ -214,6 +236,10 @@ updates to this record:
   limits.
 - Untrusted socket requests and deliveries are a new boundary with the
   `socket_request` fuzz target.
+- Decision 13 appends `ChangesPage.liveWatch`. A library whose `local`
+  instance watches keeps that one guest resident; every other plugin
+  still sleeps, and listing stays the backstop for anything a watch
+  missed.
 - See [Entrypoints, events and the ABI](../plugins/abi.md#how-events-are-delivered),
   [Pushed sockets](../plugins/abi.md#pushed-sockets-sockets),
   [Reading past events](../plugins/abi.md#reading-past-events-enveventsread)

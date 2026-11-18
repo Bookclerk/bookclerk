@@ -8,11 +8,11 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    Bindings, ByteRange, CopyResult, Destination, Entrypoints, ExtensibleConfig, Invocation,
-    KeyOutcome, ListOptions, ListPage, MoveManyPage, MoveManyRequest, MoveOptions, MoveResult,
-    ObjectMetadata, PluginDescribe, PluginWorker, PutResult, ReadResult, ScalarLimits,
-    StreamCopyHandler, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY, FEATURE_STREAMS,
-    PRODUCT_API_VERSION,
+    Bindings, ByteRange, ChangesPage, ChangesRequest, CopyResult, Destination, Entrypoints,
+    ExtensibleConfig, Invocation, KeyOutcome, ListOptions, ListPage, MoveManyPage, MoveManyRequest,
+    MoveOptions, MoveResult, ObjectMetadata, PluginDescribe, PluginWorker, PutResult, ReadResult,
+    ScalarLimits, StreamCopyHandler, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY,
+    FEATURE_STREAMS, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_sdk::{OutputLocalContextDto, PluginError};
 use bookclerk_storage::guest::{self, object_metadata, plugin_error as map_storage};
@@ -61,9 +61,39 @@ impl LocalDestination {
             ));
         }
         let backend = LocalFsBackend::with_prefix(root, &parsed.prefix).map_err(map_storage)?;
+        let settings: WatchSetting = if config.is_empty() {
+            WatchSetting::default()
+        } else {
+            config.json_into().map_err(|err| {
+                PluginError::invalid_params(format!("local destination `watch` setting: {err}"))
+            })?
+        };
+        let backend = if settings.watch {
+            backend.with_watch()
+        } else {
+            backend
+        };
         Ok(Self { backend })
     }
 }
+
+/// The instance's `watch` setting, read from the same `open` payload as the
+/// root and prefix.
+#[derive(Debug, Default, serde::Deserialize)]
+struct WatchSetting {
+    /// When true the guest watches the root and serves `changes` from what
+    /// it saw (on a local disk only; see `docs/server/output.md`).
+    #[serde(default)]
+    watch: bool,
+}
+
+/// What this plugin does natively: everything the local backend does, plus
+/// the change feed, which an instance turns on with its `watch` setting.
+const CAPABILITIES: bookclerk_storage::StorageCapabilities =
+    bookclerk_storage::StorageCapabilities {
+        changes: true,
+        ..LocalFsBackend::CAPABILITIES
+    };
 
 fn write_meta(options: &WriteOptions) -> Result<ObjectMeta> {
     let sha256_hex =
@@ -231,6 +261,10 @@ impl Destination for LocalDestination {
         guest::head_many(&self.backend, keys).await
     }
 
+    async fn changes(&self, request: ChangesRequest) -> Result<ChangesPage> {
+        guest::changes(&self.backend, request).await
+    }
+
     async fn abort_stage(&self, key: &str, commit_token: &str) -> Result<()> {
         let staged = stage_object_key(Some(commit_token), key)?;
         match self.backend.delete(&staged).await {
@@ -257,7 +291,7 @@ impl PluginWorker for LocalRoot {
                 FEATURE_STORAGE_COPY.into(),
             ]
             .into_iter()
-            .chain(guest::storage_features(LocalFsBackend::CAPABILITIES))
+            .chain(guest::storage_features(CAPABILITIES))
             .collect(),
             scalar_limits: ScalarLimits::default().into(),
             capabilities: manifest_capabilities(include_str!("../plugin.toml"))?,
@@ -366,10 +400,47 @@ mod tests {
                 described.rpc_features
             );
         }
-        assert!(!described
+        assert!(described
             .rpc_features
             .iter()
             .any(|f| f == bookclerk_plugin_sdk::FEATURE_STORAGE_CHANGES));
+    }
+
+    #[tokio::test]
+    async fn the_watch_setting_turns_the_change_feed_on() {
+        let _env = ENV_LOCK.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let off = open_at(dir.path());
+        let page = off
+            .changes(ChangesRequest::default())
+            .await
+            .expect("changes");
+        assert!(!page.complete && !page.live_watch && !page.cursor.is_empty());
+
+        let on = LocalDestination::from_config(&ExtensibleConfig::json(&serde_json::json!({
+            "prefix": "",
+            "watch": true,
+        })))
+        .expect("destination");
+        std::env::remove_var("BOOKCLERK_OUTPUT_LOCAL_ROOT");
+        let page = on
+            .changes(ChangesRequest::default())
+            .await
+            .expect("changes");
+        // A temp dir on a local disk is watched; elsewhere the feed says it
+        // cannot vouch for itself.
+        assert_eq!(page.complete, page.live_watch);
+        let invalid = on
+            .changes(ChangesRequest {
+                cursor: Some("not a cursor".into()),
+                limit: 0,
+            })
+            .await
+            .expect_err("a foreign cursor");
+        assert_eq!(
+            invalid.code,
+            bookclerk_plugin_sdk::PluginErrorCode::InvalidCursor
+        );
     }
 
     #[tokio::test]

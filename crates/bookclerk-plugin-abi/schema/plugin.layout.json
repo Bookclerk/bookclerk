@@ -1721,6 +1721,15 @@
             "kind": "bool"
           },
           "offset": 1
+        },
+        {
+          "name": "liveWatch",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 2
         }
       ]
     },

@@ -1558,6 +1558,7 @@ fn storage_reply_seeds_are_current() {
         cursor: cursor.to_string(),
         more,
         complete: true,
+        live_watch: false,
     };
     let meta = |key: &str| ObjectMetadata {
         key: key.to_string(),
@@ -1629,6 +1630,16 @@ fn storage_reply_seeds_are_current() {
         (
             "changes_empty_cursor.bin",
             seed(3, StorageReply::Changes(changes("", false, &[]))),
+        ),
+        (
+            "changes_live_watch.bin",
+            seed(
+                3,
+                StorageReply::Changes(ChangesPage {
+                    live_watch: true,
+                    ..changes("w1.id.3", false, &["a/2.m4b"])
+                }),
+            ),
         ),
         (
             "list_hinted.bin",

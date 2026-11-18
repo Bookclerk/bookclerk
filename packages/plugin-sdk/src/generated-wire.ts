@@ -2339,6 +2339,7 @@ export const ChangesPageCodec: StructCodec<T.ChangesPage> = {
     s.setText(1, v.cursor ?? "");
     s.setBool(0, v.more ?? false);
     s.setBool(1, v.complete ?? false);
+    s.setBool(2, v.liveWatch ?? false);
   },
   read(s, caps) {
     return {
@@ -2346,6 +2347,7 @@ export const ChangesPageCodec: StructCodec<T.ChangesPage> = {
       cursor: s.getText(1),
       more: s.getBool(0),
       complete: s.getBool(1),
+      liveWatch: s.getBool(2),
     };
   },
 };

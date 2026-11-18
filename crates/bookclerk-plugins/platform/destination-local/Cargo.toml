@@ -24,7 +24,7 @@ path = "src/main.rs"
 async-trait.workspace = true
 base64.workspace = true
 bookclerk-plugin-sdk.workspace = true
-bookclerk-storage.workspace = true
+bookclerk-storage = { workspace = true, features = ["watch"] }
 bytes.workspace = true
 chrono.workspace = true
 serde.workspace = true

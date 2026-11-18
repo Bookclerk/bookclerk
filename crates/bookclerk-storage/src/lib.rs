@@ -29,6 +29,8 @@ pub mod intent;
 /// On-disk local list index (external sort, O(page) reads).
 mod list_index;
 mod local;
+#[cfg(feature = "watch")]
+mod local_watch;
 mod placement;
 #[cfg(feature = "s3")]
 mod s3;

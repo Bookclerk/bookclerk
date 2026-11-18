@@ -8,10 +8,11 @@
 //! natively (see `docs/plugins/abi.md#intent-operations`).
 
 use bookclerk_plugin_sdk::{
-    KeyOutcome, ListOptions, ListPage, MoveManyPage, MoveManyRequest, MoveManyTarget,
-    ObjectInfo as AbiObjectInfo, ObjectMetadata, PluginError, WriteOptions,
-    FEATURE_STORAGE_CHANGES, FEATURE_STORAGE_CONDITIONAL_WRITE, FEATURE_STORAGE_DELETE_MANY,
-    FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE, FEATURE_STORAGE_MOVE_MANY, MAX_BATCH_KEYS,
+    ChangesPage, ChangesRequest, KeyOutcome, ListOptions, ListPage, MoveManyPage, MoveManyRequest,
+    MoveManyTarget, ObjectChange as AbiObjectChange, ObjectInfo as AbiObjectInfo, ObjectMetadata,
+    PluginError, WriteOptions, FEATURE_STORAGE_CHANGES, FEATURE_STORAGE_CONDITIONAL_WRITE,
+    FEATURE_STORAGE_DELETE_MANY, FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE,
+    FEATURE_STORAGE_MOVE_MANY, MAX_BATCH_KEYS,
 };
 
 use crate::error::StorageError;
@@ -281,6 +282,54 @@ pub async fn head_many<B: StorageBackend + ?Sized>(
         .map(|probe| probe.map(object_metadata))
         .collect())
 }
+
+/// Serves `changes` from the backend's change feed.
+///
+/// A backend without a feed (for the `local` plugin, an instance with
+/// `watch` off) answers with an empty page that says changes may have been
+/// missed, so the host lists instead.
+///
+/// # Errors
+///
+/// Returns `invalidCursor` for a cursor the feed does not accept, and the
+/// feed's other failures.
+pub async fn changes<B: StorageBackend + ?Sized>(
+    backend: &B,
+    request: ChangesRequest,
+) -> GuestResult<ChangesPage> {
+    let page = backend
+        .changes(request.cursor.as_deref(), request.limit)
+        .await
+        .map_err(plugin_error)?;
+    let Some(page) = page else {
+        return Ok(ChangesPage {
+            changes: Vec::new(),
+            cursor: NO_FEED_CURSOR.into(),
+            more: false,
+            complete: false,
+            live_watch: false,
+        });
+    };
+    Ok(ChangesPage {
+        changes: page
+            .changes
+            .into_iter()
+            .map(|change| AbiObjectChange {
+                key: change.key,
+                kind: change.kind,
+                info: change.info.map(object_info),
+            })
+            .collect(),
+        cursor: page.cursor,
+        more: page.more,
+        complete: page.complete,
+        live_watch: page.live_watch,
+    })
+}
+
+/// The cursor of a page from a backend with no change feed; the host only
+/// hands it back, and it always reads as incomplete.
+const NO_FEED_CURSOR: &str = "none";
 
 /// Refuses a batch over [`MAX_BATCH_KEYS`] keys.
 fn require_batch(keys: &[String], op: &str) -> GuestResult<()> {

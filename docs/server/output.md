@@ -32,6 +32,7 @@ plus its own `plugin-state/<plugin-key-fs-id>/data` and `tmp` folders.
 | --- | --- | --- |
 | `root` | `Audiobooks` | A relative path resolves under `BOOKCLERK_FILES_DIR` |
 | `prefix` | `""` | Key prefix inside the root |
+| `watch` | `false` | Notice files added, changed or removed outside Bookclerk right away (see [Watching the folder](#watching-the-folder)) |
 | `naming_profile`, `folder_template`, `file_template`, `chapter_file_template` | from `core.output` | Naming for this destination only |
 
 To move the library folder:
@@ -72,6 +73,34 @@ FUSE mount (sshfs, rclone, mergerfs and the like):
 Between two file systems (a move into a folder that is another mount),
 Bookclerk copies the file, syncs it to disk, checks its size, and only then
 deletes the original.
+
+### Watching the folder
+
+With `watch` on, the plugin asks the operating system to tell it whenever a
+file in the folder is added, changed, renamed or removed, and keeps a list
+of those changes. Bookclerk reads the list instead of walking the whole
+folder, so changes made by other programs show up within seconds.
+
+```sh
+bookclerk plugins config set local watch true
+```
+
+Things to know:
+
+- **It keeps the plugin running.** Plugins normally stop after a few idle
+  minutes. A watching plugin stays up while its watch works, because the
+  list lives in its memory. That costs a few megabytes (see
+  [the record](../adr/event-delivery-model.md#decision)).
+- **Local disks only.** On a network share or a FUSE mount the operating
+  system is not told about changes made by other machines, so the plugin
+  does not watch there, and Bookclerk keeps finding changes by listing.
+- **Listing stays the backstop.** When the watch cannot vouch for what it
+  saw (the plugin restarted, the operating system dropped events, more than
+  16,384 changes piled up unread, or a whole folder was moved), Bookclerk
+  lists the folder once and carries on from there.
+- On Linux each watched folder uses one inotify watch. A library with more
+  folders than `fs.inotify.max_user_watches` allows stops the watch, and
+  Bookclerk falls back to listing.
 
 Change signatures need a modification time that moves with every write.
 FAT keeps it to 2 seconds and exFAT to 10 milliseconds, so two writes of
