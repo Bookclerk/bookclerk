@@ -102,6 +102,16 @@ fn listing_identities() -> sea_orm::Select<store_listings::Entity> {
     select
 }
 
+/// The identity of one acquired edition, the only columns the key walk
+/// reads from `edition_acquisitions`.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct AcquiredEdition {
+    /// The acquired edition (`editions.id`), the page's keyset column.
+    edition_id: String,
+    /// When the acquisition row last changed (RFC 3339 text).
+    updated_at: String,
+}
+
 /// `text` as a time, or the time of the read when it does not parse.
 fn changed_at(text: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(text.trim())
@@ -111,6 +121,9 @@ fn changed_at(text: &str) -> DateTime<Utc> {
 impl LibraryStore {
     /// One keyset page of the account titles whose edition is acquired
     /// with a stored audio file, identity columns only.
+    ///
+    /// A page of editions whose result would exceed the database's result
+    /// limits is halved and read again.
     ///
     /// # Arguments
     ///
@@ -140,15 +153,32 @@ impl LibraryStore {
                 .clamp(1, ACQUIRED_KEYS_MAX_PAGE)
                 .min(u64::from(rows).max(1)),
         };
-        let mut query = edition_acquisitions::Entity::find()
-            .filter(edition_acquisitions::Column::Status.eq(AcquireStatus::Acquired.as_str()))
-            .filter(edition_acquisitions::Column::StorageKey.is_not_null())
-            .order_by_asc(edition_acquisitions::Column::EditionId)
-            .limit(want);
-        if let Some(after) = after {
-            query = query.filter(edition_acquisitions::Column::EditionId.gt(after));
-        }
-        let acquired = query.all(self.db()).await.map_err(LibraryError::Orm)?;
+        let mut want = want;
+        let acquired = loop {
+            let mut query = edition_acquisitions::Entity::find()
+                .select_only()
+                .column(edition_acquisitions::Column::EditionId)
+                .column(edition_acquisitions::Column::UpdatedAt)
+                .filter(edition_acquisitions::Column::Status.eq(AcquireStatus::Acquired.as_str()))
+                .filter(edition_acquisitions::Column::StorageKey.is_not_null())
+                .order_by_asc(edition_acquisitions::Column::EditionId)
+                .limit(want);
+            if let Some(after) = after {
+                query = query.filter(edition_acquisitions::Column::EditionId.gt(after));
+            }
+            let read = query
+                .into_model::<AcquiredEdition>()
+                .all(self.db())
+                .await
+                .map_err(LibraryError::Orm);
+            match read {
+                Ok(rows) => break rows,
+                Err(err) if super::books_page::is_result_too_large(&err) && want > 1 => {
+                    want /= 2;
+                }
+                Err(err) => return Err(err),
+            }
+        };
         let full = u64::try_from(acquired.len()).unwrap_or(u64::MAX) >= want;
         let next = acquired
             .last()
@@ -194,7 +224,7 @@ impl LibraryStore {
             .into_iter()
             .map(|m| ((m.plugin_key, m.account_id), m.source))
             .collect();
-        let acquired: std::collections::BTreeMap<&str, &edition_acquisitions::Model> = acquired
+        let acquired: std::collections::BTreeMap<&str, &AcquiredEdition> = acquired
             .iter()
             .map(|row| (row.edition_id.as_str(), row))
             .collect();

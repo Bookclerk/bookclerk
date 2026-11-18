@@ -746,3 +746,62 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
     assert!(shares(&a, &first).await);
     assert_eq!(b_sync.sync_once().await.unwrap().sent, 0);
 }
+
+/// A store account's key of title `product_id` held by `holding_id`.
+fn own_key(holding_id: &str, account_id: &str, product_id: &str) -> super::AcquiredTitleKey {
+    super::AcquiredTitleKey {
+        holding_id: holding_id.to_owned(),
+        edition_id: "edition-1".to_owned(),
+        source: "audible".to_owned(),
+        plugin_key: "audible".to_owned(),
+        account_id: account_id.to_owned(),
+        marketplace: "us".to_owned(),
+        product_id: product_id.to_owned(),
+        updated_at: chrono::DateTime::UNIX_EPOCH,
+    }
+}
+
+/// Two accounts hold one title: the first holding represents it, but a
+/// later sibling's newer request moves the entry past the cursor.
+#[test]
+fn a_later_siblings_newer_change_moves_the_titles_entry() {
+    let reference = super::CatalogRef {
+        store: super::store_id("audible"),
+        product_id: "B000TEST01".to_owned(),
+    };
+    let cursor = chrono::DateTime::parse_from_rfc3339("2026-11-01T00:00:00Z")
+        .map(|at| at.with_timezone(&chrono::Utc))
+        .unwrap();
+    let asked = cursor + chrono::Duration::days(1);
+    let mut out = Vec::new();
+    let mut own = std::collections::BTreeMap::new();
+    let first = own_key("holding-a", "owner", "B000TEST01");
+    assert!(super::push_own(
+        &mut out,
+        &mut own,
+        reference.clone(),
+        first,
+        cursor - chrono::Duration::days(1),
+    ));
+    let sibling = own_key("holding-b", "member", "B000TEST01");
+    assert!(!super::push_own(
+        &mut out,
+        &mut own,
+        reference.clone(),
+        sibling,
+        asked,
+    ));
+    // An older sibling never moves the entry back.
+    let older = own_key("holding-c", "other", "B000TEST01");
+    assert!(!super::push_own(
+        &mut out, &mut own, reference, older, cursor
+    ));
+    assert_eq!(out.len(), 1);
+    let entry = &out[0];
+    assert_eq!(entry.order, super::own_order(asked, "holding-a"));
+    assert!(entry.order.as_str() > super::own_order(cursor, "").as_str());
+    match &entry.source {
+        super::Source::Own(key) => assert_eq!(key.holding_id, "holding-a"),
+        super::Source::Branch(_) => panic!("an own title became a branch entry"),
+    }
+}

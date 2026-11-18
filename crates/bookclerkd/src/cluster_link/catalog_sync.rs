@@ -50,6 +50,7 @@ use bookclerk_node_proto::{
     UploadProbe, MAX_CATALOG_BATCH_TITLES, MAX_UPLOAD_FILES,
 };
 use bookclerk_storage::StorageBackend;
+use chrono::{DateTime, Utc};
 use sha2::Digest as _;
 use tokio::io::AsyncReadExt as _;
 use tokio::sync::watch;
@@ -347,6 +348,8 @@ impl<S: BranchShelf> CatalogSync<S> {
         members_books: bool,
     ) -> anyhow::Result<Vec<Entry>> {
         let mut seen = BTreeSet::new();
+        // Where each own title's entry sits in `out`, and its change time.
+        let mut own: BTreeMap<CatalogRef, (usize, DateTime<Utc>)> = BTreeMap::new();
         let mut out = Vec::new();
         let mut after: Option<String> = None;
         // The branch owner's own books go up (and, when the library
@@ -367,23 +370,14 @@ impl<S: BranchShelf> CatalogSync<S> {
                     store: store_id(&key.source),
                     product_id: key.product_id.clone(),
                 };
-                if !seen.insert(reference.clone()) {
-                    continue;
-                }
                 // A requested book counts as changed when it was last
                 // asked for, so one already past the cursor still goes up.
                 let changed = owners
                     .requested_at(&key)
                     .map_or(key.updated_at, |asked| asked.max(key.updated_at));
-                out.push(Entry {
-                    order: format!(
-                        "{}|own|{}",
-                        changed.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-                        key.holding_id
-                    ),
-                    reference,
-                    source: Source::Own(key),
-                });
+                if push_own(&mut out, &mut own, reference.clone(), key, changed) {
+                    seen.insert(reference);
+                }
             }
             match page.next {
                 Some(next) => after = Some(next),
@@ -770,6 +764,63 @@ fn call_error(what: &str, err: &OwnerCallError) -> anyhow::Error {
         OwnerCallError::Refused(reason) => anyhow::anyhow!("the library refused {what}: {reason}"),
         OwnerCallError::Unavailable => anyhow::anyhow!("the library was unavailable for {what}"),
     }
+}
+
+/// Adds own title `key`, changed at `changed`, to the pass's entries, one
+/// entry per store and product id.
+///
+/// The first key of a title represents it; a later sibling holding of the
+/// same title (another account, or another marketplace's listing) only
+/// moves the entry's change time forward, so a sibling's newer change or
+/// request still sends the title past the cursor.
+///
+/// # Arguments
+///
+/// * `out` - The pass's entries so far.
+/// * `own` - Where each own title's entry sits in `out`, and its change
+///   time.
+/// * `reference` - The title's catalog reference.
+/// * `key` - The account holding to add.
+/// * `changed` - When `key` last changed or was last asked for.
+///
+/// # Returns
+///
+/// `true` when `key` started a new entry.
+fn push_own(
+    out: &mut Vec<Entry>,
+    own: &mut BTreeMap<CatalogRef, (usize, DateTime<Utc>)>,
+    reference: CatalogRef,
+    key: AcquiredTitleKey,
+    changed: DateTime<Utc>,
+) -> bool {
+    if let Some(&(at, earlier)) = own.get(&reference) {
+        if changed > earlier {
+            if let Some(entry) = out.get_mut(at) {
+                if let Source::Own(first) = &entry.source {
+                    entry.order = own_order(changed, &first.holding_id);
+                }
+            }
+            own.insert(reference, (at, changed));
+        }
+        return false;
+    }
+    own.insert(reference.clone(), (out.len(), changed));
+    out.push(Entry {
+        order: own_order(changed, &key.holding_id),
+        reference,
+        source: Source::Own(key),
+    });
+    true
+}
+
+/// The sync order of an own title that changed at `changed`, represented
+/// by holding `holding_id`: change time first, so a pass resumes past the
+/// cursor, then the holding to break ties.
+fn own_order(changed: DateTime<Utc>, holding_id: &str) -> String {
+    format!(
+        "{}|own|{holding_id}",
+        changed.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+    )
 }
 
 #[cfg(test)]
