@@ -77,13 +77,16 @@ feed it uses and its health.
 
 ### 6. Webhooks are a host-held entrypoint
 
-A plugin may declare webhooks in its manifest. On a core branch (one that
-is publicly addressable) the host serves them under an unguessable
-per-instance path, outside operator auth. Before waking the guest, the
-host enforces a body cap, a rate limit and any signature rule the
-manifest declares. By default it stores a verified request, answers at
-once and wakes the guest to handle it, as it does for socket messages. A
-local branch has no public URL, so a plugin there uses its fallback.
+A plugin may declare webhooks in its manifest. The host serves them under
+an unguessable per-instance path, outside operator auth, on a library
+whose public origin an outside service can reach over the Internet. Being
+a core branch (reachable by its own branches, which may be on a LAN) is
+not enough by itself, so the host checks reachability per plugin. Before
+waking the guest, the host enforces a body cap, a rate limit and any
+signature rule the manifest declares. By default it stores a verified
+request, answers at once and wakes the guest to handle it, as it does for
+socket messages. Without an Internet address there is no webhook URL, and
+the plugin uses its fallback.
 
 ### 7. Cloud setup through the plugin
 
