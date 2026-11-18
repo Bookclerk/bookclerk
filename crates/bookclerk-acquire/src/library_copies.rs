@@ -8,6 +8,10 @@
 //! its own acquire pipeline, so the copy is converted, named, tagged and
 //! recorded here exactly as a store download would be.
 //!
+//! A copy the library acquired from another store is not taken on sight:
+//! the install downloads its own first, and the pipeline keeps the better
+//! of the two by probe, once.
+//!
 //! The acquire asks through [`LibraryCopies`], which each kind of install
 //! implements over its own connection to the library. This module decides
 //! which of the copy's files are taken ([`plan_files`]), downloads them
@@ -67,6 +71,13 @@ pub trait LibraryCopy: Send + Sync {
     /// The store the library downloaded the copy from, when it knows.
     fn source_store(&self) -> Option<&str>;
 
+    /// What the library's probe found in the copy's primary audio: its
+    /// media type, average bitrate and whether it is lossless. The acquire
+    /// compares it with its own store download when the copy came from
+    /// another store ([`bookclerk_library::FileProbe::is_better_than`]),
+    /// and probes the copy itself before it believes the answer.
+    fn probe(&self) -> bookclerk_library::FileProbe;
+
     /// The copy's files, the primary audio first; a file's place is its
     /// download index.
     fn files(&self) -> &[LibraryCopyFile];
@@ -101,10 +112,13 @@ pub trait LibraryCopies: Send + Sync {
     /// when no library holds one this install's person may take, when
     /// this install does not keep copies, or when no library answers.
     ///
-    /// The acquire takes only a copy from the listing's own store
-    /// ([`from_store`]). An implementation that asks several libraries
-    /// therefore keeps asking past a copy from another store, so that
-    /// copy does not hide a later library's usable one.
+    /// A copy from the listing's own store ([`from_store`]) is taken
+    /// instead of the store download; a copy from another store only
+    /// replaces the store download when it is the better one. An
+    /// implementation that asks several libraries therefore keeps asking
+    /// past a copy from another store and returns it only when no library
+    /// has one from the listing's own, and never returns a copy whose
+    /// store the library does not know.
     async fn copy_of(&self, listing: LibraryCopyListing<'_>) -> Option<Box<dyn LibraryCopy>>;
 }
 
@@ -117,6 +131,36 @@ pub struct LibraryCopySource {
     /// The pool that reads a downloaded file's tags; `None` uses the
     /// process pool ([`bookclerk_media::pool`]).
     media: Option<Arc<MediaPool>>,
+    /// Where the audio the acquire stores came from, when not the title's
+    /// own store.
+    stored_from: StoredFrom,
+}
+
+/// The store the audio an acquire stores was downloaded from, when it is
+/// not the title's own: set when a library's copy from another store
+/// replaced the title's own download, and read when a written file's
+/// probe is recorded. Clones share the one value, so the request and the
+/// recording destinations of one acquire agree.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct StoredFrom(Arc<std::sync::Mutex<Option<String>>>);
+
+impl StoredFrom {
+    /// Names the store the stored audio came from.
+    pub(crate) fn set(&self, store: &str) {
+        // A poisoned lock still holds a whole value.
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(store.to_owned());
+    }
+
+    /// The store named, if any.
+    pub(crate) fn get(&self) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 impl LibraryCopySource {
@@ -126,6 +170,7 @@ impl LibraryCopySource {
         Self {
             copies: Some(copies),
             media: None,
+            stored_from: StoredFrom::default(),
         }
     }
 
@@ -146,6 +191,20 @@ impl LibraryCopySource {
     pub(crate) fn media(&self) -> Arc<MediaPool> {
         self.media.clone().unwrap_or_else(bookclerk_media::pool)
     }
+
+    /// The same source for one acquire: one job's titles share a source,
+    /// and each must name where its own stored audio came from.
+    #[must_use]
+    pub(crate) fn for_one_acquire(mut self) -> Self {
+        self.stored_from = StoredFrom::default();
+        self
+    }
+
+    /// Where this acquire's stored audio came from, when not the title's
+    /// own store.
+    pub(crate) fn stored_from(&self) -> &StoredFrom {
+        &self.stored_from
+    }
 }
 
 impl std::fmt::Debug for LibraryCopySource {
@@ -160,8 +219,8 @@ impl std::fmt::Debug for LibraryCopySource {
 
 /// True when the library downloaded its copy from `store`, the store this
 /// install's title belongs to. A copy whose store the library does not
-/// know, or one from another store, is not taken: the install fetches its
-/// own.
+/// know is never taken, and one from another store only replaces the
+/// install's own download when it is the better copy.
 ///
 /// An implementation of [`LibraryCopies`] that asks several libraries uses
 /// this to pass over a copy from another store and ask the next library.
@@ -426,6 +485,8 @@ pub(crate) mod tests {
         pub failing: Option<usize>,
         /// True when [`LibraryCopy::taken`] fails (after counting).
         pub refuses_taken: bool,
+        /// What the library says its probe found: `(bitrate, lossless)`.
+        pub claims: (Option<u32>, bool),
     }
 
     impl MemoryCopy {
@@ -446,12 +507,22 @@ pub(crate) mod tests {
                 taken: Arc::new(AtomicUsize::new(0)),
                 failing: None,
                 refuses_taken: false,
+                claims: (None, false),
             }
         }
     }
 
     #[async_trait::async_trait]
     impl LibraryCopy for MemoryCopy {
+        fn probe(&self) -> bookclerk_library::FileProbe {
+            bookclerk_library::FileProbe {
+                content_type: "audio/mp4".into(),
+                bitrate_kbps: self.claims.0,
+                lossless: self.claims.1,
+                source_store: self.store.clone(),
+            }
+        }
+
         fn source_store(&self) -> Option<&str> {
             self.store.as_deref()
         }

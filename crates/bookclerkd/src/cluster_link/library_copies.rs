@@ -12,10 +12,11 @@
 //! so the catalog sync never shares the book back to the library it came
 //! from.
 //!
-//! The pipeline takes a copy only when the library downloaded it from the
-//! title's own store, and fetches from the store otherwise. A library
-//! whose copy came from another store is therefore passed over here, so
-//! the next library is still asked.
+//! The pipeline takes a copy the library downloaded from the title's own
+//! store instead of fetching from the store. A copy from another store is
+//! offered only when no library has one from the title's own, and the
+//! pipeline then keeps the better of that copy and its own store download.
+//! A copy whose store the library does not know is never offered.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -27,7 +28,7 @@ use bookclerk_acquire::{
 use bookclerk_library::control_plane::{
     list_cluster_links, record_copy_taken_from_link, ClusterLink, TakenCopy,
 };
-use bookclerk_library::{FileRole, LibraryStore};
+use bookclerk_library::{FileProbe, FileRole, LibraryStore};
 use bookclerk_node_client::{CopyFetchError, GrantedCopy, HostClientHandle};
 use bookclerk_node_proto::CopyRole;
 
@@ -88,6 +89,10 @@ impl LibraryCopies for LinkCopies {
                 return None;
             }
         };
+        // A copy from another store only replaces the store download when
+        // it is the better one, so it is offered only when no library has
+        // a copy from the title's own store.
+        let mut other_store = None;
         for link in links.into_iter().filter(takes_copies) {
             // A library that is not connected now is not waited for: the
             // title comes from its store instead.
@@ -110,18 +115,9 @@ impl LibraryCopies for LinkCopies {
                     continue;
                 }
             };
-            // A copy from another store is never taken, so it must not
-            // hide the same-store copy a later library holds.
-            if !from_store(granted.copy.source_store.as_deref(), listing.store) {
-                tracing::debug!(
-                    library = %link.owner_cluster_id,
-                    store = %listing.store,
-                    copy_store = ?granted.copy.source_store,
-                    "the library's copy is from another store; asking the next library"
-                );
-                continue;
-            }
-            return Some(Box::new(LinkCopy {
+            let same_store = from_store(granted.copy.source_store.as_deref(), listing.store);
+            let known_store = granted.copy.source_store.is_some();
+            let copy = LinkCopy {
                 files: granted.files.iter().map(listed).collect(),
                 granted,
                 handle,
@@ -131,9 +127,15 @@ impl LibraryCopies for LinkCopies {
                 account_id: listing.account_id.to_string(),
                 marketplace: listing.marketplace.to_string(),
                 product_id: listing.product_id.to_string(),
-            }));
+            };
+            if same_store {
+                return Some(Box::new(copy));
+            }
+            if known_store && other_store.is_none() {
+                other_store = Some(copy);
+            }
         }
-        None
+        other_store.map(|copy| Box::new(copy) as Box<dyn LibraryCopy>)
     }
 }
 
@@ -181,6 +183,16 @@ struct LinkCopy {
 impl LibraryCopy for LinkCopy {
     fn source_store(&self) -> Option<&str> {
         self.granted.copy.source_store.as_deref()
+    }
+
+    fn probe(&self) -> FileProbe {
+        let copy = &self.granted.copy;
+        FileProbe {
+            content_type: copy.content_type.clone(),
+            bitrate_kbps: copy.bitrate_kbps,
+            lossless: copy.lossless,
+            source_store: copy.source_store.clone(),
+        }
     }
 
     fn files(&self) -> &[LibraryCopyFile] {

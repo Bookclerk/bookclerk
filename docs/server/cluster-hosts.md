@@ -816,11 +816,18 @@ library it joined, in turn, for the copy of that listing.
 - **Split by chapter: MP4 audio only.** A branch whose output is split
   into chapter files takes the library's copy only when it is an M4B,
   M4A or MP4 file; otherwise it fetches from the store.
-- **Another store: the branch fetches its own.** When the library's copy
-  came from a different store, or the library doesn't know where it came
-  from, that library is passed over and the next one is asked. When no
-  library has a copy from the title's store, the branch downloads from
-  its own store as usual.
+- **Another store: the better copy is kept.** When no library has a copy
+  from the title's store but one has a copy of the same edition from a
+  different store, the branch downloads from its own store first and
+  probes that download. If the library's probe says its copy is better
+  (lossless beats lossy, then the higher bitrate wins), the branch
+  downloads the library's copy too, probes it itself, and stores it in
+  place of its own download only when its own probe agrees. Otherwise it
+  keeps its own. The comparison runs once, in that acquire. The stored
+  file's row names the store the audio really came from, and the cover
+  and companion PDF of the branch's own download are kept.
+- **Unknown store: the branch fetches its own.** A copy whose store the
+  library doesn't know is never offered.
 - **Any problem: the store.** If the copy doesn't arrive whole, is larger
   than the acquire's scratch budget, or holds audio the media worker
   can't read, the branch removes what it downloaded and fetches from the
@@ -1227,9 +1234,10 @@ shared stay in the library, marked as from a branch that left (see
   joined.
 - A branch takes a library's copy only for a title its own scan found on
   a store account connected to the branch, and only when the library's
-  copy came from the same store. It doesn't yet compare a copy from
-  another store with its own download, and it doesn't take a book the
-  library holds as several audio files.
+  copy came from the same store or is better than the branch's own
+  download. It doesn't take a book the library holds as several audio
+  files, and it doesn't compare again after the title is acquired, so a
+  better copy the library gets later isn't picked up.
 - The library's name is the host of its public origin. There is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the

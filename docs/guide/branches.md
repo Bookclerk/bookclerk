@@ -139,9 +139,10 @@ the store. Your server runs the library's work and shows its books either
 way.
 
 > [!NOTE]
-> If the library got its copy from a different store than yours, or keeps
-> the book as several audio files, your server downloads the book from
-> your store.
+> If the library got its copy from a different store than yours, your
+> server downloads the book from your store and keeps whichever of the
+> two is the better recording. If the library keeps the book as several
+> audio files, your server downloads the book from your store.
 
 ## Sign in with a library card
 
