@@ -50,8 +50,11 @@ There is no ordered rule list and no fallback destination.
 3. The job succeeds as soon as one target holds the complete files.
    Failed transfers and unavailable targets are retried in the
    background.
-4. Each stored copy is a holding row for that destination instance, with
-   the key it used and its state (stored, pending retry, failed).
+4. Each stored copy is recorded per destination instance, with the key
+   it used and its state (stored, pending retry, failed). In the data
+   model these are `edition_files` rows keyed by destination; a holding
+   remains a store entitlement
+   ([library data model](library-data-model.md)).
 5. Changing a template or filter affects new acquires. Moving existing
    files to match is a separate job the operator starts.
 
@@ -92,9 +95,9 @@ secret. Manual entry stays available.
 
 ## Consequences
 
-- Destinations, holdings and reads key on the instance id. Reads use a
-  holding's destination and may fall back to another destination holding
-  the same file.
+- Destinations, stored files and reads key on the instance id. A read
+  uses the file's destination and may fall back to another destination
+  that stores the same file.
 - `plugin.capnp` gains a webhook entrypoint and binding and a provisioning
   entrypoint, appended with the SDKs. The webhook route is a new
   untrusted-input boundary and ships with a fuzz target.
@@ -113,7 +116,8 @@ secret. Manual entry stays available.
 
 1. This record.
 2. Destinations keyed by instance; templates, filters and the target-set
-   check; simultaneous streaming; holdings per destination.
+   check; simultaneous streaming; stored files and retries per
+   destination; the plugin translating the host's key syntax.
 3. The listing fallback and feed health.
 4. The R2 plugin with its Cloudflare Queue feed.
 5. The webhook entrypoint, binding and host route.
