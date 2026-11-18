@@ -13,7 +13,7 @@
 //! |---|---|---|---|
 //! | library → clerk | `hello` | `topics` | once, after the upgrade: the topics this card hears about |
 //! | library → clerk | `changed` | `topics` | those topics changed; read again |
-//! | clerk → library | `books` | `after` | the page of the person's books after this cursor ([`WindowCursor`]; empty for the first) |
+//! | clerk → library | `books` | `after` | the page of the library's books after this cursor ([`WindowCursor`]; empty for the first) |
 //! | library → clerk | `books.page` | `after`, `works`, `next?` | that page ([`WindowWork`]); no `next` on the last page |
 //! | library → clerk | `error` | `code` | a `books` frame was not answered ([`ClerkSocketError`]) |
 //!
@@ -59,7 +59,7 @@ pub const MAX_CLERK_TOPIC_BYTES: usize = 32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ClerkTopic {
-    /// The library's books changed: read the person's books again.
+    /// The library's books changed: read them again.
     Library,
     /// The person's stored Discover shelves may have changed.
     Discover,
@@ -110,7 +110,7 @@ pub enum ClerkSocketError {
 /// A frame from a clerk to a library.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClerkFrame {
-    /// `books`: the page of the person's books after `after` (empty for
+    /// `books`: the page of the library's books after `after` (empty for
     /// the first page).
     Books {
         /// The cursor of the previous page.
@@ -131,7 +131,8 @@ pub enum LibraryFrame {
         /// The topics, without names this version does not know.
         topics: BTreeSet<ClerkTopic>,
     },
-    /// `books.page`: one page of the person's books.
+    /// `books.page`: one page of the library's books, the card's person's
+    /// own marked ([`crate::WindowEdition::yours`]).
     BooksPage {
         /// The cursor the clerk asked with.
         after: WindowCursor,
@@ -362,6 +363,7 @@ mod tests {
     use super::*;
     use crate::catalog::CatalogMetadata;
     use crate::lookup::{Availability, LookupEdition, LookupFormat};
+    use crate::WindowEdition;
 
     fn at(text: &str) -> WindowCursor {
         WindowCursor::parse(text).unwrap()
@@ -371,16 +373,19 @@ mod tests {
         WindowWork {
             work: "w-1".into(),
             identifiers: Vec::new(),
-            editions: vec![LookupEdition {
-                store: "audible".into(),
-                marketplace: "us".into(),
-                product_id: "B0TEST".into(),
-                availability: Availability::Owned,
-                formats: vec![LookupFormat::Audio],
-                metadata: CatalogMetadata {
-                    title: "A Title".into(),
-                    ..CatalogMetadata::default()
+            editions: vec![WindowEdition {
+                edition: LookupEdition {
+                    store: "audible".into(),
+                    marketplace: "us".into(),
+                    product_id: "B0TEST".into(),
+                    availability: Availability::Owned,
+                    formats: vec![LookupFormat::Audio],
+                    metadata: CatalogMetadata {
+                        title: "A Title".into(),
+                        ..CatalogMetadata::default()
+                    },
                 },
+                yours: true,
             }],
         }
     }
@@ -490,7 +495,7 @@ mod tests {
     #[test]
     fn a_page_with_a_malformed_work_is_refused() {
         let mut bad = work();
-        bad.editions[0].availability = Availability::Reachable;
+        bad.editions[0].edition.availability = Availability::Reachable;
         let frame = LibraryFrame::BooksPage {
             after: WindowCursor::start(),
             works: vec![bad],

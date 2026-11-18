@@ -7,8 +7,9 @@ import { storeLabel } from "@/lib/catalogTitle";
 import { ApiError } from "@/lib/api";
 import {
   fetchWindowBooks,
-  filterWindowBooks,
+  shownWindowBooks,
   windowEntryFormats,
+  windowEntryIsYours,
   windowEntryLibraries,
   windowLibraries,
   type WindowBooks,
@@ -16,7 +17,7 @@ import {
 } from "@/lib/join";
 import { useLiveRefresh } from "@/lib/live";
 
-/** One work a library holds for this server's person. */
+/** One work another library holds, marked Yours when it is the person's. */
 function WindowRow({ entry }: { entry: WindowEntryView }) {
   const first = entry.editions[0];
   if (!first) return null;
@@ -38,6 +39,7 @@ function WindowRow({ entry }: { entry: WindowEntryView }) {
           <h3 className="truncate font-display text-base font-semibold leading-tight text-ink sm:text-lg">
             {first.title}
           </h3>
+          {windowEntryIsYours(entry) ? <Badge className="bg-ink text-paper">Yours</Badge> : null}
           {windowEntryFormats(entry).map((format) => (
             <Badge key={format} className="bg-teal/10 text-ink/70">
               {format === "pdf" ? "PDF" : "Audio"}
@@ -61,9 +63,10 @@ function WindowRow({ entry }: { entry: WindowEntryView }) {
 }
 
 /**
- * Library on a window: the books each library this server is a window of
- * ("Use this computer to download" off) or holds a library card for holds
- * for its person, merged by work, narrowed by the Library search. Renders
+ * Library on a window: every book of each library this server is a window
+ * of ("Use this computer to download" off) or holds a library card for,
+ * merged by work, the person's own marked Yours, narrowed by the Library
+ * search and, when asked, to the person's own. Renders
  * nothing when this server reads no other library, or the caller may not
  * read the view (only the
  * operator or an Owner may). A refresh that fails for another reason keeps
@@ -72,6 +75,8 @@ function WindowRow({ entry }: { entry: WindowEntryView }) {
 export function WindowBooksSection({ query = "" }: { query?: string }) {
   const [view, setView] = useState<WindowBooks | null>(null);
   const [stale, setStale] = useState(false);
+  // "Only yours": a per-visit choice, off so every book shows by default.
+  const [onlyYours, setOnlyYours] = useState(false);
   // Only the latest refresh may change the view, so an older answer that
   // arrives late never replaces a newer one.
   const latest = useRef(0);
@@ -106,15 +111,29 @@ export function WindowBooksSection({ query = "" }: { query?: string }) {
   if (!view) return null;
   const libraries = windowLibraries(view);
   if (libraries.length === 0) return null;
-  const shown = filterWindowBooks(view.books, query);
+  const shown = shownWindowBooks(view.books, query, onlyYours);
+  const anyYours = view.books.some(windowEntryIsYours);
   return (
     <section aria-labelledby="window-books-heading" className="bg-card">
       <div className="border-b border-ink/10 px-3 py-3 sm:px-4">
-        <h2 id="window-books-heading" className="font-display text-lg font-semibold text-ink">
-          Your books in other libraries
-        </h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 id="window-books-heading" className="font-display text-lg font-semibold text-ink">
+            Books in other libraries
+          </h2>
+          {anyYours ? (
+            <label className="flex items-center gap-2 text-xs text-ink/70">
+              <input
+                type="checkbox"
+                checked={onlyYours}
+                onChange={(e) => setOnlyYours(e.target.checked)}
+              />
+              Only yours
+            </label>
+          ) : null}
+        </div>
         <p className="text-xs text-ink/55">
-          Held for you in {libraries.join(", ")}. This server doesn&apos;t download them
+          Every book in {libraries.join(", ")}; the ones on your own store accounts there are marked
+          Yours. This server doesn&apos;t download them
           {view.clusters.length > 0 ? (
             <>
               ; turn on &ldquo;Use this computer to download&rdquo; in Settings to keep copies here
@@ -140,7 +159,9 @@ export function WindowBooksSection({ query = "" }: { query?: string }) {
         </p>
       ) : shown.length === 0 ? (
         <p className="px-4 py-6 text-center text-sm text-ink/60">
-          None of your books in other libraries match this search.
+          {onlyYours
+            ? "None of your books in other libraries match this search."
+            : "No books in other libraries match this search."}
         </p>
       ) : (
         shown.map((entry) => <WindowRow key={entry.key} entry={entry} />)

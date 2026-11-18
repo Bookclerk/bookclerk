@@ -102,7 +102,7 @@ the library as a member, through the same join flow a server uses (see
 
 A computer that joins from the window becomes a **window** of the library:
 as soon as the join finishes, the app turns off **Use this computer to
-download** for that library, so the computer shows the person's books there
+download** for that library, so the computer shows the library's books
 and takes none of the library's work (see
 [Window mode](../../server/cluster-hosts.md#window-mode)). Turning the setting
 on in Settings → Library makes it a branch that downloads. Nothing the library

@@ -243,7 +243,7 @@ async fn only_a_library_card_offering_the_subprotocol_is_admitted() {
 }
 
 #[tokio::test]
-async fn a_card_reads_its_persons_books_and_hears_their_topics_until_it_ends() {
+async fn a_card_reads_the_librarys_books_and_hears_their_topics_until_it_ends() {
     let _dek = crate::auth::tests::process_dek_lock().await;
     let files = tempfile::tempdir().unwrap();
     let (_state, store, addr) = served(&files).await;
@@ -291,11 +291,20 @@ async fn a_card_reads_its_persons_books_and_hears_their_topics_until_it_ends() {
         (after, cursor),
         (bookclerk_node_proto::WindowCursor::start(), None)
     );
-    let products: Vec<&str> = works
+    let mut products: Vec<(&str, bool)> = works
         .iter()
-        .flat_map(|work| work.editions.iter().map(|e| e.product_id.as_str()))
+        .flat_map(|work| {
+            work.editions
+                .iter()
+                .map(|e| (e.edition.product_id.as_str(), e.yours))
+        })
         .collect();
-    assert_eq!(products, vec!["B0RILEY001"], "only Riley's books");
+    products.sort_unstable();
+    assert_eq!(
+        products,
+        vec![("B0RILEY001", true), ("B0SAM00001", false)],
+        "every book of the library, Riley's marked"
+    );
 
     for bad in [
         r#"{"v":1,"type":"books","after":0}"#,

@@ -226,10 +226,14 @@ never sends work on it.
    the subprotocol `bookclerk-clerk.v1`, over TLS except on loopback.
 2. The library answers `hello` with the topics the card hears about
    (`library` and `discover`), then `changed` whenever one of them moves.
-3. The clerk asks for the person's books a page at a time with
+3. The clerk asks for the library's books a page at a time with
    `{"v":1,"type":"books","after":""}`. The library answers `books.page`
-   with up to 100 works, each with its identifiers and the editions the
-   person owns, and the cursor for the next page (none on the last page).
+   with up to 100 works, each with its identifiers and the library's
+   editions of it, and the cursor for the next page (none on the last
+   page). The pages list every book on the library's store accounts, as
+   its own Library page lists them for a member. Each edition is
+   `{"edition": {...}, "yours": true}` when it is on a store account
+   linked to the card's person; `yours` is left out otherwise.
    A cursor is an opaque string of up to 64 letters, digits and `-`. The
    clerk sends it back unchanged as the next `after`.
    A frame it cannot read gets `error` with code `invalid`.
@@ -263,13 +267,14 @@ library. The daemon, never the browser, talks to the library:
 
 Then the daemon keeps the library's clerk socket open with the card:
 
-- It reads every page of the person's books on each connection, whenever
+- It reads every page of the library's books on each connection, whenever
   the library sends `changed` for `library`, and every 30 minutes. Once the
   last page is in, it drops the books the read no longer named. A read cut
   short drops nothing.
-- The books show in **Your books in other libraries**
+- The books show in **Books in other libraries**
   (`GET /api/config/join/window`, which lists the libraries in `cards`),
-  merged with the books of any library this install is a window of.
+  merged with the books of any library this install is a window of. Each
+  edition there carries `yours`, and the person's own are marked **Yours**.
 - A lost connection is dialed again after 5 seconds, doubling up to 5
   minutes.
 - When the library ends the card (close 4401, or 401 on connecting), the

@@ -5,8 +5,8 @@
 
 use bookclerk_node_proto::{
     window_page_problem, Availability, CatalogMetadata, LookupEdition, LookupFormat,
-    LookupIdentifier, LookupScheme, WindowCursor, WindowWork, MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS,
-    MAX_WINDOW_WORKS,
+    LookupIdentifier, LookupScheme, WindowCursor, WindowEdition, WindowWork, MAX_FRAME_BYTES,
+    MAX_LOOKUP_EDITIONS, MAX_WINDOW_WORKS,
 };
 use sea_orm::{ActiveModelTrait, ActiveValue::Set};
 
@@ -137,7 +137,7 @@ async fn read_all(store: &LibraryStore, node: &str) -> Vec<WindowWork> {
 }
 
 #[tokio::test]
-async fn the_library_lists_only_its_persons_books_to_a_trusted_branch() {
+async fn the_library_lists_every_book_to_a_trusted_branch_marking_its_persons() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let store = store_in(dir.path()).await;
@@ -180,24 +180,35 @@ async fn the_library_lists_only_its_persons_books_to_a_trusted_branch() {
     add_branch(&store, BRANCH, riley).await;
 
     let listed = read_all(&store, BRANCH).await;
-    assert_eq!(listed.len(), 1, "only Riley's book: {listed:?}");
-    assert_eq!(listed[0].work, works[0]);
-    assert_eq!(listed[0].editions[0].product_id, "B0RILEY001");
-    assert_eq!(listed[0].editions[0].availability, Availability::Owned);
-    assert_eq!(listed[0].editions.len(), 1, "one entry per edition");
+    assert_eq!(listed.len(), 2, "every book of the library: {listed:?}");
+    let riley_work = listed
+        .iter()
+        .find(|w| w.work == works[0])
+        .expect("Riley's book is listed");
+    assert_eq!(riley_work.editions.len(), 1, "one entry per edition");
+    let riley_book = &riley_work.editions[0];
+    assert_eq!(riley_book.edition.product_id, "B0RILEY001");
+    assert_eq!(riley_book.edition.availability, Availability::Owned);
+    assert!(riley_book.yours, "on Riley's own accounts");
     assert_eq!(
-        listed[0].editions[0].formats,
+        riley_book.edition.formats,
         vec![LookupFormat::Audio, LookupFormat::Pdf]
     );
-    assert!(listed[0].identifiers.iter().any(|id| {
+    assert!(riley_work.identifiers.iter().any(|id| {
         id.scheme == LookupScheme::Asin && id.value == "B0RILEY001" && id.marketplace == "us"
     }));
+    let sam_book = listed
+        .iter()
+        .flat_map(|w| &w.editions)
+        .find(|e| e.edition.product_id == "B0SAM00001")
+        .expect("Sam's book is listed too");
+    assert!(!sam_book.yours, "only Sam's account holds it");
 }
 
 /// A clerk's library card reads the same page for its person, with no
-/// branch node involved, and only that person's books.
+/// branch node involved: every book, the person's marked.
 #[tokio::test]
-async fn a_persons_page_lists_only_that_persons_books() {
+async fn a_persons_page_lists_every_book_marking_that_persons() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let store = store_in(dir.path()).await;
@@ -237,15 +248,28 @@ async fn a_persons_page_lists_only_that_persons_books() {
         None
     );
     assert_eq!(next, None);
-    assert_eq!(page.len(), 1, "only Riley's book: {page:?}");
-    assert_eq!(page[0].work, works[0]);
-    assert_eq!(page[0].editions[0].product_id, "B0RILEY001");
+    let yours = |page: &[WindowWork]| -> Vec<(String, bool)> {
+        let mut books: Vec<(String, bool)> = page
+            .iter()
+            .flat_map(|w| &w.editions)
+            .map(|e| (e.edition.product_id.clone(), e.yours))
+            .collect();
+        books.sort();
+        books
+    };
     assert_eq!(
-        person_books_page(&store, nobody, &WindowCursor::start())
-            .await
-            .unwrap(),
-        (Vec::new(), None),
-        "a person with no store accounts has no books"
+        yours(&page),
+        vec![("B0RILEY001".into(), true), ("B0SAM00001".into(), false)]
+    );
+    assert!(page.iter().any(|w| w.work == works[0]));
+    let (page, next) = person_books_page(&store, nobody, &WindowCursor::start())
+        .await
+        .unwrap();
+    assert_eq!(next, None);
+    assert_eq!(
+        yours(&page),
+        vec![("B0RILEY001".into(), false), ("B0SAM00001".into(), false)],
+        "a person with no store accounts sees every book, none theirs"
     );
 }
 
@@ -291,7 +315,7 @@ async fn many_books_page_out_within_every_profiles_limits() {
         let listed = read_all(&store, BRANCH).await;
         let mut products: Vec<&str> = listed
             .iter()
-            .flat_map(|w| w.editions.iter().map(|e| e.product_id.as_str()))
+            .flat_map(|w| w.editions.iter().map(|e| e.edition.product_id.as_str()))
             .collect();
         products.sort_unstable();
         products.dedup();
@@ -432,6 +456,14 @@ fn edition(asin: &str, title: &str) -> LookupEdition {
     }
 }
 
+/// `edition` as a page lists it for its person: theirs.
+fn yours(edition: LookupEdition) -> WindowEdition {
+    WindowEdition {
+        edition,
+        yours: true,
+    }
+}
+
 fn asin(value: &str) -> LookupIdentifier {
     LookupIdentifier {
         scheme: LookupScheme::Asin,
@@ -482,12 +514,12 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
         WindowWork {
             work: "a-1".into(),
             identifiers: vec![asin("B0SHARED01")],
-            editions: vec![edition("B0SHARED01", "Shared")],
+            editions: vec![yours(edition("B0SHARED01", "Shared"))],
         },
         WindowWork {
             work: "a-2".into(),
             identifiers: vec![asin("B0ALPHA001")],
-            editions: vec![edition("B0ALPHA001", "Alpha only")],
+            editions: vec![yours(edition("B0ALPHA001", "Alpha only"))],
         },
     ];
     assert_eq!(
@@ -501,12 +533,12 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
         WindowWork {
             work: "b-9".into(),
             identifiers: vec![asin("B0SHARED01"), asin("B0BETAED01")],
-            editions: vec![edition("B0BETAED01", "Shared (beta edition)")],
+            editions: vec![yours(edition("B0BETAED01", "Shared (beta edition)"))],
         },
         WindowWork {
             work: "book-4".into(),
             identifiers: Vec::new(),
-            editions: vec![edition("B0NOIDS001", "No identifiers")],
+            editions: vec![yours(edition("B0NOIDS001", "No identifiers"))],
         },
     ];
     record_window_page(&store, "beta", &first, &beta)
@@ -520,7 +552,7 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
         &[WindowWork {
             work: "g".into(),
             identifiers: Vec::new(),
-            editions: vec![edition("B0GAMMA001", "Gamma")],
+            editions: vec![yours(edition("B0GAMMA001", "Gamma"))],
         }],
     )
     .await
@@ -582,7 +614,7 @@ async fn one_edition_on_two_pages_of_a_read_keeps_every_format() {
         vec![WindowWork {
             work: "w-1".into(),
             identifiers: vec![asin("B0TWICE001")],
-            editions: vec![copy],
+            editions: vec![yours(copy)],
         }]
     };
     let formats = |view: Vec<WindowEntry>| -> Vec<LookupFormat> {
@@ -624,6 +656,69 @@ async fn one_edition_on_two_pages_of_a_read_keeps_every_format() {
 /// A work's overflow groups (`<work>-x<n>`) are stored under the work's own
 /// grouping key, so the window shows one entry even with no identifier to
 /// join them.
+/// Whether an edition is the person's survives the store: it stays theirs
+/// when any copy in a read is, and a later read where no copy is theirs
+/// any more drops the mark. A row stored before the library sent the mark
+/// reads as not theirs.
+#[tokio::test]
+async fn whether_a_book_is_yours_is_kept_per_read() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    link(&store, "alpha", false).await;
+    let page = |asin_value: &str, mine: bool| {
+        vec![WindowWork {
+            work: format!("w-{asin_value}"),
+            identifiers: vec![asin(asin_value)],
+            editions: vec![WindowEdition {
+                edition: edition(asin_value, asin_value),
+                yours: mine,
+            }],
+        }]
+    };
+    let marks = |view: Vec<WindowEntry>| -> Vec<(String, bool)> {
+        view.into_iter()
+            .flat_map(|entry| entry.editions)
+            .map(|held| (held.edition.product_id, held.yours))
+            .collect()
+    };
+
+    let read = window_read_stamp();
+    for (asin_value, mine) in [
+        ("B0MINE0001", false),
+        ("B0MINE0001", true),
+        ("B0MINE0001", false),
+        ("B0OTHER001", false),
+    ] {
+        record_window_page(&store, "alpha", &read, &page(asin_value, mine))
+            .await
+            .unwrap();
+    }
+    finish_window_read(&store, "alpha", &read).await.unwrap();
+    assert_eq!(
+        marks(window_view(&store).await.unwrap()),
+        vec![("B0MINE0001".into(), true), ("B0OTHER001".into(), false)]
+    );
+
+    let later = window_read_stamp();
+    for asin_value in ["B0MINE0001", "B0OTHER001"] {
+        record_window_page(&store, "alpha", &later, &page(asin_value, false))
+            .await
+            .unwrap();
+    }
+    finish_window_read(&store, "alpha", &later).await.unwrap();
+    assert_eq!(
+        marks(window_view(&store).await.unwrap()),
+        vec![("B0MINE0001".into(), false), ("B0OTHER001".into(), false)]
+    );
+
+    let before: StoredBook = serde_json::from_str(
+        r#"{"identifiers":[],"edition":{"store":"audible","product_id":"B0OLD00001","availability":"owned","metadata":{"title":"Old"}}}"#,
+    )
+    .unwrap();
+    assert!(!before.yours);
+}
+
 #[tokio::test]
 async fn a_works_overflow_group_joins_the_work_without_identifiers() {
     assert_eq!(grouping_key("0b1e-4c2a-x2"), "0b1e-4c2a");
@@ -642,12 +737,12 @@ async fn a_works_overflow_group_joins_the_work_without_identifiers() {
         WindowWork {
             work: "book-7".into(),
             identifiers: Vec::new(),
-            editions: vec![edition("B0OVERFL01", "Overflowing")],
+            editions: vec![yours(edition("B0OVERFL01", "Overflowing"))],
         },
         WindowWork {
             work: overflow_key("book-7", 1),
             identifiers: Vec::new(),
-            editions: vec![edition("B0OVERFL02", "Overflowing")],
+            editions: vec![yours(edition("B0OVERFL02", "Overflowing"))],
         },
     ];
     record_window_page(&store, "alpha", &read, &page)
@@ -685,7 +780,7 @@ async fn a_product_in_several_marketplaces_is_read_under_every_profile() {
         let listed = read_all(&store, BRANCH).await;
         let mut markets: Vec<&str> = listed
             .iter()
-            .flat_map(|w| w.editions.iter())
+            .flat_map(|w| w.editions.iter().map(|e| &e.edition))
             .filter(|e| e.product_id == "B0MULTI001")
             .map(|e| e.marketplace.as_str())
             .collect();
@@ -760,7 +855,7 @@ async fn an_edition_wider_than_a_cell_is_kept_whole_under_every_profile() {
         let work = WindowWork {
             work: "w1".into(),
             identifiers: vec![asin("B0WIDE0001")],
-            editions: vec![wide.clone()],
+            editions: vec![yours(wide.clone())],
         };
         let first = window_read_stamp();
         record_window_page(&store, "lib", &first, std::slice::from_ref(&work))
@@ -793,7 +888,7 @@ async fn an_edition_wider_than_a_cell_is_kept_whole_under_every_profile() {
         short.metadata.title = "Short".into();
         let later = window_read_stamp();
         let work = WindowWork {
-            editions: vec![short.clone()],
+            editions: vec![yours(short.clone())],
             ..work
         };
         record_window_page(&store, "lib", &later, &[work])
@@ -837,6 +932,7 @@ fn json_is_cut_on_character_boundaries_and_joined_in_order() {
     let stored = serde_json::to_string(&StoredBook {
         identifiers: vec![],
         edition: edition("B0X", "Title"),
+        yours: false,
     })
     .unwrap();
     let (a, b) = stored.split_at(10);
@@ -877,7 +973,7 @@ async fn an_isbn_alone_does_not_place_a_window_book() {
         &[WindowWork {
             work: "remote".into(),
             identifiers: vec![isbn],
-            editions: vec![edition("B0REMOTE01", "Remote")],
+            editions: vec![yours(edition("B0REMOTE01", "Remote"))],
         }],
     )
     .await
@@ -1022,7 +1118,7 @@ async fn a_title_wider_than_one_reply_is_left_out_of_the_window() {
         .await
         .into_iter()
         .flat_map(|work| work.editions)
-        .map(|edition| edition.product_id)
+        .map(|edition| edition.edition.product_id)
         .collect();
     listed.sort();
     assert_eq!(listed, vec!["B0NARROW01", "B0NARROW02"]);
@@ -1039,7 +1135,7 @@ async fn a_title_wider_than_one_reply_is_left_out_of_the_window() {
         listed.extend(
             page.into_iter()
                 .flat_map(|work| work.editions)
-                .map(|edition| edition.product_id),
+                .map(|edition| edition.edition.product_id),
         );
         match next {
             Some(next) => after = next,
@@ -1166,7 +1262,7 @@ async fn another_accounts_wide_book_row_does_not_hide_a_title() {
         .await
         .into_iter()
         .flat_map(|work| work.editions)
-        .map(|edition| edition.product_id)
+        .map(|edition| edition.edition.product_id)
         .collect();
     assert_eq!(listed, vec!["B0SHARED01"]);
 }
@@ -1204,7 +1300,7 @@ async fn a_listing_cell_wider_than_the_cell_cap_leaves_only_its_title_out() {
         .await
         .into_iter()
         .flat_map(|work| work.editions)
-        .map(|edition| edition.product_id)
+        .map(|edition| edition.edition.product_id)
         .collect();
     assert_eq!(listed, vec!["B0CELL0001"]);
 }
@@ -1243,7 +1339,7 @@ async fn a_holdings_read_wider_than_one_reply_reads_fewer_rows() {
         .await
         .into_iter()
         .flat_map(|work| work.editions)
-        .map(|edition| edition.product_id)
+        .map(|edition| edition.edition.product_id)
         .collect();
     listed.sort();
     assert_eq!(listed, asins);
@@ -1283,7 +1379,7 @@ async fn many_editions_repeated_in_one_read_stay_within_the_bind_limit() {
             WindowWork {
                 work: format!("w-{n}"),
                 identifiers: vec![asin(&id)],
-                editions: vec![edition(&id, &format!("Book {n}"))],
+                editions: vec![yours(edition(&id, &format!("Book {n}")))],
             }
         })
         .collect();
@@ -1322,7 +1418,7 @@ async fn a_title_a_scan_dropped_is_not_listed() {
         let mut products: Vec<String> = works
             .into_iter()
             .flat_map(|work| work.editions)
-            .map(|edition| edition.product_id)
+            .map(|edition| edition.edition.product_id)
             .collect();
         products.sort();
         products

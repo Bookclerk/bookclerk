@@ -1,12 +1,15 @@
 //! Window mode: an install whose link to a library has "Use this computer
 //! to download" off is a window of that library. It takes no work from it
-//! and instead shows the books that library holds for its person, merged
-//! by work with the books of every other library it is a window of.
+//! and instead shows that library's books, merged by work with the books
+//! of every other library it is a window of or holds a library card for.
 //!
 //! On the library, [`window_books_page`] answers the `window.books` frame:
-//! one page of the books on the store accounts linked to the node's owner
-//! (the person), grouped by this library's works, each work with its
-//! identifiers. Only a branch this library trusts is answered.
+//! one page of the books on every store account of this library, as its
+//! own Library page lists them for a member, grouped by this library's
+//! works, each work with its identifiers. Each edition is marked
+//! [`WindowEdition::yours`] when it is on a store account linked to the
+//! node's owner (the person). Only a branch this library trusts is
+//! answered.
 //! [`person_books_page`] answers the same page for a person directly: a
 //! clerk signed in with that person's library card reads it over the
 //! clerk socket (`GET /api/clerk/v1/connect`).
@@ -33,7 +36,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bookclerk_node_proto::{
     LookupEdition, LookupFormat, LookupIdentifier, LookupScheme, LookupWork, WindowCursor,
-    WindowWork, MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS, MAX_WINDOW_WORKS,
+    WindowEdition, WindowWork, MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS, MAX_WINDOW_WORKS,
 };
 use chrono::Utc;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
@@ -60,9 +63,6 @@ pub const WINDOW_BOOKS_READ: u64 = 200;
 /// [`MAX_FRAME_BYTES`] so the frame's envelope always fits.
 const WINDOW_PAGE_BUDGET: usize = MAX_FRAME_BYTES / 2;
 
-/// Most account ids one read binds, whatever the plugin allows.
-const MAX_IN_ACCOUNTS: usize = 64;
-
 /// The store accounts linked to `user_id`, as `(plugin key, account id)`.
 ///
 /// Both the person's sign-in identities and each identity's account links
@@ -87,6 +87,12 @@ async fn person_accounts(store: &LibraryStore, user_id: i64) -> Result<BTreeSet<
         }
     }
     Ok(accounts)
+}
+
+/// True when `a` and `b` are the same store listing: the same store,
+/// marketplace and product id.
+fn same_edition(a: &LookupEdition, b: &LookupEdition) -> bool {
+    a.store == b.store && a.marketplace == b.marketplace && a.product_id == b.product_id
 }
 
 /// The page key of a work's `n`th overflow group (`<work>-x<n>`). Work ids
@@ -159,15 +165,16 @@ async fn titles_within_bytes(
 /// One page of the books this library holds for branch `node_id`'s owner,
 /// for the `window.books` frame.
 ///
-/// The person's titles (their accounts' holdings) are read in holding id
-/// order from cursor `after` (at most [`WINDOW_BOOKS_READ`] holdings, and
+/// The library's titles (every account holding, each marked the person's
+/// when it is on one of their accounts) are read in holding id order from
+/// cursor `after` (at most [`WINDOW_BOOKS_READ`] holdings, and
 /// no more than one database result page); the next cursor is the last
 /// holding id the page covered. Each title is grouped under its work here
 /// (its key is the work id, or `edition-<edition id>` when the edition has
 /// no work), with the work's identifiers; a work
-/// lists at most [`MAX_LOOKUP_EDITIONS`] editions (where two of the
-/// person's accounts hold the same edition, one entry with every format
-/// either copy has).
+/// lists at most [`MAX_LOOKUP_EDITIONS`] editions (where two accounts hold
+/// the same edition, one entry with every format either copy has, the
+/// person's when either account is).
 /// The page stops early once it would pass the frame budget or
 /// [`MAX_WINDOW_WORKS`] works; the books after that come on the next page.
 ///
@@ -223,8 +230,8 @@ async fn window_books_page_by(
         .map(Some)
 }
 
-/// One page of the books this library holds for a person, as a clerk
-/// signed in with that person's library card reads them over the client
+/// One page of this library's books for a person, as a clerk signed in
+/// with that person's library card reads them over the client
 /// socket (`GET /api/clerk/v1/connect`): the same works, grouping and
 /// limits as [`window_books_page`], for the person the card belongs to
 /// rather than a branch node's owner.
@@ -250,42 +257,26 @@ pub async fn person_books_page(
     person_books_page_by(store, user_id, after, page).await
 }
 
-/// The account holdings of `account_ids` after cursor `after`, at most
-/// `limit` per chunk of `width` accounts, and the page boundary: the lowest
-/// last row of a chunk that filled (holdings past it may be unread).
+/// The library's account holdings after cursor `after`, at most `limit`, in
+/// holding id order: every book on any store account here, whoever's
+/// account it is.
 ///
 /// # Errors
 ///
 /// Returns the read error.
 async fn held_after(
     store: &LibraryStore,
-    account_ids: &[String],
-    width: usize,
     after: &WindowCursor,
     limit: u64,
-) -> Result<(Vec<holdings::Model>, Option<String>)> {
-    let mut read: Vec<holdings::Model> = Vec::new();
-    let mut boundary: Option<String> = None;
-    for part in account_ids.chunks(width.max(1)) {
-        let mut select = find_holdings()
-            .filter(holdings::Column::HolderKind.eq("account"))
-            .filter(holdings::Column::AccountId.is_in(part.to_vec()))
-            .order_by_asc(holdings::Column::Id)
-            .limit(limit);
-        if !after.is_start() {
-            select = select.filter(holdings::Column::Id.gt(after.as_str()));
-        }
-        let rows = select.all(store.db()).await.map_err(LibraryError::Orm)?;
-        if u64::try_from(rows.len()).unwrap_or(u64::MAX) >= limit {
-            if let Some(last) = rows.last() {
-                if boundary.as_ref().is_none_or(|b| last.id < *b) {
-                    boundary = Some(last.id.clone());
-                }
-            }
-        }
-        read.extend(rows);
+) -> Result<Vec<holdings::Model>> {
+    let mut select = find_holdings()
+        .filter(holdings::Column::HolderKind.eq("account"))
+        .order_by_asc(holdings::Column::Id)
+        .limit(limit);
+    if !after.is_start() {
+        select = select.filter(holdings::Column::Id.gt(after.as_str()));
     }
-    Ok((read, boundary))
+    select.all(store.db()).await.map_err(LibraryError::Orm)
 }
 
 /// [`person_books_page`] reading at most `page` books per database read
@@ -300,49 +291,32 @@ async fn person_books_page_by(
     after: &WindowCursor,
     page: u64,
 ) -> Result<(Vec<WindowWork>, Option<WindowCursor>)> {
+    // The person sees every book on the library's store accounts, as the
+    // library's own Library page lists them; the ones on an account of
+    // their own are marked theirs.
     let accounts = person_accounts(store, person).await?;
-    if accounts.is_empty() {
-        return Ok((Vec::new(), None));
-    }
-    // Read by account id in chunks within the plugin's bind limit, then keep
-    // only the holdings whose plugin key matches too. Each chunk reads at
-    // most `limit` holdings after the cursor; when a chunk fills, holdings
-    // of that chunk past its last row are unread, so the page ends at the
-    // lowest such row and nothing in between is skipped.
-    let width = in_chunk(store, 3).min(MAX_IN_ACCOUNTS);
-    let account_ids: Vec<String> = accounts
-        .iter()
-        .map(|(_, account)| account.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
     let mut limit = WINDOW_BOOKS_READ.min(page.max(1));
     // Holding rows are narrow, but a plugin may advertise a small
     // `maxResultBytes`: when a read is refused for its bytes, the page is
     // read again with half as many rows per read.
-    let (mut read, boundary) = loop {
-        match held_after(store, &account_ids, width, after, limit).await {
+    let read = loop {
+        match held_after(store, after, limit).await {
             Ok(found) => break found,
             Err(err) if limit > 1 && is_result_bytes_limit(&err) => limit /= 2,
             Err(err) => return Err(err),
         }
     };
-    read.sort_by(|a, b| a.id.cmp(&b.id));
-    read.dedup_by(|a, b| a.id == b.id);
-    if let Some(boundary) = &boundary {
-        read.retain(|h| h.id <= *boundary);
-    }
-    let cap = usize::try_from(limit).unwrap_or(usize::MAX);
-    let full = boundary.is_some() || read.len() > cap;
-    read.truncate(cap);
+    let full = u64::try_from(read.len()).unwrap_or(u64::MAX) >= limit;
     let read_last: Option<String> = read.last().map(|h| h.id.clone());
-    let held: Vec<holdings::Model> = read
-        .into_iter()
+    let yours: BTreeSet<String> = read
+        .iter()
         .filter(|h| match (&h.plugin_key, &h.account_id) {
             (Some(plugin), Some(account)) => accounts.contains(&(plugin.clone(), account.clone())),
             _ => false,
         })
+        .map(|h| h.id.clone())
         .collect();
+    let held = read;
     let titles = listed_titles(store, titles_within_bytes(store, held).await?).await?;
     let edition_ids: Vec<String> = titles
         .iter()
@@ -370,6 +344,10 @@ async fn person_books_page_by(
             last = Some(title.holding_id.clone());
             continue;
         };
+        let edition = WindowEdition {
+            edition,
+            yours: yours.contains(&title.holding_id),
+        };
         let work = work_of_edition
             .get(&title.edition_id)
             .cloned()
@@ -381,11 +359,9 @@ async fn person_books_page_by(
         let mut overflow = 0;
         while let Some(&at) = index.get(&key) {
             let editions = &works[at].editions;
-            let listed = editions.iter().any(|e| {
-                e.store == edition.store
-                    && e.marketplace == edition.marketplace
-                    && e.product_id == edition.product_id
-            });
+            let listed = editions
+                .iter()
+                .any(|e| same_edition(&e.edition, &edition.edition));
             if listed || editions.len() < MAX_LOOKUP_EDITIONS {
                 break;
             }
@@ -422,17 +398,17 @@ async fn person_books_page_by(
             }
         };
         let editions = &mut works[at].editions;
-        let same = editions.iter().position(|e| {
-            e.store == edition.store
-                && e.marketplace == edition.marketplace
-                && e.product_id == edition.product_id
-        });
+        let same = editions
+            .iter()
+            .position(|e| same_edition(&e.edition, &edition.edition));
         match same {
-            // Two of the person's accounts hold it: the library has every
-            // format either copy has.
+            // Two accounts hold it: the library has every format either
+            // copy has, and it is the person's when either account is.
             Some(i) => {
-                let held = &mut editions[i].formats;
-                held.extend(edition.formats);
+                let listed = &mut editions[i];
+                listed.yours |= edition.yours;
+                let held = &mut listed.edition.formats;
+                held.extend(edition.edition.formats);
                 held.sort_unstable();
                 held.dedup();
             }
@@ -509,23 +485,27 @@ pub async fn record_window_page(
             )
             .await?
         };
-        for edition in &work.editions {
+        for listed in &work.editions {
+            let edition = &listed.edition;
             let key = (
                 edition.store.clone(),
                 edition.marketplace.clone(),
                 edition.product_id.clone(),
             );
             let merged;
+            let mut yours = listed.yours;
             let edition = match earlier.get(&key) {
-                Some(formats) => {
+                Some(before) => {
                     let mut richer = edition.clone();
-                    richer.formats = formats
+                    richer.formats = before
+                        .formats
                         .iter()
                         .chain(&edition.formats)
                         .copied()
                         .collect::<BTreeSet<_>>()
                         .into_iter()
                         .collect();
+                    yours |= before.yours;
                     merged = richer;
                     &merged
                 }
@@ -534,6 +514,7 @@ pub async fn record_window_page(
             let json = serde_json::to_string(&StoredBook {
                 identifiers: work.identifiers.clone(),
                 edition: edition.clone(),
+                yours,
             })
             .map_err(|err| LibraryError::Invalid(err.to_string()))?;
             // The pieces go in first under a new version, then the row
@@ -669,22 +650,33 @@ async fn drop_unnamed_parts(store: &LibraryStore, owner_cluster_id: &str) -> Res
     Ok(())
 }
 
-/// The formats already stored by this same read (stamped `seen_at`) for the
-/// editions of `works`, by `(store, marketplace, product id)`.
+/// What one read already stored of an edition: its formats, and whether
+/// it was the person's.
+struct Earlier {
+    /// The formats stored so far in this read.
+    formats: Vec<LookupFormat>,
+    /// Whether an earlier copy in this read was the person's.
+    yours: bool,
+}
+
+/// What this same read (stamped `seen_at`) already stored for the editions
+/// of `works`, by `(store, marketplace, product id)`.
 ///
-/// Two of the person's accounts can hold one edition with their books on
-/// different pages; the second copy then adds its formats to the first
-/// instead of replacing them. A later complete read starts from its own
-/// stamp, so a format no longer held still goes.
+/// Two accounts can hold one edition with their books on different pages;
+/// the second copy then adds its formats to the first instead of replacing
+/// them, and the edition stays the person's when either copy is. A later
+/// complete read starts from its own stamp, so a format no longer held, or
+/// an account no longer the person's, still goes.
 async fn earlier_in_read(
     store: &LibraryStore,
     owner_cluster_id: &str,
     seen_at: &str,
     works: &[WindowWork],
-) -> Result<HashMap<(String, String, String), Vec<LookupFormat>>> {
+) -> Result<HashMap<(String, String, String), Earlier>> {
     let wanted: BTreeSet<(String, String, String)> = works
         .iter()
         .flat_map(|work| &work.editions)
+        .map(|e| &e.edition)
         .map(|e| (e.store.clone(), e.marketplace.clone(), e.product_id.clone()))
         .collect();
     let products: Vec<String> = wanted
@@ -733,7 +725,15 @@ async fn earlier_in_read(
     Ok(join_parts(parts)
         .into_iter()
         .filter(|(key, _)| named.contains(key))
-        .map(|((key, _), book)| (key, book.edition.formats))
+        .map(|((key, _), book)| {
+            (
+                key,
+                Earlier {
+                    formats: book.edition.formats,
+                    yours: book.yours,
+                },
+            )
+        })
         .collect())
 }
 
@@ -850,6 +850,10 @@ struct StoredBook {
     identifiers: Vec<LookupIdentifier>,
     /// The edition as the library sent it (formats joined within a read).
     edition: LookupEdition,
+    /// Whether the person holds it through an account of their own there.
+    /// Rows stored before the library said so read as not theirs.
+    #[serde(default)]
+    yours: bool,
 }
 
 /// A window book's `(store, marketplace, product id)`.
@@ -923,6 +927,9 @@ pub struct WindowEntryEdition {
     pub owner_origin: String,
     /// The edition as that library sent it.
     pub edition: LookupEdition,
+    /// Whether the person holds it there through a store account of their
+    /// own.
+    pub yours: bool,
 }
 
 /// One work in the window's merged view.
@@ -1055,7 +1062,7 @@ pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
         return Ok(Vec::new());
     }
     let clusters: Vec<String> = windows.keys().cloned().collect();
-    let mut parsed: Vec<(window_books::Model, LookupEdition, Vec<LookupIdentifier>)> = Vec::new();
+    let mut parsed: Vec<(window_books::Model, StoredBook)> = Vec::new();
     for cluster in &clusters {
         let rows = read_paged(
             store,
@@ -1092,13 +1099,19 @@ pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
                 .into_iter()
                 .filter(LookupIdentifier::is_well_formed)
                 .collect();
-            parsed.push((row, book.edition, identifiers));
+            parsed.push((
+                row,
+                StoredBook {
+                    identifiers,
+                    ..book
+                },
+            ));
         }
     }
     let mut groups = Groups::new(parsed.len());
     let mut first_with: HashMap<String, usize> = HashMap::new();
-    for (i, (row, _, identifiers)) in parsed.iter().enumerate() {
-        for key in merge_keys(row, identifiers) {
+    for (i, (row, book)) in parsed.iter().enumerate() {
+        for key in merge_keys(row, &book.identifiers) {
             match first_with.get(&key) {
                 Some(&j) => groups.join(i, j),
                 None => {
@@ -1146,14 +1159,15 @@ pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
             let editions = indices
                 .iter()
                 .map(|&i| {
-                    let (row, edition, _) = &parsed[i];
+                    let (row, book) = &parsed[i];
                     WindowEntryEdition {
                         owner_cluster_id: row.owner_cluster_id.clone(),
                         owner_origin: windows
                             .get(&row.owner_cluster_id)
                             .cloned()
                             .unwrap_or_default(),
-                        edition: edition.clone(),
+                        edition: book.edition.clone(),
+                        yours: book.yours,
                     }
                 })
                 .collect();
