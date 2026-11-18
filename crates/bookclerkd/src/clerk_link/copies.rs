@@ -8,8 +8,9 @@
 //! `copy.grant` naming the edition by its store listing, and the library
 //! answers only for an edition the card's person may take. The pipeline
 //! then downloads the files through [`CardCopy`] with the grant's token
-//! (sent to the granting library alone), and once it stored the title the
-//! copy is recorded in `link_imports` under the library's cluster id, so a
+//! (sent to the granting library alone). Once the copy is downloaded,
+//! before the title is stored, it is recorded in `link_imports` under the
+//! library's cluster id (again harmlessly when already recorded), so a
 //! clerk that later becomes a branch never shares the book back.
 //!
 //! A copy the library downloaded from another store than the title's is
