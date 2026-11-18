@@ -6030,11 +6030,13 @@ async fn discover_catalog_search(
         min_length_minutes: q.min_length_minutes.filter(|n| *n > 0),
         max_length_minutes: q.max_length_minutes.filter(|n| *n > 0),
     };
+    let library = state.library_snapshot().await;
     let sources = state.sources.read().await;
     let page = timeout(
         CATALOG_SEARCH_TIMEOUT,
         bookclerk_discover::catalog_search_page(
             &sources,
+            Some(&library),
             bookclerk_discover::CatalogSearchPageOpts {
                 query: &query,
                 region: &region,
@@ -6078,7 +6080,6 @@ async fn discover_catalog_search(
         })
         .collect();
     drop(sources);
-    let library = state.library_snapshot().await;
     bookclerk_discover::join_search_branch_availability(&library, &mut page.items, |id| {
         plugin_keys.get(id).cloned()
     })
