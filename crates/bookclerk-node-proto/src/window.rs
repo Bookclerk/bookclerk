@@ -7,7 +7,8 @@
 //! The person is the branch node's owner on the library, so the request
 //! names no user or account. The library answers with every book on its
 //! store accounts, and marks each edition the person holds through a store
-//! account of their own ([`WindowEdition::yours`]).
+//! account of their own ([`WindowEdition::yours`]), and says what copy of
+//! it the library already holds ([`WindowEdition::copy`]).
 //!
 //! 1. window → library: [`crate::Body::WindowBooks`] with the cursor of the
 //!    previous page ([`WindowCursor`]; empty for the first).
@@ -124,6 +125,82 @@ pub struct WindowEdition {
     /// strength of it is checked again there.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub yours: bool,
+    /// The copy of the edition's audio the library holds, when it has
+    /// acquired one and knows its media type; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<WindowCopy>,
+}
+
+/// Longest [`WindowCopy::version`], in bytes.
+pub const MAX_COPY_VERSION_BYTES: usize = 64;
+
+/// Longest [`WindowCopy::content_type`], in bytes.
+pub const MAX_COPY_CONTENT_TYPE_BYTES: usize = 64;
+
+/// The copy of an edition's primary audio file a library holds, as its
+/// probe of the file found it: enough for a reader to decide whether to
+/// take the library's copy or fetch its own, without asking again.
+///
+/// A hint, like [`WindowEdition::yours`]: the library checks what it hands
+/// out when a copy is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowCopy {
+    /// The storefront the library's copy was downloaded from (a store id);
+    /// absent when the library does not know. It can differ from the
+    /// edition's own store when the same edition is sold by several.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_store: Option<String>,
+    /// The file's media type, such as `audio/mp4`; 1 to
+    /// [`MAX_COPY_CONTENT_TYPE_BYTES`] bytes of a `type/subtype` token.
+    pub content_type: String,
+    /// Average bitrate in kbps, 1 to [`crate::MAX_PROBE_BITRATE_KBPS`];
+    /// absent when the file was not probed or states no running time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitrate_kbps: Option<u32>,
+    /// True when the audio encoding is lossless; false also for a file
+    /// that was not probed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lossless: bool,
+    /// An opaque token that changes whenever the library's file is
+    /// replaced: 1 to [`MAX_COPY_VERSION_BYTES`] ASCII letters, digits and
+    /// `-`. A reader keeps it to notice a newer copy.
+    pub version: String,
+}
+
+/// True for a media type token: `type/subtype` of lowercase letters,
+/// digits and `+ - .`, at most [`MAX_COPY_CONTENT_TYPE_BYTES`] bytes.
+fn is_media_type(text: &str) -> bool {
+    let part = |part: &str| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'+' | b'-' | b'.'))
+    };
+    text.len() <= MAX_COPY_CONTENT_TYPE_BYTES
+        && text
+            .split_once('/')
+            .is_some_and(|(kind, sub)| part(kind) && part(sub))
+}
+
+impl WindowCopy {
+    /// True when every field is within its documented shape.
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        self.source_store
+            .as_deref()
+            .is_none_or(crate::catalog::is_store_id)
+            && is_media_type(&self.content_type)
+            && self
+                .bitrate_kbps
+                .is_none_or(|kbps| (1..=crate::MAX_PROBE_BITRATE_KBPS).contains(&kbps))
+            && !self.version.is_empty()
+            && self.version.len() <= MAX_COPY_VERSION_BYTES
+            && self
+                .version
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    }
 }
 
 impl WindowWork {
@@ -131,7 +208,8 @@ impl WindowWork {
     /// ([`is_work_ref`]), at most [`MAX_LOOKUP_IDENTIFIERS`] distinct
     /// well-formed identifiers, and 1 to [`MAX_LOOKUP_EDITIONS`] well-formed
     /// editions the library holds, with distinct (store, marketplace,
-    /// product id).
+    /// product id) and, where one is stated, a well-formed copy
+    /// ([`WindowCopy::is_well_formed`]).
     #[must_use]
     pub fn problem(&self) -> Option<&'static str> {
         if !is_work_ref(&self.work) {
@@ -150,7 +228,11 @@ impl WindowWork {
             return Some("invalid_editions");
         }
         let mut keys = std::collections::BTreeSet::new();
-        for edition in self.editions.iter().map(|e| &e.edition) {
+        for listed in &self.editions {
+            if listed.copy.as_ref().is_some_and(|c| !c.is_well_formed()) {
+                return Some("invalid_copy");
+            }
+            let edition = &listed.edition;
             if let Some(problem) = edition.problem() {
                 return Some(problem);
             }
@@ -229,6 +311,7 @@ mod tests {
             editions: vec![WindowEdition {
                 edition: edition("B0TEST"),
                 yours: true,
+                copy: None,
             }],
         }
     }
@@ -267,6 +350,62 @@ mod tests {
         );
     }
 
+    fn copy() -> WindowCopy {
+        WindowCopy {
+            source_store: Some("audible".into()),
+            content_type: "audio/mp4".into(),
+            bitrate_kbps: Some(125),
+            lossless: false,
+            version: "3f9a0c1e5b7d2a44".into(),
+        }
+    }
+
+    #[test]
+    fn a_copy_is_sent_only_when_held_and_is_validated() {
+        let mut work = work();
+        assert!(!serde_json::to_string(&work).unwrap().contains("copy"));
+        work.editions[0].copy = Some(copy());
+        assert_eq!(work.problem(), None);
+        let text = serde_json::to_string(&work).unwrap();
+        assert!(!text.contains("lossless"), "false is left out: {text}");
+        assert_eq!(serde_json::from_str::<WindowWork>(&text).unwrap(), work);
+        let mut value = serde_json::to_value(&work).unwrap();
+        value["editions"][0]["copy"]["key"] = serde_json::json!("Author/Title.m4b");
+        assert!(
+            serde_json::from_value::<WindowWork>(value).is_err(),
+            "a copy names no storage key"
+        );
+
+        let unprobed = WindowCopy {
+            source_store: None,
+            bitrate_kbps: None,
+            ..copy()
+        };
+        assert!(unprobed.is_well_formed());
+        let bad: [fn(&mut WindowCopy); 9] = [
+            |c| c.source_store = Some("Audible".into()),
+            |c| c.source_store = Some(String::new()),
+            |c| c.content_type = "audio".into(),
+            |c| c.content_type = "audio/".into(),
+            |c| c.content_type = "Audio/MP4".into(),
+            |c| c.content_type = format!("audio/{}", "a".repeat(MAX_COPY_CONTENT_TYPE_BYTES)),
+            |c| c.bitrate_kbps = Some(0),
+            |c| c.bitrate_kbps = Some(crate::MAX_PROBE_BITRATE_KBPS + 1),
+            |c| c.version = "a b".into(),
+        ];
+        for change in bad {
+            let mut copy = copy();
+            change(&mut copy);
+            assert!(!copy.is_well_formed(), "{copy:?}");
+            let mut work = self::work();
+            work.editions[0].copy = Some(copy);
+            assert_eq!(work.problem(), Some("invalid_copy"));
+        }
+        for version in [String::new(), "v".repeat(MAX_COPY_VERSION_BYTES + 1)] {
+            assert!(!WindowCopy { version, ..copy() }.is_well_formed());
+        }
+    }
+
     #[test]
     fn works_are_validated() {
         let mut bad = work();
@@ -279,6 +418,7 @@ mod tests {
         bad.editions.push(WindowEdition {
             edition: edition("B0TEST"),
             yours: false,
+            copy: None,
         });
         assert_eq!(bad.problem(), Some("invalid_editions"));
         let mut bad = work();

@@ -55,6 +55,7 @@ fn work(asin: &str, title: &str) -> WindowWork {
                 },
             },
             yours: true,
+            copy: None,
         }],
     }
 }
