@@ -89,6 +89,36 @@ export function isOver(state: LiveStatus["state"]): boolean {
   }
 }
 
+/** What the session object does with a visitor's request. */
+export type Forwarding =
+  /** The VM runs the visitor's copy: pass the request on. */
+  | "forward"
+  /** The session is starting or over: answer that it is not running. */
+  | "not-running"
+  /**
+   * The session is ready but its VM is gone (it crashed or the platform
+   * stopped it): end the session. Forwarding would start a new, empty VM
+   * that knows nothing of the visitor, so their sign-in would stop working.
+   */
+  | "lost";
+
+/**
+ * Decides what the session object does with a visitor's request.
+ *
+ * @param state - The session's state, or undefined before it opened.
+ * @param hasSecrets - Whether the object still keeps the visitor's portal session.
+ * @param vmRunning - Whether the session's VM is running.
+ * @returns What to do with the request.
+ */
+export function forwarding(
+  state: SessionState | undefined,
+  hasSecrets: boolean,
+  vmRunning: boolean,
+): Forwarding {
+  if (state !== "ready" || !hasSecrets) return "not-running";
+  return vmRunning ? "forward" : "lost";
+}
+
 /**
  * The website to link back to.
  *

@@ -7,6 +7,7 @@ import { describe, it } from "vitest";
 import { recordStartup, startupEstimate } from "../src/limits.ts";
 import {
   CLOSE_TOO_MANY,
+  forwarding,
   isOver,
   liveStatus,
   MAX_LIVE_SOCKETS,
@@ -32,6 +33,27 @@ describe("liveStatus", () => {
     assert.equal(isOver("ready"), false);
     for (const state of ["ending", "ended", "failed", "none"] as const)
       assert.equal(isOver(state), true);
+  });
+});
+
+describe("forwarding", () => {
+  it("forwards only a ready session whose VM runs", () => {
+    assert.equal(forwarding("ready", true, true), "forward");
+  });
+
+  it("ends a ready session whose VM stopped instead of starting an empty one", () => {
+    assert.equal(forwarding("ready", true, false), "lost");
+  });
+
+  it("says a session that is starting, over or unopened is not running, VM or not", () => {
+    for (const state of ["starting", "ending", "ended", "failed", undefined] as const)
+      for (const running of [true, false])
+        assert.equal(forwarding(state, true, running), "not-running", `${state} ${running}`);
+  });
+
+  it("says a ready session without the visitor's sign-in is not running", () => {
+    assert.equal(forwarding("ready", false, true), "not-running");
+    assert.equal(forwarding("ready", false, false), "not-running");
   });
 });
 

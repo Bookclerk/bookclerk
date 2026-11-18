@@ -5,7 +5,10 @@
 // and on every way a session ends (Start over, 10 minutes idle, the hard
 // stop, the sweep) signs their store accounts out before destroying the VM.
 // The VM's disk is ephemeral, so destroying it deletes the library,
-// master.key and every token with it. The object also pushes the session's
+// master.key and every token with it. A VM that stops on its own (a crash,
+// or the platform stopping it) ends the session too: the object never lets
+// a request start a new VM in its place, because a new VM would hold an
+// empty library that knows nothing of the visitor. The object also pushes the session's
 // status to the visitor's open pages over WebSockets (live.ts).
 
 import { Container } from "@cloudflare/containers";
@@ -23,6 +26,7 @@ import {
 } from "./lifecycle.ts";
 import {
   CLOSE_TOO_MANY,
+  forwarding,
   isOver,
   LIVE_PATH,
   liveCommand,
@@ -341,14 +345,33 @@ export class DemoSession extends Container<Env> implements SessionApi {
     const meta = await this.meta();
     const secrets =
       meta?.state === "ready" ? await this.ctx.storage.get<SessionSecrets>("secrets") : undefined;
-    if (!secrets) {
-      // The Worker turns this into the waiting page or the ended page.
-      return Response.json(
-        { error: "This demo session is not running." },
-        { status: 503, headers: { "X-Demo-State": meta?.state ?? "none" } },
-      );
+    let state = meta?.state;
+    switch (forwarding(state, secrets !== undefined, this.vmRunning())) {
+      case "forward":
+        // containerFetch would start a new VM if this one stopped meanwhile;
+        // that race is as short as the check above.
+        return timed("container", () => this.containerFetch(request, PORT));
+      case "lost":
+        await this.lost();
+        state = (await this.meta())?.state;
+        break;
+      case "not-running":
+        break;
     }
-    return timed("container", () => this.containerFetch(request, PORT));
+    // The Worker turns this into the waiting page or the ended page.
+    return Response.json(
+      { error: "This demo session is not running." },
+      { status: 503, headers: { "X-Demo-State": state ?? "none" } },
+    );
+  }
+
+  /**
+   * Whether the session's VM is running, as the runtime sees it.
+   *
+   * @returns True while the VM runs.
+   */
+  vmRunning(): boolean {
+    return this.ctx.container?.running ?? false;
   }
 
   /**
@@ -367,7 +390,9 @@ export class DemoSession extends Container<Env> implements SessionApi {
     await this.setState("ending");
     let result = { revoked: 0, failed: 0 };
     const secrets = await this.ctx.storage.get<SessionSecrets>("secrets");
-    if (wasReady && secrets) {
+    // Only a running VM can sign the stores out: asking a stopped one
+    // would start a new, empty VM just to be refused.
+    if (wasReady && secrets && this.vmRunning()) {
       const call: ContainerCall = (path, init) =>
         this.containerFetch(`http://container${path}`, init, PORT);
       result = await signOutStores(call, secrets.portalSession, SIGN_OUT_TIMEOUT_MS, meta.origin);
@@ -432,6 +457,28 @@ export class DemoSession extends Container<Env> implements SessionApi {
    *
    */
   override async onStop(): Promise<void> {
+    await this.lost();
+  }
+
+  /**
+   * The runtime lost track of the VM without an exit code, which it reports
+   * here instead of through {@link onStop}. A ready session's VM is gone,
+   * so the session ends; while it starts, {@link boot} handles the failure.
+   *
+   * @param error - What the runtime reported.
+   */
+  override async onError(error: unknown): Promise<void> {
+    const meta = await this.meta();
+    console.error(`demo session ${meta?.id} container error: ${String(error)}`);
+    if (meta?.state === "ready" && !this.vmRunning()) await this.lost();
+  }
+
+  /**
+   * Ends a session whose VM stopped on its own: forgets the secrets,
+   * records the end as "stopped" and tells the open pages. Does nothing
+   * once the session is ending or over.
+   */
+  async lost(): Promise<void> {
     const meta = await this.meta();
     if (meta && (meta.state === "ready" || meta.state === "starting")) {
       await this.ctx.storage.delete("secrets");

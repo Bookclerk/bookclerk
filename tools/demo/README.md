@@ -154,6 +154,12 @@ every content signal to `no` (`use=immediate`).
    **Start over**. The Durable Object revokes every linked store account,
    destroys the container and refunds unused time to the day's budget. A
    cron sweep every five minutes ends any session that outlived its time.
+   A container that stops on its own (it crashed, or the platform stopped
+   it) also ends the session, recorded as `stopped`: the Durable Object
+   never forwards a request that would start a new container in its place,
+   because a new one holds an empty library with no sign-in for the visitor.
+   The visitor sees the ended page rather than a sign-in page that the demo
+   refuses.
 
 ## The image
 
