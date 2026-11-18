@@ -430,6 +430,7 @@ async fn a_copy_taken_from_a_library_is_recorded_once_for_that_library() {
     for profile in Profile::ALL {
         let store = kit(profile).await;
         let name = profile.name();
+        connect(&store, "own-acct", None).await;
         let book = TakenCopy {
             plugin_key: PLUGIN,
             account_id: "own-acct",

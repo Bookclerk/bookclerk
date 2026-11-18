@@ -4577,6 +4577,12 @@ mod results_and_uploads {
             .await
             .unwrap()
             .is_empty());
+        // The title is on a store account connected to the branch.
+        world
+            .host
+            .upsert_account(PLUGIN, "riley-acct", "us", None, true, PLUGIN)
+            .await
+            .unwrap();
         copy.taken().await.unwrap();
         assert_eq!(
             books_imported_from_link(&world.host, &library)
