@@ -4630,8 +4630,27 @@ mod results_and_uploads {
         assert!(head.contains("content-length: 0"), "{head}");
         assert!(body.is_empty());
 
-        // No file of that index; no token, another scheme, another token,
-        // another copy's id.
+        // The link's own download brings each file to disk, resumes one
+        // that was cut short, and asks nothing for a file the grant does
+        // not list.
+        let taken = tempfile::tempdir().unwrap();
+        let dest = taken.path().join("audio.part");
+        handle.fetch_copy_file(&granted, 0, &dest).await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), audio);
+        std::fs::write(&dest, &audio[..70_000]).unwrap();
+        handle.fetch_copy_file(&granted, 0, &dest).await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), audio);
+        let cover = taken.path().join("cover.part");
+        handle.fetch_copy_file(&granted, 1, &cover).await.unwrap();
+        assert!(std::fs::read(&cover).unwrap().is_empty());
+        assert!(matches!(
+            handle
+                .fetch_copy_file(&granted, 2, &taken.path().join("none"))
+                .await,
+            Err(bookclerk_node_client::CopyFetchError::NoSuchFile)
+        ));
+        assert!(!taken.path().join("none").exists());
+
         let (head, body) = get_copy_file(world.addr, &file(2), Some(&authorization), None).await;
         assert!(head.starts_with("http/1.1 404"), "{head}");
         assert!(String::from_utf8_lossy(&body).contains("unknown_file"));

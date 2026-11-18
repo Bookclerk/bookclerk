@@ -260,6 +260,14 @@ paths = [
 
 [[test_input]]
 package = "bookclerk-node-proto"
+# The copy download answer oracle is shared with the replay test through `#[path]`.
+paths = [
+  "fuzz/corpus/copy_answer/**",
+  "fuzz/oracles/copy_answer.rs",
+]
+
+[[test_input]]
+package = "bookclerk-node-proto"
 # The clerk socket frame oracle is shared with the replay test through `#[path]`.
 paths = [
   "fuzz/corpus/clerk_socket_frame/**",
