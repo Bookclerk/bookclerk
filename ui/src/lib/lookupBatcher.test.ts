@@ -91,6 +91,24 @@ describe("createLookupBatcher", () => {
     expect(calls).toBe(1);
   });
 
+  it("does not share a lookup across viewer generations", async () => {
+    vi.useFakeTimers();
+    let generation = 0;
+    const lookup = createLookupBatcher<string, string>({
+      maxBatch: 24,
+      windowMs: 10,
+      keyOf: (q) => q,
+      generation: () => generation,
+      send: async (qs) => qs,
+    });
+    const before = lookup("a");
+    generation += 1;
+    const after = lookup("a");
+    expect(after).not.toBe(before);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(await Promise.all([before, after])).toEqual(["a", "a"]);
+  });
+
   it("waits for `before` ahead of each batch", async () => {
     vi.useFakeTimers();
     let open: () => void = () => {};

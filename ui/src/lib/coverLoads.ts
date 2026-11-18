@@ -18,6 +18,12 @@
 const loading = new Set<Element>();
 /** Of those, the ones on screen now. */
 const onScreen = new Set<Element>();
+/**
+ * Of those, the ones the observer has not reported on yet: observations
+ * arrive asynchronously, so a cover just registered is waited for until
+ * its first report says whether it is on screen.
+ */
+const unseen = new Set<Element>();
 /** Callers of {@link coversSettled} waiting for `onScreen` to empty. */
 let waiters: Array<() => void> = [];
 /** One observer for every tracked cover. */
@@ -25,7 +31,7 @@ let observer: IntersectionObserver | null = null;
 
 /** Wakes every waiter once no on-screen cover is loading. */
 function notify() {
-  if (onScreen.size > 0) return;
+  if (onScreen.size > 0 || unseen.size > 0) return;
   const woken = waiters;
   waiters = [];
   for (const wake of woken) wake();
@@ -43,16 +49,19 @@ export function trackCoverLoad(el: Element): () => void {
   observer ??= new IntersectionObserver((entries) => {
     for (const entry of entries) {
       if (!loading.has(entry.target)) continue;
+      unseen.delete(entry.target);
       if (entry.isIntersecting) onScreen.add(entry.target);
       else onScreen.delete(entry.target);
     }
     notify();
   });
   loading.add(el);
+  unseen.add(el);
   observer.observe(el);
   return () => {
     if (!loading.delete(el)) return;
     onScreen.delete(el);
+    unseen.delete(el);
     observer?.unobserve(el);
     notify();
   };
@@ -66,7 +75,7 @@ export function trackCoverLoad(el: Element): () => void {
  * @returns A promise that resolves when the on-screen covers have settled.
  */
 export function coversSettled(maxMs: number): Promise<void> {
-  if (onScreen.size === 0) return Promise.resolve();
+  if (onScreen.size === 0 && unseen.size === 0) return Promise.resolve();
   return new Promise((resolve) => {
     const done = () => {
       clearTimeout(timer);

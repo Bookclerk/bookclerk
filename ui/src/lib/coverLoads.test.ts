@@ -28,7 +28,9 @@ describe("coversSettled", () => {
   it("resolves at once when no cover on screen is loading", async () => {
     const { coversSettled, trackCoverLoad } = await import("./coverLoads");
     // Loading but off screen (a lazy image, or clipped by a shelf).
-    trackCoverLoad(el());
+    const a = el();
+    trackCoverLoad(a);
+    fire(a, false);
     await expect(coversSettled(1_000)).resolves.toBeUndefined();
   });
 
@@ -52,6 +54,20 @@ describe("coversSettled", () => {
     expect(settled).toBe(true);
     doneB();
     expect(coversLoadingOnScreen()).toBe(0);
+  });
+
+  it("waits for a new cover's first report before deciding", async () => {
+    const { coversSettled, trackCoverLoad } = await import("./coverLoads");
+    const a = el();
+    trackCoverLoad(a);
+    let settled = false;
+    const wait = coversSettled(60_000).then(() => (settled = true));
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    // Reported off screen: nothing to wait for.
+    fire(a, false);
+    await wait;
+    expect(settled).toBe(true);
   });
 
   it("gives up waiting after the cap", async () => {

@@ -718,8 +718,10 @@ loads with `no_purchase_hints=true`; the GUI:
    minutes, details 6 hours) in memory and `sessionStorage`, and puts only
    the titles it lacks into a batch, so a reload or a return to Discover
    asks nothing it already has. The batch routes are `POST`s and API JSON
-   is `no-store`, so the browser's HTTP cache never holds them; signing out
-   clears this cache, since prices depend on the viewer's linked stores.
+   is `no-store`, so the browser's HTTP cache never holds them. Signing out
+   clears this cache, since prices depend on the viewer's linked stores,
+   and an answer to a lookup still running then is neither kept nor shared
+   with the next viewer.
 
 The daemon still searches **all** stores, then highlights `best` using the
 caller’s associated accounts (portal account links, or all operator accounts)

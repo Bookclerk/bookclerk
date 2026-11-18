@@ -60,7 +60,10 @@ describe("createLookupCache", () => {
     cache.set("a", 1);
     await vi.advanceTimersByTimeAsync(250);
     expect(storage.data.size).toBe(1);
+    const { lookupGeneration } = await import("./lookupCache");
+    const before = lookupGeneration();
     clearLookupCaches();
+    expect(lookupGeneration()).toBe(before + 1);
     expect(cache.get("a")).toBeUndefined();
     expect(storage.data.size).toBe(0);
   });

@@ -1056,7 +1056,7 @@ export function DiscoverPage({
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div data-discover-scroll className="min-h-0 flex-1 overflow-auto">
         <main className={cn("flex flex-col gap-8 px-4 py-6 sm:px-5", pageWidthClass)}>
           {panel === "results" ? (
             <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
@@ -1427,8 +1427,9 @@ function ShelfSection({
         }
       },
       // Half a screen below the fold: the next shelf down is priced before
-      // the viewer reaches it.
-      { rootMargin: "50% 0px" },
+      // the viewer reaches it. Measured against Discover's own scroll area,
+      // which would otherwise clip the shelf before the margin applies.
+      { root: el.closest("[data-discover-scroll]"), rootMargin: "50% 0px" },
     );
     obs.observe(el);
     return () => obs.disconnect();

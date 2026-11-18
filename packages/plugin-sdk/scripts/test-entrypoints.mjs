@@ -631,6 +631,21 @@ const jobInvocation = {
     (err) => err instanceof PluginError && err.wireCode === "rate_limited",
     "a failed lookup rejects the whole batch",
   );
+  // After one lane fails, the lanes still waiting finish but start nothing new.
+  class OneFailsStore extends StorefrontEntrypoint {
+    asked = 0;
+    async purchaseHint(params) {
+      this.asked += 1;
+      if (params.productId === "p1") throw new PluginError("rate_limited", "slow down");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return { productId: params.productId };
+    }
+  }
+  const oneFails = new OneFailsStore({}, {});
+  const named = Array.from({ length: 10 }, (_, n) => ({ productId: `p${n}` }));
+  await assert.rejects(() => oneFails.purchaseHints({ queries: named }));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(oneFails.asked, PURCHASE_HINTS_CONCURRENCY, "no lookup starts after a failure");
 }
 
 // --- Native-behind-workerd control plane (dist + bundled embed) ---

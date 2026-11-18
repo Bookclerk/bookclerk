@@ -139,7 +139,22 @@ export function createLookupCache<T>(
   return cache;
 }
 
-/** Forgets every lookup cache, as signing out does. */
+/** Bumped by {@link clearLookupCaches}: which viewer a lookup was asked for. */
+let generation = 0;
+
+/**
+ * The current viewer generation. A lookup records it when asked and keeps
+ * its answer only if it is unchanged when the answer arrives, so a lookup
+ * still running at sign-out never fills the next viewer's cache.
+ *
+ * @returns The generation number.
+ */
+export function lookupGeneration(): number {
+  return generation;
+}
+
+/** Forgets every lookup cache and starts a new viewer generation, as signing out does. */
 export function clearLookupCaches(): void {
+  generation += 1;
   for (const cache of caches) cache.clear();
 }

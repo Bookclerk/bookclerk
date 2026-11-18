@@ -2329,11 +2329,19 @@ export class StorefrontEntrypoint<
     // A few lanes take the next query in order; the first failure (a rate
     // limit included) rejects the batch.
     let next = 0;
+    // Set by the first failure, so the other lanes take on no new query
+    // (a rate limit must not be followed by more requests).
+    let failed = false;
     const lane = async (): Promise<void> => {
-      while (next < order.length) {
+      while (next < order.length && !failed) {
         if (Date.now() - started >= PURCHASE_HINTS_BUDGET_MS) return;
         const i = order[next++];
-        out[i] = await this.purchaseHint(params.queries[i]);
+        try {
+          out[i] = await this.purchaseHint(params.queries[i]);
+        } catch (err) {
+          failed = true;
+          throw err;
+        }
       }
     };
     const lanes = Math.min(PURCHASE_HINTS_CONCURRENCY, order.length);

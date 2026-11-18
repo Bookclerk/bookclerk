@@ -1,7 +1,7 @@
 import { normalizeThemePreference, type ThemePreference } from "@/lib/theme";
 import { coversSettled } from "@/lib/coverLoads";
 import { createLookupBatcher } from "@/lib/lookupBatcher";
-import { clearLookupCaches, createLookupCache } from "@/lib/lookupCache";
+import { clearLookupCaches, createLookupCache, lookupGeneration } from "@/lib/lookupCache";
 
 /**
  * Pipeline acquire state for a library book row.
@@ -3894,6 +3894,7 @@ const purchaseHintsBatcher = createLookupBatcher<PurchaseHintsQuery, PurchaseHin
   keyOf: (q) => purchaseHintsClientKey(q),
   send: sendPurchaseHintsBatch,
   before: coversFirst,
+  generation: lookupGeneration,
 });
 
 /**
@@ -4019,9 +4020,11 @@ export function fetchPurchaseHints(body: PurchaseHintsQuery): Promise<PurchaseHi
   const key = purchaseHintsClientKey(body);
   const cached = purchaseHintsClientCache.get(key);
   if (cached) return Promise.resolve(cached);
+  const asked = lookupGeneration();
   return purchaseHintsBatcher(body).then((value) => {
-    // An unfinished lookup is not kept, so the next ask reaches the server.
-    if (!value.incomplete) {
+    // An unfinished lookup is not kept, so the next ask reaches the server;
+    // nor is one asked for a viewer who has since signed out.
+    if (!value.incomplete && lookupGeneration() === asked) {
       purchaseHintsClientCache.set(key, value);
     }
     return value;
@@ -4070,6 +4073,7 @@ function serializeTitleMetaQuery(body: TitleMetaQuery) {
  * @returns One answer (or `null`) per query, in order.
  */
 async function sendTitleMetaBatch(queries: TitleMetaQuery[]): Promise<(TitleMeta | null)[]> {
+  const asked = lookupGeneration();
   const res = await fetchWithTimeout(
     "/api/discover/title-meta/batch",
     {
@@ -4084,7 +4088,7 @@ async function sendTitleMetaBatch(queries: TitleMetaQuery[]): Promise<(TitleMeta
   const data = (await parseJson(res)) as { results: (TitleMeta | null)[] };
   return queries.map((query, idx) => {
     const meta = data.results[idx] ?? null;
-    titleMetaClientCache.set(titleMetaClientKey(query), meta);
+    if (lookupGeneration() === asked) titleMetaClientCache.set(titleMetaClientKey(query), meta);
     return meta;
   });
 }
@@ -4096,6 +4100,7 @@ const titleMetaBatcher = createLookupBatcher<TitleMetaQuery, TitleMeta | null>({
   keyOf: titleMetaClientKey,
   send: sendTitleMetaBatch,
   before: coversFirst,
+  generation: lookupGeneration,
 });
 
 /**
@@ -4162,13 +4167,11 @@ export async function fetchTitleMetaBatch(
       pending.push({ index, query });
     }
   });
-  for (let i = 0; i < pending.length; i += LOOKUP_BATCH_MAX) {
-    const chunk = pending.slice(i, i + LOOKUP_BATCH_MAX);
-    const metas = await sendTitleMetaBatch(chunk.map((c) => c.query));
-    chunk.forEach((item, idx) => {
-      results[item.index] = metas[idx] ?? null;
-    });
-  }
+  // Through the shared batcher: same scheduling, covers first, no duplicates.
+  const metas = await Promise.all(pending.map((item) => titleMetaBatcher(item.query)));
+  pending.forEach((item, idx) => {
+    results[item.index] = metas[idx] ?? null;
+  });
   return results;
 }
 

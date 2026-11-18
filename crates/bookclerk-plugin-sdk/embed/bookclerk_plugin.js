@@ -11946,12 +11946,18 @@ var StorefrontEntrypoint = class extends NamedEntrypoint {
     const out = params.queries.map(() => null);
     const order = params.queries.map((query, i) => ({ i, direct: Boolean(query.productId?.trim()) })).sort((a, b) => Number(b.direct) - Number(a.direct)).map((entry) => entry.i);
     let next = 0;
+    let failed = false;
     const lane = async () => {
-      while (next < order.length) {
+      while (next < order.length && !failed) {
         if (Date.now() - started >= PURCHASE_HINTS_BUDGET_MS)
           return;
         const i = order[next++];
-        out[i] = await this.purchaseHint(params.queries[i]);
+        try {
+          out[i] = await this.purchaseHint(params.queries[i]);
+        } catch (err) {
+          failed = true;
+          throw err;
+        }
       }
     };
     const lanes = Math.min(PURCHASE_HINTS_CONCURRENCY, order.length);

@@ -10,7 +10,8 @@
  * - keeps **one batch in flight** at a time, so lookups asked while one is
  *   running wait and go out together in the next one, and a slow store
  *   never holds more than one of the browser's connections;
- * - asks once for a lookup already waiting or running with the same key;
+ * - asks once for a lookup already waiting or running with the same key
+ *   (within one viewer generation);
  * - runs an optional `before` step ahead of each batch (Discover waits
  *   there for the covers on screen, see `coverLoads.ts`).
  *
@@ -32,6 +33,12 @@ export interface LookupBatcherOptions<Q, R> {
   send: (queries: Q[]) => Promise<R[]>;
   /** Awaited before each batch is sent; its failure is ignored. */
   before?: () => Promise<void>;
+  /**
+   * The current viewer generation (see `lookupCache.ts`). A lookup asked
+   * in a later generation never shares a lookup asked before it, so an
+   * answer meant for a signed-out viewer never reaches the next one.
+   */
+  generation?: () => number;
 }
 
 /** One lookup waiting for its batch, and everyone waiting on its answer. */
@@ -99,7 +106,7 @@ export function createLookupBatcher<Q, R>(
   };
 
   return (query: Q) => {
-    const key = options.keyOf(query);
+    const key = `${options.generation?.() ?? 0}\n${options.keyOf(query)}`;
     const existing = pending.get(key);
     if (existing) return existing;
     const promise = new Promise<R>((resolve, reject) => {
