@@ -162,7 +162,7 @@ export function StatusPage({
                   value={`${cluster.live} / ${cluster.nodes} live`}
                   detail={[
                     cluster.drained > 0 ? `${cluster.drained} drained` : null,
-                    cluster.host_nodes > 0 ? `${cluster.host_nodes} branch node(s)` : null,
+                    cluster.branch_nodes > 0 ? `${cluster.branch_nodes} branch node(s)` : null,
                   ]
                     .filter(Boolean)
                     .join(" · ")}

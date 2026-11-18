@@ -2495,7 +2495,7 @@ export interface ClusterSummary {
   nodes: number;
   live: number;
   drained: number;
-  host_nodes: number;
+  branch_nodes: number;
   cpu_budget_millicores: number;
   cpu_reserved_millicores: number;
   memory_budget_bytes: number;

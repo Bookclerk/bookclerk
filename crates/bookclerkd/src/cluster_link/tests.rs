@@ -428,11 +428,11 @@ struct Deployed {
 
 /// Installs the store plugin on the owner (archive stored in the library,
 /// grant approved by the cluster's operator), sets its instance to
-/// `mode = zip` with a sealed `token`, and deploys it to `host_node`.
+/// `mode = zip` with a sealed `token`, and deploys it to `branch_node`.
 async fn deploy_store(
     owner: &LibraryStore,
     owner_files: &std::path::Path,
-    host_node: &str,
+    branch_node: &str,
 ) -> Deployed {
     let stage = owner_files.join("store-stage");
     std::fs::create_dir_all(&stage).unwrap();
@@ -519,7 +519,7 @@ async fn deploy_store(
         owner,
         &actor,
         &instance.id,
-        host_node,
+        branch_node,
         DesiredState::Present,
     )
     .await
@@ -3095,6 +3095,75 @@ mod results_and_uploads {
         );
     }
 
+    /// A file that arrives once the receiving shared node has no output
+    /// destination deployed is answered `unavailable`, so the branch node
+    /// retries; nothing is written.
+    #[tokio::test]
+    async fn a_file_is_unavailable_while_no_destination_is_deployed() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let scope = local_scope("Author/Title t1");
+        let files = vec![local_file("Author/Title t1/t1.m4b", b"audio")];
+        let (upload_id, token, _) =
+            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+        // The node undeploys its only destination before the file arrives.
+        crate::node_api::uploads::set_test_destinations(world.owner_files.path(), Vec::new());
+        let put = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
+        assert!(put.starts_with("HTTP/1.1 503"), "{put}");
+        assert!(put.contains("unavailable"), "{put}");
+        assert!(!owner_out.path().join("Author/Title t1/t1.m4b").exists());
+    }
+
+    /// A commit that arrives once the receiving shared node has no output
+    /// destination deployed is answered `unavailable`, and the title is
+    /// not marked acquired.
+    #[tokio::test]
+    async fn a_commit_is_unavailable_while_no_destination_is_deployed() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let scope = local_scope("Author/Title t1");
+        let files = vec![local_file("Author/Title t1/t1.m4b", b"audio")];
+        let (upload_id, token, _) =
+            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+        let put = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
+        assert!(put.starts_with("HTTP/1.1 200"), "{put}");
+        // The node undeploys its only destination before the commit.
+        crate::node_api::uploads::set_test_destinations(world.owner_files.path(), Vec::new());
+        let committed = commit_raw(world.addr, &upload_id, &token, "{}").await;
+        assert!(committed.starts_with("HTTP/1.1 503"), "{committed}");
+        assert!(committed.contains("unavailable"), "{committed}");
+        let row = world
+            .owner
+            .get_book_by_uuid(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            row.acquire_status,
+            bookclerk_library::AcquireStatus::Acquired
+        );
+    }
+
     /// A fence lost while a file streams aborts the upload: the owner
     /// answers `lost` before the body ends, its destination keeps nothing
     /// (not even a temp file), and the upload's token no longer opens it.
@@ -3250,7 +3319,7 @@ mod results_and_uploads {
             &world.link.remote_node_id,
             job_id,
             fence,
-            &owner_node_id(world),
+            &shared_node_id(world),
             &UploadGrantRequest {
                 holding_id: &holding_of(&world.owner, book_uuid).await,
                 primary_key: key,
@@ -3475,7 +3544,7 @@ mod results_and_uploads {
     }
 
     /// The owner's own node id.
-    fn owner_node_id(world: &Linked) -> String {
+    fn shared_node_id(world: &Linked) -> String {
         bookclerk_library::control_plane::load_or_create_node_identity(world.owner_files.path())
             .unwrap()
             .node_id
@@ -3617,7 +3686,7 @@ mod results_and_uploads {
             &world.link.remote_node_id,
             &job_id,
             fence,
-            &owner_node_id(&world),
+            &shared_node_id(&world),
             &UploadGrantRequest {
                 holding_id: &holding_of(&world.owner, &book.uuid).await,
                 primary_key: "Author/Title t1/t1.m4b",
@@ -3676,7 +3745,7 @@ mod results_and_uploads {
             &world.link.remote_node_id,
             &job_id,
             fence,
-            &owner_node_id(&world),
+            &shared_node_id(&world),
             &UploadGrantRequest {
                 holding_id: &holding_of(&world.owner, &book.uuid).await,
                 primary_key: &format!("{dir}/Title t1 [{id}].m4b"),
@@ -3752,7 +3821,7 @@ mod results_and_uploads {
             &world.link.remote_node_id,
             &job_id,
             fence,
-            &owner_node_id(&world),
+            &shared_node_id(&world),
             &UploadGrantRequest {
                 holding_id: &holding_of(&world.owner, &book.uuid).await,
                 primary_key: "Author/Title t1/t1.m4b",
@@ -4023,7 +4092,7 @@ mod results_and_uploads {
             &world.link.remote_node_id,
             job_id,
             fence,
-            &owner_node_id(world),
+            &shared_node_id(world),
             &UploadGrantRequest {
                 holding_id: &holding_of(&world.owner, book_uuid).await,
                 primary_key,

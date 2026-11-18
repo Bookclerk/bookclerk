@@ -374,7 +374,7 @@ async fn untrusted_nodes_claim_nothing(owner_db: LibraryStore, host_db: LibraryS
     link(&owner_db, riley, PLUGIN, "acct").await;
     add_node(&owner_db, HOST, "branch", Some(riley)).await;
     add_node(&owner_db, "host-orphan", "branch", None).await;
-    add_node(&owner_db, "owner-node", "shared", None).await;
+    add_node(&owner_db, "shared-node", "shared", None).await;
     scan(&owner_db, Some("acct")).await;
 
     for (node, claimant) in [
@@ -390,7 +390,7 @@ async fn untrusted_nodes_claim_nothing(owner_db: LibraryStore, host_db: LibraryS
         assert!(claim(&host_db, node, claimant).await.is_none(), "{node}");
     }
     assert_eq!(
-        node_trust(&host_db, "owner-node", Claimant::Remote)
+        node_trust(&host_db, "shared-node", Claimant::Remote)
             .await
             .unwrap(),
         NodeTrust::All

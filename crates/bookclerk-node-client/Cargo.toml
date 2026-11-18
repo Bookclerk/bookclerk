@@ -37,6 +37,7 @@ webpki-roots = "1"
 zeroize.workspace = true
 
 [dev-dependencies]
+log = "0.4"
 tempfile.workspace = true
 
 [lints]

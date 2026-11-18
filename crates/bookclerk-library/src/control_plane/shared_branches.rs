@@ -5,10 +5,10 @@
 //!   join as a shared branch: a shared branch's own database is replaced by the library's,
 //!   so the install must hold no library data of its own (no users, store
 //!   accounts, books, or libraries it is a branch of).
-//! - [`owner_nodes_visible_to`] lists the shared nodes a caller may see
-//!   (Settings → Shared branches), by the same rule [`remove_owner_node`] removes
+//! - [`shared_nodes_visible_to`] lists the shared nodes a caller may see
+//!   (Settings → Shared branches), by the same rule [`remove_shared_node`] removes
 //!   them.
-//! - [`remove_owner_node`] removes a shared node that is no longer running
+//! - [`remove_shared_node`] removes a shared node that is no longer running
 //!   from the library's node list, the way any shared node leaves.
 
 use crate::EntityKind;
@@ -95,23 +95,23 @@ pub async fn library_contents(store: &LibraryStore) -> Result<LibraryContents> {
 }
 
 /// The shared nodes (`kind = shared`: this one and its shared branches) `actor` may
-/// see, by the rule [`remove_owner_node`] removes them: the operator or an
+/// see, by the rule [`remove_shared_node`] removes them: the operator or an
 /// active Owner sees every one; another active user only the ones they own;
 /// an unknown or disabled user none.
 ///
 /// # Errors
 ///
 /// Returns the read error.
-pub async fn owner_nodes_visible_to(
+pub async fn shared_nodes_visible_to(
     store: &LibraryStore,
     actor: &EnrollmentActor,
 ) -> Result<Vec<NodeRecord>> {
-    let owner_nodes = list_nodes(store)
+    let shared_nodes = list_nodes(store)
         .await?
         .into_iter()
         .filter(|node| node.kind == NodeKind::Shared);
     match actor {
-        EnrollmentActor::Operator { .. } => Ok(owner_nodes.collect()),
+        EnrollmentActor::Operator { .. } => Ok(shared_nodes.collect()),
         EnrollmentActor::User { user_id } => {
             let user = store
                 .get_user(*user_id)
@@ -119,8 +119,8 @@ pub async fn owner_nodes_visible_to(
                 .filter(|user| user.status == UserStatus::Active);
             Ok(match user {
                 None => Vec::new(),
-                Some(user) if user.role == UserRole::Owner => owner_nodes.collect(),
-                Some(user) => owner_nodes
+                Some(user) if user.role == UserRole::Owner => shared_nodes.collect(),
+                Some(user) => shared_nodes
                     .filter(|node| node.owner_user_id == Some(user.id))
                     .collect(),
             })
@@ -151,7 +151,7 @@ pub async fn owner_nodes_visible_to(
 /// caller may not see, [`LibraryError::Invalid`] for a branch node (revoke
 /// it instead) or this node, [`LibraryError::Conflict`] while it is live,
 /// and the write error.
-pub async fn remove_owner_node(
+pub async fn remove_shared_node(
     store: &LibraryStore,
     actor: &EnrollmentActor,
     node_id: &str,
@@ -272,7 +272,7 @@ pub async fn remove_owner_node(
         // refuse bumps too; that costs one needless re-read.
         super::bump(super::LiveTopic::Nodes),
     ]);
-    let operation_id = format!("owner-node-remove-{}", uuid::Uuid::new_v4());
+    let operation_id = format!("shared-node-remove-{}", uuid::Uuid::new_v4());
     let reply = store
         .execute_host_batch(batch::request(&operation_id, statements))
         .await?;
@@ -284,13 +284,13 @@ pub async fn remove_owner_node(
     }
     let detail = serde_json::json!({ "node_id": node_id }).to_string();
     if let Err(err) = store
-        .insert_security_audit_event(&audit, "owner_node_removed", Some(&detail))
+        .insert_security_audit_event(&audit, "shared_node_removed", Some(&detail))
         .await
     {
         tracing::warn!(
             node_id,
             error = %err,
-            "removed a shared node, but could not record the owner_node_removed audit event"
+            "removed a shared node, but could not record the shared_node_removed audit event"
         );
     }
     tracing::info!(node_id, "removed a shared node from the library");

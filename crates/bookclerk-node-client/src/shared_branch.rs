@@ -1089,6 +1089,68 @@ mod tests {
         }
     }
 
+    /// Log records this test binary's code wrote through the `log` crate.
+    ///
+    /// No test here installs a `tracing` subscriber, so `tracing` events
+    /// reach `log` (its fallback when no subscriber was ever set); a
+    /// subscriber installed by a later test would end that fallback.
+    struct LogRecords(std::sync::Mutex<Vec<String>>);
+
+    impl log::Log for LogRecords {
+        fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if let Ok(mut records) = self.0.lock() {
+                records.push(record.args().to_string());
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    /// The process-wide record sink, shared by every test that reads logs.
+    static LOG_RECORDS: LogRecords = LogRecords(std::sync::Mutex::new(Vec::new()));
+
+    /// Installs [`LOG_RECORDS`] as the `log` logger at every level (once per
+    /// process) and returns every record written so far.
+    fn log_records() -> Vec<String> {
+        let _ = log::set_logger(&LOG_RECORDS);
+        log::set_max_level(log::LevelFilter::Trace);
+        LOG_RECORDS.0.lock().unwrap().clone()
+    }
+
+    /// Applying a bootstrap logs which library and node this install now
+    /// starts as, and never the database URL or the joiner's password.
+    #[test]
+    fn applying_a_bootstrap_logs_the_shared_node_without_secrets() {
+        log_records();
+        let files = tempfile::tempdir().unwrap();
+        let config = files.path().join("config.toml");
+        apply_shared_branch_bootstrap(
+            files.path(),
+            &config,
+            &bootstrap(SharedBranchDatabase::Postgres {
+                url: SecretValue::new(b"postgres://u:pw-logged@db/lib".to_vec()),
+            }),
+            Some("joiner-logged-pass"),
+        )
+        .unwrap();
+        let line = log_records()
+            .into_iter()
+            .find(|line| line.contains("wrote the shared branch bootstrap"))
+            .expect("the bootstrap is logged");
+        assert!(
+            line.contains("this install starts as a shared node of the library"),
+            "{line}"
+        );
+        assert!(line.contains("cluster-1"), "{line}");
+        for secret in ["pw-logged", "joiner-logged-pass"] {
+            assert!(!line.contains(secret), "{secret} reached the log: {line}");
+        }
+    }
+
     #[test]
     fn a_postgres_bootstrap_becomes_this_installs_own() {
         let files = tempfile::tempdir().unwrap();

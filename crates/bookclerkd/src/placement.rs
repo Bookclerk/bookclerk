@@ -510,7 +510,7 @@ mod tests {
                 )
                 .route(
                     "/api/config/nodes/{node_id}",
-                    delete(crate::config_authority::delete_owner_node),
+                    delete(crate::config_authority::delete_shared_node),
                 )
                 .route(
                     "/api/config/nodes/{node_id}/owner",

@@ -445,7 +445,7 @@ pub(super) async fn upload_grant(
         &host.node_id,
         &job_id,
         fence,
-        &host.owner_node_id,
+        &host.shared_node_id,
         &request,
     )
     .await?;

@@ -10542,7 +10542,7 @@
           "Cluster"
         ],
         "summary": "`DELETE /api/config/nodes/{node_id}`: remove a shared node (a shared branch, or\nany node sharing this database) that is no longer running from the\nlibrary's node list. The operator or an Owner may remove any; another\nuser only one they own. A running node, this node, or a branch is\nrefused (a branch is revoked instead).",
-        "operationId": "delete_owner_node",
+        "operationId": "delete_shared_node",
         "parameters": [
           {
             "name": "node_id",
@@ -10560,7 +10560,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OwnerNodeRemoved"
+                  "$ref": "#/components/schemas/SharedNodeRemoved"
                 }
               }
             }
@@ -33005,7 +33005,7 @@
           "nodes",
           "live",
           "drained",
-          "host_nodes",
+          "branch_nodes",
           "cpu_budget_millicores",
           "cpu_reserved_millicores",
           "memory_budget_bytes",
@@ -33035,7 +33035,7 @@
             "example": 0,
             "minimum": 0
           },
-          "host_nodes": {
+          "branch_nodes": {
             "type": "integer",
             "description": "Enrolled hosts (nodes with their own database).",
             "example": 1,
@@ -38163,26 +38163,6 @@
           }
         }
       },
-      "OwnerNodeRemoved": {
-        "type": "object",
-        "description": "`DELETE /api/config/nodes/{node_id}` body.",
-        "required": [
-          "node_id",
-          "removed"
-        ],
-        "properties": {
-          "node_id": {
-            "type": "string",
-            "description": "Id of the node that was removed, trimmed.",
-            "example": "node-2b8d4e"
-          },
-          "removed": {
-            "type": "boolean",
-            "description": "Always true: a refused removal is an error status instead.",
-            "example": true
-          }
-        }
-      },
       "PasskeyCreationOptions": {
         "type": "object",
         "description": "WebAuthn creation options for `navigator.credentials.create()`, plus the challenge id for the finish step.",
@@ -42794,6 +42774,26 @@
               "$ref": "#/components/schemas/NodeView"
             },
             "description": "This node and the shared branches the caller may see."
+          }
+        }
+      },
+      "SharedNodeRemoved": {
+        "type": "object",
+        "description": "`DELETE /api/config/nodes/{node_id}` body.",
+        "required": [
+          "node_id",
+          "removed"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "Id of the node that was removed, trimmed.",
+            "example": "node-2b8d4e"
+          },
+          "removed": {
+            "type": "boolean",
+            "description": "Always true: a refused removal is an error status instead.",
+            "example": true
           }
         }
       },

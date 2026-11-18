@@ -506,7 +506,7 @@ Audit events:
 - On the library: `shared_branch_authorize`, `shared_branch_authorize_refused`,
   `shared_branch_enroll_refused` and `shared_branch_enrolled`.
 - On the joining server: `shared_branch_joined`.
-- When one is removed: `owner_node_removed`.
+- When one is removed: `shared_node_removed`.
 
 ## Consent: what the library may run here
 

@@ -78,7 +78,7 @@ fn assert_forbidden(err: &LibraryError) {
 }
 
 #[tokio::test]
-async fn a_link_redeems_once_into_a_host_node_owned_by_its_user() {
+async fn a_link_redeems_once_into_a_branch_node_owned_by_its_user() {
     let _guard = master_key_test_lock_async().await;
     let (store, _dir) = cluster().await;
     let riley = user(&store, UserRole::Member, "Riley").await;
@@ -506,13 +506,13 @@ async fn revoking_a_node_marks_its_credential_and_wakes_every_node() {
     assert!(messages >= 1, "no node.revoked message published");
 
     // A shared node has no credential to revoke.
-    let owner_node = list_nodes(&store)
+    let shared_node = list_nodes(&store)
         .await
         .unwrap()
         .into_iter()
         .find(|node| node.kind == NodeKind::Shared)
         .unwrap();
-    let err = revoke_node_credential(&store, &operator(), &owner_node.node_id)
+    let err = revoke_node_credential(&store, &operator(), &shared_node.node_id)
         .await
         .unwrap_err();
     assert!(matches!(err, LibraryError::Invalid(_)), "{err}");
@@ -670,7 +670,7 @@ async fn redeem_refuses_keys_that_are_not_prime_order_points() {
 /// conditioned on the heartbeat checked first, and the node's rows go while
 /// this node's stay.
 #[tokio::test]
-async fn owner_node_removal_is_one_batch_without_an_interactive_transaction() {
+async fn shared_node_removal_is_one_batch_without_an_interactive_transaction() {
     let _guard = master_key_test_lock_async().await;
     for profile in crate::test_support::Profile::ALL {
         let kit = crate::test_support::sqlite::memory(profile).await;
@@ -713,7 +713,7 @@ async fn owner_node_removal_is_one_batch_without_an_interactive_transaction() {
             .await
             .unwrap();
         let batches_before = kit.batch_sizes().len();
-        remove_owner_node(&store, &as_owner, &enrolled.node_id, &this_node)
+        remove_shared_node(&store, &as_owner, &enrolled.node_id, &this_node)
             .await
             .unwrap();
         assert_eq!(kit.refused_begins(), 0, "{}", profile.name());
@@ -744,7 +744,7 @@ async fn owner_node_removal_is_one_batch_without_an_interactive_transaction() {
                 .await
                 .unwrap();
         let batches_before = kit.batch_sizes().len();
-        remove_owner_node(&store, &as_owner, &second.node_id, &this_node)
+        remove_shared_node(&store, &as_owner, &second.node_id, &this_node)
             .await
             .unwrap();
         assert_eq!(
@@ -755,6 +755,103 @@ async fn owner_node_removal_is_one_batch_without_an_interactive_transaction() {
         );
         assert_eq!(kit.refused_begins(), 0, "{}", profile.name());
     }
+}
+
+/// Log records this test binary's code wrote through the `log` crate.
+///
+/// No test in this crate installs a `tracing` subscriber, so `tracing`
+/// events reach `log` (its fallback when no subscriber was ever set); a
+/// subscriber installed by a later test would end that fallback.
+struct LogRecords(std::sync::Mutex<Vec<String>>);
+
+impl log::Log for LogRecords {
+    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if let Ok(mut records) = self.0.lock() {
+            records.push(record.args().to_string());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+/// The process-wide record sink, shared by every test that reads logs.
+static LOG_RECORDS: LogRecords = LogRecords(std::sync::Mutex::new(Vec::new()));
+
+/// Installs [`LOG_RECORDS`] as the `log` logger at every level (once per
+/// process) and returns every record written so far.
+fn log_records() -> Vec<String> {
+    let _ = log::set_logger(&LOG_RECORDS);
+    log::set_max_level(log::LevelFilter::Trace);
+    LOG_RECORDS.0.lock().unwrap().clone()
+}
+
+/// Removing a shared node is audited as `shared_node_removed`; when the
+/// audit row cannot be written the removal still stands, and the failure
+/// is logged under the same action name.
+#[tokio::test]
+async fn removing_a_shared_node_is_audited_or_logged() {
+    let _guard = master_key_test_lock_async().await;
+    log_records();
+    let (store, dir) = cluster().await;
+    let this_node = load_or_create_node_identity(dir.path()).unwrap().node_id;
+    let owner = user(&store, UserRole::Owner, "Morgan").await;
+    let as_owner = EnrollmentActor::User { user_id: owner };
+    let mut removed = Vec::new();
+    for (name, seed) in [("rack", 7), ("rack-2", 8)] {
+        let minted = mint_enrollment_link(&store, &operator(), owner, name, None)
+            .await
+            .unwrap();
+        let enrolled =
+            redeem_enrollment_link_as(&store, &redeem_request(&minted, seed), NodeKind::Shared)
+                .await
+                .unwrap();
+        removed.push(enrolled.node_id);
+    }
+
+    remove_shared_node(&store, &as_owner, &removed[0], &this_node)
+        .await
+        .unwrap();
+    let events = store.list_security_audit_events(10).await.unwrap();
+    let audited = events
+        .iter()
+        .find(|event| event.action == "shared_node_removed")
+        .expect("the removal is audited");
+    assert!(
+        audited
+            .detail_json
+            .as_deref()
+            .is_some_and(|detail| detail.contains(&removed[0])),
+        "{audited:?}"
+    );
+
+    // The audit table is briefly unwritable.
+    store
+        .db()
+        .execute_unprepared("ALTER TABLE security_audit_events RENAME TO security_audit_away")
+        .await
+        .unwrap();
+    remove_shared_node(&store, &as_owner, &removed[1], &this_node)
+        .await
+        .unwrap();
+    store
+        .db()
+        .execute_unprepared("ALTER TABLE security_audit_away RENAME TO security_audit_events")
+        .await
+        .unwrap();
+    assert!(matches!(
+        load_node(&store, &removed[1]).await.unwrap_err(),
+        LibraryError::NotFound(_)
+    ));
+    assert!(
+        log_records().iter().any(|line| line.contains(
+            "removed a shared node, but could not record the shared_node_removed audit event"
+        )),
+        "the unaudited removal is logged"
+    );
 }
 
 /// Node ids with an event-subscriber registration, sorted.
@@ -771,7 +868,7 @@ async fn event_subscriber_nodes_for(store: &LibraryStore) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_shared_branch_redeem_records_an_owner_node_with_no_socket_credential() {
+async fn a_shared_branch_redeem_records_a_shared_node_with_no_socket_credential() {
     let _guard = master_key_test_lock_async().await;
     let (store, dir) = cluster().await;
     let this_node = load_or_create_node_identity(dir.path()).unwrap().node_id;
@@ -805,14 +902,14 @@ async fn a_shared_branch_redeem_records_an_owner_node_with_no_socket_credential(
     // a running node stay; then an Owner removes it.
     let as_member = EnrollmentActor::User { user_id: member };
     assert!(matches!(
-        remove_owner_node(&store, &as_member, &enrolled.node_id, &this_node)
+        remove_shared_node(&store, &as_member, &enrolled.node_id, &this_node)
             .await
             .unwrap_err(),
         LibraryError::NotFound(_)
     ));
     let as_owner = EnrollmentActor::User { user_id: owner };
     assert!(matches!(
-        remove_owner_node(&store, &as_owner, &this_node, &this_node)
+        remove_shared_node(&store, &as_owner, &this_node, &this_node)
             .await
             .unwrap_err(),
         LibraryError::Invalid(_)
@@ -822,7 +919,7 @@ async fn a_shared_branch_redeem_records_an_owner_node_with_no_socket_credential(
         .await
         .unwrap();
     assert!(matches!(
-        remove_owner_node(&store, &as_owner, &enrolled.node_id, &this_node)
+        remove_shared_node(&store, &as_owner, &enrolled.node_id, &this_node)
             .await
             .unwrap_err(),
         LibraryError::Conflict(_)
@@ -887,7 +984,7 @@ async fn a_shared_branch_redeem_records_an_owner_node_with_no_socket_credential(
     for sql in seed {
         store.db().execute_unprepared(&sql).await.unwrap();
     }
-    remove_owner_node(&store, &as_owner, &enrolled.node_id, &this_node)
+    remove_shared_node(&store, &as_owner, &enrolled.node_id, &this_node)
         .await
         .unwrap();
     assert!(matches!(
@@ -957,7 +1054,7 @@ async fn a_shared_branch_redeem_records_an_owner_node_with_no_socket_credential(
         .await
         .unwrap();
     assert!(matches!(
-        remove_owner_node(&store, &operator(), &branch.node_id, &this_node)
+        remove_shared_node(&store, &operator(), &branch.node_id, &this_node)
             .await
             .unwrap_err(),
         LibraryError::Invalid(_)

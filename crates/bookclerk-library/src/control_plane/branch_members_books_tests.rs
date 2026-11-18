@@ -169,16 +169,16 @@ async fn only_a_branch_takes_the_choice() {
     for profile in Profile::ALL {
         let name = profile.name();
         let store = store(profile).await;
-        add_node(&store, "owner-node", "shared", None).await;
+        add_node(&store, "shared-node", "shared", None).await;
 
         assert_eq!(
-            set_branch_members_books(&store, "owner-node", true)
+            set_branch_members_books(&store, "shared-node", true)
                 .await
                 .unwrap(),
             None
         );
         assert_eq!(
-            node(&store, "owner-node").await.acquire_members_books,
+            node(&store, "shared-node").await.acquire_members_books,
             0,
             "{name}"
         );

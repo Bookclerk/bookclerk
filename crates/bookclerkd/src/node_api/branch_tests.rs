@@ -778,7 +778,7 @@ async fn branch_context(state: &Arc<AppState>, node_id: &str) -> super::super::w
                 plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
             },
         },
-        owner_node_id: "owner-node".into(),
+        shared_node_id: "shared-node".into(),
         state: Arc::clone(state),
         serial: super::super::ws::go_live_for_test(node_id),
     }

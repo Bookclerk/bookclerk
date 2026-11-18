@@ -1892,7 +1892,7 @@ shared node and branch node.
   is no longer trusted.
 - **Audit.** `shared_branch_authorize`, `shared_branch_authorize_refused`,
   `shared_branch_enroll_refused`, `shared_branch_enrolled` (owner), `shared_branch_joined`
-  (joiner), `owner_node_removed`.
+  (joiner), `shared_node_removed`.
 - **Tests.** Proto: the bootstrap opens only with the node key and its ids,
   and never prints its secrets. Daemon: shared branch refused to non-Owners, with
   SQLite, without a second factor, without the joiner's offer; step-up

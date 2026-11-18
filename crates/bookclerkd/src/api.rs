@@ -1241,7 +1241,7 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
 fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(crate::config_authority::get_nodes))
-        .routes(routes!(crate::config_authority::delete_owner_node))
+        .routes(routes!(crate::config_authority::delete_shared_node))
         // Settings → Shared branches: every shared node for the operator or an Owner.
         .routes(routes!(crate::config_authority::get_shared_branches))
         .routes(routes!(crate::config_authority::put_node_runtime))

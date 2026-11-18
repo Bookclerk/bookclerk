@@ -78,11 +78,11 @@ async fn link(store: &LibraryStore, user_id: i64, account_id: &str) {
 
 /// Adds the [`HOST`] node, owned by `owner`, with a live credential.
 async fn add_host(store: &LibraryStore, owner: i64) {
-    add_host_node(store, HOST, owner).await;
+    add_branch_node(store, HOST, owner).await;
 }
 
 /// Adds the Host `node_id`, owned by `owner`, with a live credential.
-async fn add_host_node(store: &LibraryStore, node_id: &str, owner: i64) {
+async fn add_branch_node(store: &LibraryStore, node_id: &str, owner: i64) {
     let now = chrono::Utc::now().to_rfc3339();
     nodes::ActiveModel {
         node_id: Set(node_id.into()),
@@ -1564,7 +1564,7 @@ async fn a_stale_fence_cannot_write_scan_rows_or_open_uploads() {
             HOST,
             &acquire,
             stale,
-            "owner-node",
+            "shared-node",
             &UploadGrantRequest {
                 holding_id: "",
                 primary_key: "",
@@ -1904,7 +1904,7 @@ async fn a_moved_lease_supersedes_the_old_hosts_upload() {
     let _guard = master_key_test_lock_async().await;
     let w = world().await;
     const OTHER: &str = "host-riley-2";
-    add_host_node(&w.store, OTHER, w.riley).await;
+    add_branch_node(&w.store, OTHER, w.riley).await;
     let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
     let (book_uuid, files) = riley_title(&w.store).await;
     let fence = claim(&w.store).await.unwrap().job.lease_generation;
@@ -4486,7 +4486,7 @@ async fn a_job_upload_takes_over_a_branch_delivered_copy_of_its_edition() {
         .create_user(UserRole::Member, Some("Kim"), None)
         .await
         .unwrap();
-    add_host_node(&w.store, branch, kim.id).await;
+    add_branch_node(&w.store, branch, kim.id).await;
     let (book_uuid, files) = riley_title(&w.store).await;
     let key = files[0].copies[0].key.clone();
 
@@ -4681,4 +4681,28 @@ async fn an_administrators_branch_takes_other_members_work_only_when_asked() {
     }
     assert!(job_for_node_owner(&store, HOST, &pinned).await.unwrap());
     assert!(!job_for_node_owner(&store, HOST, &unpinned).await.unwrap());
+}
+
+/// A job whose stored token no longer unseals is not handed to the branch
+/// node: the claim answers nothing, and the attempt fails as
+/// `secrets_unavailable` with the reason a branch node operator reads.
+#[tokio::test]
+async fn a_token_that_does_not_unseal_fails_the_attempt() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    // The sealed token is damaged at rest, so it no longer opens.
+    w.store
+        .db()
+        .execute_unprepared("UPDATE encrypted_secrets SET ciphertext = X'00'")
+        .await
+        .unwrap();
+
+    assert!(claim(&w.store).await.is_none(), "nothing is handed out");
+    let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert_eq!(job.error_kind.as_deref(), Some(SECRETS_UNAVAILABLE));
+    assert_eq!(
+        job.error_message.as_deref(),
+        Some("the job's secrets could not be unsealed for a branch node")
+    );
 }

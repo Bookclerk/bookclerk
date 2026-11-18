@@ -44,7 +44,7 @@ const WAKE_ID_PREFIX: &str = "wake:";
 /// Forwards one host's queue over one connection.
 pub(crate) struct WakeForwarder {
     /// This shared node (the catalog row's node).
-    owner_node_id: String,
+    shared_node_id: String,
     /// The host whose queue is forwarded.
     host_id: String,
     /// Catalog `plugin_id` claimed under (`node:<host_id>`).
@@ -58,17 +58,17 @@ pub(crate) struct WakeForwarder {
 }
 
 impl WakeForwarder {
-    /// A forwarder for `host_id` on shared node `owner_node_id`, or `None`
+    /// A forwarder for `host_id` on shared node `shared_node_id`, or `None`
     /// when the host id cannot name a queue.
-    pub(crate) fn new(owner_node_id: &str, host_id: &str, serial: u64) -> Option<Self> {
-        if owner_node_id.is_empty() || !is_valid_node_id(host_id) {
+    pub(crate) fn new(shared_node_id: &str, host_id: &str, serial: u64) -> Option<Self> {
+        if shared_node_id.is_empty() || !is_valid_node_id(host_id) {
             return None;
         }
         Some(Self {
-            owner_node_id: owner_node_id.to_string(),
+            shared_node_id: shared_node_id.to_string(),
             host_id: host_id.to_string(),
             consumer: node_consumer_id(host_id),
-            lease_owner: format!("wake-{owner_node_id}-{serial}"),
+            lease_owner: format!("wake-{shared_node_id}-{serial}"),
             lease_secs: WAKE_LEASE_SECS,
             in_flight: HashMap::new(),
         })
@@ -81,7 +81,7 @@ impl WakeForwarder {
             &self.host_id,
         ))];
         if let Err(err) = library
-            .upsert_event_subscriber(&self.owner_node_id, &self.consumer, &subs, enabled)
+            .upsert_event_subscriber(&self.shared_node_id, &self.consumer, &subs, enabled)
             .await
         {
             tracing::warn!(host_id = %self.host_id, error = %err, "host queue catalog upsert failed");
@@ -120,7 +120,7 @@ impl WakeForwarder {
                     &uuid::Uuid::new_v4().to_string(),
                     std::slice::from_ref(&self.consumer),
                     u32::try_from(SEND_QUEUE_FRAMES).unwrap_or(u32::MAX),
-                    &self.owner_node_id,
+                    &self.shared_node_id,
                 )
                 .await;
             let delivery = match claimed {
@@ -219,7 +219,7 @@ mod tests {
     use bookclerk_library::catalog_subscribers_for_event;
     use bookclerk_library::control_plane::publish_node_message;
 
-    const OWNER: &str = "owner-node";
+    const OWNER: &str = "shared-node";
     const HOST: &str = "3f2b8c1e-7a4d-4e5f-9b0a-1c2d3e4f5a6b";
 
     async fn memory_store() -> LibraryStore {

@@ -319,7 +319,7 @@ pub(super) struct Registered {
 /// [`promote`] refuses (the connection was revoked during the handshake).
 pub(super) async fn start_session(
     library: &LibraryStore,
-    owner_node_id: &str,
+    shared_node_id: &str,
     node_id: &str,
     serial: u64,
     close: watch::Receiver<Option<u16>>,
@@ -328,7 +328,7 @@ pub(super) async fn start_session(
     if !promote(node_id, serial) {
         return None;
     }
-    let wakes = WakeForwarder::new(owner_node_id, node_id, serial);
+    let wakes = WakeForwarder::new(shared_node_id, node_id, serial);
     if let Some(wakes) = wakes.as_ref() {
         wakes.heartbeat(library, true).await;
     }
@@ -483,9 +483,9 @@ async fn run(
             cfg.paths().files_dir.clone(),
         )
     };
-    let owner_node_id = crate::node_queue::node_id(&files_dir).unwrap_or_default();
+    let shared_node_id = crate::node_queue::node_id(&files_dir).unwrap_or_default();
     let authed = match owner_origin {
-        Some(origin) => handshake(&library, &mut socket, &origin, &owner_node_id).await,
+        Some(origin) => handshake(&library, &mut socket, &origin, &shared_node_id).await,
         None => Err(Refusal::auth("owner_origin_unavailable", None)),
     };
     let authed = match authed {
@@ -514,7 +514,7 @@ async fn run(
         box_public_key: authed.box_public_key,
         owner_box_secret: authed.owner_box_secret,
         settings,
-        owner_node_id: receiving_node_id,
+        shared_node_id: receiving_node_id,
         state: Arc::clone(&state),
         serial,
     };
@@ -628,7 +628,7 @@ async fn handshake(
     library: &LibraryStore,
     socket: &mut WebSocket,
     owner_origin: &str,
-    owner_node_id: &str,
+    shared_node_id: &str,
 ) -> Result<Authed, Refusal> {
     let Some(hello) = next_handshake_frame(socket).await else {
         return Err(Refusal::auth("malformed_hello", None));
@@ -721,7 +721,7 @@ async fn handshake(
         unregister(&node_id, serial);
         return Err(Refusal::auth("closed", Some(&node_id)));
     }
-    let Some(registered) = start_session(library, owner_node_id, &node_id, serial, close).await
+    let Some(registered) = start_session(library, shared_node_id, &node_id, serial, close).await
     else {
         return Err(revoked);
     };

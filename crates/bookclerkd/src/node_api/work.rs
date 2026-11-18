@@ -85,7 +85,7 @@ pub(crate) struct HostContext {
     pub settings: RemoteClaimSettings,
     /// This shared node's id: uploads granted on this connection are
     /// received here.
-    pub owner_node_id: String,
+    pub shared_node_id: String,
     /// The daemon, for this node's output destinations and settings.
     pub state: std::sync::Arc<crate::api::AppState>,
     /// This connection's session serial: a work frame that changes what
