@@ -28,6 +28,9 @@ use crate::cue::{
 };
 use crate::destinations::{destination_id, AcquireDestination, AcquireDestinations};
 use crate::error::{AcquireError, Result};
+use crate::library_copies::{
+    fetch_library_copy, from_store, LibraryCopy, LibraryCopyListing, LibraryCopySource,
+};
 use crate::naming::{
     audio_basename, chapter_storage_key_with_folder, sidecar_key, storage_key_with_contexts,
     NamingContext,
@@ -82,6 +85,9 @@ pub struct AcquireRequest {
     /// Metadata providers asked for the plain-audio catalog and chapter
     /// overlay. The default has none, so plain audio keeps its store tags.
     pub metadata: AcquireMetadata,
+    /// The libraries asked for the copy they already hold of the title
+    /// before it is fetched from its store. The default asks none.
+    pub library_copies: LibraryCopySource,
 }
 
 /// Turns a cover URL a metadata provider named into an image the acquire can
@@ -160,6 +166,10 @@ pub struct AcquireResult {
     pub written_keys: Vec<String>,
     /// True when an existing file was matched and no download ran.
     pub matched_existing: bool,
+    /// True when the audio was taken from the copy a library this install
+    /// joined already held, instead of fetched from the store.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_library: bool,
 }
 
 /// Run the acquire pipeline for one book.
@@ -291,6 +301,7 @@ async fn acquire_book_recorded(
                     storage_key: primary_key,
                     written_keys: Vec::new(),
                     matched_existing: true,
+                    from_library: false,
                 });
             }
             let backends: Vec<(&str, &dyn StorageBackend)> = destinations
@@ -310,6 +321,7 @@ async fn acquire_book_recorded(
                     storage_key: primary_key,
                     written_keys: Vec::new(),
                     matched_existing: true,
+                    from_library: false,
                 });
             }
         }
@@ -339,6 +351,7 @@ async fn acquire_book_recorded(
                     storage_key: primary_key,
                     written_keys: Vec::new(),
                     matched_existing: true,
+                    from_library: false,
                 });
             }
             ExistingPlan::SyncMissing {
@@ -381,6 +394,7 @@ async fn acquire_book_recorded(
                     storage_key: primary_key,
                     written_keys: written,
                     matched_existing: true,
+                    from_library: false,
                 });
             }
             ExistingPlan::Fetch {
@@ -1159,7 +1173,13 @@ async fn run_source_pipeline(
     let work_dir = req.cache_dir.join("acquire").join(status_key(req));
     prepare_work_dir(library, req, &work_dir).await?;
 
-    let fetch = fetch_title_enforcing_quota(library, req, source, &work_dir).await?;
+    let (fetch, copy) = match fetch_from_library(library, req, &work_dir).await {
+        Some((fetch, copy)) => (fetch, Some(copy)),
+        None => (
+            fetch_title_enforcing_quota(library, req, source, &work_dir).await?,
+            None,
+        ),
+    };
     enforce_work_dir_quota(library, req, &work_dir).await?;
 
     let result = run_stage_enforcing_quota(library, req, &work_dir, async {
@@ -1169,7 +1189,88 @@ async fn run_source_pipeline(
     if result.is_ok() {
         enforce_work_dir_quota(library, req, &work_dir).await?;
     }
-    result
+    let mut result = result?;
+    if let Some(copy) = copy {
+        result.from_library = true;
+        if let Err(err) = copy.taken().await {
+            tracing::warn!(
+                id = %status_key(req),
+                error = %err,
+                "the copy taken from the library could not be recorded as taken"
+            );
+        }
+    }
+    Ok(result)
+}
+
+/// Name of the directory, inside an acquire's scratch directory, that a
+/// library's copy is downloaded into.
+const LIBRARY_COPY_DIR: &str = "library-copy";
+
+/// Takes the title's audio from the copy a library already holds, when
+/// one of the libraries the request asks ([`AcquireRequest::library_copies`])
+/// offers a copy it downloaded from the title's own store.
+///
+/// A copy from another store is left alone (the title is fetched from its
+/// own store), and so is one that cannot be downloaded whole within the
+/// scratch budget or read by the confined tag reader: the caller then
+/// fetches from the store, and what the attempt left in `work_dir` is
+/// removed first.
+///
+/// # Returns
+///
+/// The fetch and the copy it came from, or `None` to fetch from the store.
+async fn fetch_from_library(
+    library: &LibraryStore,
+    req: &AcquireRequest,
+    work_dir: &Path,
+) -> Option<(PlainFetch, Box<dyn LibraryCopy>)> {
+    let copies = req.library_copies.copies()?;
+    let title = resolve_title(library, req).await?;
+    let copy = copies
+        .copy_of(LibraryCopyListing {
+            store: &title.source,
+            plugin_key: &title.plugin_key,
+            account_id: &title.account_id,
+            marketplace: &title.marketplace,
+            product_id: &title.product_id,
+        })
+        .await?;
+    if !from_store(copy.source_store(), &title.source) {
+        tracing::debug!(
+            id = %status_key(req),
+            store = %title.source,
+            copy_store = ?copy.source_store(),
+            "the library's copy is from another store; fetching from the title's own"
+        );
+        return None;
+    }
+    let budget = remaining_temp_budget(library, req, work_dir).await.ok()?;
+    let dir = work_dir.join(LIBRARY_COPY_DIR);
+    let media = req.library_copies.media();
+    match fetch_library_copy(copy.as_ref(), &dir, budget, &media).await {
+        Ok(fetch) => {
+            tracing::info!(
+                id = %status_key(req),
+                store = %title.source,
+                "taking the copy the library holds instead of fetching from the store"
+            );
+            Some((fetch, copy))
+        }
+        Err(err) => {
+            tracing::warn!(
+                id = %status_key(req),
+                error = %err,
+                "the library's copy could not be taken; fetching from the store"
+            );
+            if let Err(err) = tokio::fs::remove_dir_all(&dir).await {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(error = %err, "could not remove the partial library copy");
+                }
+            }
+            None
+        }
+    }
 }
 
 /// Packages or stores a source `PlainFetch` according to output options and chapter overlay.
@@ -1539,6 +1640,7 @@ async fn store_plain_fetch(
         storage_key: stored_keys.primary_key.clone(),
         written_keys,
         matched_existing: false,
+        from_library: false,
     })
 }
 
@@ -1612,6 +1714,7 @@ async fn store_plain_parts(
         storage_key: stored_keys.primary_key.clone(),
         written_keys,
         matched_existing: false,
+        from_library: false,
     })
 }
 
@@ -3068,6 +3171,7 @@ async fn acquire_pdf_only_recorded(
                 storage_key: key,
                 written_keys: Vec::new(),
                 matched_existing: true,
+                from_library: false,
             });
         }
     }
@@ -3159,6 +3263,7 @@ async fn download_and_store_companion_pdf(
         storage_key: pdf_key,
         written_keys,
         matched_existing: false,
+        from_library: false,
     })
 }
 
@@ -3294,6 +3399,7 @@ mod tests {
             library_id: None,
             parent_library_id: None,
             metadata: AcquireMetadata::default(),
+            library_copies: LibraryCopySource::default(),
         }
     }
 
@@ -3599,6 +3705,149 @@ mod tests {
                 pdf_url: self.pdf_url.clone(),
             })
         }
+    }
+
+    /// A request for `uuid` that asks `copies` before the store and reads
+    /// what it downloads in this process.
+    fn copy_req(
+        cache: &Path,
+        job: String,
+        product_id: &str,
+        uuid: &str,
+        copies: Arc<crate::library_copies::tests::OneCopy>,
+    ) -> AcquireRequest {
+        let mut req = edition_req(cache, job, product_id, "user-1", uuid);
+        req.library_copies = LibraryCopySource::new(copies)
+            .read_by(Arc::new(bookclerk_media::MediaPool::in_process()));
+        req
+    }
+
+    #[tokio::test]
+    async fn a_title_is_taken_from_the_copy_its_library_holds_of_the_same_store() {
+        use crate::library_copies::tests::{MemoryCopy, OneCopy};
+        use bookclerk_library::FileRole;
+
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let dest = tmp.path().join("dest");
+        let destinations = title_named_destinations(&dest, puts.clone());
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let audio = bookclerk_tags::fixtures::tagged_m4b();
+
+        // The library downloaded its copy from this title's store: the
+        // store is not asked, and the library's bytes are what is stored.
+        let uuid = edition_book(&store, "B00COPY", "user-1", "Twin", None).await;
+        let copy = MemoryCopy::new(
+            Some("audible"),
+            vec![
+                ("Twin.m4b", FileRole::Audio, audio.clone()),
+                ("Twin.cue", FileRole::Sidecar, b"FILE".to_vec()),
+            ],
+        );
+        let (copy_fetches, taken) = (copy.fetched.clone(), copy.taken.clone());
+        let copies = OneCopy::of(copy);
+        let req = copy_req(&cache, job.clone(), "B00COPY", &uuid, copies.clone());
+        let result = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert!(result.from_library);
+        assert!(!result.matched_existing);
+        assert_eq!(fetches.load(Ordering::SeqCst), 0, "the store is not asked");
+        assert_eq!(copy_fetches.load(Ordering::SeqCst), 1, "only the audio");
+        assert_eq!(taken.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *copies.asked.lock().unwrap(),
+            [(
+                "audible".to_string(),
+                "us".to_string(),
+                "B00COPY".to_string()
+            )]
+        );
+        assert_eq!(
+            std::fs::read(dest.join(&result.storage_key)).unwrap(),
+            audio
+        );
+        let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
+        assert_eq!(book.acquire_status, AcquireStatus::Acquired);
+        // The result says where the audio came from.
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["from_library"],
+            serde_json::json!(true)
+        );
+
+        // A copy the library downloaded from another store, or from a
+        // store it does not know, is left alone: this title's own store
+        // is asked, and nothing is downloaded from the library.
+        for (n, theirs) in [Some("libro"), None].into_iter().enumerate() {
+            let product = format!("B00OTHER{n}");
+            let uuid = edition_book(&store, &product, "user-1", "Twin", None).await;
+            let copy = MemoryCopy::new(theirs, vec![("Twin.m4b", FileRole::Audio, audio.clone())]);
+            let (copy_fetches, taken) = (copy.fetched.clone(), copy.taken.clone());
+            let before = fetches.load(Ordering::SeqCst);
+            let req = copy_req(&cache, job.clone(), &product, &uuid, OneCopy::of(copy));
+            let result = acquire_book(&store, &destinations, req, &source)
+                .await
+                .unwrap();
+            assert!(!result.from_library);
+            assert_eq!(fetches.load(Ordering::SeqCst), before + 1);
+            assert_eq!(copy_fetches.load(Ordering::SeqCst), 0);
+            assert_eq!(taken.load(Ordering::SeqCst), 0);
+            assert!(
+                serde_json::to_value(&result)
+                    .unwrap()
+                    .get("from_library")
+                    .is_none(),
+                "a store fetch serializes as it always did"
+            );
+        }
+
+        // A copy that does not arrive falls back to the store, and what
+        // arrived of it is gone before the store's files are packaged.
+        let uuid = edition_book(&store, "B00CUT", "user-1", "Twin", None).await;
+        let mut copy = MemoryCopy::new(
+            Some("audible"),
+            vec![("Twin.m4b", FileRole::Audio, audio.clone())],
+        );
+        copy.failing = Some(0);
+        let taken = copy.taken.clone();
+        let before = fetches.load(Ordering::SeqCst);
+        let req = copy_req(&cache, job.clone(), "B00CUT", &uuid, OneCopy::of(copy));
+        let work_dir = cache.join("acquire").join(&uuid);
+        prepare_work_dir(&store, &req, &work_dir).await.unwrap();
+        assert!(fetch_from_library(&store, &req, &work_dir).await.is_none());
+        assert!(!work_dir.join(LIBRARY_COPY_DIR).exists());
+        let mut copy = MemoryCopy::new(
+            Some("audible"),
+            vec![("Twin.m4b", FileRole::Audio, audio.clone())],
+        );
+        copy.failing = Some(0);
+        let req = copy_req(&cache, job.clone(), "B00CUT", &uuid, OneCopy::of(copy));
+        let result = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert!(!result.from_library);
+        assert_eq!(fetches.load(Ordering::SeqCst), before + 1);
+        assert_eq!(taken.load(Ordering::SeqCst), 0);
+
+        // No library holds a copy: the store, as before.
+        let uuid = edition_book(&store, "B00NONE", "user-1", "Twin", None).await;
+        let none = Arc::new(OneCopy::default());
+        let before = fetches.load(Ordering::SeqCst);
+        let req = copy_req(&cache, job, "B00NONE", &uuid, none.clone());
+        let result = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert!(!result.from_library);
+        assert_eq!(fetches.load(Ordering::SeqCst), before + 1);
+        assert_eq!(none.asked.lock().unwrap().len(), 1);
     }
 
     struct CountingBackend {

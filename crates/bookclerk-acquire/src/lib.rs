@@ -17,6 +17,7 @@ mod cue;
 mod destinations;
 /// Acquire-pipeline error types (`AcquireError`) returned to host callers.
 mod error;
+mod library_copies;
 mod match_storage;
 mod naming;
 mod pipeline;
@@ -28,6 +29,10 @@ pub use convert::{convert_book, ConvertRequest, ConvertSummary};
 mod storage_scan;
 pub use destinations::{destination_id, AcquireDestination, AcquireDestinations};
 pub use error::{AcquireError, Result};
+pub use library_copies::{
+    LibraryCopies, LibraryCopy, LibraryCopyError, LibraryCopyFile, LibraryCopyListing,
+    LibraryCopySource,
+};
 pub use match_storage::{
     match_storage_to_library, match_storage_using_index, MatchStorageOptions, MatchStorageSummary,
 };
