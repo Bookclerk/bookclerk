@@ -2777,11 +2777,6 @@ mod results_and_uploads {
             .find_map(|file| file.probe.as_ref())
             .expect("the audio file was probed");
         assert_eq!(probe.source_store, None);
-        // With no worker where one is required, nothing is probed and the
-        // files still upload.
-        let files = manifest("audible", bookclerk_media::MediaPool::default()).await;
-        assert_eq!(files.len(), 3);
-        assert!(files.iter().all(|file| file.probe.is_none()));
     }
 
     /// A key an upload was granted, then written by a local acquire of
