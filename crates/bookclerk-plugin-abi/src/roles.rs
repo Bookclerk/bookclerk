@@ -99,11 +99,12 @@ mod purchase_hints_tests {
         }
     }
 
-    /// Past the budget no lookup starts, and every query answers `None`.
+    /// Within the budget each query is looked up; past it no lookup starts
+    /// and every query answers `None`.
     ///
     /// # Panics
     ///
-    /// When the batch fails or a lookup started anyway.
+    /// When a batch fails or a lookup ran on the wrong side of the budget.
     #[tokio::test(flavor = "current_thread")]
     async fn nothing_starts_past_the_budget() {
         let params = PurchaseHintsParams {
@@ -112,11 +113,16 @@ mod purchase_hints_tests {
                 ..PurchaseHintParams::default()
             }],
         };
-        let hints = purchase_hints_one_by_one(&EchoStore, params, std::time::Duration::ZERO)
+        let within =
+            purchase_hints_one_by_one(&EchoStore, params.clone(), std::time::Duration::MAX)
+                .await
+                .expect("a batch");
+        assert_eq!(within[0].as_ref().map(|h| h.product_id.as_str()), Some("p"));
+        let past = purchase_hints_one_by_one(&EchoStore, params, std::time::Duration::ZERO)
             .await
             .expect("a batch");
-        assert_eq!(hints.len(), 1);
-        assert!(hints[0].is_none());
+        assert_eq!(past.len(), 1);
+        assert!(past[0].is_none());
     }
 }
 
