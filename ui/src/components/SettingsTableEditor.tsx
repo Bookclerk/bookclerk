@@ -89,7 +89,11 @@ export function SettingsTableEditor({
                             onChange={(e) => setText(e.target.value)}
                             className={cellSelectClassName}
                           >
-                            {column.required ? null : <option value="">—</option>}
+                            {column.required && text !== "" ? null : (
+                              <option value="" disabled={column.required}>
+                                —
+                              </option>
+                            )}
                             {column.choices.map((choice) => (
                               <option key={choice.value} value={choice.value}>
                                 {choice.label}

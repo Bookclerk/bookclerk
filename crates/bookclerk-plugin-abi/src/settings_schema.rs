@@ -458,7 +458,11 @@ impl SettingsSchema {
     #[must_use]
     pub fn defaults(&self) -> BTreeMap<String, Value> {
         self.config_entries()
-            .filter_map(|spec| spec.default.clone().map(|v| (spec.key.clone(), v)))
+            .filter_map(|spec| {
+                spec.default
+                    .as_ref()
+                    .map(|v| (spec.key.clone(), spec.normalize_value(v)))
+            })
             .collect()
     }
 
@@ -838,6 +842,22 @@ mod tests {
         let effective = schema.effective_config(&doc);
         assert!(effective.invalid.is_empty());
         assert_eq!(effective.config.get("mappings"), Some(&normalized));
+
+        // A table-level default is normalized the same way when unset.
+        let defaulted = SettingSpec {
+            default: Some(serde_json::json!([{ "library": "main", "prefix": "" }])),
+            ..mappings_spec()
+        };
+        let schema = SettingsSchema::new(vec![defaulted]);
+        let expected = serde_json::json!([{ "library": "main", "prefix": "", "watch": true }]);
+        assert_eq!(schema.defaults().get("mappings"), Some(&expected));
+        assert_eq!(
+            schema
+                .effective_config(&BTreeMap::new())
+                .config
+                .get("mappings"),
+            Some(&expected)
+        );
     }
 
     #[test]
