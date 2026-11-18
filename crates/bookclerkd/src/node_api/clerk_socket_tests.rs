@@ -630,10 +630,12 @@ async fn ask(socket: &mut Socket, frame: &ClerkFrame) -> Next {
 /// sizes and a token; each file downloads whole or by range with it and
 /// with nothing else; an edition without a copy is `not_found`; signing
 /// the card out refuses the next download; and at TRACE neither the
-/// token nor the card reaches a log this daemon writes. (The `log` bridge
-/// is not installed here: the test's own WebSocket client would trace the
-/// frame it received. `bookclerk-config`'s bridge, which drops the
-/// WebSocket library's records, has its own test.)
+/// token nor the card reaches a log this daemon writes. The WebSocket
+/// library's own records are left out of that check: another test in this
+/// binary may have installed a plain `log` bridge, through which this
+/// test's own client traces the frame it received. The daemon's bridge
+/// drops those records (`tests/websocket_trace_logs.rs` checks it with the
+/// production log setup).
 #[tokio::test]
 async fn a_card_downloads_the_librarys_copy_until_it_is_signed_out() {
     use bookclerk_node_proto::{CopyRole, COPIES_PATH};
@@ -809,7 +811,11 @@ async fn a_card_downloads_the_librarys_copy_until_it_is_signed_out() {
         Next::Closed(CLOSE_UNAUTHORIZED)
     );
 
-    let logged = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+    let logged = String::from_utf8_lossy(&logs.0.lock().unwrap())
+        .lines()
+        .filter(|line| !line.contains("tungstenite::"))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
         logged.contains("granted a copy of an edition to a library card"),
         "{logged}"
