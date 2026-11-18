@@ -1543,13 +1543,14 @@ checked just before the rename and reported as not atomic (see
 
 The optional `s3` destination declares the same set. It cannot see its
 bucket's settings when it is described, so it declares them for every store
-and finds out once, on first use, whether the store enforces
-`If-None-Match` and `If-Match` (see
+and finds out once, on first use, which request kinds (plain upload,
+multipart completion, copy, delete) enforce `If-None-Match` and `If-Match`
+(see
 [Moves and conditional writes](../server/output.md#moves-and-conditional-writes)).
-On a store that does, conditions go to S3 with the request and the store
-decides them; a move is a pinned copy and a conditional delete, never
-atomic. On a store that does not, the guest runs the host's own algorithm
-and says `atomic: false`.
+Where every request an operation sends is enforced, conditions go to S3
+with the request and the store decides them; a move is a pinned copy and a conditional delete, never
+atomic. Otherwise the guest runs the host's own algorithm for that
+operation and says `atomic: false`.
 
 The host checks every reply against the request before acting on it: the
 outcomes must name the keys it sent, in order, a prefix page may only name

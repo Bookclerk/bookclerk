@@ -112,11 +112,36 @@ pub struct S3Backend {
 /// has seen the store refuse one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ConditionalSupport {
-    /// `PutObject`, `CompleteMultipartUpload` and `CopyObject` honour
-    /// `If-None-Match` and `If-Match`.
+    /// `PutObject` refuses `If-None-Match: *` on an existing key and a
+    /// mismatched `If-Match`. Gates conditional writes of small objects.
     pub writes: bool,
-    /// `DeleteObject` honours `If-Match`.
+    /// `CompleteMultipartUpload` refuses `If-None-Match: *` on an existing
+    /// key and a mismatched `If-Match`. Gates conditional writes of large
+    /// objects and the completion of a large no-overwrite move.
+    pub completes: bool,
+    /// `CopyObject` refuses `If-None-Match: *` onto an existing key. Gates
+    /// no-overwrite moves.
+    pub copies: bool,
+    /// `DeleteObject` refuses a mismatched `If-Match`. Gates every native
+    /// move, whose last step deletes the source only while it is unchanged.
     pub deletes: bool,
+}
+
+impl ConditionalSupport {
+    /// True when every request a conditional write may send is enforced,
+    /// whichever of the single-request or multipart paths its size picks.
+    #[must_use]
+    pub fn conditional_writes(self) -> bool {
+        self.writes && self.completes
+    }
+
+    /// True when a move with these options can run natively: the source
+    /// delete is always conditional, and a no-overwrite move also needs the
+    /// copy and the multipart completion to refuse an existing target.
+    #[must_use]
+    pub fn native_move(self, no_overwrite: bool) -> bool {
+        self.deletes && (!no_overwrite || (self.copies && self.completes))
+    }
 }
 
 impl std::fmt::Debug for S3Backend {
@@ -284,7 +309,7 @@ impl S3Backend {
         let out = req
             .send()
             .await
-            .map_err(|err| map_conditional(key, condition, format!("{err:?}")))?;
+            .map_err(|err| map_conditional(key, condition, &err))?;
         Ok(out.e_tag().map(str::to_string))
     }
 
@@ -303,11 +328,16 @@ impl S3Backend {
     /// Which conditional requests this store enforces, probed on first use
     /// and remembered for the backend's lifetime.
     ///
-    /// The probe writes a scratch object under `.bookclerk-probe/` with
-    /// `If-None-Match: *` twice and expects the second write refused, then
-    /// deletes it with a wrong `If-Match` and expects that refused too, and
-    /// finally removes the object. Any other answer, including an error,
-    /// counts as "not enforced", so a store is never trusted by default.
+    /// Each request kind is probed on its own, because a store can enforce a
+    /// condition on one and ignore it on another. Under `.bookclerk-probe/`
+    /// the probe writes a scratch object with `If-None-Match: *` twice
+    /// (the second must be refused) and overwrites it with a wrong
+    /// `If-Match` (refused); completes a one-part multipart upload onto it
+    /// with each condition (both refused) and aborts the upload; copies it
+    /// onto a second existing object with `If-None-Match: *` (refused); and
+    /// deletes it with a wrong `If-Match` (refused). It then removes both
+    /// objects. Any other answer, including an error, counts as "not
+    /// enforced", so a store is never trusted by default.
     pub async fn conditional_support(&self) -> ConditionalSupport {
         *self
             .conditional
@@ -317,52 +347,175 @@ impl S3Backend {
 
     /// Runs the probe behind [`Self::conditional_support`].
     async fn probe_conditional_support(&self) -> ConditionalSupport {
-        let key = self.full_key(&format!(
-            ".bookclerk-probe/conditional-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let put_if_absent = || {
-            self.client
-                .put_object()
-                .bucket(&self.bucket)
-                .key(&key)
-                .if_none_match("*")
-                .body(ByteStream::from_static(b"probe"))
-                .send()
-        };
+        let id = uuid::Uuid::new_v4();
+        let key = self.full_key(&format!(".bookclerk-probe/conditional-{id}"));
+        let other = self.full_key(&format!(".bookclerk-probe/conditional-{id}-target"));
         let mut support = ConditionalSupport::default();
-        if put_if_absent().await.is_ok() {
-            support.writes = matches!(
-                put_if_absent().await,
-                Err(err) if refused_precondition(&format!("{err:?}"))
+        if let Some(writes) = self.probe_writes(&key).await {
+            support.writes = writes;
+            support.completes = self.probe_completes(&key).await;
+            support.copies = self.probe_copies(&key, &other).await;
+            support.deletes = refused(
+                self.client
+                    .delete_object()
+                    .bucket(&self.bucket)
+                    .key(&key)
+                    .if_match(PROBE_MISMATCH)
+                    .send()
+                    .await,
             );
-            if support.writes {
-                support.deletes = matches!(
-                    self.client
-                        .delete_object()
-                        .bucket(&self.bucket)
-                        .key(&key)
-                        .if_match("\"bookclerk-probe-mismatch\"")
-                        .send()
-                        .await,
-                    Err(err) if refused_precondition(&format!("{err:?}"))
-                );
-            }
         }
-        let _ = self
-            .client
-            .delete_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await;
+        for scratch in [&key, &other] {
+            let _ = self
+                .client
+                .delete_object()
+                .bucket(&self.bucket)
+                .key(scratch)
+                .send()
+                .await;
+        }
         tracing::debug!(
             bucket = %self.bucket,
             writes = support.writes,
+            completes = support.completes,
+            copies = support.copies,
             deletes = support.deletes,
             "probed S3 conditional request support"
         );
         support
+    }
+
+    /// Creates the probe object at `key` and checks that `PutObject` then
+    /// refuses both conditions.
+    ///
+    /// # Returns
+    ///
+    /// Whether both were refused, or `None` when the probe object could not
+    /// be created (the rest of the probe needs it, so nothing is trusted).
+    async fn probe_writes(&self, key: &str) -> Option<bool> {
+        let put = || {
+            self.client
+                .put_object()
+                .bucket(&self.bucket)
+                .key(key)
+                .body(ByteStream::from_static(b"probe"))
+        };
+        put().if_none_match("*").send().await.ok()?;
+        Some(
+            refused(put().if_none_match("*").send().await)
+                && refused(put().if_match(PROBE_MISMATCH).send().await),
+        )
+    }
+
+    /// True when `CompleteMultipartUpload` onto the existing `key` refuses
+    /// both `If-None-Match: *` and a mismatched `If-Match`. The upload is
+    /// aborted afterwards whatever happened.
+    async fn probe_completes(&self, key: &str) -> bool {
+        let Ok(created) = self
+            .client
+            .create_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+        else {
+            return false;
+        };
+        let Some(upload_id) = created.upload_id().map(str::to_string) else {
+            return false;
+        };
+        let enforced = async {
+            let part = self
+                .client
+                .upload_part()
+                .bucket(&self.bucket)
+                .key(key)
+                .upload_id(&upload_id)
+                .part_number(1)
+                .body(ByteStream::from_static(b"probe"))
+                .send()
+                .await
+                .ok()?;
+            let parts = CompletedMultipartUpload::builder()
+                .parts(
+                    CompletedPart::builder()
+                        .part_number(1)
+                        .set_e_tag(part.e_tag().map(str::to_string))
+                        .build(),
+                )
+                .build();
+            let complete = || {
+                self.client
+                    .complete_multipart_upload()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .upload_id(&upload_id)
+                    .multipart_upload(parts.clone())
+            };
+            Some(
+                refused(complete().if_none_match("*").send().await)
+                    && refused(complete().if_match(PROBE_MISMATCH).send().await),
+            )
+        }
+        .await
+        .unwrap_or(false);
+        let _ = self
+            .client
+            .abort_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .upload_id(&upload_id)
+            .send()
+            .await;
+        enforced
+    }
+
+    /// True when `CopyObject` from `key` onto the existing `other` refuses
+    /// `If-None-Match: *`, sent the way a move sends it.
+    ///
+    /// The source's ETag is read afresh, because an earlier probe step that
+    /// a store did not refuse may have rewritten it, and a stale
+    /// `x-amz-copy-source-if-match` would be refused for the wrong reason.
+    async fn probe_copies(&self, key: &str, other: &str) -> bool {
+        let Ok(head) = self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+        else {
+            return false;
+        };
+        let Some(etag) = head
+            .e_tag()
+            .filter(|etag| !etag.is_empty())
+            .map(str::to_string)
+        else {
+            return false;
+        };
+        let created = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(other)
+            .body(ByteStream::from_static(b"target"))
+            .send()
+            .await;
+        if created.is_err() {
+            return false;
+        }
+        refused(
+            self.client
+                .copy_object()
+                .bucket(&self.bucket)
+                .key(other)
+                .copy_source(encode_copy_source(&self.bucket, key))
+                .copy_source_if_match(&etag)
+                .if_none_match("*")
+                .send()
+                .await,
+        )
     }
 
     /// Streams a local file as fixed-size parts (used above [`MULTIPART_THRESHOLD`]).
@@ -539,7 +692,7 @@ impl S3Backend {
             let completed_out = complete
                 .send()
                 .await
-                .map_err(|err| map_conditional(key, condition, format!("{err:?}")))?;
+                .map_err(|err| map_conditional(key, condition, &err))?;
             let etag = completed_out.e_tag().unwrap_or("").to_string();
             if etag.is_empty() {
                 return Err(StorageError::Integrity(
@@ -793,7 +946,7 @@ impl S3Backend {
             let completed_out = complete
                 .send()
                 .await
-                .map_err(|err| map_conditional(to, target, format!("{err:?}")))?;
+                .map_err(|err| map_conditional(to, target, &err))?;
             let etag = completed_out.e_tag().unwrap_or("").to_string();
             if etag.is_empty() {
                 return Err(StorageError::Integrity(
@@ -1328,7 +1481,7 @@ impl StorageBackend for S3Backend {
     /// [`crate::intent::fallback_move`] instead.
     async fn move_object(&self, from: &str, to: &str, options: &MoveOptions) -> Result<MoveResult> {
         let support = self.conditional_support().await;
-        if !support.deletes || (options.no_overwrite && !support.writes) {
+        if !support.native_move(options.no_overwrite) {
             return crate::intent::fallback_move(self, from, to, options).await;
         }
         let Some(source) = self.head(from).await? else {
@@ -1406,7 +1559,7 @@ impl StorageBackend for S3Backend {
         meta: ObjectMeta,
         condition: &WriteCondition,
     ) -> Result<ConditionalPutResult> {
-        if !self.conditional_support().await.writes {
+        if !self.conditional_support().await.conditional_writes() {
             return crate::intent::fallback_put_conditional(self, key, body, meta, condition).await;
         }
         let current = self.head(key).await?;
@@ -1871,6 +2024,16 @@ fn bound_integrity_key(key: &str, etag: &str) -> String {
     )
 }
 
+/// The `If-Match` value the conditional probe sends, which no real object's
+/// ETag equals.
+const PROBE_MISMATCH: &str = "\"bookclerk-probe-mismatch\"";
+
+/// True when a probe request failed because the store refused its
+/// precondition; success or any other failure means "not enforced".
+fn refused<T, E: std::fmt::Debug>(answer: std::result::Result<T, E>) -> bool {
+    matches!(answer, Err(err) if refused_precondition(&format!("{err:?}")))
+}
+
 /// True when an S3 error says a request's precondition did not hold.
 fn refused_precondition(msg: &str) -> bool {
     msg.contains("PreconditionFailed")
@@ -1878,13 +2041,20 @@ fn refused_precondition(msg: &str) -> bool {
         || msg.contains("ConditionalRequestConflict")
 }
 
-/// Maps a failed write or delete: a refused precondition is
-/// [`StorageError::Conflict`] when the request carried one.
-fn map_conditional(key: &str, condition: Option<&WriteCondition>, msg: String) -> StorageError {
-    if condition.is_some() && refused_precondition(&msg) {
+/// Maps a failed conditional write of `key`.
+///
+/// A refused precondition is [`StorageError::Conflict`] when the request
+/// carried one; the error's debug text is read only to recognise that
+/// refusal. Every other failure keeps the plain [`StorageError::S3`] message
+/// an unconditional write reports.
+fn map_conditional<E>(key: &str, condition: Option<&WriteCondition>, err: &E) -> StorageError
+where
+    E: std::fmt::Debug + std::fmt::Display,
+{
+    if condition.is_some() && refused_precondition(&format!("{err:?}")) {
         StorageError::Conflict(format!("{key}: precondition failed"))
     } else {
-        map_missing(key, msg)
+        StorageError::S3(err.to_string())
     }
 }
 

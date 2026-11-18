@@ -133,13 +133,14 @@ Nothing is read from `BOOKCLERK_S3_*` or `BOOKCLERK_AWS_*` variables.
 
 S3 has no rename, so a move copies the object inside the bucket and then
 deletes the original. Some S3-compatible services accept the `If-None-Match`
-and `If-Match` headers but ignore them, so the first time the plugin needs
-them it checks the bucket once: it writes a scratch object under
-`.bookclerk-probe/` twice and expects the second write refused, tries to
-delete it with a wrong `If-Match` and expects that refused too, and then
-removes it. The plugin remembers the answer until it restarts.
+and `If-Match` headers but ignore them, sometimes on only some kinds of
+request. So the first time the plugin needs them it checks the bucket once,
+with scratch objects under `.bookclerk-probe/`: it tries a plain upload, a
+multipart upload, a copy and a delete that should each be refused, and
+then removes the scratch objects. Each kind of request is trusted only if
+the bucket refused it. The plugin remembers the answer until it restarts.
 
-When the bucket enforces the headers:
+When the bucket enforces the headers on every request an operation sends:
 
 - A write that must not replace an object, or must replace only the object
   Bookclerk last read, sends the condition with the upload, and S3 refuses

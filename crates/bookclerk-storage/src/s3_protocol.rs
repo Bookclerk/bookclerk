@@ -58,6 +58,22 @@ struct World {
     /// When false the store accepts `If-None-Match` / `If-Match` on writes
     /// and deletes but ignores them, as some S3-compatible stores do.
     enforce_conditions: bool,
+    /// Requests that ignore their conditions even while
+    /// `enforce_conditions` is set, for stores that enforce some kinds only.
+    ignore_conditions_on: Vec<CondOp>,
+}
+
+/// A request kind that can carry `If-None-Match` / `If-Match`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CondOp {
+    /// `PutObject`.
+    Put,
+    /// `CompleteMultipartUpload`.
+    Complete,
+    /// `CopyObject`.
+    Copy,
+    /// `DeleteObject`.
+    Delete,
 }
 
 const PRECONDITION_FAILED: &str = "HTTP/1.1 412 Precondition Failed\r\nContent-Type: application/xml\r\nContent-Length: 48\r\nConnection: close\r\n\r\n<Error><Code>PreconditionFailed</Code></Error>";
@@ -67,10 +83,11 @@ const PRECONDITION_FAILED: &str = "HTTP/1.1 412 Precondition Failed\r\nContent-T
 /// write may go ahead.
 fn refused_condition(
     world: &World,
+    op: CondOp,
     key: &str,
     headers: &HashMap<String, String>,
 ) -> Option<String> {
-    if !world.enforce_conditions {
+    if !world.enforce_conditions || world.ignore_conditions_on.contains(&op) {
         return None;
     }
     let current = world.objects.get(key);
@@ -324,7 +341,7 @@ async fn handle(
             return "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 .into();
         };
-        if let Some(refused) = refused_condition(&world, &upload_key, headers) {
+        if let Some(refused) = refused_condition(&world, CondOp::Complete, &upload_key, headers) {
             return refused;
         }
         let Some(upload) = world.uploads.remove(&upload_id) else {
@@ -355,7 +372,7 @@ async fn handle(
         let mut world = world.lock().await;
         // Deleting a missing key succeeds, conditions or not.
         if world.objects.contains_key(key) {
-            if let Some(refused) = refused_condition(&world, key, headers) {
+            if let Some(refused) = refused_condition(&world, CondOp::Delete, key, headers) {
                 return refused;
             }
         }
@@ -441,7 +458,7 @@ async fn handle(
             return "HTTP/1.1 412 Precondition Failed\r\nContent-Length: 48\r\nConnection: close\r\n\r\n<Error><Code>PreconditionFailed</Code></Error>"
                 .into();
         }
-        if let Some(refused) = refused_condition(&guard, key, headers) {
+        if let Some(refused) = refused_condition(&guard, CondOp::Copy, key, headers) {
             return refused;
         }
         let etag = obj.etag.clone();
@@ -495,7 +512,7 @@ async fn handle(
         }
         let etag = etag_for(body);
         let mut world = world.lock().await;
-        if let Some(refused) = refused_condition(&world, key, headers) {
+        if let Some(refused) = refused_condition(&world, CondOp::Put, key, headers) {
             return refused;
         }
         world.objects.insert(
@@ -583,6 +600,7 @@ fn new_world(hold_parts: bool) -> Arc<Mutex<World>> {
         part_gate: Arc::new(Notify::new()),
         first_part_started: Arc::new(Notify::new()),
         enforce_conditions: true,
+        ignore_conditions_on: Vec::new(),
     }))
 }
 
@@ -1371,13 +1389,79 @@ async fn the_probe_trusts_only_a_store_that_refuses_the_second_write() {
             support,
             ConditionalSupport {
                 writes: enforce,
+                completes: enforce,
+                copies: enforce,
                 deletes: enforce,
             }
+        );
+        assert!(
+            world.lock().await.uploads.is_empty(),
+            "probe upload left open"
         );
         no_probe_objects_left(&world).await;
         // Remembered: a second call does not probe again.
         world.lock().await.enforce_conditions = !enforce;
         assert_eq!(backend.clone().conditional_support().await, support);
+    }
+}
+
+#[tokio::test]
+async fn each_request_kind_is_trusted_only_on_its_own_evidence() {
+    for ignored in [CondOp::Put, CondOp::Complete, CondOp::Copy, CondOp::Delete] {
+        let world = new_world(false);
+        world.lock().await.ignore_conditions_on = vec![ignored];
+        let url = serve(Arc::clone(&world)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = open_sized(&url, dir.path(), None).await;
+        let support = backend.conditional_support().await;
+        assert_eq!(
+            support,
+            ConditionalSupport {
+                writes: ignored != CondOp::Put,
+                completes: ignored != CondOp::Complete,
+                copies: ignored != CondOp::Copy,
+                deletes: ignored != CondOp::Delete,
+            },
+            "ignoring {ignored:?}"
+        );
+        no_probe_objects_left(&world).await;
+        assert!(
+            world.lock().await.uploads.is_empty(),
+            "probe upload left open"
+        );
+
+        // A store that ignores one kind gets the host's algorithm wherever
+        // that kind would carry the guarantee, so nothing is overwritten.
+        put_bytes(&backend, "a.m4b", b"book").await;
+        put_bytes(&backend, "taken.m4b", b"other").await;
+        let no_overwrite = MoveOptions {
+            no_overwrite: true,
+            ..MoveOptions::default()
+        };
+        let refused = backend
+            .move_object("a.m4b", "taken.m4b", &no_overwrite)
+            .await;
+        assert!(
+            matches!(refused, Err(StorageError::Conflict(_))),
+            "ignoring {ignored:?}: {refused:?}"
+        );
+        assert_eq!(backend.get("taken.m4b").await.unwrap().as_ref(), b"other");
+        assert_eq!(backend.get("a.m4b").await.unwrap().as_ref(), b"book");
+
+        let put = put_if(&backend, "new.json", b"one", &WriteCondition::IfNoneMatch)
+            .await
+            .unwrap();
+        assert_eq!(
+            put.atomic,
+            !matches!(ignored, CondOp::Put | CondOp::Complete),
+            "ignoring {ignored:?}"
+        );
+        let again = put_if(&backend, "new.json", b"two", &WriteCondition::IfNoneMatch).await;
+        assert!(
+            matches!(again, Err(StorageError::Conflict(_))),
+            "ignoring {ignored:?}: {again:?}"
+        );
+        assert_eq!(backend.get("new.json").await.unwrap().as_ref(), b"one");
     }
 }
 
