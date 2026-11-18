@@ -1169,16 +1169,18 @@ across every corpus, in `npm test` (the `workerd_guests` check);
 
 - **Parsing** (`parseFile` in
   `crates/bookclerk-plugins/optional/metadata-files/src/dialects.ts`, for
-  `libation_json`, `opf` and `kodi_album_nfo`). Oracle, written from the ABI's record rules
-  (`validate_metadata_file_record` and `check_record_against_dialect`)
-  and the dialect's manifest row: a file is refused only with
-  `invalid_params`. Otherwise the record passes every rule the host
-  applies, states only the row's fields and credit roles, and is the same
-  on a second parse.
+  `libation_json`, `opf`, `kodi_album_nfo` and `cue`). Oracle, written
+  from the ABI's record rules (`validate_metadata_file_record` and
+  `check_record_against_dialect`) and the dialect's manifest row: a file
+  is refused only with `invalid_params`. Otherwise the record passes every
+  rule the host applies, states only the row's fields and credit roles,
+  and is the same on a second parse.
 - **Rendering** (`renderFile`), for every row with `writes = true`, over
   every mutated file as the existing file, with a random record and field
-  list (today `opf` and `kodi_album_nfo`). Oracle: a refusal only for a file `parse` also refuses or an
-  answer that would pass the size cap. Otherwise the answer is within
+  list (today `opf`, `kodi_album_nfo` and `cue`). Oracle: a refusal only
+  for a file `parse` also refuses, an answer that would pass the size cap,
+  or a request the format cannot hold (chapters for a CUE sheet with
+  several files). Otherwise the answer is within
   `MAX_METADATA_FILE_BYTES`, and a re-parse passes the same rules, reads
   back each field it was asked to write, and reads every other field (and
   every credit role the request does not state) as the existing file did.

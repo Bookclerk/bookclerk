@@ -1455,8 +1455,8 @@ export class MetadataFiles extends MetadataFilesEntrypoint<Env> {
 
 The first-party `metadata_files` plugin
 (`crates/bookclerk-plugins/optional/metadata-files`) reads and writes OPF
-package documents and Kodi `album.nfo` files, and reads Libation's
-catalog record without writing it. A format that belongs to one tool
+package documents and Kodi `album.nfo` files, edits existing CUE sheets,
+and reads Libation's catalog record without writing it. A format that belongs to one tool
 lives in that tool's plugin. The plugin's README lists what each record
 maps to.
 

@@ -456,7 +456,10 @@ function project(
       // Every writable dialect keeps one series.
       return r.seriesEntries.slice(0, 1).map((s) => [s.name, s.position]);
     case "chapters":
-      return r.chapters.map((c) => [c.title, c.startMs, c.lengthMs]);
+      // CUE times are whole 1/75 s frames and carry no lengths.
+      return row.id === "cue"
+        ? r.chapters.map((c) => [c.title, Math.round((c.startMs * 75) / 1000)])
+        : r.chapters.map((c) => [c.title, c.startMs, c.lengthMs]);
     case "genres":
     case "tags":
       return r[field];
@@ -505,8 +508,9 @@ function check(row: Row, bytes: Uint8Array, rand: () => number): void {
   const rendered = attempt(() => renderFile(row.id, bytes, record, fields));
   if ("refused" in rendered) {
     // A file parse reads may still be refused when the answer would pass
-    // the size cap.
-    const allowed = "refused" in parsed || /^rendered file is/.test(rendered.refused.message);
+    // the size cap, or when the format cannot hold what was asked for.
+    const allowed =
+      "refused" in parsed || /^(?:rendered file is|cannot write )/.test(rendered.refused.message);
     assert.ok(allowed, `render refused a file parse reads: ${rendered.refused.message}`);
     return;
   }

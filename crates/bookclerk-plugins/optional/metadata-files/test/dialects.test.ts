@@ -529,6 +529,78 @@ describe("kodi_album_nfo", () => {
   });
 });
 
+describe("cue", () => {
+  test("reads a sheet's details and chapters", () => {
+    const parsed = parseFile("cue", seed("cue/seed_00.cue"));
+    assert.equal(parsed.title, "The Name of the Wind");
+    assert.equal(parsed.publishedAt, "2009-04-07");
+    assert.deepEqual(parsed.genres, ["Audiobook", "Fantasy"]);
+    assert.deepEqual(
+      parsed.credits.map((c) => c.name),
+      ["Patrick Rothfuss"],
+    );
+    assert.deepEqual(
+      parsed.chapters.map((c) => [c.title, c.startMs]),
+      [
+        ["Prologue: A Silence of Three Parts", 0],
+        ["Chapter 1: A Place for Demons", 312_493],
+        ["Chapter 2: A Beautiful Day", 74_099_987],
+      ],
+    );
+  });
+
+  test("leaves chapters unstated across several files", () => {
+    const parsed = parseFile("cue", seed("cue/seed_01.cue"));
+    assert.deepEqual(parsed.present, ["title"]);
+  });
+
+  test("refuses a sheet with no audio file, so it never creates one", () => {
+    refuses(() => parseFile("cue", utf8('TITLE "x"\n')), /names no audio file/);
+    refuses(() => renderFile("cue", new Uint8Array(), record(), ["title"]), /names no audio file/);
+  });
+
+  test("rewrites the details and tracks it is asked to", () => {
+    const out = str(
+      renderFile(
+        "cue",
+        seed("cue/seed_00.cue"),
+        record({
+          title: 'Say "hi"',
+          chapters: [
+            { title: "One", startMs: 0, depth: 0 },
+            { title: "", startMs: 61_234, depth: 0 },
+          ],
+        }),
+        ["title", "chapters"],
+      ),
+    );
+    assert.match(out, /^REM GENRE "Audiobook"\n/);
+    assert.match(out, /PERFORMER "Patrick Rothfuss"\nTITLE "Say 'hi'"\nFILE /);
+    assert.match(
+      out,
+      /MP4\n {2}TRACK 01 AUDIO\n {4}TITLE "One"\n {4}INDEX 01 00:00:00\n {2}TRACK 02 AUDIO\n {4}INDEX 01 01:01:18\n$/,
+    );
+    assert.deepEqual(
+      parseFile("cue", utf8(out)).chapters.map((c) => [c.title, c.startMs]),
+      [
+        ["One", 0],
+        ["", 61_240],
+      ],
+    );
+  });
+
+  test("keeps line breaks and refuses chapters across several files", () => {
+    const out = str(renderFile("cue", seed("cue/seed_01.cue"), record({ title: "T" }), ["title"]));
+    assert.equal(out, str(seed("cue/seed_01.cue")).replace("Two Files", "T"));
+    refuses(
+      () => renderFile("cue", seed("cue/seed_01.cue"), record(), ["chapters"]),
+      /cannot write chapters/,
+    );
+    const ended = str(renderFile("cue", seed("cue/seed_02.cue"), record(), ["chapters"]));
+    assert.equal(ended, "FILE book.wav WAVE");
+  });
+});
+
 describe("credit roles", () => {
   test("a credit role cut off by the list cap stays unknown", () => {
     const authors = Array.from({ length: MAX_LIST_ENTRIES }, (_, i) => `A${i}`);

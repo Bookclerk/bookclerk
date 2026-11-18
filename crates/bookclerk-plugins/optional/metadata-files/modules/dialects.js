@@ -6,6 +6,7 @@
  * exactly for the rows with `writes = true`.
  */
 import { parseAlbumNfo, renderAlbumNfo } from "./album-nfo.js";
+import { parseCue, renderCue } from "./cue.js";
 import { parseLibationJson } from "./libation.js";
 import { parseOpf, renderOpf } from "./opf.js";
 import { MAX_FILE_BYTES, invalid } from "./text.js";
@@ -14,6 +15,7 @@ export const DIALECTS = new Map([
     ["libation_json", { parse: parseLibationJson }],
     ["opf", { parse: parseOpf, render: renderOpf }],
     ["kodi_album_nfo", { parse: parseAlbumNfo, render: renderAlbumNfo }],
+    ["cue", { parse: parseCue, render: renderCue }],
 ]);
 /**
  * Finds a dialect.

@@ -59,6 +59,11 @@ name = "album-nfo.js"
 path = "album-nfo.js"
 type = "js"
 
+[[modules]]
+name = "cue.js"
+path = "cue.js"
+type = "js"
+
 [capabilities.network]
 # The host hands every file in and takes every file back, so the plugin
 # needs no network or file grant.
@@ -84,6 +89,14 @@ id = "kodi_album_nfo"
 name = "Kodi album.nfo"
 file_names = ["album.nfo"]
 fields = ["title", "description", "publisher", "publishedAt", "genres", "credits"]
+credit_roles = ["author"]
+writes = true
+
+[[metadata_files.dialects]]
+id = "cue"
+name = "CUE sheet"
+suffixes = [".cue"]
+fields = ["title", "publishedAt", "genres", "credits", "chapters"]
 credit_roles = ["author"]
 writes = true
 

@@ -451,6 +451,9 @@ that tools without a plugin of their own keep next to a book's audio:
 - **Kodi `album.nfo`**: title, description, publisher, date, genres and
   authors, as Kodi and Jellyfin read them. Bookclerk can write it the same
   way.
+- **CUE sheets** (`*.cue`): title, date, genres, authors and the track
+  list as chapters. Bookclerk can update a sheet that exists but does not
+  create new ones, because a sheet has to name its audio file.
 - **Libation's catalog record** (`<book name>.metadata.json`): the
   Audible product Libation saves at download. It is read-only, because it
   is the store's record rather than the library's.
