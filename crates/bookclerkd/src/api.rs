@@ -2987,8 +2987,11 @@ fn instance_settings_group(
     for spec in &view.schema {
         let value = stored
             .and_then(|config| config.settings.get(&spec.key))
-            .map(|value| setting_text(&SettingValue::to_json(value)))
-            .or_else(|| spec.default.as_ref().map(setting_text))
+            .map(SettingValue::to_json)
+            .or_else(|| spec.default.clone())
+            // Show what the guest receives: table rows with column
+            // defaults filled.
+            .map(|value| setting_text(&spec.normalize_value(&value)))
             .unwrap_or_else(|| {
                 if spec.kind == SettingKind::Table {
                     "[]".to_string()
@@ -8920,5 +8923,58 @@ tcp = {tcp}
         );
         let missing = super::serve_invite_spa(&dist.path().join("gone.html")).await;
         assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
+mod instance_settings_tests {
+    use bookclerk_plugin_abi::SettingSpec;
+
+    use crate::config_authority::PluginInstanceView;
+
+    /// An instance with one table setting whose default rows omit a
+    /// defaulted column.
+    // A fixed, valid literal.
+    #[allow(clippy::expect_used)]
+    fn view() -> PluginInstanceView {
+        let table: SettingSpec = serde_json::from_value(serde_json::json!({
+            "key": "mappings",
+            "type": "table",
+            "default": [{ "library": "main" }],
+            "columns": [
+                { "key": "library", "type": "string", "required": true },
+                { "key": "watch", "type": "bool", "default": true }
+            ]
+        }))
+        .expect("spec");
+        PluginInstanceView {
+            plugin_instance_id: "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b".into(),
+            plugin_key: "example".into(),
+            alias: "example".into(),
+            display_name: String::new(),
+            is_default: true,
+            created_at: "2026-11-18T00:00:00Z".into(),
+            schema: vec![table],
+            config: None,
+            deployments: Vec::new(),
+            placement: None,
+        }
+    }
+
+    #[test]
+    // The test's own literal value.
+    #[allow(clippy::expect_used)]
+    fn an_unset_table_shows_its_default_rows_with_column_defaults() {
+        let group = super::instance_settings_group(&view(), None, "node-1");
+        let option = group
+            .settings
+            .iter()
+            .find(|option| option.key == "mappings")
+            .expect("the table");
+        let rows: serde_json::Value = serde_json::from_str(&option.value).expect("rows");
+        assert_eq!(
+            rows,
+            serde_json::json!([{ "library": "main", "watch": true }])
+        );
     }
 }
