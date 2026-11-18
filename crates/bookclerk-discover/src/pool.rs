@@ -119,6 +119,7 @@ pub(crate) fn candidate_from_listing(
         is_abridged: detail.is_abridged,
         store_rank: None,
         work_id: listing.work_id.clone(),
+        expression_id: listing.expression_id.clone(),
     }
 }
 
@@ -154,6 +155,7 @@ mod tests {
             product_id: "9780441172719".into(),
             edition_id: "e1".into(),
             work_id: Some("w1".into()),
+            expression_id: Some("x1".into()),
             title: "Dune".into(),
             categories: Some("Science Fiction".into()),
             detail: ListingDetail {

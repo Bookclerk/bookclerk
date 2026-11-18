@@ -6006,6 +6006,8 @@ impl LibraryStore {
                     let mut entry = GlobalQueueEntry {
                         work_key: row.work_key,
                         work_id: row.work_id,
+                        edition_id: row.edition_id,
+                        expression_id: None,
                         title: row.title,
                         authors: row.authors,
                         asin: row.asin,
@@ -6096,6 +6098,9 @@ impl LibraryStore {
                         // Prefer the newest metadata.
                         entry.work_key = row.work_key;
                         entry.title = row.title;
+                        if row.edition_id.is_some() {
+                            entry.edition_id = row.edition_id;
+                        }
                         if row.authors.is_some() {
                             entry.authors = row.authors;
                         }
@@ -6140,6 +6145,16 @@ impl LibraryStore {
             }
         }
         let mut out: Vec<_> = by_key.into_values().collect();
+        let editions: std::collections::BTreeSet<String> =
+            out.iter().filter_map(|e| e.edition_id.clone()).collect();
+        let placement_of = self.placements_of_editions(editions).await?;
+        for entry in &mut out {
+            entry.expression_id = entry
+                .edition_id
+                .as_ref()
+                .and_then(|edition| placement_of.get(edition))
+                .map(|placement| placement.expression_id.clone());
+        }
         out.sort_by(|a, b| {
             b.wish_count
                 .cmp(&a.wish_count)

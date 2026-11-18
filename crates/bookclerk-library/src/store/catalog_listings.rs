@@ -257,6 +257,11 @@ pub struct CatalogListingRecord {
     pub edition_id: String,
     /// That edition's work, when the rows are consistent.
     pub work_id: Option<String>,
+    /// That edition's expression (`expressions.id`), when the rows are
+    /// consistent. Listings of one expression are the same recording or
+    /// text, so their prices compare; listings of one work in different
+    /// expressions (a narration and a full-cast dramatisation) do not.
+    pub expression_id: Option<String>,
     /// Title as the store lists it.
     pub title: String,
     /// Store category labels.
@@ -431,6 +436,7 @@ fn record_of(m: store_listings::Model) -> CatalogListingRecord {
         product_id: m.product_id,
         edition_id: m.edition_id,
         work_id: None,
+        expression_id: None,
         title: m.title,
         categories: m.categories,
         asin: None,
@@ -876,7 +882,7 @@ impl LibraryStore {
         }
         let editions: BTreeSet<String> = rows.values().map(|r| r.edition_id.clone()).collect();
         let edition_list: Vec<String> = editions.iter().cloned().collect();
-        let work_of = self.works_of_editions(editions).await?;
+        let placement_of = self.placements_of_editions(editions).await?;
         let mut identifiers: HashMap<String, Vec<edition_identifiers::Model>> = HashMap::new();
         for chunk in edition_list.chunks(self.lookup_chunk()) {
             for m in edition_identifiers::Entity::find()
@@ -910,7 +916,10 @@ impl LibraryStore {
             }
         }
         for record in rows.values_mut() {
-            record.work_id = work_of.get(&record.edition_id).cloned();
+            if let Some(placement) = placement_of.get(&record.edition_id) {
+                record.work_id = Some(placement.work_id.clone());
+                record.expression_id = Some(placement.expression_id.clone());
+            }
             if let Some(ids) = identifiers.get(&record.edition_id) {
                 let asins = || ids.iter().filter(|m| m.scheme == "asin");
                 record.asin = asins()
@@ -1061,6 +1070,7 @@ mod tests {
         assert_eq!(got.title, "Title 9780000000001");
         assert_eq!(got.isbn.as_deref(), Some("9780000000001"));
         assert!(got.work_id.is_some(), "the resolver placed it in a work");
+        assert!(got.expression_id.is_some(), "and in an expression");
         assert_eq!(
             got.detail.description.as_deref(),
             Some("About 9780000000001.")
@@ -1377,6 +1387,13 @@ mod tests {
                 .unwrap();
             assert_eq!(stored.work_id, work.work_id);
             assert_eq!(stored.edition_id, work.edition_id);
+            // The queue entry names the wished edition and its recording, the
+            // listing's own expression, so Discover prices the wish from it.
+            let queue = store.list_global_request_queue().await.unwrap();
+            assert_eq!(queue.len(), 1);
+            assert_eq!(queue[0].edition_id, work.edition_id);
+            assert_eq!(queue[0].expression_id, record.expression_id);
+            assert!(queue[0].expression_id.is_some());
             let source = crate::NewTitleRequestSource {
                 source: String::from("libro"),
                 product_id: String::from("9780000000003"),

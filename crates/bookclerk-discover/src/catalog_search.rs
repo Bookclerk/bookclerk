@@ -592,6 +592,7 @@ pub async fn catalog_search_page(
                             is_abridged: hit.is_abridged,
                             store_rank,
                             work_id: None,
+                            expression_id: None,
                         },
                     );
                 }
@@ -1319,6 +1320,7 @@ mod tests {
             is_abridged: None,
             store_rank: Some(0),
             work_id: None,
+            expression_id: None,
         }
     }
 
@@ -1573,6 +1575,7 @@ mod tests {
                     is_abridged: None,
                     store_rank: None,
                     work_id: None,
+                    expression_id: None,
                 },
             }],
         };

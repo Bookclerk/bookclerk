@@ -807,6 +807,17 @@ pub fn listing_from_book(
     resolve::Listing::from_draft(&draft)
 }
 
+/// Where the data model places one edition: the recording or text it is
+/// an edition of, and that expression's work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EditionPlacement {
+    /// `expressions.id`: two editions with the same expression are the same
+    /// recording (or text), sold under different products.
+    pub(crate) expression_id: String,
+    /// `works.id` of that expression.
+    pub(crate) work_id: String,
+}
+
 /// A title someone asks about (a wish, a catalog card): what the resolver
 /// needs to say which work it belongs to.
 #[derive(Debug, Clone, Default)]
@@ -2209,6 +2220,26 @@ impl LibraryStore {
         &self,
         edition_ids: BTreeSet<String>,
     ) -> Result<std::collections::BTreeMap<String, String>> {
+        Ok(self
+            .placements_of_editions(edition_ids)
+            .await?
+            .into_iter()
+            .map(|(edition, placement)| (edition, placement.work_id))
+            .collect())
+    }
+
+    /// Each edition's expression and work.
+    ///
+    /// An edition whose expression row is missing is left out, as it is
+    /// from [`Self::works_of_editions`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub(crate) async fn placements_of_editions(
+        &self,
+        edition_ids: BTreeSet<String>,
+    ) -> Result<std::collections::BTreeMap<String, EditionPlacement>> {
         use std::collections::BTreeMap;
         let edition_ids: Vec<String> = edition_ids.into_iter().collect();
         let mut expression_of = BTreeMap::new();
@@ -2241,8 +2272,15 @@ impl LibraryStore {
         }
         Ok(expression_of
             .into_iter()
-            .filter_map(|(edition, expression)| {
-                Some((edition, work_of_expression.get(&expression)?.clone()))
+            .filter_map(|(edition, expression_id)| {
+                let work_id = work_of_expression.get(&expression_id)?.clone();
+                Some((
+                    edition,
+                    EditionPlacement {
+                        expression_id,
+                        work_id,
+                    },
+                ))
             })
             .collect())
     }

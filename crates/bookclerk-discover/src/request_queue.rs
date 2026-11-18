@@ -105,6 +105,8 @@ mod tests {
     /// An open queue entry for `title` on work `work_id`, with `wishes` wishes.
     fn entry(work_id: &str, title: &str, wishes: i64) -> GlobalQueueEntry {
         GlobalQueueEntry {
+            edition_id: None,
+            expression_id: None,
             work_key: format!("soft:{title}"),
             work_id: work_id.into(),
             title: title.into(),

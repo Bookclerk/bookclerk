@@ -42636,7 +42636,7 @@
         "properties": {
           "work_id": {
             "type": "string",
-            "description": "Library `works.id` UUID when the recommendation is tied to an owned work.",
+            "description": "Library `works.id` of the work the card's edition belongs to, when\nthe library's data model places it (a wish, or a store listing from\nthe shared listing pool). Cards for one work are one card.",
             "example": "5b7e2c1d-8a4f-4e3b-9c6d-2f1a0b9e8d7c",
             "nullable": true
           },
