@@ -21,7 +21,7 @@ import {
   MAX_OFFERED_JOB_CAP,
   setBranchJobCap,
   setBranchSharing,
-  setLinkDownload,
+  setLinkKeepCopies,
   setMembersListing,
   type BranchWorkSettings,
 } from "@/lib/join";
@@ -217,28 +217,21 @@ function SharingSettings({ link, onSaved }: { link: ClusterLinkView; onSaved: ()
 }
 
 /**
- * "Use this computer to download" for one library this server is a branch
- * of. On by default; off makes this server a window of that library.
+ * "Keep copies on this computer" for one library this server is a branch
+ * of. On by default; off leaves the library's copies of your books there.
+ * The branch takes the library's work and shows its books either way.
  */
-function DownloadSetting({ link, onSaved }: { link: ClusterLinkView; onSaved: () => void }) {
+function KeepCopiesSetting({ link, onSaved }: { link: ClusterLinkView; onSaved: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const download = link.download ?? true;
+  const keepCopies = link.keep_copies ?? true;
   const library = libraryLabel(link.owner_origin);
 
   async function save(next: boolean) {
-    if (
-      !next &&
-      !window.confirm(
-        `Stop downloading for ${library}? This server stops running its work and its plugins here, and hands back anything in progress. Your books there are shown in Library instead.`,
-      )
-    ) {
-      return;
-    }
     setBusy(true);
     setError(null);
     try {
-      await setLinkDownload(link, next);
+      await setLinkKeepCopies(link, next);
       onSaved();
     } catch (err) {
       setError(joinErrorMessage(err, "Could not save."));
@@ -253,16 +246,16 @@ function DownloadSetting({ link, onSaved }: { link: ClusterLinkView; onSaved: ()
         <input
           type="checkbox"
           className="mt-0.5"
-          checked={download}
+          checked={keepCopies}
           disabled={busy}
           onChange={(e) => void save(e.target.checked)}
         />
         <span>
-          <span className="block font-medium">Use this computer to download</span>
+          <span className="block font-medium">Keep copies on this computer</span>
           <span className="block text-xs text-ink/55">
-            {download
-              ? `This server runs ${library}'s work and keeps the books it downloads. Turn off to only see your books there, without downloading anything.`
-              : `Off: this server runs none of ${library}'s work. Your books there are shown in Library.`}
+            {keepCopies
+              ? `Your books in ${library} are copied to this server's own storage. Turn off to leave them in ${library} only.`
+              : `Off: your books stay in ${library} only. This server still runs ${library}'s work and shows its books in Library.`}
           </span>
         </span>
       </label>
@@ -412,7 +405,7 @@ function LinkRow({
           Leave library
         </Button>
       ) : null}
-      {link.state === "active" ? <DownloadSetting link={link} onSaved={onLeft} /> : null}
+      {link.state === "active" ? <KeepCopiesSetting link={link} onSaved={onLeft} /> : null}
       {link.state === "active" ? <SharingSettings link={link} onSaved={onLeft} /> : null}
       {note ? (
         <p className="w-full text-xs font-medium text-brick" role="status">
@@ -735,8 +728,6 @@ export function ClusterConsentsPanel({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
   const [joinedTo, setJoinedTo] = useState<string | null>(null);
-  // Desktop window only: whether the invite join became a window.
-  const [joinedAsWindow, setJoinedAsWindow] = useState<boolean | null>(null);
   const [defaultBranchName, setDefaultBranchName] = useState<string | undefined>();
 
   useEffect(() => {
@@ -819,11 +810,7 @@ export function ClusterConsentsPanel({
       </div>
       {sharingOnly ? null : joinedTo ? (
         <p className="text-sm font-medium text-ink" role="status">
-          {joinedAsWindow === true
-            ? `Connected to ${joinedTo}. This computer is a window of it: it shows your books there and downloads nothing.`
-            : joinedAsWindow === false
-              ? `Connected to ${joinedTo}, but downloading could not be turned off. Turn off "Use this computer to download" below to make it a window.`
-              : `Connected to ${joinedTo}. Its plugin requests appear below.`}
+          {`Connected to ${joinedTo}. Its plugin requests appear below.`}
         </p>
       ) : null}
       {sharingOnly ? null : joining ? (
@@ -831,9 +818,8 @@ export function ClusterConsentsPanel({
           <h3 className="text-sm font-semibold text-ink">Join a library</h3>
           <JoinWizard
             defaultBranchName={defaultBranchName}
-            onJoined={(origin, _link, asWindow) => {
+            onJoined={(origin) => {
               setJoining(false);
-              setJoinedAsWindow(asWindow);
               setJoinedTo(origin);
               void refresh();
             }}

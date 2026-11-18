@@ -1,7 +1,7 @@
-//! Window mode: an install whose link to a library has "Use this computer
-//! to download" off is a window of that library. It takes no work from it
-//! and instead shows that library's books, merged by work with the books
-//! of every other library it is a window of or holds a library card for.
+//! Books in other libraries: a branch shows the books of the library it
+//! joined, and a clerk those of each library it holds a library card for,
+//! merged by work into one list ("window books"). A branch reads them
+//! whatever its "Keep copies on this computer" setting says.
 //!
 //! On the library, [`window_books_page`] answers the `window.books` frame:
 //! one page of the books on every store account of this library, as its
@@ -14,16 +14,16 @@
 //! clerk signed in with that person's library card reads it over the
 //! clerk socket (`GET /api/clerk/v1/connect`).
 //!
-//! On the window:
+//! On the reading install (a branch or a clerk):
 //!
 //! 1. [`record_window_page`] stores each page, one `window_books` row per
 //!    edition, with the work of this install's own library its identifiers
 //!    reach (by identifier, never by title; none when no single work does).
 //! 2. [`finish_window_read`] drops the rows a complete read no longer
 //!    named, so a book the library stopped holding goes away.
-//!    [`clear_window_books`] drops a library's rows outright (download
-//!    turned back on, or the link left).
-//! 3. [`window_view`] merges every window link's rows into one list: rows
+//!    [`clear_window_books`] drops a library's rows outright (the link
+//!    left, or the card signed out).
+//! 3. [`window_view`] merges every link's and card's rows into one list: rows
 //!    are the same work when they reach the same local work, share a
 //!    strong identifier (ASIN with marketplace, OpenLibrary edition or work
 //!    id), or are grouped together by the same library.
@@ -1158,11 +1158,10 @@ fn merge_keys(row: &window_books::Model, identifiers: &[LookupIdentifier]) -> Ve
     keys
 }
 
-/// The merged view of every library this install is a window of: the books
-/// each holds for the person, one entry per work, sorted by title.
+/// The merged view of every library this install is a branch of or holds
+/// a library card for: their books, one entry per work, sorted by title.
 ///
-/// Only active links with "Use this computer to download" off count, and
-/// every active library card ([`crate::control_plane::list_clerk_links`]). Rows
+/// Every active link counts, and every active library card ([`crate::control_plane::list_clerk_links`]). Rows
 /// are the same work when they reach the same work of this library, share
 /// a strong identifier (not an ISBN), or carry the same grouping key from
 /// one library. A row whose stored edition is missing or no longer parses
@@ -1175,13 +1174,13 @@ pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
     let mut windows: BTreeMap<String, String> = list_cluster_links(store)
         .await?
         .into_iter()
-        .filter(|link| link.is_active() && !link.download)
+        .filter(|link| link.is_active())
         .map(|link| (link.owner_cluster_id, link.owner_origin))
         .collect();
     // Libraries this install holds a library card for (as a clerk) read
     // into the same rows. A clerk link is refused while a cluster link to
     // that library is active, so the two never share a library; should
-    // both be found, the window link's origin is kept.
+    // both be found, the branch link's origin is kept.
     for link in list_clerk_links(store).await? {
         if link.is_active() {
             windows

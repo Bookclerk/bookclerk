@@ -5037,12 +5037,10 @@ async fn departed_libraries_lose_their_plugin_state() {
     );
 }
 
-/// "Use this computer to download" off makes the link a window: the
-/// consented plugin is withdrawn, the owner sees the deployment as an
-/// error naming window mode, and no job is claimed until the setting is on
-/// again.
+/// "Keep copies on this computer" off changes nothing about the library's
+/// work: the consented plugin stays and the branch keeps claiming jobs.
 #[tokio::test]
-async fn a_window_link_runs_no_owner_plugin_until_it_downloads_again() {
+async fn a_branch_that_keeps_no_copies_still_runs_its_librarys_work() {
     let _dek = crate::auth::tests::process_dek_lock().await;
     let owner_files = tempfile::tempdir().unwrap();
     let host_files = tempfile::tempdir().unwrap();
@@ -5055,7 +5053,7 @@ async fn a_window_link_runs_no_owner_plugin_until_it_downloads_again() {
     let link = join(&owner, &host, admin, &origin, None).await.unwrap();
     let node_id = link.remote_node_id.clone();
     let cluster_id = link.owner_cluster_id.clone();
-    let deployed = deploy_store(&owner, owner_files.path(), &node_id).await;
+    deploy_store(&owner, owner_files.path(), &node_id).await;
     let first = enqueue_scan(&owner).await;
     let transport = EchoTransport::default();
     let (handle, _stop) = start_client(
@@ -5074,33 +5072,16 @@ async fn a_window_link_runs_no_owner_plugin_until_it_downloads_again() {
     .await;
 
     assert!(
-        bookclerk_library::control_plane::set_cluster_link_download(&host, &cluster_id, false)
+        bookclerk_library::control_plane::set_cluster_link_keep_copies(&host, &cluster_id, false)
             .await
             .unwrap()
     );
     notify_consent_changed();
-    eventually("the owner to see window mode", || async {
-        observed(&owner, &deployed, &node_id)
-            .await
-            .is_some_and(|seen| {
-                seen.status == DeploymentStatus::Error
-                    && seen.detail == super::consent::WINDOW_MODE_DETAIL
-            })
+    let second = enqueue_scan(&owner).await;
+    eventually("the second scan to finish with copies off", || async {
+        job(&owner, &second).await.state == JobState::Succeeded
     })
     .await;
-    assert!(handle.consented_plugins().is_empty());
-    let second = enqueue_scan(&owner).await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    assert_eq!(job(&owner, &second).await.state, JobState::Pending);
-    assert_eq!(transport.runs().len(), 1, "a window claims nothing");
-
-    bookclerk_library::control_plane::set_cluster_link_download(&host, &cluster_id, true)
-        .await
-        .unwrap();
-    notify_consent_changed();
-    eventually(
-        "the second scan to finish once it downloads again",
-        || async { job(&owner, &second).await.state == JobState::Succeeded },
-    )
-    .await;
+    assert!(!handle.consented_plugins().is_empty());
+    assert_eq!(transport.runs().len(), 2);
 }

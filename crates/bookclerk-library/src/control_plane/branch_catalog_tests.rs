@@ -786,7 +786,7 @@ async fn ancestry_lists_this_library_then_every_parent_and_refuses_cycles() {
         list_members_books: Some(false),
         work_for_members: Some(true),
         keep_member_copies: None,
-        download: Some(false),
+        keep_copies: Some(false),
     };
     assert!(set_cluster_link_settings(&store, "parent", settings)
         .await
@@ -794,10 +794,7 @@ async fn ancestry_lists_this_library_then_every_parent_and_refuses_cycles() {
     let link = load_cluster_link(&store, "parent").await.unwrap().unwrap();
     assert!(link.share_books && !link.include_branches && !link.list_members_books);
     assert!(link.work_for_members && !link.keep_member_copies);
-    assert!(
-        !link.download,
-        "the window setting is written with the rest"
-    );
+    assert!(!link.keep_copies, "keep copies is written with the rest");
     assert!(!set_cluster_link_settings(&store, "elsewhere", settings)
         .await
         .unwrap());

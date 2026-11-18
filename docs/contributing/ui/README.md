@@ -77,9 +77,11 @@ network can reach this host's web API.
   for a write its `Referer`, is not the app's) is refused with `403`, since
   the host would otherwise add the operator token to it.
 - The window only shows pages from the scheme, with one exception: joining a
-  library opens the library's own sign-in pages in the window until the
-  library sends it back, and that return (to `http://localhost/join/callback`)
-  is handed to the app scheme. Navigation anywhere else is refused.
+  library, or signing in to one with a library card, opens the library's own
+  sign-in pages in the window until the library sends it back, and that
+  return (to `http://localhost/join/callback` or
+  `http://localhost/clerk/callback`) is handed to the app scheme. Navigation
+  anywhere else is refused.
 - The page may call one Tauri command, `live`, which takes nothing from the
   page but its channel. The capability in
   `crates/bookclerk-desktop/capabilities/main.json` allows it for the main
@@ -93,27 +95,21 @@ network can reach this host's web API.
 
 #### First run in the window
 
-On a fresh install the window opens on **Join your library**: the person
-enters the library's address (with its port, if it has one) and signs in on
-the library as a member, through the same join flow a server uses (see
-[Branches](../../guide/branches.md)). The library must let new branches join.
+On a fresh install the window opens on **Sign in to your library**: the
+person enters the library's address (with its port, if it has one) and
+signs in on the library with their account there, through the same library
+card sign-in a server uses (see
+[Signing in with a library card](../../server/sign-in.md#signing-in-with-a-library-card)).
+The computer becomes a **clerk** of the library: it shows the library's
+books, the person's own marked, and takes none of the library's work. It
+is not a branch, so nothing the library deploys ever runs there.
 **Host a library on this computer instead** sets up a library here, as
 `bookclerkd`'s first run does.
-
-A computer that joins from the window becomes a **window** of the library:
-as soon as the join finishes, the app turns off **Use this computer to
-download** for that library, so the computer shows the library's books
-and takes none of the library's work (see
-[Window mode](../../server/cluster-hosts.md#window-mode)). Turning the setting
-on in Settings → Library makes it a branch that downloads. Nothing the library
-deploys runs there before that, or before the window's operator approves it.
-If the setting can't be stored, the page says the computer is a branch that
-downloads and points at Settings → Library.
 
 Not there yet: the tray, uploads (when
 they come, through the native file picker), opening external links in the
 system browser, passkeys (WebAuthn needs a real origin), impersonation (it
-needs a session cookie), and signed packages. Joining a library whose node API uses
+needs a session cookie), and signed packages. Joining or signing in to a library whose node API uses
 a self-signed certificate does not work from the window yet: the webview does
 not trust that certificate for the sign-in pages. Links the host writes for other
 people, such as invite links, still name `integrations.public_origin` or the

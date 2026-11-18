@@ -12,7 +12,7 @@
 //!   PKCE verifier and `state`, keeps them in memory for
 //!   [`PENDING_CLERK_TTL`], and answers the authorize URL to send the
 //!   browser to. The redirect URI is this install's own `/clerk/callback`.
-//!   A library this install is already an active branch or window of is
+//!   A library this install is already an active branch of is
 //!   refused (409 `already_joined`): its books are read through that link.
 //! - `POST /api/config/clerk/callback` `{code, state, error?}`: the browser
 //!   came back. The daemon matches `state` to its pending sign-in, redeems

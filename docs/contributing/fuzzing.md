@@ -478,7 +478,7 @@ only that. The others check:
   accepted exactly when it is one object with no repeated keys and no keys
   besides `cluster_id`, `share_books`, `include_branches`,
   `list_members_books`, `work_for_members`, `keep_member_copies` and
-  `download`, with a string `cluster_id` and booleans for `share_books`
+  `keep_copies`, with a string `cluster_id` and booleans for `share_books`
   and `include_branches`, and each of the other four absent, `null` or a
   boolean. The parser then returns the trimmed id and those values, with
   an absent or `null` setting left unset (kept as stored) rather than read

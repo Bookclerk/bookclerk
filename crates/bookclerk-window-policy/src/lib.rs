@@ -16,9 +16,11 @@
 //!   credentials, origins and forwarding headers are dropped; `Host`,
 //!   `Origin` ([`EMBEDDED_ORIGIN`]) and the operator token are set.
 //! - [`classify_navigation`]: the window stays on the app's pages, except
-//!   for a library's sign-in while a join started from the window is open.
-//! - [`join_sign_in_ttl`]: how long that sign-in stays open, from the join
-//!   start's answer.
+//!   for a library's sign-in while one started from the window is open: a
+//!   join (this install becomes a branch) or a library card (this install
+//!   signs in as a clerk).
+//! - [`sign_in_ttl`]: how long that sign-in stays open, from the start
+//!   route's answer.
 
 use std::time::Duration;
 
@@ -28,7 +30,7 @@ use http::{header, HeaderMap, HeaderName, HeaderValue, Method};
 pub const EMBEDDED_HOST: &str = "localhost";
 
 /// The origin the router sees every embedded request come from: loopback,
-/// so a join's return address is one the library accepts.
+/// so a sign-in's return address is one the library accepts.
 pub const EMBEDDED_ORIGIN: &str = "http://localhost";
 
 /// Origins of the window's own pages: the custom scheme, and the form
@@ -38,6 +40,21 @@ pub const APP_ORIGINS: [&str; 2] = ["bookclerk://localhost", "http://bookclerk.l
 /// The route that starts a join; its answer opens the sign-in window.
 pub const JOIN_START_PATH: &str = "/api/config/join/start";
 
+/// The route that starts a library card sign-in; its answer opens the
+/// sign-in window.
+pub const CLERK_START_PATH: &str = "/api/config/clerk/start";
+
+/// The routes whose successful `POST` opens a library's sign-in in the
+/// window.
+pub const SIGN_IN_START_PATHS: [&str; 2] = [JOIN_START_PATH, CLERK_START_PATH];
+
+/// The paths a library sends the window back to after its sign-in, on a
+/// loopback `http` address: the join's and the library card's callback.
+pub const SIGN_IN_CALLBACK_PATHS: [&str; 2] = [
+    bookclerk_node_proto::JOIN_CALLBACK_PATH,
+    bookclerk_node_proto::CLERK_CALLBACK_PATH,
+];
+
 /// The node API's path prefix: other nodes reach it over TLS, never the
 /// window.
 pub const NODE_API_PATH: &str = "/api/node";
@@ -46,9 +63,9 @@ pub const NODE_API_PATH: &str = "/api/node";
 /// value as `bookclerkd`'s `live::LIVE_PATH` (a test there checks).
 pub const LIVE_PATH: &str = "/api/live";
 
-/// Longest sign-in a join start may open, in seconds, whatever its answer
+/// Longest sign-in a start route may open, in seconds, whatever its answer
 /// says.
-pub const MAX_JOIN_SIGN_IN_SECS: u64 = 3600;
+pub const MAX_SIGN_IN_SECS: u64 = 3600;
 
 /// Request headers dropped before routing, so the page cannot present a
 /// credential, an origin or a forwarded address of its own.
@@ -78,12 +95,12 @@ pub enum Refusal {
 pub enum Navigation {
     /// One of the app's own pages.
     App,
-    /// A library's sign-in page, while a join is open.
-    JoinSignIn,
+    /// A library's sign-in page, while a sign-in is open.
+    SignIn,
     /// The library sending the window back after sign-in. The window opens
     /// this path and query on the app scheme instead; it always starts with
-    /// the join callback path.
-    JoinReturn(String),
+    /// one of [`SIGN_IN_CALLBACK_PATHS`].
+    SignInReturn(String),
     /// Anywhere else: refused.
     Refuse,
 }
@@ -191,31 +208,31 @@ fn is_loopback_http(url: &url::Url) -> bool {
 /// # Arguments
 ///
 /// * `raw` - The URL the window is about to open.
-/// * `join_open` - Whether a join's sign-in is under way.
+/// * `sign_in_open` - Whether a library's sign-in is under way.
 ///
 /// # Returns
 ///
-/// The app's own pages always; the library's return to
-/// `http://localhost/join/callback` (any loopback host and port) as a
-/// [`Navigation::JoinReturn`] while a join is open; other `https` pages,
-/// or loopback `http` ones, only while a join is open.
+/// The app's own pages always; the library's return to one of
+/// [`SIGN_IN_CALLBACK_PATHS`] on a loopback `http` address (any host and
+/// port) as a [`Navigation::SignInReturn`] while a sign-in is open; other
+/// `https` pages, or loopback `http` ones, only while a sign-in is open.
 #[must_use]
-pub fn classify_navigation(raw: &str, join_open: bool) -> Navigation {
+pub fn classify_navigation(raw: &str, sign_in_open: bool) -> Navigation {
     let Ok(url) = url::Url::parse(raw) else {
         return Navigation::Refuse;
     };
     if is_app_url(&url) {
         return Navigation::App;
     }
-    if !join_open {
+    if !sign_in_open {
         return Navigation::Refuse;
     }
-    if is_loopback_http(&url) && url.path() == bookclerk_node_proto::JOIN_CALLBACK_PATH {
+    if is_loopback_http(&url) && SIGN_IN_CALLBACK_PATHS.contains(&url.path()) {
         let query = url.query().map(|q| format!("?{q}")).unwrap_or_default();
-        return Navigation::JoinReturn(format!("{}{query}", url.path()));
+        return Navigation::SignInReturn(format!("{}{query}", url.path()));
     }
     if url.scheme() == "https" || is_loopback_http(&url) {
-        return Navigation::JoinSignIn;
+        return Navigation::SignIn;
     }
     Navigation::Refuse
 }
@@ -230,7 +247,7 @@ pub enum LiveRefusal {
     /// A webview other than the main window called it.
     OtherWebview,
     /// The calling page is not one of the app's own pages, such as a
-    /// library's sign-in page shown during a join.
+    /// library's sign-in page.
     ForeignPage,
 }
 
@@ -259,7 +276,7 @@ pub fn live_refusal(webview_label: &str, page_url: &str) -> Option<LiveRefusal> 
 }
 
 /// How long the window may show the library's sign-in, from a successful
-/// join start's JSON answer.
+/// start route's JSON answer (a join's or a library card's).
 ///
 /// # Arguments
 ///
@@ -267,17 +284,17 @@ pub fn live_refusal(webview_label: &str, page_url: &str) -> Option<LiveRefusal> 
 ///
 /// # Returns
 ///
-/// `expires_in_secs`, at most [`MAX_JOIN_SIGN_IN_SECS`], when the body is a
+/// `expires_in_secs`, at most [`MAX_SIGN_IN_SECS`], when the body is a
 /// JSON object with a string `authorize_url` and an unsigned integer
 /// `expires_in_secs`; `None` otherwise.
 #[must_use]
-pub fn join_sign_in_ttl(body: &[u8]) -> Option<Duration> {
+pub fn sign_in_ttl(body: &[u8]) -> Option<Duration> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
     value.get("authorize_url")?.as_str()?;
     let secs = value
         .get("expires_in_secs")?
         .as_u64()?
-        .min(MAX_JOIN_SIGN_IN_SECS);
+        .min(MAX_SIGN_IN_SECS);
     Some(Duration::from_secs(secs))
 }
 
@@ -423,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn the_window_stays_on_the_app_unless_a_join_is_open() {
+    fn the_window_stays_on_the_app_unless_a_sign_in_is_open() {
         for open in [false, true] {
             assert_eq!(
                 classify_navigation("bookclerk://localhost/settings", open),
@@ -449,35 +466,47 @@ mod tests {
         );
         assert_eq!(
             classify_navigation("https://library.example/join/approve", true),
-            Navigation::JoinSignIn
+            Navigation::SignIn
         );
         assert_eq!(
             classify_navigation("http://localhost/join/callback?code=c&state=s", true),
-            Navigation::JoinReturn("/join/callback?code=c&state=s".into())
+            Navigation::SignInReturn("/join/callback?code=c&state=s".into())
         );
         assert_eq!(
             classify_navigation("http://127.0.0.1:8787/join/callback", true),
-            Navigation::JoinReturn("/join/callback".into())
+            Navigation::SignInReturn("/join/callback".into())
         );
         assert_eq!(
             classify_navigation("http://[::1]/", true),
-            Navigation::JoinSignIn
+            Navigation::SignIn
         );
         assert_eq!(
             classify_navigation("http://evil.example/join/callback", true),
             Navigation::Refuse
         );
+        assert_eq!(
+            classify_navigation("http://localhost:8787/clerk/callback?code=c&state=s", true),
+            Navigation::SignInReturn("/clerk/callback?code=c&state=s".into())
+        );
+        assert_eq!(
+            classify_navigation("http://localhost/clerk/callback?code=c", false),
+            Navigation::Refuse
+        );
+        assert_eq!(
+            classify_navigation("http://localhost/clerk/callbacks", true),
+            Navigation::SignIn
+        );
     }
 
     #[test]
-    fn join_ttl_comes_from_a_join_start_answer_only() {
+    fn sign_in_ttl_comes_from_a_start_answer_only() {
         let started =
             br#"{"authorize_url":"https://l.example/join/approve","expires_in_secs":600}"#;
-        assert_eq!(join_sign_in_ttl(started), Some(Duration::from_secs(600)));
+        assert_eq!(sign_in_ttl(started), Some(Duration::from_secs(600)));
         let long = br#"{"authorize_url":"x","expires_in_secs":999999}"#;
-        assert_eq!(join_sign_in_ttl(long), Some(Duration::from_secs(3600)));
-        assert_eq!(join_sign_in_ttl(br#"{"expires_in_secs":600}"#), None);
-        assert_eq!(join_sign_in_ttl(b"not json"), None);
+        assert_eq!(sign_in_ttl(long), Some(Duration::from_secs(3600)));
+        assert_eq!(sign_in_ttl(br#"{"expires_in_secs":600}"#), None);
+        assert_eq!(sign_in_ttl(b"not json"), None);
     }
 
     #[test]
