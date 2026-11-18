@@ -296,7 +296,7 @@ artifacts = ["bookclerk"]
 
 [targets.copy_answer]
 crate = "bookclerk-node-proto"
-boundary = "The head of a library's answer to a copy download, GET /api/copies/v1/{copy_id}/files/{n}, which decides how many bytes a branch or clerk takes and where in the file it writes them"
+boundary = "A library's answer to a copy download, GET /api/copies/v1/{copy_id}/files/{n}: where its head ends, and what the head says of how many bytes a branch or clerk takes and where in the file it writes them"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]

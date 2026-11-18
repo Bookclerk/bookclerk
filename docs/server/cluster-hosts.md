@@ -777,7 +777,9 @@ the answer states exactly the bytes it asked for: `200` with the size the
 grant listed, or `206` from the byte it resumes at to the end of the
 file. An answer with another length or range, or with a chunked body, is
 refused, and what the reader already holds is kept for the next try. A
-`416` on a resumed download starts that file over once.
+`416` on a resumed download starts that file over once. A branch linked
+to several libraries sends a copy's token only to the library that
+granted it.
 
 The library sends a copy of an edition when it holds the edition's audio
 and the person may see the edition. The primary audio file comes first,

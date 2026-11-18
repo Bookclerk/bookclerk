@@ -637,10 +637,11 @@ impl OwnerEndpoint {
     ///
     /// # Errors
     ///
-    /// Returns [`DialError`] when the request cannot be made, the answer
-    /// does not state exactly the bytes asked for or ends early
-    /// ([`DialError::Http`]), a read stalls ([`DialError::Timeout`]), or
-    /// `file` cannot be written.
+    /// Returns [`CopyStreamError::Transfer`] when the request cannot be
+    /// made, the answer does not state exactly the bytes asked for or ends
+    /// early ([`DialError::Http`]), or a read stalls
+    /// ([`DialError::Timeout`]); [`CopyStreamError::Local`] when `file`
+    /// cannot be written.
     pub async fn get_copy_stream(
         &self,
         path: &str,
@@ -648,12 +649,13 @@ impl OwnerEndpoint {
         resume_from: u64,
         size: u64,
         file: &mut tokio::fs::File,
-    ) -> Result<u16, DialError> {
-        use bookclerk_node_proto::{parse_copy_answer, CopyAnswer, MAX_COPY_ANSWER_HEAD_BYTES};
+    ) -> Result<u16, CopyStreamError> {
+        use bookclerk_node_proto::{copy_answer_head_end, parse_copy_answer, CopyAnswer};
         use tokio::io::AsyncSeekExt as _;
+        use CopyStreamError::Local;
 
         if authorization.contains(['\r', '\n']) || path.contains(['\r', '\n', ' ']) {
-            return Err(DialError::Http);
+            return Err(DialError::Http.into());
         }
         let mut io = self.connect().await?;
         let range = if resume_from > 0 {
@@ -681,38 +683,40 @@ impl OwnerEndpoint {
 
         let mut chunk = vec![0u8; UPLOAD_COPY_CHUNK];
         let mut buf = Vec::new();
+        let broken = |problem: &'static str| {
+            tracing::warn!(problem, "a copy download's answer breaks the rules");
+            DialError::Http
+        };
+        // Where the head ends is decided over everything received so far,
+        // so it does not depend on how the answer was cut into reads.
         let head_end = loop {
-            if let Some(at) = find(&buf, b"\r\n\r\n") {
+            if let Some(at) = copy_answer_head_end(&buf).map_err(broken)? {
                 break at;
-            }
-            if buf.len() > MAX_COPY_ANSWER_HEAD_BYTES + 4 {
-                return Err(DialError::Http);
             }
             let n = idle_step(io.read(&mut chunk)).await.map_err(stalled)?;
             if n == 0 {
-                return Err(DialError::Http);
+                return Err(DialError::Http.into());
             }
             buf.extend_from_slice(&chunk[..n]);
         };
-        let answer = parse_copy_answer(&buf[..head_end], resume_from, size).map_err(|problem| {
-            tracing::warn!(problem, "a copy download's answer breaks the rules");
-            DialError::Http
-        })?;
+        let answer = parse_copy_answer(&buf[..head_end], resume_from, size).map_err(broken)?;
         let (offset, length) = match answer {
             CopyAnswer::Status(status) => return Ok(status),
             CopyAnswer::Body { offset, length } => (offset, length),
         };
         if offset == 0 {
-            file.set_len(0).await?;
+            cut_to_empty(file).await.map_err(Local)?;
         }
-        file.seek(std::io::SeekFrom::Start(offset)).await?;
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(Local)?;
         // Nothing past the stated length is taken, whenever it arrives.
         let early = &buf[head_end + 4..];
         let early =
             &early[..usize::try_from(length).map_or(early.len(), |most| most.min(early.len()))];
         let mut taken = u64::try_from(early.len()).map_err(|_| DialError::Http)?;
         let body = async {
-            file.write_all(early).await?;
+            file.write_all(early).await.map_err(Local)?;
             while taken < length {
                 let want = usize::try_from(length - taken)
                     .unwrap_or(usize::MAX)
@@ -721,20 +725,62 @@ impl OwnerEndpoint {
                     .await
                     .map_err(stalled)?;
                 if n == 0 {
-                    return Err(DialError::Http);
+                    return Err(DialError::Http.into());
                 }
-                file.write_all(&chunk[..n]).await?;
+                file.write_all(&chunk[..n]).await.map_err(Local)?;
                 taken += u64::try_from(n).map_err(|_| DialError::Http)?;
             }
-            Ok(())
+            Ok::<(), CopyStreamError>(())
         }
         .await;
         // What arrived reaches the file even when the download failed, so
         // the next request resumes after it.
-        file.flush().await?;
+        file.flush().await.map_err(Local)?;
         body?;
         Ok(if offset == 0 { 200 } else { 206 })
     }
+}
+
+/// Why [`OwnerEndpoint::get_copy_stream`] did not bring the bytes.
+#[derive(Debug, thiserror::Error)]
+pub enum CopyStreamError {
+    /// The request or the library's answer failed; asking again may work.
+    #[error(transparent)]
+    Transfer(#[from] DialError),
+    /// The destination file could not be cut, positioned or written (a
+    /// full disk, say); asking again does not help until that is fixed.
+    #[error("the local file failed: {0}")]
+    Local(std::io::Error),
+}
+
+/// Held while a destination file is being cut to empty, and taken before
+/// a destination's length is read ([`cuts_finished`]).
+///
+/// The cut runs on the blocking pool and finishes even when the download
+/// that asked for it is dropped. Without this a later download of the
+/// same path could read the old length first, resume from it, and have
+/// the late cut leave a hole before the bytes it then wrote.
+static CUTTING: std::sync::LazyLock<Arc<tokio::sync::Mutex<()>>> =
+    std::sync::LazyLock::new(|| Arc::new(tokio::sync::Mutex::new(())));
+
+/// Cuts `file` to empty, holding [`CUTTING`] until the cut is done
+/// whether or not the caller is still waiting for it.
+async fn cut_to_empty(file: &tokio::fs::File) -> std::io::Result<()> {
+    let cutting = Arc::clone(&CUTTING).lock_owned().await;
+    let handle = file.try_clone().await?.into_std().await;
+    tokio::task::spawn_blocking(move || {
+        let done = handle.set_len(0);
+        drop(cutting);
+        done
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
+/// Waits until no destination file is being cut to empty by a download,
+/// a dropped one included; a length read after this is not behind a cut.
+pub(crate) async fn cuts_finished() {
+    drop(CUTTING.lock().await);
 }
 
 /// What a first TLS handshake showed of an owner's certificate, before any
@@ -1284,8 +1330,10 @@ mod tests {
                     request.push(byte[0]);
                 }
                 requests.push(String::from_utf8(request).unwrap());
-                socket.write_all(&answer).await.unwrap();
-                socket.shutdown().await.unwrap();
+                // The reader may hang up once it refuses the head, so a
+                // failed write is not the test failing.
+                let _ = socket.write_all(&answer).await;
+                let _ = socket.shutdown().await;
             }
             requests
         });
@@ -1313,6 +1361,58 @@ mod tests {
         .into_bytes();
         out.extend_from_slice(&file[from..]);
         out
+    }
+
+    /// The head and the first file bytes are told apart the same way
+    /// wherever the library's writes fall, the blank line cut in two
+    /// included, and a destination that cannot be written is a local
+    /// failure, not one to ask the library again about.
+    #[tokio::test]
+    async fn a_copy_answer_cut_anywhere_gives_the_same_file() {
+        const COPY: &str = "0b7f6c7e-3d1a-4a52-9c1e-6f2f0f0c9a11";
+        let content = b"\r\n\r\nfile bytes that look like a blank line\r\n\r\n".to_vec();
+        let size = content.len() as u64;
+        let answer = whole(&content);
+        let head = answer.len() - content.len();
+        let dir = tempfile::tempdir().unwrap();
+        for cut in [1, head - 3, head - 2, head - 1, head, head + 1, head + 5] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let pieces = [answer[..cut].to_vec(), answer[cut..].to_vec()];
+            let served = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0u8; 1];
+                while !request.ends_with(b"\r\n\r\n") {
+                    assert_eq!(socket.read(&mut byte).await.unwrap(), 1);
+                    request.push(byte[0]);
+                }
+                for piece in pieces {
+                    socket.write_all(&piece).await.unwrap();
+                    socket.flush().await.unwrap();
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                }
+            });
+            let endpoint = OwnerEndpoint::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
+            let dest = dir.path().join(format!("cut-{cut}"));
+            crate::fetch_copy_file(&endpoint, "Bookclerk-Copy secret", COPY, 0, size, &dest)
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read(&dest).unwrap(), content, "cut at {cut}");
+            served.await.unwrap();
+        }
+
+        // A file that cannot be written.
+        let dest = dir.path().join("read-only");
+        std::fs::write(&dest, b"old").unwrap();
+        let mut file = tokio::fs::File::open(&dest).await.unwrap();
+        let (endpoint, _served) = scripted_library(vec![answer]).await;
+        let path = format!("/api/copies/v1/{COPY}/files/0");
+        let out = endpoint
+            .get_copy_stream(&path, "Bookclerk-Copy secret", 0, size, &mut file)
+            .await;
+        assert!(matches!(out, Err(CopyStreamError::Local(_))), "{out:?}");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"old");
     }
 
     /// A copy's file comes whole, resumes where a cut download stopped,

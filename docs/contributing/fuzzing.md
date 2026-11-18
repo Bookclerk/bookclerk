@@ -62,7 +62,7 @@ boundary extends it.
 | `clerk_token_request` | A library card's token exchange, the body of `POST /api/clerk/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_clerk_token_request`, `clerk_exchange_matches` |
 | `clerk_token_answer` | A library's answer to a clerk's token exchange, read on the clerk before it seals the library card and records the library | `bookclerk-node-proto::parse_clerk_token_answer` |
 | `copy_range` | The `Range` header of a copy download, `GET /api/copies/v1/{copy_id}/files/{n}`, which decides which bytes of a library's file are sent | `bookclerk-node-proto::parse_copy_range` |
-| `copy_answer` | The head of a library's answer to a copy download, read on the branch or clerk that took the copy: how many bytes it takes and where in the file it writes them | `bookclerk-node-proto::parse_copy_answer` |
+| `copy_answer` | A library's answer to a copy download, read on the branch or clerk that took the copy: where its head ends, how many bytes follow and where in the file they are written | `bookclerk-node-proto::copy_answer_head_end`, `parse_copy_answer` |
 | `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics, pages of the library's books with the person's marked, and the grant of a copy with its download token) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
@@ -426,18 +426,28 @@ only that. The others check:
   `bookclerk-node-proto`.
 - **`copy_answer`**: the input is the byte the reader asked to resume
   from and the file's size (eight bytes each, big endian) and then the
-  head as received, without its closing blank line. A body the parser
+  answer as received: the head, the blank line that ends it (CRLF CRLF)
+  and, if a seed wants them, first bytes of the body. A seed whose head
+  has no blank line after it is read as an answer that has not ended, and
+  is refused. The head ends before the first blank line, which the oracle
+  finds by a second scan one byte at a time; it is refused when that is
+  past 16 KiB; and every shorter run of the same bytes finds the same
+  head once it holds the blank line and none before, so where the
+  library's writes fall never moves a byte between the head and the
+  file. A body the parser
   answers ends exactly at the file's end and starts at byte 0 or at the
   byte asked for, and only a `206` starts above 0, so a reader never
   writes past the size the grant stated or leaves a gap. A head is
-  refused when it is over 16 KiB, is not printable ASCII lines ended by
+  refused when it is not printable ASCII lines ended by
   CRLF, has no `HTTP/1.0` or `HTTP/1.1` status line with a status from
-  100 to 599, has a header line without a name and a colon, states a
+  100 to 599, has a header line without a colon or whose name is not an
+  HTTP token, states a
   transfer encoding, or repeats or misstates `Content-Length` or
   `Content-Range`; a `200` is a body exactly when its length is the
   file's size and it states no range; a `206` exactly when a byte inside
   the file was asked for and the range and length are that byte to the
-  end; every other status is an answer without file bytes. The answer
+  end; a `416` that states a range must state `bytes */<size>`; every
+  other status is an answer without file bytes. The answer
   equals the one the oracle works out by reading the head a second way
   (bytes compared one by one, digits folded into a wide integer). Seeds
   named `body-*` and `status-*` must parse as that and the others must be

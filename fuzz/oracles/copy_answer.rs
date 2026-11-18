@@ -7,11 +7,18 @@
 //! took the copy from, and [`parse_copy_answer`] decides from it how many
 //! bytes the reader takes and where in the file it writes them. The input
 //! is the byte the reader asked to resume from and the file's size (eight
-//! bytes each, big endian; missing bytes are zero), then the head as
-//! received.
+//! bytes each, big endian; missing bytes are zero), then the answer as
+//! received: the head, the blank line that ends it and any first bytes of
+//! the body. [`copy_answer_head_end`] finds the head in it, as the reader
+//! does after each read.
 //!
-//! Whatever the head is:
+//! Whatever the answer is:
 //!
+//! - the head ends where a second scan (one byte at a time) finds the
+//!   first blank line, is refused when that is past the longest head, and
+//!   is found the same in every shorter run of the bytes that holds the
+//!   blank line and in none that does not, so where the library's writes
+//!   were cut into reads never moves a byte between the head and the file;
 //! - a body ends exactly at the file's end and starts at byte 0 or at the
 //!   byte asked for, so the reader never writes past the size the grant
 //!   stated or leaves a gap;
@@ -20,10 +27,12 @@
 //!   head (bytes compared one by one, digits folded into a wide integer),
 //!   so the parser and the oracle would have to be wrong the same way.
 
-use bookclerk_node_proto::{parse_copy_answer, CopyAnswer, MAX_COPY_ANSWER_HEAD_BYTES};
+use bookclerk_node_proto::{
+    copy_answer_head_end, parse_copy_answer, CopyAnswer, MAX_COPY_ANSWER_HEAD_BYTES,
+};
 
-/// Largest input worth checking: the two numbers and a head just past the
-/// longest the parser takes.
+/// Largest input worth checking: the two numbers and an answer just past
+/// the longest head the parser takes.
 pub const MAX_INPUT_BYTES: usize = 16 + MAX_COPY_ANSWER_HEAD_BYTES + 64;
 
 /// What the oracle found the head to be.
@@ -105,6 +114,67 @@ fn range_of(value: &[u8]) -> Option<(u128, u128, u128)> {
     ))
 }
 
+/// True for a byte an HTTP header name may hold, read off the list in
+/// RFC 9110 rather than by character class.
+fn token_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'0'..=b'9'
+            | b'a'..=b'z'
+            | b'A'..=b'Z'
+            | b'!'
+            | b'#'
+            | b'$'
+            | b'%'
+            | b'&'
+            | b'\''
+            | b'*'
+            | b'+'
+            | b'-'
+            | b'.'
+            | b'^'
+            | b'_'
+            | b'`'
+            | b'|'
+            | b'~'
+    )
+}
+
+/// True for the `Content-Range` of an unsatisfied range, `bytes */<size>`.
+fn unsatisfied(value: &[u8]) -> bool {
+    value
+        .strip_prefix(b"bytes */")
+        .is_some_and(|total| digits(total).is_some())
+}
+
+/// Where the head ends in `received`, scanned one byte at a time:
+/// `Ok(Some(n))` for a head of `n` bytes, `Ok(None)` while the blank line
+/// may still arrive, `Err(())` when the head is too long.
+fn head_end(received: &[u8]) -> Result<Option<usize>, ()> {
+    let mut run = 0usize;
+    for (at, byte) in received.iter().enumerate() {
+        run = match (run, byte) {
+            (0 | 2, b'\r') => run + 1,
+            (1, b'\n') => 2,
+            (3, b'\n') => {
+                let head = at - 3;
+                return if head <= MAX_COPY_ANSWER_HEAD_BYTES {
+                    Ok(Some(head))
+                } else {
+                    Err(())
+                };
+            }
+            (_, b'\r') => 1,
+            _ => 0,
+        };
+    }
+    if received.len() >= MAX_COPY_ANSWER_HEAD_BYTES + 4 {
+        Err(())
+    } else {
+        Ok(None)
+    }
+}
+
 /// The answer the head should get, read a second way; `None` when it
 /// should be refused.
 fn expected(head: &[u8], asked_from: u64, size: u64) -> Option<CopyAnswer> {
@@ -128,7 +198,7 @@ fn expected(head: &[u8], asked_from: u64, size: u64) -> Option<CopyAnswer> {
     for line in &lines[1..] {
         let colon = line.iter().position(|byte| *byte == b':')?;
         let name = line[..colon].to_ascii_lowercase();
-        if name.is_empty() || name.contains(&b' ') || name.contains(&b'\t') {
+        if name.is_empty() || !name.iter().all(|byte| token_byte(*byte)) {
             return None;
         }
         let value = trimmed(&line[colon + 1..]);
@@ -163,6 +233,7 @@ fn expected(head: &[u8], asked_from: u64, size: u64) -> Option<CopyAnswer> {
                 length: size - asked_from,
             })
         }
+        416 if !ranges.iter().all(|value| unsatisfied(value)) => None,
         other => Some(CopyAnswer::Status(u16::try_from(other).unwrap_or(u16::MAX))),
     }
 }
@@ -172,11 +243,12 @@ fn expected(head: &[u8], asked_from: u64, size: u64) -> Option<CopyAnswer> {
 /// # Arguments
 ///
 /// * `data` - Eight bytes of the byte asked for, eight of the file's size,
-///   then the head.
+///   then the answer as received.
 ///
 /// # Returns
 ///
-/// What the head was read as.
+/// What the answer was read as; `Refused` also when its head has no end
+/// yet or is too long.
 ///
 /// # Panics
 ///
@@ -193,7 +265,37 @@ pub fn check(data: &[u8]) -> Read {
     let asked_from = u64::from_be_bytes(half);
     half.copy_from_slice(&numbers[8..]);
     let size = u64::from_be_bytes(half);
-    let head = &data[prefix..];
+    let received = &data[prefix..];
+
+    let found = copy_answer_head_end(received).map_err(|_| ());
+    assert_eq!(found, head_end(received), "the head's end");
+    // However the bytes were cut into reads, the same head is found: a
+    // shorter run finds it exactly when it holds the blank line.
+    let cuts = [
+        received.len() / 2,
+        received.len().saturating_sub(1),
+        usize::from(numbers[7]) % (received.len() + 1),
+    ];
+    let around = found.ok().flatten().map(|head| [head + 3, head + 4]);
+    for cut in cuts.into_iter().chain(around.into_iter().flatten()) {
+        let Some(shorter) = received.get(..cut) else {
+            continue;
+        };
+        let early = copy_answer_head_end(shorter).map_err(|_| ());
+        match found {
+            Ok(Some(head)) if cut >= head + 4 => assert_eq!(early, Ok(Some(head))),
+            Ok(_) => assert_eq!(early, Ok(None), "a head found before its end"),
+            Err(()) => assert_ne!(
+                early.map(|end| end.is_some()),
+                Ok(true),
+                "a head found in an answer that is refused"
+            ),
+        }
+    }
+    let Ok(Some(head_len)) = found else {
+        return Read::Refused;
+    };
+    let head = &received[..head_len];
     let shown = String::from_utf8_lossy(head);
 
     let answer = parse_copy_answer(head, asked_from, size).ok();

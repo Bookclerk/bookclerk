@@ -13,7 +13,7 @@ use std::path::Path;
 
 use bookclerk_node_proto::{is_copy_id, COPIES_PATH};
 
-use crate::endpoint::{DialError, OwnerEndpoint};
+use crate::endpoint::{cuts_finished, CopyStreamError, DialError, OwnerEndpoint};
 
 /// Why [`fetch_copy_file`] did not bring the file.
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +21,10 @@ pub enum CopyFetchError {
     /// The copy id is not one a library gives out; nothing was asked.
     #[error("not a copy id")]
     InvalidCopy,
+    /// Another library granted the copy than the one asked for its file;
+    /// nothing was asked, so the token was sent to no one.
+    #[error("the copy was granted by another library")]
+    OtherLibrary,
     /// The grant lists no file at that index; nothing was asked.
     #[error("the copy has no such file")]
     NoSuchFile,
@@ -34,9 +38,19 @@ pub enum CopyFetchError {
     /// for. What arrived so far is kept, so the next call resumes.
     #[error(transparent)]
     Transfer(#[from] DialError),
-    /// The local file could not be opened or read.
+    /// The local file could not be opened, read or written (a full disk,
+    /// say). Calling again does not help until that is fixed.
     #[error("the local file failed: {0}")]
     Local(#[from] std::io::Error),
+}
+
+impl From<CopyStreamError> for CopyFetchError {
+    fn from(err: CopyStreamError) -> Self {
+        match err {
+            CopyStreamError::Transfer(err) => Self::Transfer(err),
+            CopyStreamError::Local(err) => Self::Local(err),
+        }
+    }
 }
 
 /// Downloads file `index` of the copy `copy_id` to `dest`.
@@ -77,8 +91,14 @@ pub async fn fetch_copy_file(
         .write(true)
         .open(dest)
         .await?;
+    // A download of this path that was dropped while it cut the file to
+    // empty finishes the cut first, so the length is the one to resume
+    // from.
+    cuts_finished().await;
     let held = file.metadata().await?.len();
     if held == size {
+        // An earlier call may have written every byte and failed to sync.
+        file.sync_all().await?;
         return Ok(());
     }
     let mut resume_from = if held < size { held } else { 0 };

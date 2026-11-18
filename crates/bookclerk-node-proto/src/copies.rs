@@ -279,6 +279,36 @@ pub fn parse_copy_range(header: &str, size: u64) -> CopyRange {
 /// status line and headers, before the blank line.
 pub const MAX_COPY_ANSWER_HEAD_BYTES: usize = 16 * 1024;
 
+/// Finds where the head of a download's answer ends in the bytes
+/// received so far, however the library's writes were cut into reads.
+///
+/// The head ends before the first blank line (CRLF CRLF). A reader calls
+/// this on everything it has received after each read: the head is the
+/// first `n` bytes, [`parse_copy_answer`] reads it, and the body starts
+/// four bytes after it. The answer depends only on the bytes, never on
+/// where the reads fell: once it is `Some(n)` or an error it stays that
+/// for every longer run of the same bytes.
+///
+/// # Returns
+///
+/// `Ok(Some(n))` when the head is the first `n` bytes, `Ok(None)` when
+/// the blank line has not arrived yet and still may.
+///
+/// # Errors
+///
+/// Returns a short reason when the head would be longer than
+/// [`MAX_COPY_ANSWER_HEAD_BYTES`].
+pub fn copy_answer_head_end(received: &[u8]) -> Result<Option<usize>, &'static str> {
+    match received.windows(4).position(|run| run == b"\r\n\r\n") {
+        Some(at) if at <= MAX_COPY_ANSWER_HEAD_BYTES => Ok(Some(at)),
+        Some(_) => Err("head_too_long"),
+        // A blank line that has not started within the limit never ends
+        // a head short enough.
+        None if received.len() >= MAX_COPY_ANSWER_HEAD_BYTES + 4 => Err("head_too_long"),
+        None => Ok(None),
+    }
+}
+
 /// What the head of a download's answer says follows it
 /// ([`parse_copy_answer`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,7 +340,12 @@ pub enum CopyAnswer {
 /// - `206` with `Content-Range: bytes <asked_from>-<size - 1>/<size>` and
 ///   the matching `Content-Length`, only when `asked_from` is above 0 and
 ///   inside the file;
-/// - any other status from 100 to 599: no file bytes.
+/// - any other status from 100 to 599: no file bytes. A `416` that
+///   states a `Content-Range` must state the unsatisfied form,
+///   `bytes */<size>`.
+///
+/// A header's name is an HTTP token (letters, digits and
+/// ``!#$%&'*+-.^_`|~``).
 ///
 /// # Errors
 ///
@@ -329,6 +364,10 @@ pub fn parse_copy_answer(
         (!text.is_empty() && text.len() <= 19 && text.bytes().all(|b| b.is_ascii_digit()))
             .then(|| text.parse().ok())
             .flatten()
+    }
+    /// True for a byte of an HTTP token (RFC 9110 `tchar`).
+    fn token_byte(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
     }
     if head.len() > MAX_COPY_ANSWER_HEAD_BYTES {
         return Err("head_too_long");
@@ -364,7 +403,7 @@ pub fn parse_copy_answer(
             return Err("bad_header_line");
         }
         let (name, value) = line.split_once(':').ok_or("bad_header_line")?;
-        if name.is_empty() || name.contains([' ', '\t']) {
+        if name.is_empty() || !name.bytes().all(token_byte) {
             return Err("bad_header_line");
         }
         let value = value.trim_matches([' ', '\t']);
@@ -418,6 +457,16 @@ pub fn parse_copy_answer(
                 offset: asked_from,
                 length: rest,
             })
+        }
+        416 => {
+            let stated = range.map(|value| {
+                value
+                    .strip_prefix("bytes */")
+                    .and_then(number)
+                    .ok_or("bad_content_range")
+            });
+            stated.transpose()?;
+            Ok(CopyAnswer::Status(416))
         }
         other => Ok(CopyAnswer::Status(other)),
     }
@@ -659,6 +708,32 @@ mod tests {
     }
 
     #[test]
+    fn a_download_answer_head_ends_at_the_first_blank_line_however_it_arrives() {
+        let answer = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nab\r\n\r\n";
+        let head = b"HTTP/1.1 200 OK\r\nContent-Length: 4".len();
+        for received in 0..=answer.len() {
+            let want = (received >= head + 4).then_some(head);
+            assert_eq!(copy_answer_head_end(&answer[..received]), Ok(want));
+        }
+        // The longest head is taken; one byte more is not, with or
+        // without its blank line.
+        let mut longest = vec![b'a'; MAX_COPY_ANSWER_HEAD_BYTES];
+        assert_eq!(copy_answer_head_end(&longest), Ok(None));
+        longest.extend_from_slice(b"\r\n\r");
+        assert_eq!(copy_answer_head_end(&longest), Ok(None));
+        longest.push(b'\n');
+        assert_eq!(
+            copy_answer_head_end(&longest),
+            Ok(Some(MAX_COPY_ANSWER_HEAD_BYTES))
+        );
+        let mut over = vec![b'a'; MAX_COPY_ANSWER_HEAD_BYTES + 1];
+        over.extend_from_slice(b"\r\n\r");
+        assert_eq!(copy_answer_head_end(&over), Err("head_too_long"));
+        over.push(b'\n');
+        assert_eq!(copy_answer_head_end(&over), Err("head_too_long"));
+    }
+
+    #[test]
     fn a_download_answer_states_exactly_the_bytes_asked_for() {
         use CopyAnswer::{Body, Status};
         let body = |offset, length| Ok(Body { offset, length });
@@ -742,6 +817,30 @@ mod tests {
             ("HTTP/1.1 2000 OK", 0, 10, Err("bad_status_line")),
             ("HTTP/1.1 099 Odd", 0, 10, Err("bad_status_line")),
             ("HTTP/1.1 200 OK\r\nno colon", 0, 10, Err("bad_header_line")),
+            (
+                "HTTP/1.1 200 OK\r\nBad(Name): x\r\nContent-Length: 10",
+                0,
+                10,
+                Err("bad_header_line"),
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nX-Odd_Name.1: x\r\nContent-Length: 10",
+                0,
+                10,
+                body(0, 10),
+            ),
+            (
+                "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */10",
+                10,
+                10,
+                Ok(Status(416)),
+            ),
+            (
+                "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: invalid",
+                10,
+                10,
+                Err("bad_content_range"),
+            ),
             (
                 "HTTP/1.1 200 OK\r\nContent-Length : 10",
                 0,

@@ -1453,6 +1453,7 @@ impl HostClientHandle {
         })?;
         register_value_for_redaction(token.expose());
         Ok(Some(crate::GrantedCopy::new(
+            shared.cluster_id.clone(),
             copy_id,
             expires_in_secs,
             copy,
@@ -1467,14 +1468,18 @@ impl HostClientHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::CopyFetchError`]; `NoSuchFile` when the grant lists
-    /// no file at `index`.
+    /// Returns [`crate::CopyFetchError`]: `OtherLibrary` when another
+    /// library granted `copy` (its token is not sent), `NoSuchFile` when
+    /// the grant lists no file at `index`.
     pub async fn fetch_copy_file(
         &self,
         copy: &crate::GrantedCopy,
         index: usize,
         dest: &std::path::Path,
     ) -> Result<(), crate::CopyFetchError> {
+        if !copy.granted_by(&self.shared.cluster_id) {
+            return Err(crate::CopyFetchError::OtherLibrary);
+        }
         let file = copy
             .files
             .get(index)

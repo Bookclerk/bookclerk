@@ -1,8 +1,10 @@
-//! Coverage-guided checks of the head of a copy download's answer
-//! (`bookclerk-node-proto::parse_copy_answer`), which decides how many
-//! bytes a reader takes from the library it took a copy from and where in
-//! the file it writes them. The oracle in `fuzz/oracles/copy_answer.rs` is
-//! shared with the replay test.
+//! Coverage-guided checks of a copy download's answer as a reader
+//! receives it (`bookclerk-node-proto::copy_answer_head_end` and
+//! `parse_copy_answer`): where its head ends, however the bytes were cut
+//! into reads, and what the head says of the bytes that follow, which
+//! decides how many a reader takes from the library it took a copy from
+//! and where in the file it writes them. The oracle in
+//! `fuzz/oracles/copy_answer.rs` is shared with the replay test.
 
 #![no_main]
 
