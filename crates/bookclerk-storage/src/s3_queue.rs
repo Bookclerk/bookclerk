@@ -506,7 +506,10 @@ impl QueueFeed {
                 full = true;
                 break;
             }
-            if received < want {
+            // SQS may return fewer messages than asked even with more
+            // ready (and short polls sample only some servers), so only an
+            // empty receive, or the page budget, ends the page.
+            if received == 0 {
                 break;
             }
             if events.len() >= limit {
@@ -699,6 +702,8 @@ mod tests {
         deleted: Vec<u64>,
         fail_receive: bool,
         fail_release: bool,
+        /// Most messages one receive returns, like SQS's partial batches.
+        batch_cap: Option<usize>,
     }
 
     impl FakeQueue {
@@ -727,7 +732,8 @@ mod tests {
                 return Err(StorageError::S3("receive failed".into()));
             }
             let mut out = Vec::new();
-            while out.len() < max.min(RECEIVE_BATCH) {
+            let cap = state.batch_cap.unwrap_or(RECEIVE_BATCH);
+            while out.len() < max.min(RECEIVE_BATCH).min(cap) {
                 let Some((id, body)) = state.ready.pop_front() else {
                     break;
                 };
@@ -933,6 +939,21 @@ mod tests {
         let last = feed.changes(Some(&next.cursor), 12).await.expect("last");
         assert_eq!(last.changes.len(), 1);
         assert!(!last.more);
+    }
+
+    #[tokio::test]
+    async fn partial_batches_do_not_end_the_page() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let queue = Arc::new(FakeQueue::default());
+        queue.state.lock().unwrap().batch_cap = Some(2);
+        for i in 0..5 {
+            queue.send(put(&format!("k{i}"), &format!("t{i}")));
+        }
+        let feed = feed(&queue, dir.path());
+        let start = feed.changes(None, 0).await.expect("start");
+        let page = feed.changes(Some(&start.cursor), 0).await.expect("page");
+        assert_eq!(page.changes.len(), 5);
+        assert!(!page.more);
     }
 
     #[tokio::test]
