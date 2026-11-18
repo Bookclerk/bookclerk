@@ -721,8 +721,9 @@ pub enum Body {
     /// edition, named by its store listing, for the node's owner
     /// ([`crate::copies`]). Answered with [`Body::CopyGranted`], or `error`
     /// with `refused` (not a branch this library trusts), `not_found` (the
-    /// person cannot take the edition, or the library holds no copy of it)
-    /// or `invalid`.
+    /// person cannot take the edition, or the library holds no copy of it),
+    /// `invalid`, or `unavailable` (the library cannot read its storage
+    /// right now).
     #[serde(rename = "copy.grant")]
     CopyGrant {
         /// Store id of the edition's listing.

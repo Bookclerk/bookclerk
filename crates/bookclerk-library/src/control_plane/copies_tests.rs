@@ -7,7 +7,7 @@ use bookclerk_node_proto::{copy_granted_problem, CopyGrantedFrame, CopyRole, Upl
 use sea_orm::EntityTrait;
 
 use super::*;
-use crate::control_plane::window_books::tests::{add_branch, book, hold, raw, BRANCH};
+use crate::control_plane::window_books::tests::{add_branch, hold, raw, BRANCH};
 use crate::models::{UserRole, UserStatus};
 use crate::test_support::{sqlite::memory, Profile};
 
@@ -314,6 +314,9 @@ async fn a_grant_is_checked_afresh_on_every_download() {
         .unwrap();
     assert_ne!(row.token_hash, *opened.token);
     assert_eq!(row.token_hash, crate::hash_token(&opened.token));
+    // Nor does the grant print it.
+    let printed = format!("{opened:?}");
+    assert!(printed.contains(&opened.copy_id) && !printed.contains(opened.token.as_str()));
     assert_eq!(
         (row.holder_kind.as_str(), row.holder_id.as_str()),
         ("node", BRANCH)

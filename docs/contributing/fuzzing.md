@@ -60,6 +60,7 @@ boundary extends it.
 | `clerk_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_clerk_query`, `clerk_request_problem` |
 | `clerk_token_request` | A library card's token exchange, the body of `POST /api/clerk/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_clerk_token_request`, `clerk_exchange_matches` |
 | `clerk_token_answer` | A library's answer to a clerk's token exchange, read on the clerk before it seals the library card and records the library | `bookclerk-node-proto::parse_clerk_token_answer` |
+| `copy_range` | The `Range` header of a copy download, `GET /api/copies/v1/{copy_id}/files/{n}`, which decides which bytes of a library's file are sent | `bookclerk-node-proto::parse_copy_range` |
 | `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics and pages of the library's books, the person's marked) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
@@ -329,7 +330,16 @@ only that. The others check:
   control characters, or a sync token of at most 4096 bytes with no
   control characters. A file of an `upload.grant` or `catalog.upload`
   that passes its validator states a probe only with a bitrate of at most
-  20,000 kbps and a plain store id. Seeds cover `accounts.update`, `accounts.updated`,
+  20,000 kbps and a plain store id. A `copy.grant` that passes its
+  validator names a plain store id, a lowercase marketplace and a product
+  id with no control characters or outer whitespace. A `copy.granted`
+  that passes its validator carries a lowercase hyphenated UUID as its
+  copy id, a token of 1 to 1024 base64url characters, a life of one
+  second to a day, and 1 to 1000 files with distinct relative names
+  (at most 512 bytes, no `.` or `..` segment, backslash, control
+  character or drive prefix), each at most 1 TiB, exactly one of them the
+  primary audio. The `copy_*` seeds' names say whether the receiver takes
+  the frame, and the replay test checks each against its name. Seeds cover `accounts.update`, `accounts.updated`,
   `scan.removed`, `scan.pass_end` and a `work` frame with scan tokens. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
@@ -389,6 +399,16 @@ only that. The others check:
   second to a year; other keys are ignored, and each field is the value
   sent. The shared oracle is `fuzz/oracles/clerk_token_answer.rs`,
   replayed from `bookclerk-node-proto`.
+- **`copy_range`**: the input is the file's size (eight bytes, big
+  endian) and then the header as sent. A part the parser answers lies
+  inside the file (at least one byte, ending at or before the end), so a
+  read never passes the file; only a header that is `bytes=`, digits and
+  exactly one `-` gets a part or "unsatisfiable", and anything else gets
+  the whole file; and the answer equals the one the oracle works out by
+  reading the header a second way (digits folded into a wide integer).
+  Seeds named `part-*` must parse as a part and the others must not. The
+  shared oracle is `fuzz/oracles/copy_range.rs`, replayed from
+  `bookclerk-node-proto`.
 - **`clerk_socket_frame`**: the first byte picks the direction (even:
   clerk to library; odd: library to clerk) and the rest is the frame,
   checked against the frame read as an untyped JSON value. A clerk frame

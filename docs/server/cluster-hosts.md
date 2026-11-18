@@ -751,6 +751,56 @@ keys.
 These routes sit outside the cookie and operator-auth layers, because the
 sealed token is the credential. They run the transport policy first.
 
+## Taking a copy from the library
+
+A branch can take the files the library already holds of an edition,
+instead of downloading the book from the store again. Nothing new has to
+be turned on: the library answers a branch it trusts, for the person the
+branch belongs to.
+
+1. **Grant.** The branch sends `copy.grant` over the node socket, naming
+   the edition by its store listing (`store`, `marketplace`,
+   `product_id`). The library answers `copy.granted` with a copy id, what
+   the copy is (media type, bitrate, source store, version, as the
+   [window list](#window-mode) states it), the list of files with their
+   sizes, and a bearer token **sealed to the branch's box key**. Only the
+   token's hash is stored, and it lives one hour.
+2. **Download.** The branch sends
+   `GET /api/copies/v1/{copy_id}/files/{n}` per file, with
+   `Authorization: Bookclerk-Copy <token>`. The library streams the file
+   from its destination; nothing is staged on its disk. One `Range`
+   (`bytes=a-b`, `bytes=a-` or `bytes=-n`) is honoured with `206`, so a
+   broken download resumes where it stopped.
+
+The library sends a copy of an edition when it holds the edition's audio
+and the person may see the edition. The primary audio file comes first,
+then the files stored in the same folder (parts, chapters, cover, PDF,
+sidecars). File names are relative to that folder. They say what a file
+is; the branch names the files its own way.
+
+The library checks the grant again on **every** download, not only when
+it hands out the token: the branch is still trusted, it still belongs to
+the same person, that person may still see the edition, and the files
+are still the ones the grant listed. A token outlives none of them.
+
+| Refusal | Meaning |
+| --- | --- |
+| `error` `refused` (socket) | Not a branch this library trusts |
+| `error` `not_found` (socket) | The person may not take the edition, or the library holds no copy of it. The two are not told apart |
+| `error` `unavailable` (socket), `503 unavailable` | The library's storage can't be read right now. Try again later |
+| `401 unauthorized` | Unknown copy, a wrong or expired token, or a grant that no longer holds |
+| `421 misdirected` | Another library node granted it |
+| `404 unknown_file` | The copy has no file `{n}` |
+| `416 range_not_satisfiable` | The range starts at or past the end of the file |
+
+Limits: 1000 files per copy and 512-byte names. A grant is dropped once
+it expires.
+
+> [!NOTE]
+> This is the library's side. A branch doesn't yet take copies by itself
+> when it acquires a book the library already holds, and a clerk can't
+> ask for one yet.
+
 ## Node-local instances
 
 An instance can be **local to one node**: it deploys only on that node and

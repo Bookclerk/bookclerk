@@ -433,7 +433,6 @@ async fn edition_plan(
 }
 
 /// A grant just opened by [`open_copy`].
-#[derive(Debug)]
 pub struct OpenedCopy {
     /// The copy id.
     pub copy_id: String,
@@ -441,6 +440,16 @@ pub struct OpenedCopy {
     pub token: Zeroizing<String>,
     /// Seconds the token is accepted.
     pub expires_in_secs: u64,
+}
+
+impl std::fmt::Debug for OpenedCopy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenedCopy")
+            .field("copy_id", &self.copy_id)
+            .field("token", &"<redacted>")
+            .field("expires_in_secs", &self.expires_in_secs)
+            .finish()
+    }
 }
 
 /// A fresh bearer token: 32 random bytes, base64url.

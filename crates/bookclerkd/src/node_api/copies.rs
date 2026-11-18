@@ -2,7 +2,7 @@
 //!
 //! | Request | Answer |
 //! |---|---|
-//! | `copy.grant {store, marketplace?, product_id}` (node socket) | `copy.granted {copy_id, sealed_token, expires_in_secs, copy, files}` or `error {code: "refused" \| "not_found" \| "invalid"}` |
+//! | `copy.grant {store, marketplace?, product_id}` (node socket) | `copy.granted {copy_id, sealed_token, expires_in_secs, copy, files}` or `error {code: "refused" \| "not_found" \| "invalid" \| "unavailable"}` |
 //! | `GET /api/copies/v1/{copy_id}/files/{n}` | 200 or 206 with the file's bytes |
 //!
 //! The grant names an edition by its store listing and no person: the
