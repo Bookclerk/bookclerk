@@ -3,15 +3,18 @@
  * Jellyfin read for a music album, which audiobook folders reuse.
  *
  * The reader takes the `<album>` root's children: `title`, `review` as the
- * description, `label` as the publisher, `releasedate` (else `year`) as the
- * date, each `genre`, and each `artist` as an author. Text is plain, not
- * HTML.
+ * description, `label` as the publisher, a non-blank `releasedate` (else
+ * `year`) as the date, each `genre`, and as authors the `artist` of each
+ * `albumArtistCredits` (what Kodi exports), else each direct `artist`
+ * (what older files and other tools write). Text is plain, not HTML.
  *
  * The writer edits the file in place, as the OPF writer does: for each
  * field it sets, it removes the elements that field reads from and appends
- * new ones at the end of `<album>`. Writing the date also writes `year`;
- * writing authors also drops `albumArtistCredits`, whose artists would
- * otherwise disagree with the new ones.
+ * new ones at the end of `<album>`, and adds nothing when there is nothing
+ * to add. Writing the date also writes `year`; writing authors writes each
+ * as a direct `artist` and an `albumArtistCredits` entry, and replaces
+ * `artistdesc` (the artists as Kodi shows them) with the names joined by
+ * ` / `.
  */
 
 import type { MetadataField, MetadataFileRecord } from "@bookclerk/plugin-sdk/workerd";
@@ -66,7 +69,12 @@ function replaces(element: XmlElement, field: MetadataField, authors: boolean): 
     case "genres":
       return element.name === "genre";
     case "credits":
-      return authors && (element.name === "artist" || element.name === "albumArtistCredits");
+      return (
+        authors &&
+        (element.name === "artist" ||
+          element.name === "albumArtistCredits" ||
+          element.name === "artistdesc")
+      );
     case "subtitle":
     case "language":
     case "tags":
@@ -99,10 +107,15 @@ export function parseAlbumNfo(bytes: Uint8Array): MetadataFileRecord {
   if (review !== undefined) out.description(review.text);
   const label = first("label");
   if (label !== undefined) out.text("publisher", label.text);
-  const date = first("releasedate") ?? first("year");
+  const released = first("releasedate");
+  const date = released !== undefined && released.text.trim() !== "" ? released : first("year");
   if (date !== undefined) out.publishedAt(date.text);
   if (first("genre") !== undefined) out.labels("genres", all("genre"));
-  if (first("artist") !== undefined) out.credits("author", all("artist"));
+  const credited = kids
+    .filter((k) => k.name === "albumArtistCredits")
+    .flatMap((k) => k.children.filter((c) => c.name === "artist").map((c) => c.text));
+  if (credited.length > 0) out.credits("author", credited);
+  else if (first("artist") !== undefined) out.credits("author", all("artist"));
   return out.build();
 }
 
@@ -143,10 +156,14 @@ export function renderAlbumNfo(
   }
   if (set("genres")) for (const genre of record.genres) element("genre", genre);
   if (set("credits") && authors) {
-    for (const credit of record.credits)
-      if (credit.role === "author") element("artist", credit.name);
+    const names = record.credits.filter((c) => c.role === "author").map((c) => c.name);
+    if (names.length > 0) element("artistdesc", names.join(" / "));
+    for (const name of names) element("artist", name);
+    for (const name of names) {
+      added.push(`<albumArtistCredits><artist>${escapeText(name)}</artist></albumArtistCredits>`);
+    }
   }
   const edits = removed.map((kid) => removal(source, kid));
-  edits.push(appendChildren(source, album, added));
+  if (added.length > 0) edits.push(appendChildren(source, album, added));
   return encodeFile(applyEdits(source, edits));
 }

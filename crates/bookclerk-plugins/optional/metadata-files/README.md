@@ -7,11 +7,11 @@ belongs to one tool lives in that tool's plugin instead (Audiobookshelf's
 runs in `workerd` with no network or file grant: the host hands it one
 file's bytes.
 
-| Dialect | Files | Writes | Fields |
-| --- | --- | --- | --- |
-| `libation_json` | `*.metadata.json` | no | title, subtitle, description, publisher, date, language, genres, abridgement, ASIN and ISBN, authors and narrators, series, chapters, running time |
-| `kodi_album_nfo` | `album.nfo` | yes | title, description, publisher, date, genres, authors |
-| `opf` | `*.opf` | yes | title, description, publisher, date, language, genres, ISBN and ASIN, authors, narrators, translators, editors and illustrators, series |
+| Dialect          | Files             | Writes | Fields                                                                                                                                             |
+| ---------------- | ----------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `libation_json`  | `*.metadata.json` | no     | title, subtitle, description, publisher, date, language, genres, abridgement, ASIN and ISBN, authors and narrators, series, chapters, running time |
+| `kodi_album_nfo` | `album.nfo`       | yes    | title, description, publisher, date, genres, authors                                                                                               |
+| `opf`            | `*.opf`           | yes    | title, description, publisher, date, language, genres, ISBN and ASIN, authors, narrators, translators, editors and illustrators, series            |
 
 ## Libation's catalog record
 
@@ -58,11 +58,15 @@ states. With no file yet, it writes a new OPF 2 package.
 
 Kodi and Jellyfin read an `album.nfo` for a music album, and audiobook
 folders reuse it. The reader takes the `<album>` root's `title`, `review`
-(the description, as plain text), `label` (publisher), `releasedate` (else
-`year`), each `genre`, and each `artist` as an author.
+(the description, as plain text), `label` (publisher), a non-blank
+`releasedate` (else `year`) and each `genre`. Authors come from the
+`artist` of each `albumArtistCredits`, as Kodi exports them, else from each
+direct `artist`, as older files and other tools write them.
 
-A write edits the file in place, like OPF. Writing the date also writes
-`year`, and writing authors also drops `albumArtistCredits` so Kodi does
+A write edits the file in place, like OPF, and leaves the file untouched
+when it has nothing to add or remove. Writing the date also writes `year`.
+Writing authors writes each one both ways, and replaces `artistdesc` (the
+artists as Kodi shows them) with the names joined by `/`, so Kodi does
 not show the old artists.
 
 ## XML
