@@ -44,9 +44,9 @@ const IMPORT_PAGE: u64 = 256;
 pub struct LinkImport<'a> {
     /// The library this branch acquired the title for.
     pub cluster_id: &'a str,
-    /// The library's row of the title (its uuid is the library's and is not
-    /// reused here).
-    pub book: &'a BookRecord,
+    /// The title as the library sent it (its `uuid`, when set, is the
+    /// library's and is not reused here).
+    pub book: &'a NewBook,
     /// Storage key of the primary audio file, the same on every
     /// destination of the copy.
     pub primary_key: &'a str,
@@ -153,32 +153,12 @@ pub async fn import_link_title(
     Ok(LinkImportOutcome::Imported(Box::new(stored)))
 }
 
-/// The library's row as an insert here: the same store identity and
+/// The library's title as an insert here: the same store identity and
 /// metadata under this library's own uuid.
-fn new_book(book: &BookRecord) -> NewBook {
+fn new_book(book: &NewBook) -> NewBook {
     NewBook {
         uuid: None,
-        product_id: book.product_id.clone(),
-        plugin_key: book.plugin_key.clone(),
-        source: book.source.clone(),
-        account_id: book.account_id.clone(),
-        asin: book.asin.clone(),
-        isbn: book.isbn.clone(),
-        marketplace: book.marketplace.clone(),
-        title: book.title.clone(),
-        authors: book.authors.clone(),
-        narrators: book.narrators.clone(),
-        series: book.series.clone(),
-        series_index: book.series_index.clone(),
-        series_asin: book.series_asin.clone(),
-        purchased_at: book.purchased_at,
-        publisher: book.publisher.clone(),
-        length_minutes: book.length_minutes,
-        is_abridged: book.is_abridged,
-        content_kind: book.content_kind.clone(),
-        categories: book.categories.clone(),
-        subtitle: book.subtitle.clone(),
-        published_at: book.published_at,
+        ..book.clone()
     }
 }
 

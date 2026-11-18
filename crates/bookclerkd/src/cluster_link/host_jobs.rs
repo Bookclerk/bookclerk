@@ -64,8 +64,8 @@ use bookclerk_library::control_plane::LinkImportOutcome;
 use bookclerk_library::{BookRecord, JobKind, LibraryStore, NewBook};
 use bookclerk_node_client::{HostJobCtx, OwnerCallError};
 use bookclerk_node_proto::{
-    AcquireTarget, FileCopy, PlanDestination, UploadFile, UploadProbe, MAX_SCAN_BATCH_ROWS,
-    MAX_SCAN_REMOVED_IDS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
+    AcquireTarget, FileCopy, PlanDestination, TargetTitle, UploadFile, UploadProbe,
+    MAX_SCAN_BATCH_ROWS, MAX_SCAN_REMOVED_IDS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
 };
 use bookclerk_plugin_host::{HandedScan, RefreshedCredentialSink};
 use bookclerk_source::DownloadOptions;
@@ -173,12 +173,14 @@ pub struct HostTitle {
     /// The owner's account holding of the title (`holdings.id` there): the
     /// title this host's upload is granted and committed for.
     pub holding_id: String,
-    /// The owner's library row.
-    pub book: BookRecord,
-    /// The owner's row for the title's podcast parent, when it sent one;
+    /// The title as the owner sent it, as a library insert under the
+    /// holding id ([`scratch_book`]): what the scratch library is seeded
+    /// with and the branch's own library imports.
+    pub book: NewBook,
+    /// The title's podcast parent as the owner sent it, when it did;
     /// seeded into the scratch library so episodes are named as on the
     /// owner.
-    pub parent: Option<BookRecord>,
+    pub parent: Option<NewBook>,
     /// The title's library id on the owner, which names its files here as
     /// there (this host's scratch library has its own edition ids).
     pub library_id: Option<String>,
@@ -278,8 +280,8 @@ pub type LocalDestination = (&'static str, Box<dyn StorageBackend>);
 /// kept it ([`HostGuests::import_owner_title`]).
 #[derive(Debug, Clone, Copy)]
 pub struct OwnerTitleCopy<'a> {
-    /// The owner's row of the title.
-    pub book: &'a BookRecord,
+    /// The title as the owner sent it.
+    pub book: &'a NewBook,
     /// The acquired files' keys.
     pub acquired: &'a AcquiredTitle,
     /// Every file this host holds on its own destinations:
@@ -512,7 +514,7 @@ impl HostGuests for GuestHost {
             pdf_key: copy.acquired.pdf_key.as_deref(),
             files: &files,
         };
-        let book_uuid = copy.book.uuid.as_str();
+        let book_uuid = copy.book.uuid.as_deref().unwrap_or_default();
         match bookclerk_library::control_plane::import_link_title(&library, import).await {
             Ok(LinkImportOutcome::Imported(book)) => tracing::info!(
                 cluster_id = %self.cluster_id,
@@ -582,31 +584,46 @@ async fn scratch_library(cfg: &bookclerk_config::Config, dir: &Path) -> anyhow::
     })
 }
 
-/// The owner's row as a scratch-library insert (same uuid).
-fn new_book_from(book: &BookRecord) -> NewBook {
+/// The title an acquire target names as a library insert: the target's
+/// store and account, `uuid` as the row's id (a scratch library takes the
+/// owner's holding id; `None` lets the library assign one), and the owner's
+/// metadata. A date that does not parse as RFC 3339 is left out; it only
+/// names files.
+#[must_use]
+pub fn scratch_book(
+    plugin_key: &str,
+    account_id: &str,
+    uuid: Option<String>,
+    title: &TargetTitle,
+) -> NewBook {
+    let at = |text: &Option<String>| {
+        text.as_deref()
+            .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+            .map(|at| at.with_timezone(&chrono::Utc))
+    };
     NewBook {
-        uuid: Some(book.uuid.clone()),
-        product_id: book.product_id.clone(),
-        plugin_key: book.plugin_key.clone(),
-        source: book.source.clone(),
-        account_id: book.account_id.clone(),
-        asin: book.asin.clone(),
-        isbn: book.isbn.clone(),
-        marketplace: book.marketplace.clone(),
-        title: book.title.clone(),
-        authors: book.authors.clone(),
-        narrators: book.narrators.clone(),
-        series: book.series.clone(),
-        series_index: book.series_index.clone(),
-        series_asin: book.series_asin.clone(),
-        purchased_at: book.purchased_at,
-        publisher: book.publisher.clone(),
-        length_minutes: book.length_minutes,
-        is_abridged: book.is_abridged,
-        content_kind: book.content_kind.clone(),
-        categories: book.categories.clone(),
-        subtitle: book.subtitle.clone(),
-        published_at: book.published_at,
+        uuid,
+        product_id: title.product_id.clone(),
+        plugin_key: plugin_key.to_string(),
+        source: title.source.clone(),
+        account_id: account_id.to_string(),
+        asin: title.asin.clone(),
+        isbn: title.isbn.clone(),
+        marketplace: title.marketplace.clone(),
+        title: title.title.clone(),
+        authors: title.authors.clone(),
+        narrators: title.narrators.clone(),
+        series: title.series.clone(),
+        series_index: title.series_index.clone(),
+        series_asin: title.series_product_id.clone(),
+        purchased_at: at(&title.purchased_at),
+        publisher: title.publisher.clone(),
+        length_minutes: title.length_minutes,
+        is_abridged: title.is_abridged,
+        content_kind: title.content_kind.clone(),
+        categories: title.categories.clone(),
+        subtitle: title.subtitle.clone(),
+        published_at: at(&title.published_at),
     }
 }
 
@@ -665,15 +682,14 @@ async fn acquire_into(
     cache_dir: &Path,
     metadata: bookclerk_acquire::AcquireMetadata,
 ) -> anyhow::Result<AcquiredTitle> {
-    let book = &title.book;
     scratch
-        .scope(book.plugin_key.as_str(), book.source.as_str())
-        .ensure_account(&book.account_id, &book.marketplace, None)
+        .scope(title.book.plugin_key.as_str(), title.book.source.as_str())
+        .ensure_account(&title.book.account_id, &title.book.marketplace, None)
         .await?;
     if let Some(parent) = &title.parent {
-        scratch.upsert_book(&new_book_from(parent)).await?;
+        scratch.upsert_book(parent).await?;
     }
-    scratch.upsert_book(&new_book_from(book)).await?;
+    let book = &scratch.upsert_book(&title.book).await?;
     let Some(primary) = title.destinations.first() else {
         anyhow::bail!("the owner planned no destination");
     };
@@ -1301,13 +1317,16 @@ async fn acquire_titles<G: HostGuests>(
                 failed += 1;
                 continue;
             }
-            let book: BookRecord =
-                serde_json::from_value(target.book).context("the owner's library row")?;
-            let parent: Option<BookRecord> = target
+            let book = scratch_book(
+                &target.plugin_key,
+                &target.account_id,
+                Some(target.holding_id.clone()),
+                &target.title,
+            );
+            let parent = target
                 .parent
-                .map(serde_json::from_value)
-                .transpose()
-                .context("the owner's podcast parent row")?;
+                .as_ref()
+                .map(|parent| scratch_book(&target.plugin_key, &target.account_id, None, parent));
             let outbox = work_path(job_dir, &target.holding_id)?;
             let title = HostTitle {
                 holding_id: target.holding_id,
@@ -1355,7 +1374,7 @@ async fn acquire_titles<G: HostGuests>(
                     if !copies.is_empty() {
                         tracing::warn!(
                             job_id = %host.job.job.id,
-                            book_uuid = %title.book.uuid,
+                            book_uuid = %title.holding_id,
                             files = copies.len(),
                             "the owner's answer to a title's commit is unknown; keeping its copies on this host's own destinations"
                         );
@@ -1365,7 +1384,7 @@ async fn acquire_titles<G: HostGuests>(
                     // file failed, or it refused the commit), so this host
                     // keeps no copy of it either, unless the fence is lost:
                     // a replacement run may own those keys by now.
-                    remove_local_copies(&title.book.uuid, &copies, host.is_lost()).await;
+                    remove_local_copies(&title.holding_id, &copies, host.is_lost()).await;
                 }
             }
             let _ = tokio::fs::remove_dir_all(&outbox).await;
@@ -1388,7 +1407,7 @@ async fn acquire_titles<G: HostGuests>(
                 }
                 Err(err) if ctx.is_cancelled() => return Err(err),
                 Err(err) => {
-                    tracing::warn!(job_id = %host.job.job.id, book_uuid = %title.book.uuid, error = %err, "a title failed on the host");
+                    tracing::warn!(job_id = %host.job.job.id, book_uuid = %title.holding_id, error = %err, "a title failed on the host");
                     failed += 1;
                 }
             }
@@ -1744,7 +1763,7 @@ async fn upload_title<G: HostGuests>(
     copied: Option<&std::sync::Mutex<Vec<LocalCopy>>>,
     commit_unsettled: &AtomicBool,
 ) -> anyhow::Result<()> {
-    let book_uuid = title.book.uuid.as_str();
+    let book_uuid = title.holding_id.as_str();
     let manifest = upload_manifest(
         &title.destinations,
         outbox,

@@ -31,10 +31,10 @@ use bookclerk_library::control_plane::{
     live_remote_job, HandedPassEnd, ScanAccept, ScanSighting, TitleNames, UploadDestination,
     UploadGrant, UploadGrantRequest,
 };
-use bookclerk_library::{JobKind, LibraryStore};
+use bookclerk_library::{AcquireTitle, JobKind, LibraryStore};
 use bookclerk_node_proto::{
-    seal_upload_token, AcquireTarget, Body, Frame, LibraryId, PlanDestination, MAX_FRAME_BYTES,
-    MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
+    seal_upload_token, AcquireTarget, Body, Frame, LibraryId, PlanDestination, TargetTitle,
+    MAX_FRAME_BYTES, MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
 };
 use rand::RngCore as _;
 use zeroize::Zeroize as _;
@@ -215,8 +215,8 @@ pub(super) async fn scan_pass_report(
     })
 }
 
-/// The library row of `book`'s podcast parent, when `book` is an episode
-/// whose parent the library holds: the row an acquire names an episode's
+/// The podcast parent of `title`, when `title` is an episode whose show the
+/// same store account holds here: the title an acquire names an episode's
 /// folder from when episodes are saved to the parent's folder.
 ///
 /// # Errors
@@ -224,15 +224,53 @@ pub(super) async fn scan_pass_report(
 /// Returns the store's read error.
 async fn podcast_parent(
     library: &LibraryStore,
-    book: &bookclerk_library::BookRecord,
-) -> bookclerk_library::Result<Option<bookclerk_library::BookRecord>> {
-    if !bookclerk_library::is_episode(&book.content_kind) {
+    title: &AcquireTitle,
+) -> bookclerk_library::Result<Option<AcquireTitle>> {
+    if !bookclerk_library::is_episode(title.content_kind) {
         return Ok(None);
     }
-    let Some(parent_asin) = book.series_asin.as_deref() else {
+    let Some(show) = title.series_product_id.as_deref() else {
         return Ok(None);
     };
-    library.get_book(parent_asin, &book.account_id).await
+    Ok(library
+        .acquire_titles_named(Some(&title.account_id), show)
+        .await?
+        .into_iter()
+        .find(|parent| {
+            parent.plugin_key == title.plugin_key
+                && parent.account_id == title.account_id
+                && bookclerk_library::is_podcast_parent(parent.content_kind)
+        }))
+}
+
+/// `title` as an acquire target names it ([`TargetTitle`]).
+fn target_title(title: &AcquireTitle) -> TargetTitle {
+    TargetTitle {
+        product_id: title.product_id.clone(),
+        source: title.source.clone(),
+        marketplace: title.marketplace.clone(),
+        asin: title.asin.clone(),
+        isbn: title.isbn.clone(),
+        title: title.title.clone(),
+        subtitle: title.subtitle.clone(),
+        authors: title.authors.clone(),
+        narrators: title.narrators.clone(),
+        series: title.series.clone(),
+        series_index: title.series_index.clone(),
+        series_product_id: title.series_product_id.clone(),
+        publisher: title.publisher.clone(),
+        categories: title.categories.clone(),
+        length_minutes: title.length_minutes,
+        is_abridged: title.is_abridged,
+        content_kind: title.content_kind.to_string(),
+        purchased_at: title.purchased_at.map(|at| at.to_rfc3339()),
+        published_at: title.published_at.map(|at| at.to_rfc3339()),
+    }
+}
+
+/// The `<library id>` of `edition_id`, as a target carries it.
+fn target_library_id(edition_id: &str) -> Option<LibraryId> {
+    bookclerk_library::library_id(edition_id).and_then(|id| LibraryId::try_from(id).ok())
 }
 
 /// `acquire.plan`: the titles the job still needs, and how to name them.
@@ -274,32 +312,19 @@ pub(super) async fn acquire_plan(
         if !crate::jobs::acquire_job_includes_title(&title, false, download_episodes) {
             continue;
         }
-        // The host still names and seeds from the flat row while `books`
-        // exists (book model step 6); `job_titles` keeps only titles with
-        // one.
-        let Some(book_uuid) = title.book_uuid.as_deref() else {
-            continue;
-        };
-        let Some(book) = library.get_book_by_uuid(book_uuid).await? else {
-            continue;
-        };
-        let parent = podcast_parent(library, &book).await?;
+        let parent = podcast_parent(library, &title).await?;
         // The host names with this library's edition ids, so it plans the
-        // same keys this node grants; a failed read fails the plan rather
-        // than send the host names this node would not grant.
-        let library_id = owner_library_id(library, &book.uuid).await?;
-        let parent_library_id = match &parent {
-            Some(parent) => owner_library_id(library, &parent.uuid).await?,
-            None => None,
-        };
+        // same keys this node grants.
         targets.push(AcquireTarget {
             holding_id: title.holding_id.clone(),
             plugin_key: title.plugin_key.clone(),
             account_id: title.account_id.clone(),
-            book: serde_json::to_value(&book).unwrap_or_default(),
-            parent: parent.map(|parent| serde_json::to_value(&parent).unwrap_or_default()),
-            library_id,
-            parent_library_id,
+            title: target_title(&title),
+            library_id: target_library_id(&title.edition_id),
+            parent_library_id: parent
+                .as_ref()
+                .and_then(|parent| target_library_id(&parent.edition_id)),
+            parent: parent.as_ref().map(target_title),
         });
     }
     let destinations = destinations
@@ -327,21 +352,6 @@ pub(super) async fn acquire_plan(
         targets.truncate(targets.len() / 2);
     }
     Ok(frame)
-}
-
-/// The library id of title `book_uuid` in this node's library, as the
-/// `<library id>` naming tag writes it, or `None` when it has no edition.
-///
-/// # Errors
-///
-/// Returns an error when the edition cannot be read.
-async fn owner_library_id(
-    library: &LibraryStore,
-    book_uuid: &str,
-) -> bookclerk_library::Result<Option<LibraryId>> {
-    Ok(bookclerk_acquire::library_id_of(library, book_uuid)
-        .await?
-        .and_then(|id| LibraryId::try_from(id).ok()))
 }
 
 /// This node's destinations with the key scope of the title `book` on
