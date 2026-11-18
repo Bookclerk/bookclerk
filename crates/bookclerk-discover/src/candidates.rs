@@ -11,9 +11,7 @@ use bookclerk_library::{LibraryStore, TasteTitle};
 use bookclerk_source::{CatalogHit, ExpandSeed, SourceRegistry};
 
 use crate::error::Result;
-use crate::identity::{
-    candidate_map_key, hard_work_key, merge_candidate_metadata, push_edition, StoreEdition,
-};
+use crate::identity::{candidate_map_key, merge_candidate_metadata, push_edition, StoreEdition};
 
 /// A purchase candidate discovered from a storefront catalog (not owned locally).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -557,15 +555,25 @@ pub(crate) fn same_recording_key(
     map: &HashMap<String, StorefrontCandidate>,
     c: &StorefrontCandidate,
 ) -> Option<String> {
-    let hard = hard_work_key(c.asin.as_deref(), c.isbn.as_deref());
+    // ISBN and ASIN are compared each on their own: a listing with both
+    // and one with only the ASIN are still one recording.
+    let isbn = |v: Option<&str>| {
+        v.map(bookclerk_enrich::canonicalize_isbn)
+            .filter(|s| !s.is_empty())
+    };
+    let asin = |v: Option<&str>| {
+        v.map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_ascii_uppercase)
+    };
+    let (c_isbn, c_asin) = (isbn(c.isbn.as_deref()), asin(c.asin.as_deref()));
     map.iter().find_map(|(key, existing)| {
-        if let Some(hard) = hard.as_deref() {
-            if key == hard
-                || hard_work_key(existing.asin.as_deref(), existing.isbn.as_deref()).as_deref()
-                    == Some(hard)
-            {
-                return Some(key.clone());
-            }
+        let shares =
+            |mine: &Option<String>, theirs: Option<String>| mine.is_some() && *mine == theirs;
+        if shares(&c_isbn, isbn(existing.isbn.as_deref()))
+            || shares(&c_asin, asin(existing.asin.as_deref()))
+        {
+            return Some(key.clone());
         }
         let same_listing = c.source.eq_ignore_ascii_case(&existing.source)
             && c.product_id.eq_ignore_ascii_case(&existing.product_id);

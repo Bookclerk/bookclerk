@@ -19,7 +19,7 @@ use std::cmp::Ordering;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-use crate::candidates::{hit_to_candidate, insert_keyed, same_recording_key, StorefrontCandidate};
+use crate::candidates::{hit_to_candidate, same_recording_key, StorefrontCandidate};
 use crate::error::Result;
 use crate::identity::{merge_candidate_metadata, push_edition, StoreEdition};
 use crate::ttl_cache::TtlCache;
@@ -1239,10 +1239,34 @@ fn upsert_hit(map: &mut HashMap<String, StorefrontCandidate>, mut hit: Storefron
     }
     if let Some(mut existing) = same_recording_key(map, &hit).and_then(|key| map.remove(&key)) {
         merge_candidate_metadata(&mut existing, &hit);
-        insert_keyed(map, existing);
+        insert_search_row(map, existing);
         return;
     }
-    insert_keyed(map, hit);
+    insert_search_row(map, hit);
+}
+
+/// Stores a search row under a key that names its recording on every page.
+///
+/// A row with an ISBN or ASIN is keyed by it. Any other row's title and
+/// authors key is qualified with its store and product, so two recordings
+/// with one title keep apart keys even when they arrive on different pages
+/// (the web app drops a later row whose key it already showed).
+///
+/// # Arguments
+///
+/// * `map` - Search rows by key; `row` must not be in it.
+/// * `row` - The row to store.
+fn insert_search_row(map: &mut HashMap<String, StorefrontCandidate>, row: StorefrontCandidate) {
+    let key = crate::identity::hard_work_key(row.asin.as_deref(), row.isbn.as_deref())
+        .unwrap_or_else(|| {
+            format!(
+                "{}|{}:{}",
+                crate::identity::candidate_map_key(&row),
+                row.source,
+                row.product_id
+            )
+        });
+    map.insert(key, row);
 }
 
 /// Names the recording each hit is, from the shared listing pool.
@@ -1919,6 +1943,31 @@ mod tests {
         c.store_editions = vec![StoreEdition::new(source, product_id)];
         c.store_rank = None;
         c
+    }
+
+    /// A shared ASIN merges two rows even when only one also has an ISBN,
+    /// and rows without identifiers keep keys that name their own listing,
+    /// so a same-titled recording on a later page is not taken for one
+    /// already shown.
+    #[test]
+    fn search_rows_merge_on_either_identifier_and_keep_listing_keys() {
+        let mut map = HashMap::new();
+        let mut audible = lean_row("audible", "B0SAME", Some("9781250890009"));
+        audible.asin = Some("B0SAME".into());
+        upsert_hit(&mut map, audible);
+        let mut other = lean_row("other", "o-1", None);
+        other.asin = Some("b0same".into());
+        upsert_hit(&mut map, other);
+        assert_eq!(map.len(), 1, "{:?}", map.keys().collect::<Vec<_>>());
+
+        let mut first_page = HashMap::new();
+        upsert_hit(&mut first_page, lean_row("chirp", "c-1", None));
+        let mut second_page = HashMap::new();
+        upsert_hit(&mut second_page, lean_row("libro", "l-1", None));
+        let first: Vec<&String> = first_page.keys().collect();
+        let second: Vec<&String> = second_page.keys().collect();
+        assert_ne!(first, second);
+        assert!(first[0].ends_with("|chirp:c-1"), "{first:?}");
     }
 
     #[test]
