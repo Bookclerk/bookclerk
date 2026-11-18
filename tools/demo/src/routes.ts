@@ -99,6 +99,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/branch-requests", "deny"],
   ["POST", "/api/clerk/v1/token", "deny"],
   ["GET", "/api/clerk/v1/connect", "deny"],
+  // A copy's files are a branch's or clerk's to download: never the demo's.
+  ["GET", "/api/copies/v1/{copy_id}/files/{index}", "deny"],
   ["GET", "/api/config/shared-branches", "allow"],
   ["GET", "/api/config/clerk", "allow"],
   ["POST", "/api/config/clerk/callback", "deny"],

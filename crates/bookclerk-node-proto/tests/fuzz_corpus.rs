@@ -1,7 +1,8 @@
 //! Replays the checked-in `node_frame`, `node_account_bundle`,
 //! `clerk_authorization`, `clerk_authorize`, `clerk_token_request`,
-//! `clerk_token_answer` and `clerk_socket_frame` fuzz corpora in PR CI (no libFuzzer required), through the same oracles the
-//! targets use, so an input that once broke a parsing invariant stays fixed
+//! `clerk_token_answer`, `clerk_socket_frame` and `copy_range` fuzz corpora
+//! in PR CI (no libFuzzer required), through the same oracles the targets
+//! use, so an input that once broke a parsing invariant stays fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
 // not a documented panic path.
@@ -28,6 +29,10 @@ mod clerk_authorize_oracle;
 /// The `clerk_token_request` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/clerk_token_request.rs"]
 mod clerk_token_oracle;
+
+/// The `copy_range` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/copy_range.rs"]
+mod copy_range_oracle;
 
 /// The `clerk_token_answer` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/clerk_token_answer.rs"]
@@ -70,9 +75,47 @@ fn node_frame_corpus_keeps_every_invariant() {
             .ok()
             .and_then(|text| bookclerk_node_proto::Frame::parse(text).ok());
         accepted += usize::from(parsed.is_some());
+        // A copy seed's name says whether the library or the branch takes
+        // the frame, so the oracle's copy rules run on frames of both kinds.
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with("copy_") {
+            assert_eq!(
+                parsed.as_ref().is_some_and(copy_frame_is_taken),
+                !name.ends_with("_refused"),
+                "{name}"
+            );
+        }
     }
     // The seeds include frames the parser accepts, so the round trip runs.
     assert!(accepted > 0, "no corpus frame parsed");
+}
+
+/// True when `frame` is a `copy.grant` or `copy.granted` its receiver
+/// would act on.
+fn copy_frame_is_taken(frame: &bookclerk_node_proto::Frame) -> bool {
+    use bookclerk_node_proto::{copy_grant_problem, copy_granted_problem, Body, CopyGrantedFrame};
+    match &frame.body {
+        Body::CopyGrant {
+            store,
+            marketplace,
+            product_id,
+        } => copy_grant_problem(store, marketplace, product_id).is_none(),
+        Body::CopyGranted {
+            copy_id,
+            sealed_token,
+            expires_in_secs,
+            copy,
+            files,
+        } => copy_granted_problem(&CopyGrantedFrame {
+            copy_id,
+            sealed_token,
+            expires_in_secs: *expires_in_secs,
+            copy,
+            files,
+        })
+        .is_none(),
+        _ => false,
+    }
 }
 
 #[test]
@@ -199,4 +242,26 @@ fn fuzz_corpus_clerk_socket_frame_replays() {
     }
     assert!(accepted > 0, "no clerk_socket_frame seed was accepted");
     assert!(refused > 0, "every clerk_socket_frame seed was accepted");
+}
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_copy_range_replays() {
+    let (mut parts, mut others) = (0, 0);
+    for path in corpus_files("copy_range") {
+        let data = std::fs::read(&path).expect("read");
+        let part = copy_range_oracle::check(&data);
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // Seeds say what they are read as in their name.
+        assert_eq!(part, name.starts_with("part"), "seed {name}");
+        if part {
+            parts += 1;
+        } else {
+            others += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(parts > 0, "no copy_range seed named a part");
+    assert!(others > 0, "every copy_range seed named a part");
 }
