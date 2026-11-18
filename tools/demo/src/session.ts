@@ -26,6 +26,7 @@ import {
 } from "./lifecycle.ts";
 import {
   CLOSE_TOO_MANY,
+  diagnosticsEnv,
   forwarding,
   isOver,
   LIVE_PATH,
@@ -249,6 +250,8 @@ export class DemoSession extends Container<Env> implements SessionApi {
             BOOKCLERK_OPERATOR_TOKEN: operatorToken,
             BOOKCLERK_AUTH_PASSWORD: randomHex(32),
             BOOKCLERK_INTEGRATIONS_PUBLIC_ORIGIN: meta.origin,
+            // Problem reports, so the project hears about the demo's bugs.
+            ...diagnosticsEnv(this.env),
           },
         },
         cancellationOptions: { portReadyTimeoutMS: BOOT_TIMEOUT_MS },

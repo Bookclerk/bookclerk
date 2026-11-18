@@ -10,7 +10,8 @@ compatibility_date = "2026-06-01"
 workers_dev = false
 
 # Visitors' store sign-ins are personal data: no Worker or container logs
-# outlive a session.
+# outlive a session. The copies send redacted problem reports instead, when
+# the deploy sets DIAGNOSTICS_URL (src/live.ts diagnosticsEnv).
 [observability]
 enabled = false
 

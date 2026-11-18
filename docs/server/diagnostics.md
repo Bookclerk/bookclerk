@@ -95,6 +95,12 @@ and the rustc channel and release.
 The collector keeps no client IP address, and no hash of one. Each report
 stores the uploader's `User-Agent` (at most 200 characters).
 
+> [!NOTE]
+> The hosted demo's copies send reports with sharing on, so the project
+> hears about the demo's bugs. They carry the same redaction, and every
+> demo copy shares one node id (see
+> [`tools/demo/README.md`](../../tools/demo/README.md)).
+
 Reports are kept for 180 days (the website's privacy page says 6 months).
 See [Retention](#retention) for how that is enforced.
 

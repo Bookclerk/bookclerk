@@ -86,7 +86,11 @@ every content signal to `no` (`use=immediate`).
    the operator (as an operator would in Settings; visitors cannot). It
    reads the plugin instance list first and leaves any plugin already
    deployed on the node alone, so on a baked image that one read is all
-   it sends. It then makes the visitor
+   it sends. When the deploy set `DIAGNOSTICS_URL` (the collector every
+   release build uses), the container also gets it as
+   `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL`, and `packaging/demo/boot.sh` turns
+   `diagnostics.share_reports` on, so the copy sends redacted problem
+   reports ([diagnostics](../../docs/server/diagnostics.md)). It then makes the visitor
    the host's Owner (with the fixed password `VISITOR_PASSWORD` in
    `src/lifecycle.ts`) and redeems the Owner's claim ticket. It then reads
    `GET /api/discover/status` as the visitor every second for up to 25

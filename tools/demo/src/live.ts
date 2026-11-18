@@ -131,6 +131,22 @@ export function siteUrl(env: Pick<Env, "SITE_URL">): string {
     : "";
 }
 
+/**
+ * The environment a visitor's container gets so its copy sends problem
+ * reports to the diagnostics collector. The image's boot script turns
+ * `diagnostics.share_reports` on when the collector address is present.
+ *
+ * @param env - Worker env.
+ * @returns `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL` when `DIAGNOSTICS_URL` is
+ *   an https URL; otherwise nothing, and the copy sends no reports.
+ */
+export function diagnosticsEnv(env: Pick<Env, "DIAGNOSTICS_URL">): Record<string, string> {
+  const url = env.DIAGNOSTICS_URL;
+  return typeof url === "string" && /^https:\/\/[^\s"<>]+$/.test(url)
+    ? { BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL: url }
+    : {};
+}
+
 /** What the Worker does with a request to {@link LIVE_PATH}. */
 export type LiveVerdict = "open" | "not_websocket" | "cross_origin" | "no_session";
 

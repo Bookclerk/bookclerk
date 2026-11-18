@@ -7,6 +7,7 @@ import { describe, it } from "vitest";
 import { recordStartup, startupEstimate } from "../src/limits.ts";
 import {
   CLOSE_TOO_MANY,
+  diagnosticsEnv,
   forwarding,
   isOver,
   liveStatus,
@@ -54,6 +55,20 @@ describe("forwarding", () => {
   it("says a ready session without the visitor's sign-in is not running", () => {
     assert.equal(forwarding("ready", false, true), "not-running");
     assert.equal(forwarding("ready", false, false), "not-running");
+  });
+});
+
+describe("diagnosticsEnv", () => {
+  it("hands an https collector to the container", () => {
+    assert.deepEqual(diagnosticsEnv({ DIAGNOSTICS_URL: "https://diagnostics.example.org" }), {
+      BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL: "https://diagnostics.example.org",
+    });
+  });
+
+  it("hands nothing without an https collector, so the copy sends no reports", () => {
+    assert.deepEqual(diagnosticsEnv({}), {});
+    for (const url of ["", "http://diagnostics.example.org", "https://a b", "none"])
+      assert.deepEqual(diagnosticsEnv({ DIAGNOSTICS_URL: url }), {}, url);
   });
 });
 
