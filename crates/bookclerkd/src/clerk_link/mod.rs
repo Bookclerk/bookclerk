@@ -442,6 +442,13 @@ impl ClerkReader {
                     if !ask.answered_by(&granted) {
                         anyhow::bail!("the library granted a copy of another edition");
                     }
+                    // Signed in again (or out) while the grant was on its
+                    // way: it was granted to the old card, so it is not
+                    // used. Dropping the ask answers it with no copy.
+                    if !self.same_card(signed_in_at).await? {
+                        let _ = socket.close(None).await;
+                        return Ok(SessionEnd::Lost);
+                    }
                     // The acquire may have stopped waiting; then the copy
                     // goes unused.
                     let _ = ask.reply.send(Some(*granted));

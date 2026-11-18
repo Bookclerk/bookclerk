@@ -1198,6 +1198,113 @@ async fn a_grant_is_answered_in_order_and_a_copy_of_another_edition_ends_the_ses
     assert!(reader_of("fake-grants").is_none());
 }
 
+/// A grant that arrives after the clerk signed in again was granted to the
+/// old card: it is not used, and the session dialed with that card ends.
+#[tokio::test]
+async fn a_grant_answered_after_a_new_sign_in_is_not_used() {
+    use bookclerk_acquire::LibraryCopies as _;
+    use bookclerk_node_proto::{ClerkFrame, LibraryFrame};
+
+    use super::copies::{reader_of, CardCopies};
+
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let asked = Arc::new(tokio::sync::Notify::new());
+    let answer = Arc::new(tokio::sync::Notify::new());
+    let origin = {
+        let (asked, answer) = (Arc::clone(&asked), Arc::clone(&answer));
+        fake_library(Upgrade::Accept, move |mut socket| {
+            let (asked, answer) = (Arc::clone(&asked), Arc::clone(&answer));
+            async move {
+                assert!(matches!(
+                    heard(&mut socket).await,
+                    Some(ClerkFrame::Books { .. })
+                ));
+                say(
+                    &mut socket,
+                    LibraryFrame::BooksPage {
+                        after: cursor(""),
+                        works: vec![],
+                        next: None,
+                    },
+                )
+                .await;
+                assert!(matches!(
+                    heard(&mut socket).await,
+                    Some(ClerkFrame::CopyGrant { .. })
+                ));
+                asked.notify_one();
+                // Held until the clerk has signed in again.
+                answer.notified().await;
+                say(
+                    &mut socket,
+                    LibraryFrame::CopyGranted(Box::new(granted_copy("B0LATE0001", "audible"))),
+                )
+                .await;
+                while heard(&mut socket).await.is_some() {}
+            }
+        })
+        .await
+    };
+    let files = tempfile::tempdir().unwrap();
+    let store = clerk_with_card_of(&files, &origin, "fake-late-grant").await;
+
+    let (_stop, mut shutdown) = watch::channel(false);
+    let session = {
+        let store = store.clone();
+        tokio::spawn(async move {
+            ClerkReader {
+                library: store,
+                cluster_id: "fake-late-grant".into(),
+            }
+            .session(&mut shutdown)
+            .await
+        })
+    };
+    eventually("the reader to connect", 20, || async {
+        reader_of("fake-late-grant").is_some()
+    })
+    .await;
+
+    let acquire = {
+        let copies = CardCopies::new(store.clone());
+        tokio::spawn(async move { copies.copy_of(listing("B0LATE0001")).await.is_some() })
+    };
+    asked.notified().await;
+    // Signed in again while the grant is on its way.
+    let link = load_clerk_link(&store, "fake-late-grant")
+        .await
+        .unwrap()
+        .unwrap();
+    bookclerk_library::control_plane::record_clerk_link(
+        &store,
+        &bookclerk_library::control_plane::NewClerkLink {
+            library_cluster_id: link.library_cluster_id.clone(),
+            origin: link.origin.clone(),
+            spki_pin: link.spki_pin.clone(),
+            library_name: link.library_name.clone(),
+            remote_user_id: link.remote_user_id,
+            display_name: link.display_name.clone(),
+            clerk_name: link.clerk_name.clone(),
+        },
+        &bookclerk_library::control_plane::LibraryCard::new("d".repeat(43)).unwrap(),
+    )
+    .await
+    .unwrap();
+    answer.notify_one();
+
+    let took = tokio::time::timeout(Duration::from_secs(20), acquire)
+        .await
+        .expect("the acquire is answered")
+        .unwrap();
+    assert!(!took, "a copy granted to the old card was used");
+    assert!(!bookclerk_config::contains_registered_secret("dG9rZW4"));
+    let ended = tokio::time::timeout(Duration::from_secs(20), session)
+        .await
+        .expect("the session ends")
+        .unwrap();
+    assert_eq!(ended.unwrap(), super::SessionEnd::Lost);
+}
+
 /// A clerk's own acquire takes the copy the library holds of its person's
 /// book: the reader asks over the card, the files download with the
 /// grant's token, and the taken copy is recorded as the library's.
