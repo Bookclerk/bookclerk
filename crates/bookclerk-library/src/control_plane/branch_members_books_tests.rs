@@ -102,7 +102,7 @@ async fn the_choice_reaches_the_branch_and_restarts_its_pass() {
             .create_user(UserRole::Member, Some("Riley"), None)
             .await
             .unwrap();
-        add_node(&store, BRANCH, "host", Some(member.id)).await;
+        add_node(&store, BRANCH, "branch", Some(member.id)).await;
 
         // Off by default.
         let first = open(&store).await;
@@ -169,7 +169,7 @@ async fn only_a_branch_takes_the_choice() {
     for profile in Profile::ALL {
         let name = profile.name();
         let store = store(profile).await;
-        add_node(&store, "owner-node", "owner", None).await;
+        add_node(&store, "owner-node", "shared", None).await;
 
         assert_eq!(
             set_branch_members_books(&store, "owner-node", true)

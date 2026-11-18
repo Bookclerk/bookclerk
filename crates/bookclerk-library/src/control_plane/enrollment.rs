@@ -1183,7 +1183,7 @@ pub async fn redeem_enrollment_link_as(
                         node_id, sign_public_key, box_public_key, link_id, enrolled_at
                      ) SELECT ?, ?, ?, link_id, ?
                          FROM node_enrollment_links
-                        WHERE link_id = ? AND redeemed_node_id = ? AND ? = 'host'",
+                        WHERE link_id = ? AND redeemed_node_id = ? AND ? = 'branch'",
                     vec![
                         text(&node_id),
                         bookclerk_plugin_abi::DbValue::Bytes(req.sign_public_key.clone()),
