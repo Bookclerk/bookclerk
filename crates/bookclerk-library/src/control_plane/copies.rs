@@ -270,8 +270,26 @@ fn digest_of(rows: &[&edition_files::Model]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// The key of the primary audio among one destination's `rows`: the
+/// acquisition's `primary` where the destination holds it, else the only
+/// row it recorded as the primary audio ([`FileRole::Audio`]), since a
+/// destination with its own naming template stores the file under
+/// another key. `None` when the destination holds neither, or more than
+/// one candidate.
+fn own_primary(rows: &[&edition_files::Model], primary: &str) -> Option<String> {
+    if rows.iter().any(|row| row.storage_key == primary) {
+        return Some(primary.to_string());
+    }
+    let mut audio = rows
+        .iter()
+        .filter(|row| FileRole::parse(&row.role) == FileRole::Audio);
+    let only = audio.next()?;
+    audio.next().is_none().then(|| only.storage_key.clone())
+}
+
 /// The files of `edition_id` on each destination that holds its primary
-/// audio `primary`, with each list's digest.
+/// audio (`primary`, or the destination's own name for it,
+/// [`own_primary`]), with each list's digest.
 ///
 /// A destination whose list would pass [`MAX_COPY_FILES`] is left out: the
 /// answer frame could not carry it.
@@ -305,20 +323,23 @@ async fn files_of(
             .or_default()
             .push(row);
     }
-    let folder = folder_of(primary);
     let mut files = BTreeMap::new();
     let mut digests = BTreeMap::new();
     for (destination, mut rows) in by_destination {
-        if !rows.iter().any(|row| row.storage_key == primary) {
+        // Destinations may name files differently, so each has its own
+        // primary audio key: the acquisition's where this destination
+        // holds it, else the one row it recorded as the primary audio.
+        let Some(primary) = own_primary(&rows, primary) else {
             continue;
-        }
+        };
+        let folder = folder_of(&primary);
         rows.sort_by(|a, b| {
             (a.storage_key != primary, &a.storage_key)
                 .cmp(&(b.storage_key != primary, &b.storage_key))
         });
         let listed: Vec<&edition_files::Model> = rows
             .into_iter()
-            .filter(|row| plan_file(row, primary, folder).is_some())
+            .filter(|row| plan_file(row, &primary, folder).is_some())
             .collect();
         if listed.len() > MAX_COPY_FILES
             || listed.first().is_none_or(|row| row.storage_key != primary)
@@ -330,7 +351,7 @@ async fn files_of(
             destination.to_string(),
             listed
                 .into_iter()
-                .filter_map(|row| plan_file(row, primary, folder))
+                .filter_map(|row| plan_file(row, &primary, folder))
                 .collect(),
         );
     }

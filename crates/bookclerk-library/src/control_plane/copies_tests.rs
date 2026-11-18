@@ -418,6 +418,68 @@ async fn a_grant_is_checked_afresh_on_every_download() {
     }
 }
 
+/// A destination that names files its own way holds the primary audio
+/// under another key: its files are listed from the one row it recorded
+/// as the primary audio, named below that file's folder. A destination
+/// with two such rows and neither the acquisition's key is not offered.
+#[tokio::test]
+async fn a_destination_with_its_own_naming_is_planned_from_its_own_primary() {
+    let store = memory(Profile::ALL[0]).await.into_store();
+    let riley = library_with_a_copy(&store).await;
+    add_branch(&store, BRANCH, riley).await;
+    let record = store.get_book(ASIN, "riley-acct").await.unwrap().unwrap();
+    let owner = store
+        .file_owner_of_book(&record.uuid)
+        .await
+        .unwrap()
+        .unwrap();
+    for (destination, key, role) in [
+        ("b2", "Title (Ann Author)/Title.m4b", FileRole::Audio),
+        ("b2", "Title (Ann Author)/Part 2.m4b", FileRole::Part),
+        ("b2", "Title (Ann Author)/cover.jpg", FileRole::Cover),
+        ("b2", "Other/stray.pdf", FileRole::Pdf),
+        ("twice", "X/One.m4b", FileRole::Audio),
+        ("twice", "X/Two.m4b", FileRole::Audio),
+    ] {
+        assert!(store
+            .record_edition_file(destination, key, &owner, role)
+            .await
+            .unwrap());
+    }
+    let plan = planned(&store, BRANCH).await;
+    assert_eq!(
+        plan.destinations.keys().collect::<Vec<_>>(),
+        ["b2", "local"]
+    );
+    let listed: Vec<(&str, &str, CopyRole)> = plan.destinations["b2"]
+        .iter()
+        .map(|file| (file.key.as_str(), file.file.name.as_str(), file.file.role))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("Title (Ann Author)/Title.m4b", "Title.m4b", CopyRole::Audio),
+            (
+                "Title (Ann Author)/Part 2.m4b",
+                "Part 2.m4b",
+                CopyRole::Part
+            ),
+            ("Title (Ann Author)/cover.jpg", "cover.jpg", CopyRole::Cover),
+        ]
+    );
+    // The grant on that destination opens and is honoured.
+    let opened = open_copy(&store, CopyHolder::Node(BRANCH), &plan, "b2", "owner-1")
+        .await
+        .unwrap()
+        .unwrap();
+    let download = authorize_copy(&store, &opened.copy_id, &opened.token)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(download.destination, "b2");
+    assert_eq!(download.files.len(), 3);
+}
+
 /// A file the answer frame cannot carry (a name past the limit) is left
 /// out, and an edition with more files than a frame lists is not offered
 /// from that destination.
