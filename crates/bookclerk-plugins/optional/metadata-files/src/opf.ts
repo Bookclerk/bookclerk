@@ -25,10 +25,13 @@ import {
   type Edit,
   type XmlDocument,
   type XmlElement,
+  appendChildren,
   applyEdits,
   attribute,
   escapeAttribute,
   escapeText,
+  indentOf,
+  lineBreak,
   parseXml,
   removal,
 } from "./xml.ts";
@@ -356,20 +359,6 @@ function prefixFor(elements: readonly XmlElement[], uri: string): string | undef
 }
 
 /**
- * The indentation at the start of an element's line.
- *
- * @param source - The document.
- * @param element - The element.
- * @returns Its leading spaces and tabs, or `undefined` when other text
- *   shares the line.
- */
-function indentOf(source: string, element: XmlElement): string | undefined {
-  const lineStart = source.lastIndexOf("\n", element.start - 1) + 1;
-  const lead = source.slice(lineStart, element.start);
-  return /^[ \t]*$/.test(lead) ? lead : undefined;
-}
-
-/**
  * Writes the fields asked for into an OPF package document.
  *
  * @param existing - The file as it is now; empty to create it.
@@ -420,8 +409,7 @@ export function renderOpf(
   }
   for (const kid of removed) edits.push(removal(source, kid));
   const added = newElements(record, fields, dc, opf);
-  // New lines follow the file's own line breaks.
-  const nl = source.includes("\r\n") ? "\r\n" : "\n";
+  const nl = lineBreak(source);
   const rootIndent = indentOf(source, root) ?? "";
   if (metadata === undefined) {
     const indent = `${rootIndent}  `;
@@ -444,20 +432,6 @@ export function renderOpf(
     const at = metadata.start + 1 + metadata.name.length;
     edits.push({ start: at, end: at, text: declare });
   }
-  const ownIndent = indentOf(source, metadata) ?? rootIndent;
-  const firstKid = kids[0];
-  const indent = (firstKid && indentOf(source, firstKid)) || `${ownIndent}  `;
-  const lines = added.map((e) => `${nl}${indent}${e}`).join("");
-  if (metadata.selfClosing) {
-    edits.push({
-      start: metadata.end - 2,
-      end: metadata.end,
-      text: `>${lines}${nl}${ownIndent}</${metadata.name}>`,
-    });
-  } else {
-    let insert = metadata.closeStart;
-    while (insert > metadata.openEnd && /\s/.test(source[insert - 1] ?? "")) insert -= 1;
-    edits.push({ start: insert, end: insert, text: lines });
-  }
+  edits.push(appendChildren(source, metadata, added));
   return encodeFile(applyEdits(source, edits));
 }
