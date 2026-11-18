@@ -23,9 +23,7 @@
 //!   merchandising flags) ever becomes a genre;
 //! - parsing the same body twice gives the same titles.
 
-use bookclerk_audible_catalog::{
-    is_audible_podcast_product, parse_catalog_products, CatalogList, CatalogProduct,
-};
+use bookclerk_audible_catalog::{parse_catalog_products, CatalogList, CatalogProduct};
 use serde_json::Value;
 
 /// The genres a row must yield, restated from the catalog's ladder shape.
@@ -51,9 +49,34 @@ fn expected_genres(row: &Value) -> Option<String> {
     (!names.is_empty()).then(|| names.join("; "))
 }
 
+/// Whether a row is a podcast show or episode, restated from the catalog's
+/// `content_type` and `content_delivery_type` values (case-insensitive; a
+/// missing or non-string value is no kind).
+fn is_podcast(row: &Value) -> bool {
+    let kind = |key: &str| {
+        row.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_ascii_lowercase()
+    };
+    let content = kind("content_type");
+    let delivery = kind("content_delivery_type");
+    [
+        "podcast",
+        "podcastepisode",
+        "episode",
+        "parent",
+        "podcastparent",
+        "podcast_parent",
+        "season",
+    ]
+    .contains(&content.as_str())
+        || ["podcastparent", "podcastepisode", "episode"].contains(&delivery.as_str())
+}
+
 /// The ASIN of a row that must become a title, or `None` when it is skipped.
 fn expected_asin(row: &Value) -> Option<&str> {
-    if !row.is_object() || is_audible_podcast_product(row) {
+    if !row.is_object() || is_podcast(row) {
         return None;
     }
     row.get("asin")
@@ -83,8 +106,15 @@ pub fn check(data: &[u8]) {
         (Ok(_), Err(err)) => panic!("accepted a body that is not JSON: {err}"),
         (Err(err), Ok(_)) => panic!("refused a JSON body: {err}"),
     };
+    // The documented key of each list, written out rather than read from
+    // `CatalogList::key`, so a wrong key in the crate is caught.
+    let key = if selector % 2 == 0 {
+        "products"
+    } else {
+        "similar_products"
+    };
     let rows: Vec<&Value> = value
-        .get(list.key())
+        .get(key)
         .and_then(Value::as_array)
         .map(|rows| rows.iter().collect())
         .unwrap_or_default();
@@ -102,8 +132,14 @@ pub fn check(data: &[u8]) {
     for (title, (asin, genres)) in titles.iter().zip(&expected) {
         check_title(title, asin, genres.as_deref());
     }
+    // Compared through `Debug`: a rating of NaN (`"NaN"` parses as one) is
+    // not equal to itself under `PartialEq`, but prints the same both times.
     let again = parse_catalog_products(body, list).unwrap_or_default();
-    assert_eq!(titles, again, "parsing twice differs");
+    assert_eq!(
+        format!("{titles:?}"),
+        format!("{again:?}"),
+        "parsing twice differs"
+    );
 }
 
 /// Checks one title against the row it came from.
