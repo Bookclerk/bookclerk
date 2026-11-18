@@ -64,7 +64,7 @@ use bookclerk_library::control_plane::LinkImportOutcome;
 use bookclerk_library::{BookRecord, JobKind, LibraryStore, NewBook};
 use bookclerk_node_client::{HostJobCtx, OwnerCallError};
 use bookclerk_node_proto::{
-    AcquireTarget, FileCopy, PlanDestination, UploadFile, MAX_SCAN_BATCH_ROWS,
+    AcquireTarget, FileCopy, PlanDestination, UploadFile, UploadProbe, MAX_SCAN_BATCH_ROWS,
     MAX_SCAN_REMOVED_IDS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
 };
 use bookclerk_plugin_host::{HandedScan, RefreshedCredentialSink};
@@ -1474,6 +1474,7 @@ fn content_type(key: &str) -> Option<String> {
         match ext.as_str() {
             "m4b" | "m4a" | "mp4" => "audio/mp4",
             "mp3" => "audio/mpeg",
+            "flac" => "audio/flac",
             "pdf" => "application/pdf",
             "jpg" | "jpeg" => "image/jpeg",
             "png" => "image/png",
@@ -1497,6 +1498,62 @@ pub async fn upload_manifest(
     destinations: &[HostDestination],
     outbox: &Path,
     acquired: &AcquiredTitle,
+    source_store: Option<&str>,
+) -> anyhow::Result<Vec<(UploadFile, PathBuf)>> {
+    let media = bookclerk_media::pool();
+    upload_manifest_probed_by(destinations, outbox, acquired, source_store, &media).await
+}
+
+/// What `media`'s probe finds in the audio file at `path`, for the upload
+/// manifest: its media type and its [`UploadProbe`], naming `source_store`
+/// when that is a plain store id.
+///
+/// # Returns
+///
+/// `None` for a file that is not audio or cannot be probed (a format the
+/// tag reader does not know, or no confined worker where one is required);
+/// the file is uploaded either way.
+async fn probe_for_upload(
+    media: &bookclerk_media::MediaPool,
+    key: &str,
+    path: &Path,
+    source_store: Option<&str>,
+) -> Option<(String, UploadProbe)> {
+    if !content_type(key).is_some_and(|kind| kind.starts_with("audio/")) {
+        return None;
+    }
+    match media.probe_file(path).await {
+        Ok(probe) => Some((
+            probe.content_type.to_owned(),
+            UploadProbe {
+                bitrate_kbps: probe
+                    .bitrate_kbps
+                    .map(|kbps| kbps.min(bookclerk_node_proto::MAX_PROBE_BITRATE_KBPS)),
+                lossless: probe.lossless,
+                source_store: source_store
+                    .filter(|store| bookclerk_node_proto::is_store_id(store))
+                    .map(str::to_owned),
+            },
+        )),
+        Err(err) => {
+            tracing::debug!(key, error = %err, "acquired audio file was not probed");
+            None
+        }
+    }
+}
+
+/// [`upload_manifest`] whose audio files are probed through `media`
+/// instead of the process-wide pool.
+///
+/// # Errors
+///
+/// As [`upload_manifest`].
+pub(crate) async fn upload_manifest_probed_by(
+    destinations: &[HostDestination],
+    outbox: &Path,
+    acquired: &AcquiredTitle,
+    source_store: Option<&str>,
+    media: &bookclerk_media::MediaPool,
 ) -> anyhow::Result<Vec<(UploadFile, PathBuf)>> {
     if acquired.keys.len() != destinations.len() {
         anyhow::bail!("the acquire did not write every destination");
@@ -1515,6 +1572,24 @@ pub async fn upload_manifest(
                 destination: destination.id.clone(),
                 key: key.clone(),
             };
+            // A new manifest entry for this content, probed where it lies.
+            let new_file = |copy: FileCopy, size: u64, sha256: String| {
+                let path = path.clone();
+                async move {
+                    let probed = probe_for_upload(media, &copy.key, &path, source_store).await;
+                    let (content_type, probe) = match probed {
+                        Some((kind, probe)) => (Some(kind), Some(probe)),
+                        None => (content_type(&copy.key), None),
+                    };
+                    UploadFile {
+                        copies: vec![copy],
+                        size,
+                        sha256,
+                        content_type,
+                        probe,
+                    }
+                }
+            };
             match by_content.get(&(size, sha256.clone())) {
                 Some(&at) => {
                     let (file, _): &mut (UploadFile, PathBuf) = &mut files[at];
@@ -1523,30 +1598,14 @@ pub async fn upload_manifest(
                         // separate entry, since a file has one copy per
                         // destination.
                         by_content.insert((size, sha256.clone()), files.len());
-                        files.push((
-                            UploadFile {
-                                copies: vec![copy],
-                                size,
-                                sha256,
-                                content_type: content_type(key),
-                            },
-                            path,
-                        ));
+                        files.push((new_file(copy, size, sha256).await, path));
                     } else {
                         file.copies.push(copy);
                     }
                 }
                 None => {
                     by_content.insert((size, sha256.clone()), files.len());
-                    files.push((
-                        UploadFile {
-                            copies: vec![copy],
-                            size,
-                            sha256,
-                            content_type: content_type(key),
-                        },
-                        path,
-                    ));
+                    files.push((new_file(copy, size, sha256).await, path));
                 }
             }
         }
@@ -1686,7 +1745,13 @@ async fn upload_title<G: HostGuests>(
     commit_unsettled: &AtomicBool,
 ) -> anyhow::Result<()> {
     let book_uuid = title.book.uuid.as_str();
-    let manifest = upload_manifest(&title.destinations, outbox, acquired).await?;
+    let manifest = upload_manifest(
+        &title.destinations,
+        outbox,
+        acquired,
+        Some(title.book.source.as_str()),
+    )
+    .await?;
     let placed = match copied {
         Some(copied) => {
             copy_to_local_destinations(guests, book_uuid, outbox, acquired, copied).await?

@@ -1972,8 +1972,80 @@ async fn riley_title(store: &LibraryStore) -> (String, Vec<bookclerk_node_proto:
         size: 3,
         sha256: "ab".repeat(32),
         content_type: Some("audio/mp4".into()),
+        probe: None,
     }];
     (book.uuid, files)
+}
+
+/// The probe a branch states for an uploaded audio file reaches its file
+/// row when the upload commits, not before: a granted or aborted upload
+/// leaves the row unprobed, and so does a committed file that states no
+/// probe or no media type.
+#[tokio::test]
+async fn a_committed_uploads_probe_is_kept_on_the_file_row() {
+    let _guard = master_key_test_lock_async().await;
+    let key = "Author/Title/Title.m4b";
+    let stated = bookclerk_node_proto::UploadProbe {
+        bitrate_kbps: Some(125),
+        lossless: false,
+        source_store: Some("audible".into()),
+    };
+    // (probe, media type, whether the upload commits) -> the row's probe.
+    let cases = [
+        (Some(stated.clone()), Some("audio/mp4"), true, true),
+        (Some(stated.clone()), Some("audio/mp4"), false, false),
+        (None, Some("audio/mp4"), true, false),
+        (Some(stated), None, true, false),
+    ];
+    for (probe, content_type, commits, kept) in cases {
+        let w = world().await;
+        let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+        let (book_uuid, mut files) = riley_title(&w.store).await;
+        let fence = claim(&w.store).await.unwrap().job.lease_generation;
+        let destinations = local("Author/Title");
+        files[0].probe = probe;
+        files[0].content_type = content_type.map(str::to_string);
+        let request = UploadGrantRequest {
+            holding_id: &holding_of(&w.store, &book_uuid).await,
+            primary_key: key,
+            pdf_key: None,
+            files: &files,
+            destinations: &destinations,
+        };
+        let UploadGrant::Granted { upload_id, .. } =
+            grant_upload(&w.store, HOST, &job_id, fence, "owner", &request)
+                .await
+                .unwrap()
+        else {
+            panic!("granted");
+        };
+        assert_eq!(
+            w.store.edition_file_probe("local", key).await.unwrap(),
+            None,
+            "a granted upload has proved nothing yet"
+        );
+        if commits {
+            assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
+            assert!(matches!(
+                commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+                    .await
+                    .unwrap(),
+                UploadCommit::Committed { .. }
+            ));
+        } else {
+            assert!(abort_upload(&w.store, &upload_id).await.unwrap().is_some());
+        }
+        let expected = kept.then(|| crate::FileProbe {
+            content_type: "audio/mp4".into(),
+            bitrate_kbps: Some(125),
+            lossless: false,
+            source_store: Some("audible".into()),
+        });
+        assert_eq!(
+            w.store.edition_file_probe("local", key).await.unwrap(),
+            expected
+        );
+    }
 }
 
 /// An upload is granted only for a title of the job, its token opens only

@@ -104,6 +104,8 @@ libc = "0.2"
 async-trait.workspace = true
 bytes.workspace = true
 bookclerk-library = { workspace = true, features = ["test-support"] }
+# Tagged audio fixtures for the upload manifest's probe test.
+bookclerk-tags = { workspace = true, features = ["fixtures"] }
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 http-body-util = "0.1"
 # Builds a second test image for the cover cache's replace-on-change tests;

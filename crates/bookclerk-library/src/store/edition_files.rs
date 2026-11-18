@@ -221,8 +221,10 @@ impl FileProbe {
     }
 
     /// True when the values are ones an honest probe can produce: a short
-    /// media type of visible ASCII and a bitrate within
-    /// [`Self::MAX_BITRATE_KBPS`].
+    /// media type of visible ASCII, a bitrate within
+    /// [`Self::MAX_BITRATE_KBPS`], and a storefront that is a store's plain
+    /// id (lowercase letters, digits, `_`, `-` and `.`, as node frames name
+    /// stores).
     #[must_use]
     pub fn is_well_formed(&self) -> bool {
         let type_ok = !self.content_type.is_empty()
@@ -233,7 +235,7 @@ impl FileProbe {
                 && store.len() <= Self::MAX_CONTENT_TYPE_BYTES
                 && store
                     .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+                    .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.'))
         });
         type_ok
             && store_ok
@@ -544,6 +546,18 @@ impl LibraryStore {
                 Expr::value(Option::<i64>::None),
             )
             .col_expr(
+                edition_files::Column::ContentType,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::SourceStore,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::ProbedAt,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
                 edition_files::Column::Sha256,
                 Expr::value(Option::<String>::None),
             )
@@ -703,6 +717,25 @@ impl LibraryStore {
                 edition_files::Column::Sha256,
                 Expr::value(sha256.map(str::to_string)),
             )
+            // The new copy's probe is stored after the claim; the old
+            // copy's says nothing about it.
+            .col_expr(edition_files::Column::Lossless, Expr::value(0))
+            .col_expr(
+                edition_files::Column::BitrateKbps,
+                Expr::value(Option::<i64>::None),
+            )
+            .col_expr(
+                edition_files::Column::ContentType,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::SourceStore,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::ProbedAt,
+                Expr::value(Option::<String>::None),
+            )
             .col_expr(edition_files::Column::Writer, Expr::value(writer))
             .col_expr(edition_files::Column::WrittenAt, Expr::value(now))
             .filter(edition_files::Column::Destination.eq(destination))
@@ -772,6 +805,26 @@ impl LibraryStore {
                     .col_expr(
                         edition_files::Column::Writer,
                         Expr::value(prior.writer.as_str()),
+                    )
+                    // The probe on the row is the given-back upload's, and
+                    // the earlier copy's was cleared by its claim: unknown
+                    // again until the file is probed.
+                    .col_expr(edition_files::Column::Lossless, Expr::value(0))
+                    .col_expr(
+                        edition_files::Column::BitrateKbps,
+                        Expr::value(Option::<i64>::None),
+                    )
+                    .col_expr(
+                        edition_files::Column::ContentType,
+                        Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        edition_files::Column::SourceStore,
+                        Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        edition_files::Column::ProbedAt,
+                        Expr::value(Option::<String>::None),
                     )
                     .filter(ours)
                     .exec(self.db())
@@ -845,6 +898,48 @@ impl LibraryStore {
         owner: &FileOwner,
         probe: &FileProbe,
     ) -> Result<bool> {
+        let held = Condition::all()
+            .add(edition_files::Column::OwnerKind.eq(owner.kind()))
+            .add(edition_files::Column::OwnerId.eq(owner.id()));
+        self.write_file_probe(destination, key, held, probe).await
+    }
+
+    /// Stores what a probe found in the file the upload `writer` wrote at
+    /// `key` on `destination`, as [`Self::set_edition_file_probe`] does for
+    /// an owner.
+    ///
+    /// The row is changed only while `writer` is still the upload that
+    /// claimed the key last, so a committed upload never describes a file
+    /// a later write replaced.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the row was `writer`'s and now carries `probe`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `probe` is not well formed or the write fails.
+    pub async fn set_uploaded_file_probe(
+        &self,
+        destination: &str,
+        key: &str,
+        writer: &str,
+        probe: &FileProbe,
+    ) -> Result<bool> {
+        let written = Condition::all().add(edition_files::Column::Writer.eq(writer));
+        self.write_file_probe(destination, key, written, probe)
+            .await
+    }
+
+    /// Writes `probe` on the row of `key` on `destination` when it also
+    /// matches `holder`.
+    async fn write_file_probe(
+        &self,
+        destination: &str,
+        key: &str,
+        holder: Condition,
+        probe: &FileProbe,
+    ) -> Result<bool> {
         if !probe.is_well_formed() {
             return Err(LibraryError::Invalid(
                 "a file probe has a malformed media type, store or bitrate".to_string(),
@@ -870,8 +965,7 @@ impl LibraryStore {
             .col_expr(edition_files::Column::ProbedAt, Expr::value(now_str()))
             .filter(edition_files::Column::Destination.eq(destination))
             .filter(edition_files::Column::StorageKey.eq(key))
-            .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
-            .filter(edition_files::Column::OwnerId.eq(owner.id()))
+            .filter(holder)
             .exec(self.db())
             .await
             .map_err(LibraryError::Orm)?;

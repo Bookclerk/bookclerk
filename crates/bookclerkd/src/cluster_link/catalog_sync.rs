@@ -47,7 +47,7 @@ use bookclerk_library::{
 use bookclerk_node_client::{CatalogSession, HostClientHandle, OwnerCallError};
 use bookclerk_node_proto::{
     is_storage_key, CatalogFile, CatalogMetadata, CatalogRef, CatalogTitle, FileCopy, UploadFile,
-    MAX_CATALOG_BATCH_TITLES, MAX_UPLOAD_FILES,
+    UploadProbe, MAX_CATALOG_BATCH_TITLES, MAX_UPLOAD_FILES,
 };
 use bookclerk_storage::StorageBackend;
 use sha2::Digest as _;
@@ -700,6 +700,14 @@ impl<S: BranchShelf> CatalogSync<S> {
                 "{:?} changed while it was shared",
                 file.key
             );
+            // What this install's own probe found when it stored the file
+            // (the shelf's name is its destination id), so the library
+            // keeps the same values on its row.
+            let probe = self
+                .library
+                .edition_file_probe(shelf.name(), &file.key)
+                .await
+                .with_context(|| format!("reading the probe of {:?}", file.key))?;
             files.push(UploadFile {
                 copies: session
                     .destinations
@@ -715,7 +723,15 @@ impl<S: BranchShelf> CatalogSync<S> {
                     .iter()
                     .map(|b| format!("{b:02x}"))
                     .collect(),
-                content_type: file.content_type.clone(),
+                content_type: probe
+                    .as_ref()
+                    .map(|probe| probe.content_type.clone())
+                    .or_else(|| file.content_type.clone()),
+                probe: probe.map(|probe| UploadProbe {
+                    bitrate_kbps: probe.bitrate_kbps,
+                    lossless: probe.lossless,
+                    source_store: probe.source_store,
+                }),
             });
         }
         let reference = title.reference();

@@ -1150,14 +1150,63 @@ pub struct UploadFile {
     /// MIME type to store with it.
     #[serde(default)]
     pub content_type: Option<String>,
+    /// What the sender's probe found in an audio file, so the library
+    /// keeps it on the file's row without reading the file back; absent
+    /// for other files and for audio the sender could not probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe: Option<UploadProbe>,
+}
+
+/// What a node's probe found in an audio file it uploads
+/// ([`UploadFile::probe`]). The media type travels as
+/// [`UploadFile::content_type`].
+///
+/// The library stores these values as the sender states them: the sender
+/// is a node it trusts with the title, and they decide only which of two
+/// copies of one edition is kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UploadProbe {
+    /// Average audio bitrate in kilobits per second, 1 to
+    /// [`MAX_PROBE_BITRATE_KBPS`]; absent when the file states no running
+    /// time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitrate_kbps: Option<u32>,
+    /// True for a lossless encoding (FLAC, ALAC).
+    #[serde(default)]
+    pub lossless: bool,
+    /// Plain id of the storefront the copy was downloaded from
+    /// ([`crate::is_store_id`]), when the sender knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_store: Option<String>,
+}
+
+/// Highest bitrate an [`UploadProbe`] may state, in kilobits per second:
+/// above any audiobook encoding, so a forged value cannot win by size alone.
+pub const MAX_PROBE_BITRATE_KBPS: u32 = 20_000;
+
+impl UploadProbe {
+    /// True when the bitrate, if stated, is 1 to
+    /// [`MAX_PROBE_BITRATE_KBPS`] and the storefront, if named, is a store
+    /// id ([`crate::is_store_id`]).
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        self.bitrate_kbps
+            .is_none_or(|kbps| (1..=MAX_PROBE_BITRATE_KBPS).contains(&kbps))
+            && self
+                .source_store
+                .as_deref()
+                .is_none_or(crate::catalog::is_store_id)
+    }
 }
 
 impl UploadFile {
     /// True when the file has between one and [`MAX_UPLOAD_COPIES`]
     /// copies, each naming a different destination id
     /// ([`is_destination_id`]) and a storage key ([`is_storage_key`]); the
-    /// size is within [`MAX_UPLOAD_FILE_BYTES`]; and the digest is
-    /// lowercase hex SHA-256.
+    /// size is within [`MAX_UPLOAD_FILE_BYTES`]; the digest is lowercase
+    /// hex SHA-256; and the probe, if there is one, is well formed
+    /// ([`UploadProbe::is_well_formed`]).
     #[must_use]
     pub fn is_well_formed(&self) -> bool {
         let mut destinations = std::collections::BTreeSet::new();
@@ -1177,7 +1226,8 @@ impl UploadFile {
             .content_type
             .as_deref()
             .is_none_or(|t| t.len() <= 128 && !t.chars().any(char::is_control));
-        copies_ok && digest_ok && type_ok && self.size <= MAX_UPLOAD_FILE_BYTES
+        let probe_ok = self.probe.as_ref().is_none_or(UploadProbe::is_well_formed);
+        copies_ok && digest_ok && type_ok && probe_ok && self.size <= MAX_UPLOAD_FILE_BYTES
     }
 
     /// This file's key on `destination`, if it is written there.
@@ -1360,6 +1410,7 @@ mod tests {
             size: 1,
             sha256: "0f".repeat(32),
             content_type: Some("audio/mp4".into()),
+            probe: None,
         };
         assert!(file("Author/Title/Title.m4b").is_well_formed());
         for bad in ["", "/abs.m4b", "a/../b.m4b", "a//b", "./a", "a\\b", "a\nb"] {
@@ -1404,6 +1455,48 @@ mod tests {
             }
             .is_well_formed());
         }
+        // A probe is optional, travels only when stated, and is bounded.
+        let probed = |probe: UploadProbe| UploadFile {
+            probe: Some(probe),
+            ..file("a.m4b")
+        };
+        let good = UploadProbe {
+            bitrate_kbps: Some(125),
+            lossless: false,
+            source_store: Some("audible".into()),
+        };
+        assert!(probed(good.clone()).is_well_formed());
+        assert!(probed(UploadProbe {
+            bitrate_kbps: None,
+            lossless: true,
+            source_store: None,
+        })
+        .is_well_formed());
+        for bitrate_kbps in [0, MAX_PROBE_BITRATE_KBPS + 1] {
+            assert!(!probed(UploadProbe {
+                bitrate_kbps: Some(bitrate_kbps),
+                ..good.clone()
+            })
+            .is_well_formed());
+        }
+        for store in ["", "Audible", "a b", &"s".repeat(65)] {
+            assert!(!probed(UploadProbe {
+                source_store: Some(store.into()),
+                ..good.clone()
+            })
+            .is_well_formed());
+        }
+        let text = serde_json::to_string(&probed(good.clone())).unwrap();
+        assert!(text.contains(r#""probe":{"bitrate_kbps":125,"#), "{text}");
+        assert_eq!(
+            serde_json::from_str::<UploadFile>(&text).unwrap().probe,
+            Some(good)
+        );
+        let bare = serde_json::to_string(&file("a.m4b")).unwrap();
+        assert!(!bare.contains("probe"), "{bare}");
+        assert!(
+            serde_json::from_str::<UploadProbe>(r#"{"lossless":false,"codec":"aac"}"#).is_err()
+        );
     }
 
     #[test]
@@ -1722,6 +1815,7 @@ mod tests {
                         size: 3,
                         sha256: "ab".repeat(32),
                         content_type: None,
+                        probe: None,
                     }],
                 },
                 "upload.grant",

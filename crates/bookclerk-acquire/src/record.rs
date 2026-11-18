@@ -131,7 +131,7 @@ impl RecordingBackend {
 }
 
 /// `source` as a file row may name it: a store's plain id (lowercase
-/// letters, digits, `-` and `_`, at most
+/// letters, digits, `_`, `-` and `.`, at most
 /// [`FileProbe::MAX_CONTENT_TYPE_BYTES`] bytes). Anything else is left out,
 /// so an odd plugin id costs the row its source and not the probe.
 fn source_store_of(source: &str) -> Option<String> {
@@ -139,7 +139,7 @@ fn source_store_of(source: &str) -> Option<String> {
         && source.len() <= FileProbe::MAX_CONTENT_TYPE_BYTES
         && source
             .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.'));
     plain.then(|| source.to_owned())
 }
 
