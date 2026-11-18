@@ -248,7 +248,7 @@ fn encoded_len<T: serde::Serialize>(value: &T) -> usize {
 /// # Errors
 ///
 /// Returns any read error other than a title too wide to read.
-async fn titles_within_bytes(
+pub(crate) async fn titles_within_bytes(
     store: &LibraryStore,
     held: Vec<holdings::Model>,
 ) -> Result<Vec<AcquireTitle>> {
@@ -1321,4 +1321,4 @@ pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
 
 #[cfg(test)]
 #[path = "window_books_tests.rs"]
-mod tests;
+pub(crate) mod tests;

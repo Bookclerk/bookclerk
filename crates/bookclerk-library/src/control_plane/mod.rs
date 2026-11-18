@@ -19,6 +19,7 @@ mod clerk_links;
 mod cluster_links;
 pub(crate) use cluster_links::from_object;
 mod connections_request;
+mod copies;
 mod cron_fires;
 mod deployments;
 mod documents;
@@ -115,6 +116,10 @@ pub use cluster_links::{
 pub use connections_request::{
     parse_add_connections_request, parse_disconnect_request, AccountRef, AddConnectionsBody,
     AddConnectionsRequest, DisconnectBody, DisconnectRequest, MAX_ADD_CONNECTIONS,
+};
+pub use copies::{
+    authorize_copy, open_copy, plan_copy, CopyDownload, CopyHolder, CopyListing, CopyPlan,
+    CopyPlanFile, CopyPlanned, OpenedCopy, COPY_TOKEN_TTL_SECS,
 };
 pub use cron_fires::{
     claim_cron_fire, ensure_cron_cursor, load_cron_cursor, CronCursor, CronFireClaim,

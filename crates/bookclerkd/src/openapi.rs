@@ -52,6 +52,9 @@ const NODE_SIGNATURE: &str = "nodeSignature";
 /// Security scheme: an upload grant's `Authorization: Bookclerk-Upload …` header.
 const UPLOAD_TOKEN: &str = "uploadToken";
 
+/// Security scheme: a copy grant's `Authorization: Bookclerk-Copy …` header.
+const COPY_TOKEN: &str = "copyToken";
+
 /// Security scheme: an access token this daemon issued as an OIDC provider.
 const OIDC_ACCESS_TOKEN: &str = "oidcAccessToken";
 
@@ -156,7 +159,7 @@ impl Access {
 /// (name, scheme) for the operator Bearer token, the two session cookies, and
 /// the credentials single routes check themselves: node signatures, upload
 /// tokens, OIDC access tokens and clerk sign-in tokens.
-fn security_schemes() -> [(&'static str, SecurityScheme); 7] {
+fn security_schemes() -> [(&'static str, SecurityScheme); 8] {
     [
         (
             OPERATOR_TOKEN,
@@ -195,6 +198,13 @@ fn security_schemes() -> [(&'static str, SecurityScheme); 7] {
             SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
                 "Authorization",
                 "The token of an upload grant, as `Authorization: Bookclerk-Upload <token>`.",
+            ))),
+        ),
+        (
+            COPY_TOKEN,
+            SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
+                "Authorization",
+                "The token of a copy grant, as `Authorization: Bookclerk-Copy <token>`.",
             ))),
         ),
         (
@@ -262,6 +272,7 @@ const TAGS: &[(&str, &str, &str)] = &[
     ("Accounts", "/api/portal", "Store accounts a library user connects (the Accounts page)."),
     ("Clerk sign-in", "/api/clerk/v1", "A clerk's sign-in as a person: redeem an approved code for a session token."),
     ("Node protocol", "/api/node/v1", "Node-to-node enrollment, socket, artifacts and uploads; each route checks its own credential."),
+    ("Library copies", "/api/copies/v1", "Downloads of an edition's files the library already holds, by a branch or clerk it granted the copy to; the grant's token is the credential."),
     ("OIDC provider", "/.well-known", "Bookclerk as an OpenID Connect provider for other apps."),
     ("OIDC provider", "/oidc", "Bookclerk as an OpenID Connect provider for other apps."),
     ("OIDC provider", "/api/auth/oidc/clients", "Bookclerk as an OpenID Connect provider for other apps."),

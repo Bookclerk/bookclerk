@@ -287,6 +287,13 @@ input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.copy_range]
+crate = "bookclerk-node-proto"
+boundary = "The Range header of a copy download, GET /api/copies/v1/{copy_id}/files/{n}, which decides which bytes of a library's file are sent"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.clerk_socket_frame]
 crate = "bookclerk-node-proto"
 boundary = "The clerk socket's frames, GET /api/clerk/v1/connect: what a library reads from a clerk and what a clerk reads back"

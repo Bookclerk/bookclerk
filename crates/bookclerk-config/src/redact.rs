@@ -468,6 +468,8 @@ fn secret_patterns() -> &'static [Regex] {
             r"(?i)\bBearer\s+[A-Za-z0-9._\-+/=]+",
             // A clerk's library card (`Authorization: Bookclerk-Clerk`).
             r"(?i)\bBookclerk-Clerk\s+[A-Za-z0-9_\-]+",
+            // A copy token (`Authorization: Bookclerk-Copy`).
+            r"(?i)\bBookclerk-Copy\s+[A-Za-z0-9_\-]+",
             r"\bAKIA[0-9A-Z]{16}\b",
             r"(?i)(aws_secret_access_key\s*[=:]\s*)\S+",
             r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b",
@@ -690,6 +692,14 @@ mod tests {
         assert!(!out.contains("Atna|abcDEF123"));
         assert!(!out.contains("Atnr|xyz"));
         assert!(out.contains(REDACTED));
+    }
+
+    #[test]
+    fn redacts_copy_tokens() {
+        let s = "authorization: bookclerk-copy q8Zl0m3VnS2xR7bW4cYd1eTf6gUh9iJk5LoNpQrStUv range=bytes=0-";
+        let out = redact_str(s);
+        assert!(!out.contains("q8Zl0m3VnS2xR7bW"), "{out}");
+        assert!(out.contains("range=bytes=0-"), "{out}");
     }
 
     #[test]

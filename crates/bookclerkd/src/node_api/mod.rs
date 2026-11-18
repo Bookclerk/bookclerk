@@ -36,6 +36,7 @@ mod artifacts;
 pub mod branch;
 pub mod clerk;
 pub(crate) mod clerk_socket;
+pub(crate) mod copies;
 mod host_accounts;
 mod host_catalog;
 mod host_interlibrary;
@@ -466,6 +467,9 @@ pub(crate) fn node_routes() -> OpenApiRouter<Arc<AppState>> {
         // credential.
         .routes(routes!(uploads::put_file))
         .routes(routes!(uploads::post_commit))
+        // A reader's download of a copy this library holds: the sealed
+        // copy token is the credential.
+        .routes(routes!(copies::get_file))
 }
 
 /// The node API routes, as every listener mounts them: outside the cookie

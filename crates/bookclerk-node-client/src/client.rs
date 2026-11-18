@@ -1383,6 +1383,84 @@ impl HostClientHandle {
         }
     }
 
+    /// `copy.grant`: asks the library for the copy it holds of the edition
+    /// named by its store listing, for this node's owner, and opens the
+    /// sealed token (bound to this node and the copy).
+    ///
+    /// # Returns
+    ///
+    /// `None` when the library answers `not_found`: the person cannot take
+    /// that edition, or the library holds no copy of it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`]; `Refused` when the library does not
+    /// count this node as a branch, `Unavailable` for an answer that
+    /// breaks the frame rules or a token that does not open.
+    pub async fn copy_grant(
+        &self,
+        store: &str,
+        marketplace: &str,
+        product_id: &str,
+    ) -> Result<Option<crate::GrantedCopy>, OwnerCallError> {
+        let shared = &self.shared;
+        let conn = shared
+            .wait_conn(Instant::now() + shared.timing.request_timeout)
+            .await
+            .ok_or(OwnerCallError::Unavailable)?;
+        let answer = conn
+            .request(Body::CopyGrant {
+                store: store.to_string(),
+                marketplace: marketplace.to_string(),
+                product_id: product_id.to_string(),
+            })
+            .await
+            .map_err(|Unavailable| OwnerCallError::Unavailable)?;
+        let (copy_id, sealed_token, expires_in_secs, copy, files) = match answer.body {
+            Body::CopyGranted {
+                copy_id,
+                sealed_token,
+                expires_in_secs,
+                copy,
+                files,
+            } => (copy_id, sealed_token, expires_in_secs, copy, files),
+            Body::Error { code, .. } if code == "not_found" => return Ok(None),
+            Body::Error { code, message } if code == "refused" => {
+                return Err(OwnerCallError::Refused(message))
+            }
+            _ => return Err(OwnerCallError::Unavailable),
+        };
+        let frame = bookclerk_node_proto::CopyGrantedFrame {
+            copy_id: &copy_id,
+            sealed_token: &sealed_token,
+            expires_in_secs,
+            copy: &copy,
+            files: &files,
+        };
+        if let Some(problem) = bookclerk_node_proto::copy_granted_problem(&frame) {
+            tracing::warn!(problem, "the library's copy.granted breaks the frame rules");
+            return Err(OwnerCallError::Unavailable);
+        }
+        let token = bookclerk_node_proto::open_copy_token(
+            &shared.box_secret,
+            &shared.node_id,
+            &copy_id,
+            &sealed_token,
+        )
+        .map_err(|_| {
+            tracing::warn!(%copy_id, "the copy token does not open with this node's box key");
+            OwnerCallError::Unavailable
+        })?;
+        register_value_for_redaction(token.expose());
+        Ok(Some(crate::GrantedCopy::new(
+            copy_id,
+            expires_in_secs,
+            copy,
+            files,
+            token,
+        )))
+    }
+
     /// `catalog.upload`: opens an upload of one shared title's `files` and
     /// opens its sealed token (bound to this node, [`CATALOG_ITEM`], the
     /// fence and the upload).

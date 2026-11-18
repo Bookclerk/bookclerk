@@ -2066,6 +2066,41 @@ it: a tree, A ← B ← C.
   operator and for an Owner, refused to an Administrator and a Member. UI
   (vitest): the read-only summaries and who sees the sharing settings.
 
+### Copies from the library to a branch
+
+Uploads move a branch's files up; this moves the library's files down,
+so a branch need not download from a store an edition its library
+already processed.
+
+- **Grant, then plain HTTP.** `copy.grant {store, marketplace?,
+  product_id}` on the node socket names an edition by its listing, and
+  `copy.granted` answers with a copy id, the file list and a bearer token
+  sealed to the node's box key (bound to the node and the copy id). The
+  files are read with `GET /api/copies/v1/{copy_id}/files/{n}` and
+  `Authorization: Bookclerk-Copy <token>`, streamed from the destination
+  with one `Range` honoured. A file is not frame text because audio does
+  not fit a 1 MiB frame, and a plain GET can resume.
+- **`copy_grants`.** One row per grant: the copy id, the token's hash
+  (never the token), the holder (`holder_kind` `node` or `card`, and its
+  id), the person, the edition, the granting node, the destination and a
+  digest of the file rows the grant listed. It lives one hour and the
+  record-retention pass deletes it after that; deleting a user deletes
+  their grants.
+- **Authorized on every request.** The token alone proves nothing after
+  the grant: each GET reads afresh that the holder is still trusted and
+  still belongs to the person, that the person may still see the edition
+  (one function, `visible_to`, which patron scopes will narrow), and that
+  the files' digest is unchanged. Every failure is the same `401`, and
+  "not visible" and "no copy" are the same `not_found` on the socket, so
+  a holder cannot probe for editions it may not see.
+- **Names are hints.** File names are relative to the primary audio's
+  folder; files outside it, or whose names cannot be framed, are left
+  out. The reader places files under its own naming and never writes to
+  a name as given.
+- **The route is outside the session layers**, like uploads: the sealed
+  token is the credential, and the transport policy runs first. The
+  hosted demo denies it.
+
 ## Consequences
 
 - New unreleased tables: `cluster_identity`, `nodes`,

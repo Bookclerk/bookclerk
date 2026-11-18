@@ -58,13 +58,27 @@
 //!   sync token of at most 4096 bytes with no control characters. Checked
 //!   character by character here, since the owner removes holdings by
 //!   those ids and stores the token for the account's next pass.
+//! - a `copy.grant` the library would accept (`copy_grant_problem` finds
+//!   nothing) names a plain store id, a lowercase marketplace and a
+//!   product id with no control characters or outer whitespace, since the
+//!   library looks the listing up by them. A `copy.granted` a branch would
+//!   accept (`copy_granted_problem` finds nothing) carries a lowercase
+//!   hyphenated UUID as its copy id (the branch puts it in a URL path), a
+//!   token of 1 to 1024 base64url characters, a life of one second to a
+//!   day, and 1 to 1000 files with distinct names, exactly one of them
+//!   the primary audio, each at most 1 TiB with a name of at most 512
+//!   bytes that is a relative path (no empty, `.` or `..` segment, no
+//!   leading `/`, no backslash, no control character, no drive prefix).
+//!   Checked character by character here, since the branch asks for byte
+//!   ranges by those sizes and reads the names when it places the files.
 
 use std::collections::BTreeSet;
 
 use bookclerk_node_proto::{
-    claimed_problem, finish_problem, found_problem, questions_problem, scan_pass_end_problem,
-    scan_removed_problem, window_page_problem, Availability, Body, Frame, LookupScheme, LookupWork,
-    WindowCursor, FRAME_VERSION, MAX_FRAME_BYTES, MAX_LIBRARY_ID_BYTES,
+    claimed_problem, copy_grant_problem, copy_granted_problem, finish_problem, found_problem,
+    questions_problem, scan_pass_end_problem, scan_removed_problem, window_page_problem,
+    Availability, Body, CopyGrantedFrame, CopyRole, Frame, LookupScheme, LookupWork, WindowCursor,
+    FRAME_VERSION, MAX_FRAME_BYTES, MAX_LIBRARY_ID_BYTES,
 };
 use serde_json::Value;
 
@@ -136,6 +150,7 @@ pub fn check(data: &[u8]) {
     check_requests(&frame.body);
     check_window(&frame.body);
     check_scan_reports(&frame.body);
+    check_copies(&frame.body);
     let text_again = frame.to_text();
     // Serializing can lengthen an opaque JSON field (`1e9` is written out
     // in full), past the limit the parser enforces: such a frame is never
@@ -151,6 +166,110 @@ pub fn check(data: &[u8]) {
         same(&json(&again), &json(&frame)),
         "a frame changed across a round trip: {frame:?} became {again:?}"
     );
+}
+
+/// The rules of a `copy.grant` the library would accept and of a
+/// `copy.granted` a branch would accept.
+fn check_copies(body: &Body) {
+    match body {
+        Body::CopyGrant {
+            store,
+            marketplace,
+            product_id,
+        } if copy_grant_problem(store, marketplace, product_id).is_none() => {
+            assert!(
+                !store.is_empty()
+                    && store.len() <= 64
+                    && store
+                        .bytes()
+                        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.')),
+                "copy store {store:?} accepted"
+            );
+            assert!(
+                marketplace.len() <= 16
+                    && marketplace
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()),
+                "copy marketplace {marketplace:?} accepted"
+            );
+            assert!(
+                !product_id.is_empty()
+                    && product_id.len() <= 256
+                    && product_id.trim() == product_id
+                    && !product_id.chars().any(char::is_control),
+                "copy product id {product_id:?} accepted"
+            );
+        }
+        Body::CopyGranted {
+            copy_id,
+            sealed_token,
+            expires_in_secs,
+            copy,
+            files,
+        } if copy_granted_problem(&CopyGrantedFrame {
+            copy_id,
+            sealed_token,
+            expires_in_secs: *expires_in_secs,
+            copy,
+            files,
+        })
+        .is_none() =>
+        {
+            let groups: Vec<&str> = copy_id.split('-').collect();
+            assert!(
+                groups.iter().map(|group| group.len()).eq([8, 4, 4, 4, 12])
+                    && groups.iter().all(|group| group
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))),
+                "copy id {copy_id:?} accepted"
+            );
+            assert!(
+                (1..=1024).contains(&sealed_token.len())
+                    && sealed_token
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+                "a sealed token that is not base64url text accepted"
+            );
+            assert!(
+                (1..=86_400).contains(expires_in_secs),
+                "a token life of {expires_in_secs} s accepted"
+            );
+            assert!(
+                (1..=1000).contains(&files.len()),
+                "a copy of {} files accepted",
+                files.len()
+            );
+            let mut names = BTreeSet::new();
+            for file in files {
+                let name = file.name.as_str();
+                let drive = name.chars().nth(1) == Some(':')
+                    && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
+                assert!(
+                    name.len() <= 512
+                        && !drive
+                        && !name.chars().any(|c| c == '\\' || c.is_control())
+                        && name.split('/').all(|part| !matches!(part, "" | "." | "..")),
+                    "copy file name {name:?} accepted"
+                );
+                assert!(names.insert(name), "a copy file named twice was accepted");
+                assert!(
+                    file.size <= 1 << 40,
+                    "a copy file of {} bytes accepted",
+                    file.size
+                );
+            }
+            assert_eq!(
+                files
+                    .iter()
+                    .filter(|file| file.role == CopyRole::Audio)
+                    .count(),
+                1,
+                "a copy without exactly one primary audio file accepted"
+            );
+        }
+        Body::CopyGrant { .. } | Body::CopyGranted { .. } => {}
+        _ => {}
+    }
 }
 
 /// The rules of a `scan.removed` or `scan.pass_end` the owner would accept.

@@ -29560,6 +29560,165 @@
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
+    "/api/copies/v1/{copy_id}/files/{index}": {
+      "get": {
+        "tags": [
+          "Library copies"
+        ],
+        "summary": "Streams one file of a granted copy.",
+        "operationId": "get_file",
+        "parameters": [
+          {
+            "name": "copy_id",
+            "in": "path",
+            "description": "Copy id from `copy.granted`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "index",
+            "in": "path",
+            "description": "The file's index in the grant's `files`.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "description": "One byte range (`bytes=A-B`, `bytes=A-` or `bytes=-N`); anything else reads the whole file.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The whole file.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/BinaryBody"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "The requested byte range, with `Content-Range`.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/BinaryBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The copy token is missing, wrong or expired, or the grant no longer holds: the branch is no longer trusted, the person may no longer take the edition, or the library's files changed since the grant (`unauthorized`). Ask for a new grant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The connection failed the transport policy (`transport_insecure`, with the check in `reason`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransportRefused"
+                },
+                "example": {
+                  "error": "transport_insecure",
+                  "reason": "plain_http"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The index names no file of the copy (`unknown_file`), or the node API is not mounted on this listener (`node_api_unmounted`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unknown_file"
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "The range starts at or past the end of the file (`range_not_satisfiable`); `Content-Range` states the size.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "range_not_satisfiable"
+                }
+              }
+            }
+          },
+          "421": {
+            "description": "Another node granted this copy (`misdirected`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "misdirected"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Storage or the grant record is unavailable; retry (`unavailable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unavailable"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "copyToken": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
     "/api/openapi.json": {
       "get": {
         "tags": [
@@ -46521,6 +46680,12 @@
         "name": "Authorization",
         "description": "A library card (`POST /api/clerk/v1/token`), as `Authorization: Bookclerk-Clerk <token>`. Accepted only on routes any library session may use, over TLS except on loopback."
       },
+      "copyToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "The token of a copy grant, as `Authorization: Bookclerk-Copy <token>`."
+      },
       "nodeSignature": {
         "type": "apiKey",
         "in": "header",
@@ -46629,6 +46794,10 @@
     {
       "name": "Node protocol",
       "description": "Node-to-node enrollment, socket, artifacts and uploads; each route checks its own credential."
+    },
+    {
+      "name": "Library copies",
+      "description": "Downloads of an edition's files the library already holds, by a branch or clerk it granted the copy to; the grant's token is the credential."
     },
     {
       "name": "OIDC provider",

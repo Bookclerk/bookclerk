@@ -717,6 +717,40 @@ pub enum Body {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next: Option<crate::window::WindowCursor>,
     },
+    /// Reader → library: ask for the copy this library holds of one
+    /// edition, named by its store listing, for the node's owner
+    /// (`copy_grant_problem`). Answered with [`Body::CopyGranted`], or `error`
+    /// with `refused` (not a branch this library trusts), `not_found` (the
+    /// person cannot take the edition, or the library holds no copy of it),
+    /// `invalid`, or `unavailable` (the library cannot read its storage
+    /// right now).
+    #[serde(rename = "copy.grant")]
+    CopyGrant {
+        /// Store id of the edition's listing.
+        store: String,
+        /// The listing's marketplace; empty (or absent) for a store
+        /// without marketplaces.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        marketplace: String,
+        /// The listing's product id.
+        product_id: String,
+    },
+    /// Library → reader: the copy may be downloaded.
+    #[serde(rename = "copy.granted")]
+    CopyGranted {
+        /// Copy id; the files are at `COPIES_PATH<copy_id>/files/<n>`.
+        copy_id: String,
+        /// The bearer token for the download endpoint, sealed to the
+        /// node's box key and bound to the node and the copy
+        /// (`crate::seal_copy_token`).
+        sealed_token: String,
+        /// Seconds the token stays valid.
+        expires_in_secs: u64,
+        /// What the copy is, as the library's page states it.
+        copy: crate::window::WindowCopy,
+        /// The copy's files; a file's index here is its `<n>`.
+        files: Vec<crate::copies::CopyFile>,
+    },
     /// Owner → host: the request with this frame id was applied.
     #[serde(rename = "ok")]
     Accepted {},

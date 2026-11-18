@@ -1526,6 +1526,29 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_node_upload_sessions_job ON node_upload_sessions(job_id)",
     ),
+    // A reader's leave to download the copy this library holds of one
+    // edition (`copy.grant`). Only the token's hash is stored. The holder
+    // is the asking branch node or a clerk's library card; every download
+    // re-checks it, the person and the edition, so a row only bounds the
+    // token's life and pins the files it was granted for.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS copy_grants (
+        copy_id TEXT PRIMARY KEY NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        holder_kind TEXT NOT NULL CHECK (holder_kind IN ('node', 'card')),
+        holder_id TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        edition_id TEXT NOT NULL,
+        serving_node_id TEXT NOT NULL,
+        destination TEXT NOT NULL,
+        files_digest TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_copy_grants_expires ON copy_grants(expires_at)",
+    ),
     // Every file key an acquire or a host upload wrote, per output
     // destination, and the edition it belongs to (`owner_kind = 'edition'`),
     // so an upload is never granted another edition's file in a folder
