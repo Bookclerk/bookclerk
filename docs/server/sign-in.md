@@ -234,6 +234,12 @@ never sends work on it.
    its own Library page lists them for a member. Each edition is
    `{"edition": {...}, "yours": true}` when it is on a store account
    linked to the card's person; `yours` is left out otherwise.
+   An edition whose audio the library already holds also carries `copy`:
+   `content_type` (a media type such as `audio/mp4`), `bitrate_kbps` and
+   `source_store` (the store the file came from) when the library has
+   probed the file, `lossless` when true, and `version`, a short opaque
+   string that changes when the library's file does. `copy` is left out
+   for an edition the library has not downloaded.
    A cursor is an opaque string of up to 64 letters, digits and `-`. The
    clerk sends it back unchanged as the next `after`.
    A frame it cannot read gets `error` with code `invalid`.

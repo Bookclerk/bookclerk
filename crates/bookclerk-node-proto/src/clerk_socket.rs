@@ -386,6 +386,7 @@ mod tests {
                     },
                 },
                 yours: true,
+                copy: None,
             }],
         }
     }

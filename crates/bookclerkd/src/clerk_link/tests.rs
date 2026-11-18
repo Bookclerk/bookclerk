@@ -548,6 +548,7 @@ fn work(asin: &str) -> bookclerk_node_proto::WindowWork {
                 },
             },
             yours: true,
+            copy: None,
         }],
     }
 }

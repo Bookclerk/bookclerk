@@ -320,7 +320,9 @@ only that. The others check:
   and a positive generation. A
   `window.page` that passes its validator carries at most 100 works, each
   once, with plain identifiers, 1 to 8 distinct owned editions with a
-  title, and a plain next cursor (up to 64 letters, digits and `-`)
+  title, a copy (where one is stated) with a lowercase media type, a
+  bitrate of 1 to 20000 kbit/s, a short lowercase source store and a
+  plain version, and a plain next cursor (up to 64 letters, digits and `-`)
   sorting past the one asked with. A `scan.removed` or
   `scan.pass_end` that passes its validator names an account and carries
   at most 500 product ids, each non-blank, at most 512 bytes and free of

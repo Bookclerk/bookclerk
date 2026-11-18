@@ -35,8 +35,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bookclerk_node_proto::{
-    LookupEdition, LookupFormat, LookupIdentifier, LookupScheme, LookupWork, WindowCursor,
-    WindowEdition, WindowWork, MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS, MAX_WINDOW_WORKS,
+    LookupEdition, LookupFormat, LookupIdentifier, LookupScheme, LookupWork, WindowCopy,
+    WindowCursor, WindowEdition, WindowWork, MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS,
+    MAX_PROBE_BITRATE_KBPS, MAX_WINDOW_WORKS,
 };
 use chrono::Utc;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
@@ -44,17 +45,19 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use super::batch::{exec, int, text, text_opt};
 use super::catalog_lookup::{
     identifiers_of, in_chunk, is_result_bytes_limit, is_too_wide_to_read, is_trusted_branch,
-    listed_titles, read_chunked_all, read_paged, read_paged_by, result_page, run_batches, stamp,
-    title_edition, work_for_question, works_of_editions, PAGED_FIXED_BINDS,
+    listed_titles, read_chunked, read_chunked_all, read_paged, read_paged_by, result_page,
+    run_batches, stamp, title_edition, work_for_question, works_of_editions, PAGED_FIXED_BINDS,
 };
 use super::clerk_links::list_clerk_links;
 use super::cluster_links::list_cluster_links;
 use crate::entities::{
-    account_links, holdings, nodes, portal_identities, window_book_parts, window_books,
+    account_links, edition_acquisitions, edition_files, holdings, nodes, portal_identities,
+    window_book_parts, window_books,
 };
 use crate::error::{LibraryError, Result};
+use crate::models::AcquireStatus;
 use crate::store::holdings::find_holdings;
-use crate::store::{AcquireTitle, LibraryStore};
+use crate::store::{AcquireTitle, FileRole, LibraryStore};
 
 /// Most holdings one [`window_books_page`] reads.
 pub const WINDOW_BOOKS_READ: u64 = 200;
@@ -87,6 +90,116 @@ async fn person_accounts(store: &LibraryStore, user_id: i64) -> Result<BTreeSet<
         }
     }
     Ok(accounts)
+}
+
+/// The media type an audio file's name implies, for a row no probe
+/// described; `None` for an extension that names no audio container.
+fn audio_type_of_key(key: &str) -> Option<&'static str> {
+    let (_, ext) = key.rsplit_once('.')?;
+    match ext.to_ascii_lowercase().as_str() {
+        "m4b" | "m4a" | "mp4" => Some("audio/mp4"),
+        "mp3" => Some("audio/mpeg"),
+        "flac" => Some("audio/flac"),
+        _ => None,
+    }
+}
+
+/// What the library tells a reader about the audio file `row` holds.
+///
+/// The probe's values when the file was probed; otherwise the media type
+/// its name implies, with no bitrate. `None` when neither gives a media
+/// type, or a stored value is outside what a page may carry.
+fn copy_of_row(row: &edition_files::Model) -> Option<WindowCopy> {
+    use sha2::Digest as _;
+
+    let probed = row.probed_at.is_some();
+    let content_type = match (&row.content_type, probed) {
+        (Some(kind), true) => kind.clone(),
+        _ => audio_type_of_key(&row.storage_key)?.to_string(),
+    };
+    // Any write of the key changes `written_at`, and a new upload its
+    // digest: the token names this file and nothing about where it lies.
+    let mut hasher = sha2::Sha256::new();
+    for part in [
+        row.destination.as_str(),
+        row.storage_key.as_str(),
+        row.written_at.as_str(),
+        row.writer.as_str(),
+        row.sha256.as_deref().unwrap_or(""),
+    ] {
+        hasher.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_be_bytes());
+        hasher.update(part.as_bytes());
+    }
+    let digest = hex::encode(hasher.finalize());
+    let copy = WindowCopy {
+        source_store: row.source_store.clone().filter(|_| probed),
+        content_type,
+        bitrate_kbps: row
+            .bitrate_kbps
+            .filter(|_| probed)
+            .and_then(|kbps| u32::try_from(kbps).ok())
+            .filter(|kbps| (1..=MAX_PROBE_BITRATE_KBPS).contains(kbps)),
+        lossless: probed && row.lossless != 0,
+        version: digest.chars().take(32).collect(),
+    };
+    copy.is_well_formed().then_some(copy)
+}
+
+/// The copy this library holds of each of `edition_ids`, by edition id:
+/// the edition's acquired primary audio file as its row describes it
+/// ([`copy_of_row`]).
+///
+/// An edition that is not acquired, or whose primary file has no row, has
+/// no entry. Where the file lies on several destinations, the probed row
+/// is used, then the first destination by name, so the answer is stable.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub(crate) async fn copies_of_editions(
+    store: &LibraryStore,
+    edition_ids: &[String],
+) -> Result<HashMap<String, WindowCopy>> {
+    let primary: HashMap<String, String> = read_chunked(store, edition_ids, |part| {
+        edition_acquisitions::Entity::find()
+            .filter(edition_acquisitions::Column::EditionId.is_in(part))
+            .filter(edition_acquisitions::Column::Status.eq(AcquireStatus::Acquired.as_str()))
+    })
+    .await?
+    .into_iter()
+    .filter_map(|row| Some((row.edition_id, row.storage_key?)))
+    .collect();
+    if primary.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let acquired: Vec<String> = primary
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut rows = read_chunked_all(store, &acquired, |part| {
+        edition_files::Entity::find()
+            .filter(edition_files::Column::OwnerKind.eq("edition"))
+            .filter(edition_files::Column::OwnerId.is_in(part))
+            .filter(edition_files::Column::Role.eq(FileRole::Audio.as_str()))
+    })
+    .await?;
+    rows.sort_by(|a, b| {
+        (a.probed_at.is_none(), &a.destination).cmp(&(b.probed_at.is_none(), &b.destination))
+    });
+    let mut copies = HashMap::new();
+    for row in rows {
+        if primary.get(&row.owner_id) != Some(&row.storage_key)
+            || copies.contains_key(&row.owner_id)
+        {
+            continue;
+        }
+        if let Some(copy) = copy_of_row(&row) {
+            copies.insert(row.owner_id, copy);
+        }
+    }
+    Ok(copies)
 }
 
 /// True when `a` and `b` are the same store listing: the same store,
@@ -325,6 +438,7 @@ async fn person_books_page_by(
         .into_iter()
         .collect();
     let work_of_edition = works_of_editions(store, &edition_ids).await?;
+    let copies = copies_of_editions(store, &edition_ids).await?;
     let work_ids: Vec<String> = work_of_edition
         .values()
         .cloned()
@@ -347,6 +461,7 @@ async fn person_books_page_by(
         let edition = WindowEdition {
             edition,
             yours: yours.contains(&title.holding_id),
+            copy: copies.get(&title.edition_id).cloned(),
         };
         let work = work_of_edition
             .get(&title.edition_id)
@@ -494,6 +609,12 @@ pub async fn record_window_page(
             );
             let merged;
             let mut yours = listed.yours;
+            // Every page of a read states the same copy of an edition;
+            // one that states none keeps what an earlier page said.
+            let copy = listed
+                .copy
+                .clone()
+                .or_else(|| earlier.get(&key).and_then(|before| before.copy.clone()));
             let edition = match earlier.get(&key) {
                 Some(before) => {
                     let mut richer = edition.clone();
@@ -515,6 +636,7 @@ pub async fn record_window_page(
                 identifiers: work.identifiers.clone(),
                 edition: edition.clone(),
                 yours,
+                copy,
             })
             .map_err(|err| LibraryError::Invalid(err.to_string()))?;
             // The pieces go in first under a new version, then the row
@@ -650,13 +772,15 @@ async fn drop_unnamed_parts(store: &LibraryStore, owner_cluster_id: &str) -> Res
     Ok(())
 }
 
-/// What one read already stored of an edition: its formats, and whether
-/// it was the person's.
+/// What one read already stored of an edition: its formats, whether it
+/// was the person's, and the library's copy.
 struct Earlier {
     /// The formats stored so far in this read.
     formats: Vec<LookupFormat>,
     /// Whether an earlier copy in this read was the person's.
     yours: bool,
+    /// The library's copy as an earlier page of this read stated it.
+    copy: Option<WindowCopy>,
 }
 
 /// What this same read (stamped `seen_at`) already stored for the editions
@@ -731,6 +855,7 @@ async fn earlier_in_read(
                 Earlier {
                     formats: book.edition.formats,
                     yours: book.yours,
+                    copy: book.copy,
                 },
             )
         })
@@ -854,6 +979,10 @@ struct StoredBook {
     /// Rows stored before the library said so read as not theirs.
     #[serde(default)]
     yours: bool,
+    /// The copy the library holds of it, when it said so. Rows stored
+    /// before the library stated copies have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    copy: Option<WindowCopy>,
 }
 
 /// A window book's `(store, marketplace, product id)`.
@@ -930,6 +1059,8 @@ pub struct WindowEntryEdition {
     /// Whether the person holds it there through a store account of their
     /// own.
     pub yours: bool,
+    /// The copy of its audio that library holds, when it stated one.
+    pub copy: Option<WindowCopy>,
 }
 
 /// One work in the window's merged view.
@@ -1168,6 +1299,7 @@ pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
                             .unwrap_or_default(),
                         edition: book.edition.clone(),
                         yours: book.yours,
+                        copy: book.copy.clone(),
                     }
                 })
                 .collect();
