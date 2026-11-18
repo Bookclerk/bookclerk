@@ -100,6 +100,10 @@ mod purchase_hints_tests {
     }
 
     /// Past the budget no lookup starts, and every query answers `None`.
+    ///
+    /// # Panics
+    ///
+    /// When the batch fails or a lookup started anyway.
     #[tokio::test(flavor = "current_thread")]
     async fn nothing_starts_past_the_budget() {
         let params = PurchaseHintsParams {
