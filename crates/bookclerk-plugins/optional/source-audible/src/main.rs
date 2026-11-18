@@ -47,6 +47,8 @@ impl PluginWorker for AudibleRoot {
             // hits carry `rank_hint` instead.
             catalog: CatalogCapabilities {
                 detail_by_isbn: false,
+                price_by_isbn: false,
+                price_by_asin: false,
             },
             ..PluginDescribe::default()
         })

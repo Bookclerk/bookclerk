@@ -1904,7 +1904,15 @@ class StorefrontEntrypoint(NamedEntrypoint):
         raise _unsupported("expandCandidates")
 
     async def purchaseHint(self, _params: abi.PurchaseHintParams):
-        """Purchase link / price hint (``PurchaseHintParams`` → ``PurchaseHint``)."""
+        """Purchase link / price hint (``PurchaseHintParams`` → ``PurchaseHint``).
+
+        ``params["lookup"]`` says how the host names the title (``"product"``,
+        ``"isbn"``, ``"asin"``, ``"title"`` or ``"unspecified"``). For a
+        ``"title"`` lookup, return ``{"hint": ..., "records": [...]}`` with
+        every priced listing the search matched (each ``{"record":
+        CatalogHit, "hint": PurchaseHint}``) so the host can keep the
+        recording it asked for; a bare ``PurchaseHint`` or ``None`` also works.
+        """
         raise _unsupported("purchaseHint")
 
     async def purchaseHints(self, params: abi.PurchaseHintsParams):

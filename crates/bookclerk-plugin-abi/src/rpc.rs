@@ -2743,14 +2743,7 @@ impl content_source_capnp::Server for ContentSourceServer {
         mut results: content_source_capnp::PurchaseHintResults,
     ) -> capnp::Result<()> {
         let params = read_purchase_hint_params(params.get()?.get_params()?)?;
-        let outcome = self
-            .inner
-            .purchase_hint(params)
-            .await
-            .map(|hint| PurchaseHintResult {
-                found: hint.is_some(),
-                hint: hint.unwrap_or_default(),
-            });
+        let outcome = self.inner.purchase_hint_result(params).await;
         write_purchase_hint_reply(results.get().init_result(), &outcome)
     }
 
@@ -2762,17 +2755,9 @@ impl content_source_capnp::Server for ContentSourceServer {
         let params = read_purchase_hints_params(params.get()?.get_params()?)?;
         let outcome = self
             .inner
-            .purchase_hints(params)
+            .purchase_hints_results(params)
             .await
-            .map(|hints| PurchaseHintsResult {
-                results: hints
-                    .into_iter()
-                    .map(|hint| PurchaseHintResult {
-                        found: hint.is_some(),
-                        hint: hint.unwrap_or_default(),
-                    })
-                    .collect(),
-            });
+            .map(|results| PurchaseHintsResult { results });
         write_purchase_hints_reply(results.get().init_result(), &outcome)
     }
 
@@ -4377,28 +4362,36 @@ impl ContentSource for ContentSourceClient {
             .map(|ok| ok.hits)
     }
     async fn purchase_hint(&self, params: PurchaseHintParams) -> Result<Option<PurchaseHint>> {
+        let result = self.purchase_hint_result(params).await?;
+        Ok(result.found.then_some(result.hint))
+    }
+    async fn purchase_hint_result(&self, params: PurchaseHintParams) -> Result<PurchaseHintResult> {
         let mut req = self.client.purchase_hint_request();
         write_purchase_hint_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_purchase_hint_reply(reply_result!(reply))
-            .map_err(from_capnp)?
-            .map(|ok| ok.found.then_some(ok.hint))
+        read_purchase_hint_reply(reply_result!(reply)).map_err(from_capnp)?
     }
     async fn purchase_hints(
         &self,
         params: PurchaseHintsParams,
     ) -> Result<Vec<Option<PurchaseHint>>> {
+        Ok(self
+            .purchase_hints_results(params)
+            .await?
+            .into_iter()
+            .map(|r| r.found.then_some(r.hint))
+            .collect())
+    }
+    async fn purchase_hints_results(
+        &self,
+        params: PurchaseHintsParams,
+    ) -> Result<Vec<PurchaseHintResult>> {
         let mut req = self.client.purchase_hints_request();
         write_purchase_hints_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
         read_purchase_hints_reply(reply_result!(reply))
             .map_err(from_capnp)?
-            .map(|ok| {
-                ok.results
-                    .into_iter()
-                    .map(|r| r.found.then_some(r.hint))
-                    .collect()
-            })
+            .map(|ok| ok.results)
     }
     async fn list_deals(&self, params: ListDealsParams) -> Result<Vec<CatalogHit>> {
         let mut req = self.client.list_deals_request();
@@ -5781,6 +5774,8 @@ mod tests {
             id: "store".into(),
             catalog: crate::CatalogCapabilities {
                 detail_by_isbn: true,
+                price_by_isbn: true,
+                price_by_asin: false,
             },
             ..PluginDescribe::default()
         };
@@ -5797,6 +5792,8 @@ mod tests {
         )
         .expect("decode describe");
         assert!(back.catalog.detail_by_isbn);
+        assert!(back.catalog.price_by_isbn);
+        assert!(!back.catalog.price_by_asin);
         assert_eq!(back, declared);
 
         // A guest that never sets the struct declares nothing.
@@ -6571,6 +6568,97 @@ mod tests {
                     .await
                     .expect_err("a rate limit");
                 assert_eq!(err.code, PluginErrorCode::RateLimited, "{err}");
+            })
+            .await;
+    }
+
+    /// Answers a title lookup with two priced records, anything else with
+    /// a bare hint.
+    struct TitleStore;
+
+    #[async_trait::async_trait(?Send)]
+    impl ContentSource for TitleStore {
+        async fn purchase_hint_result(
+            &self,
+            params: PurchaseHintParams,
+        ) -> Result<PurchaseHintResult> {
+            let priced = |id: &str| crate::PricedRecord {
+                record: CatalogHit {
+                    product_id: id.into(),
+                    ..CatalogHit::default()
+                },
+                hint: PurchaseHint {
+                    product_id: id.into(),
+                    ..PurchaseHint::default()
+                },
+            };
+            let hint = PurchaseHint {
+                product_id: "pick".into(),
+                ..PurchaseHint::default()
+            };
+            Ok(PurchaseHintResult {
+                found: true,
+                hint,
+                records: if params.lookup == crate::PriceLookup::Title {
+                    vec![priced("narrated"), priced("cast")]
+                } else {
+                    Vec::new()
+                },
+            })
+        }
+
+        async fn purchase_hints_results(
+            &self,
+            params: PurchaseHintsParams,
+        ) -> Result<Vec<PurchaseHintResult>> {
+            let mut out = Vec::new();
+            for query in params.queries {
+                out.push(self.purchase_hint_result(query).await?);
+            }
+            Ok(out)
+        }
+    }
+
+    /// Title-search records cross the wire for one query and for a batch,
+    /// and the bare-hint methods still answer with the store's pick.
+    #[tokio::test(flavor = "current_thread")]
+    async fn purchase_hint_records_round_trip_over_capnp() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let client = ContentSourceClient {
+                    client: capnp_rpc::new_client(ContentSourceServer {
+                        inner: Arc::new(TitleStore),
+                    }),
+                };
+                let by_title = PurchaseHintParams {
+                    title: Some("Known".into()),
+                    lookup: crate::PriceLookup::Title,
+                    ..PurchaseHintParams::default()
+                };
+                let one = client
+                    .purchase_hint_result(by_title.clone())
+                    .await
+                    .expect("one");
+                let ids: Vec<String> = one
+                    .records
+                    .iter()
+                    .map(|priced| priced.record.product_id.clone())
+                    .collect();
+                assert_eq!(ids, vec!["narrated".to_string(), "cast".to_string()]);
+                assert_eq!(one.hint.product_id, "pick");
+
+                let batch = client
+                    .purchase_hints_results(PurchaseHintsParams {
+                        queries: vec![PurchaseHintParams::default(), by_title.clone()],
+                    })
+                    .await
+                    .expect("batch");
+                let counts: Vec<usize> = batch.iter().map(|r| r.records.len()).collect();
+                assert_eq!(counts, vec![0, 2]);
+
+                let bare = client.purchase_hint(by_title).await.expect("bare");
+                assert_eq!(bare.map(|h| h.product_id).as_deref(), Some("pick"));
             })
             .await;
     }

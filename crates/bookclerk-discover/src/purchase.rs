@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use bookclerk_enrich::normalize_region;
-use bookclerk_source::{PurchaseHintOpts, SourcePurchaseHint, SourceRegistry};
+use bookclerk_source::{PriceLookup, PurchaseHintOpts, SourcePurchaseHint, SourceRegistry};
 
 use crate::error::Result;
 use crate::identity::works_match;
@@ -232,6 +232,7 @@ pub async fn purchase_hints_for(
         isbn: isbn.map(str::to_string),
         region,
         with_price: false,
+        lookup: PriceLookup::Unspecified,
     };
     append_registry_hints(registry, &mut hints, &opts, None).await;
 
@@ -422,6 +423,7 @@ async fn resolve_purchase_hints_uncached(
         isbn: isbn.map(str::to_string),
         region: region.clone(),
         with_price: true,
+        lookup: PriceLookup::Unspecified,
     };
     append_registry_hints(
         registry,
@@ -457,6 +459,7 @@ async fn resolve_purchase_hints_uncached(
             isbn: isbn.map(str::to_string),
             region: region.clone(),
             with_price: true,
+            lookup: PriceLookup::Unspecified,
         };
         let trusted = seed_source_is_trusted(&ed.source);
         let q_title = title.to_string();
@@ -918,6 +921,7 @@ fn store_query_opts(query: &PurchaseHintsQuery, region: &str, store: &str) -> Pu
         isbn: clean(query.isbn.as_deref()),
         region: region.to_string(),
         with_price: true,
+        lookup: PriceLookup::Unspecified,
     }
 }
 
@@ -1840,6 +1844,7 @@ mod tests {
         let opts = PurchaseHintOpts {
             title: Some("Paused".into()),
             with_price: true,
+            lookup: PriceLookup::Unspecified,
             region: "us".into(),
             ..PurchaseHintOpts::default()
         };

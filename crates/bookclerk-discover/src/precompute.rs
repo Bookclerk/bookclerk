@@ -33,7 +33,7 @@ use bookclerk_library::{
 };
 use bookclerk_source::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, ContentSource,
-    PurchaseHintOpts, SourceError, SourceRegistry,
+    PriceLookup, PurchaseHintOpts, SourceError, SourceRegistry,
 };
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -635,6 +635,7 @@ async fn price_candidates(
                 isbn: c.isbn.clone(),
                 region: region.to_string(),
                 with_price: true,
+                lookup: PriceLookup::Unspecified,
             }
         })
         .collect();

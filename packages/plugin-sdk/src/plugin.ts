@@ -122,6 +122,7 @@ import type {
   PluginDescribe as WirePluginDescribe,
   PluginMigration,
   PublishOk,
+  PricedRecord,
   PurchaseHint,
   PurchaseHintParams,
   PurchaseHintsParams,
@@ -2188,6 +2189,24 @@ export const PURCHASE_HINTS_BUDGET_MS = 4_000;
  */
 export const PURCHASE_HINTS_CONCURRENCY = 4;
 
+/**
+ * A purchase-hint answer that carries the priced listings a title search
+ * matched, for a host that asked with `lookup = "title"`.
+ *
+ * Return it from {@link StorefrontEntrypoint.purchaseHint} (or as an entry
+ * of {@link StorefrontEntrypoint.purchaseHints}) instead of a bare
+ * {@link PurchaseHint} when the store's search returned more than one
+ * listing: the host places each record in its library model by
+ * identifiers, credits and kinds, and keeps only the recording it asked
+ * for. `hint` stays the store's own pick for hosts that ignore records.
+ */
+export interface PurchaseHintAnswer {
+  /** The store's own pick, or `null` when it found nothing. */
+  hint: PurchaseHint | null;
+  /** Every priced listing the search matched, with its full catalog record. */
+  records: PricedRecord[];
+}
+
 const STOREFRONT_METHODS = Object.freeze([
   "login",
   "scan",
@@ -2299,10 +2318,18 @@ export class StorefrontEntrypoint<
   /**
    * Purchase link / price hint; `null` when the title is unknown.
    *
-   * @param _params - Title identifiers.
-   * @returns Hint or `null`.
+   * `params.lookup` says how the host names the title: `"isbn"` or
+   * `"asin"` (sent only when `describe().catalog` declares `priceByIsbn` /
+   * `priceByAsin`) want that exact edition or `null`, never a title match;
+   * `"product"` names the store's own product; `"title"` asks for a search
+   * by title and authors, answered best with a {@link PurchaseHintAnswer}
+   * listing every priced result; `"unspecified"` (older hosts) leaves the
+   * choice to the store.
+   *
+   * @param _params - Title identifiers and how to look the title up.
+   * @returns Hint, an answer with title-search records, or `null`.
    */
-  purchaseHint(_params: PurchaseHintParams): Promise<PurchaseHint | null> {
+  purchaseHint(_params: PurchaseHintParams): Promise<PurchaseHint | PurchaseHintAnswer | null> {
     return Promise.reject(unsupported("purchaseHint"));
   }
   /**
@@ -2316,11 +2343,13 @@ export class StorefrontEntrypoint<
    * long) when the store asks to slow down, so the host leaves it alone.
    *
    * @param params - The titles to price, in order.
-   * @returns One hint or `null` per query.
+   * @returns One hint, answer with records, or `null` per query.
    */
-  async purchaseHints(params: PurchaseHintsParams): Promise<Array<PurchaseHint | null>> {
+  async purchaseHints(
+    params: PurchaseHintsParams,
+  ): Promise<Array<PurchaseHint | PurchaseHintAnswer | null>> {
     const started = Date.now();
-    const out: Array<PurchaseHint | null> = params.queries.map(() => null);
+    const out: Array<PurchaseHint | PurchaseHintAnswer | null> = params.queries.map(() => null);
     // Queries that already name a product id are one lookup each; title
     // searches come after, and nothing starts past the budget.
     const order = params.queries

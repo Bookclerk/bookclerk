@@ -264,6 +264,12 @@ CATALOG_FIELDS: tuple[str, ...] = ("any", "author", "narrator", "series", "genre
 Ordinal-ordered ``CatalogField`` wire names (index = Cap'n Proto ordinal).
 """
 
+PRICE_LOOKUPS: tuple[str, ...] = ("unspecified", "product", "isbn", "asin", "title")
+"""How a purchase-hint query names the title to price.
+
+Ordinal-ordered ``PriceLookup`` wire names (index = Cap'n Proto ordinal).
+"""
+
 ABRIDGEMENTS: tuple[str, ...] = ("unknown", "unabridged", "abridged")
 """Whether an edition is abridged.
 
@@ -377,6 +383,7 @@ __all__ = [
     "FETCHED_FILE_ROLES",
     "CATALOG_SORTS",
     "CATALOG_FIELDS",
+    "PRICE_LOOKUPS",
     "ABRIDGEMENTS",
     "METADATA_FIELDS",
     "DB_TYPES",

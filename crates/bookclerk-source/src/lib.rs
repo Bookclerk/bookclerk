@@ -23,8 +23,8 @@ pub use bookclerk_storefront::{
     extension_from_url, language_rank, listing, normalize_language, records, CatalogHit,
     CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, CatalogSortDir, ConfigOptionValue,
     ExpandSeed, ImportCredentialsOptions, LoginOptions, OAuthProgress, PlainAudioPart, PlainFetch,
-    PurchaseHintOpts, Result, ScanOptions, ScanSummary, SourceAccount, SourceBrand,
-    SourceConfigOption, SourceError, SourceFetch, SourcePurchaseHint,
+    PriceLookup, PricedAnswer, PricedListing, PurchaseHintOpts, Result, ScanOptions, ScanSummary,
+    SourceAccount, SourceBrand, SourceConfigOption, SourceError, SourceFetch, SourcePurchaseHint,
 };
 pub use fetch::FetchOptions;
 pub use options::DownloadOptions;

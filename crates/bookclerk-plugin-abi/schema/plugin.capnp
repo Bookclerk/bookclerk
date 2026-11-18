@@ -1674,6 +1674,14 @@ struct CatalogCapabilities {
   # store to fill description, narrators, runtime and genres on lean result
   # rows from any store that carry an ISBN.
   detailByIsbn @0 :Bool;
+  # True when `purchaseHint` / `purchaseHints` price a query by its exact
+  # ISBN (`lookup = isbn`): the answer is the store's listing of that ISBN
+  # or not found, never a title match. The host then prices a card at this
+  # store by the ISBNs of the card's recording before searching by title.
+  priceByIsbn @1 :Bool;
+  # True when `purchaseHint` / `purchaseHints` price a query by its exact
+  # ASIN (`lookup = asin`), as `priceByIsbn` does for ISBNs.
+  priceByAsin @2 :Bool;
 }
 
 # Portal Accounts connect mode for storefronts.
@@ -2449,6 +2457,27 @@ struct PurchaseHintParams {
   region @5 :Text;
   # When true, guests should include live price fields when available.
   withPrice @6 :Bool;
+  # How the host asks the store to find the title. `unspecified` (an older
+  # host) leaves the guest free to use any field, as before.
+  lookup @7 :PriceLookup;
+}
+
+# How a purchase-hint query names the title to price.
+enum PriceLookup {
+  # Any field may be used, strongest first (older hosts).
+  unspecified @0;
+  # `productId` names the store's own product; answer for it alone.
+  product @1;
+  # `isbn` names the edition; answer for that exact ISBN or not found.
+  # Sent only to a store that declared `CatalogCapabilities.priceByIsbn`.
+  isbn @2;
+  # `asin` names the edition; answer for that exact ASIN or not found.
+  # Sent only to a store that declared `CatalogCapabilities.priceByAsin`.
+  asin @3;
+  # Search by `title` and `authors`, and return every priced listing the
+  # search matched in `PurchaseHintResult.records`, so the host can place
+  # each one in the library model and keep only the recording it asked for.
+  title @4;
 }
 
 # Params of `ContentSource.listDeals`.
@@ -2610,6 +2639,20 @@ struct PurchaseHintResult {
   # False when the guest could not resolve the title (`hint` is empty).
   found @0 :Bool;
   # Purchase hint when `found`.
+  hint @1 :PurchaseHint;
+  # Every priced listing a title search matched (`lookup = title`), each
+  # with its full catalog record, so the host can tell recordings apart by
+  # identifiers, credits and kinds rather than by title. Empty for other
+  # lookups and for guests that do not return records; `hint` then stays
+  # the answer.
+  records @2 :List(PricedRecord);
+}
+
+# One priced listing returned by a title search.
+struct PricedRecord {
+  # The listing's catalog record: identifiers, credits, kinds, language.
+  record @0 :CatalogHit;
+  # Its purchase link and prices, as `PurchaseHint` carries them.
   hint @1 :PurchaseHint;
 }
 
