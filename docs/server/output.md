@@ -136,8 +136,8 @@ deletes the original. Some S3-compatible services accept the `If-None-Match`
 and `If-Match` headers but ignore them, sometimes on only some kinds of
 request. So the first time the plugin needs them it checks the bucket once,
 with scratch objects under `.bookclerk-probe/`: it tries a plain upload, a
-multipart upload, a copy and a delete that should each be refused, and
-then removes the scratch objects. Each kind of request is trusted only if
+multipart upload, a copy, a copy in parts and a delete that should each be
+refused, and then removes the scratch objects. Each kind of request is trusted only if
 the bucket refused it. The plugin remembers the answer until it restarts.
 
 When the bucket enforces the headers on every request an operation sends:

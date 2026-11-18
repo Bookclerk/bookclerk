@@ -74,6 +74,26 @@ enum CondOp {
     Copy,
     /// `DeleteObject`.
     Delete,
+    /// `x-amz-copy-source-if-match` on `CopyObject`.
+    CopySource,
+    /// `x-amz-copy-source-if-match` on `UploadPartCopy`.
+    PartCopySource,
+}
+
+/// True when a store that honours `op` refuses a copy whose source has
+/// `etag` under the request's `x-amz-copy-source-if-match`.
+fn refused_source(
+    world: &World,
+    op: CondOp,
+    etag: &str,
+    headers: &HashMap<String, String>,
+) -> bool {
+    if world.ignore_conditions_on.contains(&op) {
+        return false;
+    }
+    headers
+        .get("x-amz-copy-source-if-match")
+        .is_some_and(|expected| expected != etag)
 }
 
 const PRECONDITION_FAILED: &str = "HTTP/1.1 412 Precondition Failed\r\nContent-Type: application/xml\r\nContent-Length: 48\r\nConnection: close\r\n\r\n<Error><Code>PreconditionFailed</Code></Error>";
@@ -301,7 +321,7 @@ async fn handle(
                 return "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                     .into();
             };
-            if obj.etag != if_match {
+            if refused_source(&world, CondOp::PartCopySource, &obj.etag, headers) {
                 return "HTTP/1.1 412 Precondition Failed\r\nContent-Type: application/xml\r\nContent-Length: 48\r\nConnection: close\r\n\r\n<Error><Code>PreconditionFailed</Code></Error>"
                     .into();
             }
@@ -445,16 +465,12 @@ async fn handle(
             .cloned()
             .unwrap_or_default();
         let source_key = percent_decode(source.trim_start_matches('/'));
-        let if_match = headers
-            .get("x-amz-copy-source-if-match")
-            .cloned()
-            .unwrap_or_default();
         let mut guard = world.lock().await;
         let Some(obj) = guard.objects.get(&source_key).cloned_obj() else {
             return "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 .into();
         };
-        if obj.etag != if_match {
+        if refused_source(&guard, CondOp::CopySource, &obj.etag, headers) {
             return "HTTP/1.1 412 Precondition Failed\r\nContent-Length: 48\r\nConnection: close\r\n\r\n<Error><Code>PreconditionFailed</Code></Error>"
                 .into();
         }
@@ -1391,6 +1407,8 @@ async fn the_probe_trusts_only_a_store_that_refuses_the_second_write() {
                 writes: enforce,
                 completes: enforce,
                 copies: enforce,
+                copy_pins: true,
+                part_copy_pins: true,
                 deletes: enforce,
             }
         );
@@ -1407,7 +1425,14 @@ async fn the_probe_trusts_only_a_store_that_refuses_the_second_write() {
 
 #[tokio::test]
 async fn each_request_kind_is_trusted_only_on_its_own_evidence() {
-    for ignored in [CondOp::Put, CondOp::Complete, CondOp::Copy, CondOp::Delete] {
+    for ignored in [
+        CondOp::Put,
+        CondOp::Complete,
+        CondOp::Copy,
+        CondOp::Delete,
+        CondOp::CopySource,
+        CondOp::PartCopySource,
+    ] {
         let world = new_world(false);
         world.lock().await.ignore_conditions_on = vec![ignored];
         let url = serve(Arc::clone(&world)).await;
@@ -1420,6 +1445,8 @@ async fn each_request_kind_is_trusted_only_on_its_own_evidence() {
                 writes: ignored != CondOp::Put,
                 completes: ignored != CondOp::Complete,
                 copies: ignored != CondOp::Copy,
+                copy_pins: ignored != CondOp::CopySource,
+                part_copy_pins: ignored != CondOp::PartCopySource,
                 deletes: ignored != CondOp::Delete,
             },
             "ignoring {ignored:?}"

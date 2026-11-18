@@ -122,6 +122,13 @@ pub struct ConditionalSupport {
     /// `CopyObject` refuses `If-None-Match: *` onto an existing key. Gates
     /// no-overwrite moves.
     pub copies: bool,
+    /// `CopyObject` refuses a mismatched `x-amz-copy-source-if-match`.
+    /// Gates every native move, which pins its copy to the source ETag.
+    pub copy_pins: bool,
+    /// `UploadPartCopy` refuses a mismatched `x-amz-copy-source-if-match`.
+    /// Gates every native move, because a large source is copied in parts
+    /// and a rewrite between parts must not produce a mixed target.
+    pub part_copy_pins: bool,
     /// `DeleteObject` refuses a mismatched `If-Match`. Gates every native
     /// move, whose last step deletes the source only while it is unchanged.
     pub deletes: bool,
@@ -135,12 +142,16 @@ impl ConditionalSupport {
         self.writes && self.completes
     }
 
-    /// True when a move with these options can run natively: the source
-    /// delete is always conditional, and a no-overwrite move also needs the
-    /// copy and the multipart completion to refuse an existing target.
+    /// True when a move with these options can run natively: the copy is
+    /// always pinned to the source ETag and the source delete is always
+    /// conditional, and a no-overwrite move also needs the copy and the
+    /// multipart completion to refuse an existing target.
     #[must_use]
     pub fn native_move(self, no_overwrite: bool) -> bool {
-        self.deletes && (!no_overwrite || (self.copies && self.completes))
+        self.deletes
+            && self.copy_pins
+            && self.part_copy_pins
+            && (!no_overwrite || (self.copies && self.completes))
     }
 }
 
@@ -334,7 +345,10 @@ impl S3Backend {
     /// (the second must be refused) and overwrites it with a wrong
     /// `If-Match` (refused); completes a one-part multipart upload onto it
     /// with each condition (both refused) and aborts the upload; copies it
-    /// onto a second existing object with `If-None-Match: *` (refused); and
+    /// onto a second existing object with a wrong
+    /// `x-amz-copy-source-if-match` (refused) and with `If-None-Match: *`
+    /// (refused); copies it as an upload part with a wrong
+    /// `x-amz-copy-source-if-match` (refused) and aborts that upload; and
     /// deletes it with a wrong `If-Match` (refused). It then removes both
     /// objects. Any other answer, including an error, counts as "not
     /// enforced", so a store is never trusted by default.
@@ -354,7 +368,8 @@ impl S3Backend {
         if let Some(writes) = self.probe_writes(&key).await {
             support.writes = writes;
             support.completes = self.probe_completes(&key).await;
-            support.copies = self.probe_copies(&key, &other).await;
+            (support.copies, support.copy_pins) = self.probe_copies(&key, &other).await;
+            support.part_copy_pins = self.probe_part_copy_pins(&key).await;
             support.deletes = refused(
                 self.client
                     .delete_object()
@@ -379,6 +394,8 @@ impl S3Backend {
             writes = support.writes,
             completes = support.completes,
             copies = support.copies,
+            copy_pins = support.copy_pins,
+            part_copy_pins = support.part_copy_pins,
             deletes = support.deletes,
             "probed S3 conditional request support"
         );
@@ -470,30 +487,18 @@ impl S3Backend {
         enforced
     }
 
-    /// True when `CopyObject` from `key` onto the existing `other` refuses
-    /// `If-None-Match: *`, sent the way a move sends it.
+    /// Checks how `CopyObject` from `key` onto the existing `other` treats
+    /// its conditions, sent the way a move sends them.
     ///
     /// The source's ETag is read afresh, because an earlier probe step that
     /// a store did not refuse may have rewritten it, and a stale
     /// `x-amz-copy-source-if-match` would be refused for the wrong reason.
-    async fn probe_copies(&self, key: &str, other: &str) -> bool {
-        let Ok(head) = self
-            .client
-            .head_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await
-        else {
-            return false;
-        };
-        let Some(etag) = head
-            .e_tag()
-            .filter(|etag| !etag.is_empty())
-            .map(str::to_string)
-        else {
-            return false;
-        };
+    ///
+    /// # Returns
+    ///
+    /// `(copies, copy_pins)`: whether `If-None-Match: *` onto `other` was
+    /// refused, and whether a wrong `x-amz-copy-source-if-match` was.
+    async fn probe_copies(&self, key: &str, other: &str) -> (bool, bool) {
         let created = self
             .client
             .put_object()
@@ -503,19 +508,84 @@ impl S3Backend {
             .send()
             .await;
         if created.is_err() {
-            return false;
+            return (false, false);
         }
-        refused(
+        let copy = || {
             self.client
                 .copy_object()
                 .bucket(&self.bucket)
                 .key(other)
                 .copy_source(encode_copy_source(&self.bucket, key))
+        };
+        // Leaves `other` in place whether or not the store refuses it.
+        let copy_pins = refused(copy().copy_source_if_match(PROBE_MISMATCH).send().await);
+        let Some(etag) = self.probe_etag(key).await else {
+            return (false, copy_pins);
+        };
+        let copies = refused(
+            copy()
                 .copy_source_if_match(&etag)
                 .if_none_match("*")
                 .send()
                 .await,
-        )
+        );
+        (copies, copy_pins)
+    }
+
+    /// True when `UploadPartCopy` from `key` refuses a wrong
+    /// `x-amz-copy-source-if-match`. The upload is aborted afterwards
+    /// whatever happened, so `key` is never rewritten.
+    async fn probe_part_copy_pins(&self, key: &str) -> bool {
+        let Ok(created) = self
+            .client
+            .create_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+        else {
+            return false;
+        };
+        let Some(upload_id) = created.upload_id().map(str::to_string) else {
+            return false;
+        };
+        let enforced = refused(
+            self.client
+                .upload_part_copy()
+                .bucket(&self.bucket)
+                .key(key)
+                .upload_id(&upload_id)
+                .part_number(1)
+                .copy_source(encode_copy_source(&self.bucket, key))
+                .copy_source_if_match(PROBE_MISMATCH)
+                .send()
+                .await,
+        );
+        let _ = self
+            .client
+            .abort_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .upload_id(&upload_id)
+            .send()
+            .await;
+        enforced
+    }
+
+    /// The current ETag of the probe object at `key`, or `None` when it
+    /// cannot be read.
+    async fn probe_etag(&self, key: &str) -> Option<String> {
+        let head = self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .ok()?;
+        head.e_tag()
+            .filter(|etag| !etag.is_empty())
+            .map(str::to_string)
     }
 
     /// Streams a local file as fixed-size parts (used above [`MULTIPART_THRESHOLD`]).
