@@ -417,6 +417,32 @@ impl OwnerShareFilter {
         (sent || self.requested.contains_key(&held)) && !self.imported.contains(&held)
     }
 
+    /// The keys of `keys` that are sent, dropping every holding of an
+    /// edition when any of its holdings was imported from the library: a
+    /// copy imported for one account is the same file every other account
+    /// holding that edition would send back.
+    ///
+    /// # Arguments
+    ///
+    /// * `keys` - Whole editions' keys, every account holding of each
+    ///   edition present, as one [`LibraryStore::acquired_title_keys_page`]
+    ///   returns them.
+    ///
+    /// # Returns
+    ///
+    /// The admitted keys, in their order.
+    #[must_use]
+    pub fn admit_editions(&self, keys: Vec<AcquiredTitleKey>) -> Vec<AcquiredTitleKey> {
+        let imported: BTreeSet<String> = keys
+            .iter()
+            .filter(|key| self.imported.contains(&held_key(key)))
+            .map(|key| key.edition_id.clone())
+            .collect();
+        keys.into_iter()
+            .filter(|key| !imported.contains(&key.edition_id) && self.admits(key))
+            .collect()
+    }
+
     /// When the library last asked for the book `key` names, if it asked
     /// and this branch still lists it. The catalog sync orders a requested
     /// book no earlier than this, so a book already past the sync's cursor

@@ -362,10 +362,7 @@ impl<S: BranchShelf> CatalogSync<S> {
                 .library
                 .acquired_title_keys_page(after.as_deref(), ENTRY_PAGE)
                 .await?;
-            for key in page.keys {
-                if !owners.admits(&key) {
-                    continue;
-                }
+            for key in owners.admit_editions(page.keys) {
                 let reference = CatalogRef {
                     store: store_id(&key.source),
                     product_id: key.product_id.clone(),
