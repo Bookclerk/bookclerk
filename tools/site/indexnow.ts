@@ -8,8 +8,9 @@
 // A URL is submitted when it is new, when its fingerprint (the sitemap's
 // `<lastmod>`, else a hash of the page) changed, or when it left the
 // sitemaps, and at most once per UTC day: a later change the same day waits
-// for the next day's run. With no previous snapshot only pages dated within
-// the last RECENT_DAYS are submitted; the rest become the baseline.
+// for the next day's run. With no previous snapshot only pages dated today
+// or in the RECENT_DAYS days before are submitted; the rest become the
+// baseline.
 
 import { parseIsoDate } from "./last-updated.ts";
 import type { IsoDate } from "./last-updated.ts";
@@ -294,11 +295,11 @@ export function writeSnapshot(snapshot: Snapshot): string {
  * list now.
  *
  * With no previous snapshot (the first run, or one whose snapshot was lost)
- * only pages whose `<lastmod>` falls within RECENT_DAYS before `today` are
- * submitted; every listed URL is recorded, so the next run diffs against
- * them. Undated pages and older ones are left to the sitemaps, which search
- * engines read anyway. Otherwise a URL is
- * submitted when it is new, its fingerprint changed, or it is no longer
+ * only pages whose `<lastmod>` is `today` or one of the RECENT_DAYS days
+ * before it are submitted; every listed URL is recorded, so the next run
+ * diffs against them. Undated pages and older ones are left to the
+ * sitemaps, which search engines read anyway. Otherwise a URL is submitted
+ * when it is new, its fingerprint changed, or it is no longer
  * listed (a removed page), unless it was already submitted `today`: then
  * its old entry is kept, so the next day's run still sees the change. A
  * removed URL is recorded as `removed` on the day it is submitted, so a page

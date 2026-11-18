@@ -9,7 +9,7 @@
 // live /sitemap.xml index names, fingerprints each URL (its `<lastmod>`, else
 // a SHA-256 of the page as Markdown), plans the submission against the
 // previous snapshot (indexnow.ts) and posts it. Without a snapshot it submits
-// only pages dated in the last RECENT_DAYS days. The new snapshot is written
+// only pages dated today or in the RECENT_DAYS days before. The new snapshot is written
 // only after IndexNow accepted every request, so a failed run is retried in
 // full. INDEXNOW_DRY_RUN=1 plans and prints without checking the key file,
 // posting or writing, for a look before the key is deployed.
@@ -283,7 +283,7 @@ export async function run(argv: readonly string[], deps: RunDeps): Promise<numbe
     const plan = planSubmission(previous, current, today);
     const what =
       previous === null
-        ? `no previous snapshot, so only pages dated in the last ${RECENT_DAYS} days`
+        ? `no previous snapshot, so only pages dated today or in the ${RECENT_DAYS} days before`
         : "new or changed URLs";
     deps.log(`${current.size} URLs listed; submitting ${plan.submit.length} (${what}).`);
     if (dryRun) {

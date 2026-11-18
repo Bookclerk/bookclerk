@@ -1084,9 +1084,9 @@ edge cache shows the published docs.
    failed run is retried in full.
 
 With no snapshot (the first run, or 90 days without an accepted run) only
-pages whose sitemap `<lastmod>` falls in the last 7 days are submitted, and
-every listed URL becomes the snapshot the next run compares against. Search
-engines learn the older and undated pages from the sitemaps.
+pages whose sitemap `<lastmod>` is today or one of the 7 days before are
+submitted, and every listed URL becomes the snapshot the next run compares
+against. Search engines learn the older and undated pages from the sitemaps.
 
 > [!NOTE]
 > The snapshot is an artifact rather than an Actions cache entry. CI's

@@ -10,7 +10,7 @@
 # per UTC day. The snapshot is an artifact, not an Actions cache entry,
 # because CI's caches push small entries out within minutes. With no
 # snapshot (the first run, or 90 days without an accepted run) only pages
-# dated in the last 7 days are submitted. See
+# dated today or in the 7 days before are submitted. See
 # docs/contributing/automation.md#indexnow.
 #
 # Variable INDEXNOW_KEY (repository or organization; public by design): the
