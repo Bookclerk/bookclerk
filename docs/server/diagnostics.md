@@ -355,7 +355,8 @@ comment per issue**, edited in place. Editing a comment notifies nobody.
 
 The comment shows:
 
-- how many reports the issue tracks, and from how many installations;
+- how many reports the issue tracks (reports carry no install identity,
+  so the dashboard and the comment count reports, not installations);
 - how they were linked: listed in the issue, matched by signature, added
   by triage, or attached by members;
 - the first and last receipt;

@@ -249,7 +249,6 @@ type StoredReport = {
   schema_version: number;
   report_id: string;
   received_at_unix_ms: number;
-  client_ip_hash: string;
   payload: Record<string, unknown>;
 };
 
@@ -265,7 +264,6 @@ function stored(id: string, overrides: Record<string, unknown> = {}): StoredRepo
     schema_version: 1,
     report_id: id,
     received_at_unix_ms: NOW - 3_600_000,
-    client_ip_hash: "5e0c00000000000000000000000019ab",
     payload: {
       trigger: "error_burst",
       version: "0.9.0-rc.2",
@@ -384,7 +382,6 @@ describe("signature", () => {
     assert.match(a.signature ?? "", /^[0-9a-f]{16}$/);
     assert.equal(a.errors, 1);
     assert.equal(a.events, 2);
-    assert.equal(a.installHash, "5e0c00000000000000000000000019ab");
   });
 
   it("never throws on hostile shapes", async () => {
@@ -2371,9 +2368,14 @@ describe("untrusted times and pages", () => {
     assert.equal((await first(db, "SELECT prs_synced_at FROM issues"))!.prs_synced_at, null);
   });
 
-  it("ignores an install hash that is not a string", async () => {
-    for (const client_ip_hash of [["abc"], { toString: null }, 12]) {
-      assert.equal((await summarizeReport({ ...stored(ID1), client_ip_hash })).installHash, "");
+  it("ignores the client_ip_hash that older stored reports carry", async () => {
+    for (const client_ip_hash of [
+      "5e0c00000000000000000000000019ab",
+      ["abc"],
+      { toString: null },
+    ]) {
+      const got = await summarizeReport({ ...stored(ID1), client_ip_hash });
+      assert.deepEqual(got, await summarizeReport(stored(ID1)));
     }
   });
 });
@@ -3963,9 +3965,7 @@ describe("issue page and ledger corrections", () => {
     );
     assert.equal(posted.headers.get("authorization"), "Bearer ghs_installation");
     assert.ok(
-      String(posted.body!.body).startsWith(
-        `${MARKER}\n**Diagnostics summary** · 2 reports from 1 installation`,
-      ),
+      String(posted.body!.body).startsWith(`${MARKER}\n**Diagnostics summary** · 2 reports ·`),
       String(posted.body!.body),
     );
     assert.match(

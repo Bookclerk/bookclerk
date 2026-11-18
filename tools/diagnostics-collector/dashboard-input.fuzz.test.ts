@@ -295,7 +295,7 @@ async function checkSummary(input: unknown, label: string) {
     assert.ok(got[k].length <= MAX_FIELD_CHARS, label);
     assert.ok(!/[\u0000-\u001f\u007f]/.test(got[k]), `${label}: control character in ${k}`);
   }
-  assert.match(got.installHash, /^([0-9a-f]{1,64})?$/, label);
+  assert.ok(!("installHash" in got), `${label}: reports carry no install identity`);
   const again = await summarizeReport(input);
   assert.deepEqual(again, got, `${label}: not deterministic`);
   checkEventLog(payload["events"], label);

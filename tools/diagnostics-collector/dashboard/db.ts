@@ -77,8 +77,6 @@ export type ReportRow = {
   signature: string | null;
   /** Readable signature, `target · message`. */
   signature_label: string | null;
-  /** Hashed client address, "" when not kept. */
-  install_hash: string;
 };
 
 /** A report with its tracking issue, as `REPORT_COLUMNS` selects it. */
@@ -182,8 +180,6 @@ export type IssueSummary = {
   fingerprint: string;
   /** Reports the issue tracks. */
   reports: number;
-  /** Distinct installs among them. */
-  installs: number;
   /** First receipt, Unix ms, or null without reports. */
   first_seen: number | null;
   /** Last receipt, Unix ms, or null without reports. */
@@ -202,8 +198,6 @@ export type IssueSummary = {
 export type OverviewStats = {
   /** Reports in the range. */
   total: number;
-  /** Distinct installs among them. */
-  installs: number;
   /** Reports in the last 24 hours. */
   last24h: number;
   /** Reports in the 24 hours before those. */
@@ -374,8 +368,8 @@ export function reportInsert(
   return db
     .prepare(
       `INSERT OR IGNORE INTO reports (report_id, object_key, received_at, version, os, arch, distro,
-         trigger, events, errors, warnings, signature, signature_label, install_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         trigger, events, errors, warnings, signature, signature_label)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       row.reportId,
@@ -391,7 +385,6 @@ export function reportInsert(
       s.warnings,
       s.signature,
       s.signatureLabel,
-      s.installHash,
     );
 }
 
@@ -530,7 +523,7 @@ const TRACKER = `(SELECT ri.issue_number FROM report_issue ri LEFT JOIN issues t
  * and how many issues link it in all, so a list can flag a conflict.
  */
 const REPORT_COLUMNS = `r.report_id, r.object_key, r.received_at, r.version, r.os, r.arch, r.distro,
-  r.trigger, r.events, r.errors, r.warnings, r.signature, r.signature_label, r.install_hash,
+  r.trigger, r.events, r.errors, r.warnings, r.signature, r.signature_label,
   i.number AS issue_number, i.state AS issue_state,
   (SELECT ri.source FROM report_issue ri WHERE ri.report_id = r.report_id AND ri.issue_number = i.number) AS issue_source,
   (SELECT COUNT(*) FROM report_issue ri WHERE ri.report_id = r.report_id AND ${LINKED}) AS issue_count`;
@@ -773,11 +766,7 @@ export async function overviewStats(
   const d1 = reportWhere(now - DAY_MS, f);
   const d2 = reportWhere(now - 2 * DAY_MS, f);
   const [tot, a, b, nf, oi] = await Promise.all([
-    first(
-      db,
-      `SELECT COUNT(*) AS n, COUNT(DISTINCT NULLIF(r.install_hash, '')) AS installs FROM reports r WHERE ${range.where}`,
-      ...range.params,
-    ),
+    first(db, `SELECT COUNT(*) AS n FROM reports r WHERE ${range.where}`, ...range.params),
     first(db, `SELECT COUNT(*) AS n FROM reports r WHERE ${d1.where}`, ...d1.params),
     first(
       db,
@@ -794,7 +783,6 @@ export async function overviewStats(
   ]);
   return {
     total: Number(tot?.n ?? 0),
-    installs: Number(tot?.installs ?? 0),
     last24h: Number(a?.n ?? 0),
     prev24h: Number(b?.n ?? 0),
     notFiled: Number(nf?.n ?? 0),
@@ -1322,7 +1310,7 @@ export async function issueSummaries(
       db,
       `${tracked}
        SELECT i.number AS issue, i.summary_sent AS sent,
-         COUNT(r.report_id) AS reports, COUNT(DISTINCT NULLIF(r.install_hash, '')) AS installs,
+         COUNT(r.report_id) AS reports,
          MIN(r.received_at) AS first_seen, MAX(r.received_at) AS last_seen,
          COALESCE(SUM(ri.source = 'filed'), 0) AS filed, COALESCE(SUM(ri.source = 'signature'), 0) AS by_signature,
          COALESCE(SUM(ri.source = 'triage'), 0) AS by_triage, COALESCE(SUM(ri.source = 'manual'), 0) AS by_manual
@@ -1397,7 +1385,6 @@ export async function issueSummaries(
     const summary = {
       issue,
       reports: Number(t.reports),
-      installs: Number(t.installs),
       first_seen: t.first_seen === null ? null : Number(t.first_seen),
       last_seen: t.last_seen === null ? null : Number(t.last_seen),
       sources: {
@@ -1562,8 +1549,6 @@ export type IssueDetail = {
   prs: PrRow[];
   /** Reports it tracks. */
   reports: number;
-  /** Distinct installs among them. */
-  installs: number;
   /** First receipt, Unix ms, or null. */
   first_seen: number | null;
   /** Last receipt, Unix ms, or null. */
@@ -1618,7 +1603,7 @@ export async function issueDetail(
       first(
         db,
         `${WITH_TRACKED_FOR}
-       SELECT COUNT(r.report_id) AS reports, COUNT(DISTINCT NULLIF(r.install_hash, '')) AS installs,
+       SELECT COUNT(r.report_id) AS reports,
          MIN(r.received_at) AS first_seen, MAX(r.received_at) AS last_seen
        FROM tr JOIN reports r ON r.report_id = tr.report_id WHERE tr.issue_number = ?`,
         number,
@@ -1692,7 +1677,6 @@ export async function issueDetail(
     issue,
     prs,
     reports: Number(totals?.reports ?? 0),
-    installs: Number(totals?.installs ?? 0),
     first_seen: totals?.first_seen == null ? null : Number(totals.first_seen),
     last_seen: totals?.last_seen == null ? null : Number(totals.last_seen),
     versions: versions.map((v) => ({ key: String(v.key ?? ""), n: Number(v.n) })),

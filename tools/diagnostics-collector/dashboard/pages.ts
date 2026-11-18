@@ -608,7 +608,7 @@ export function overviewPage(d: OverviewData): SafeHtml {
       <div class="toolbar"><h1>Overview</h1>${versionForm}${rangePicker(d.url, d.rangeId)}</div>
       <div class="grid" data-live="overview">
         <section class="panel stat s2"><h2>Reports, 24h</h2><div class="v">${fmtInt(d.stats.last24h)}</div><div class="d">${delta >= 0 ? "+" : "−"}${fmtInt(Math.abs(delta))} on the day before</div></section>
-        <section class="panel stat s2"><h2>Reports, ${range.label}</h2><div class="v">${fmtInt(d.stats.total)}</div><div class="d">from ${fmtInt(d.stats.installs)} installs</div>${sparkline(d.totalSeries, "teal", 120, 28, true)}</section>
+        <section class="panel stat s2"><h2>Reports, ${range.label}</h2><div class="v">${fmtInt(d.stats.total)}</div>${sparkline(d.totalSeries, "teal", 120, 28, true)}</section>
         <section class="panel stat warn s2"><h2>Not filed</h2><div class="v">${fmtInt(d.stats.notFiled)}</div><div class="d">no issue lists them</div></section>
         <section class="panel stat s2"><h2>Open issues</h2><div class="v">${fmtInt(d.stats.openIssues)}</div><div class="d">labeled diagnostics</div></section>
         <section class="panel stat${afterFixIssues ? " crit" : ""} s2"><h2>After a fix</h2><div class="v">${fmtInt(afterFixIssues)}</div><div class="d">issues seen again from the fixed version on</div></section>
@@ -810,7 +810,6 @@ export function reportPage(d: ReportData): SafeHtml {
           <div><dt>Trigger</dt><dd>${r.trigger}</dd></div>
           <div><dt>Events</dt><dd class="num">${fmtInt(r.events)} (${plural(r.errors, "error")}, ${plural(r.warnings, "warning")})</dd></div>
           <div><dt>Signature</dt><dd class="mono">${r.signature ? html`<a href="/reports?range=90d&amp;signature=${r.signature}">${r.signature}</a>` : "none"}</dd></div>
-          <div><dt>Install</dt><dd class="mono">${r.install_hash ? `${String(r.install_hash).slice(0, 4)}…${String(r.install_hash).slice(-4)}` : "not recorded"}</dd></div>
         </dl></section>
         <section class="panel s4" data-live="tracked"><h2>Tracked by</h2><div class="links">
           ${
@@ -957,7 +956,7 @@ export function issuePage(d: IssueData): SafeHtml {
       }</div>
       <div class="grid">
         <section class="panel s7" data-live="stats"><h2>Reports tracked</h2><dl class="meta">
-          <div><dt>Reports</dt><dd class="num">${fmtInt(t.reports)} from ${plural(t.installs, "installation")}</dd></div>
+          <div><dt>Reports</dt><dd class="num">${fmtInt(t.reports)}</dd></div>
           <div><dt>First seen</dt><dd class="num">${t.first_seen ? `${fmtTime(t.first_seen)} UTC` : "no report yet"}</dd></div>
           <div><dt>Last seen</dt><dd class="num">${t.last_seen ? `${fmtTime(t.last_seen)} UTC` : ""}</dd></div>
           <div><dt>Last 14 days</dt><dd>${sparkline(dailySeries(d.now, 14, t.days), fix && fix.after > 0 ? "brick" : "teal")}</dd></div>

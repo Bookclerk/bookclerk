@@ -92,7 +92,6 @@ export async function summarizeReport(stored: unknown): Promise<{
   warnings: number;
   signature: string | null;
   signatureLabel: string | null;
-  installHash: string;
 }> {
   const s = asObject(stored);
   const p = asObject(s.payload);
@@ -132,9 +131,5 @@ export async function summarizeReport(stored: unknown): Promise<{
     warnings,
     signature,
     signatureLabel,
-    installHash:
-      typeof s.client_ip_hash === "string" && /^[0-9a-f]{1,64}$/.test(s.client_ip_hash)
-        ? s.client_ip_hash
-        : "",
   };
 }
