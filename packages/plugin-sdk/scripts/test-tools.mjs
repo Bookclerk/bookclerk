@@ -254,14 +254,16 @@ run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
   const formatted = formatManifest(withDefault);
   const reparsed = parse(formatted);
   validateManifest(reparsed);
-  if (
-    canonical(reparsed.settings) !== canonical(withDefault.settings) ||
+  // Name the failed check rather than print the manifest text.
+  const failed = [
+    canonical(reparsed.settings) !== canonical(withDefault.settings) && "settings changed",
     !formatted.includes(
       'default = [\n    { library = "a" },\n    { library = "b", mode = "write" },\n]',
-    ) ||
-    formatManifest(reparsed) !== formatted
-  ) {
-    console.error("FAIL table setting format round trip", formatted);
+    ) && "default rows not formatted",
+    formatManifest(reparsed) !== formatted && "second format differs",
+  ].filter(Boolean);
+  if (failed.length) {
+    console.error(`FAIL table setting format round trip: ${failed.join(", ")}`);
     process.exit(1);
   }
   console.log(`ok ${cases.length + 2} table setting cases`);
