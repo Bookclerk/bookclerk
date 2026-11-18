@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { PluginSettingColumn } from "./api";
+import type { InstanceSettingValue, PluginSettingColumn } from "./api";
 import {
   cellText,
   cellValue,
+  inexactNumberSetting,
   newRow,
   parseRows,
   rowsProblem,
@@ -105,5 +106,14 @@ describe("table settings", () => {
     );
     expect(rowsProblem(columns, [{ library: "a", depth: 1.5 }])).toMatch(/^Row 1: Depth/);
     expect(rowsProblem(columns, [{ library: "a", depth: -3 }])).toBeNull();
+  });
+
+  it("finds stored integers the browser rounded", () => {
+    const doc = JSON.parse(
+      '{"name":"a","limit":3,"mappings":[{"library":"a","depth":9007199254740993}]}',
+    ) as Record<string, InstanceSettingValue>;
+    expect(inexactNumberSetting(doc)).toBe("mappings");
+    expect(inexactNumberSetting({ limit: 2 ** 60 })).toBe("limit");
+    expect(inexactNumberSetting({ name: "a", limit: 3, mappings: [{ depth: 4 }] })).toBeNull();
   });
 });

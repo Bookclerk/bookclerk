@@ -8,7 +8,12 @@
  *
  * @module
  */
-import type { PluginSettingColumn, SettingCellValue, SettingRow } from "./api";
+import type {
+  InstanceSettingValue,
+  PluginSettingColumn,
+  SettingCellValue,
+  SettingRow,
+} from "./api";
 
 /**
  * Reads the rows out of a table setting's JSON text.
@@ -148,6 +153,32 @@ export function rowsProblem(columns: PluginSettingColumn[], rows: SettingRow[]):
       if (column.choices?.length && !column.choices.some((choice) => choice.value === value)) {
         return `Row ${index + 1}: choose a valid ${column.label}`;
       }
+    }
+  }
+  return null;
+}
+
+/**
+ * The first stored setting holding a number JavaScript cannot hold exactly.
+ *
+ * Settings are integers of up to 64 bits, but `JSON.parse` rounds one beyond
+ * 2^53 - 1, so writing back a document read in the browser would change it
+ * even when the operator did not touch that setting.
+ *
+ * @param settings - Settings of an instance document as the browser read it.
+ * @returns The key of the first such setting (a scalar or any table cell), or
+ *   `null` when every number is a safe integer.
+ */
+export function inexactNumberSetting(
+  settings: Record<string, InstanceSettingValue>,
+): string | null {
+  const inexact = (value: SettingCellValue | undefined) =>
+    typeof value === "number" && !Number.isSafeInteger(value);
+  for (const [key, value] of Object.entries(settings)) {
+    if (Array.isArray(value)) {
+      if (value.some((row) => Object.values(row).some(inexact))) return key;
+    } else if (inexact(value)) {
+      return key;
     }
   }
   return null;

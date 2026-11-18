@@ -48,7 +48,7 @@ import {
   type SettingsResponse,
 } from "@/lib/api";
 import { storeIconSrc } from "@/lib/catalogTitle";
-import { parseRows, rowsProblem } from "@/lib/settingsTable";
+import { inexactNumberSetting, parseRows, rowsProblem } from "@/lib/settingsTable";
 import { cn, pageWidthClass } from "@/lib/utils";
 
 const FAMILY_LABELS: Record<string, string> = {
@@ -857,6 +857,12 @@ export function SettingsPage({
         const value = documentValue(option, draft);
         if (value === null) delete nextSettings[option.key];
         else nextSettings[option.key] = value;
+      }
+      const inexact = inexactNumberSetting(nextSettings);
+      if (inexact) {
+        throw new Error(
+          `${plugin.id} setting ${inexact} holds a number too large to save from this page; change it with the CLI`,
+        );
       }
       await withRequestTimeout(
         putPluginInstanceConfig(instanceId, {
