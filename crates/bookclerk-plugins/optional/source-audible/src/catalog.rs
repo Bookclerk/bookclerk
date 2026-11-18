@@ -6,7 +6,7 @@ use bookclerk_audible_catalog::{
     is_valid_asin, normalize_region, public_http_client, region_tld, search_catalog_asins,
     search_catalog_by_genre_name, search_catalog_by_narrator, search_catalog_by_series_asin,
     search_catalog_keywords, search_catalog_products, search_catalog_products_paged,
-    search_catalog_storefront, CatalogProduct,
+    search_catalog_storefront, search_similar_products, CatalogProduct,
 };
 use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_storefront::{
@@ -142,6 +142,25 @@ pub async fn search_catalog(
     Ok(hits)
 }
 
+/// How many similar titles to ask Audible for per seed.
+const SIMILAR_TITLES: usize = 20;
+
+/// Expansion hits in the order they were found, one per ASIN.
+#[derive(Default)]
+struct OrderedHits {
+    /// Upper-cased ASINs already kept.
+    seen: std::collections::HashSet<String>,
+    /// Kept hits, first found first.
+    hits: Vec<CatalogHit>,
+}
+
+impl OrderedHits {
+    /// Number of hits kept so far.
+    fn len(&self) -> usize {
+        self.hits.len()
+    }
+}
+
 /// Expand author / series / narrator / series-ASIN candidates from a taste seed.
 ///
 /// Soft-fails individual HTTP calls; budgets returned hits by `limit`.
@@ -165,17 +184,15 @@ pub async fn expand_candidates(
     } else {
         normalize_region(&seed.region)
     };
-    let mut by_asin = std::collections::HashMap::new();
+    let mut by_asin = OrderedHits::default();
 
-    let push = |by_asin: &mut std::collections::HashMap<String, CatalogHit>,
-                p: CatalogProduct,
-                origin: String| {
+    let push = |by_asin: &mut OrderedHits, p: CatalogProduct, origin: String| {
         if p.asin.trim().is_empty() {
             return;
         }
-        by_asin
-            .entry(p.asin.to_ascii_uppercase())
-            .or_insert_with(|| product_to_hit(p, origin));
+        if by_asin.seen.insert(p.asin.to_ascii_uppercase()) {
+            by_asin.hits.push(product_to_hit(p, origin));
+        }
     };
 
     // Exact series ASIN listing (strongest series signal).
@@ -278,8 +295,10 @@ pub async fn expand_candidates(
         }
     }
 
-    // When the seed is an Audible ASIN (or product_id looks like one) and we still
-    // have room, keyword-search the title for near-neighbors.
+    // When the seed is an Audible ASIN (or product_id looks like one) and we
+    // still have room, add the titles Audible's listeners also enjoyed. A
+    // keyword search on the seed's title matched words, not books (*The Great
+    // Hunt* brought *Turkey Hunting for Kids*).
     if by_asin.len() < limit {
         let seed_asin = seed
             .asin
@@ -294,32 +313,27 @@ pub async fn expand_candidates(
                     None
                 }
             });
-        if seed_asin.is_some() {
-            let title = seed.title.trim();
-            if !title.is_empty() {
-                match search_catalog_products(&http, &region, title, None, Some(title)).await {
-                    Ok(products) => {
-                        for p in products {
-                            // Skip the seed itself.
-                            if seed_asin.is_some_and(|a| p.asin.eq_ignore_ascii_case(a)) {
-                                continue;
-                            }
-                            push(
-                                &mut by_asin,
-                                p,
-                                format!("audible related search (“{}”)", seed.title),
-                            );
-                        }
+        if let Some(seed_asin) = seed_asin {
+            match search_similar_products(&http, &region, seed_asin, SIMILAR_TITLES).await {
+                Ok(products) => {
+                    for p in products {
+                        push(
+                            &mut by_asin,
+                            p,
+                            format!("audible related titles (“{}”)", seed.title),
+                        );
                     }
-                    Err(err) => {
-                        tracing::debug!(error = %err, "audible related title search failed");
-                    }
+                }
+                Err(err) => {
+                    tracing::debug!(error = %err, "audible similar titles lookup failed");
                 }
             }
         }
     }
 
-    let mut hits: Vec<_> = by_asin.into_values().collect();
+    // Keep the order the sources were asked in (series, author, narrator,
+    // similar titles), so the cut drops the weakest signals first.
+    let mut hits = by_asin.hits;
     hits.truncate(limit);
     Ok(hits)
 }

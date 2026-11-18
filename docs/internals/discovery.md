@@ -25,7 +25,7 @@ Connect-portal identities later.
 
 ```mermaid
 flowchart LR
-  Seeds["Local taste seeds<br/>finished, rated, listening"] --> Expand["Storefront expansion<br/>Libro.fm related audiobooks<br/>Audible author, series, ASIN, narrator (optional)<br/>Chirp related, series, author, catalog, deals<br/>GraphicAudio Magento related, series, search"]
+  Seeds["Local taste seeds<br/>finished, rated, listening"] --> Expand["Storefront expansion<br/>Libro.fm related audiobooks<br/>Audible series, author, narrator, similar titles<br/>Chirp related, series, author, catalog, deals<br/>GraphicAudio Magento related, series, search"]
   Expand --> Score["Local scoring<br/>filter owned<br/>embedding similarity<br/>author and series boost<br/>purchase hints"]
 ```
 
@@ -438,10 +438,22 @@ Candidates are **unowned** storefront hits (plus open wishlist items), scored by
    name. Names are compared without a leading article or trailing generic
    words such as "Series" or "Sequence", so "The Dune Sequence" matches
    "Dune" but "Midnight World" does not match "Midnight".
+   The Audible plugin asks, in order, for the seed's series, more by its
+   author, more by its narrator, and then the titles Audible lists as
+   similar to the seed (`/1.0/catalog/products/{asin}/sims`, its "listeners
+   also enjoyed"), and keeps that order when it cuts the list to the
+   requested size. It never keyword-searches the seed's title: that matched
+   words, not books (*The Great Hunt* found *Turkey Hunting for Kids*).
 3. Overlap with liked authors
-4. Embedding similarity to finished / highly rated / recently listened works
-5. Wishlist boost (`wish_count × 40` on the shared queue / Discover merge)
-6. Purchase hints resolved at view time (see below)
+4. **Genres** the person likes, read from the candidate's own genres
+   (`genre_match` in `bookclerk-discover`). The genres of the seed the
+   store was asked about count only for a candidate whose store gave none,
+   and then at a third of the weight: a store finds candidates from a seed,
+   but that does not make them the seed's genre. Each liked genre counts
+   once per candidate, however often the store's genre ladders repeat it.
+5. Embedding similarity to finished / highly rated / recently listened works
+6. Wishlist boost (`wish_count × 40` on the shared queue / Discover merge)
+7. Purchase hints resolved at view time (see below)
 
 Before scoring, a candidate in a language the reader does not listen in is
 dropped (`retain_reader_languages` in `bookclerk-discover`). The reader's
