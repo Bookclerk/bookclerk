@@ -501,3 +501,23 @@ test("a body that fails while it is read skips the run", async () => {
   assert.match(h.lines.join("\n"), /connection reset/);
   assert.equal(h.seen.filter((s) => s.method === "POST").length, 0);
 });
+
+test("--previous-run prints the run whose snapshot to download", async () => {
+  const listing = JSON.stringify({
+    artifacts: [
+      { name: "indexnow-snapshot", expired: false, workflow_run: { id: 7, head_branch: "x" } },
+      { name: "indexnow-snapshot", expired: false, workflow_run: { id: 6, head_branch: "main" } },
+    ],
+  });
+  const h = harness(SITE);
+  h.files.set("listing.json", listing);
+  assert.equal(await run(["--previous-run", "listing.json", "main"], h.deps), 0);
+  assert.deepEqual(h.lines, ["6"]);
+  const none = harness(SITE);
+  assert.equal(await run(["--previous-run", "missing.json", "main"], none.deps), 0);
+  assert.deepEqual(none.lines, []);
+  const bad = harness(SITE);
+  assert.equal(await run(["--previous-run", "listing.json"], bad.deps), 2);
+  assert.equal(await run(["--previous-run", "listing.json", ""], bad.deps), 2);
+  assert.equal(h.seen.length + none.seen.length + bad.seen.length, 0);
+});

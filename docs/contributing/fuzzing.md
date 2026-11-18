@@ -1127,6 +1127,13 @@ fuzzing in `npm test`.
   `tools/site/fuzz/indexnow_snapshot/`. Oracle: the document read through
   property descriptors, each URL checked against the site's origin and each
   date by the last-updated date oracle.
+- **IndexNow snapshot artifact lookup** (`previousSnapshotRun` in
+  `tools/site/indexnow.ts`) reads GitHub's artifact listing in the
+  `indexnow` workflow and picks the run whose snapshot the next run
+  downloads. Corpus `tools/site/fuzz/indexnow_artifacts/`. Oracle: an
+  explicit walk of own properties: the first entry wins that is named
+  `indexnow-snapshot`, has `expired` exactly `false`, was uploaded on the
+  default branch and whose run `id` is a positive safe integer.
 
 ### Hosted demo Worker
 

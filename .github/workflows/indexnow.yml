@@ -73,17 +73,21 @@ jobs:
         with:
           node-version-file: .tool-versions
 
-      # The newest snapshot an earlier run on the default branch kept.
+      # The newest snapshot an earlier run on the default branch kept. The
+      # listing is read by previousSnapshotRun (tools/site/indexnow.ts,
+      # fuzzed), which prints the run id or nothing.
       - name: Find the previous snapshot
         id: previous
+        working-directory: tools/site
         env:
           GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=indexnow-snapshot&per_page=20" \
-            --jq "[.artifacts[] | select(.expired == false and .workflow_run.head_branch == \"$DEFAULT_BRANCH\")][0].workflow_run.id // empty")"
-          if [[ "$id" =~ ^[0-9]{1,20}$ ]]; then
+          listing="$RUNNER_TEMP/indexnow-artifacts.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=indexnow-snapshot&per_page=20" > "$listing"
+          id="$(node indexnow-run.ts --previous-run "$listing" "$DEFAULT_BRANCH")"
+          if [[ "$id" =~ ^[1-9][0-9]{0,19}$ ]]; then
             echo "run-id=$id" >> "$GITHUB_OUTPUT"
           else
             echo "No earlier snapshot; this run submits only recently dated pages."

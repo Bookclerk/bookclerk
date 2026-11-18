@@ -232,6 +232,52 @@ export function readSnapshot(json: string, origin: string): Snapshot | null {
   return snapshot;
 }
 
+/** The name of the artifact the indexnow workflow keeps its snapshot in. */
+export const SNAPSHOT_ARTIFACT = "indexnow-snapshot";
+
+/** A workflow run id, as decimal digits of a positive safe integer. */
+export type RunId = string & { readonly __runId: unique symbol };
+
+/**
+ * Picks the workflow run whose snapshot artifact the next run downloads,
+ * from a GitHub artifact listing (`GET /repos/{owner}/{repo}/actions/artifacts`).
+ *
+ * The first entry wins that is named SNAPSHOT_ARTIFACT, has not expired and
+ * was uploaded by a run on `branch`, whose run `id` is a positive safe
+ * integer; GitHub lists the newest artifacts first. The listing is read
+ * defensively: anything else in it is skipped, never trusted.
+ *
+ * @param json - The listing as received.
+ * @param branch - The branch the snapshot must come from (the default branch).
+ * @returns The run id, or null when the listing is unreadable or holds no
+ *   such artifact.
+ */
+export function previousSnapshotRun(json: string, branch: string): RunId | null {
+  if (json.length > MAX_DOCUMENT_BYTES) return null;
+  let document: unknown;
+  try {
+    document = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (typeof document !== "object" || document === null || Array.isArray(document)) return null;
+  const artifacts: unknown = Object.assign(Object.create(null), document)["artifacts"];
+  if (!Array.isArray(artifacts)) return null;
+  for (const item of artifacts) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+    const artifact: Record<string, unknown> = Object.assign(Object.create(null), item);
+    const run = artifact["workflow_run"];
+    if (artifact["name"] !== SNAPSHOT_ARTIFACT || artifact["expired"] !== false) continue;
+    if (typeof run !== "object" || run === null || Array.isArray(run)) continue;
+    const fields: Record<string, unknown> = Object.assign(Object.create(null), run);
+    const id = fields["id"];
+    if (fields["head_branch"] !== branch) continue;
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) continue;
+    return String(id) as RunId;
+  }
+  return null;
+}
+
 /**
  * Writes a snapshot for readSnapshot.
  *
