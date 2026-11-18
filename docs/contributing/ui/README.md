@@ -77,9 +77,11 @@ network can reach this host's web API.
   for a write its `Referer`, is not the app's) is refused with `403`, since
   the host would otherwise add the operator token to it.
 - The window only shows pages from the scheme, with one exception: joining a
-  library opens the library's own sign-in pages in the window until the
-  library sends it back, and that return (to `http://localhost/join/callback`)
-  is handed to the app scheme. Navigation anywhere else is refused.
+  library, or signing in to one with a library card, opens the library's own
+  sign-in pages in the window until the library sends it back, and that
+  return (to `http://localhost/join/callback` or
+  `http://localhost/clerk/callback`) is handed to the app scheme. Navigation
+  anywhere else is refused.
 - The page may call one Tauri command, `live`, which takes nothing from the
   page but its channel. The capability in
   `crates/bookclerk-desktop/capabilities/main.json` allows it for the main
@@ -107,7 +109,7 @@ is not a branch, so nothing the library deploys ever runs there.
 Not there yet: the tray, uploads (when
 they come, through the native file picker), opening external links in the
 system browser, passkeys (WebAuthn needs a real origin), impersonation (it
-needs a session cookie), and signed packages. Joining a library whose node API uses
+needs a session cookie), and signed packages. Joining or signing in to a library whose node API uses
 a self-signed certificate does not work from the window yet: the webview does
 not trust that certificate for the sign-in pages. Links the host writes for other
 people, such as invite links, still name `integrations.public_origin` or the
