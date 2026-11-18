@@ -8,7 +8,9 @@
 // A URL is submitted when it is new, when its fingerprint (the sitemap's
 // `<lastmod>`, else a hash of the page) changed, or when it left the
 // sitemaps, and at most once per UTC day: a later change the same day waits
-// for the next day's run.
+// for the next day's run. With no previous snapshot only pages dated today
+// or in the RECENT_DAYS days before are submitted; the rest become the
+// baseline.
 
 import { parseIsoDate } from "./last-updated.ts";
 import type { IsoDate } from "./last-updated.ts";
@@ -37,6 +39,16 @@ const MAX_FINGERPRINT_LENGTH = 128;
  * until the next UTC day so a page restored the same day waits for it.
  */
 const REMOVED_FINGERPRINT = "removed";
+
+/**
+ * How far back, in days before the run's UTC day, a page's `<lastmod>` may
+ * be for a run without a snapshot to submit it. Covers a week of runs that
+ * may have been lost with the snapshot.
+ */
+export const RECENT_DAYS = 7;
+
+/** Milliseconds in one day. */
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The `version` of the snapshot this module writes and reads. */
 const SNAPSHOT_VERSION = 1;
@@ -221,6 +233,52 @@ export function readSnapshot(json: string, origin: string): Snapshot | null {
   return snapshot;
 }
 
+/** The name of the artifact the indexnow workflow keeps its snapshot in. */
+export const SNAPSHOT_ARTIFACT = "indexnow-snapshot";
+
+/** A workflow run id, as decimal digits of a positive safe integer. */
+export type RunId = string & { readonly __runId: unique symbol };
+
+/**
+ * Picks the workflow run whose snapshot artifact the next run downloads,
+ * from a GitHub artifact listing (`GET /repos/{owner}/{repo}/actions/artifacts`).
+ *
+ * The first entry wins that is named SNAPSHOT_ARTIFACT, has not expired and
+ * was uploaded by a run on `branch`, whose run `id` is a positive safe
+ * integer; GitHub lists the newest artifacts first. The listing is read
+ * defensively: anything else in it is skipped, never trusted.
+ *
+ * @param json - The listing as received.
+ * @param branch - The branch the snapshot must come from (the default branch).
+ * @returns The run id, or null when the listing is unreadable or holds no
+ *   such artifact.
+ */
+export function previousSnapshotRun(json: string, branch: string): RunId | null {
+  if (json.length > MAX_DOCUMENT_BYTES) return null;
+  let document: unknown;
+  try {
+    document = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (typeof document !== "object" || document === null || Array.isArray(document)) return null;
+  const artifacts: unknown = Object.assign(Object.create(null), document)["artifacts"];
+  if (!Array.isArray(artifacts)) return null;
+  for (const item of artifacts) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+    const artifact: Record<string, unknown> = Object.assign(Object.create(null), item);
+    const run = artifact["workflow_run"];
+    if (artifact["name"] !== SNAPSHOT_ARTIFACT || artifact["expired"] !== false) continue;
+    if (typeof run !== "object" || run === null || Array.isArray(run)) continue;
+    const fields: Record<string, unknown> = Object.assign(Object.create(null), run);
+    const id = fields["id"];
+    if (fields["head_branch"] !== branch) continue;
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) continue;
+    return String(id) as RunId;
+  }
+  return null;
+}
+
 /**
  * Writes a snapshot for readSnapshot.
  *
@@ -236,8 +294,12 @@ export function writeSnapshot(snapshot: Snapshot): string {
  * Plans a submission from the previous snapshot and the URLs the sitemaps
  * list now.
  *
- * With no previous snapshot every URL is submitted. Otherwise a URL is
- * submitted when it is new, its fingerprint changed, or it is no longer
+ * With no previous snapshot (the first run, or one whose snapshot was lost)
+ * only pages whose `<lastmod>` is `today` or one of the RECENT_DAYS days
+ * before it are submitted; every listed URL is recorded, so the next run
+ * diffs against them. Undated pages and older ones are left to the
+ * sitemaps, which search engines read anyway. Otherwise a URL is submitted
+ * when it is new, its fingerprint changed, or it is no longer
  * listed (a removed page), unless it was already submitted `today`: then
  * its old entry is kept, so the next day's run still sees the change. A
  * removed URL is recorded as `removed` on the day it is submitted, so a page
@@ -259,8 +321,19 @@ export function planSubmission(
 ): Plan {
   const submit: SiteUrl[] = [];
   const next: Snapshot = new Map();
+  if (previous === null) {
+    const since = `lastmod:${recentSince(today)}`;
+    const until = `lastmod:${today}`;
+    for (const [url, fp] of current) {
+      // `lastmod:YYYY-MM-DD` fingerprints order as their dates do.
+      if (fp.startsWith("lastmod:") && fp >= since && fp <= until) submit.push(url);
+      next.set(url, { fp, sent: today });
+    }
+    submit.sort();
+    return { submit, next };
+  }
   for (const [url, fp] of current) {
-    const before = previous?.get(url);
+    const before = previous.get(url);
     const sameDay = before !== undefined && before.fp === `lastmod:${before.sent}`;
     const unchanged = before !== undefined && before.fp === fp && !sameDay;
     if (before !== undefined && (unchanged || before.sent === today)) {
@@ -270,7 +343,7 @@ export function planSubmission(
       next.set(url, { fp, sent: today });
     }
   }
-  for (const [url, before] of previous ?? []) {
+  for (const [url, before] of previous) {
     if (current.has(url)) continue;
     if (before.sent === today) next.set(url, before);
     else if (before.fp === REMOVED_FINGERPRINT) continue;
@@ -281,6 +354,18 @@ export function planSubmission(
   }
   submit.sort();
   return { submit, next };
+}
+
+/**
+ * The first UTC day a run without a snapshot still submits pages dated on.
+ *
+ * @param today - The run's UTC day.
+ * @returns The day RECENT_DAYS before `today`, as `YYYY-MM-DD`.
+ */
+function recentSince(today: IsoDate): string {
+  return new Date(Date.parse(`${today}T00:00:00Z`) - RECENT_DAYS * DAY_MS)
+    .toISOString()
+    .slice(0, "YYYY-MM-DD".length);
 }
 
 /**
