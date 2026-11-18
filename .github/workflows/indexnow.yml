@@ -128,3 +128,5 @@ jobs:
           path: ${{ runner.temp }}/indexnow-snapshot.json
           if-no-files-found: error
           retention-days: 90
+          # A re-run of an accepted run replaces the artifact it kept.
+          overwrite: true
