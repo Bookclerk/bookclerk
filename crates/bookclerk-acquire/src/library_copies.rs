@@ -229,10 +229,12 @@ const PDF_EXTS: [&str; 1] = ["pdf"];
 /// # Returns
 ///
 /// `None` when the copy cannot be taken: it lists no audio, its first
-/// file is not the primary audio, it lists more than one audio file, or
-/// the audio is of a kind the tag reader does not understand.
+/// file is not the primary audio, it lists more than one audio file, the
+/// audio is of a kind the tag reader does not understand, or
+/// [`CopyWants::mp4_audio_only`] is set and the audio is in another
+/// container.
 #[must_use]
-pub(crate) fn plan_files(files: &[LibraryCopyFile], want_pdf: bool) -> Option<Vec<TakenFile>> {
+pub(crate) fn plan_files(files: &[LibraryCopyFile], wants: CopyWants) -> Option<Vec<TakenFile>> {
     let first = files.first()?;
     if first.role != FileRole::Audio {
         return None;
@@ -243,6 +245,9 @@ pub(crate) fn plan_files(files: &[LibraryCopyFile], want_pdf: bool) -> Option<Ve
     } else {
         Taken::OtherAudio
     };
+    if wants.mp4_audio_only && kind != Taken::Mp4Audio {
+        return None;
+    }
     let mut taken = vec![TakenFile {
         index: 0,
         kind,
@@ -265,7 +270,7 @@ pub(crate) fn plan_files(files: &[LibraryCopyFile], want_pdf: bool) -> Option<Ve
                 }
             }
             FileRole::Pdf => {
-                if want_pdf && pdf.is_none() && file.size > 0 {
+                if wants.pdf && pdf.is_none() && file.size > 0 {
                     pdf = known_ext(&file.name, &PDF_EXTS).map(|ext| TakenFile {
                         index,
                         kind: Taken::Pdf,
@@ -280,6 +285,17 @@ pub(crate) fn plan_files(files: &[LibraryCopyFile], want_pdf: bool) -> Option<Ve
     taken.extend(cover);
     taken.extend(pdf);
     Some(taken)
+}
+
+/// What an acquire's own output options ask of a library's copy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CopyWants {
+    /// The acquire keeps companion PDFs, so the copy's PDF is taken.
+    pub pdf: bool,
+    /// The acquire splits its output by chapter. The splitter cuts MP4
+    /// audio only, and a single file in another container is not
+    /// repackaged first, so only a copy whose audio is MP4 is taken.
+    pub mp4_audio_only: bool,
 }
 
 /// A library's copy downloaded into scratch.
@@ -306,7 +322,7 @@ pub(crate) struct LibraryFetch {
 ///   as `<index>.<ext>`, never under a name the library gave.
 /// * `budget` - Most bytes the files may take together.
 /// * `media` - Reads the downloaded audio file's tags.
-/// * `want_pdf` - Whether the acquire keeps companion PDFs.
+/// * `wants` - What the acquire's output options ask of the copy.
 ///
 /// # Errors
 ///
@@ -319,10 +335,10 @@ pub(crate) async fn fetch_library_copy(
     dir: &Path,
     budget: u64,
     media: &MediaPool,
-    want_pdf: bool,
+    wants: CopyWants,
 ) -> Result<LibraryFetch, LibraryCopyError> {
-    let taken = plan_files(copy.files(), want_pdf)
-        .ok_or("the copy is not one audio file this install can read")?;
+    let taken = plan_files(copy.files(), wants)
+        .ok_or("the copy is not one audio file this install can use")?;
     let total = taken
         .iter()
         .fold(0u64, |sum, file| sum.saturating_add(file.size));
@@ -495,6 +511,12 @@ pub(crate) mod tests {
         }
     }
 
+    /// An acquire that keeps companion PDFs.
+    const PDF: CopyWants = CopyWants {
+        pdf: true,
+        mp4_audio_only: false,
+    };
+
     /// A listed file of `size` bytes.
     fn listed(name: &str, role: FileRole, size: u64) -> LibraryCopyFile {
         LibraryCopyFile {
@@ -550,27 +572,51 @@ pub(crate) mod tests {
             ext: "pdf",
             size: 4,
         };
-        assert_eq!(plan_files(&files, true).unwrap(), [audio, cover, pdf]);
+        assert_eq!(plan_files(&files, PDF).unwrap(), [audio, cover, pdf]);
         // An acquire that keeps no companion PDFs does not download one.
-        assert_eq!(plan_files(&files, false).unwrap(), [audio, cover]);
+        assert_eq!(
+            plan_files(&files, CopyWants::default()).unwrap(),
+            [audio, cover]
+        );
 
         let mp3 = [
             listed("art/cover.png", FileRole::Cover, 9),
             listed("Book.mp3", FileRole::Audio, 1),
         ];
-        assert_eq!(plan_files(&mp3, true), None, "the audio is listed first");
+        assert_eq!(plan_files(&mp3, PDF), None, "the audio is listed first");
         let mp3 = [
             listed("Book.mp3", FileRole::Audio, 1),
             listed("art/cover.png", FileRole::Cover, 9),
         ];
         assert_eq!(
-            plan_files(&mp3, true)
+            plan_files(&mp3, PDF)
                 .unwrap()
                 .iter()
                 .map(|f| (f.index, f.kind, f.ext))
                 .collect::<Vec<_>>(),
             [(0, Taken::OtherAudio, "mp3"), (1, Taken::Cover, "png")]
         );
+    }
+
+    #[test]
+    fn an_acquire_that_splits_by_chapter_takes_mp4_audio_only() {
+        // The chapter splitter cuts MP4 audio; one MP3 or FLAC with
+        // chapters inside would reach it as it is and fail the acquire.
+        let split = CopyWants {
+            pdf: false,
+            mp4_audio_only: true,
+        };
+        for name in ["Book.mp3", "Book.flac"] {
+            let files = [listed(name, FileRole::Audio, 1)];
+            assert_eq!(plan_files(&files, split), None, "{name}");
+            assert!(plan_files(&files, CopyWants::default()).is_some(), "{name}");
+        }
+        for name in ["Book.m4b", "Book.m4a", "Book.mp4"] {
+            assert!(
+                plan_files(&[listed(name, FileRole::Audio, 1)], split).is_some(),
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -586,7 +632,7 @@ pub(crate) mod tests {
                         listed("cover.jpg", FileRole::Cover, 1),
                         listed("Book - Epilogue.m4b", role, 2),
                     ],
-                    true
+                    PDF
                 ),
                 None,
                 "{role:?}"
@@ -596,21 +642,18 @@ pub(crate) mod tests {
 
     #[test]
     fn a_copy_without_readable_primary_audio_is_not_taken() {
-        assert_eq!(plan_files(&[], true), None);
+        assert_eq!(plan_files(&[], PDF), None);
         // The primary audio is always listed first.
         assert_eq!(
-            plan_files(&[listed("cover.jpg", FileRole::Cover, 1)], true),
+            plan_files(&[listed("cover.jpg", FileRole::Cover, 1)], PDF),
             None
         );
-        assert_eq!(
-            plan_files(&[listed("a.mp3", FileRole::Part, 1)], true),
-            None
-        );
+        assert_eq!(plan_files(&[listed("a.mp3", FileRole::Part, 1)], PDF), None);
         // Audio of a kind the tag reader does not know, or with no
         // extension at all.
         for name in ["Book.ogg", "Book", "Book.mp3.exe", ".m4b/Book"] {
             assert_eq!(
-                plan_files(&[listed(name, FileRole::Audio, 1)], true),
+                plan_files(&[listed(name, FileRole::Audio, 1)], PDF),
                 None,
                 "{name}"
             );
@@ -634,7 +677,7 @@ pub(crate) mod tests {
             ],
         );
         let dir = tmp.path().join("one");
-        let taken = fetch_library_copy(&copy, &dir, u64::MAX, &media, true)
+        let taken = fetch_library_copy(&copy, &dir, u64::MAX, &media, PDF)
             .await
             .unwrap();
         let fetch = taken.fetch;
@@ -664,7 +707,7 @@ pub(crate) mod tests {
 
         // An acquire that keeps no PDFs leaves the library's where it is.
         let dir = tmp.path().join("no-pdf");
-        let taken = fetch_library_copy(&copy, &dir, u64::MAX, &media, false)
+        let taken = fetch_library_copy(&copy, &dir, u64::MAX, &media, CopyWants::default())
             .await
             .unwrap();
         assert_eq!(taken.pdf, None);
@@ -676,7 +719,7 @@ pub(crate) mod tests {
             vec![("Book.mp3", FileRole::Audio, tagged_mp3())],
         );
         let dir = tmp.path().join("mp3");
-        let fetch = fetch_library_copy(&copy, &dir, u64::MAX, &media, true)
+        let fetch = fetch_library_copy(&copy, &dir, u64::MAX, &media, PDF)
             .await
             .unwrap()
             .fetch;
@@ -693,10 +736,14 @@ pub(crate) mod tests {
             ],
         );
         let dir = tmp.path().join("parts");
-        let err = fetch_library_copy(&copy, &dir, u64::MAX, &media, true)
+        let err = fetch_library_copy(&copy, &dir, u64::MAX, &media, PDF)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("not one audio file"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("not one audio file this install can use"),
+            "{err}"
+        );
         assert_eq!(copy.fetched.load(Ordering::SeqCst), 0);
         assert!(!dir.exists());
     }
@@ -709,7 +756,7 @@ pub(crate) mod tests {
         // Larger than the scratch budget: nothing is asked for.
         let copy = MemoryCopy::new(Some("a"), vec![("Book.m4b", FileRole::Audio, tagged_m4b())]);
         let size = copy.listed[0].size;
-        let err = fetch_library_copy(&copy, &tmp.path().join("big"), size - 1, &media, true)
+        let err = fetch_library_copy(&copy, &tmp.path().join("big"), size - 1, &media, PDF)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("left for scratch"), "{err}");
@@ -720,7 +767,7 @@ pub(crate) mod tests {
         let mut copy =
             MemoryCopy::new(Some("a"), vec![("Book.m4b", FileRole::Audio, tagged_m4b())]);
         copy.failing = Some(0);
-        let err = fetch_library_copy(&copy, &tmp.path().join("cut"), u64::MAX, &media, true)
+        let err = fetch_library_copy(&copy, &tmp.path().join("cut"), u64::MAX, &media, PDF)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("cut"), "{err}");
@@ -729,7 +776,7 @@ pub(crate) mod tests {
         let mut copy =
             MemoryCopy::new(Some("a"), vec![("Book.m4b", FileRole::Audio, tagged_m4b())]);
         copy.listed[0].size += 1;
-        let err = fetch_library_copy(&copy, &tmp.path().join("size"), u64::MAX, &media, true)
+        let err = fetch_library_copy(&copy, &tmp.path().join("size"), u64::MAX, &media, PDF)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not the"), "{err}");
@@ -740,17 +787,21 @@ pub(crate) mod tests {
             vec![("Book.m4b", FileRole::Audio, b"not audio".to_vec())],
         );
         assert!(
-            fetch_library_copy(&copy, &tmp.path().join("bad"), u64::MAX, &media, true)
+            fetch_library_copy(&copy, &tmp.path().join("bad"), u64::MAX, &media, PDF)
                 .await
                 .is_err()
         );
 
         // No audio at all.
         let copy = MemoryCopy::new(Some("a"), vec![("cover.jpg", FileRole::Cover, vec![1])]);
-        let err = fetch_library_copy(&copy, &tmp.path().join("none"), u64::MAX, &media, true)
+        let err = fetch_library_copy(&copy, &tmp.path().join("none"), u64::MAX, &media, PDF)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("not one audio file"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("not one audio file this install can use"),
+            "{err}"
+        );
     }
 
     #[test]

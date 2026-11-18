@@ -29,7 +29,7 @@ use crate::cue::{
 use crate::destinations::{destination_id, AcquireDestination, AcquireDestinations};
 use crate::error::{AcquireError, Result};
 use crate::library_copies::{
-    fetch_library_copy, from_store, LibraryCopyListing, LibraryCopySource, LibraryFetch,
+    fetch_library_copy, from_store, CopyWants, LibraryCopyListing, LibraryCopySource, LibraryFetch,
 };
 use crate::naming::{
     audio_basename, chapter_storage_key_with_folder, sidecar_key, storage_key_with_contexts,
@@ -1250,8 +1250,11 @@ async fn fetch_from_library(
     let budget = remaining_temp_budget(library, req, work_dir).await.ok()?;
     let dir = work_dir.join(LIBRARY_COPY_DIR);
     let media = req.library_copies.media();
-    let want_pdf = req.options.download_pdf;
-    match fetch_library_copy(copy.as_ref(), &dir, budget, &media, want_pdf).await {
+    let wants = CopyWants {
+        pdf: req.options.download_pdf,
+        mp4_audio_only: req.options.wants_split_by_chapter(),
+    };
+    match fetch_library_copy(copy.as_ref(), &dir, budget, &media, wants).await {
         Ok(fetch) => {
             tracing::info!(
                 id = %status_key(req),

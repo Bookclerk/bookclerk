@@ -809,6 +809,9 @@ library it joined, in turn, for the copy of that listing.
 - **Several audio files: the store.** A book the library holds as parts
   or as one file per chapter is fetched from the branch's store. The
   grant lists those files by name, which need not be playing order.
+- **Split by chapter: MP4 audio only.** A branch whose output is split
+  into chapter files takes the library's copy only when it is an M4B,
+  M4A or MP4 file; otherwise it fetches from the store.
 - **Another store: the branch fetches its own.** When the library's copy
   came from a different store, or the library doesn't know where it came
   from, that library is passed over and the next one is asked. When no
