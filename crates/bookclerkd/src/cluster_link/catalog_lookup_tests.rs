@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_library::control_plane::{
-    ask_branches, branch_listings_for_works, load_cluster_link_keys, set_cluster_link_download,
+    ask_branches, branch_listings_for_works, load_cluster_link_keys, set_cluster_link_keep_copies,
     set_cluster_link_listing, ClusterLink,
 };
 use bookclerk_library::{LibraryStore, NewBook, UserRole};
@@ -213,14 +213,16 @@ async fn a_branch_answers_its_librarys_question_over_the_socket() {
     .unwrap();
     assert!(hits[0].available_through.is_empty(), "expired: {hits:?}");
 
-    // Members' books back on, but B becomes a window of A (download off):
-    // a window is a client of A, not one of its nodes, and offers nothing.
+    // Members' books back on and "Keep copies on this computer" off: B is
+    // still one of A's branches and answers.
     assert!(set_cluster_link_listing(&b, &link.owner_cluster_id, true)
         .await
         .unwrap());
-    assert!(set_cluster_link_download(&b, &link.owner_cluster_id, false)
-        .await
-        .unwrap());
+    assert!(
+        set_cluster_link_keep_copies(&b, &link.owner_cluster_id, false)
+            .await
+            .unwrap()
+    );
     a.db()
         .execute_unprepared("UPDATE catalog_lookups SET answered_at = '1970-01-01T00:00:00Z'")
         .await
@@ -234,11 +236,11 @@ async fn a_branch_answers_its_librarys_question_over_the_socket() {
     );
     assert_eq!(answerer.answer_once().await.unwrap(), 1);
     assert!(
-        branch_listings_for_works(&a, std::slice::from_ref(&work))
+        !branch_listings_for_works(&a, std::slice::from_ref(&work))
             .await
             .unwrap()
             .is_empty(),
-        "a window lists nothing"
+        "a branch keeping no copies still lists its books"
     );
 }
 

@@ -2579,8 +2579,8 @@ export interface ClusterLinkView {
   work_for_members?: boolean;
   /** "Keep copies of other members' books" (off by default). */
   keep_member_copies?: boolean;
-  /** "Use this computer to download" (on by default); off makes this server a window. */
-  download?: boolean;
+  /** "Keep copies on this computer" (on by default): take the library's copies of this server's person's books. */
+  keep_copies?: boolean;
   /** The most jobs this host runs for the library at once; `null` is an equal share of the machine. */
   max_jobs?: number | null;
   /** Jobs the library may have running here now; absent while its link is not running. */

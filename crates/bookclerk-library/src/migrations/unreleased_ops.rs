@@ -1477,7 +1477,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         keep_member_copies INTEGER NOT NULL DEFAULT 0 CHECK (keep_member_copies IN (0, 1)),
         max_jobs INTEGER CHECK (max_jobs IS NULL OR (max_jobs >= 0 AND max_jobs <= 16)),
         list_members_books INTEGER NOT NULL DEFAULT 1 CHECK (list_members_books IN (0, 1)),
-        download INTEGER NOT NULL DEFAULT 1 CHECK (download IN (0, 1)),
+        keep_copies INTEGER NOT NULL DEFAULT 1 CHECK (keep_copies IN (0, 1)),
         person_user_id INTEGER
     )",
     ),
@@ -1772,9 +1772,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         updated_at TEXT NOT NULL
     )",
     ),
-    // On a window (a link with "Use this computer to download" off) or a
-    // clerk (a library card): the books each library holds for this
-    // install's person, one row per edition (`control_plane::window_books`),
+    // On a branch (each active link) or a clerk (each library card): the
+    // books of each library, one row per edition (`control_plane::window_books`),
     // keyed by the library's cluster id. Rows are dropped by code when the
     // link or card goes, not by a foreign key, since either kind of link
     // can own them. `work_ref` is the library's

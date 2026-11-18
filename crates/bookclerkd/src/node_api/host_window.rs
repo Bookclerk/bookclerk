@@ -1,12 +1,13 @@
-//! Window mode on this library: the pages of a branch owner's books a
-//! window reads (`control_plane::window_books`).
+//! "Books in other libraries" on this library: the pages of this library's
+//! books a trusted branch reads (`control_plane::window_books`), each
+//! edition marked where it is the branch owner's.
 //!
 //! | Frame | Answer |
 //! |---|---|
 //! | `window.books` | `window.page {works, next?}` or `error {code: "refused"}` |
 //!
 //! The person is this connection's authenticated node's owner; the frame
-//! names no user, so a window can only read its own person's books.
+//! names no user, so the marks are always that person's.
 
 use bookclerk_library::control_plane::window_books_page;
 use bookclerk_library::LibraryStore;

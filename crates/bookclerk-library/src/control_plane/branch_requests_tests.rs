@@ -475,7 +475,7 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
             max_jobs: Set(None),
             list_members_books: Set(1),
             person_user_id: Set(None),
-            download: Set(1),
+            keep_copies: Set(1),
         }
         .insert(store.db())
         .await
@@ -657,7 +657,7 @@ async fn a_library_that_acquires_all_members_books_is_sent_every_listed_one() {
             max_jobs: Set(None),
             list_members_books: Set(1),
             person_user_id: Set(None),
-            download: Set(1),
+            keep_copies: Set(1),
         }
         .insert(store.db())
         .await

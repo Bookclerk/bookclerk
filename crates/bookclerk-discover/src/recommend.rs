@@ -707,15 +707,15 @@ pub(crate) async fn rank_candidates(
         );
         // Origin / category / deals are candidate-specific (not on wishlist rows).
         reasons.insert(0, c.origin.clone());
-        if let Some(cats) = &c.seed_categories {
-            for cat in split_tokens_display(cats) {
-                let key = cat.to_lowercase();
-                if let Some(w) = profile.liked_categories.get(&key) {
-                    score += w * 0.45;
-                    reasons.push(format!("matches liked category ({cat})"));
-                    push_shelf_category(&mut categories, "genre");
-                }
-            }
+        let genres = genre_match(
+            c.categories.as_deref(),
+            c.seed_categories.as_deref(),
+            &profile.liked_categories,
+        );
+        if !genres.reasons.is_empty() {
+            score += genres.score;
+            reasons.extend(genres.reasons);
+            push_shelf_category(&mut categories, "genre");
         }
         if c.origin.contains("chirp top deals") || c.origin.contains("chirp free deals") {
             score += 1.5;
@@ -1901,6 +1901,62 @@ fn open_candidate_embedder(opts: &RecommendOptions) -> Result<Option<Box<dyn Emb
     Ok(Some(open_embedder(dir, opts.embed_intra_threads, true)?))
 }
 
+/// Weight of a liked genre the candidate itself lists.
+const OWN_GENRE_WEIGHT: f64 = 0.45;
+
+/// Weight of a liked genre only the seed lists, for a candidate whose store
+/// gave no genres of its own. Lower than [`OWN_GENRE_WEIGHT`]: the store
+/// found the candidate from the seed, but nothing says it shares the genre.
+const SEED_GENRE_WEIGHT: f64 = 0.15;
+
+/// How a candidate's genres move its score.
+#[derive(Debug, Default, PartialEq)]
+struct GenreMatch {
+    /// Points added to the score.
+    score: f64,
+    /// One `matches liked category (…)` reason per liked genre matched.
+    reasons: Vec<String>,
+}
+
+/// Scores a candidate's genres against the genres the person likes.
+///
+/// The candidate's own genres count when its store gave any. Only when it
+/// gave none do the seed's genres count, at [`SEED_GENRE_WEIGHT`]: a
+/// candidate the store found from a fantasy seed is not fantasy itself (a
+/// title search for *The Great Hunt* found a hunting guide). Each liked genre
+/// counts once, however often the genre ladders repeat it.
+///
+/// # Arguments
+///
+/// * `own` - Genres the candidate's store listed for it.
+/// * `seed` - Genres of the taste seed the store was asked about.
+/// * `liked` - Lowercased genre → how much the person likes it.
+fn genre_match(own: Option<&str>, seed: Option<&str>, liked: &HashMap<String, f64>) -> GenreMatch {
+    let own = own.map(split_tokens_display).unwrap_or_default();
+    let (genres, weight) = if own.is_empty() {
+        (
+            seed.map(split_tokens_display).unwrap_or_default(),
+            SEED_GENRE_WEIGHT,
+        )
+    } else {
+        (own, OWN_GENRE_WEIGHT)
+    };
+    let mut seen = HashSet::new();
+    let mut out = GenreMatch::default();
+    for genre in genres {
+        let key = genre.to_lowercase();
+        let Some(w) = liked.get(&key) else {
+            continue;
+        };
+        if seen.insert(key) {
+            out.score += w * weight;
+            out.reasons
+                .push(format!("matches liked category ({genre})"));
+        }
+    }
+    out
+}
+
 /// Splits a display list on `,; /|&` and trims empty tokens.
 fn split_tokens_display(s: &str) -> Vec<String> {
     s.split([',', ';', '/', '|', '&'])
@@ -1913,6 +1969,47 @@ fn split_tokens_display(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A person who likes fantasy, and epic fantasy more.
+    fn likes_fantasy() -> HashMap<String, f64> {
+        HashMap::from([("fantasy".to_string(), 2.0), ("epic".to_string(), 1.0)])
+    }
+
+    #[test]
+    fn a_candidate_is_scored_on_its_own_genres_not_the_seeds() {
+        // Found from a fantasy seed, but the store files it under nature.
+        let m = genre_match(
+            Some("Children's Audiobooks; Animals & Nature"),
+            Some("Science Fiction & Fantasy; Fantasy; Epic"),
+            &likes_fantasy(),
+        );
+        assert_eq!(m, GenreMatch::default());
+    }
+
+    #[test]
+    fn a_liked_genre_counts_once_however_often_the_ladders_repeat_it() {
+        let m = genre_match(
+            Some("Science Fiction & Fantasy; Fantasy; Epic; Fantasy"),
+            None,
+            &likes_fantasy(),
+        );
+        assert!((m.score - (2.0 + 1.0) * OWN_GENRE_WEIGHT).abs() < 1e-9);
+        assert_eq!(
+            m.reasons,
+            vec![
+                "matches liked category (Fantasy)".to_string(),
+                "matches liked category (Epic)".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_seeds_genres_count_less_when_the_store_gave_none() {
+        let m = genre_match(None, Some("Fantasy"), &likes_fantasy());
+        assert!((m.score - 2.0 * SEED_GENRE_WEIGHT).abs() < 1e-9);
+        assert_eq!(m.reasons.len(), 1);
+        const { assert!(SEED_GENRE_WEIGHT < OWN_GENRE_WEIGHT) };
+    }
 
     /// A store card for one listing of *The Sunlit Man*, in work
     /// `w-sunlit`, recording `expression`.

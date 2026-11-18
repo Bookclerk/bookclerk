@@ -73,11 +73,11 @@ export interface BranchLinkView {
   /** "Keep copies of other members' books" (off by default): also write their books to this server's own outputs. */
   keep_member_copies?: boolean;
   /**
-   * "Use this computer to download" (on by default). Off makes this server
-   * a window of the library: it runs none of its work and shows the books
-   * the library holds for this server's person instead.
+   * "Keep copies on this computer" (on by default): take the library's
+   * copies of this server's person's books into its own storage. The
+   * branch takes the library's work and shows its books either way.
    */
-  download?: boolean;
+  keep_copies?: boolean;
   /** The most jobs this server runs for the library at once; `null` is an equal share of the machine. */
   max_jobs?: number | null;
   /** Jobs the library may have running here now (its share of the machine); absent while its link is not running. */
@@ -663,19 +663,18 @@ export function connectionsAddedLine(library: string, report: ConnectionsAdded):
 }
 
 /**
- * Settings → Library: "Use this computer to download" for one library this
- * server is a branch of (the operator or an Owner). Off makes this server a
- * window of that library: its plugins stop here and held jobs go back at
- * once. The two book-sharing settings are sent as they are, since the
- * route takes them on every change; the others are left as they are.
+ * Settings → Library: "Keep copies on this computer" for one library this
+ * server is a branch of (the operator or an Owner). The two book-sharing
+ * settings are sent as they are, since the route takes them on every
+ * change; the others are left as they are.
  *
  * @param link - The library's link as last read.
- * @param download - The new setting.
+ * @param keepCopies - The new setting.
  * @returns The link with the stored settings.
  */
-export function setLinkDownload(
+export function setLinkKeepCopies(
   link: Pick<BranchLinkView, "cluster_id" | "share_books" | "include_branches">,
-  download: boolean,
+  keepCopies: boolean,
 ): Promise<{ cluster: BranchLinkView }> {
   return request("/api/config/join/sharing", {
     method: "POST",
@@ -683,32 +682,9 @@ export function setLinkDownload(
       cluster_id: link.cluster_id,
       share_books: link.share_books ?? true,
       include_branches: link.include_branches ?? true,
-      download,
+      keep_copies: keepCopies,
     },
   });
-}
-
-/**
- * After a join from the desktop window: makes this computer a window of the
- * library it just joined, by turning "Use this computer to download" off.
- * The library's plugins wait for approval before they run here, so nothing
- * downloads in between.
- *
- * @param link - The link the join recorded.
- * @returns True when downloading is off; false when the setting could not be
- *   stored (the link stays a downloading branch until it is changed in
- *   Settings → Library).
- */
-export async function makeWindowOf(
-  link: Pick<BranchLinkView, "cluster_id" | "share_books" | "include_branches" | "download">,
-): Promise<boolean> {
-  if (link.download === false) return true;
-  try {
-    await setLinkDownload(link, false);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** One edition in the window view, and the library that holds it. */
@@ -758,7 +734,7 @@ export interface WindowEntryView {
 
 /** `GET /api/config/join/window`. */
 export interface WindowBooks {
-  /** The libraries this server is a window of. */
+  /** The libraries this server is an active branch of. */
   clusters: BranchLinkView[];
   /** The libraries this server holds an active library card for. */
   cards: ClerkCardView[];
@@ -767,9 +743,9 @@ export interface WindowBooks {
 }
 
 /**
- * The window view (the operator or an Owner): the books every library this
- * server is a window of, or holds a library card for, holds for its
- * person, merged by work.
+ * Books in other libraries (the operator or an Owner): the books of every
+ * library this server is a branch of or holds a library card for, merged
+ * by work, each edition marked where it is this server's person's.
  *
  * @returns The libraries and their books.
  */
@@ -779,7 +755,7 @@ export function fetchWindowBooks(): Promise<WindowBooks> {
 
 /**
  * The hosts of the libraries a window view reads, each once: the libraries
- * this server is a window of, then those it holds a card for.
+ * this server is a branch of, then those it holds a card for.
  *
  * @param view - The window view.
  * @returns For example `["books.example.com", "other.example"]`.

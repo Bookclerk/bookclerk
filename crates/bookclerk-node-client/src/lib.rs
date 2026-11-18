@@ -39,6 +39,12 @@
 //!   [`HostJobCtx::upload_file`], [`HostJobCtx::commit_upload`]); the job
 //!   completes with its closing upload's commit.
 //!
+//! A branch may also take the copy the library already holds of an
+//! edition: [`HostClientHandle::copy_grant`] asks for it and
+//! [`HostClientHandle::fetch_copy_file`] downloads each file, resuming a
+//! download that was cut short ([`fetch_copy_file`] is the same download
+//! for a clerk, which holds a plain token).
+//!
 //! An install may instead sign in to a library as a clerk, holding a
 //! library card for its person rather than node keys ([`authorize_clerk`],
 //! [`redeem_clerk_code`]); the daemon reads the person's books over the
@@ -50,6 +56,7 @@
 mod branch;
 mod clerk;
 mod client;
+mod copies;
 mod endpoint;
 mod enroll;
 mod jobs;
@@ -66,9 +73,10 @@ pub use client::{
     HostClientConfig, HostClientHandle, OfferedAccounts, AWAITING_HOST_CONSENT, KIND_NOT_RUN_HERE,
     MAX_ARTIFACT_BYTES, MAX_LEASE, SECRETS_UNOPENABLE,
 };
+pub use copies::{fetch_copy_file, CopyFetchError};
 pub use endpoint::{
-    DialError, OwnerEndpoint, OwnerIo, OwnerSocket, SocketMessage, TlsProbe, CONNECT_PATH,
-    ENROLL_OAUTH_PATH, ENROLL_PATH, INFO_PATH,
+    CopyStreamError, DialError, OwnerEndpoint, OwnerIo, OwnerSocket, SocketMessage, TlsProbe,
+    CONNECT_PATH, ENROLL_OAUTH_PATH, ENROLL_PATH, INFO_PATH,
 };
 pub use enroll::{check_join_ancestry, join_cluster, refuse_cycle, JoinError};
 pub use jobs::{

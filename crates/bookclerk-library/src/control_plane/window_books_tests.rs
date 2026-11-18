@@ -1,7 +1,8 @@
-//! Window mode: the library answers a trusted branch with the books on its
-//! owner's accounts only, page by page within the frame budget; the window
-//! stores each library's pages, drops what a complete read no longer names,
-//! and merges every window link's books by local work and identifier.
+//! Books in other libraries: the library answers a trusted branch with its
+//! books, the owner's marked, page by page within the frame budget; the
+//! reading install stores each library's pages, drops what a complete read
+//! no longer names, and merges every link's books by local work and
+//! identifier.
 
 use bookclerk_node_proto::{
     window_page_problem, Availability, CatalogMetadata, LookupEdition, LookupFormat,
@@ -12,7 +13,8 @@ use sea_orm::{ActiveModelTrait, ActiveValue::Set};
 
 use super::*;
 use crate::control_plane::{
-    record_cluster_link, set_cluster_link_download, ClusterLinkKeys, NewClusterLink,
+    leave_cluster_link, record_cluster_link, set_cluster_link_keep_copies, ClusterLinkKeys,
+    NewClusterLink,
 };
 use crate::entities::node_credentials;
 use crate::master_key::master_key_test_lock_async;
@@ -326,7 +328,7 @@ async fn many_books_page_out_within_every_profiles_limits() {
         products.dedup();
         assert_eq!(products.len(), BOOKS, "{name}");
 
-        // The same store as a window: every page stored, merged and kept by
+        // The same store as a reading branch: every page stored, merged and kept by
         // a complete read, all within the profile's limits.
         crate::entities::cluster_links::ActiveModel {
             owner_cluster_id: Set("lib".into()),
@@ -341,14 +343,14 @@ async fn many_books_page_out_within_every_profiles_limits() {
             list_members_books: Set(1),
             work_for_members: Set(0),
             keep_member_copies: Set(0),
-            download: Set(0),
+            keep_copies: Set(0),
             person_user_id: Set(None),
             max_jobs: Set(None),
         }
         .insert(store.db())
         .await
         .unwrap();
-        // A second link, which downloads: listing the links pages too.
+        // A second link: listing the links pages too.
         crate::entities::cluster_links::ActiveModel {
             owner_cluster_id: Set("other".into()),
             owner_origin: Set("https://other.example".into()),
@@ -362,7 +364,7 @@ async fn many_books_page_out_within_every_profiles_limits() {
             list_members_books: Set(1),
             work_for_members: Set(0),
             keep_member_copies: Set(0),
-            download: Set(1),
+            keep_copies: Set(1),
             person_user_id: Set(None),
             max_jobs: Set(None),
         }
@@ -478,7 +480,7 @@ fn asin(value: &str) -> LookupIdentifier {
     }
 }
 
-async fn link(store: &LibraryStore, cluster: &str, download: bool) {
+async fn link(store: &LibraryStore, cluster: &str) {
     record_cluster_link(
         store,
         &NewClusterLink {
@@ -491,9 +493,6 @@ async fn link(store: &LibraryStore, cluster: &str, download: bool) {
     )
     .await
     .unwrap();
-    assert!(set_cluster_link_download(store, cluster, download)
-        .await
-        .unwrap());
 }
 
 #[tokio::test]
@@ -508,10 +507,14 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
         .id;
     // The window's own library knows one of the works.
     let local = hold(&store, me, "my-acct", &["B0SHARED01".into()]).await;
-    link(&store, "alpha", false).await;
-    link(&store, "beta", false).await;
-    link(&store, "gamma", true).await;
-    assert!(!set_cluster_link_download(&store, "nowhere", false)
+    link(&store, "alpha").await;
+    link(&store, "beta").await;
+    link(&store, "gamma").await;
+    // Keeping copies off changes nothing about the view.
+    assert!(set_cluster_link_keep_copies(&store, "gamma", false)
+        .await
+        .unwrap());
+    assert!(!set_cluster_link_keep_copies(&store, "nowhere", false)
         .await
         .unwrap());
 
@@ -550,7 +553,7 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
     record_window_page(&store, "beta", &first, &beta)
         .await
         .unwrap();
-    // A link that downloads is not part of the view.
+    // Every active link is part of the view, keeping copies or not.
     record_window_page(
         &store,
         "gamma",
@@ -566,8 +569,11 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
 
     let view = window_view(&store).await.unwrap();
     let titles: Vec<&str> = view.iter().map(WindowEntry::title).collect();
-    assert_eq!(titles, vec!["Alpha only", "No identifiers", "Shared"]);
-    let shared = &view[2];
+    assert_eq!(
+        titles,
+        vec!["Alpha only", "Gamma", "No identifiers", "Shared"]
+    );
+    let shared = &view[3];
     assert_eq!(shared.work_id.as_deref(), Some(local[0].as_str()));
     assert_eq!(shared.key, format!("work:{}", local[0]));
     let libraries: Vec<&str> = shared
@@ -595,14 +601,18 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
         .iter()
         .map(|e| e.title().to_string())
         .collect();
-    assert_eq!(titles, vec!["No identifiers", "Shared"]);
+    assert_eq!(titles, vec!["Gamma", "No identifiers", "Shared"]);
 
-    // Turning download back on hides beta and drops its rows.
-    set_cluster_link_download(&store, "beta", true)
+    // Leaving beta hides its books; the daemon then drops its rows.
+    leave_cluster_link(&store, "beta", None).await.unwrap();
+    let titles: Vec<String> = window_view(&store)
         .await
-        .unwrap();
-    assert_eq!(window_view(&store).await.unwrap().len(), 1);
-    assert_eq!(clear_window_books(&store, "beta").await.unwrap(), 0);
+        .unwrap()
+        .iter()
+        .map(|e| e.title().to_string())
+        .collect();
+    assert_eq!(titles, vec!["Gamma", "Shared"]);
+    assert_eq!(clear_window_books(&store, "beta").await.unwrap(), 2);
 }
 
 /// Two accounts holding one edition with their books on different pages of
@@ -613,7 +623,7 @@ async fn one_edition_on_two_pages_of_a_read_keeps_every_format() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let store = store_in(dir.path()).await;
-    link(&store, "alpha", false).await;
+    link(&store, "alpha").await;
     let held = |formats: Vec<LookupFormat>| {
         let mut copy = edition("B0TWICE001", "Twice");
         copy.formats = formats;
@@ -823,7 +833,7 @@ async fn the_window_keeps_the_copy_a_library_states() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let store = store_in(dir.path()).await;
-    link(&store, "alpha", false).await;
+    link(&store, "alpha").await;
     let copy = WindowCopy {
         source_store: Some("audible".into()),
         content_type: "audio/mp4".into(),
@@ -878,7 +888,7 @@ async fn whether_a_book_is_yours_is_kept_per_read() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let store = store_in(dir.path()).await;
-    link(&store, "alpha", false).await;
+    link(&store, "alpha").await;
     let page = |asin_value: &str, mine: bool| {
         vec![WindowWork {
             work: format!("w-{asin_value}"),
@@ -945,7 +955,7 @@ async fn a_works_overflow_group_joins_the_work_without_identifiers() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let store = store_in(dir.path()).await;
-    link(&store, "alpha", false).await;
+    link(&store, "alpha").await;
     let read = window_read_stamp();
     let page = vec![
         WindowWork {
@@ -1055,7 +1065,7 @@ async fn an_edition_wider_than_a_cell_is_kept_whole_under_every_profile() {
             list_members_books: Set(1),
             work_for_members: Set(0),
             keep_member_copies: Set(0),
-            download: Set(0),
+            keep_copies: Set(0),
             person_user_id: Set(None),
             max_jobs: Set(None),
         }
@@ -1173,7 +1183,7 @@ async fn an_isbn_alone_does_not_place_a_window_book() {
     let mut local = book("my-acct", "B0LOCAL001");
     local.isbn = Some("9780306406157".into());
     store.upsert_book(&local).await.unwrap();
-    link(&store, "alpha", false).await;
+    link(&store, "alpha").await;
     let isbn = LookupIdentifier {
         scheme: LookupScheme::Isbn,
         value: "9780306406157".into(),
@@ -1587,7 +1597,7 @@ async fn many_editions_repeated_in_one_read_stay_within_the_bind_limit() {
     caps.max_binds = 32;
     caps.max_result_rows = 500;
     let store = LibraryStore::from_connection(db).with_db_capabilities(caps);
-    link(&store, "alpha", false).await;
+    link(&store, "alpha").await;
     let works: Vec<WindowWork> = (0..40)
         .map(|n| {
             let id = format!("B0REPEAT{n:02}");

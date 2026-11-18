@@ -177,11 +177,16 @@ pub struct GrantedCopy {
     pub files: Vec<bookclerk_node_proto::CopyFile>,
     /// The bearer token, opened with this node's box key.
     token: SecretValue,
+    /// Cluster id of the library that granted the copy: the only one its
+    /// token is sent to.
+    library: String,
 }
 
 impl GrantedCopy {
-    /// Wraps an opened grant.
+    /// Wraps a grant opened on the link to the library `library` (its
+    /// cluster id).
     pub(crate) fn new(
+        library: String,
         copy_id: String,
         expires_in_secs: u64,
         copy: bookclerk_node_proto::WindowCopy,
@@ -194,7 +199,15 @@ impl GrantedCopy {
             copy,
             files,
             token,
+            library,
         }
+    }
+
+    /// True when the library with cluster id `cluster_id` granted this
+    /// copy. A branch may be linked to several libraries, and a copy's
+    /// token goes to none but its own.
+    pub(crate) fn granted_by(&self, cluster_id: &str) -> bool {
+        self.library == cluster_id
     }
 
     /// The `Authorization` header value of this copy's downloads.
@@ -532,4 +545,32 @@ impl HostJobCtx {
 pub trait HostJobRunner: Send + Sync + 'static {
     /// Runs one job; `Ok` carries the outcome text recorded as progress.
     fn run(&self, ctx: HostJobCtx) -> impl Future<Output = Result<String, HostJobError>> + Send;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A grant belongs to the library whose link opened it, and to no
+    /// other library the branch is linked to.
+    #[test]
+    fn a_granted_copy_knows_the_library_that_granted_it() {
+        let copy = GrantedCopy::new(
+            "library-a".into(),
+            "6f1c2b7e-0d4a-4e8b-9a51-2c3d4e5f6a7b".into(),
+            3600,
+            bookclerk_node_proto::WindowCopy {
+                source_store: None,
+                content_type: "audio/mp4".into(),
+                bitrate_kbps: None,
+                lossless: false,
+                version: "v1".into(),
+            },
+            Vec::new(),
+            SecretValue::new(b"copy-token-for-library-a".to_vec()),
+        );
+        assert!(copy.granted_by("library-a"));
+        assert!(!copy.granted_by("library-b"));
+        assert!(!copy.granted_by(""));
+    }
 }

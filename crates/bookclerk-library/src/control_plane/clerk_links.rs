@@ -9,7 +9,8 @@
 //! [`load_clerk_card`] to dial the library's clerk socket, and stores the
 //! books it reads with the window books functions
 //! (`control_plane::window_books`), keyed by the library's cluster id, so
-//! "Your books in other libraries" merges them with those of window links.
+//! "Books in other libraries" merges them with those of the libraries this
+//! install is a branch of.
 //!
 //! The card never leaves this module in plain form except as a
 //! [`LibraryCard`], a zeroizing buffer whose `Debug` output is redacted.
@@ -183,7 +184,7 @@ pub struct NewClerkLink {
 ///
 /// Returns [`LibraryError::Invalid`] for a malformed cluster id, origin,
 /// pin, name or user id, [`LibraryError::Conflict`] when this install is
-/// already an active branch or window of that library (it reads that
+/// already an active branch of that library (it reads that
 /// library's books through the link instead), an error when no master key
 /// is configured, and the write error.
 pub async fn record_clerk_link(
@@ -391,7 +392,7 @@ pub async fn sign_out_clerk_link(
         CLERK_CARD_NAME,
     )
     .await?;
-    // A window link to the same library keeps its own rows; only a clerk
+    // A branch link to the same library keeps its own rows; only a clerk
     // link with no active cluster link owns them.
     if !load_cluster_link(store, library_cluster_id)
         .await?

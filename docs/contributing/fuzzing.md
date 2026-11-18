@@ -55,6 +55,7 @@ boundary extends it.
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
+| `audible_catalog` | Audible public catalog answers (search results and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
@@ -62,6 +63,7 @@ boundary extends it.
 | `clerk_token_request` | A library card's token exchange, the body of `POST /api/clerk/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_clerk_token_request`, `clerk_exchange_matches` |
 | `clerk_token_answer` | A library's answer to a clerk's token exchange, read on the clerk before it seals the library card and records the library | `bookclerk-node-proto::parse_clerk_token_answer` |
 | `copy_range` | The `Range` header of a copy download, `GET /api/copies/v1/{copy_id}/files/{n}`, which decides which bytes of a library's file are sent | `bookclerk-node-proto::parse_copy_range` |
+| `copy_answer` | A library's answer to a copy download, read on the branch or clerk that took the copy: where its head ends, how many bytes follow and where in the file they are written | `bookclerk-node-proto::copy_answer_head_end`, `parse_copy_answer` |
 | `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics, pages of the library's books with the person's marked, and the grant of a copy with its download token) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
@@ -423,6 +425,35 @@ only that. The others check:
   Seeds named `part-*` must parse as a part and the others must not. The
   shared oracle is `fuzz/oracles/copy_range.rs`, replayed from
   `bookclerk-node-proto`.
+- **`copy_answer`**: the input is the byte the reader asked to resume
+  from and the file's size (eight bytes each, big endian) and then the
+  answer as received: the head, the blank line that ends it (CRLF CRLF)
+  and, if a seed wants them, first bytes of the body. A seed whose head
+  has no blank line after it is read as an answer that has not ended, and
+  is refused. The head ends before the first blank line, which the oracle
+  finds by a second scan one byte at a time; it is refused when that is
+  past 16 KiB; and every shorter run of the same bytes finds the same
+  head once it holds the blank line and none before, so where the
+  library's writes fall never moves a byte between the head and the
+  file. A body the parser
+  answers ends exactly at the file's end and starts at byte 0 or at the
+  byte asked for, and only a `206` starts above 0, so a reader never
+  writes past the size the grant stated or leaves a gap. A head is
+  refused when it is not printable ASCII lines ended by
+  CRLF, has no `HTTP/1.0` or `HTTP/1.1` status line with a status from
+  100 to 599, has a header line without a colon or whose name is not an
+  HTTP token, states a
+  transfer encoding, or repeats or misstates `Content-Length` or
+  `Content-Range`; a `200` is a body exactly when its length is the
+  file's size and it states no range; a `206` exactly when a byte inside
+  the file was asked for and the range and length are that byte to the
+  end; a `416` that states a range must state `bytes */<size>`; every
+  other status is an answer without file bytes. The answer
+  equals the one the oracle works out by reading the head a second way
+  (bytes compared one by one, digits folded into a wide integer). Seeds
+  named `body-*` and `status-*` must parse as that and the others must be
+  refused. The shared oracle is `fuzz/oracles/copy_answer.rs`, replayed
+  from `bookclerk-node-proto`.
 - **`clerk_socket_frame`**: the first byte picks the direction (even:
   clerk to library; odd: library to clerk) and the rest is the frame,
   checked against the frame read as an untyped JSON value. A clerk frame
@@ -478,7 +509,7 @@ only that. The others check:
   accepted exactly when it is one object with no repeated keys and no keys
   besides `cluster_id`, `share_books`, `include_branches`,
   `list_members_books`, `work_for_members`, `keep_member_copies` and
-  `download`, with a string `cluster_id` and booleans for `share_books`
+  `keep_copies`, with a string `cluster_id` and booleans for `share_books`
   and `include_branches`, and each of the other four absent, `null` or a
   boolean. The parser then returns the trimmed id and those values, with
   an absent or `null` setting left unset (kept as stored) rather than read

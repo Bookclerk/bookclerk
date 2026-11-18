@@ -397,12 +397,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-audible-catalog"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-plugin-sdk",
+ "bookclerk-storefront",
+ "serde_json",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "bookclerk-config"
 version = "0.1.0"
 dependencies = [
  "bookclerk-tls",
  "directories",
  "getrandom 0.4.3",
+ "log",
  "oslog",
  "regex",
  "serde",
@@ -411,6 +423,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-appender",
+ "tracing-log",
  "tracing-subscriber",
  "utoipa",
  "windows-sys 0.61.2",
@@ -469,6 +482,7 @@ name = "bookclerk-fuzz"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
+ "bookclerk-audible-catalog",
  "bookclerk-config",
  "bookclerk-cover",
  "bookclerk-db-exec",

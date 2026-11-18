@@ -3,7 +3,8 @@
 //! Settings → Library → Leave library).
 //!
 //! - `GET /api/config/join`: whether this is a fresh install (no Owner,
-//!   no Administrator, no cluster link), and the links it has.
+//!   no Administrator, no cluster link, no library card), and the links it
+//!   has.
 //! - `POST /api/config/join/inspect` `{address}`: reads the library's
 //!   `GET /api/node/v1/info` from this daemon (never from the browser)
 //!   under the transport policy; a self-signed library's fingerprint comes
@@ -33,25 +34,24 @@
 //!   branch of, with their sharing and work settings.
 //! - `POST /api/config/join/sharing` `{cluster_id, share_books,
 //!   include_branches, work_for_members?, keep_member_copies?,
-//!   list_members_books?, download?}`: Settings → Library's "Share this
+//!   list_members_books?, keep_copies?}`: Settings → Library's "Share this
 //!   branch's books with *library*" and "Include books from my own
 //!   branches" (the catalog sync reports them to the library at once),
 //!   "Download for other members of *library*" and "Keep copies of other
 //!   members' books", which the link's client claims and copies under from
 //!   its next consent check, "List my members' books to *library*", which
-//!   the next catalog lookup answer follows, and "Use this computer to
-//!   download" (off makes this install a window of that library: the
-//!   link's plugins are withdrawn and its held jobs given back at once, and
-//!   the books the library holds for this install's person are read).
+//!   the next catalog lookup answer follows, and "Keep copies on this
+//!   computer" (whether the branch takes the library's copies of its
+//!   person's books; it takes the library's work either way).
 //!
 //! Inspect and start refuse a library whose ancestry names this library's
 //! own cluster id (409 `join_cycle`), so a tree of libraries never loops;
 //! a branch's redeem checks it again before the code is spent.
 //!
-//! - `GET /api/config/join/window`: the libraries this install is a window
-//!   of (active links with "Use this computer to download" off), those it
-//!   holds an active library card for (`crate::clerk_link`), and the books
-//!   they hold for this install's person, merged by work.
+//! - `GET /api/config/join/window`: the libraries this install is a branch
+//!   of (active links), those it holds an active library card for
+//!   (`crate::clerk_link`), and their books, merged by work, each edition
+//!   marked where it is this install's person's.
 //!
 //! The sharing and window routes are for the operator or an Owner (the stored role is
 //! read on every call; anyone else gets 403); all the others are
@@ -120,7 +120,8 @@ pub(crate) fn join_error(status: StatusCode, error: &str, detail: &str) -> Respo
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 /// JSON body for `GET /api/config/join`.
 pub struct JoinStatus {
-    /// Whether this install has no users and no libraries yet.
+    /// Whether this install has no users, no libraries and no library cards
+    /// yet.
     #[schema(example = false)]
     pub fresh: bool,
     /// Whether an Owner (or legacy administrator) exists here.
@@ -506,6 +507,10 @@ pub async fn get_join_status(State(state): State<Arc<AppState>>) -> Response {
         Ok(links) => links,
         Err(err) => return crate::config_authority::events_error(err),
     };
+    let cards = match bookclerk_library::control_plane::list_clerk_links(&library).await {
+        Ok(cards) => cards,
+        Err(err) => return crate::config_authority::events_error(err),
+    };
     let owners = library.count_owners().await.unwrap_or(1);
     let admins = library.count_administrators().await.unwrap_or(1);
     let shared_branch_problem = match install_problem(&library).await {
@@ -513,7 +518,7 @@ pub async fn get_join_status(State(state): State<Arc<AppState>>) -> Response {
         Err(err) => return join_failed(&err),
     };
     Json(JoinStatus {
-        fresh: owners == 0 && admins == 0 && links.is_empty(),
+        fresh: owners == 0 && admins == 0 && links.is_empty() && cards.is_empty(),
         has_owner: owners > 0 || admins > 0,
         shared_branch_eligible: shared_branch_problem.is_none(),
         shared_branch_problem,
@@ -1522,17 +1527,6 @@ pub async fn post_join_sharing(
         settings,
     } = body.into_request();
     let cluster_id = cluster_id.as_str();
-    if settings.download.is_some() {
-        // Before the write too: a window read that stores a page after the
-        // write's clear then sees the change and discards what it wrote.
-        super::window::notify_window_changed(cluster_id);
-    }
-    // A download change is stored and applied to the share table under one
-    // guard, so racing changes reach it in the order they were stored.
-    let window_write = match settings.download {
-        Some(_) => Some(state.capacity.lock_cap_writes().await),
-        None => None,
-    };
     // Every setting goes in one statement, so a failed write changes none of
     // them and nothing changes unaudited. A setting the body leaves out is
     // not written at all, so it keeps whatever is stored when the statement
@@ -1550,11 +1544,6 @@ pub async fn post_join_sharing(
         }
         Err(err) => return crate::config_authority::events_error(err),
     }
-    if let Some(download) = settings.download {
-        // A window's share of the machine goes to the downloading links.
-        state.capacity.set_window(cluster_id, !download);
-    }
-    drop(window_write);
     tracing::info!(
         %cluster_id,
         %actor,
@@ -1563,7 +1552,7 @@ pub async fn post_join_sharing(
         work_for_members = ?settings.work_for_members,
         keep_member_copies = ?settings.keep_member_copies,
         list_members_books = ?settings.list_members_books,
-        download = ?settings.download,
+        keep_copies = ?settings.keep_copies,
         "branch sharing settings changed"
     );
     let detail = json!({
@@ -1573,7 +1562,7 @@ pub async fn post_join_sharing(
         "work_for_members": settings.work_for_members,
         "keep_member_copies": settings.keep_member_copies,
         "list_members_books": settings.list_members_books,
-        "download": settings.download,
+        "keep_copies": settings.keep_copies,
     })
     .to_string();
     if let Err(err) = store
@@ -1591,9 +1580,6 @@ pub async fn post_join_sharing(
     // The link's client claims under the new scope from its next consent
     // check; this runs one now.
     super::consent::notify_consent_changed();
-    if settings.download.is_some() {
-        super::window::notify_window_changed(cluster_id);
-    }
     match bookclerk_library::control_plane::load_cluster_link(&store, cluster_id).await {
         Ok(Some(link)) => Json(SharingChanged {
             cluster: shared_link_json(&state, &link),
@@ -1670,8 +1656,7 @@ pub struct WindowEntryView {
 /// JSON body for `GET /api/config/join/window`.
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct WindowBooks {
-    /// The libraries this install is a window of (active links with "Use
-    /// this computer to download" off).
+    /// The libraries this install is an active branch of.
     pub clusters: Vec<super::api::ClusterLinkView>,
     /// The libraries this install holds an active library card for.
     pub cards: Vec<crate::clerk_link::api::ClerkLinkView>,
@@ -1680,15 +1665,15 @@ pub struct WindowBooks {
     pub books: Vec<WindowEntryView>,
 }
 
-/// `GET /api/config/join/window`: the window view for the operator or an
-/// Owner: every book of each library this install is a window of, or
-/// holds a library card for, merged by work, each edition marked when it
+/// `GET /api/config/join/window`: "Books in other libraries" for the
+/// operator or an Owner: every book of each library this install is a
+/// branch of, or holds a library card for, merged by work, each edition marked when it
 /// is this install's person's (`{clusters, cards, books}`).
 #[utoipa::path(
     get,
     path = "/api/config/join/window",
     responses(
-        (status = 200, description = "The libraries this install is a window of or holds a card for, and their books.", body = WindowBooks),
+        (status = 200, description = "The libraries this install is a branch of or holds a card for, and their books.", body = WindowBooks),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
             ("forbidden" = (summary = "The user is not an active Owner.", value = json!({"error": "forbidden"}))),
@@ -1759,7 +1744,7 @@ pub async fn get_join_window(
     let mut answer = Json(WindowBooks {
         clusters: links
             .iter()
-            .filter(|link| link.is_active() && !link.download)
+            .filter(|link| link.is_active())
             .map(link_json)
             .collect(),
         cards: cards

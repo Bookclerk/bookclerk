@@ -762,7 +762,7 @@ branch belongs to.
    the edition by its store listing (`store`, `marketplace`,
    `product_id`). The library answers `copy.granted` with a copy id, what
    the copy is (media type, bitrate, source store, version, as the
-   [window list](#window-mode) states it), the list of files with their
+   [list of books in other libraries](#books-in-other-libraries) states it), the list of files with their
    sizes, and a bearer token **sealed to the branch's box key**. Only the
    token's hash is stored, and it lives one hour.
 2. **Download.** The branch sends
@@ -771,6 +771,15 @@ branch belongs to.
    from its destination; nothing is staged on its disk. One `Range`
    (`bytes=a-b`, `bytes=a-` or `bytes=-n`) is honoured with `206`, so a
    broken download resumes where it stopped.
+
+The reader writes each file to disk as it arrives and takes it only when
+the answer states exactly the bytes it asked for: `200` with the size the
+grant listed, or `206` from the byte it resumes at to the end of the
+file. An answer with another length or range, or with a chunked body, is
+refused, and what the reader already holds is kept for the next try. A
+`416` on a resumed download starts that file over once. A branch linked
+to several libraries sends a copy's token only to the library that
+granted it.
 
 The library sends a copy of an edition when it holds the edition's audio
 and the person may see the edition. The primary audio file comes first,
@@ -873,9 +882,9 @@ all on by default:
 - **List my members' books to <library>.** Off: B answers A's catalog
   questions with its owner's books only (see
   [Shared catalog](#shared-catalog)).
-- **Use this computer to download.** Off: B is a window of that library.
-  It takes none of A's work and shows the books A holds for B's person
-  instead (see [Window mode](#window-mode)).
+- **Keep copies on this computer.** Off: B leaves A's copies of its
+  person's books at A. B still takes A's work, lists its books to A and
+  shows A's books (see [Books in other libraries](#books-in-other-libraries)).
 
 B's operator or an Owner of B may change them. An Owner sees only the
 libraries, these settings and each library's job cap (see
@@ -885,8 +894,8 @@ refused (403).
 
 The routes are `GET /api/config/join/sharing` (→ `{clusters}`) and
 `POST /api/config/join/sharing`
-`{cluster_id, share_books, include_branches, list_members_books?, download?}`
-(`list_members_books` and `download` are left as they are when absent),
+`{cluster_id, share_books, include_branches, list_members_books?, keep_copies?}`
+(`list_members_books` and `keep_copies` are left as they are when absent),
 which also takes the [work settings](#work-settings-on-the-branch).
 
 ### Work settings on the branch
@@ -1020,8 +1029,7 @@ entries; leave `node_id` out to ask the first branch that lists the work.
    **What B lists** above): its owner's books always, a member's while
    **List my members' books to <library>** is on and the member has not
    opted out, and nothing while **Share this branch's books with
-   <library>** is off or B is a window of A (see
-   [Window mode](#window-mode)). B's listing settings are where B's
+   <library>** is off. B's listing settings are where B's
    operator draws the line; there is no per-request approval.
 4. **B fetches and sends the book.** An accepted book not yet downloaded
    is queued as an ordinary acquire in B's own library, on the store
@@ -1068,46 +1076,34 @@ Branches**. The API is `PUT /api/config/branches/members-books`
 - Each change is written to A's security audit log
   (`branch_members_books_set`).
 
-### Window mode
+### Books in other libraries
 
-A window shows the books its person has in the libraries they joined,
-without downloading anything. It is the same install as a branch with one
-setting per library turned off: **Use this computer to download** in
-**Settings → Library**. A person can start as a window and turn the
-setting on later to keep copies.
+Every branch shows the books of the library it joined, whatever its
+**Keep copies on this computer** setting says. That setting only decides
+whether B takes A's copies of its person's books; B takes A's work and
+answers A's catalog questions and requests either way.
 
-With the setting off for library A, B:
+For each library A it joined, B:
 
-- **Takes no work from A.** B claims no jobs from A and runs none of A's
-  plugins. Each deployment A made to B is reported to A as `error` with
-  the detail "this computer does not download for this library (window
-  mode)", and B records, fetches and configures nothing for it. Turning
-  the setting off hands back any job B holds for A at once. A's share of
-  B's job slots goes to the libraries B downloads for, and A's job cap
-  applies again when the setting is turned back on.
-- **Lists nothing to A and takes none of its requests.** A window is a
-  client of A, not one of its nodes. It answers A's catalog questions as
-  "missing" and every interlibrary request from A as "not listed", so A
-  shows no title as available through B.
-- **Reads A's books.** On every connection, every 30 minutes, and at
-  once when the setting changes, B sends `window.books` page by page. A
-  answers each page (`window.page`) with the titles on all of A's store
-  accounts, as A's own Library page lists them for a member, at most 100
-  works per page, grouped by A's works with each work's identifiers. Each
-  edition is marked `yours` when a store account linked to B's owner
-  holds it, and carries `copy` when A already holds its audio: the
-  file's media type, its bitrate and the store it came from when A has
-  probed it, whether it is lossless, and a version that changes when A's
-  file does. Each page ends with an opaque cursor string, which B sends
-  back to get the next page. A answers only a branch it trusts, and the
-  frame names no user, so the mark is always for B's own person.
+- **Reads A's books.** On every connection and every 30 minutes, B sends
+  `window.books` page by page. A answers each page (`window.page`) with
+  the titles on all of A's store accounts, as A's own Library page lists
+  them for a member, at most 100 works per page, grouped by A's works
+  with each work's identifiers. Each edition is marked `yours` when a
+  store account linked to B's owner holds it, and carries `copy` when A
+  already holds its audio: the file's media type, its bitrate and the
+  store it came from when A has probed it, whether it is lossless, and a
+  version that changes when A's file does. Each page ends with an opaque
+  cursor string, which B sends back to get the next page. A answers only
+  a branch it trusts, and the frame names no user, so the mark is always
+  for B's own person.
 - **Keeps one copy of the list per library.** B stores each page as it
-  arrives, with the copy A stated for each edition. Once the last page is in, it drops the books A no longer
-  named. A read cut short keeps the list from the last complete read.
-  Turning the setting back on clears that library's list.
+  arrives, with the copy A stated for each edition. Once the last page is
+  in, it drops the books A no longer named. A read cut short keeps the
+  list from the last complete read. Leaving A clears that library's list.
 
 B's **Library** page then shows **Books in other libraries** to B's
-operator and Owners: every library B is a window of, merged into one list
+operator and Owners: every library B is a branch of, merged into one list
 by work, the person's own books marked **Yours**, with an **Only yours**
 filter. Two books are the same work when their identifiers reach the
 same work in B's own library, when they share a strong identifier (an
@@ -1123,10 +1119,6 @@ The list also has the books of every library B holds a library card for
 
 The route is `GET /api/config/join/window` (→ `{clusters, cards, books}`),
 for B's operator or an Owner of B.
-
-> [!NOTE]
-> Asking a library to send a book to a window isn't built yet. It arrives
-> with window-mode requests, after interlibrary requests to branches.
 
 ### No loops
 
@@ -1176,9 +1168,9 @@ shared stay in the library, marked as from a branch that left (see
   (the operator or an Owner). There is no CLI command for them yet.
 - A branch answers only from its own library, not from other libraries it
   joined.
-- A window can't ask a library to send it a book yet, and the library's
-  scheduler can still place plugin replicas on a window (the window
-  reports them as errors and never runs them).
+- **Keep copies on this computer** is stored but doesn't copy anything
+  yet: taking a library's copy into a branch's own storage arrives with
+  the branch side of library copies.
 - The library's name is the host of its public origin. There is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the

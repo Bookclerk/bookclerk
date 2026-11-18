@@ -43,8 +43,8 @@ struct LiveFeed {
 ///
 /// The only command the window allows (`capabilities/main.json`), and only
 /// on the app's own pages: the library's sign-in pages the window shows
-/// during a join are remote, so Tauri refuses them. The page passes
-/// nothing but the channel.
+/// during a join or a library card sign-in are remote, so Tauri refuses
+/// them. The page passes nothing but the channel.
 ///
 /// # Arguments
 ///
@@ -130,8 +130,8 @@ pub fn run() -> anyhow::Result<()> {
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(480.0, 360.0)
                 .on_navigation(move |url| match navigation_host.navigation(url.as_str()) {
-                    Navigation::App | Navigation::JoinSignIn => true,
-                    Navigation::JoinReturn(path_and_query) => {
+                    Navigation::App | Navigation::SignIn => true,
+                    Navigation::SignInReturn(path_and_query) => {
                         return_to_app(&handle, &path_and_query);
                         false
                     }
@@ -154,7 +154,7 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 /// Opens `path_and_query` on the app scheme: where the library's return
-/// from a join sign-in lands, so the app finishes the join.
+/// from a join or library card sign-in lands, so the app finishes it.
 ///
 /// # Arguments
 ///
@@ -164,7 +164,7 @@ fn return_to_app(handle: &tauri::AppHandle, path_and_query: &str) {
     let target = match Url::parse(&format!("{APP_ORIGIN}{path_and_query}")) {
         Ok(target) => target,
         Err(err) => {
-            tracing::warn!(error = %err, "join return address is not a valid app URL");
+            tracing::warn!(error = %err, "sign-in return address is not a valid app URL");
             return;
         }
     };

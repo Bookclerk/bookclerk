@@ -2242,16 +2242,15 @@ impl LibraryStore {
     ) -> Result<std::collections::BTreeMap<String, EditionPlacement>> {
         use std::collections::BTreeMap;
         let edition_ids: Vec<String> = edition_ids.into_iter().collect();
+        // Unique-key lookups through the row-capped helper, so each chunk
+        // also fits the adapter's result-row limit.
         let mut expression_of = BTreeMap::new();
-        for chunk in edition_ids.chunks(self.lookup_chunk()) {
-            for e in editions::Entity::find()
-                .filter(editions::Column::Id.is_in(chunk.iter().cloned()))
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                expression_of.insert(e.id, e.expression_id);
-            }
+        for e in find_chunked::<editions::Entity, _>(self, &edition_ids, |part| {
+            editions::Entity::find().filter(editions::Column::Id.is_in(part.iter().cloned()))
+        })
+        .await?
+        {
+            expression_of.insert(e.id, e.expression_id);
         }
         let expression_ids: Vec<String> = expression_of
             .values()
@@ -2260,15 +2259,12 @@ impl LibraryStore {
             .into_iter()
             .collect();
         let mut work_of_expression = BTreeMap::new();
-        for chunk in expression_ids.chunks(self.lookup_chunk()) {
-            for x in expressions::Entity::find()
-                .filter(expressions::Column::Id.is_in(chunk.iter().cloned()))
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                work_of_expression.insert(x.id, x.work_id);
-            }
+        for x in find_chunked::<expressions::Entity, _>(self, &expression_ids, |part| {
+            expressions::Entity::find().filter(expressions::Column::Id.is_in(part.iter().cloned()))
+        })
+        .await?
+        {
+            work_of_expression.insert(x.id, x.work_id);
         }
         Ok(expression_of
             .into_iter()

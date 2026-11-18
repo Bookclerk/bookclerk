@@ -206,8 +206,11 @@ a window on `main`.
   6. Window mode, now replaced by clerks with library cards (see
      [Kinds of install](#kinds-of-install)): the library side first
      (library cards, then the clerk socket that reports changes and pages
-     the person's books), then the clerk side, then the copy setting redefined as "Keep copies on
-     this computer", then turning a clerk into a branch.
+     the person's books), then the clerk side, then the copy setting
+     redefined as "Keep copies on this computer" (implemented: a branch
+     takes its library's work and shows its books whatever the setting
+     says, and the desktop app signs in with a library card), then
+     turning a clerk into a branch.
   7. Capacity shares between a branch's own work and each link
      (implemented).
 - Steps 2 to 7 add node-socket frames. Each ships with a fuzz target, a

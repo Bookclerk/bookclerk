@@ -178,15 +178,23 @@ function CardRow({
   );
 }
 
+/** Props for {@link ClerkSignInForm}. */
+export interface ClerkSignInFormProps {
+  /** The name to suggest for this computer. */
+  defaultName: string;
+  /** Shows a Back button that calls this. */
+  onCancel?: () => void;
+}
+
 /**
  * Sign in with a library card: address → fingerprint (self-signed
  * libraries) and this computer's name → the library's sign-in page, which
  * sends the browser back to `/clerk/callback`.
  *
- * @param props - The name to suggest, and what Back does.
+ * @param props - See {@link ClerkSignInFormProps}.
  * @returns The form.
  */
-function ClerkSignInForm({ defaultName, onCancel }: { defaultName: string; onCancel: () => void }) {
+export function ClerkSignInForm({ defaultName, onCancel }: ClerkSignInFormProps) {
   const [address, setAddress] = useState("");
   const [name, setName] = useState(defaultName);
   const [library, setLibrary] = useState<LibraryInfoView | null>(null);
@@ -321,9 +329,11 @@ function ClerkSignInForm({ defaultName, onCancel }: { defaultName: string; onCan
         </p>
       ) : null}
 
-      <Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>
-        Back
-      </Button>
+      {onCancel ? (
+        <Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>
+          Back
+        </Button>
+      ) : null}
     </div>
   );
 }
