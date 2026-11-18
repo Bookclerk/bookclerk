@@ -1159,29 +1159,37 @@ pick another run.
   condition outside that is refused, and a response header outside it is
   dropped from the answer.
 
-### Metadata file dialect guest
+### Metadata file dialect guests
 
-The `metadata_files` guest reads sidecar files from storage the host does
-not control. Its `test/fuzz.test.ts` replays one corpus per dialect under
+Two guests read sidecar files from storage the host does not control: the
+shared `metadata_files` guest (`libation_json`) and the Audiobookshelf
+plugin (`abs_metadata_json`, `abs_nfo`, `desc_txt` and `reader_txt`).
+Each one's `test/fuzz.test.ts` replays one corpus per dialect under
 `fuzz/<dialect id>/` and runs seeded byte and text mutations, spliced
 across every corpus, in `npm test` (the `workerd_guests` check);
 `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
 
-- **Parsing** (`parseFile` in
-  `crates/bookclerk-plugins/optional/metadata-files/src/dialects.ts`, for
-  `libation_json`, `opf` and `kodi_album_nfo`). Oracle, written from the ABI's record rules
-  (`validate_metadata_file_record` and `check_record_against_dialect`)
-  and the dialect's manifest row: a file is refused only with
-  `invalid_params`. Otherwise the record passes every rule the host
-  applies, states only the row's fields and credit roles, and is the same
-  on a second parse.
-- **Rendering** (`renderFile`), for every row with `writes = true`, over
-  every mutated file as the existing file, with a random record and field
-  list (today `opf` and `kodi_album_nfo`). Oracle: a refusal only for a file `parse` also refuses or an
-  answer that would pass the size cap. Otherwise the answer is within
+- **Parsing** (`parseFile` in each guest's `src/dialects.ts`, under
+  `crates/bookclerk-plugins/optional/metadata-files` (`libation_json`,
+  `opf` and `kodi_album_nfo`) and `integration-audiobookshelf`). Oracle,
+  written from the ABI's record rules (`validate_metadata_file_record` and
+  `check_record_against_dialect`) and the dialect's manifest row: a file
+  is refused only with `invalid_params`. Otherwise the record passes every
+  rule the host applies, states only the row's fields and credit roles,
+  and is the same on a second parse.
+- **Rendering** (`renderFile`), for every row with `writes = true` (`opf`,
+  `kodi_album_nfo` and all four Audiobookshelf dialects), over every
+  mutated file as the existing file, with a random record and field list.
+  Oracle: a refusal only for a file `parse` also refuses, an answer that
+  would pass the size cap, a `metadata.json` number whose exact value a
+  double cannot keep, an existing Audiobookshelf file with bytes that
+  decode only to U+FFFD, or an Audiobookshelf NFO description line it
+  would read as an underline. Otherwise the answer is within
   `MAX_METADATA_FILE_BYTES`, and a re-parse passes the same rules, reads
   back each field it was asked to write, and reads every other field (and
   every credit role the request does not state) as the existing file did.
+  The Audiobookshelf oracle also checks that each such field stays stated
+  or absent as before.
 - **XML scanning** (`parseXml` in `src/xml.ts`), under every XML dialect's
   parse and render. It decodes only XML's five entities and numeric
   references, refuses a document type with an internal subset and nesting

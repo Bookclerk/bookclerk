@@ -1,0 +1,1 @@
+{"title":42,"authors":["  A  ","A",7,null,""],"series":["#1"," #2","Name #"],"publishedYear":1984,"publishedDate":"not a date","chapters":[{"start":-1,"title":"neg"},{"start":5,"end":2,"title":"backwards"},{"start":"3"},{"start":1e300},{"start":1,"title":["x"]}],"description":"\u0000bell\u0007\r\nline","abridged":"yes"}

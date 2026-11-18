@@ -4,7 +4,7 @@ name = "Audiobookshelf"
 version = "0.2.0"
 logo = "https://www.google.com/s2/favicons?domain=audiobookshelf.org&sz=128"
 runtime = "workerd"
-entrypoints = ["remoteLibrary", "oidc"]
+entrypoints = ["remoteLibrary", "oidc", "metadataFiles"]
 
 [workerd]
 compatibility_date = "2026-08-01"
@@ -16,8 +16,8 @@ entrypoint = "default"
 [workerd.limits]
 cpu_ms = 30000
 # A listening sync makes one request per user and one per changed progress
-# row; it stops short of this cap and picks up the rest on the next sync
-# (see `src/listening.ts`).
+# row; it stops short of this cap and returns what it collected (see
+# `src/listening.ts`).
 subrequests = 1000
 
 # Emitted from `src/` by `npm run build`; CI fails when they drift.
@@ -66,6 +66,31 @@ name = "watch.js"
 path = "watch.js"
 type = "js"
 
+[[modules]]
+name = "dialects.js"
+path = "dialects.js"
+type = "js"
+
+[[modules]]
+name = "text.js"
+path = "text.js"
+type = "js"
+
+[[modules]]
+name = "abs-json.js"
+path = "abs-json.js"
+type = "js"
+
+[[modules]]
+name = "nfo.js"
+path = "nfo.js"
+type = "js"
+
+[[modules]]
+name = "plain-text.js"
+path = "plain-text.js"
+type = "js"
+
 [capabilities.network]
 mode = "outbound"
 # Self-hosted Audiobookshelf has no fixed address, so the plugin asks for any
@@ -78,6 +103,40 @@ domains = ["*"]
 # Audiobookshelf pushes new users over Socket.io; the host holds the socket
 # while the plugin sleeps and answers its pings (see `src/push.ts`).
 [sockets]
+
+# Audiobookshelf's sidecar files, read and written for the host (see
+# `src/dialects.ts`). The host hands every file in and takes every file
+# back; these calls make no requests.
+[[metadata_files.dialects]]
+id = "abs_metadata_json"
+name = "Audiobookshelf metadata.json"
+file_names = ["metadata.json"]
+fields = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "identifiers", "credits", "series", "chapters"]
+credit_roles = ["author", "narrator"]
+writes = true
+
+[[metadata_files.dialects]]
+id = "abs_nfo"
+name = "Audiobookshelf .nfo"
+suffixes = [".nfo"]
+fields = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "identifiers", "credits", "series"]
+credit_roles = ["author", "narrator"]
+writes = true
+
+[[metadata_files.dialects]]
+id = "desc_txt"
+name = "Audiobookshelf desc.txt"
+file_names = ["desc.txt"]
+fields = ["description"]
+writes = true
+
+[[metadata_files.dialects]]
+id = "reader_txt"
+name = "Audiobookshelf reader.txt"
+file_names = ["reader.txt"]
+fields = ["credits"]
+credit_roles = ["narrator"]
+writes = true
 
 [vars]
 
