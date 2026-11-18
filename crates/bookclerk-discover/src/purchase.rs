@@ -1641,7 +1641,10 @@ mod tests {
         let drama = crate::pool::catalog_listing(
             "chirp",
             "us",
-            &hit("G1", bookclerk_source::records::ExpressionKind::Dramatisation),
+            &hit(
+                "G1",
+                bookclerk_source::records::ExpressionKind::Dramatisation,
+            ),
             now,
         );
         library
