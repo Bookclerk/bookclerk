@@ -599,8 +599,9 @@ pub const BATCH_DEADLINE: Duration = Duration::from_secs(10);
 /// ([`bookclerk_source::SourceError::RateLimited`]) is left alone for the
 /// time it said (see [`RATE_LIMIT_FIRST_PAUSE`]).
 ///
-/// Each store is asked the strongest way it supports: by the product it already sells, by the card's exact ISBN or ASIN when it
-/// declared that lookup, else by title. A title search's records are
+/// Each store is asked the strongest way it supports: by the product it
+/// already sells, by the card's exact ISBN or ASIN when it declared that
+/// lookup, else by title. A title search's records are
 /// stored in the listing pool and kept only for the card's recording.
 ///
 /// # Arguments
