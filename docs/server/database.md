@@ -732,8 +732,17 @@ library holds as works, expressions and editions:
   destination, with the edition it belongs to (a branch's delivered
   title's included), its role (`audio`, `part`,
   `chapter`, `pdf`, `cover`, `sidecar`, `transcript`, `epub`) and, for an
-  upload, the file's SHA-256. The quality columns (`lossless`,
-  `bitrate_kbps`) stay empty until uploads carry a file's quality.
+  upload, the file's SHA-256. An audio file's row also holds what a
+  probe of the file found: its media type (`content_type`, from the
+  container, not the file name), its average bitrate (`bitrate_kbps`),
+  whether the encoding is lossless (`lossless`), the store the copy came
+  from (`source_store`) and when it was probed (`probed_at`). The acquire
+  that writes a file probes it; an upload carries the sender's values and
+  they are stored when it commits. `probed_at` is empty for a file that
+  was never probed (it is not audio, the media worker was unavailable, or
+  it was stored before probes were recorded), and the other four columns
+  are then empty too. See [What a stored file's row
+  says](media.md#what-a-stored-files-row-says).
 - `edition_acquisitions`: each edition's acquire state (status, primary
   storage key, last error) and the account holding (`holding_id`) whose
   title's write set it, written with the title's own status. Only that

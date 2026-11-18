@@ -100,7 +100,7 @@ pub fn check(data: &[u8]) {
             assert!(
                 probe
                     .bitrate_kbps
-                    .is_none_or(|kbps| kbps >= 1 && kbps <= 20_000),
+                    .is_none_or(|kbps| (1..=20_000).contains(&kbps)),
                 "probe bitrate {:?} accepted",
                 probe.bitrate_kbps
             );

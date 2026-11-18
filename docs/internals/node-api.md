@@ -46,7 +46,7 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `scan.removed {account_id, batch, product_ids}` (at most 500 ids, after the job's rows) | `scan.accepted {batch, upserted}` (holdings removed), `lost`, or `error` `refused` |
 | `scan.pass_end {account_id, sync_token, complete, full}` (one per account, last) | `scan.accepted {batch: 0, upserted}` (holdings a complete full pass pruned), `lost`, or `error` `refused` |
 | `acquire.plan` | `acquire.targets {targets, destinations}` |
-| `upload.grant` | `upload.granted {upload_id, sealed_token, expires_in_secs}` |
+| `upload.grant` (each file of the manifest may carry `probe {bitrate_kbps, lossless, source_store}`, as may `catalog.upload`'s) | `upload.granted {upload_id, sealed_token, expires_in_secs}` |
 | `catalog.begin {share_books, include_branches}` | `catalog.session {fence, cursor, ancestry, destinations, wanted, members_books}`; `members_books` (absent reads as false) is the library's "Acquire all of this branch's members' books": the branch then also sends the members' books it lists (see [Acquiring all of a branch's members' books](../server/cluster-hosts.md#acquiring-all-of-a-branchs-members-books)) |
 | `catalog.sync {fence, batch, cursor, done, titles}` | `catalog.accepted {batch, upserted, skipped, wanted}`, or `lost` |
 | `catalog.upload {fence, store, product_id, files}` | `upload.granted` (then the upload routes above, job id `catalog`) |
