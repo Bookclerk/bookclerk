@@ -625,6 +625,10 @@ A host never writes library SQL.
    title carries its store account's holding id on the owner, which its
    upload names, and its library id on the owner, so the `<library id>`
    naming tag writes the owner's id rather than the host's scratch one.
+   It also carries the store listing the acquire needs (store, product id,
+   marketplace, title, people, series and dates), read from the owner's
+   holdings and editions, and a podcast episode carries its show's
+   listing the same way.
 3. The host acquires each title into a per-title outbox, with one
    sub-directory per owner destination. So each destination's file names
    come out exactly as a local acquire on the owner would name them.

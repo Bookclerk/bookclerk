@@ -1,1 +1,1 @@
-{"v":1,"id":"r1","type":"acquire.targets","targets":[{"holding_id":"b1","plugin_key":"store","account_id":"a1","book":{"title":"Dune"},"library_id":"hd4j63pc","parent_library_id":"04hmasw9"}],"destinations":[{"id":"local","options":{}}]}
+{"v":1,"id":"r1","type":"acquire.targets","targets":[{"holding_id":"b1","plugin_key":"store","account_id":"a1","title":{"product_id":"p1","source":"store","marketplace":"us","title":"Dune","content_kind":"book"},"library_id":"hd4j63pc","parent_library_id":"04hmasw9"}],"destinations":[{"id":"local","options":{}}]}
