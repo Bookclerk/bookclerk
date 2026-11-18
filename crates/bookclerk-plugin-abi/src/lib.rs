@@ -281,7 +281,7 @@ pub use roles::{
     JobController, JobRunner, KvNamespace, MetadataFiles, MetadataProvider, NamedKvBinding,
     NamedQueueBinding, NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer,
     QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler, SocketHandler, Sockets, Source,
-    PURCHASE_HINTS_BUDGET,
+    PURCHASE_HINTS_BUDGET, PURCHASE_HINTS_CONCURRENCY,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;

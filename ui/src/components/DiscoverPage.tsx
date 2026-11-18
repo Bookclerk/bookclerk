@@ -83,6 +83,11 @@ import { formatDuration } from "@/lib/libraryFilters";
 import { takeQueuedDiscoverSearch, type DiscoverSearchHandoff } from "@/lib/routes";
 import { descriptionPlainText } from "@/lib/safeHtml";
 
+/**
+ * Cards a shelf adds at a time as it scrolls sideways. A shelf on screen
+ * prices every card it has added in one go, so this is also the size of
+ * the lookup batch a sideways scroll sends.
+ */
 const SHELF_CHUNK = 8;
 const SHELVES_INITIAL = 6;
 const RESULTS_PAGE_SIZE = 24;
@@ -1051,7 +1056,7 @@ export function DiscoverPage({
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div data-discover-scroll className="min-h-0 flex-1 overflow-auto">
         <main className={cn("flex flex-col gap-8 px-4 py-6 sm:px-5", pageWidthClass)}>
           {panel === "results" ? (
             <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
@@ -1404,6 +1409,58 @@ function ShelfSection({
 }) {
   const [visible, setVisible] = useState(SHELF_CHUNK);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  // Once the shelf comes near the screen, every card it has added looks up
+  // its prices and details at the same moment, so they share one batch
+  // instead of one request per card as each slides into view.
+  // (Without IntersectionObserver every shelf is active from the start.)
+  const [active, setActive] = useState(() => typeof IntersectionObserver === "undefined");
+
+  useEffect(() => {
+    const el = sectionRef.current;
+    if (!el || active) return;
+    // Measured against Discover's own scroll area, which would otherwise
+    // clip the shelf before the margin applies.
+    const root = el.closest<HTMLElement>("[data-discover-scroll]");
+    let obs: IntersectionObserver | null = null;
+    const watch = () => {
+      obs?.disconnect();
+      // Half a screen below the fold: the next shelf down is priced before
+      // the viewer reaches it. In pixels, because a percentage margin is
+      // taken from the root's width, not its height.
+      const half = Math.round((root?.clientHeight || window.innerHeight) / 2);
+      const next = new IntersectionObserver(
+        (entries) => {
+          if (entries.some((e) => e.isIntersecting)) {
+            setActive(true);
+            next.disconnect();
+          }
+        },
+        { root, rootMargin: `${half}px 0px` },
+      );
+      next.observe(el);
+      obs = next;
+    };
+    watch();
+    // Re-measured when the scroll area changes height, which can happen
+    // without a window resize (the header wrapping, for one).
+    let lastHeight = root?.clientHeight;
+    const resized =
+      root && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            if (root.clientHeight === lastHeight) return;
+            lastHeight = root.clientHeight;
+            watch();
+          })
+        : null;
+    if (resized && root) resized.observe(root);
+    else window.addEventListener("resize", watch);
+    return () => {
+      resized?.disconnect();
+      window.removeEventListener("resize", watch);
+      obs?.disconnect();
+    };
+  }, [active]);
 
   const orderedItems = useMemo(() => preferCatalogLanguageOrder(shelf.items), [shelf.items]);
 
@@ -1414,19 +1471,24 @@ function ShelfSection({
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
+    // Keep at least a screen's width of cards past the visible ones: add the
+    // next chunk (and so send its lookup batch) once less than that is left,
+    // so its prices are in before it slides into view.
     const onScroll = () => {
-      if (el.scrollLeft + el.clientWidth >= el.scrollWidth - 96) {
+      if (el.scrollLeft + 2 * el.clientWidth >= el.scrollWidth) {
         setVisible((n) => Math.min(n + SHELF_CHUNK, orderedItems.length));
       }
     };
+    // A wide screen may show the whole first chunk; top the buffer up now.
+    onScroll();
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [orderedItems.length]);
+  }, [orderedItems.length, visible]);
 
   const items = orderedItems.slice(0, visible);
 
   return (
-    <section className="space-y-3">
+    <section ref={sectionRef} className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-ink">{shelf.title}</h2>
         {shelf.subtitle ? <p className="text-sm text-ink/55">{shelf.subtitle}</p> : null}
@@ -1439,6 +1501,7 @@ function ShelfSection({
             wishlistUuid={wishlistUuidForRec(wishlist, r)}
             wishlisted={wishlist.some((req) => wishMatchesRec(req, r))}
             busy={busy}
+            active={active}
             onOpen={onOpen}
             onWishlist={onWishlist}
           />
@@ -1456,6 +1519,7 @@ function ShelfCard({
   wishlistUuid,
   wishlisted,
   busy,
+  active,
   onOpen,
   onWishlist,
 }: {
@@ -1463,11 +1527,11 @@ function ShelfCard({
   wishlistUuid: string | null;
   wishlisted: boolean;
   busy: boolean;
+  /** True once the card's shelf is near the screen: look up prices and details. */
+  active: boolean;
   onOpen: (title: CatalogTitle) => void;
   onWishlist: (title: CatalogTitle) => void;
 }) {
-  const cardRef = useRef<HTMLElement | null>(null);
-  const [inView, setInView] = useState(false);
   const [title, setTitle] = useState(() => catalogTitleFromRec(rec, wishlistUuid));
   const [, setHints] = useState<PurchaseHint[]>(rec.purchase_hints);
   const [best, setBest] = useState<PurchaseHint | null>(rec.purchase_hints[0] ?? null);
@@ -1482,23 +1546,7 @@ function ShelfCard({
   }, [rec, wishlistUuid]);
 
   useEffect(() => {
-    const el = cardRef.current;
-    if (!el) return;
-    const obs = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          setInView(true);
-          obs.disconnect();
-        }
-      },
-      { rootMargin: "120px" },
-    );
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (!inView) return;
+    if (!active) return;
     let cancelled = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
     if (pricingAttempt === 0) {
@@ -1557,17 +1605,14 @@ function ShelfCard({
       cancelled = true;
       if (retry) clearTimeout(retry);
     };
-  }, [inView, rec, wishlistUuid, pricingAttempt]);
+  }, [active, rec, wishlistUuid, pricingAttempt]);
 
   const blurb = descriptionPlainText(title.description);
   const seriesLabel = formatSeriesLabel(title.series, title.series_index);
   const bestPrice = best ? formatShelfBestPrice(best) : null;
 
   return (
-    <article
-      ref={cardRef}
-      className="w-40 shrink-0 snap-start rounded-lg bg-card-mid p-2.5 shadow-sm ring-1 ring-ink/5 sm:w-44"
-    >
+    <article className="w-40 shrink-0 snap-start rounded-lg bg-card-mid p-2.5 shadow-sm ring-1 ring-ink/5 sm:w-44">
       <button type="button" className="w-full text-left" onClick={() => onOpen(title)}>
         <CoverThumb
           path={title.cover_path}
