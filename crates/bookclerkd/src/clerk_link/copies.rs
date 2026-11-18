@@ -153,13 +153,19 @@ impl LibraryCopies for InstallCopies {
     }
 }
 
-/// What the acquires of `library` ask before a store: its branch links,
+/// Who the acquires of `library` ask before a store: its branch links,
 /// then its library cards.
-pub(crate) fn acquire_copies(library: &LibraryStore) -> LibraryCopySource {
-    LibraryCopySource::new(Arc::new(InstallCopies {
+pub(super) fn install_copies(library: &LibraryStore) -> Arc<dyn LibraryCopies> {
+    Arc::new(InstallCopies {
         links: LinkCopies::new(library.clone()),
         cards: CardCopies::new(library.clone()),
-    }))
+    })
+}
+
+/// What the acquires of `library` ask before a store
+/// ([`install_copies`]).
+pub(crate) fn acquire_copies(library: &LibraryStore) -> LibraryCopySource {
+    LibraryCopySource::new(install_copies(library))
 }
 
 /// Sends `ask` to `reader` and waits for the library's answer.

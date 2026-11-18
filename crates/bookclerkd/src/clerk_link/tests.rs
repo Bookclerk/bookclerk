@@ -1206,7 +1206,7 @@ async fn a_card_takes_the_librarys_copy_of_its_persons_book() {
     use bookclerk_acquire::LibraryCopies as _;
     use bookclerk_library::control_plane::books_imported_from_link;
 
-    use super::copies::{reader_of, CardCopies};
+    use super::copies::{install_copies, reader_of, CardCopies};
 
     let _dek = crate::auth::tests::process_dek_lock().await;
     let library_files = tempfile::tempdir().unwrap();
@@ -1286,7 +1286,9 @@ async fn a_card_takes_the_librarys_copy_of_its_persons_book() {
     })
     .await;
 
-    let copies = CardCopies::new(clerk_store.clone());
+    // Asked as the clerk's acquires ask: its branch links (none here),
+    // then its cards.
+    let copies = install_copies(&clerk_store);
     let copy = copies
         .copy_of(listing("B0COPY0001"))
         .await
@@ -1323,6 +1325,32 @@ async fn a_card_takes_the_librarys_copy_of_its_persons_book() {
     // keeps serving.
     assert!(copies.copy_of(listing("B0COPY0002")).await.is_none());
     assert!(copies.copy_of(listing("B0COPY0001")).await.is_some());
+
+    // Signed in again (a new card): the session dialed with the old card
+    // grants nothing and makes way for one with the new card.
+    let link = load_clerk_link(&clerk_store, &cluster_id)
+        .await
+        .unwrap()
+        .unwrap();
+    bookclerk_library::control_plane::record_clerk_link(
+        &clerk_store,
+        &bookclerk_library::control_plane::NewClerkLink {
+            library_cluster_id: cluster_id.clone(),
+            origin: link.origin.clone(),
+            spki_pin: link.spki_pin.clone(),
+            library_name: link.library_name.clone(),
+            remote_user_id: link.remote_user_id,
+            display_name: link.display_name.clone(),
+            clerk_name: link.clerk_name.clone(),
+        },
+        &bookclerk_library::control_plane::LibraryCard::new("d".repeat(43)).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(CardCopies::new(clerk_store.clone())
+        .copy_of(listing("B0COPY0001"))
+        .await
+        .is_none());
 
     let _ = stop.send(true);
     tokio::time::timeout(Duration::from_secs(5), reader)

@@ -294,15 +294,21 @@ impl ClerkReader {
             Err(DialError::Refused(401)) => return self.sign_out().await,
             Err(err) => return Err(err.into()),
         };
-        self.serve(socket, shutdown).await
+        self.serve(socket, &link.created_at, shutdown).await
     }
 
     /// Serves a welcomed socket: reads on connect, on `changed` naming the
     /// library topic, and every [`READ_POLL`]; sends the `copy.grant`
     /// frames this install's acquires ask for meanwhile.
+    ///
+    /// `signed_in_at` is the sign-in time of the card the socket was dialed
+    /// with: a grant is asked only while that card is still the link's
+    /// active one, so a session left over from a card signed out (or
+    /// replaced by a new sign-in) never answers for the current card.
     async fn serve(
         &self,
         mut socket: OwnerSocket,
+        signed_in_at: &str,
         shutdown: &mut watch::Receiver<bool>,
     ) -> anyhow::Result<SessionEnd> {
         let (asks_tx, mut asks) = mpsc::channel(copies::ASK_QUEUE);
@@ -337,6 +343,12 @@ impl ClerkReader {
                     continue;
                 }
                 Some(ask) = asks.recv() => {
+                    if !self.same_card(signed_in_at).await? {
+                        // Dropping the ask answers it with no copy; dial
+                        // again with the link's current card, if any.
+                        let _ = socket.close(None).await;
+                        return Ok(SessionEnd::Lost);
+                    }
                     send(
                         &mut socket,
                         ClerkFrame::CopyGrant {
@@ -514,6 +526,14 @@ impl ClerkReader {
                 "could not drop an unfinished read of the library's books"
             );
         }
+    }
+
+    /// True while the link is active here with the card signed in at
+    /// `signed_in_at`.
+    async fn same_card(&self, signed_in_at: &str) -> anyhow::Result<bool> {
+        Ok(load_clerk_link(&self.library, &self.cluster_id)
+            .await?
+            .is_some_and(|link| link.is_active() && link.created_at == signed_in_at))
     }
 
     /// True while the link is still active here.
