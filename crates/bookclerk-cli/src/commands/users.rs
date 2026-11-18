@@ -1,14 +1,17 @@
 //! `bookclerk users`: the library's people. Today it reads and sets patron
-//! scopes, which part of the library a Member or Host sees.
+//! scopes, which part of the library a Member or Host sees, and member
+//! controls, what a Member may do.
 //!
 //! Reads and writes the library database directly, like `nodes`. The web
-//! app's Settings → Users and `GET`/`PUT /api/users/{id}/scope` change the
-//! same records.
+//! app's Settings → Users, `GET`/`PUT /api/users/{id}/scope` and
+//! `GET`/`PUT /api/users/{id}/controls` change the same records.
 
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
-    assigned_patron_scope, default_patron_scope, role_is_scoped, set_default_patron_scope,
-    set_patron_scope, ConfigActor, PatronScope, RuleEffect, ScopeField, ScopeRule,
+    assigned_member_controls, assigned_patron_scope, default_member_controls, default_patron_scope,
+    member_control_overrides, role_is_scoped, set_default_member_controls,
+    set_default_patron_scope, set_member_control_overrides, set_patron_scope, AssignedControls,
+    ConfigActor, MemberControl, MemberControls, PatronScope, RuleEffect, ScopeField, ScopeRule,
 };
 use bookclerk_library::UserRecord;
 use clap::Subcommand;
@@ -24,6 +27,49 @@ pub enum UsersCommand {
         #[command(subcommand)]
         /// Scope verb.
         command: ScopeCommand,
+    },
+    /// Read or set what a patron may do: link store accounts, download,
+    /// edit metadata, upload, request books, see prices.
+    Controls {
+        #[command(subcommand)]
+        /// Controls verb.
+        command: ControlsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+/// `bookclerk users controls` verbs.
+pub enum ControlsCommand {
+    /// Print a patron's controls, or the library's default.
+    Get {
+        /// Login name or user id.
+        #[arg(required_unless_present = "default", conflicts_with = "default")]
+        user: Option<String>,
+        /// The library's default, which patrons follow unless a control is
+        /// set for them alone.
+        #[arg(long)]
+        default: bool,
+    },
+    /// Change controls of a patron, or of the library's default. Controls
+    /// not named keep their value.
+    Set {
+        /// Login name or user id.
+        #[arg(required_unless_present = "default", conflicts_with = "default")]
+        user: Option<String>,
+        /// Change the library's default instead of one patron's controls.
+        #[arg(long)]
+        default: bool,
+        /// Allow a control (`link_accounts`, `download`, `edit_metadata`,
+        /// `upload`, `request_books`, `see_prices`). Repeatable.
+        #[arg(long, value_name = "CONTROL")]
+        allow: Vec<String>,
+        /// Turn a control off. Repeatable.
+        #[arg(long, value_name = "CONTROL")]
+        deny: Vec<String>,
+        /// Make the patron follow the library's default for a control
+        /// again. Repeatable; `all` names every control.
+        #[arg(long, value_name = "CONTROL", conflicts_with = "default")]
+        follow_default: Vec<String>,
     },
 }
 
@@ -80,7 +126,10 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let plane = crate::registry::open_host(config).await?;
     let store = &plane.store;
-    let UsersCommand::Scope { command } = command;
+    let command = match command {
+        UsersCommand::Scope { command } => command,
+        UsersCommand::Controls { command } => return run_controls(store, command, format).await,
+    };
     match command {
         ScopeCommand::Get { user, default } => match (user, default) {
             (_, true) => print_default(format, &default_patron_scope(store).await?),
@@ -119,6 +168,150 @@ pub async fn run(
             }
         }
     }
+}
+
+/// Runs a `users controls` command.
+///
+/// # Errors
+///
+/// Returns an error for an unknown user or control, or a failed read or
+/// write.
+async fn run_controls(
+    store: &bookclerk_library::LibraryStore,
+    command: ControlsCommand,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    match command {
+        ControlsCommand::Get { user, default } => match (user, default) {
+            (_, true) => print_default_controls(format, &default_member_controls(store).await?),
+            (Some(user), false) => {
+                let user = resolve_user(store, &user).await?;
+                let assigned = assigned_member_controls(store, &user).await?;
+                print_user_controls(format, &user, &assigned)
+            }
+            (None, false) => anyhow::bail!("name a user or pass --default"),
+        },
+        ControlsCommand::Set {
+            user,
+            default,
+            allow,
+            deny,
+            follow_default,
+        } => {
+            let mut changes = Vec::new();
+            for (names, value) in [(&allow, Some(true)), (&deny, Some(false))] {
+                for name in names {
+                    changes.push((parse_control(name)?, value));
+                }
+            }
+            for name in &follow_default {
+                if name.trim() == "all" {
+                    changes.extend(
+                        MemberControl::ALL
+                            .into_iter()
+                            .map(|control| (control, None)),
+                    );
+                } else {
+                    changes.push((parse_control(name)?, None));
+                }
+            }
+            if changes.is_empty() {
+                anyhow::bail!("name a control with --allow, --deny or --follow-default");
+            }
+            match (user, default) {
+                (_, true) => {
+                    let mut controls = default_member_controls(store).await?;
+                    for (control, value) in changes {
+                        controls.set(control, value.unwrap_or(true));
+                    }
+                    let actor = ConfigActor::Operator { id: "cli".into() };
+                    let stored = set_default_member_controls(store, &actor, controls).await?;
+                    print_default_controls(format, &stored.body)
+                }
+                (Some(user), false) => {
+                    let user = resolve_user(store, &user).await?;
+                    let mut overrides = member_control_overrides(store, user.id).await?;
+                    for (control, value) in changes {
+                        overrides.set(control, value);
+                    }
+                    let assigned = set_member_control_overrides(store, user.id, overrides).await?;
+                    print_user_controls(format, &user, &assigned)
+                }
+                (None, false) => anyhow::bail!("name a user or pass --default"),
+            }
+        }
+    }
+}
+
+/// Parses a control name.
+fn parse_control(name: &str) -> anyhow::Result<MemberControl> {
+    MemberControl::parse(name.trim()).ok_or_else(|| {
+        let known: Vec<&str> = MemberControl::ALL.iter().map(|c| c.as_str()).collect();
+        anyhow::anyhow!("unknown control `{name}`; use one of {}", known.join(", "))
+    })
+}
+
+/// The text form of one control's value.
+fn allowed_word(value: bool) -> &'static str {
+    if value {
+        "allowed"
+    } else {
+        "off"
+    }
+}
+
+/// Prints the library's default controls.
+fn print_default_controls(format: OutputFormat, controls: &MemberControls) -> anyhow::Result<()> {
+    emit(format, &json!({ "controls": controls }), || {
+        println!("Default member controls");
+        for control in MemberControl::ALL {
+            println!(
+                "  {:<14} {}",
+                control.as_str(),
+                allowed_word(controls.allows(control))
+            );
+        }
+    })
+}
+
+/// Prints a patron's controls.
+fn print_user_controls(
+    format: OutputFormat,
+    user: &UserRecord,
+    assigned: &AssignedControls,
+) -> anyhow::Result<()> {
+    let applies = role_is_scoped(user.role);
+    emit(
+        format,
+        &json!({
+            "user_id": user.id,
+            "defaults": assigned.defaults,
+            "overrides": assigned.overrides,
+            "effective": assigned.effective,
+            "applies": applies,
+        }),
+        || {
+            println!("User {}", user.id);
+            if !applies {
+                println!(
+                    "  not applied: a {} may always do everything",
+                    user.role.as_str()
+                );
+            }
+            for control in MemberControl::ALL {
+                let source = if assigned.overrides.get(control).is_some() {
+                    "set for this user"
+                } else {
+                    "library default"
+                };
+                println!(
+                    "  {:<14} {} ({source})",
+                    control.as_str(),
+                    allowed_word(assigned.effective.allows(control))
+                );
+            }
+        },
+    )
 }
 
 /// Builds a scope from `--include` and `--exclude` values.
@@ -252,6 +445,18 @@ async fn resolve_user(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn controls_parse_by_wire_name() {
+        assert_eq!(
+            parse_control(" see_prices ").unwrap(),
+            MemberControl::SeePrices
+        );
+        assert!(parse_control("fly").is_err());
+        let mut controls = MemberControls::all(true);
+        controls.set(MemberControl::Upload, false);
+        assert!(!controls.upload && controls.download);
+    }
 
     #[test]
     fn rules_parse_from_field_value_pairs() {

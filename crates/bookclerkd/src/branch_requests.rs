@@ -12,7 +12,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use bookclerk_library::control_plane::{
-    notify_requests_queued, plan_branch_request, BranchRequestBody,
+    notify_requests_queued, plan_branch_request, BranchRequestBody, MemberControl,
 };
 use bookclerk_library::{EnqueueJobSpec, JobKind, JobTrigger, LibraryError};
 use serde::{Deserialize, Serialize};
@@ -20,6 +20,10 @@ use serde_json::json;
 
 use crate::api::AppState;
 use crate::jobs::{admit, queue_limits, AdmitJob};
+
+/// The refusal a patron whose member controls turn requests off gets.
+const REQUESTS_NOT_ALLOWED: &str =
+    "this library's administrator hasn't allowed you to ask branches for books";
 
 /// `POST /api/branch-requests` answer.
 #[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
@@ -52,6 +56,7 @@ pub struct BranchRequestQueued {
         (status = 200, description = "The request was queued for the branch.", body = BranchRequestQueued),
         (status = 400, description = "The work or node id is malformed.", body = String, content_type = "text/plain", example = json!("invalid work_id")),
         (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller's member controls turn requesting books off.", body = String, content_type = "text/plain", example = json!("this library's administrator hasn't allowed you to ask branches for books")),
         (status = 404, description = "No branch this library trusts (or not the named one) currently lists the work.", body = String, content_type = "text/plain", example = json!("work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b on any branch not found")),
         (status = 503, description = "The job queue is full; try again later.", body = String, content_type = "text/plain", example = json!("the job queue is full")),
         (status = 500, description = "The library could not be read or written.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
@@ -66,6 +71,14 @@ pub(crate) async fn create_branch_request(
     let ask = body
         .validate()
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    crate::patron_scopes::require_control(
+        &state,
+        &headers,
+        MemberControl::RequestBooks,
+        REQUESTS_NOT_ALLOWED,
+    )
+    .await
+    .map_err(|(status, Json(body))| (status, body.error))?;
     let work_id = ask.work_id.as_str();
     let node_id = ask.node_id.as_deref();
     let library = state.library_snapshot().await;

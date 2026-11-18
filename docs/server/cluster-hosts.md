@@ -248,16 +248,21 @@ accounts and which of them would travel.
   as it is, and one
   that came without a secret is not added. The join's answer counts what
   was added, already there, taken, or not kept.
-- **The branch operator's rule.** Each operator decides per member
-  whether they may connect store accounts there (**Settings → User
-  Management**, `PATCH /api/users/{id}` with `may_connect_accounts`). The
-  rule is on by default, and nobody can change their own. A member it is off for adds nothing from a join,
+- **The branch operator's rule.** Each operator decides whether members
+  may connect store accounts there with the **Link store accounts**
+  member control, for every member or one (**Settings → User
+  Management**, `PUT /api/users/default-controls` and
+  `PUT /api/users/{id}/controls`; see
+  [Sharing](../guide/sharing.md#limit-what-a-patron-may-do)). It is on
+  by default, nobody can change their own, and Owners and Administrators
+  are never limited. A member it is off for adds nothing from a join,
   and the connect routes answer `403`. A sign-in that finishes after the
-  rule was turned off is not linked, and an account it newly stored (or
-  found revoked) is revoked again and its secrets deleted. A join already adding accounts when
-  the rule is turned off (or the member is disabled) stops: each account
-  is added in its own batch that checks the rule again, and the ones not
-  yet added count as not kept.
+  control was turned off is not linked, and an account it newly stored
+  (or found revoked) is revoked again and its secrets deleted. A join
+  already adding accounts when the control is turned off (or the member
+  is disabled) stops: each account is added in its own batch that checks
+  the member's controls again, and the ones not yet added count as not
+  kept.
 
 ### Adding connections later, and disconnecting everywhere
 

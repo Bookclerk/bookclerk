@@ -75,6 +75,42 @@ From the command line, `bookclerk users scope get` and
 `bookclerk users scope set` do the same (see the
 [CLI reference](../server/cli-reference.md)).
 
+## Limit what a patron may do
+
+Six switches, the **member controls**, say what a Member may do. All are
+on out of the box.
+
+| Control | Turning it off stops |
+| --- | --- |
+| Link store accounts | Connecting a store, signing in to one again, and bringing connections from another library. Connections already here keep working. |
+| Download | Taking copies of the library's files to a branch or a clerk app |
+| Edit metadata | Changing a book's details |
+| Upload | Adding books by uploading files |
+| Request books | Asking a branch for a book it listed |
+| See prices and store links | Prices and store links in Discover and the wishlist |
+
+> [!NOTE]
+> Members can't edit metadata or upload books in Bookclerk yet, so those
+> two switches change nothing today. They are kept so the setting is
+> ready when it applies.
+
+With **See prices and store links** off, Discover, catalog search and
+the wishlist still show which stores carry a book, but no price and no
+link into the store.
+
+To set them:
+
+1. Open **Settings → User Management**.
+2. With no one selected, switch **Default member controls**. Every Member
+   follows these unless a control is set for them alone.
+3. To change one person, select them and pick **Allowed** or **Off** for a
+   control under **What this patron may do**. **Default** makes that
+   control follow the library's default again.
+
+Owners and Administrators may always do everything. From the command
+line, `bookclerk users controls get` and `bookclerk users controls set`
+do the same.
+
 ## Audiobookshelf
 
 If your household listens with [Audiobookshelf](https://www.audiobookshelf.org/),

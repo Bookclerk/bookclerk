@@ -139,10 +139,10 @@ enum Commands {
         /// Nested `nodes` verb (list, set, label).
         command: commands::nodes::NodesCommand,
     },
-    /// The library's people: patron scopes.
+    /// The library's people: patron scopes and member controls.
     Users {
         #[command(subcommand)]
-        /// Nested `users` verb (scope).
+        /// Nested `users` verb (scope, controls).
         command: commands::users::UsersCommand,
     },
     /// Plugin-owned queues on the outbox: counters, consumers, messages.

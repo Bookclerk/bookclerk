@@ -1,9 +1,11 @@
 //! Patron scope routes: an Administrator reads and sets which part of the
-//! library a patron sees, per patron and as the library's default (see
+//! library a patron sees and what they may do in it (the member controls),
+//! per patron and as the library's default (see
 //! `docs/adr/patron-scopes.md`).
 //!
-//! The scope itself lives in `bookclerk_library::control_plane`; the
-//! library pages apply it (see `library_works`).
+//! The scope and the controls live in `bookclerk_library::control_plane`;
+//! the library pages apply the scope (see `library_works`), and each
+//! guarded route checks its control.
 
 use std::sync::Arc;
 
@@ -11,12 +13,14 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use bookclerk_library::control_plane::{
-    assigned_patron_scope, default_patron_scope, role_is_scoped, set_default_patron_scope,
-    set_patron_scope, verify_patron_administrator, AssignedScope, ConfigActor, PatronScope,
+    assigned_member_controls, assigned_patron_scope, default_member_controls, default_patron_scope,
+    role_is_scoped, set_default_member_controls, set_default_patron_scope,
+    set_member_control_overrides, set_patron_scope, verify_patron_administrator, AssignedControls,
+    AssignedScope, ConfigActor, ControlOverrides, MemberControl, MemberControls, PatronScope,
     PutUserScope,
 };
 use bookclerk_library::LibraryError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
 use crate::auth::{authorize_provisioner, Provisioner};
@@ -56,7 +60,7 @@ fn failed(route: &str, err: &LibraryError) -> ScopeError {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorMessage::new(
-            "the patron scope could not be read or written",
+            "the patron's scope or controls could not be read or written",
         )),
     )
 }
@@ -146,7 +150,7 @@ fn user_scope_json(user: &bookclerk_library::UserRecord, assigned: AssignedScope
         (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
         (status = 403, description = "The caller may not manage this user.", body = ErrorMessage, example = json!({"error": "you may not manage this user"})),
         (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
-        (status = 500, description = "The scope could not be read.", body = ErrorMessage, example = json!({"error": "the patron scope could not be read or written"})),
+        (status = 500, description = "The scope could not be read.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
     ),
 )]
 pub(crate) async fn get_user_scope(
@@ -182,7 +186,7 @@ pub(crate) async fn get_user_scope(
         (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
         (status = 403, description = "The caller may not manage this user, or tried to set their own scope.", body = ErrorMessage, example = json!({"error": "you may not set your own scope"})),
         (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
-        (status = 500, description = "The scope could not be written.", body = ErrorMessage, example = json!({"error": "the patron scope could not be read or written"})),
+        (status = 500, description = "The scope could not be written.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
     ),
 )]
 pub(crate) async fn put_user_scope(
@@ -228,7 +232,7 @@ pub(crate) async fn put_user_scope(
         (status = 200, description = "The default scope.", body = DefaultScopeJson),
         (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
         (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage, example = json!({"error": "forbidden"})),
-        (status = 500, description = "The scope could not be read.", body = ErrorMessage, example = json!({"error": "the patron scope could not be read or written"})),
+        (status = 500, description = "The scope could not be read.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
     ),
 )]
 pub(crate) async fn get_default_scope(
@@ -257,7 +261,7 @@ pub(crate) async fn get_default_scope(
         (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
         (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage, example = json!({"error": "forbidden"})),
         (status = 409, description = "The default kept changing underneath the write; retry.", body = ErrorMessage, example = json!({"error": "core.patron_scope kept changing; retry"})),
-        (status = 500, description = "The scope could not be written.", body = ErrorMessage, example = json!({"error": "the patron scope could not be read or written"})),
+        (status = 500, description = "The scope could not be written.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
     ),
 )]
 pub(crate) async fn put_default_scope(
@@ -291,6 +295,313 @@ pub(crate) async fn put_default_scope(
         )
         .await;
     Ok(Json(DefaultScopeJson { scope: stored.body }))
+}
+
+/// A patron's member controls as the control routes report them.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct UserControlsJson {
+    /// The user (`users.id`).
+    #[schema(example = 7)]
+    user_id: i64,
+    /// The library's default for every patron.
+    defaults: MemberControls,
+    /// The controls set for this patron alone; the others follow the
+    /// default.
+    overrides: ControlOverrides,
+    /// What applies to the user now: everything for an Owner or
+    /// Administrator, nothing for a disabled user, and the default with the
+    /// overrides applied for a Member.
+    effective: MemberControls,
+    /// Whether the controls apply to the user's role: false for an Owner
+    /// or Administrator, who may always do everything.
+    #[schema(example = true)]
+    applies: bool,
+}
+
+/// `PUT /api/users/{id}/controls` body.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PutUserControls {
+    /// The controls set for this patron alone; an absent or `null`
+    /// control follows the library's default, so `{}` returns the patron
+    /// to the default for all of them.
+    overrides: ControlOverrides,
+}
+
+/// The library's default member controls as the control routes report
+/// them.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct DefaultControlsJson {
+    /// The controls every patron follows unless set for them alone.
+    controls: MemberControls,
+}
+
+/// The wire form of a user's controls.
+fn user_controls_json(
+    user: &bookclerk_library::UserRecord,
+    assigned: AssignedControls,
+) -> UserControlsJson {
+    UserControlsJson {
+        user_id: user.id,
+        defaults: assigned.defaults,
+        overrides: assigned.overrides,
+        effective: assigned.effective,
+        applies: role_is_scoped(user.role),
+    }
+}
+
+/// The controls `overrides` sets, as `name=value` pairs for the audit log.
+fn audit_overrides(overrides: &ControlOverrides) -> String {
+    let set: Vec<String> = MemberControl::ALL
+        .into_iter()
+        .filter_map(|control| {
+            overrides
+                .get(control)
+                .map(|value| format!(r#""{}":{value}"#, control.as_str()))
+        })
+        .collect();
+    format!("{{{}}}", set.join(","))
+}
+
+/// Reads what a patron may do: the library's default, their own
+/// overrides, and what applies.
+#[utoipa::path(
+    get,
+    path = "/api/users/{id}/controls",
+    params(("id" = i64, Path, description = "User id.")),
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
+    responses(
+        (status = 200, description = "The patron's controls.", body = UserControlsJson),
+        (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
+        (status = 403, description = "The caller may not manage this user.", body = ErrorMessage, example = json!({"error": "you may not manage this user"})),
+        (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
+        (status = 500, description = "The controls could not be read.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
+    ),
+)]
+pub(crate) async fn get_user_controls(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(user_id): Path<i64>,
+) -> Result<Json<UserControlsJson>, ScopeError> {
+    const ROUTE: &str = "GET /api/users/{id}/controls";
+    let actor = provisioner(&state, &headers).await?;
+    let library = state.library_snapshot().await;
+    let user = managed_user(&library, actor, user_id, ROUTE).await?;
+    let assigned = assigned_member_controls(&library, &user)
+        .await
+        .map_err(|err| library_error(ROUTE, err))?;
+    Ok(Json(user_controls_json(&user, assigned)))
+}
+
+/// Sets the controls that differ for one patron; every other control
+/// follows the library's default.
+///
+/// Nobody sets their own. Owners and Administrators may always do
+/// everything, so overrides stored for one only apply if their role
+/// changes to Member.
+#[utoipa::path(
+    put,
+    path = "/api/users/{id}/controls",
+    params(("id" = i64, Path, description = "User id.")),
+    request_body = PutUserControls,
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
+    responses(
+        (status = 200, description = "The patron's controls after the change.", body = UserControlsJson),
+        (status = 400, description = "The body names a control that does not exist.", body = ErrorMessage, example = json!({"error": "unknown field `fly`, expected one of `link_accounts`, `download`, `edit_metadata`, `upload`, `request_books`, `see_prices`"})),
+        (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
+        (status = 403, description = "The caller may not manage this user, or tried to set their own controls.", body = ErrorMessage, example = json!({"error": "you may not set your own controls"})),
+        (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
+        (status = 500, description = "The controls could not be written.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
+    ),
+)]
+pub(crate) async fn put_user_controls(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(user_id): Path<i64>,
+    Json(body): Json<PutUserControls>,
+) -> Result<Json<UserControlsJson>, ScopeError> {
+    const ROUTE: &str = "PUT /api/users/{id}/controls";
+    let actor = provisioner(&state, &headers).await?;
+    let library = state.library_snapshot().await;
+    let user = managed_user(&library, actor, user_id, ROUTE).await?;
+    if actor.user_id() == Some(user_id) {
+        return Err(refused(
+            StatusCode::FORBIDDEN,
+            "you may not set your own controls",
+        ));
+    }
+    let assigned = set_member_control_overrides(&library, user_id, body.overrides)
+        .await
+        .map_err(|err| library_error(ROUTE, err))?;
+    let _ = library
+        .insert_security_audit_event(
+            &actor.audit_actor(),
+            "user_member_controls",
+            Some(&format!(
+                r#"{{"user_id":{user_id},"overrides":{}}}"#,
+                audit_overrides(&assigned.overrides)
+            )),
+        )
+        .await;
+    Ok(Json(user_controls_json(&user, assigned)))
+}
+
+/// Reads the library's default member controls, which every patron
+/// follows unless a control is set for them alone.
+#[utoipa::path(
+    get,
+    path = "/api/users/default-controls",
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
+    responses(
+        (status = 200, description = "The default controls.", body = DefaultControlsJson),
+        (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
+        (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage, example = json!({"error": "forbidden"})),
+        (status = 500, description = "The controls could not be read.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
+    ),
+)]
+pub(crate) async fn get_default_controls(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<DefaultControlsJson>, ScopeError> {
+    const ROUTE: &str = "GET /api/users/default-controls";
+    provisioner(&state, &headers).await?;
+    let library = state.library_snapshot().await;
+    let controls = default_member_controls(&library)
+        .await
+        .map_err(|err| library_error(ROUTE, err))?;
+    Ok(Json(DefaultControlsJson { controls }))
+}
+
+/// Replaces the library's default member controls. Every patron follows
+/// the change at once, except in the controls set for them alone.
+#[utoipa::path(
+    put,
+    path = "/api/users/default-controls",
+    request_body = MemberControls,
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
+    responses(
+        (status = 200, description = "The default controls after the change.", body = DefaultControlsJson),
+        (status = 400, description = "The body names a control that does not exist.", body = ErrorMessage, example = json!({"error": "unknown field `fly`, expected one of `link_accounts`, `download`, `edit_metadata`, `upload`, `request_books`, `see_prices`"})),
+        (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
+        (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage, example = json!({"error": "forbidden"})),
+        (status = 409, description = "The default kept changing underneath the write; retry.", body = ErrorMessage, example = json!({"error": "core.member_controls kept changing; retry"})),
+        (status = 500, description = "The controls could not be written.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
+    ),
+)]
+pub(crate) async fn put_default_controls(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(controls): Json<MemberControls>,
+) -> Result<Json<DefaultControlsJson>, ScopeError> {
+    const ROUTE: &str = "PUT /api/users/default-controls";
+    let actor = provisioner(&state, &headers).await?;
+    let library = state.library_snapshot().await;
+    let config_actor = match actor.user_id() {
+        None => ConfigActor::Operator {
+            id: "operator".into(),
+        },
+        Some(user_id) => verify_patron_administrator(&library, user_id)
+            .await
+            .map_err(|err| library_error(ROUTE, err))?,
+    };
+    let stored = set_default_member_controls(&library, &config_actor, controls)
+        .await
+        .map_err(|err| match err {
+            LibraryError::Conflict(message) => refused(StatusCode::CONFLICT, message),
+            other => library_error(ROUTE, other),
+        })?;
+    let _ = library
+        .insert_security_audit_event(
+            &actor.audit_actor(),
+            "member_controls_default",
+            Some(&serde_json::to_string(&stored.body).unwrap_or_default()),
+        )
+        .await;
+    Ok(Json(DefaultControlsJson {
+        controls: stored.body,
+    }))
+}
+
+/// Whether the caller's member controls allow `control`, resolving the
+/// caller fail-closed ([`crate::auth::caller_subject`]).
+///
+/// Only a caller positively identified as the operator passes without a
+/// check. A user is checked by their stored role, status and controls
+/// (an unknown user may do nothing); a session linked to no user follows
+/// the library default.
+///
+/// # Errors
+///
+/// 401 when the session ended since it was admitted, 500 when the caller
+/// or the controls cannot be read.
+async fn caller_allowed(
+    state: &AppState,
+    headers: &HeaderMap,
+    control: MemberControl,
+) -> Result<bool, ScopeError> {
+    let user_id = match crate::auth::caller_subject(state, headers).await {
+        crate::auth::CallerSubject::Operator => return Ok(true),
+        crate::auth::CallerSubject::Person(user_id) => user_id,
+        crate::auth::CallerSubject::SignedOut => {
+            return Err(refused(StatusCode::UNAUTHORIZED, "sign in again"))
+        }
+        crate::auth::CallerSubject::Unavailable => {
+            tracing::error!(
+                control = control.as_str(),
+                "the caller could not be identified"
+            );
+            return Err(refused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the patron's scope or controls could not be read or written",
+            ));
+        }
+    };
+    let library = state.library_snapshot().await;
+    let allowed = match user_id {
+        Some(user_id) => {
+            bookclerk_library::control_plane::user_may(&library, user_id, control).await
+        }
+        None => default_member_controls(&library)
+            .await
+            .map(|controls| controls.allows(control)),
+    };
+    allowed.map_err(|err| failed("member control check", &err))
+}
+
+/// Refuses with 403 when the caller's member controls turn `control` off.
+/// Only a caller positively identified as the operator passes unchecked.
+///
+/// # Errors
+///
+/// 403 with `message` when the control is off, 401 when the session ended,
+/// 500 when the caller or the controls cannot be read (the route fails
+/// closed).
+pub(crate) async fn require_control(
+    state: &AppState,
+    headers: &HeaderMap,
+    control: MemberControl,
+    message: &str,
+) -> Result<(), ScopeError> {
+    if caller_allowed(state, headers, control).await? {
+        Ok(())
+    } else {
+        Err(refused(StatusCode::FORBIDDEN, message))
+    }
+}
+
+/// Whether the caller's member controls allow `control`. Only a caller
+/// positively identified as the operator may without a check. A caller
+/// that cannot be identified, or whose controls cannot be read, answers
+/// `false`, so a route that only trims its answer fails closed without
+/// failing the request.
+pub(crate) async fn caller_may(
+    state: &AppState,
+    headers: &HeaderMap,
+    control: MemberControl,
+) -> bool {
+    caller_allowed(state, headers, control)
+        .await
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

@@ -38,7 +38,7 @@ These options work with every command. Some commands have their own option of th
 - [`bookclerk events`](#bookclerk-events): Durable domain-event outbox and deliveries
 - [`bookclerk clusters`](#bookclerk-clusters): Owner clusters this install hosts for, and consent to their plugins
 - [`bookclerk nodes`](#bookclerk-nodes): Cluster nodes: liveness, capacity, budgets, and placement labels
-- [`bookclerk users`](#bookclerk-users): The library's people: patron scopes
+- [`bookclerk users`](#bookclerk-users): The library's people: patron scopes and member controls
 - [`bookclerk queues`](#bookclerk-queues): Plugin-owned queues on the outbox: counters, consumers, messages
 - [`bookclerk login`](#bookclerk-login): Print a loopback operator sign-in URL (requires a running daemon)
 - [`bookclerk diagnostics`](#bookclerk-diagnostics): Diagnostics ring buffer and opt-in upload
@@ -1805,7 +1805,7 @@ Arguments:
 
 ## `bookclerk users`
 
-The library's people: patron scopes
+The library's people: patron scopes and member controls
 
 ```text
 bookclerk users [OPTIONS] <COMMAND>
@@ -1814,6 +1814,7 @@ bookclerk users [OPTIONS] <COMMAND>
 Commands:
 
 - [`bookclerk users scope`](#bookclerk-users-scope): Read or set which part of the library a patron sees
+- [`bookclerk users controls`](#bookclerk-users-controls): Read or set what a patron may do: link store accounts, download, edit metadata, upload, request books, see prices
 
 ### `bookclerk users scope`
 
@@ -1862,6 +1863,54 @@ Options:
 - `--include <FIELD=VALUE>`: Show only books with this value (`genre=Kids`); fields are genre, series, author and narrator. Repeatable: a book needs one
 - `--exclude <FIELD=VALUE>`: Hide books with this value, whatever `--include` says. Repeatable
 - `--follow-default`: Drop the patron's own scope so they follow the library's default
+
+### `bookclerk users controls`
+
+Read or set what a patron may do: link store accounts, download, edit metadata, upload, request books, see prices
+
+```text
+bookclerk users controls [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk users controls get`](#bookclerk-users-controls-get): Print a patron's controls, or the library's default
+- [`bookclerk users controls set`](#bookclerk-users-controls-set): Change controls of a patron, or of the library's default. Controls not named keep their value
+
+#### `bookclerk users controls get`
+
+Print a patron's controls, or the library's default
+
+```text
+bookclerk users controls get [OPTIONS] [USER]
+```
+
+Arguments:
+
+- `[USER]`: Login name or user id
+
+Options:
+
+- `--default`: The library's default, which patrons follow unless a control is set for them alone
+
+#### `bookclerk users controls set`
+
+Change controls of a patron, or of the library's default. Controls not named keep their value
+
+```text
+bookclerk users controls set [OPTIONS] [USER]
+```
+
+Arguments:
+
+- `[USER]`: Login name or user id
+
+Options:
+
+- `--default`: Change the library's default instead of one patron's controls
+- `--allow <CONTROL>`: Allow a control (`link_accounts`, `download`, `edit_metadata`, `upload`, `request_books`, `see_prices`). Repeatable
+- `--deny <CONTROL>`: Turn a control off. Repeatable
+- `--follow-default <CONTROL>`: Make the patron follow the library's default for a control again. Repeatable; `all` names every control
 
 ## `bookclerk queues`
 

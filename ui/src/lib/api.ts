@@ -1364,8 +1364,8 @@ export interface ListedUser {
     account_id: string;
     label: string | null;
   }[];
-  /** Whether an administrator lets this user connect store accounts here (absent: allowed). */
-  may_connect_accounts?: boolean;
+  /** What the user may do here: the member controls that apply to them. */
+  controls?: MemberControls;
   /** Linked login identities (local + OIDC). */
   identities?: {
     provider: string;
@@ -1562,6 +1562,92 @@ export async function putDefaultScope(scope: PatronScope): Promise<{ scope: Patr
   return parseJson(res);
 }
 
+/** One thing an administrator may allow or refuse a patron. */
+export type MemberControl =
+  "link_accounts" | "download" | "edit_metadata" | "upload" | "request_books" | "see_prices";
+
+/** A value for every member control (`true` = allowed). */
+export type MemberControls = Record<MemberControl, boolean>;
+
+/** One patron's overrides; a missing control follows the library's default. */
+export type ControlOverrides = Partial<Record<MemberControl, boolean>>;
+
+/** A patron's member controls as `GET /api/users/{id}/controls` reports them. */
+export interface UserControls {
+  /** The user. */
+  user_id: number;
+  /** The library's default for every patron. */
+  defaults: MemberControls;
+  /** The controls set for this patron alone. */
+  overrides: ControlOverrides;
+  /** What applies to the user now. */
+  effective: MemberControls;
+  /** False for an Owner or Administrator, who may always do everything. */
+  applies: boolean;
+}
+
+/**
+ * Reads what a patron may do.
+ *
+ * @param id - The user.
+ * @returns The default, the patron's overrides and what applies.
+ */
+export async function getUserControls(id: number): Promise<UserControls> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/controls`, {
+    credentials: "include",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Sets the controls that differ for one patron; the rest follow the
+ * library's default.
+ *
+ * @param id - The user.
+ * @param overrides - The controls set for them alone (`{}` for none).
+ * @returns The controls after the change.
+ */
+export async function putUserControls(
+  id: number,
+  overrides: ControlOverrides,
+): Promise<UserControls> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/controls`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ overrides }),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Reads the library's default member controls.
+ *
+ * @returns The default.
+ */
+export async function getDefaultControls(): Promise<{ controls: MemberControls }> {
+  const res = await fetch("/api/users/default-controls", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Replaces the library's default member controls.
+ *
+ * @param controls - The new default.
+ * @returns The default after the change.
+ */
+export async function putDefaultControls(
+  controls: MemberControls,
+): Promise<{ controls: MemberControls }> {
+  const res = await fetch("/api/users/default-controls", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(controls),
+  });
+  return parseJson(res);
+}
+
 /**
  * Updates a first-party user role, status, or profile fields.
  *
@@ -1577,8 +1663,6 @@ export async function patchUser(
     display_name?: string;
     login_name?: string;
     email?: string;
-    /** Let the user connect store accounts here, or stop them. */
-    may_connect_accounts?: boolean;
   },
 ): Promise<UserMutationResponse> {
   const res = await fetch(`/api/users/${encodeURIComponent(String(id))}`, {
