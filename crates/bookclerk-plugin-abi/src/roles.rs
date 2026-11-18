@@ -35,6 +35,87 @@ pub const PURCHASE_HINTS_BUDGET: std::time::Duration = std::time::Duration::from
 /// while staying a polite handful of requests rather than a burst.
 pub const PURCHASE_HINTS_CONCURRENCY: usize = 4;
 
+/// The default [`ContentSource::purchase_hints`]: asks
+/// [`ContentSource::purchase_hint`] for each query,
+/// [`PURCHASE_HINTS_CONCURRENCY`] at a time, those naming a product id
+/// first, and starts no lookup once `budget` has passed (those answer
+/// `None`).
+///
+/// # Errors
+///
+/// The first lookup error, which fails the whole batch.
+async fn purchase_hints_one_by_one<S: ContentSource + ?Sized>(
+    source: &S,
+    params: PurchaseHintsParams,
+    budget: std::time::Duration,
+) -> Result<Vec<Option<PurchaseHint>>> {
+    use futures::stream::{StreamExt, TryStreamExt};
+
+    let started = std::time::Instant::now();
+    let mut out: Vec<Option<PurchaseHint>> = vec![None; params.queries.len()];
+    // Queries that already name a product id are one lookup each; title
+    // searches come after, and nothing starts past the budget.
+    let mut order: Vec<usize> = (0..params.queries.len()).collect();
+    order.sort_by_key(|&i| {
+        params.queries[i]
+            .product_id
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+    });
+    let queries = &params.queries;
+    let answers: Vec<(usize, Option<PurchaseHint>)> = futures::stream::iter(order)
+        .map(|i| async move {
+            // Checked as each lookup is about to start, not when it was
+            // queued, so a slow store stops taking on new titles.
+            if started.elapsed() >= budget {
+                return Ok((i, None));
+            }
+            Ok::<_, PluginError>((i, source.purchase_hint(queries[i].clone()).await?))
+        })
+        .buffer_unordered(PURCHASE_HINTS_CONCURRENCY)
+        .try_collect()
+        .await?;
+    for (i, hint) in answers {
+        out[i] = hint;
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod purchase_hints_tests {
+    use super::*;
+
+    /// Answers every lookup from its product id.
+    struct EchoStore;
+
+    #[async_trait::async_trait(?Send)]
+    impl ContentSource for EchoStore {
+        async fn purchase_hint(&self, params: PurchaseHintParams) -> Result<Option<PurchaseHint>> {
+            Ok(params.product_id.map(|product_id| PurchaseHint {
+                product_id,
+                ..PurchaseHint::default()
+            }))
+        }
+    }
+
+    /// Past the budget no lookup starts, and every query answers `None`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn nothing_starts_past_the_budget() {
+        let params = PurchaseHintsParams {
+            queries: vec![PurchaseHintParams {
+                product_id: Some("p".into()),
+                ..PurchaseHintParams::default()
+            }],
+        };
+        let hints = purchase_hints_one_by_one(&EchoStore, params, std::time::Duration::ZERO)
+            .await
+            .expect("a batch");
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].is_none());
+    }
+}
+
 /// Inclusive byte range for a streamed read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ByteRange {
@@ -407,37 +488,7 @@ pub trait ContentSource {
         &self,
         params: PurchaseHintsParams,
     ) -> Result<Vec<Option<PurchaseHint>>> {
-        use futures::stream::{StreamExt, TryStreamExt};
-
-        let started = std::time::Instant::now();
-        let mut out: Vec<Option<PurchaseHint>> = vec![None; params.queries.len()];
-        // Queries that already name a product id are one lookup each; title
-        // searches come after, and nothing starts past the budget.
-        let mut order: Vec<usize> = (0..params.queries.len()).collect();
-        order.sort_by_key(|&i| {
-            params.queries[i]
-                .product_id
-                .as_deref()
-                .map(str::trim)
-                .is_none_or(str::is_empty)
-        });
-        let queries = &params.queries;
-        let answers: Vec<(usize, Option<PurchaseHint>)> = futures::stream::iter(order)
-            .map(|i| async move {
-                // Checked as each lookup is about to start, not when it was
-                // queued, so a slow store stops taking on new titles.
-                if started.elapsed() >= PURCHASE_HINTS_BUDGET {
-                    return Ok((i, None));
-                }
-                Ok::<_, PluginError>((i, self.purchase_hint(queries[i].clone()).await?))
-            })
-            .buffer_unordered(PURCHASE_HINTS_CONCURRENCY)
-            .try_collect()
-            .await?;
-        for (i, hint) in answers {
-            out[i] = hint;
-        }
-        Ok(out)
+        purchase_hints_one_by_one(self, params, PURCHASE_HINTS_BUDGET).await
     }
 
     /// Current storefront deals.
