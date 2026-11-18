@@ -2372,10 +2372,10 @@ mod results_and_uploads {
         assert!(branch_keeps_another_members_title(true).await);
     }
 
-    /// A title whose edition another account's copy already holds on every
-    /// owner destination shares those files when the owner plans the host
-    /// acquire: the host is not sent to fetch it, and the job completes
-    /// with the title acquired at the shared key.
+    /// A title whose edition another account's title already acquired is
+    /// already in the library: the owner's plan leaves it out, as a local
+    /// acquire does, so the host is not sent to fetch it, and the job
+    /// completes with the edition still at its key.
     #[tokio::test]
     async fn a_host_is_not_sent_for_an_edition_the_owner_already_holds() {
         let _dek = crate::auth::tests::process_dek_lock().await;
@@ -2426,16 +2426,19 @@ mod results_and_uploads {
             job(&world.owner, &job_id).await.state == JobState::Succeeded
         })
         .await;
-        let shared = world
+        let edition = world
             .owner
-            .get_book_by_uuid(&book.uuid)
+            .edition_of_book(&book.uuid)
             .await
             .unwrap()
-            .unwrap();
-        assert_eq!(
-            shared.acquire_status,
-            bookclerk_library::AcquireStatus::Acquired
-        );
+            .expect("the title has an edition");
+        let shared = world
+            .owner
+            .edition_acquisition(&edition)
+            .await
+            .unwrap()
+            .expect("the edition is acquired");
+        assert_eq!(shared.status, bookclerk_library::AcquireStatus::Acquired);
         assert_eq!(shared.storage_key.as_deref(), Some(key));
         assert!(
             guests.credentials.lock().unwrap().is_empty(),
@@ -2445,9 +2448,9 @@ mod results_and_uploads {
     }
 
     /// Two of the member's accounts own the same edition, and one job
-    /// covers both: the host fetches
-    /// and uploads it once, then asks for a new plan, in which the owner
-    /// shares the uploaded files with the second account's title.
+    /// covers both: the host fetches and uploads it once, then asks for a
+    /// new plan, which leaves the second account's title out because its
+    /// edition is acquired now.
     #[tokio::test]
     async fn a_host_fetches_an_edition_two_accounts_own_once() {
         let _dek = crate::auth::tests::process_dek_lock().await;
@@ -2512,21 +2515,26 @@ mod results_and_uploads {
             job(&world.owner, &job_id).await.state == JobState::Succeeded
         })
         .await;
-        let mut keys = Vec::new();
+        let mut editions = Vec::new();
         for book in &books {
-            let acquired = world
-                .owner
-                .get_book_by_uuid(&book.uuid)
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                acquired.acquire_status,
-                bookclerk_library::AcquireStatus::Acquired
+            editions.push(
+                world
+                    .owner
+                    .edition_of_book(&book.uuid)
+                    .await
+                    .unwrap()
+                    .expect("the title has an edition"),
             );
-            keys.push(acquired.storage_key.unwrap_or_default());
         }
-        assert_eq!(keys[0], keys[1], "both titles share one copy");
+        assert_eq!(editions[0], editions[1], "one edition on two accounts");
+        let acquired = world
+            .owner
+            .edition_acquisition(&editions[0])
+            .await
+            .unwrap()
+            .expect("the edition is acquired");
+        assert_eq!(acquired.status, bookclerk_library::AcquireStatus::Acquired);
+        assert!(acquired.storage_key.is_some());
         assert_eq!(
             guests.credentials.lock().unwrap().len(),
             1,

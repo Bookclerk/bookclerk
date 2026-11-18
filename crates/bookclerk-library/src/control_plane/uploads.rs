@@ -51,10 +51,10 @@ use super::trust::{
 };
 use crate::entities::{books, edition_acquisitions, node_upload_sessions};
 use crate::error::{LibraryError, Result};
-use crate::models::{is_downloadable, AcquireStatus, BookRecord, JobRecord};
+use crate::models::{is_downloadable, AcquireStatus, JobRecord};
 use crate::models::{JobKind, JobState};
 use crate::store::event_outbox::{book_acquired_spec, prepare_publish_domain_event};
-use crate::store::{EditionFile, FileOwner, FileRole, LibraryStore};
+use crate::store::{AcquireTitle, EditionFile, FileOwner, FileRole, LibraryStore};
 
 /// How long a granted upload's token is accepted past its latest
 /// extension (the grant, an accepted file, or a renewal of the job's
@@ -381,21 +381,6 @@ fn mint_token() -> Zeroizing<String> {
     Zeroizing::new(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes.as_slice()))
 }
 
-/// True when `book` is one of the titles `title` names.
-#[must_use]
-pub fn names_book(title: &str, book: &BookRecord) -> bool {
-    title.eq_ignore_ascii_case(&book.uuid)
-        || title.eq_ignore_ascii_case(&book.product_id)
-        || book
-            .isbn
-            .as_deref()
-            .is_some_and(|isbn| title.eq_ignore_ascii_case(isbn))
-        || book
-            .asin
-            .as_deref()
-            .is_some_and(|asin| title.eq_ignore_ascii_case(asin))
-}
-
 /// The store accounts (`(plugin_key, account_id)`) the job's account
 /// selector names, resolved as the claim path and the executor resolve it
 /// ([`accounts_named`]: the account id or its label, ignoring ASCII case);
@@ -414,12 +399,20 @@ async fn job_accounts(
     }
 }
 
-/// The owner's library rows the acquire `job` run by `node_id` covers: of
-/// the job's plugins ([`job_plugin_keys`]), of the accounts its account
-/// selector names (`job_accounts`, so a job naming its account by label
-/// or in another case covers that account's titles) and its title when it
-/// names them, and, for a Host trusted only with its owner's accounts, one
-/// of that user's. `None` when the node is trusted with nothing.
+/// The titles the acquire `job` run by `node_id` covers, read from the
+/// account holdings as a local acquire reads them: of the job's plugins
+/// ([`job_plugin_keys`]), of the accounts its account selector names
+/// (`job_accounts`, so a job naming its account by label or in another
+/// case covers that account's titles) and its title when it names one
+/// ([`LibraryStore::acquire_titles_named`], matched as the executor
+/// matches it), and, for a Host trusted only with its owner's accounts,
+/// one of that user's. Only titles with a flat `books` row count while
+/// `books` exists (book model step 6), as for a local acquire. `None` when
+/// the node is trusted with nothing.
+///
+/// Without a title the holdings are read in keyset pages
+/// ([`LibraryStore::acquire_titles_page`]), so no read loads the whole
+/// library at once.
 ///
 /// # Errors
 ///
@@ -428,7 +421,7 @@ pub async fn job_titles(
     store: &LibraryStore,
     node_id: &str,
     job: &JobRecord,
-) -> Result<Option<Vec<BookRecord>>> {
+) -> Result<Option<Vec<AcquireTitle>>> {
     let owned = match node_trust(store, node_id, Claimant::Remote).await? {
         NodeTrust::All => None,
         NodeTrust::OwnedBy(user_id) | NodeTrust::AllOfOwner(user_id) => {
@@ -438,48 +431,58 @@ pub async fn job_titles(
     };
     let keys = job_plugin_keys(store, job).await?.unwrap_or_default();
     let accounts = job_accounts(store, job).await?;
-    let title = job.payload.title.as_deref().filter(|t| !t.is_empty());
-    // Read one account's rows when the selector names a single account
-    // id; otherwise read them all and keep the named accounts' below.
-    let account_ids: BTreeSet<&str> = accounts
-        .iter()
-        .flatten()
-        .map(|(_, account_id)| account_id.as_str())
-        .collect();
-    let only = match (&accounts, account_ids.len()) {
-        (Some(_), 0) => return Ok(Some(Vec::new())),
-        (Some(_), 1) => account_ids.first().copied(),
-        _ => None,
+    if accounts.as_ref().is_some_and(BTreeSet::is_empty) {
+        return Ok(Some(Vec::new()));
+    }
+    let selector = job.payload.account.as_deref().filter(|a| !a.is_empty());
+    let wanted = |title: &AcquireTitle| {
+        let account = (title.plugin_key.clone(), title.account_id.clone());
+        title.book_uuid.is_some()
+            && keys.contains(&title.plugin_key)
+            && accounts
+                .as_ref()
+                .is_none_or(|accounts| accounts.contains(&account))
+            && owned.as_ref().is_none_or(|owned| owned.contains(&account))
     };
-    let mut books = store.list_books(only).await?;
-    books.retain(|book| {
-        keys.contains(&book.plugin_key)
-            && accounts.as_ref().is_none_or(|accounts| {
-                accounts.contains(&(book.plugin_key.clone(), book.account_id.clone()))
-            })
-            && title.is_none_or(|title| names_book(title, book))
-            && owned.as_ref().is_none_or(|owned| {
-                owned.contains(&(book.plugin_key.clone(), book.account_id.clone()))
-            })
-    });
-    Ok(Some(books))
+    let mut titles = Vec::new();
+    match job.payload.title.as_deref().filter(|t| !t.is_empty()) {
+        Some(named) => {
+            titles = store.acquire_titles_named(selector, named).await?;
+            titles.retain(|title| wanted(title));
+        }
+        None => {
+            let mut after = None;
+            loop {
+                let page = store
+                    .acquire_titles_page(selector, after.as_deref(), 64)
+                    .await?;
+                titles.extend(page.titles.into_iter().filter(|title| wanted(title)));
+                match page.next {
+                    Some(next) => after = Some(next),
+                    None => break,
+                }
+            }
+        }
+    }
+    Ok(Some(titles))
 }
 
 /// True when the acquire `job` still has a title whose audio is not
-/// acquired (an episode counts only with `download_episodes`).
+/// acquired on its edition (an episode counts only with
+/// `download_episodes`).
 async fn job_titles_remaining(
     store: &LibraryStore,
     node_id: &str,
     job: &JobRecord,
     download_episodes: bool,
 ) -> Result<bool> {
-    let Some(books) = job_titles(store, node_id, job).await? else {
+    let Some(titles) = job_titles(store, node_id, job).await? else {
         return Ok(true);
     };
-    Ok(books.iter().any(|book| {
-        is_downloadable(&book.content_kind)
-            && (download_episodes || book.content_kind != "episode")
-            && book.acquire_status != AcquireStatus::Acquired
+    Ok(titles.iter().any(|title| {
+        is_downloadable(title.content_kind)
+            && (download_episodes || title.content_kind != "episode")
+            && title.status != AcquireStatus::Acquired
     }))
 }
 

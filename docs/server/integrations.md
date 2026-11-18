@@ -458,6 +458,9 @@ that tools without a plugin of their own keep next to a book's audio:
   contributors by role, and one series. Bookclerk can write it: a change
   rewrites only the elements of the fields it sets and leaves the rest of
   the file as it was.
+- **Kodi `album.nfo`**: title, description, publisher, date, genres and
+  authors, as Kodi and Jellyfin read them. Bookclerk can write it the same
+  way.
 - **Libation's catalog record** (`<book name>.metadata.json`): the
   Audible product Libation saves at download. It is read-only, because it
   is the store's record rather than the library's.

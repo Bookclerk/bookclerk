@@ -616,8 +616,10 @@ A host never writes library SQL.
 
 ### Acquires
 
-1. The host asks the owner for the job's titles (`acquire.plan`).
-2. The answer, `acquire.targets`, lists the titles and every output
+1. The host asks the owner for the job's titles (`acquire.plan`). As for
+   a local acquire, a title whose edition another store account already
+   acquired is left out: the library already has its files.
+2. The answer, `acquire.targets`, lists the titles still to fetch and every output
    destination deployed on the owner node that answered, each with its own
    naming options (templates, replacement characters, path limits). Each
    title carries its store account's holding id on the owner, which its
