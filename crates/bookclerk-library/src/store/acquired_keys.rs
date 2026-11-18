@@ -419,4 +419,52 @@ mod tests {
             assert_eq!(keys[0].source, "audible", "{name}");
         }
     }
+
+    /// A page of acquired editions wider than one database reply is
+    /// halved and read again, so every title is still listed.
+    #[tokio::test]
+    async fn a_page_wider_than_one_reply_is_halved_and_read_again() {
+        let _lock = crate::master_key::master_key_test_lock_async().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (store, caps) = crate::control_plane::capped_store(dir.path()).await;
+        store
+            .upsert_account("audible", "acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let products: Vec<String> = (0..40).map(|i| format!("B0CAP{i:04}")).collect();
+        for product in &products {
+            store
+                .upsert_book(&NewBook::minimal(product, "acct", "us", product))
+                .await
+                .unwrap();
+            store
+                .set_acquire_status(
+                    product,
+                    "acct",
+                    AcquireStatus::Acquired,
+                    Some(&format!("k/{product}.m4b")),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        // Forty editions' ids and change times (about 70 bytes each) are
+        // wider than this; one listing, holding or account row is not.
+        caps.reply.store(2_000, std::sync::atomic::Ordering::SeqCst);
+        let mut listed = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let page = store
+                .acquired_title_keys_page(after.as_deref(), super::ACQUIRED_KEYS_MAX_PAGE)
+                .await
+                .unwrap();
+            listed.extend(page.keys.into_iter().map(|key| key.product_id));
+            match page.next {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+        }
+        listed.sort();
+        assert_eq!(listed, products);
+    }
 }
