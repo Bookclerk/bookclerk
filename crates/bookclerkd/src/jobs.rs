@@ -925,7 +925,14 @@ pub async fn run_acquire(
     let wanted = |t: &AcquireTitle| {
         acquire_mode_includes(t, mode, options.download_pdf, cfg.library.download_episodes)
     };
-    let targets = acquire_candidates(&library, account, title, wanted).await?;
+    let mut targets = acquire_candidates(&library, account, title, wanted).await?;
+    if mode.paced {
+        // Titles that failed before go after the rest (the sort is stable,
+        // so each group keeps its order): a title that keeps failing spends
+        // the account's budget only once the others have had theirs, so the
+        // backlog still moves when one title never downloads.
+        targets.sort_by_key(|t| t.status == AcquireStatus::Error);
+    }
     // A pinned instance serves its own plugin's books only; the rest are
     // skipped, not failed.
     let (targets, foreign): (Vec<_>, Vec<_>) = targets.into_iter().partition(|t| {
