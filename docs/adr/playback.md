@@ -83,8 +83,10 @@ every stream request call it.
 A patron scope is applied before it, as on every library page: an edition
 outside the caller's scope is `404`, the same answer as an unknown id.
 
-Per-patron download permission is not in the model yet. When it lands,
-`plan_playback` is the one place that reads it, and it covers streaming.
+The **Download** member control
+([patron scopes ADR](patron-scopes.md#member-controls)) covers streaming:
+`plan_playback` is the one place that reads it, so a patron who may not
+download is planned nothing to play.
 
 ### 5. A session is the leave to stream, checked on every request
 

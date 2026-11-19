@@ -783,6 +783,38 @@ async fn a_person_is_planned_an_editions_audio_to_play_under_every_profile() {
             .unwrap()
             .is_none());
 
+        // Turning downloads off for Riley ends playing too, for a new
+        // plan and for a session's later check; turning them back on
+        // restores both.
+        for allowed in [false, true] {
+            crate::control_plane::set_member_control_overrides(
+                &store,
+                riley,
+                crate::control_plane::ControlOverrides {
+                    download: Some(allowed),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                plan_playback(&store, riley, &edition)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                allowed,
+                "{profile:?}: downloads {allowed}"
+            );
+            assert_eq!(
+                authorize_playback(&store, riley, &edition, "local", &digest)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                allowed,
+                "{profile:?}: downloads {allowed}"
+            );
+        }
+
         // A second part joins the edition: it is a track after the
         // primary, and the earlier digest no longer matches.
         let owner = store

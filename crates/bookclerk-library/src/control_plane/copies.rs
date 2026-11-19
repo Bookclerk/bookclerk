@@ -684,10 +684,11 @@ impl PlaybackPlan {
 /// `edition_id`, and lists its tracks: the one check behind the playback
 /// manifest, a new play session and every stream request.
 ///
-/// The edition must be one the person may take (`visible_to`, the same
-/// rule a copy grant uses, so the Download permission of patron scopes
-/// lands here too) and one this library has acquired, with its primary
-/// audio recorded on at least one destination. Whether the person's
+/// The person's member controls must allow downloads
+/// ([`super::MemberControl::Download`], which covers streaming). The
+/// edition must be one the person may take (`visible_to`, the same rule
+/// a copy grant uses) and one this library has acquired, with its
+/// primary audio recorded on at least one destination. Whether the person's
 /// patron scope shows them the work at all is the caller's check
 /// ([`crate::LibraryStore::work_in_scope`]).
 ///
@@ -709,6 +710,9 @@ pub async fn plan_playback(
     person: i64,
     edition_id: &str,
 ) -> Result<Option<PlaybackPlan>> {
+    if !super::user_may(store, person, super::MemberControl::Download).await? {
+        return Ok(None);
+    }
     if visible_to(person, titles_of_edition(store, edition_id).await?).is_empty() {
         return Ok(None);
     }
