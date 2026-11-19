@@ -94,10 +94,10 @@ of the box.
 | --- | --- |
 | Link store accounts | Connecting a store account, signing in to one again, and bringing accounts from another library. Accounts already connected keep working, and an Administrator can still remove them. |
 | Download | Taking copies of the library's files: downloads to a branch or clerk, streaming, and library-card sync |
-| Edit metadata | Changing book metadata |
-| Upload | Adding books by upload |
+| Edit metadata | Changing book metadata. Patrons can't change metadata yet, so this switch is stored but does not restrict anything until they can. |
+| Upload | Adding books by upload. Patrons can't upload yet, so this switch is stored but does not restrict anything until they can. |
 | Request books | Asking a branch for a book it listed (interlibrary requests) |
-| See prices | Prices and store links in Discover, catalog search and the Wishlist; the library drops them from its answers, so the patron's browser never receives them |
+| See prices | Prices and store links in Discover, catalog search and the Wishlist; the library drops them from its answers, so the patron's browser never receives them, and the app builds no store links of its own |
 
 The library has a default for every switch, which an Administrator
 sets, and an Administrator can set single switches for one Member. A

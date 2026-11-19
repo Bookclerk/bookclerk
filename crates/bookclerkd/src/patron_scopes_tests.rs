@@ -480,10 +480,10 @@ async fn discover_answers_drop_prices_for_a_patron_who_may_not_see_them() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(
-        body["best"].is_null() || body["best"]["url"].is_null(),
-        "{body}"
-    );
+    // No store is configured here, so the answer carries no hint to strip;
+    // the redaction itself is checked on each answer type in
+    // bookclerk-discover and on the wishlist row below.
+    assert!(body["best"].is_null(), "{body}");
     let (status, body) = send(
         &app,
         "POST",
@@ -540,7 +540,20 @@ fn a_wishlist_row_keeps_its_stores_and_loses_prices_and_links() {
             "status": "open",
             "work_key": "isbn:9780441478125",
             "work_id": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b",
-            "sources": [],
+            "sources": [{
+                "id": 1,
+                "title_request_id": 1,
+                "source": "libro",
+                "product_id": "9780441478125",
+                "title": "The Left Hand of Darkness",
+                "cover_url": "https://covers.example/lhod.jpg",
+                "created_at": "2026-10-29T10:12:00Z",
+                "updated_at": "2026-10-29T10:12:00Z",
+                "url": "https://libro.fm/audiobooks/9780441478125",
+                "price_cents": 1499,
+                "currency": "USD",
+                "price_label": "$14.99"
+            }],
             "purchase_hints": [{
                 "source": "libro",
                 "product_id": "9780441478125",
@@ -563,6 +576,13 @@ fn a_wishlist_row_keeps_its_stores_and_loses_prices_and_links() {
         hint,
         serde_json::json!({"source": "libro", "product_id": "9780441478125"})
     );
+    let source = &row.sources[0];
+    assert_eq!(source.url, None);
+    assert_eq!(source.price_cents, None);
+    assert_eq!(source.currency, None);
+    assert_eq!(source.price_label, None);
+    assert_eq!(source.title.as_deref(), Some("The Left Hand of Darkness"));
+    assert!(source.cover_url.is_some(), "the cover stays");
 }
 
 #[tokio::test]

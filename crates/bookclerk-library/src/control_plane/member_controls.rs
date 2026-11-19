@@ -476,14 +476,13 @@ pub async fn user_may(store: &LibraryStore, user_id: i64, control: MemberControl
 /// Replaces the overrides of `user_id`; with none, the user follows the
 /// library's default for every control again.
 ///
-/// The caller has already checked that the actor may manage the user. One
-/// atomic batch updates the stored row, inserts it when there is none, or
-/// deletes it when no control is overridden.
+/// The caller has already checked that the actor may manage the user. The
+/// write is guarded on the role read here ([`set_member_control_overrides_for`]).
 ///
 /// # Errors
 ///
-/// Returns [`LibraryError::NotFound`] for an unknown user, or the read or
-/// write error.
+/// Returns [`LibraryError::NotFound`] for an unknown user, or the errors
+/// of [`set_member_control_overrides_for`].
 pub async fn set_member_control_overrides(
     store: &LibraryStore,
     user_id: i64,
@@ -492,6 +491,33 @@ pub async fn set_member_control_overrides(
     let Some(user) = store.get_user(user_id).await? else {
         return Err(LibraryError::not_found(EntityKind::User, user_id));
     };
+    set_member_control_overrides_for(store, &user, overrides).await
+}
+
+/// Replaces the overrides of `user`, as the caller read them when it
+/// checked that the actor may manage them; with none, the user follows the
+/// library's default for every control again.
+///
+/// One atomic batch updates the stored row, inserts it when there is none,
+/// or deletes it when no control is overridden. Every statement is guarded
+/// on the user still having the role in `user`, so a role change made after
+/// the caller authorized the write (an Owner promoting a Member to
+/// Administrator, say) stops it rather than letting it through under the
+/// old authorization.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Conflict`] when the user's role changed since
+/// `user` was read (nothing was written), [`LibraryError::NotFound`] when
+/// the user is gone, or the read or write error.
+pub async fn set_member_control_overrides_for(
+    store: &LibraryStore,
+    user: &UserRecord,
+    overrides: ControlOverrides,
+) -> Result<AssignedControls> {
+    let user_id = user.id;
+    let role = user.role.as_str();
+    let same_role = "EXISTS (SELECT 1 FROM users WHERE id = ? AND role = ?)";
     let now = Utc::now().to_rfc3339();
     let operation_id = format!(
         "patron-controls-{user_id}-{}",
@@ -499,27 +525,53 @@ pub async fn set_member_control_overrides(
     );
     let statements = if overrides.is_empty() {
         vec![batch::exec(
-            "DELETE FROM patron_controls WHERE user_id = ?",
-            vec![int(user_id)],
+            &format!("DELETE FROM patron_controls WHERE user_id = ? AND {same_role}"),
+            vec![int(user_id), int(user_id), text(role)],
         )]
     } else {
         let json = serde_json::to_string(&overrides).map_err(|err| invalid(&err.to_string()))?;
         vec![
             batch::exec(
-                "UPDATE patron_controls SET controls_json = ?, updated_at = ? WHERE user_id = ?",
-                vec![text(&json), text(&now), int(user_id)],
+                &format!(
+                    "UPDATE patron_controls SET controls_json = ?, updated_at = ? \
+                     WHERE user_id = ? AND {same_role}"
+                ),
+                vec![
+                    text(&json),
+                    text(&now),
+                    int(user_id),
+                    int(user_id),
+                    text(role),
+                ],
             ),
             batch::exec(
-                "INSERT OR IGNORE INTO patron_controls (user_id, controls_json, updated_at) \
-                 VALUES (?, ?, ?)",
-                vec![int(user_id), text(&json), text(&now)],
+                &format!(
+                    "INSERT OR IGNORE INTO patron_controls (user_id, controls_json, updated_at) \
+                     SELECT ?, ?, ? WHERE {same_role}"
+                ),
+                vec![
+                    int(user_id),
+                    text(&json),
+                    text(&now),
+                    int(user_id),
+                    text(role),
+                ],
             ),
         ]
     };
     store
         .execute_host_batch(batch::request(&operation_id, statements))
         .await?;
-    assigned_member_controls(store, &user).await
+    let Some(current) = store.get_user(user_id).await? else {
+        return Err(LibraryError::not_found(EntityKind::User, user_id));
+    };
+    if current.role != user.role && member_control_overrides(store, user_id).await? != overrides {
+        return Err(LibraryError::Conflict(format!(
+            "user {user_id} became {} while their controls were being set; read them again",
+            current.role.as_str()
+        )));
+    }
+    assigned_member_controls(store, &current).await
 }
 
 /// The stored state one decision on a control was made from, which a host

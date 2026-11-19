@@ -1243,6 +1243,16 @@ impl TitleRequestRecord {
         for hint in &mut self.purchase_hints {
             hint.hide_price_and_link();
         }
+        for source in &mut self.sources {
+            source.url = None;
+            source.price_cents = None;
+            source.currency = None;
+            source.price_label = None;
+            source.list_price_cents = None;
+            source.list_price_label = None;
+            source.member_price_cents = None;
+            source.member_price_label = None;
+        }
     }
 }
 

@@ -367,3 +367,46 @@ async fn an_unchanged_default_keeps_its_revision_and_unknown_users_may_not() {
         assert!(guard.is_none(), "{}", profile.name());
     }
 }
+
+#[tokio::test]
+async fn a_promotion_after_authorization_stops_the_override_write() {
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let sam = store
+            .create_user(UserRole::Member, Some("Sam"), None)
+            .await
+            .unwrap();
+        let overrides = ControlOverrides {
+            download: Some(false),
+            ..ControlOverrides::default()
+        };
+        // Read as a Member, then promoted before the write.
+        store
+            .set_user_role(sam.id, UserRole::Administrator)
+            .await
+            .unwrap();
+        let err = set_member_control_overrides_for(store, &sam, overrides)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LibraryError::Conflict(_)), "{name}: {err:?}");
+        assert!(
+            member_control_overrides(store, sam.id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "{name}"
+        );
+        // Read fresh, the write goes through.
+        let fresh = store.get_user(sam.id).await.unwrap().unwrap();
+        let assigned = set_member_control_overrides_for(store, &fresh, overrides)
+            .await
+            .unwrap();
+        assert_eq!(assigned.overrides, overrides, "{name}");
+        let cleared = set_member_control_overrides_for(store, &fresh, ControlOverrides::default())
+            .await
+            .unwrap();
+        assert!(cleared.overrides.is_empty(), "{name}");
+    }
+}

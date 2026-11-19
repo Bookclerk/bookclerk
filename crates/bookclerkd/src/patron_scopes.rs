@@ -15,7 +15,7 @@ use axum::Json;
 use bookclerk_library::control_plane::{
     assigned_member_controls, assigned_patron_scope, default_member_controls, default_patron_scope,
     role_follows_default_controls, role_has_controls, role_is_scoped, set_default_member_controls,
-    set_default_patron_scope, set_member_control_overrides, set_patron_scope,
+    set_default_patron_scope, set_member_control_overrides_for, set_patron_scope,
     verify_patron_administrator, AssignedControls, AssignedScope, ConfigActor, ControlOverrides,
     MemberControl, MemberControls, PatronScope, PutUserControls, PutUserScope,
 };
@@ -303,7 +303,7 @@ pub(crate) struct UserControlsJson {
     /// The user (`users.id`).
     #[schema(example = 7)]
     user_id: i64,
-    /// The library's default for every patron.
+    /// The library's default, which Members follow.
     defaults: MemberControls,
     /// The controls set for this patron alone; the others follow the
     /// default.
@@ -327,7 +327,8 @@ pub(crate) struct UserControlsJson {
 /// them.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct DefaultControlsJson {
-    /// The controls every patron follows unless set for them alone.
+    /// The controls every Member follows unless set for them alone.
+    /// Administrators do not follow it.
     controls: MemberControls,
 }
 
@@ -392,9 +393,10 @@ pub(crate) async fn get_user_controls(
 /// Sets the controls that differ for one patron; every other control
 /// follows the library's default.
 ///
-/// Nobody sets their own. Owners and Administrators may always do
-/// everything, so overrides stored for one only apply if their role
-/// changes to Member.
+/// Nobody sets their own. An Owner may always do everything, so
+/// overrides stored for one only apply if their role changes. An
+/// Administrator's overrides limit them while they stay an Administrator;
+/// only an Owner or the operator sets those.
 #[utoipa::path(
     put,
     path = "/api/users/{id}/controls",
@@ -407,6 +409,7 @@ pub(crate) async fn get_user_controls(
         (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
         (status = 403, description = "The caller may not manage this user, or tried to set their own controls.", body = ErrorMessage, example = json!({"error": "you may not set your own controls"})),
         (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
+        (status = 409, description = "The user's role changed since the caller was authorized for them; nothing was written.", body = ErrorMessage, example = json!({"error": "user 7 became administrator while their controls were being set; read them again"})),
         (status = 500, description = "The controls could not be written.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
     ),
 )]
@@ -426,9 +429,14 @@ pub(crate) async fn put_user_controls(
             "you may not set your own controls",
         ));
     }
-    let assigned = set_member_control_overrides(&library, user_id, body.overrides)
+    // Guarded on the role the authorization above read, so a promotion
+    // since then stops the write.
+    let assigned = set_member_control_overrides_for(&library, &user, body.overrides)
         .await
-        .map_err(|err| library_error(ROUTE, err))?;
+        .map_err(|err| match err {
+            LibraryError::Conflict(message) => refused(StatusCode::CONFLICT, message),
+            other => library_error(ROUTE, other),
+        })?;
     let _ = library
         .insert_security_audit_event(
             &actor.audit_actor(),
@@ -442,7 +450,7 @@ pub(crate) async fn put_user_controls(
     Ok(Json(user_controls_json(&user, assigned)))
 }
 
-/// Reads the library's default member controls, which every patron
+/// Reads the library's default member controls, which every Member
 /// follows unless a control is set for them alone.
 #[utoipa::path(
     get,
@@ -468,8 +476,9 @@ pub(crate) async fn get_default_controls(
     Ok(Json(DefaultControlsJson { controls }))
 }
 
-/// Replaces the library's default member controls. Every patron follows
-/// the change at once, except in the controls set for them alone.
+/// Replaces the library's default member controls. Every Member follows
+/// the change at once, except in the controls set for them alone;
+/// Administrators do not follow the default.
 #[utoipa::path(
     put,
     path = "/api/users/default-controls",

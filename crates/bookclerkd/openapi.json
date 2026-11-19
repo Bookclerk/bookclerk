@@ -2264,7 +2264,7 @@
         "tags": [
           "Users"
         ],
-        "summary": "Reads the library's default member controls, which every patron\nfollows unless a control is set for them alone.",
+        "summary": "Reads the library's default member controls, which every Member\nfollows unless a control is set for them alone.",
         "operationId": "get_default_controls",
         "responses": {
           "200": {
@@ -2345,7 +2345,7 @@
         "tags": [
           "Users"
         ],
-        "summary": "Replaces the library's default member controls. Every patron follows\nthe change at once, except in the controls set for them alone.",
+        "summary": "Replaces the library's default member controls. Every Member follows\nthe change at once, except in the controls set for them alone;\nAdministrators do not follow the default.",
         "operationId": "put_default_controls",
         "requestBody": {
           "content": {
@@ -2599,7 +2599,7 @@
           "Users"
         ],
         "summary": "Sets the controls that differ for one patron; every other control\nfollows the library's default.",
-        "description": "Nobody sets their own. Owners and Administrators may always do\neverything, so overrides stored for one only apply if their role\nchanges to Member.",
+        "description": "Nobody sets their own. An Owner may always do everything, so\noverrides stored for one only apply if their role changes. An\nAdministrator's overrides limit them while they stay an Administrator;\nonly an Owner or the operator sets those.",
         "operationId": "put_user_controls",
         "parameters": [
           {
@@ -2688,6 +2688,19 @@
                 },
                 "example": {
                   "error": "user 7 not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The user's role changed since the caller was authorized for them; nothing was written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "user 7 became administrator while their controls were being set; read them again"
                 }
               }
             }
@@ -34825,7 +34838,7 @@
         "properties": {
           "controls": {
             "$ref": "#/components/schemas/MemberControls",
-            "description": "The controls every patron follows unless set for them alone."
+            "description": "The controls every Member follows unless set for them alone.\nAdministrators do not follow it."
           }
         }
       },
@@ -45871,7 +45884,7 @@
           },
           "defaults": {
             "$ref": "#/components/schemas/MemberControls",
-            "description": "The library's default for every patron."
+            "description": "The library's default, which Members follow."
           },
           "overrides": {
             "$ref": "#/components/schemas/ControlOverrides",

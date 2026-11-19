@@ -713,7 +713,18 @@ async fn import_from_peer(
                     .await
                     .unwrap_or(false)
                 {
-                    report.taken.push(key);
+                    // Taken only when a link now holds the account; a batch
+                    // that stopped for another reason (the controls changed
+                    // in a way that still allows linking) kept nothing.
+                    let linked = store
+                        .count_account_links_for_account(&account.plugin_key, &account.account_id)
+                        .await
+                        .is_ok_and(|links| links > 0);
+                    if linked {
+                        report.taken.push(key);
+                    } else {
+                        report.failed.push(key);
+                    }
                 } else {
                     tracing::warn!(
                         "store connections stopped being allowed while they were kept; \

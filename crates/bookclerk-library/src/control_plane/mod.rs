@@ -205,8 +205,9 @@ pub use member_controls::{
     assigned_member_controls, default_member_controls, effective_controls,
     load_default_member_controls, member_control_overrides, parse_member_controls,
     parse_user_controls_request, role_follows_default_controls, role_has_controls,
-    set_default_member_controls, set_member_control_overrides, user_may, AssignedControls,
-    ControlOverrides, MemberControl, MemberControls, PutUserControls, MEMBER_CONTROLS_NAMESPACE,
+    set_default_member_controls, set_member_control_overrides, set_member_control_overrides_for,
+    user_may, AssignedControls, ControlOverrides, MemberControl, MemberControls, PutUserControls,
+    MEMBER_CONTROLS_NAMESPACE,
 };
 pub use node_queue::{
     is_node_consumer_id, is_valid_node_id, node_consumer_id, node_queue_name, publish_node_message,
