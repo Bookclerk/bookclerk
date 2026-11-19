@@ -334,14 +334,15 @@ async fn acquire_book_recorded(
                     key = %primary_key,
                     "skipping download — title already acquired"
                 );
-                resume_missing_companion_pdf(library, destinations, &req, source).await?;
+                let fetched_pdf =
+                    resume_missing_companion_pdf(library, destinations, &req, source).await?;
                 return Ok(AcquireResult {
                     asin: req.asin,
                     storage_key: primary_key,
                     written_keys: Vec::new(),
                     matched_existing: true,
                     from_library: false,
-                    fetched_from_store: false,
+                    fetched_from_store: fetched_pdf,
                 });
             }
             let backends: Vec<(&str, &dyn StorageBackend)> = destinations
@@ -355,14 +356,15 @@ async fn acquire_book_recorded(
                     key = %primary_key,
                     "skipping download — another book of this edition is already acquired"
                 );
-                resume_missing_companion_pdf(library, destinations, &req, source).await?;
+                let fetched_pdf =
+                    resume_missing_companion_pdf(library, destinations, &req, source).await?;
                 return Ok(AcquireResult {
                     asin: req.asin,
                     storage_key: primary_key,
                     written_keys: Vec::new(),
                     matched_existing: true,
                     from_library: false,
-                    fetched_from_store: false,
+                    fetched_from_store: fetched_pdf,
                 });
             }
         }
@@ -386,14 +388,15 @@ async fn acquire_book_recorded(
                         None,
                     )
                     .await?;
-                resume_missing_companion_pdf(library, destinations, &req, source).await?;
+                let fetched_pdf =
+                    resume_missing_companion_pdf(library, destinations, &req, source).await?;
                 return Ok(AcquireResult {
                     asin: req.asin,
                     storage_key: primary_key,
                     written_keys: Vec::new(),
                     matched_existing: true,
                     from_library: false,
-                    fetched_from_store: false,
+                    fetched_from_store: fetched_pdf,
                 });
             }
             ExistingPlan::SyncMissing {
@@ -430,14 +433,15 @@ async fn acquire_book_recorded(
                         None,
                     )
                     .await?;
-                resume_missing_companion_pdf(library, destinations, &req, source).await?;
+                let fetched_pdf =
+                    resume_missing_companion_pdf(library, destinations, &req, source).await?;
                 return Ok(AcquireResult {
                     asin: req.asin,
                     storage_key: primary_key,
                     written_keys: written,
                     matched_existing: true,
                     from_library: false,
-                    fetched_from_store: false,
+                    fetched_from_store: fetched_pdf,
                 });
             }
             ExistingPlan::Fetch {
@@ -2255,6 +2259,12 @@ async fn record_companion_pdf_failure(
 /// This path swallows PDF errors so an existing-media acquire cannot flip the
 /// book back to [`AcquireStatus::Error`].
 ///
+/// # Returns
+///
+/// Whether the PDF was fetched from the store, or a fetch was attempted
+/// and failed after it may have reached the store: either counts toward
+/// the account's download pace ([`AcquireResult::fetched_from_store`]).
+///
 /// # Errors
 ///
 /// Never returns an error today: a failed check for an already stored PDF,
@@ -2264,25 +2274,25 @@ async fn resume_missing_companion_pdf(
     destinations: &AcquireDestinations,
     req: &AcquireRequest,
     source: &dyn ContentSource,
-) -> Result<()> {
+) -> Result<bool> {
     if !req.options.download_pdf {
-        return Ok(());
+        return Ok(false);
     }
     if !req.force {
         match stored_edition_pdf(library, destinations, req).await {
-            Ok(Some(_)) => return Ok(()),
+            Ok(Some(_)) => return Ok(false),
             Ok(None) => {}
             Err(err) => {
                 record_companion_pdf_failure(library, req, &err).await;
-                return Ok(());
+                return Ok(false);
             }
         }
     }
     match acquire_pdf_only_recorded(library, destinations, req, source).await {
-        Ok(_) => Ok(()),
+        Ok(result) => Ok(result.fetched_from_store),
         Err(err) => {
             record_companion_pdf_failure(library, req, &err).await;
-            Ok(())
+            Ok(true)
         }
     }
 }
@@ -5883,6 +5893,10 @@ mod tests {
             .await
             .expect("retry must keep acquired audio and resume the companion PDF");
         assert!(second.matched_existing);
+        assert!(
+            second.fetched_from_store,
+            "the resumed PDF went to the store, so it counts toward the pace"
+        );
         assert_eq!(puts.load(Ordering::SeqCst), 1);
         assert_eq!(pdf_hits.load(Ordering::SeqCst), 2);
         let after_retry = store

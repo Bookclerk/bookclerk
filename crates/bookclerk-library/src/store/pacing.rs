@@ -9,7 +9,7 @@
 //! recorded is a no-op rather than an error.
 
 use chrono::{DateTime, Utc};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
 use super::LibraryStore;
 use crate::control_plane::batch;
@@ -48,6 +48,9 @@ fn from_ms(ms: i64) -> Option<DateTime<Utc>> {
     DateTime::from_timestamp_millis(ms)
 }
 
+/// Most ledger rows read in one page, below the database's own result cap.
+const LEDGER_PAGE_ROWS: u64 = 256;
+
 /// `WHERE` guard that keeps a write to rows of an account that exists.
 const ACCOUNT_EXISTS: &str =
     " AND EXISTS (SELECT 1 FROM accounts WHERE plugin_key = ? AND account_id = ?)";
@@ -77,17 +80,7 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         let since = now.timestamp_millis().saturating_sub(millis(BUDGET_WINDOW));
-        let starts = account_downloads::Entity::find()
-            .filter(account_downloads::Column::PluginKey.eq(plugin_key))
-            .filter(account_downloads::Column::AccountId.eq(account_id))
-            .filter(account_downloads::Column::StartedAtMs.gt(since))
-            .order_by_asc(account_downloads::Column::StartedAtMs)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .filter_map(|r| from_ms(r.started_at_ms))
-            .collect();
+        let starts = self.window_starts(plugin_key, account_id, since).await?;
         let (override_, cooldown_until) = row.map_or((PaceOverride::Default, None), |r| {
             (
                 PaceOverride::from_row(&r.pace_mode, r.downloads_per_day, r.min_gap_seconds),
@@ -99,6 +92,56 @@ impl LibraryStore {
             cooldown_until,
             window: DownloadWindow { starts },
         })
+    }
+
+    /// The start times of an account's downloads after `since_ms`, oldest
+    /// first, read in pages no larger than the database's result cap.
+    ///
+    /// Pages are keyed on `(started_at_ms, id)`, so downloads that started
+    /// in the same millisecond are neither skipped nor read twice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    async fn window_starts(
+        &self,
+        plugin_key: &str,
+        account_id: &str,
+        since_ms: i64,
+    ) -> Result<Vec<DateTime<Utc>>> {
+        let page = match self.db_capabilities().max_result_rows {
+            0 => LEDGER_PAGE_ROWS,
+            rows => LEDGER_PAGE_ROWS.min(u64::from(rows)).max(1),
+        };
+        let mut starts = Vec::new();
+        let mut after: Option<(i64, String)> = None;
+        loop {
+            let mut query = account_downloads::Entity::find()
+                .filter(account_downloads::Column::PluginKey.eq(plugin_key))
+                .filter(account_downloads::Column::AccountId.eq(account_id))
+                .filter(account_downloads::Column::StartedAtMs.gt(since_ms))
+                .order_by_asc(account_downloads::Column::StartedAtMs)
+                .order_by_asc(account_downloads::Column::Id)
+                .limit(page);
+            if let Some((ms, id)) = &after {
+                query = query.filter(
+                    sea_orm::Condition::any()
+                        .add(account_downloads::Column::StartedAtMs.gt(*ms))
+                        .add(
+                            sea_orm::Condition::all()
+                                .add(account_downloads::Column::StartedAtMs.eq(*ms))
+                                .add(account_downloads::Column::Id.gt(id.as_str())),
+                        ),
+                );
+            }
+            let rows = query.all(&self.db).await.map_err(LibraryError::Orm)?;
+            let full = u64::try_from(rows.len()).unwrap_or(u64::MAX) >= page;
+            after = rows.last().map(|r| (r.started_at_ms, r.id.clone()));
+            starts.extend(rows.into_iter().filter_map(|r| from_ms(r.started_at_ms)));
+            if !full || after.is_none() {
+                return Ok(starts);
+            }
+        }
     }
 
     /// Stores the operator's override of an account's pace (the cool-down
@@ -382,6 +425,39 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(rows.len(), 3, "{profile:?}");
+        }
+    }
+
+    /// The window is read in pages of the database's result cap, so a
+    /// one-row cap still sees every download, including two that started
+    /// in the same millisecond.
+    #[tokio::test]
+    async fn the_window_reads_in_pages_of_the_result_cap() {
+        for profile in Profile::ALL {
+            let store = sqlite::memory(profile)
+                .await
+                .into_store()
+                .with_plan_limits(64, 1, 65_536);
+            assert_eq!(store.db_capabilities().max_result_rows, 1);
+            store
+                .upsert_account(KEY, "a1", "us", None, true, "audible")
+                .await
+                .unwrap();
+            for secs in [90_000, 90_000, 95_000] {
+                store
+                    .record_account_download(KEY, "a1", at(secs), None, DownloadStarter::Host)
+                    .await
+                    .unwrap();
+            }
+            let state = store
+                .account_pace_state(KEY, "a1", at(100_000))
+                .await
+                .unwrap();
+            assert_eq!(
+                state.window.starts,
+                vec![at(90_000), at(90_000), at(95_000)],
+                "{profile:?}"
+            );
         }
     }
 

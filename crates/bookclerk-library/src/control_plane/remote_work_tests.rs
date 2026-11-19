@@ -2053,6 +2053,73 @@ async fn a_committed_uploads_probe_is_kept_on_the_file_row() {
 /// marks the title acquired and publishes `book_acquired` but cannot
 /// finish the job; only the closing upload completes it and gives its
 /// permits back, and a repeat answers the same.
+/// A title's commit and its pace ledger row land in one batch under every
+/// database profile: a batch the database refuses leaves neither the
+/// commit nor the row, and the retry records exactly one.
+#[tokio::test]
+async fn a_refused_commit_records_no_download_and_its_retry_records_one() {
+    let _guard = master_key_test_lock_async().await;
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let dir = tempfile::tempdir().unwrap();
+        crate::configure_master_key(dir.path()).expect("master key");
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let w = world_on(dir, kit.store().clone()).await;
+        let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+        let (book_uuid, files) = riley_title(&w.store).await;
+        let fence = claim(&w.store).await.unwrap().job.lease_generation;
+        let UploadGrant::Granted { upload_id, .. } = grant_upload(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            "owner",
+            &UploadGrantRequest {
+                holding_id: &holding_of(&w.store, &book_uuid).await,
+                primary_key: "Author/Title/Title.m4b",
+                pdf_key: None,
+                files: &files,
+                destinations: &local("Author/Title"),
+            },
+        )
+        .await
+        .unwrap() else {
+            panic!("granted ({name})");
+        };
+        for index in 0..files.len() {
+            assert!(record_upload_file(&w.store, &upload_id, index)
+                .await
+                .unwrap());
+        }
+        kit.lock_next_requests(1);
+        assert!(
+            commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+                .await
+                .is_err(),
+            "{name}: the refused batch fails the commit"
+        );
+        assert_eq!(ledger_len(&w.store, "riley-acct").await, 0, "{name}");
+        let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
+        assert_ne!(
+            book.acquire_status,
+            crate::models::AcquireStatus::Acquired,
+            "{name}: nothing of the refused commit landed"
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+                    .await
+                    .unwrap(),
+                UploadCommit::Committed {
+                    job_completed: false
+                },
+                "{name}"
+            );
+            assert_eq!(ledger_len(&w.store, "riley-acct").await, 1, "{name}");
+        }
+    }
+}
+
 /// How many downloads `account` has in its pace window now.
 async fn ledger_len(store: &LibraryStore, account: &str) -> usize {
     store
