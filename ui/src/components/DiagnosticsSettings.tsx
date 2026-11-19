@@ -194,13 +194,17 @@ export interface DiagnosticsSetupStepProps {
 /**
  * The first-install setup's diagnostics step: the two sharing switches,
  * starting from what the install has now (off on a fresh install), saved
- * when the person carries on.
+ * when the person carries on. The switches stay read-only until the
+ * current choices have loaded, so a choice is never overwritten by the
+ * load or saved over values that were never read.
  */
 export function DiagnosticsSetupStep({ continueLabel, onDone }: DiagnosticsSetupStepProps) {
   const [shareReports, setShareReports] = useState(false);
   const [shareUsage, setShareUsage] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [load, setLoad] = useState<"loading" | "ready" | "failed">("loading");
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -209,14 +213,20 @@ export function DiagnosticsSetupStep({ continueLabel, onDone }: DiagnosticsSetup
         if (!live) return;
         setShareReports(s.settings["diagnostics.share_reports"] === "true");
         setShareUsage(s.settings["diagnostics.share_usage"] === "true");
+        setLoad("ready");
       })
       .catch(() => {
-        /* the switches start off, as on a fresh install */
+        if (live) setLoad("failed");
       });
     return () => {
       live = false;
     };
-  }, []);
+  }, [attempt]);
+
+  function retry() {
+    setLoad("loading");
+    setAttempt((n) => n + 1);
+  }
 
   async function save() {
     setBusy(true);
@@ -237,7 +247,7 @@ export function DiagnosticsSetupStep({ continueLabel, onDone }: DiagnosticsSetup
           idPrefix="setup"
           shareReports={shareReports}
           shareUsage={shareUsage}
-          disabled={busy}
+          disabled={busy || load !== "ready"}
           onChange={(reports, usage) => {
             setShareReports(reports);
             setShareUsage(usage);
@@ -247,16 +257,27 @@ export function DiagnosticsSetupStep({ continueLabel, onDone }: DiagnosticsSetup
       <p className="text-xs text-ink/50">
         You can change these later under Settings → Server Settings.
       </p>
+      {load === "failed" ? (
+        <p className="text-sm font-medium text-brick" role="alert">
+          Could not load the current choices.
+        </p>
+      ) : null}
       {error ? (
         <p className="text-sm font-medium text-brick" role="alert">
           {error}
         </p>
       ) : null}
       <div className="flex flex-wrap gap-2">
-        <Button type="button" disabled={busy} onClick={() => void save()}>
-          {continueLabel}
-        </Button>
-        {error ? (
+        {load === "failed" ? (
+          <Button type="button" onClick={retry}>
+            Try again
+          </Button>
+        ) : (
+          <Button type="button" disabled={busy || load !== "ready"} onClick={() => void save()}>
+            {continueLabel}
+          </Button>
+        )}
+        {error || load === "failed" ? (
           <Button type="button" variant="secondary" onClick={onDone}>
             Skip for now
           </Button>

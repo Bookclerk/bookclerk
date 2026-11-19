@@ -1,1 +1,7 @@
-{"kind":"start","run_id":"0e9ced79-df3c-4dae-872b-2e5772b06e69","started_at":1792843200,"ends_at":1792843200,"version":"abc1234"}
+{
+  "kind": "start",
+  "run_id": "0e9ced79-df3c-4dae-872b-2e5772b06e69",
+  "started_at": 1792843200,
+  "ends_at": 1792843200,
+  "version": "abc1234"
+}

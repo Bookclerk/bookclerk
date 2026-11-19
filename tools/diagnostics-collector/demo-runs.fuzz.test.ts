@@ -66,7 +66,9 @@ function check(value: unknown, label: string): void {
   };
   const kind = obj?.["kind"];
   const wanted =
-    typeof kind === "string" && kind in extra ? [...common, ...(extra[kind] ?? [])] : null;
+    typeof kind === "string" && Object.hasOwn(extra, kind)
+      ? [...common, ...(extra[kind] ?? [])]
+      : null;
   const keys = obj ? Object.keys(obj).sort() : [];
   let ok =
     obj !== null &&
@@ -79,7 +81,7 @@ function check(value: unknown, label: string): void {
     oracleTime(obj["started_at"]) &&
     oracleTime(obj["ends_at"]) &&
     obj["ends_at"] > obj["started_at"] &&
-    obj["ends_at"] - obj["started_at"] <= 21_600;
+    obj["ends_at"] - obj["started_at"] <= 86_400;
   if (ok && obj && kind === "ready") {
     const s = obj["startup_seconds"];
     ok = typeof s === "number" && Number.isInteger(s) && s >= 0 && s <= 600;
@@ -147,6 +149,7 @@ const FRAGMENTS = [
   '"__proto__":{}',
   "1792843200",
   "1792864801",
+  "1792929601",
   "4102444800",
   "601",
   "A",
@@ -165,6 +168,7 @@ describe("parseDemoRunEvent", () => {
       "stop.json",
       "stop_reordered.json",
       "stop_restart.json",
+      "start_seven_hours.json",
     ]) {
       assert.ok(parseDemoRunEvent(valueOf(seed("demo_run", ok))), ok);
     }
@@ -177,6 +181,7 @@ describe("parseDemoRunEvent", () => {
       "upper_id.json",
       "stop_before_start.json",
       "array.json",
+      "regression_inherited_kind.json",
     ]) {
       assert.equal(parseDemoRunEvent(valueOf(seed("demo_run", off))), null, off);
     }

@@ -41,8 +41,12 @@ export const DEMO_END_REASONS = [
 /** One of {@link DEMO_END_REASONS}. */
 export type DemoEndReason = (typeof DEMO_END_REASONS)[number];
 
-/** Longest run accepted: the demo's hard stop is 30 minutes by default. */
-export const MAX_RUN_SECONDS = 6 * 3600;
+/**
+ * Longest run accepted: a day. The demo's hard stop is 30 minutes by
+ * default and `SESSION_MINUTES` may raise it, but its daily budget caps
+ * every run well inside a day.
+ */
+export const MAX_RUN_SECONDS = 24 * 3600;
 
 /** Longest startup accepted, as the demo itself caps it. */
 export const MAX_STARTUP_SECONDS = 600;

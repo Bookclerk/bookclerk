@@ -180,6 +180,40 @@ pub fn load_report_history(files_dir: &Path) -> Vec<ReportRecord> {
         .unwrap_or_default()
 }
 
+/// Longest a writer waits for another's lock on a small diagnostics file
+/// (the report history, the install ID) before giving up.
+pub(crate) const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Takes an exclusive lock on `file`, waiting at most `wait`.
+///
+/// # Arguments
+///
+/// * `file` - The open lock file.
+/// * `wait` - Longest wait for another holder to let go.
+///
+/// # Errors
+///
+/// Returns [`std::io::ErrorKind::TimedOut`] when the lock is still held after
+/// `wait`, or the error locking failed with.
+pub(crate) fn lock_within(file: &std::fs::File, wait: std::time::Duration) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::Error(err)) => return Err(err),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "another process holds the lock",
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+}
+
 /// Adds a report to the history, keeping the newest [`MAX_REPORT_HISTORY`].
 ///
 /// The daemon and a CLI run can both upload from the same files directory,
@@ -208,7 +242,7 @@ pub fn record_report(files_dir: &Path, record: ReportRecord) -> std::io::Result<
         .write(true)
         .open(path.with_extension("json.lock"))?;
     // Released when `lock` drops at the end of this function.
-    lock.lock()?;
+    lock_within(&lock, LOCK_WAIT)?;
     let mut rows = load_report_history(files_dir);
     rows.push(record);
     let excess = rows.len().saturating_sub(MAX_REPORT_HISTORY);
@@ -226,6 +260,26 @@ mod tests {
 
     /// A valid report ID for the tests.
     const ID: &str = "0e9ced79-df3c-4dae-872b-2e5772b06e69";
+
+    #[test]
+    fn a_held_lock_times_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.lock");
+        let open = || {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&path)
+                .unwrap()
+        };
+        let holder = open();
+        lock_within(&holder, LOCK_WAIT).unwrap();
+        let err = lock_within(&open(), std::time::Duration::from_millis(50)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        drop(holder);
+        lock_within(&open(), std::time::Duration::from_millis(50)).unwrap();
+    }
 
     #[test]
     fn concurrent_writers_keep_every_report() {

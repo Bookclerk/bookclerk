@@ -134,8 +134,8 @@ impl InstallId {
     }
 }
 
-/// Takes the exclusive lock on `install-id.lock`, held until the returned
-/// file drops. The daemon's check-in, an upload and a CLI run can all load
+/// Takes the exclusive lock on `install-id.lock` (waiting at most a few
+/// seconds for another holder), held until the returned file drops. The daemon's check-in, an upload and a CLI run can all load
 /// the ID at once; under the lock only the first creates it and the rest
 /// read what it wrote, so one install never gets two IDs.
 fn lock_id(files_dir: &Path) -> std::io::Result<std::fs::File> {
@@ -145,7 +145,7 @@ fn lock_id(files_dir: &Path) -> std::io::Result<std::fs::File> {
         .truncate(false)
         .write(true)
         .open(files_dir.join(format!("{INSTALL_ID_FILE}.lock")))?;
-    file.lock()?;
+    crate::report_history::lock_within(&file, crate::report_history::LOCK_WAIT)?;
     Ok(file)
 }
 

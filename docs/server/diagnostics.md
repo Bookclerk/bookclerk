@@ -178,8 +178,8 @@ the operator can change it under **Settings → Server Settings →
 Diagnostics**. A change from Settings applies without a restart: within
 a minute of the switch turning on, the daemon loads (or makes) the
 install ID and sends a check-in if one is due. A report sent before then
-loads the ID itself, so it is never sent without one while the switch is
-on.
+loads the ID itself; only when the ID file cannot be read or written
+does a report go without one.
 
 With it on, the daemon and the desktop app send one check-in a week to
 the collector's `/checkin` route. A check-in holds only:

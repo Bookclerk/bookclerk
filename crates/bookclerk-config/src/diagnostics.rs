@@ -357,12 +357,13 @@ impl DiagnosticsHandle {
         }
         let dir = self.inner.files_dir.get()?;
         let id = crate::InstallId::load_or_create(dir).ok()?;
-        Some(
-            self.inner
-                .install_id
-                .get_or_init(|| id.as_str().to_string())
-                .clone(),
-        )
+        let id = self
+            .inner
+            .install_id
+            .get_or_init(|| id.as_str().to_string())
+            .clone();
+        // Usage sharing may have been turned off while the ID loaded.
+        self.share_usage().then_some(id)
     }
 
     /// What uploads report as `deployment`: `demo` for a copy of the hosted
@@ -556,11 +557,16 @@ impl DiagnosticsHandle {
     /// Serializes HTTP, sanitizes events, and POSTs; refuses the body if a registered secret remains.
     fn run_upload(&self, trigger: &str) {
         // Serialize HTTP so a crash/explicit waiter never overlaps a burst POST.
-        let _gate = self
+        let gate = self
             .inner
             .upload_gate
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // Report sharing may have been turned off while this upload waited.
+        if !self.upload_enabled() {
+            self.inner.upload_in_flight.store(false, Ordering::SeqCst);
+            return;
+        }
 
         let events = {
             let guard = self.inner.ring.lock().unwrap_or_else(|e| e.into_inner());
@@ -598,6 +604,8 @@ impl DiagnosticsHandle {
             }
         }
         self.inner.upload_in_flight.store(false, Ordering::SeqCst);
+        // The history write needs no gate; later uploads need not wait on it.
+        drop(gate);
 
         // Avoid tracing recursion from the upload path: report on stderr.
         match result {
