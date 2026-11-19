@@ -544,7 +544,10 @@ remote rescan). Acquire retries skip titles already `acquired`, except when
 not `acquired`, or `pdf_storage_key` is missing/empty). Those rows stay in
 the job target list so a later acquire can resume the PDF-only side effect.
 A companion PDF that exceeds the remaining scratch budget is soft-failed
-(`pdf_status=error`) so the audio acquire can succeed. Dedicated
+(`pdf_status=error`) so the audio acquire can succeed; a store that
+answers the resumed PDF with `rateLimited` fails the title instead, so the
+job records the account's cool-down (see [Download pacing](#download-pacing)).
+Dedicated
 `acquire --pdf` still fails the job when the PDF cannot be stored; that
 path always unregisters its `acquire-pdf` scratch reservation, including
 on fetch/quota errors.

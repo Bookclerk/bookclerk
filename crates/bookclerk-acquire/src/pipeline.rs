@@ -2267,8 +2267,10 @@ async fn record_companion_pdf_failure(
 ///
 /// # Errors
 ///
-/// Never returns an error today: a failed check for an already stored PDF,
-/// and download and store failures, are recorded on `pdf_status` instead.
+/// Returns the store's `RateLimited` refusal, after recording it on
+/// `pdf_status`, so the job pauses the account. Any other failure (checking
+/// for an already stored PDF, downloading or storing it) is only recorded
+/// on `pdf_status`.
 async fn resume_missing_companion_pdf(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
@@ -2292,6 +2294,14 @@ async fn resume_missing_companion_pdf(
         Ok(result) => Ok(result.fetched_from_store),
         Err(err) => {
             record_companion_pdf_failure(library, req, &err).await;
+            // The store asking the account to slow down is the job's to
+            // act on (a cool-down), so it is not swallowed with the rest.
+            if matches!(
+                err,
+                AcquireError::Source(bookclerk_source::SourceError::RateLimited(_))
+            ) {
+                return Err(err);
+            }
             Ok(true)
         }
     }
@@ -5906,6 +5916,123 @@ mod tests {
             .expect("book after retry");
         assert_eq!(after_retry.acquire_status, AcquireStatus::Acquired);
         assert_eq!(after_retry.pdf_status, AcquireStatus::Error);
+    }
+
+    /// A store that answers its first fetch as [`CountingSource`] does
+    /// and asks the account to slow down on every later one.
+    struct ThrottlesAfterFirst(CountingSource);
+
+    #[async_trait::async_trait]
+    impl ContentSource for ThrottlesAfterFirst {
+        fn id(&self) -> &str {
+            self.0.id()
+        }
+
+        fn portal_auth_mode(&self) -> bookclerk_source::PortalAuthMode {
+            self.0.portal_auth_mode()
+        }
+
+        fn portal_brand(&self) -> bookclerk_source::SourceBrand {
+            self.0.portal_brand()
+        }
+
+        async fn login(
+            &self,
+            scope: &bookclerk_library::SourceScope,
+            opts: bookclerk_source::LoginOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::SourceAccount> {
+            self.0.login(scope, opts).await
+        }
+
+        async fn list_accounts(
+            &self,
+            scope: &bookclerk_library::SourceScope,
+        ) -> bookclerk_source::Result<Vec<bookclerk_source::SourceAccount>> {
+            self.0.list_accounts(scope).await
+        }
+
+        async fn scan(
+            &self,
+            scope: &bookclerk_library::SourceScope,
+            opts: bookclerk_source::ScanOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::ScanSummary> {
+            self.0.scan(scope, opts).await
+        }
+
+        async fn fetch_title(
+            &self,
+            scope: &bookclerk_library::SourceScope,
+            account_id: &str,
+            title_id: &str,
+            opts: &FetchOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::SourceFetch> {
+            if self.0.fetches.load(Ordering::SeqCst) > 0 {
+                return Err(bookclerk_source::SourceError::RateLimited(None));
+            }
+            self.0.fetch_title(scope, account_id, title_id, opts).await
+        }
+    }
+
+    /// A store that refuses the resumed companion PDF for downloading too
+    /// much hands that refusal to the job, so the account pauses, while
+    /// the acquired audio stays acquired.
+    #[tokio::test]
+    async fn a_throttled_companion_pdf_resume_reaches_the_job() {
+        let store = test_store().await;
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let book = store
+            .upsert_book(&bookclerk_library::NewBook::minimal(
+                "B00PDFT",
+                "user-1",
+                "us",
+                "Pdf Throttle",
+            ))
+            .await
+            .unwrap();
+        let id = job_id(&store).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let dest_root = tmp.path().join("dest");
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let pdf_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let url = serve_http_body_loop(vec![0u8; 64], pdf_hits.clone()).await;
+
+        let mut req = dummy_req(&cache, Some(id), Some(16));
+        req.asin = "B00PDFT".into();
+        req.book_uuid = Some(book.uuid);
+        req.title = "Pdf Throttle".into();
+        let destinations = counting_destinations_with(&dest_root, puts.clone(), true);
+        let source = ThrottlesAfterFirst(CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: Some(url),
+        });
+        acquire_book(&store, &destinations, req.clone(), &source)
+            .await
+            .expect("audio acquire succeeds when the companion PDF is too large");
+
+        let err = acquire_book(&store, &destinations, req, &source)
+            .await
+            .expect_err("the throttled PDF resume is the job's to act on");
+        assert!(
+            matches!(
+                err,
+                AcquireError::Source(bookclerk_source::SourceError::RateLimited(_))
+            ),
+            "unexpected error: {err}"
+        );
+        let after = store
+            .get_book("B00PDFT", "user-1")
+            .await
+            .unwrap()
+            .expect("book after retry");
+        assert_eq!(after.acquire_status, AcquireStatus::Acquired);
+        assert_eq!(after.pdf_status, AcquireStatus::Error);
+        assert_eq!(puts.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
