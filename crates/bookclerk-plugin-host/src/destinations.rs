@@ -5,7 +5,9 @@
 //! deployment cannot acquire.
 
 use bookclerk_acquire::{AcquireDestination, AcquireDestinations, AcquireError, Result};
-use bookclerk_config::Config;
+use std::collections::BTreeMap;
+
+use bookclerk_config::{Config, DestinationFilter};
 use bookclerk_source::DownloadOptions;
 use bookclerk_storage::StorageBackend;
 
@@ -20,12 +22,22 @@ const NO_DESTINATION: &str =
 /// Every deployed storage plugin instance is a destination; path
 /// destinations come first, and the first destination is the primary.
 ///
+/// # Arguments
+///
+/// * `config` - The host's configuration, for download options.
+/// * `destinations` - The deployed destinations.
+/// * `filters` - Stored destination filters by plugin instance id
+///   (`bookclerk_library::control_plane::destination_filters`), or an
+///   empty map when the caller sets them later; a
+///   destination without one takes every book.
+///
 /// # Errors
 ///
 /// Returns an error when no destination is deployed on this host.
 pub fn build_acquire_destinations(
     config: &Config,
     destinations: &DestinationRegistry,
+    filters: &BTreeMap<String, DestinationFilter>,
 ) -> Result<AcquireDestinations> {
     let deployed = destinations.destinations();
     let primary = deployed
@@ -41,6 +53,7 @@ pub fn build_acquire_destinations(
                 &dest.settings.naming,
                 &dest.settings.prefix,
             ),
+            filter: filters.get(dest.id.as_str()).cloned().unwrap_or_default(),
             id: dest.id,
             backend: dest.backend.clone_box(),
         })
