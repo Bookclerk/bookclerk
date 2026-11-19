@@ -6,8 +6,10 @@
 
 /// Normalize a language tag or display name to a primary ISO-ish code.
 ///
-/// Accepts BCP-47 (`en-US`), bare codes (`en`), and common Audible display
-/// names (`english`). Returns `None` for empty / unrecognized input.
+/// Accepts BCP-47 (`en-US`), bare codes (`en`), ISO 639-2 codes in either
+/// their terminology or bibliographic (MARC) form (`fra` / `fre`, as
+/// Libro.fm sends them), and common Audible display names (`english`).
+/// Returns `None` for empty / unrecognized input.
 #[must_use]
 pub fn normalize_language(raw: &str) -> Option<String> {
     let s = raw.trim().to_ascii_lowercase();
@@ -22,7 +24,7 @@ pub fn normalize_language(raw: &str) -> Option<String> {
     let code = match primary {
         "english" | "eng" => "en",
         "spanish" | "español" | "espanol" | "spa" => "es",
-        "french" | "français" | "francais" | "fra" => "fr",
+        "french" | "français" | "francais" | "fra" | "fre" => "fr",
         "german" | "deutsch" | "deu" | "ger" => "de",
         "italian" | "italiano" | "ita" => "it",
         "portuguese" | "português" | "portugues" | "por" => "pt",
@@ -86,6 +88,10 @@ mod tests {
         assert_eq!(normalize_language("EN").as_deref(), Some("en"));
         assert_eq!(normalize_language("english").as_deref(), Some("en"));
         assert_eq!(normalize_language("Spanish").as_deref(), Some("es"));
+        // Libro.fm's MARC codes.
+        assert_eq!(normalize_language("fre").as_deref(), Some("fr"));
+        assert_eq!(normalize_language("ger").as_deref(), Some("de"));
+        assert_eq!(normalize_language("spa").as_deref(), Some("es"));
         assert_eq!(normalize_language("  ").as_deref(), None);
         assert_eq!(normalize_language("unknown-lang").as_deref(), None);
     }

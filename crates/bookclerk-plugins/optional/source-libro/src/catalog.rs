@@ -132,7 +132,8 @@ pub async fn catalog_detail(
 /// `explore/audiobook_details`. Otherwise, or when that returns none, a
 /// Libro.fm seed gets more titles by its first author and a seed from
 /// another store gets a title-and-author search. The seed itself is never
-/// returned.
+/// returned. Every row is then read in full from its details
+/// ([`read_in_full`]), since the lists leave out the language and price.
 ///
 /// # Arguments
 ///
@@ -166,13 +167,9 @@ pub async fn expand_candidates(
                 .into_iter()
                 .filter(|h| h.isbn().as_deref() != Some(isbn))
                 .take(limit)
-                .map(|mut h| {
-                    h.origin.clone_from(&origin);
-                    h.decode_html_entities()
-                })
                 .collect();
             if !related.is_empty() {
-                return Ok(related);
+                return read_in_full(&http, base_url, related, &origin).await;
             }
         }
     }
@@ -193,16 +190,63 @@ pub async fn expand_candidates(
     }
     // One extra row so dropping the seed still leaves `limit` candidates.
     let hits = libro_search_hits(&http, base_url, &query, limit.saturating_add(1), 1).await?;
-    Ok(hits
+    let hits: Vec<CatalogHit> = hits
         .into_iter()
         .filter(|h| seed_isbn.is_none() || h.isbn() != seed_isbn)
         .take(limit)
-        .map(|mut h| {
-            h.origin.clone_from(&origin);
-            h.decode_html_entities()
-        })
-        .collect())
+        .collect();
+    read_in_full(&http, base_url, hits, &origin).await
 }
+
+/// Lean related or search rows read in full from their details, so each
+/// candidate carries its language, price and the rest of its record.
+///
+/// Libro.fm's search and related lists leave the language out, and the
+/// host keeps a candidate of unknown language, so without this a
+/// translation of a seed (a Spanish *Project Hail Mary*) reaches a reader
+/// who listens only in English. A row whose details say it is not for sale
+/// is dropped; one with no ISBN, or whose details miss, stays as the list
+/// showed it. Rows keep their order and get `origin`.
+///
+/// # Arguments
+///
+/// * `http` - Client for the details requests.
+/// * `base_url` - Libro.fm API origin.
+/// * `rows` - The lean rows, already cut to the requested count.
+/// * `origin` - Why the rows were found, shown on each candidate.
+///
+/// # Errors
+///
+/// Only Libro.fm's "slow down", so the host pauses the store instead of
+/// storing an answer of lean rows.
+async fn read_in_full(
+    http: &HttpClient,
+    base_url: &str,
+    rows: Vec<CatalogHit>,
+    origin: &str,
+) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
+    let full_rows: Vec<bookclerk_storefront::Result<Option<CatalogHit>>> =
+        futures::stream::iter(rows)
+            .map(|hit| for_sale_row(http, base_url, hit, None))
+            .buffered(EXPAND_DETAIL_CONCURRENCY)
+            .collect()
+            .await;
+    let mut out = Vec::with_capacity(full_rows.len());
+    for row in full_rows {
+        if let Some(mut hit) = row? {
+            origin.clone_into(&mut hit.origin);
+            out.push(hit.decode_html_entities());
+        }
+    }
+    Ok(out)
+}
+
+/// How many related rows' details [`expand_candidates`] fetches at once.
+///
+/// An expansion reads up to a couple of dozen rows inside the host's
+/// ten-second call timeout, so it runs more at once than a price lookup's
+/// handful ([`DETAIL_CONCURRENCY`]).
+const EXPAND_DETAIL_CONCURRENCY: usize = 6;
 
 /// Resolve a Libro.fm product link for a title, by ISBN first and then by
 /// title and author.

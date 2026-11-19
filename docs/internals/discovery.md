@@ -461,7 +461,11 @@ languages are the normalized languages of the taste books (the subject's own,
 with the household's blended in while those are few), or the default
 preferred language (`en`) when no taste book has one. A candidate whose store
 gave no language, or one `normalize_language` does not recognize, stays, as
-in catalog search. Editions in two different languages are different
+in catalog search, so a store's related titles should carry their language.
+Libro.fm's search and related lists leave it out (they often hold a seed's
+translations), so its plugin reads each related title from
+`explore/audiobook_details`, which gives the language, the list price and
+whether the title is for sale, and leaves out one that is not. Editions in two different languages are different
 expressions, so they are never merged into one candidate, and dropping one
 language never drops the other edition with it.
 
