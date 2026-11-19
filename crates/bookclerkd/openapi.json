@@ -19390,6 +19390,19 @@
               }
             }
           },
+          "413": {
+            "description": "The body is over 4096 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the body is at most 4096 bytes"
+                }
+              }
+            }
+          },
           "415": {
             "description": "The request did not declare a JSON body.",
             "content": {
@@ -19626,6 +19639,19 @@
                 },
                 "example": {
                   "error": "session_ended"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over 1024 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the body is at most 1024 bytes"
                 }
               }
             }
@@ -19877,6 +19903,19 @@
                 },
                 "example": {
                   "error": "session_ended"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over 1024 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the body is at most 1024 bytes"
                 }
               }
             }
@@ -20631,6 +20670,19 @@
               }
             }
           },
+          "413": {
+            "description": "The body is over 4096 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the body is at most 4096 bytes"
+                }
+              }
+            }
+          },
           "415": {
             "description": "The request did not declare a JSON body.",
             "content": {
@@ -21228,6 +21280,19 @@
               }
             }
           },
+          "413": {
+            "description": "The body is over 4096 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the body is at most 4096 bytes"
+                }
+              }
+            }
+          },
           "415": {
             "description": "The request did not declare a JSON body.",
             "content": {
@@ -21462,6 +21527,19 @@
                 },
                 "example": {
                   "error": "unknown_bookmark"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over 4096 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the body is at most 4096 bytes"
                 }
               }
             }

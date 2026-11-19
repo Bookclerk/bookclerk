@@ -584,6 +584,9 @@ only that. The others check:
   canonical unpadded URL-safe Base64 for a change time, a `|` and an
   edition id of 1 to 128 bytes, and an accepted cursor writes back to
   the same token.
+  The routes refuse a body over the parsers' length limits (`413`)
+  before reading it as the same JSON type, so they accept nothing the
+  parsers refuse.
   The shared oracle is `fuzz/oracles/playback_request.rs`, replayed from
   `bookclerk-library`.
 - **`sharing_request`**: reads the body as an untyped JSON value. It is

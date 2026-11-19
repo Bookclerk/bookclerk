@@ -196,6 +196,31 @@ async fn send(
     }
 }
 
+/// Sends `body` as it is, as JSON from `cookie`: for bodies the JSON
+/// writer would not produce.
+async fn send_text(world: &World, method: Method, uri: &str, cookie: &str, body: String) -> Answer {
+    let request = axum::http::Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::HOST, "library.test")
+        .header(header::COOKIE, cookie)
+        .header(header::ORIGIN, "http://library.test")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(body))
+        .unwrap();
+    let response = world.app.clone().oneshot(request).await.unwrap();
+    Answer {
+        status: response.status(),
+        headers: response.headers().clone(),
+        bytes: response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    }
+}
 /// `GET uri` as `cookie`.
 async fn get(world: &World, uri: &str, cookie: Option<&str>) -> Answer {
     send(world, Method::GET, uri, cookie, None, None).await
@@ -741,6 +766,64 @@ async fn a_member_keeps_progress_and_bookmarks_of_their_own() {
         let answer = post(&world, "/api/playback/sessions", Some(riley), body).await;
         assert_eq!(answer.status, status);
     }
+
+    // A body past the parser's length limit is refused before it is read,
+    // even when all but a few bytes are JSON whitespace.
+    let padded = |limit: usize, body: Value| format!("{}{body}", " ".repeat(limit));
+    // The length is checked before the session is looked up.
+    let session = "0b1c2d3e-0000-4000-8000-000000000000";
+    for (method, uri, limit, body) in [
+        (
+            Method::POST,
+            "/api/playback/sessions".to_string(),
+            MAX_PLAYBACK_BODY_BYTES,
+            json!({"edition_id": first}),
+        ),
+        (
+            Method::POST,
+            format!("/api/playback/sessions/{session}/sync"),
+            MAX_PLAYBACK_SYNC_BYTES,
+            json!({"position_ms": 1000}),
+        ),
+        (
+            Method::POST,
+            format!("/api/playback/sessions/{session}/close"),
+            MAX_PLAYBACK_SYNC_BYTES,
+            json!({"position_ms": 1000}),
+        ),
+        (
+            Method::PUT,
+            format!("/api/playback/progress/{first}"),
+            MAX_PLAYBACK_BODY_BYTES,
+            json!({"position_ms": 1000}),
+        ),
+        (
+            Method::POST,
+            format!("/api/library/editions/{first}/bookmarks"),
+            MAX_PLAYBACK_BODY_BYTES,
+            json!({"position_ms": 1000}),
+        ),
+    ] {
+        let answer = send_text(&world, method, &uri, riley, padded(limit, body)).await;
+        assert_eq!(answer.status, StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
+        assert_eq!(
+            answer.json()["error"],
+            format!("the body is at most {limit} bytes"),
+            "{uri}"
+        );
+    }
+    // The limit itself is inside: padding to exactly the limit is read.
+    let body = json!({"position_ms": 1000}).to_string();
+    let exact = format!("{}{body}", " ".repeat(MAX_PLAYBACK_BODY_BYTES - body.len()));
+    let answer = send_text(
+        &world,
+        Method::PUT,
+        &format!("/api/playback/progress/{first}"),
+        riley,
+        exact,
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.json());
 
     // Bookmarks.
     let bookmarks = format!("/api/library/editions/{first}/bookmarks");

@@ -40,9 +40,9 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path as AxumPath, Query, Request, State};
+use axum::extract::{FromRequest, Path as AxumPath, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::control_plane::{
     authorize_playback, load_or_create_node_identity, plan_playback, PlaybackPlan, PlaybackTrack,
@@ -51,7 +51,8 @@ use bookclerk_library::{
     parse_progress_cursor, parse_track_path, progress_cursor_token, Bookmark, BookmarkEditBody,
     EntityKind, LibraryError, LibraryStore, NewBookmarkBody, NewPlaybackSession, OpenSessionBody,
     PlaybackChange, PlaybackEdition, PlaybackEvent, PlaybackMs, PlaybackProgress, PlaybackSession,
-    PlaybackSyncBody, ProgressEditBody, MAX_PLAYBACK_TRACKS,
+    PlaybackSyncBody, ProgressEditBody, MAX_PLAYBACK_BODY_BYTES, MAX_PLAYBACK_SYNC_BYTES,
+    MAX_PLAYBACK_TRACKS,
 };
 use serde::{Deserialize, Serialize};
 
@@ -74,6 +75,51 @@ const MAX_PROGRESS_LIMIT: u64 = 100;
 
 /// An error answer of these routes: status and JSON message.
 type PlaybackError = (StatusCode, Json<ErrorMessage>);
+
+/// A JSON request body of at most `MAX` bytes: the length limit of the
+/// sans-IO parser the fuzz target drives, applied before the same JSON
+/// reading, so the route accepts no body the parser refuses for its size.
+///
+/// A longer body is answered `413`; everything else is [`Json`]'s own
+/// answer (`415` without the JSON content type, `400` for bytes that are
+/// not JSON, `422` for JSON of another shape).
+pub(crate) struct BoundedJson<T, const MAX: usize>(
+    /// The body, read from JSON.
+    pub(crate) T,
+);
+
+impl<S, T, const MAX: usize> FromRequest<S> for BoundedJson<T, MAX>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned,
+{
+    type Rejection = Response;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let (parts, body) = request.into_parts();
+        // One byte past the limit is enough to know the body is too long.
+        let bytes = axum::body::to_bytes(body, MAX.saturating_add(1))
+            .await
+            .map_err(|_| too_long(MAX))?;
+        if bytes.len() > MAX {
+            return Err(too_long(MAX));
+        }
+        let request = Request::from_parts(parts, axum::body::Body::from(bytes));
+        match Json::<T>::from_request(request, state).await {
+            Ok(Json(body)) => Ok(Self(body)),
+            Err(rejection) => Err(rejection.into_response()),
+        }
+    }
+}
+
+/// The 413 a body over `max` bytes gets.
+fn too_long(max: usize) -> Response {
+    refuse(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        format!("the body is at most {max} bytes"),
+    )
+    .into_response()
+}
 
 /// An error answer with `status` and `message`.
 fn refuse(status: StatusCode, message: impl Into<String>) -> PlaybackError {
@@ -448,6 +494,7 @@ pub(crate) struct SessionJson {
     responses(
         (status = 200, description = "The session, its tracks and where to start.", body = SessionJson),
         (status = 400, description = "The edition id is empty or over 128 bytes.", body = ErrorMessage, example = json!({"error": "edition_id must be 1 to 128 bytes"})),
+        (status = 413, description = "The body is over 4096 bytes.", body = ErrorMessage, example = json!({"error": "the body is at most 4096 bytes"})),
         (status = 401, description = "The session ended.", body = ErrorMessage, example = json!({"error": "sign in again"})),
         (status = 403, description = "The session has no library user.", body = ErrorMessage, example = json!({"error": "this session has no library user to keep listening state for"})),
         (status = 404, description = "No such edition (`edition ... not found`), or no copy of it on this node that the caller may play (`not_playable`).", body = ErrorMessage, examples(("unknown" = (summary = "No such edition", value = json!({"error": "edition 5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d not found"}))), ("not_playable" = (summary = "Nothing to play here", value = json!({"error": "not_playable"}))))),
@@ -458,7 +505,7 @@ pub(crate) struct SessionJson {
 pub(crate) async fn post_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<OpenSessionBody>,
+    BoundedJson(body): BoundedJson<OpenSessionBody, MAX_PLAYBACK_BODY_BYTES>,
 ) -> Result<Json<SessionJson>, PlaybackError> {
     const ROUTE: &str = "POST /api/playback/sessions";
     // The same check the fuzz target drives (`parse_open_session_request`).
@@ -634,6 +681,7 @@ async fn report(
     responses(
         (status = 200, description = "The caller's progress after the report.", body = SyncJson),
         (status = 400, description = "A length is past sixty days.", body = ErrorMessage, example = json!({"error": "position_ms must be at most 5184000000"})),
+        (status = 413, description = "The body is over 1024 bytes.", body = ErrorMessage, example = json!({"error": "the body is at most 1024 bytes"})),
         (status = 403, description = "The session has no library user.", body = ErrorMessage, example = json!({"error": "this session has no library user to keep listening state for"})),
         (status = 404, description = "No such session of the caller's (`unknown_session`).", body = ErrorMessage, example = json!({"error": "unknown_session"})),
         (status = 409, description = "The session was already closed (`session_ended`); open a new one.", body = ErrorMessage, example = json!({"error": "session_ended"})),
@@ -644,7 +692,7 @@ pub(crate) async fn post_session_sync(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
-    Json(body): Json<PlaybackSyncBody>,
+    BoundedJson(body): BoundedJson<PlaybackSyncBody, MAX_PLAYBACK_SYNC_BYTES>,
 ) -> Result<Json<SyncJson>, PlaybackError> {
     const ROUTE: &str = "POST /api/playback/sessions/{id}/sync";
     report(&state, &headers, &id, body, false, ROUTE).await
@@ -659,6 +707,7 @@ pub(crate) async fn post_session_sync(
     responses(
         (status = 200, description = "The caller's progress after the report; the session is closed.", body = SyncJson),
         (status = 400, description = "A length is past sixty days.", body = ErrorMessage, example = json!({"error": "position_ms must be at most 5184000000"})),
+        (status = 413, description = "The body is over 1024 bytes.", body = ErrorMessage, example = json!({"error": "the body is at most 1024 bytes"})),
         (status = 403, description = "The session has no library user.", body = ErrorMessage, example = json!({"error": "this session has no library user to keep listening state for"})),
         (status = 404, description = "No such session of the caller's (`unknown_session`).", body = ErrorMessage, example = json!({"error": "unknown_session"})),
         (status = 409, description = "The session was already closed (`session_ended`).", body = ErrorMessage, example = json!({"error": "session_ended"})),
@@ -669,7 +718,7 @@ pub(crate) async fn post_session_close(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
-    Json(body): Json<PlaybackSyncBody>,
+    BoundedJson(body): BoundedJson<PlaybackSyncBody, MAX_PLAYBACK_SYNC_BYTES>,
 ) -> Result<Json<SyncJson>, PlaybackError> {
     const ROUTE: &str = "POST /api/playback/sessions/{id}/close";
     report(&state, &headers, &id, body, true, ROUTE).await
@@ -888,6 +937,7 @@ fn checked<T>(checked: Result<T, LibraryError>, route: &str) -> Result<T, Playba
     responses(
         (status = 200, description = "The caller's progress after the change.", body = SyncJson),
         (status = 400, description = "A length is past sixty days.", body = ErrorMessage, example = json!({"error": "position_ms must be at most 5184000000"})),
+        (status = 413, description = "The body is over 4096 bytes.", body = ErrorMessage, example = json!({"error": "the body is at most 4096 bytes"})),
         (status = 401, description = "The session ended.", body = ErrorMessage, example = json!({"error": "sign in again"})),
         (status = 403, description = "The session has no library user.", body = ErrorMessage, example = json!({"error": "this session has no library user to keep listening state for"})),
         (status = 404, description = "No such edition.", body = ErrorMessage, example = json!({"error": "edition 5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d not found"})),
@@ -898,7 +948,7 @@ pub(crate) async fn put_progress(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     AxumPath(edition_id): AxumPath<String>,
-    Json(body): Json<ProgressEditBody>,
+    BoundedJson(body): BoundedJson<ProgressEditBody, MAX_PLAYBACK_BODY_BYTES>,
 ) -> Result<Json<SyncJson>, PlaybackError> {
     const ROUTE: &str = "PUT /api/playback/progress/{edition_id}";
     // The same check the fuzz target drives (`parse_progress_edit_request`).
@@ -1010,6 +1060,7 @@ pub(crate) async fn list_edition_bookmarks(
     responses(
         (status = 200, description = "The new bookmark.", body = BookmarkJson),
         (status = 400, description = "The position is past sixty days, or the title is too long or has control characters.", body = ErrorMessage, example = json!({"error": "title must be at most 200 bytes"})),
+        (status = 413, description = "The body is over 4096 bytes.", body = ErrorMessage, example = json!({"error": "the body is at most 4096 bytes"})),
         (status = 401, description = "The session ended.", body = ErrorMessage, example = json!({"error": "sign in again"})),
         (status = 403, description = "The session has no library user.", body = ErrorMessage, example = json!({"error": "this session has no library user to keep listening state for"})),
         (status = 404, description = "No such edition.", body = ErrorMessage, example = json!({"error": "edition 5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d not found"})),
@@ -1021,7 +1072,7 @@ pub(crate) async fn post_edition_bookmark(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
-    Json(body): Json<NewBookmarkBody>,
+    BoundedJson(body): BoundedJson<NewBookmarkBody, MAX_PLAYBACK_BODY_BYTES>,
 ) -> Result<Json<BookmarkJson>, PlaybackError> {
     const ROUTE: &str = "POST /api/library/editions/{id}/bookmarks";
     // The same check the fuzz target drives (`parse_new_bookmark_request`).
@@ -1060,6 +1111,7 @@ fn no_bookmark() -> PlaybackError {
     responses(
         (status = 200, description = "The bookmark after the change.", body = BookmarkJson),
         (status = 400, description = "The position is past sixty days, or the title is too long or has control characters.", body = ErrorMessage, example = json!({"error": "title must be at most 200 bytes"})),
+        (status = 413, description = "The body is over 4096 bytes.", body = ErrorMessage, example = json!({"error": "the body is at most 4096 bytes"})),
         (status = 403, description = "The session has no library user.", body = ErrorMessage, example = json!({"error": "this session has no library user to keep listening state for"})),
         (status = 404, description = "No such bookmark of the caller's (`unknown_bookmark`).", body = ErrorMessage, example = json!({"error": "unknown_bookmark"})),
         (status = 500, description = "The library could not be written.", body = ErrorMessage, example = json!({"error": "the listening state could not be written"})),
@@ -1069,7 +1121,7 @@ pub(crate) async fn put_bookmark(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
-    Json(body): Json<BookmarkEditBody>,
+    BoundedJson(body): BoundedJson<BookmarkEditBody, MAX_PLAYBACK_BODY_BYTES>,
 ) -> Result<Json<BookmarkJson>, PlaybackError> {
     const ROUTE: &str = "PUT /api/playback/bookmarks/{id}";
     // The same check the fuzz target drives (`parse_bookmark_edit_request`).

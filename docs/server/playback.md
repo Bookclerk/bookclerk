@@ -76,7 +76,9 @@ of its tracks.
   one edition. A bookmark's note is at most 200 bytes with no control
   characters, and a player's name is kept to 64 bytes.
 - **Request bodies** are JSON objects with only the documented fields.
-  One out of range gets `400`; one of another shape gets `422`.
+  One out of range gets `400`; one of another shape gets `422`. A
+  report (`sync` or `close`) is at most 1024 bytes and every other body
+  at most 4096 bytes; a longer one gets `413`.
 - **Time listened** in a session is the sum of what its reports carry,
   so reports that overlap all count.
 - **Cross-site requests** are refused like every other cookie-signed
