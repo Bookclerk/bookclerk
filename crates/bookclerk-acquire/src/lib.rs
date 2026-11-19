@@ -27,7 +27,7 @@ mod split;
 
 pub use convert::{convert_book, ConvertRequest, ConvertSummary};
 mod storage_scan;
-pub use destinations::{destination_id, AcquireDestination, AcquireDestinations};
+pub use destinations::{AcquireDestination, AcquireDestinations};
 pub use error::{AcquireError, Result};
 pub use library_copies::{
     from_store, LibraryCopies, LibraryCopy, LibraryCopyError, LibraryCopyFile, LibraryCopyListing,

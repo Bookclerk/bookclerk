@@ -1170,8 +1170,8 @@ impl From<LibraryId> for String {
 /// ([`Body::AcquireTargets`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanDestination {
-    /// Destination id on that owner node (its output kind, such as `local`
-    /// or `s3`; one destination per kind).
+    /// Destination id on that owner node: its storage plugin's id, such
+    /// as `local`, `s3` or `r2` (one destination per plugin).
     pub id: String,
     /// That destination's `DownloadOptions` (JSON): its naming templates,
     /// replacement characters and path limits.

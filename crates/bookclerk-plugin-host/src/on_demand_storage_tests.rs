@@ -17,7 +17,7 @@ use crate::activation::{Guest, GuestStarter, OnDemandStatus};
 use crate::rpc_session::PluginSession;
 
 /// Storage double: a local directory behind a guest that can stop.
-struct FakeStorage {
+pub(crate) struct FakeStorage {
     /// Cleared when the double is stopped.
     running: AtomicBool,
     /// Backend over the shared test directory.
@@ -67,7 +67,7 @@ type NamedCall<'a> = (
 );
 
 /// Guests a [`FakeStarter`] started, shared with the test.
-type Started = Arc<std::sync::Mutex<Vec<Arc<FakeStorage>>>>;
+pub(crate) type Started = Arc<std::sync::Mutex<Vec<Arc<FakeStorage>>>>;
 
 /// Starter double that hands out fresh [`FakeStorage`]s over one directory.
 struct FakeStarter {
@@ -90,7 +90,7 @@ impl GuestStarter<dyn AwakeStorage> for FakeStarter {
 }
 
 /// Proxy over a first double in `dir` that sleeps after `idle`.
-fn proxy(
+pub(crate) fn proxy(
     dir: &tempfile::TempDir,
     idle: Duration,
 ) -> (Arc<OnDemandStorage>, Arc<FakeStorage>, Started) {

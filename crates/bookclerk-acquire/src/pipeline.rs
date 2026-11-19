@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use bookclerk_config::{FileTimestampMode, MultiDestinationMode, OutputBackendKind};
+use bookclerk_config::{DestinationId, FileTimestampMode, MultiDestinationMode};
 use bookclerk_enrich::{asin_identifier, chapter_info_from_layout, MetadataProviders};
 use bookclerk_library::{AcquireStatus, FileOwner, FileProbe, LibraryStore};
 use bookclerk_media::{
@@ -26,7 +26,7 @@ use crate::cue::{
     apply_start_map_to_chapter_tree, chapters_from_catalog_info_for_plain_audio,
     rebase_chapter_tree_for_plain_audio, write_cue, FlatChapter,
 };
-use crate::destinations::{destination_id, AcquireDestination, AcquireDestinations};
+use crate::destinations::{AcquireDestination, AcquireDestinations};
 use crate::error::{AcquireError, Result};
 use crate::library_copies::{
     fetch_library_copy, from_store, CopyWants, LibraryCopyListing, LibraryCopySource, LibraryFetch,
@@ -68,9 +68,9 @@ pub struct AcquireRequest {
     pub cache_dir: PathBuf,
     /// When true, download even if matching media already exists in storage.
     pub force: bool,
-    /// When set, only write prepared audio to these destination kinds
+    /// When set, only write prepared audio to these destinations
     /// (`output.multi_destination = refetch_missing`).
-    pub write_destinations: Option<Vec<OutputBackendKind>>,
+    pub write_destinations: Option<Vec<DestinationId>>,
     /// Durable daemon job id that owns this acquire's scratch directory.
     pub job_id: Option<String>,
     /// Refuse a new scratch dir when registered temps already exceed this.
@@ -314,7 +314,7 @@ async fn acquire_book_recorded(
             let backends: Vec<(&str, &dyn StorageBackend)> = destinations
                 .items
                 .iter()
-                .map(|item| (destination_id(item.kind), item.backend.as_ref()))
+                .map(|item| (item.id.as_str(), item.backend.as_ref()))
                 .collect();
             if let Some(primary_key) = share_acquired_sibling(library, &backends, &title).await? {
                 tracing::info!(
@@ -363,19 +363,19 @@ async fn acquire_book_recorded(
             }
             ExistingPlan::SyncMissing {
                 primary_key,
-                source_kind,
+                source_id,
                 source_key,
                 missing,
             } => {
                 tracing::info!(
                     asin = %req.asin,
-                    from = ?source_kind,
+                    from = ?source_id,
                     missing = missing.len(),
                     "syncing existing media to missing destinations (no store fetch)"
                 );
                 let written = sync_missing_destinations(
                     destinations,
-                    source_kind,
+                    &source_id,
                     &source_key,
                     &missing,
                     &req.files_dir.join("stage-journal"),
@@ -405,16 +405,16 @@ async fn acquire_book_recorded(
                 });
             }
             ExistingPlan::Fetch {
-                only_kinds: Some(kinds),
+                only_ids: Some(ids),
             } => {
                 tracing::info!(
                     asin = %req.asin,
-                    destinations = ?kinds,
+                    destinations = ?ids,
                     "re-fetching into missing destinations only"
                 );
-                req.write_destinations = Some(kinds);
+                req.write_destinations = Some(ids);
             }
-            ExistingPlan::Fetch { only_kinds: None } => {
+            ExistingPlan::Fetch { only_ids: None } => {
                 // Full acquire into every destination (refetch_all, or nothing present).
             }
         }
@@ -761,16 +761,16 @@ enum ExistingPlan {
         /// Storage key already present on the primary (or first present) destination.
         primary_key: String,
         /// Destination that already holds the title and will be copied from.
-        source_kind: OutputBackendKind,
-        /// Object key on `source_kind` to copy into missing destinations.
+        source_id: DestinationId,
+        /// Object key on `source_id` to copy into missing destinations.
         source_key: String,
         /// Destinations that lack the title, paired with the planned target key.
-        missing: Vec<(OutputBackendKind, String)>,
+        missing: Vec<(DestinationId, String)>,
     },
-    /// Run the full acquire pipeline (`only_kinds` limits writes when set).
+    /// Run the full acquire pipeline (`only_ids` limits writes when set).
     Fetch {
-        /// When set, restrict the fetch write to these destination kinds; `None` writes all.
-        only_kinds: Option<Vec<OutputBackendKind>>,
+        /// When set, restrict the fetch write to these destinations; `None` writes all.
+        only_ids: Option<Vec<DestinationId>>,
     },
 }
 
@@ -797,13 +797,13 @@ async fn plan_existing_destinations(
                 .await?
             {
                 Some(primary_key) => ExistingPlan::Skip { primary_key },
-                None => ExistingPlan::Fetch { only_kinds: None },
+                None => ExistingPlan::Fetch { only_ids: None },
             },
         );
     }
 
-    let mut present: Vec<(OutputBackendKind, String)> = Vec::new();
-    let mut missing_kinds: Vec<OutputBackendKind> = Vec::new();
+    let mut present: Vec<(DestinationId, String)> = Vec::new();
+    let mut missing_ids: Vec<DestinationId> = Vec::new();
     let mut primary_key = None;
 
     for dest in &destinations.items {
@@ -813,12 +813,12 @@ async fn plan_existing_destinations(
             find_existing_for_request(&dest_index, dest.backend.as_ref(), library, &dest_req)
                 .await?
         {
-            if dest.kind == destinations.primary {
+            if dest.id == destinations.primary {
                 primary_key = Some(key.clone());
             }
-            present.push((dest.kind, key));
+            present.push((dest.id.clone(), key));
         } else {
-            missing_kinds.push(dest.kind);
+            missing_ids.push(dest.id.clone());
         }
     }
 
@@ -826,13 +826,13 @@ async fn plan_existing_destinations(
         .first()
         .and_then(|(_, k)| k.rsplit_once('.').map(|(_, e)| e))
         .unwrap_or("m4b");
-    let mut missing: Vec<(OutputBackendKind, String)> = Vec::new();
-    for kind in missing_kinds {
-        let Some(dest) = destinations.destination(kind) else {
+    let mut missing: Vec<(DestinationId, String)> = Vec::new();
+    for id in missing_ids {
+        let Some(dest) = destinations.destination(&id) else {
             continue;
         };
         let dest_req = request_for_destination(req, dest);
-        missing.push((kind, planned_storage_key_for(library, &dest_req, ext).await));
+        missing.push((id, planned_storage_key_for(library, &dest_req, ext).await));
     }
 
     if missing.is_empty() {
@@ -842,7 +842,7 @@ async fn plan_existing_destinations(
         return Ok(ExistingPlan::Skip { primary_key });
     }
     if present.is_empty() {
-        return Ok(ExistingPlan::Fetch { only_kinds: None });
+        return Ok(ExistingPlan::Fetch { only_ids: None });
     }
 
     let primary_key = primary_key
@@ -852,18 +852,18 @@ async fn plan_existing_destinations(
 
     match destinations.multi_destination {
         MultiDestinationMode::SyncMissing => {
-            let (source_kind, source_key) = present[0].clone();
+            let (source_id, source_key) = present[0].clone();
             Ok(ExistingPlan::SyncMissing {
                 primary_key,
-                source_kind,
+                source_id,
                 source_key,
                 missing,
             })
         }
         MultiDestinationMode::RefetchMissing => Ok(ExistingPlan::Fetch {
-            only_kinds: Some(missing.into_iter().map(|(k, _)| k).collect()),
+            only_ids: Some(missing.into_iter().map(|(k, _)| k).collect()),
         }),
-        MultiDestinationMode::RefetchAll => Ok(ExistingPlan::Fetch { only_kinds: None }),
+        MultiDestinationMode::RefetchAll => Ok(ExistingPlan::Fetch { only_ids: None }),
     }
 }
 
@@ -873,15 +873,15 @@ const DEST_WRITE_ATTEMPTS: u32 = 3;
 /// Copies an existing object from one destination into destinations that lack it.
 async fn sync_missing_destinations(
     destinations: &AcquireDestinations,
-    source_kind: OutputBackendKind,
+    source_id: &DestinationId,
     source_key: &str,
-    missing: &[(OutputBackendKind, String)],
+    missing: &[(DestinationId, String)],
     stage_journal: &Path,
 ) -> Result<Vec<String>> {
-    let source = destinations.destination(source_kind).ok_or_else(|| {
+    let source = destinations.destination(source_id).ok_or_else(|| {
         AcquireError::Other(anyhow::anyhow!(
             "sync source destination {:?} is not configured",
-            source_kind
+            source_id
         ))
     })?;
     let probe = source.backend.probe(source_key).await?;
@@ -898,11 +898,11 @@ async fn sync_missing_destinations(
     }
 
     let mut written = Vec::new();
-    for (kind, target_key) in missing {
-        let dest = destinations.destination(*kind).ok_or_else(|| {
+    for (id, target_key) in missing {
+        let dest = destinations.destination(id).ok_or_else(|| {
             AcquireError::Other(anyhow::anyhow!(
                 "sync target destination {:?} is not configured",
-                kind
+                id
             ))
         })?;
         bookclerk_storage::transfer_object(
@@ -949,8 +949,8 @@ struct PreparedAudioFile {
 #[derive(Debug, Clone)]
 /// First object key written to one destination during this acquire.
 struct DestinationStoredKey {
-    /// Destination backend that received the write (`local`, `s3`, …).
-    kind: OutputBackendKind,
+    /// Destination that received the write (`local`, `s3`, …).
+    id: DestinationId,
     /// Object key of the first file written to that destination.
     key: String,
 }
@@ -999,7 +999,7 @@ async fn store_prepared_audio_files(
     let mut keys = Vec::new();
     for dest in &destinations.items {
         if let Some(filter) = req.write_destinations.as_deref() {
-            if !filter.is_empty() && !filter.contains(&dest.kind) {
+            if !filter.is_empty() && !filter.contains(&dest.id) {
                 continue;
             }
         }
@@ -1016,11 +1016,11 @@ async fn store_prepared_audio_files(
                         &written_keys,
                     )
                     .await;
-                    if dest.kind == destinations.primary {
+                    if dest.id == destinations.primary {
                         primary_key = Some(first_key.clone());
                     }
                     stored = Some(DestinationStoredKey {
-                        kind: dest.kind,
+                        id: dest.id.clone(),
                         key: first_key,
                     });
                     last_err = None;
@@ -1028,7 +1028,7 @@ async fn store_prepared_audio_files(
                 }
                 Err(err) => {
                     tracing::warn!(
-                        destination = ?dest.kind,
+                        destination = %dest.id,
                         asin = %req.asin,
                         attempt,
                         %err,
@@ -1760,7 +1760,7 @@ async fn store_plain_fetch(
 
     if let Some(cover) = cover_path.as_ref() {
         for stored in &stored_keys.keys {
-            if let Some(dest) = destinations.destination(stored.kind) {
+            if let Some(dest) = destinations.destination(&stored.id) {
                 let dest_req = request_for_destination(req, dest);
                 if dest_req.options.download_cover {
                     let cover_key = sidecar_key(&stored.key, "jpg");
@@ -1778,7 +1778,7 @@ async fn store_plain_fetch(
     // Flat sidecars for players/tools that ignore embedded Nero/QuickTime chapters;
     // also persist the provider's nested chapter tree (timestamp-adjusted) when available.
     for stored in &stored_keys.keys {
-        if let Some(dest) = destinations.destination(stored.kind) {
+        if let Some(dest) = destinations.destination(&stored.id) {
             let dest_req = request_for_destination(req, dest);
             let asin_str = object_asin_for(library, &dest_req).await;
             store_flat_chapter_sidecars(
@@ -1873,7 +1873,7 @@ async fn store_plain_parts(
 
     if let Some(cover) = plain.cover_path.as_ref() {
         for stored in &stored_keys.keys {
-            if let Some(dest) = destinations.destination(stored.kind) {
+            if let Some(dest) = destinations.destination(&stored.id) {
                 let dest_req = request_for_destination(req, dest);
                 if dest_req.options.download_cover {
                     let cover_key = sidecar_key(&stored.key, "jpg");
@@ -2068,7 +2068,7 @@ async fn put_companion_pdf(
         let meta = sidecar_meta(&asin_str, &dest_req.title, "application/pdf", pdf_path).await;
         match dest.backend.put_file(&pdf_key, pdf_path, meta).await {
             Ok(()) => {
-                if dest.kind == destinations.primary {
+                if dest.id == destinations.primary {
                     primary_pdf_key = Some(pdf_key.clone());
                 }
                 written.push(pdf_key);
@@ -2191,7 +2191,7 @@ async fn stored_edition_pdf(
         return Ok(None);
     };
     let primary = destinations.primary_destination();
-    let primary = (destination_id(primary.kind), primary.backend.as_ref());
+    let primary = (primary.id.as_str(), primary.backend.as_ref());
     if !sibling_pdf_is_present(Some(&primary), Some(&key)).await? {
         return Ok(None);
     }
@@ -3225,7 +3225,7 @@ async fn check_edition_paths(
         .map_err(|err| {
             AcquireError::Other(anyhow::anyhow!(
                 "{err} (the {} destination); fix it in Settings → Output",
-                destination_id(item.kind)
+                item.id
             ))
         })?;
         let Some(owner) = &owner else {
@@ -3287,7 +3287,7 @@ async fn name_held_elsewhere(library: &LibraryStore, key: &str, owner: &FileOwne
 ///
 /// # Arguments
 ///
-/// * `destinations` - Each destination's id ([`destination_id`]) and
+/// * `destinations` - Each destination's id and
 ///   backend.
 /// * `book` - The book to mark acquired.
 ///
@@ -3514,7 +3514,7 @@ async fn download_and_store_companion_pdf(
         let pdf_key = sidecar_key(&audio_key, "pdf");
         let meta = sidecar_meta(&asin_str, &dest_req.title, "application/pdf", &pdf_path).await;
         dest.backend.put_file(&pdf_key, &pdf_path, meta).await?;
-        if dest.kind == destinations.primary {
+        if dest.id == destinations.primary {
             primary_pdf_key = Some(pdf_key.clone());
         }
         written_keys.push(pdf_key);
@@ -4601,14 +4601,14 @@ mod tests {
         };
         AcquireDestinations {
             items: vec![AcquireDestination {
-                kind: OutputBackendKind::Local,
+                id: DestinationId::new("local").unwrap(),
                 backend: Box::new(CountingBackend {
                     inner: bookclerk_storage::LocalFsBackend::new(root.to_path_buf()).unwrap(),
                     puts,
                 }),
                 options,
             }],
-            primary: OutputBackendKind::Local,
+            primary: DestinationId::new("local").unwrap(),
             multi_destination: MultiDestinationMode::RefetchAll,
         }
     }
@@ -5320,7 +5320,7 @@ mod tests {
         let backends: Vec<(&str, &dyn StorageBackend)> = destinations
             .items
             .iter()
-            .map(|item| (destination_id(item.kind), item.backend.as_ref()))
+            .map(|item| (item.id.as_str(), item.backend.as_ref()))
             .collect();
         let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
         // The edition also recorded a part file, since removed.
@@ -5361,7 +5361,7 @@ mod tests {
         let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut destinations = title_named_destinations(&local, puts.clone());
         let mut second_destination = title_named_destinations(&archive, puts).items.remove(0);
-        second_destination.kind = OutputBackendKind::S3;
+        second_destination.id = DestinationId::new("s3").unwrap();
         second_destination.options.folder_template = Some("Archive/<title> [<library id>]".into());
         destinations.items.push(second_destination);
         let source = CountingSource {
@@ -5380,7 +5380,7 @@ mod tests {
         let backends: Vec<(&str, &dyn StorageBackend)> = destinations
             .items
             .iter()
-            .map(|item| (destination_id(item.kind), item.backend.as_ref()))
+            .map(|item| (item.id.as_str(), item.backend.as_ref()))
             .collect();
         let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
         assert_eq!(
@@ -5425,7 +5425,7 @@ mod tests {
         let backends: Vec<(&str, &dyn StorageBackend)> = destinations
             .items
             .iter()
-            .map(|item| (destination_id(item.kind), item.backend.as_ref()))
+            .map(|item| (item.id.as_str(), item.backend.as_ref()))
             .collect();
         let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
         assert_eq!(

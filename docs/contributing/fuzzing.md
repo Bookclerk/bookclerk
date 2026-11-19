@@ -53,6 +53,7 @@ boundary extends it.
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
+| `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `audible_catalog` | Audible public catalog answers (search results and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
@@ -162,6 +163,13 @@ only that. The others check:
   byte, and that URL is the hash's picture on `www.gravatar.com` with
   nothing else in it. The shared oracle is `fuzz/oracles/cover_token.rs`,
   replayed from `bookclerk-cover`.
+- **`destination_id`**: the input is the id as received, read as UTF-8
+  lossily. It is accepted exactly when it is 1 to 64 bytes, each a
+  lowercase ASCII letter, a digit, `_` or `-`, checked byte by byte, so no
+  separator, dot or control byte reaches a storage key or a table row. An
+  accepted id keeps its text and survives a JSON round trip, and JSON
+  refuses whatever the parser refuses. The shared oracle is
+  `fuzz/oracles/destination_id.rs`, replayed from `bookclerk-config`.
 - **`cache_settings`**: the first byte picks the key. A value is accepted
   exactly when, after ASCII whitespace is trimmed, it is one or more ASCII
   digits whose number, read digit by digit with overflow detection, lies in
@@ -1135,10 +1143,17 @@ fuzzing in `npm test`.
   entity decoder, a URL check against the site's origin and the
   last-updated date oracle.
 - **IndexNow snapshot reader** (`readSnapshot` in `tools/site/indexnow.ts`)
-  reads the previous run's snapshot back from the Actions cache. Corpus
+  reads the previous run's snapshot back from its artifact. Corpus
   `tools/site/fuzz/indexnow_snapshot/`. Oracle: the document read through
   property descriptors, each URL checked against the site's origin and each
   date by the last-updated date oracle.
+- **IndexNow snapshot artifact lookup** (`previousSnapshotRun` in
+  `tools/site/indexnow.ts`) reads GitHub's artifact listing in the
+  `indexnow` workflow and picks the run whose snapshot the next run
+  downloads. Corpus `tools/site/fuzz/indexnow_artifacts/`. Oracle: an
+  explicit walk of own properties: the first entry wins that is named
+  `indexnow-snapshot`, has `expired` exactly `false`, was uploaded on the
+  default branch and whose run `id` is a positive safe integer.
 
 ### Hosted demo Worker
 

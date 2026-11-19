@@ -512,4 +512,4 @@ impl StorageBackend for OnDemandStorage {
 
 #[cfg(test)]
 #[path = "on_demand_storage_tests.rs"]
-mod tests;
+pub(crate) mod tests;

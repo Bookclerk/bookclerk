@@ -45,6 +45,9 @@ a later change supersedes one, its **Status** says so.
 - [Patron scopes and linked sign-in](patron-scopes.md): which part of the
   library a Member sees, and how a linked server's permissions and
   suspensions follow one authority.
+- [Storage destinations](storage-destinations.md): every storage plugin
+  instance is a destination with its own template and filter,
+  opportunistic change feeds and host-held webhooks.
 
 ## Adding a record
 

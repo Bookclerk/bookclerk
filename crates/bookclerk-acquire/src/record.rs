@@ -22,7 +22,9 @@ use bookclerk_storage::{
 use bytes::Bytes;
 use tokio::io::AsyncRead;
 
-use crate::destinations::{destination_id, AcquireDestination, AcquireDestinations};
+use bookclerk_config::DestinationId;
+
+use crate::destinations::{AcquireDestination, AcquireDestinations};
 use crate::library_copies::StoredFrom;
 
 /// One destination's backend whose writes are recorded for one edition.
@@ -31,8 +33,8 @@ pub(crate) struct RecordingBackend {
     inner: Box<dyn StorageBackend>,
     /// The library the record goes to.
     library: LibraryStore,
-    /// The destination's id ([`destination_id`]).
-    destination: &'static str,
+    /// The destination's id.
+    destination: DestinationId,
     /// The edition the acquire writes.
     owner: FileOwner,
     /// Plain id of the storefront the acquire downloads from, when it is
@@ -104,7 +106,7 @@ impl RecordingBackend {
         };
         if let Err(err) = self
             .library
-            .set_edition_file_probe(self.destination, key, &self.owner, &probe)
+            .set_edition_file_probe(self.destination.as_str(), key, &self.owner, &probe)
             .await
         {
             tracing::warn!(key, error = %err, "could not store a file's probe result");
@@ -124,7 +126,7 @@ impl RecordingBackend {
         let role = self.role_of(key);
         let recorded = self
             .library
-            .record_edition_file(self.destination, key, &self.owner, role)
+            .record_edition_file(self.destination.as_str(), key, &self.owner, role)
             .await
             .map_err(|err| {
                 StorageError::Other(anyhow::anyhow!("could not record a title's file: {err}"))
@@ -186,12 +188,12 @@ pub(crate) fn recording_destinations_probed_by(
         .items
         .iter()
         .map(|item| AcquireDestination {
-            kind: item.kind,
+            id: item.id.clone(),
             backend: match owner {
                 Some(owner) => Box::new(RecordingBackend {
                     inner: item.backend.clone_box(),
                     library: library.clone(),
-                    destination: destination_id(item.kind),
+                    destination: item.id.clone(),
                     owner: owner.clone(),
                     source_store: source_store_of(source),
                     stored_from: stored_from.clone(),
@@ -205,7 +207,7 @@ pub(crate) fn recording_destinations_probed_by(
         .collect();
     AcquireDestinations {
         items,
-        primary: destinations.primary,
+        primary: destinations.primary.clone(),
         multi_destination: destinations.multi_destination,
     }
 }
@@ -228,7 +230,7 @@ impl StorageBackend for RecordingBackend {
         Box::new(Self {
             inner: self.inner.clone_box(),
             library: self.library.clone(),
-            destination: self.destination,
+            destination: self.destination.clone(),
             owner: self.owner.clone(),
             source_store: self.source_store.clone(),
             stored_from: self.stored_from.clone(),

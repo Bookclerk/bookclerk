@@ -1,26 +1,15 @@
 //! Destination-specific storage backends for one acquire operation.
 
-use bookclerk_config::{MultiDestinationMode, OutputBackendKind};
+use bookclerk_config::{DestinationId, MultiDestinationMode};
 use bookclerk_source::DownloadOptions;
 use bookclerk_storage::{FanoutBackend, StorageBackend};
 
 use crate::error::Result;
 
-/// The id of the output destination of `kind`, as plans, upload manifests
-/// and `edition_files` name it: its lowercase kind name (a node deploys at
-/// most one destination per kind).
-#[must_use]
-pub fn destination_id(kind: OutputBackendKind) -> &'static str {
-    match kind {
-        OutputBackendKind::Local => "local",
-        OutputBackendKind::S3 => "s3",
-    }
-}
-
 /// One configured output destination for an acquire run.
 pub struct AcquireDestination {
-    /// Destination backend kind (`local`, `s3`, …).
-    pub kind: OutputBackendKind,
+    /// The destination's id: its storage plugin's alias (`local`, `s3`, …).
+    pub id: DestinationId,
     /// Constructed storage backend for this destination.
     pub backend: Box<dyn StorageBackend>,
     /// Source download options (quality, chapter prefs, …).
@@ -31,8 +20,9 @@ pub struct AcquireDestination {
 pub struct AcquireDestinations {
     /// Configured acquire destinations in evaluation order.
     pub items: Vec<AcquireDestination>,
-    /// Index of the primary destination used for library status keys.
-    pub primary: OutputBackendKind,
+    /// The primary destination, whose keys the library records as the
+    /// title's storage key.
+    pub primary: DestinationId,
     /// Whether multiple destinations are enabled for this run.
     pub multi_destination: MultiDestinationMode,
 }
@@ -55,14 +45,14 @@ impl AcquireDestinations {
     pub fn primary_destination(&self) -> &AcquireDestination {
         self.items
             .iter()
-            .find(|dest| dest.kind == self.primary)
+            .find(|dest| dest.id == self.primary)
             .unwrap_or_else(|| &self.items[0])
     }
 
-    /// Returns the destination whose kind equals `kind`, if configured.
+    /// Returns the destination `id`, if configured.
     #[must_use]
-    pub fn destination(&self, kind: OutputBackendKind) -> Option<&AcquireDestination> {
-        self.items.iter().find(|dest| dest.kind == kind)
+    pub fn destination(&self, id: &DestinationId) -> Option<&AcquireDestination> {
+        self.items.iter().find(|dest| &dest.id == id)
     }
 
     /// Clone destination backends into a listing/match storage handle.
