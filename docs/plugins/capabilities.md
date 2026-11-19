@@ -147,6 +147,16 @@ Workerd egress is matched by the shared `EgressPolicy` and
   the allowlist patterns. Percent-encoded hosts and failed IDNA are
   **rejected** (fail closed). Unicode and Punycode forms of the same name
   match after normalization.
+- **Address literals and special names.** A host that is an IP literal
+  passes only when it is public or inside a granted CIDR, judged by range
+  in every spelling (legacy `127.1`, hex and octal IPv4, bracketed and
+  IPv4-mapped IPv6). `localhost` names need a grant covering `127.0.0.1`
+  or `::1`, and `metadata.google.internal` one covering
+  `169.254.169.254`; neither ever passes as an undeclared public redirect.
+  A `connect()` host is first rewritten the way the URL parser rewrites a
+  fetch host, and one with `%`, `@` or other URL syntax is refused, so
+  the gate and the socket agree on which host it is. The bridge and
+  `EgressPolicy` are fuzzed against each other (`egress_bridge`).
 - **Resolved addresses.** Permission is enforced against the resolved IP
   (`public` plus explicit CIDRs in workerd `network.allow`). DNS
   rebinding from a public hostname to a private, loopback or metadata

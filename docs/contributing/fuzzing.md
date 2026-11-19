@@ -26,6 +26,7 @@ boundary extends it.
 | `granted_http` | The granted reverse channel | `bookclerk-workerd::granted_http` |
 | `workerd_control` | Lines on workerd's stdout, shared with plugin isolates, that report the bridge RPC port on Windows (`--control-fd`) | `bookclerk-workerd::control` |
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
+| `egress_bridge` | The workerd egress gate (`bridge/egress.js`) every workerd guest's `fetch()` and `connect()` goes through, run in an embedded JavaScript engine against `EgressPolicy` | `bookclerk-workerd` bridge |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec, the database envelope decoders, and the reply helpers every payload-free guest reply and guest error goes through (`read_empty`, `read_error`) | `bookclerk-plugin-abi` |
@@ -82,9 +83,9 @@ Some boundaries need more than a cell:
 - **`granted_http`** covers the request head, body framing, chunked bodies
   and the query string.
 - **`egress_policy`** fuzzes the JSON wire form. The workerd `egress.js`
-  gate is a separate implementation: its User-Agent rule is fuzzed in
-  JavaScript ([egress bridge User-Agent rule](#egress-bridge-user-agent-rule)),
-  the rest is still to add (#335).
+  gate is a separate implementation: `egress_bridge` checks its host
+  decisions against `EgressPolicy`, and its User-Agent rule is fuzzed in
+  JavaScript ([egress bridge User-Agent rule](#egress-bridge-user-agent-rule)).
 - **`abi_decode`** goes through `read_any_message`, and
   **`abi_roundtrip`** through `roundtrip_any_message`.
 - **`guest_sql_authz`** lowers each policy as the SQLite adapter lowers it.
@@ -116,6 +117,19 @@ only that. The others check:
   guest's own `User-Agent` is kept only on hosts an own-agent pattern
   matches, never through a `*` entry however it is spelled, and every
   other request gets the host's agent.
+- **`egress_bridge`**: for a policy the host can emit (every pattern
+  already normalized), each probe host (the grants' names and near misses,
+  `localhost` and the metadata name, and IP literals in every range and
+  spelling) goes to `allowsInitial` and `allowsRedirect` as the URL parser
+  prints it and to `allowsTcp` after `canonicalSocketHost`, in QuickJS.
+  The bridge never allows what `EgressPolicy` refuses, and on a hostname
+  the two agree exactly. The shared oracle is
+  `fuzz/oracles/egress_bridge.rs`. Its replay in `bookclerk-workerd`
+  pins the Rust verdicts in
+  `packages/plugin-sdk/scripts/egress_bridge_vectors.json`
+  (`UPDATE_FUZZ_SEEDS=1` rewrites it), and `npm run test:egress-bridge`
+  (in the `plugin_sdk_abi` check) replays them against the bridge under
+  Node, which also checks the oracle's model of the URL parser.
 - **`plugin_manifest`**: `format_manifest` round-trips, and a deny manifest
   yields a deny policy.
 - **`cron_schedule`**: an accepted schedule round-trips through its
@@ -1435,9 +1449,6 @@ check); `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
 These are tracked in the fuzzing ADR's follow-ups:
 
 - a full RPC session against a scripted guest;
-- the rest of the workerd `egress.js` gate (destinations, redirects,
-  addresses) checked against `EgressPolicy` (#335; the User-Agent rule is
-  [covered](#egress-bridge-user-agent-rule));
 - Audible CENC/DASH parsing;
 - package extraction;
 - naming paths;

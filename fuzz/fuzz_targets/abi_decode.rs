@@ -93,7 +93,11 @@ fn check_details(err: &PluginError) {
         let text = serde_json::Value::Object(details.clone()).to_string();
         let again: Option<serde_json::Map<String, serde_json::Value>> =
             serde_json::from_str(&text).ok();
-        assert_eq!(again.as_ref(), Some(details), "kept details must round-trip");
+        assert_eq!(
+            again.as_ref(),
+            Some(details),
+            "kept details must round-trip"
+        );
     }
 }
 
