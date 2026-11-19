@@ -417,7 +417,7 @@ impl OutputSettingsV1 {
         let mut settings = seed.clone();
         let mut replaced = Vec::new();
         for (name, copy) in SEED_FIELDS {
-            if NAMING_SET.contains(name) {
+            if NAMING_SET.contains(name) || *name == "copies" {
                 continue;
             }
             // Each field is judged alone: the defaults are valid, so a
@@ -429,6 +429,18 @@ impl OutputSettingsV1 {
                 copy(&mut settings, &defaults);
                 replaced.push(*name);
             }
+        }
+        // The copy list is judged against the main output kept above:
+        // whether a copy suits it, or repeats it, depends on the format and
+        // LAME settings, so it cannot be judged beside the defaults.
+        if bookclerk_config::validate_copies(
+            OutputCopy::main(settings.format, &settings.lame).as_ref(),
+            &settings.copies,
+        )
+        .is_err()
+        {
+            settings.copies.clone_from(&defaults.copies);
+            replaced.push("copies");
         }
         // The naming templates are judged as one set, after the other
         // fields: `<library id>` may sit in the folder or in both file

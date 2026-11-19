@@ -22,6 +22,23 @@ pub const MAX_EXTRA_COPIES: usize = 8;
 /// Longest quality name, in bytes (`320k-mono` is nine).
 pub const MAX_QUALITY_BYTES: usize = 16;
 
+/// The constant bitrates, in kbit/s, the MP3 encoder writes.
+///
+/// `bookclerk-media` rounds any other requested bitrate up to the next of
+/// these (and anything above 256 to 320), so a quality name only offers
+/// these rates: the name then always describes the audio written.
+pub const MP3_CBR_KBPS: [u16; 7] = [64, 96, 128, 160, 192, 256, 320];
+
+/// The constant bitrate, in kbit/s, the MP3 encoder writes for a requested
+/// `kbps`: the smallest of [`MP3_CBR_KBPS`] at or above it, else 320.
+#[must_use]
+pub fn mp3_cbr_kbps(kbps: u32) -> u16 {
+    MP3_CBR_KBPS
+        .into_iter()
+        .find(|rate| u32::from(*rate) >= kbps)
+        .unwrap_or(320)
+}
+
 /// The format of one copy of a book.
 #[derive(
     Debug,
@@ -118,7 +135,7 @@ impl fmt::Display for CopyFormat {
 enum Rate {
     /// No re-encode beyond what the format needs: the store's audio.
     Original,
-    /// A constant bitrate in kbit/s, 8 to 320.
+    /// A constant bitrate in kbit/s, one of [`MP3_CBR_KBPS`].
     Kbps(u16),
     /// A LAME VBR quality, 0 (best) to 9.
     Vbr(u8),
@@ -128,7 +145,7 @@ enum Rate {
 ///
 /// The names are `original` (the store's audio, re-packaged without
 /// re-encoding where the format allows), a constant bitrate such as `64k`
-/// (8 to 320 kbit/s, written without leading zeros) or a LAME VBR quality
+/// (one of the encoder's rates, [`MP3_CBR_KBPS`]) or a LAME VBR quality
 /// `v0` to `v9`; either of the last two may end in `-mono` for a copy mixed
 /// down to one channel. Names are stored in lower case.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -166,7 +183,7 @@ impl CopyQuality {
                 && kbps.bytes().all(|b| b.is_ascii_digit())
                 && !kbps.starts_with('0');
             let kbps = kbps.parse::<u16>().ok().filter(|_| canonical)?;
-            if !(8..=320).contains(&kbps) {
+            if !MP3_CBR_KBPS.contains(&kbps) {
                 return None;
             }
             Rate::Kbps(kbps)
@@ -190,7 +207,7 @@ impl CopyQuality {
     pub fn of_lame(lame: &LameConfig) -> Self {
         let mono = lame.downsample_mono || lame.mode.eq_ignore_ascii_case("mono");
         let rate = if lame.constant_bitrate || lame.target.eq_ignore_ascii_case("bitrate") {
-            Rate::Kbps(u16::try_from(lame.bitrate_kbps.clamp(8, 320)).unwrap_or(320))
+            Rate::Kbps(mp3_cbr_kbps(lame.bitrate_kbps))
         } else {
             Rate::Vbr(lame.vbr_quality.min(9))
         };
@@ -259,11 +276,13 @@ impl utoipa::PartialSchema for CopyQuality {
         utoipa::openapi::ObjectBuilder::new()
             .schema_type(utoipa::openapi::schema::Type::String)
             .description(Some(
-                "A copy's quality: `original`, a constant bitrate such as `64k` \
-                 (8 to 320), or a LAME VBR quality `v0` to `v9`; the last two may \
-                 end in `-mono`.",
+                "A copy's quality: `original`, a constant bitrate the MP3 encoder \
+                 writes (`64k`, `96k`, `128k`, `160k`, `192k`, `256k` or `320k`), or \
+                 a LAME VBR quality `v0` to `v9`; the last two may end in `-mono`.",
             ))
-            .pattern(Some("^(original|([1-9][0-9]{0,2}k|v[0-9])(-mono)?)$"))
+            .pattern(Some(
+                "^(original|((64|96|128|160|192|256|320)k|v[0-9])(-mono)?)$",
+            ))
             .examples(["64k-mono"])
             .into()
     }
@@ -399,14 +418,20 @@ pub fn validate_copies(main: Option<&OutputCopy>, copies: &[OutputCopy]) -> Resu
 }
 
 /// Every copy an acquire makes, in order: the main output's copy first
-/// (when the pipeline can make it), then each extra copy that differs from
-/// every earlier one.
+/// (when the pipeline can make it), then each valid extra copy that
+/// differs from every earlier one, at most [`MAX_EXTRA_COPIES`] of them
+/// whatever the list holds.
 #[must_use]
 pub fn copies_to_make(main: Option<OutputCopy>, extra: &[OutputCopy]) -> Vec<OutputCopy> {
     let mut all: Vec<OutputCopy> = main.into_iter().collect();
+    let mut extras = 0;
     for copy in extra {
+        if extras == MAX_EXTRA_COPIES {
+            break;
+        }
         if copy.validate().is_ok() && !all.contains(copy) {
             all.push(copy.clone());
+            extras += 1;
         }
     }
     all
@@ -422,7 +447,7 @@ mod tests {
 
     #[test]
     fn quality_names_round_trip_in_canonical_form() {
-        for raw in ["original", "8k", "64k", "64k-mono", "320k", "v0", "v9-mono"] {
+        for raw in ["original", "64k", "96k-mono", "320k", "v0", "v9-mono"] {
             let quality = CopyQuality::parse(raw).unwrap();
             assert_eq!(quality.to_string(), raw);
         }
@@ -439,6 +464,9 @@ mod tests {
             "k",
             "064k",
             "7k",
+            "8k",
+            "32k",
+            "80k",
             "321k",
             "1000k",
             "+64k",
@@ -492,6 +520,25 @@ mod tests {
             Some(copy("mp3_chapters:64k-mono"))
         );
         assert_eq!(OutputCopy::main(OutputFormat::Opus, &lame), None);
+        // The encoder rounds 80 kbit/s up to 96, so the main copy says 96k.
+        lame.bitrate_kbps = 80;
+        assert_eq!(
+            OutputCopy::main(OutputFormat::SingleMp3, &lame),
+            Some(copy("mp3:96k-mono"))
+        );
+    }
+
+    #[test]
+    fn requested_bitrates_round_up_to_the_encoders() {
+        assert_eq!(mp3_cbr_kbps(0), 64);
+        assert_eq!(mp3_cbr_kbps(8), 64);
+        assert_eq!(mp3_cbr_kbps(64), 64);
+        assert_eq!(mp3_cbr_kbps(65), 96);
+        assert_eq!(mp3_cbr_kbps(257), 320);
+        assert_eq!(mp3_cbr_kbps(9999), 320);
+        for rate in MP3_CBR_KBPS {
+            assert_eq!(mp3_cbr_kbps(u32::from(rate)), rate);
+        }
     }
 
     #[test]
@@ -539,7 +586,12 @@ mod tests {
         assert!(validate_copies(Some(&main), std::slice::from_ref(&mp3)).is_ok());
         assert!(validate_copies(Some(&main), std::slice::from_ref(&main)).is_err());
         assert!(validate_copies(Some(&main), &[mp3.clone(), mp3.clone()]).is_err());
-        let many: Vec<OutputCopy> = (1..=9).map(|n| copy(&format!("mp3:{}k", 16 * n))).collect();
+        let many: Vec<OutputCopy> = MP3_CBR_KBPS
+            .iter()
+            .map(|kbps| copy(&format!("mp3:{kbps}k")))
+            .chain(["mp3:v0", "mp3:v1"].map(copy))
+            .collect();
+        assert_eq!(many.len(), 9);
         assert!(validate_copies(None, &many).is_err());
         assert!(validate_copies(None, &many[..8]).is_ok());
     }
@@ -557,8 +609,17 @@ mod tests {
                 Some(main.clone()),
                 &[mp3.clone(), main.clone(), odd, mp3.clone()]
             ),
-            [main, mp3.clone()]
+            [main.clone(), mp3.clone()]
         );
+        // However long the list, at most eight extra copies are made.
+        let many: Vec<OutputCopy> = MP3_CBR_KBPS
+            .iter()
+            .map(|kbps| copy(&format!("mp3:{kbps}k")))
+            .chain(["mp3:v0", "mp3:v1", "mp3:v2"].map(copy))
+            .collect();
+        let made = copies_to_make(Some(main), &many);
+        assert_eq!(made.len(), 1 + MAX_EXTRA_COPIES);
+        assert_eq!(made[1..], many[..MAX_EXTRA_COPIES]);
         assert_eq!(copies_to_make(None, std::slice::from_ref(&mp3)), [mp3]);
     }
 

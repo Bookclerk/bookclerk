@@ -347,15 +347,21 @@ bookclerk config set output.copies "mp3:64k-mono,mp3_chapters:v4"
 | `original` | The store's files as delivered (`none`) | `original` |
 
 A quality is `original` (the store's audio, repackaged without
-re-encoding), a constant bitrate from `8k` to `320k`, or a LAME VBR level
-from `v0` (best) to `v9`. A bitrate or VBR level may end in `-mono` to mix
-the copy down to one channel. The main output is a copy too: an M4B or
+re-encoding), a constant bitrate the MP3 encoder writes (`64k`, `96k`,
+`128k`, `160k`, `192k`, `256k` or `320k`), or a LAME VBR level from `v0`
+(best) to `v9`. A bitrate or VBR level may end in `-mono` to mix the copy
+down to one channel. The main output is a copy too: an M4B or
 as-delivered output is `original`, and an MP3 output takes its quality
-from the `output.lame` settings. A copy may not repeat another or the
-main output.
+from the `output.lame` settings, named after the bitrate the encoder
+writes (it rounds `lame.bitrate_kbps` up to the next of those rates). A
+copy may not repeat another or the main output.
 
 Each acquire downloads the book once and makes every copy from that
-download, main output first. Every destination receives each copy its
+download, main output first. When a library keeps more than one copy,
+every MP3 copy is encoded at its own quality, even when the store
+delivers MP3, so each copy holds the audio its name says. A library with
+only the main output keeps storing a store's MP3 as delivered, as
+before. Every destination receives each copy its
 filter takes (see
 [Choosing which books a destination takes](#choosing-which-books-a-destination-takes)).
 For example, to send only the MP3 copy to a bucket a phone syncs from:
@@ -364,10 +370,12 @@ For example, to send only the MP3 copy to a bucket a phone syncs from:
 bookclerk plugins instances filter set <instance> --include format=mp3
 ```
 
-The first copy a destination receives keeps the usual names. A further
-copy on the same destination goes in a folder of its own, named after the
-copy: `Title [1a2b3c4d] (mp3 64k-mono)/`. Give each destination one copy
-with filters when a player scans the folder, so it doesn't see the book
+The main output keeps the usual names. Every other copy goes under a
+folder of its own at the top of the destination, named after the copy:
+`mp3 64k-mono/Title [1a2b3c4d]/`. That folder name is short, so the
+limits on path lengths shorten the book's own folders before it, and two
+copies never share a name. Give each destination one copy with filters
+when a player scans the whole destination, so it doesn't see the book
 twice.
 
 Each copy's files are recorded on the edition with the copy's format and

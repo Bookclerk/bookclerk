@@ -1374,6 +1374,43 @@ fn keeps_delivered(req: &AcquireRequest) -> bool {
         .all(|copy| copy.format == bookclerk_config::CopyFormat::Original)
 }
 
+/// True when an MP3 the store delivers is encoded again at the request's
+/// quality instead of stored as delivered: the request makes MP3 and the
+/// library keeps several copies (`output.copies`), so each copy must hold
+/// the audio its quality names. A library with one copy keeps a store's
+/// MP3 as delivered.
+fn reencodes_mp3(req: &AcquireRequest) -> bool {
+    req.options.wants_mp3() && !req.options.copies.is_empty()
+}
+
+/// Encodes each part of `plain` to MP3 at the request's quality, under
+/// `work_dir`, for a request that [`reencodes_mp3`].
+///
+/// # Errors
+///
+/// Returns the encoder's error when a part does not encode.
+async fn encode_plain_parts(
+    req: &AcquireRequest,
+    work_dir: &Path,
+    mut plain: PlainFetch,
+) -> Result<PlainFetch> {
+    let dir = work_dir.join("encoded");
+    std::fs::create_dir_all(&dir)?;
+    for (index, part) in plain.parts.iter_mut().enumerate() {
+        let out = dir.join(format!("part-{index:04}.mp3"));
+        encode_to_mp3(
+            &part.path,
+            &out,
+            &req.options.lame,
+            req.options.max_sample_rate,
+            None,
+        )
+        .await?;
+        part.path = out;
+    }
+    Ok(plain)
+}
+
 /// A copy a library offered of the request's title.
 struct OfferedCopy {
     /// The copy.
@@ -1742,6 +1779,11 @@ async fn store_plain_fetch(
     // When an Audible ASIN enrichment is available, package first so we can embed /
     // split by the literary chapter tree instead of track-boundary placeholders.
     if multi && req.options.wants_split_by_chapter() && !audible_overlay_possible {
+        let plain = if reencodes_mp3(req) {
+            encode_plain_parts(req, work_dir, plain).await?
+        } else {
+            plain
+        };
         return store_plain_parts(library, destinations, req, work_dir, plain, library_pdf).await;
     }
 
@@ -1838,8 +1880,11 @@ async fn store_plain_fetch(
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
-        if !ext.eq_ignore_ascii_case("mp3") {
-            let mp3_out = work_dir.join(format!("{}.mp3", status_key(req)));
+        if !ext.eq_ignore_ascii_case("mp3") || reencodes_mp3(req) {
+            let mut mp3_out = work_dir.join(format!("{}.mp3", status_key(req)));
+            if mp3_out == acquired_path {
+                mp3_out = work_dir.join(format!("{}.encoded.mp3", status_key(req)));
+            }
             encode_to_mp3(
                 &acquired_path,
                 &mp3_out,
@@ -5424,15 +5469,17 @@ mod tests {
         assert_eq!(mp3.primary.as_str(), "local");
         assert!(mp3.items[0].options.wants_split_by_chapter());
         assert_eq!(mp3.items[0].options.lame.bitrate_kbps, 64);
+        for dest in &mp3.items {
+            assert_eq!(
+                dest.options.folder_template.as_deref(),
+                Some("mp3_chapters 64k-mono/<title> [<library id>]"),
+                "a copy other than the main output gets a folder of its own"
+            );
+        }
         assert_eq!(
-            mp3.items[0].options.folder_template.as_deref(),
-            Some("<title> [<library id>] (mp3_chapters 64k-mono)"),
-            "a destination's second copy gets a folder of its own"
-        );
-        assert_eq!(
-            mp3.items[1].options.folder_template.as_deref(),
+            plan[0].1.items[0].options.folder_template.as_deref(),
             Some("<title> [<library id>]"),
-            "a destination's first copy keeps the plain names"
+            "the main output's copy keeps the plain names"
         );
 
         let copies: Vec<CopyTarget> = plan
@@ -5455,10 +5502,37 @@ mod tests {
         pin_library_id(&mut req, Some(&owner));
         let work_dir = cache.join("acquire").join(&uuid);
         tokio::fs::create_dir_all(&work_dir).await.unwrap();
+        // The MP3 copy is encoded again from the store's MP3 parts, so the
+        // parts are real audio and this test runs the codec in-process.
+        bookclerk_media::replace_pool(bookclerk_media::MediaPool::new(
+            bookclerk_media::MediaPoolConfig {
+                confinement: bookclerk_media::Confinement::Off,
+                ..bookclerk_media::MediaPoolConfig::default()
+            },
+        ));
+        let source = work_dir.join("source.m4b");
+        bookclerk_media::package_m4b_from_pcm(
+            &vec![0i16; 48_000 * 2],
+            48_000,
+            2,
+            &source,
+            &[("One".to_string(), 0)],
+        )
+        .unwrap();
+        let delivered = bookclerk_config::LameConfig {
+            target: "bitrate".into(),
+            constant_bitrate: true,
+            bitrate_kbps: 192,
+            ..bookclerk_config::LameConfig::default()
+        };
         let mut parts = Vec::new();
+        let mut delivered_bytes = Vec::new();
         for n in 1..=2 {
             let path = work_dir.join(format!("part{n}.mp3"));
-            tokio::fs::write(&path, format!("part {n}")).await.unwrap();
+            encode_to_mp3(&source, &path, &delivered, None, None)
+                .await
+                .unwrap();
+            delivered_bytes.push(std::fs::read(&path).unwrap());
             parts.push(bookclerk_source::PlainAudioPart {
                 path,
                 title: Some(format!("Chapter {n}")),
@@ -5477,7 +5551,7 @@ mod tests {
             .await
             .unwrap();
         let plain = format!("Twin [{id}]/");
-        let copy_folder = format!("Twin [{id}] (mp3_chapters 64k-mono)/");
+        let copy_folder = format!("mp3_chapters 64k-mono/Twin [{id}]/");
         assert!(
             result.storage_key.starts_with(&plain),
             "the main copy names the title: {}",
@@ -5529,7 +5603,12 @@ mod tests {
             .collect();
         assert_eq!(phone_keys.len(), 2, "{phone_keys:?}");
         for key in &phone_keys {
-            assert!(key.starts_with(&plain), "{key}");
+            assert!(key.starts_with(&copy_folder), "{key}");
+            let bytes = std::fs::read(tmp.path().join("phone").join(key)).unwrap();
+            assert!(
+                !delivered_bytes.contains(&bytes),
+                "the 64k mono copy is encoded again, not the store's 192k MP3: {key}"
+            );
             assert_eq!(
                 store.edition_file_copy("phone", key).await.unwrap(),
                 Some(output_copy("mp3_chapters:64k-mono"))

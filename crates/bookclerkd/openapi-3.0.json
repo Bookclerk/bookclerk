@@ -34750,9 +34750,9 @@
       },
       "CopyQuality": {
         "type": "string",
-        "description": "A copy's quality: `original`, a constant bitrate such as `64k` (8 to 320), or a LAME VBR quality `v0` to `v9`; the last two may end in `-mono`.",
+        "description": "A copy's quality: `original`, a constant bitrate the MP3 encoder writes (`64k`, `96k`, `128k`, `160k`, `192k`, `256k` or `320k`), or a LAME VBR quality `v0` to `v9`; the last two may end in `-mono`.",
         "example": "64k-mono",
-        "pattern": "^(original|([1-9][0-9]{0,2}k|v[0-9])(-mono)?)$"
+        "pattern": "^(original|((64|96|128|160|192|256|320)k|v[0-9])(-mono)?)$"
       },
       "CreatePluginInstance": {
         "type": "object",

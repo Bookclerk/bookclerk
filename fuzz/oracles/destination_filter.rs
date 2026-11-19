@@ -113,10 +113,11 @@ fn is_copy(field: &str) -> bool {
 }
 
 /// True when `value` (any case) names a copy quality: `original`, or a
-/// bitrate `8k`..`320k` without leading zeros or a `v0`..`v9`, either
+/// bitrate the MP3 encoder writes (64, 96, 128, 160, 192, 256 or 320
+/// kbit/s, written without leading zeros) or a `v0`..`v9`, either
 /// optionally followed by `-mono`.
 fn oracle_quality(value: &str) -> bool {
-    let value = value.to_lowercase();
+    let value = value.to_ascii_lowercase();
     if value.len() > 16 {
         return false;
     }
@@ -132,7 +133,7 @@ fn oracle_quality(value: &str) -> bool {
                 && digits.len() <= 3
                 && rate[..rate.len() - 1]
                     .parse::<u32>()
-                    .is_ok_and(|kbps| (8..=320).contains(&kbps))
+                    .is_ok_and(|kbps| [64, 96, 128, 160, 192, 256, 320].contains(&kbps))
         }
         _ => false,
     }
@@ -190,9 +191,8 @@ fn oracle_read(body: &[u8]) -> Option<Vec<OracleRule>> {
             "media_kind" => {
                 value.eq_ignore_ascii_case("book") || value.eq_ignore_ascii_case("podcast")
             }
-            "format" => {
-                ["m4b", "mp3", "mp3_chapters", "original"].contains(&value.to_lowercase().as_str())
-            }
+            "format" => ["m4b", "mp3", "mp3_chapters", "original"]
+                .contains(&value.to_ascii_lowercase().as_str()),
             "quality" => oracle_quality(&value),
             _ => true,
         };

@@ -336,6 +336,9 @@ async fn files_of(
             .or_default()
             .push(row);
     }
+    // Only the main output's copy is stored at the plain names (every other
+    // copy sits under a folder named after it), so any row at `primary`
+    // names the main copy, whichever destination holds it.
     let primary_copy = rows
         .iter()
         .find(|row| row.storage_key == primary)

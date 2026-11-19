@@ -94,7 +94,15 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
                 .map(crate::OutputCopy::parse)
                 .collect::<std::result::Result<Vec<_>, _>>()
             {
-                Ok(copies) => config.output.copies = copies,
+                Ok(copies) if copies.len() <= crate::MAX_EXTRA_COPIES => {
+                    config.output.copies = copies;
+                }
+                Ok(copies) => tracing::warn!(
+                    key,
+                    count = copies.len(),
+                    max = crate::MAX_EXTRA_COPIES,
+                    "ignoring output.copies: too many copies"
+                ),
                 Err(err) => tracing::warn!(key, error = %err, "ignoring output.copies"),
             }
         }
