@@ -922,6 +922,7 @@ Arguments:
 Options:
 
 - `-y, --yes`: Approve without interactive confirmation (required when stdin is not a TTY)
+- `--reset`: Approve the package's request as is, dropping the network destinations you added or denied earlier and your redirect answer. Without it a re-approval keeps them. (An installed version always records its package's request.)
 
 ### `bookclerk plugins registry`
 

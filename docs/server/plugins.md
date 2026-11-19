@@ -39,7 +39,14 @@ bookclerk plugins uninstall example          # clear the active version; undeplo
 3. **Contents.** The node extracts the archive to scratch, parses
    `plugin.toml`, checks that the file the package manifest names as
    `executable` is present, and computes the payload-root digest.
-4. **Record.** The version row records the PluginKey, the version from
+4. **Same plugin on every platform.** Every artifact must carry the same
+   plugin id and version, and the same `plugin.toml` apart from its launch
+   line (`command` and `args`). The version records the first artifact's
+   manifest, and the host decides from it (credential sharing, settings,
+   capabilities) while each node runs its own platform's artifact, so a
+   package whose artifacts declare anything else differently, such as
+   `credentials`, is refused.
+5. **Record.** The version row records the PluginKey, the version from
    `plugin.toml`, the manifest and settings schema, one artifact per
    target (URL, archive digest, payload-root digest), the coordinate it
    came from, and the consent grant.

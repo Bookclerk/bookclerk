@@ -829,9 +829,13 @@ async fn import_from_peer(
 /// and marks it `revoked` with scans off, in one atomic batch whose every
 /// statement applies only while no link holds the account.
 ///
-/// A link committed before the batch runs (another login of the same
-/// store account that finished meanwhile) keeps the account and its
-/// secrets as they are.
+/// The batch takes the account's write lock
+/// ([`super::account_slot`]) first. A link committed before
+/// it (another login of the same store account that finished meanwhile)
+/// keeps the account and its secrets as they are; an allowed login that
+/// links after it finds the sign-in gone
+/// ([`super::SignInLink::SignInTakenBack`]) instead of linking an account
+/// with no secret.
 ///
 /// # Errors
 ///
@@ -841,7 +845,11 @@ pub async fn revoke_unlinked_account(
     plugin_key: &str,
     account_id: &str,
 ) -> Result<()> {
-    let statements = revoke_unlinked_statements(plugin_key, account_id);
+    // Under the account's write lock, so a concurrent allowed login of the
+    // same store account links either before (and this batch keeps it) or
+    // after (and finds its sign-in gone), never in between.
+    let mut statements = super::account_links::lock_account_statements(plugin_key, account_id);
+    statements.extend(revoke_unlinked_statements(plugin_key, account_id));
     let operation_id = format!("refused-login-{}", uuid::Uuid::new_v4());
     store
         .execute_host_batch(batch::request(&operation_id, statements))
@@ -932,11 +940,12 @@ pub async fn withdraw_person_account(
             .await?;
         store.reset_scan_state(plugin_key, account_id).await?;
     }
-    let mut statements = vec![batch::exec(
+    let mut statements = super::account_links::lock_account_statements(plugin_key, account_id);
+    statements.push(batch::exec(
         "DELETE FROM account_links WHERE plugin_key = ? AND account_id = ? \
          AND identity_id IN (SELECT id FROM portal_identities WHERE user_id = ?)",
         vec![text(plugin_key), text(account_id), int(user_id)],
-    )];
+    ));
     statements.extend(revoke_unlinked_statements(plugin_key, account_id));
     let operation_id = format!("withdraw-account-{}", uuid::Uuid::new_v4());
     let committed = store

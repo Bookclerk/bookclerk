@@ -696,7 +696,11 @@ library the last one applied from its keeper branch, on that branch the
 last one sent to each library, with a fingerprint of the sign-in sent
 (`observed`). It is removed with the account. When an
 account is taken back with no link left, its `node:` rows in both tables
-go too, so the library picks its next keeper afresh.
+go too, so the library picks its next keeper afresh. Writes that link a
+signed-in store account, take back a refused sign-in, or revoke a link
+are serialized per account by the `bookclerk_slots` row
+`store-account:<plugin key length>:<plugin key>:<account id>`, which is
+kept once created.
 
 The library model ([ADR](../adr/library-data-model.md)) stores what the
 library holds as works, expressions and editions:
