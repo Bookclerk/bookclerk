@@ -845,10 +845,15 @@ shares it back to the library it came from (see
 used. The job log line
 `acquired` carries `from_library=true` for such a title.
 
-A clerk asks the same way on its own socket, for the person its library
-card belongs to. Its token is not sealed (a clerk has no box key; the
-socket is the card's own connection, TLS except on loopback), and each download checks that the
-card is still signed in instead of a branch's trust. See
+A clerk takes copies the same way, for the person its library card
+belongs to. Its own acquire asks each library it holds an active card
+for, after any library it joined as a branch, by sending `copy.grant` on
+that card's clerk socket; a library whose socket isn't connected is
+skipped. The same-store rule and the fall-back to the store apply, and a
+taken book is recorded for that library too. The grant's token is not
+sealed (a clerk has no box key; the socket is the card's own connection,
+TLS except on loopback), and each download checks that the card is still
+signed in instead of a branch's trust. See
 [The clerk socket](sign-in.md#the-clerk-socket).
 
 | Refusal | Meaning |
@@ -863,11 +868,6 @@ card is still signed in instead of a branch's trust. See
 
 Limits: 1000 files per copy and 512-byte names. A grant is dropped once
 it expires.
-
-> [!NOTE]
-> A branch takes copies as
-> [When a branch takes the copy](#when-a-branch-takes-the-copy) describes.
-> The clerk app doesn't yet download them.
 
 ## Node-local instances
 
@@ -1230,7 +1230,9 @@ shared stay in the library, marked as from a branch that left (see
   a store account connected to the branch, and only when the library's
   copy came from the same store. It doesn't yet compare a copy from
   another store with its own download, and it doesn't take a book the
-  library holds as several audio files.
+  library holds as several audio files. A clerk works the same way.
+- A clerk always takes a library's copy when it can: there is no setting
+  per library card to turn it off.
 - The library's name is the host of its public origin. There is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the

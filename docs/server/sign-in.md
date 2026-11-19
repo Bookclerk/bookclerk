@@ -259,6 +259,12 @@ library never sends work on it.
 
 Answers come in the order the frames were asked.
 
+A clerk asks for a copy when one of its own acquires wants that edition,
+and takes it only when the library downloaded it from the same store (see
+[When a branch takes the copy](cluster-hosts.md#when-a-branch-takes-the-copy),
+which a clerk follows too). The clerk keeps the token only while the
+acquire runs and keeps it out of its own logs.
+
 The copy token is good only while the card is: the library checks on every
 download that the card is still signed in and its user is not disabled,
 that the person may still see the edition and that the files are the ones
