@@ -853,6 +853,17 @@ pub struct AcquireMode {
     pub paced: bool,
 }
 
+/// Where a title goes in a paced run: audio not yet downloaded first (0),
+/// then an acquired title's missing companion PDF (1), then a title that
+/// failed before (2).
+fn paced_rank(status: AcquireStatus) -> u8 {
+    match status {
+        AcquireStatus::NotAcquired | AcquireStatus::Queued | AcquireStatus::Downloading => 0,
+        AcquireStatus::Acquired => 1,
+        AcquireStatus::Error => 2,
+    }
+}
+
 /// Acquire pending titles synchronously.
 ///
 /// When `ctx` is set, progress is fenced and cancel is checked between titles.
@@ -927,11 +938,12 @@ pub async fn run_acquire(
     };
     let mut targets = acquire_candidates(&library, account, title, wanted).await?;
     if mode.paced {
-        // Titles that failed before go after the rest (the sort is stable,
-        // so each group keeps its order): a title that keeps failing spends
-        // the account's budget only once the others have had theirs, so the
-        // backlog still moves when one title never downloads.
-        targets.sort_by_key(|t| t.status == AcquireStatus::Error);
+        // Audio not yet downloaded goes first, then companion PDFs of
+        // acquired titles, then titles that failed before (the sort is
+        // stable, so each group keeps its order): a title that keeps failing
+        // or has no PDF spends the account's budget only once the audio
+        // backlog has had its turn.
+        targets.sort_by_key(|t| paced_rank(t.status));
     }
     // A pinned instance serves its own plugin's books only; the rest are
     // skipped, not failed.
@@ -1779,6 +1791,23 @@ pub fn note_job_failure(job_id: &str, err: &anyhow::Error) {
 mod tests {
     use super::*;
     use bookclerk_library::{LibraryStore, NewBook};
+
+    /// A paced run sorts pending audio first, missing PDFs of acquired
+    /// titles next and earlier failures last, keeping each group's order.
+    #[test]
+    fn a_paced_run_puts_audio_before_pdf_resumes_and_failures() {
+        let mut statuses = [
+            ("a", AcquireStatus::Error),
+            ("b", AcquireStatus::Acquired),
+            ("c", AcquireStatus::NotAcquired),
+            ("d", AcquireStatus::Acquired),
+            ("e", AcquireStatus::Queued),
+            ("f", AcquireStatus::Downloading),
+        ];
+        statuses.sort_by_key(|(_, status)| paced_rank(*status));
+        let order: Vec<&str> = statuses.iter().map(|(id, _)| *id).collect();
+        assert_eq!(order, ["c", "e", "f", "b", "d", "a"]);
+    }
 
     async fn test_store() -> LibraryStore {
         LibraryStore::from_connection(

@@ -580,9 +580,10 @@ holds across plugin instances and every node of the cluster.
   request it accepted from a library (which is how "Acquire all of this
   branch's members' books" reaches it). A paced title that fails and is
   retried waits for the pace again before the retry asks the store, and is
-  set aside like any other when the wait is long. A paced run tries titles that failed
-  before last, so one title that keeps failing does not spend the budget
-  of the titles behind it. An acquire a person starts in the
+  set aside like any other when the wait is long. A paced run tries audio not yet downloaded
+  first, then missing companion PDFs of acquired titles, then titles that
+  failed before, so a title that keeps failing or has no PDF does not spend
+  the budget of the audio behind it. An acquire a person starts in the
   web app or CLI leaves `paced` unset: its downloads count against the
   budget but are never held, and when the store answers `rateLimited` the
   job records the cool-down and fails for good with the store's answer
