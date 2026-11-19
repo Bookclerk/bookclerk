@@ -167,6 +167,12 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
             };
         }
         "output.in_progress" => config.output.in_progress = Some(PathBuf::from(v)),
+        "diagnostics.share_reports" => {
+            config.diagnostics.share_reports = parse_bool(v).unwrap_or(false);
+        }
+        "diagnostics.share_usage" => {
+            config.diagnostics.share_usage = parse_bool(v).unwrap_or(false);
+        }
         "output.bad_book_action" => {
             config.output.bad_book_action = match v {
                 "Abort" => BadBookAction::Abort,

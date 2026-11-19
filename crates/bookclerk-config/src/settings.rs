@@ -551,8 +551,17 @@ pub struct DiagnosticsConfig {
     pub warn_burst_threshold: u32,
     /// Sliding window length for warn-burst detection, in seconds.
     pub warn_burst_window_secs: u64,
-    /// Max redacted events retained for upload (all levels through TRACE).
+    /// Max redacted events retained for upload: Bookclerk's own events
+    /// through TRACE, other crates' from INFO up.
     pub ring_buffer_capacity: u32,
+    /// When true, send a weekly anonymous check-in (a random install ID,
+    /// version, platform and kind) so the project can count active installs.
+    /// Separate from `share_reports`; reports carry the install ID only when
+    /// this is on.
+    pub share_usage: bool,
+    /// Marks this install as a copy of the hosted demo: reports say
+    /// `deployment = "demo"` and no check-in is sent. The demo image sets it.
+    pub demo: bool,
 }
 
 impl Default for DiagnosticsConfig {
@@ -568,6 +577,8 @@ impl Default for DiagnosticsConfig {
             warn_burst_threshold: 20,
             warn_burst_window_secs: 60,
             ring_buffer_capacity: 200,
+            share_usage: false,
+            demo: false,
         }
     }
 }

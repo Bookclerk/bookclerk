@@ -41,8 +41,9 @@ export const INSTALLATION_PERMISSIONS = Object.freeze({
 
 /**
  * Permissions of the token that edits an issue's summary comment
- * (`writeSummaryComment`): the one `issues: write` the comment edit needs,
- * which the ingest workflow's own token also has. It is never cached.
+ * (`writeSummaryComment`) or closes an issue for an owner (`closeIssue`):
+ * the one `issues: write` those writes need, which the ingest workflow's
+ * own token also has. It is never cached.
  */
 export const SUMMARY_PERMISSIONS = Object.freeze({
   issues: "write",
@@ -384,6 +385,64 @@ function refusal(verb: "edit" | "post", res: Response, text: string): SummaryWri
   throw new Error(`comment ${verb} failed: HTTP ${res.status}`);
 }
 
+/**
+ * Closes an issue for the owner's close buttons: as not planned, or as
+ * completed with a `fixed-in:<version>` label, which the sync reads as the
+ * issue's fixed-in version. The label goes on first, so an issue never
+ * shows as closed without the version it was closed for. The token is
+ * minted for this call alone with `SUMMARY_PERMISSIONS` and not kept.
+ *
+ * @param cfg - Settings.
+ * @param now - Unix time in milliseconds.
+ * @param issue - Issue number.
+ * @param fixedIn - The fixing version, or null to close as not planned.
+ * @throws {Error} When the App lacks `issues: write` or GitHub refuses
+ *   either write. Messages carry a stage and an HTTP status, never the
+ *   token.
+ */
+export async function closeIssue(
+  cfg: GitHubConfig,
+  now: number,
+  issue: number,
+  fixedIn: string | null,
+): Promise<void> {
+  const { token } = await mintToken(cfg, now, SUMMARY_PERMISSIONS);
+  const base = `${API}/repos/${cfg.owner}/${cfg.repo}/issues/${issue}`;
+  const headers = { ...apiHeaders(token), "Content-Type": "application/json" };
+  if (fixedIn !== null) {
+    // A reopened issue can still carry an earlier fixing version; the sync
+    // reads the first `fixed-in:` label, so only the new one may stay.
+    const listed = await gh(`${base}/labels?per_page=100`, { headers });
+    if (!listed.ok) throw new Error(`label list failed: HTTP ${listed.status}`);
+    const stale = labelNames(await listed.json().catch(() => null)).filter(
+      (name) => name.startsWith(FIXED_IN_LABEL) && name !== `${FIXED_IN_LABEL}${fixedIn}`,
+    );
+    for (const name of stale) {
+      const gone = await gh(`${base}/labels/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+        headers,
+      });
+      if (!gone.ok && gone.status !== 404)
+        throw new Error(`label removal failed: HTTP ${gone.status}`);
+    }
+    const res = await gh(`${base}/labels`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ labels: [`${FIXED_IN_LABEL}${fixedIn}`] }),
+    });
+    if (!res.ok) throw new Error(`label failed: HTTP ${res.status}`);
+  }
+  const res = await gh(base, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({
+      state: "closed",
+      state_reason: fixedIn === null ? "not_planned" : "completed",
+    }),
+  });
+  if (!res.ok) throw new Error(`close failed: HTTP ${res.status}`);
+}
+
 /** Forgets the cached installation token (tests). */
 export function clearTokenCache(): void {
   cachedToken = null;
@@ -392,6 +451,23 @@ export function clearTokenCache(): void {
 // ---------------------------------------------------------------------------
 // Response decoders: sans-IO, so the fuzzer drives the same code as the
 // requests above. None of them throws.
+
+/**
+ * Label names from an issue's label list (`GET …/issues/{n}/labels`).
+ *
+ * @param data - Decoded JSON (any value).
+ * @returns The names that are strings, in order; empty for anything else.
+ */
+export function labelNames(data: unknown): string[] {
+  if (!Array.isArray(data)) return [];
+  const out: string[] = [];
+  for (const item of data) {
+    const name: unknown =
+      item !== null && typeof item === "object" ? (item as Record<string, unknown>)["name"] : null;
+    if (typeof name === "string" && name.length <= 100) out.push(name);
+  }
+  return out;
+}
 
 /** A GitHub login: letters, digits and hyphens, at most 39. */
 const LOGIN = /^[A-Za-z0-9-]{1,39}$/;

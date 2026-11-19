@@ -244,6 +244,11 @@ recommend_limit = 20
 
 # [diagnostics]
 # share_reports = false
+# Weekly usage check-in (a random install ID, version, OS, arch, kind); its
+# own switch, off by default. See docs/server/diagnostics.md#share-usage.
+# share_usage = false
+# Marks a hosted demo copy: its reports are labeled demo and it never checks in.
+# demo = false
 # collector_url = ""
 # upload_on_crash = true
 # upload_on_error_burst = true

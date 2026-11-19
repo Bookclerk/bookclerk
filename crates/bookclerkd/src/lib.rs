@@ -74,7 +74,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bookclerk_config::{
-    init_tracing_with, Config, ListenAddrs, LogFormat, LoggingHandle, TracingOptions,
+    init_tracing_with, Config, ListenAddrs, LogFormat, LoggingHandle, ProcessRole, TracingOptions,
 };
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 
@@ -158,7 +158,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             .map_err(|err| anyhow::anyhow!("invalid --listen / BOOKCLERK_DAEMON_LISTEN: {err}"))?;
     }
 
-    init_logging(&config, "bookclerkd");
+    init_logging(&config, "bookclerkd", ProcessRole::Daemon);
     serve_listeners(start_host(config, HostMode::Listening).await?).await
 }
 
@@ -174,7 +174,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 /// The logging handle is kept in [`LOGGING`] for the rest of the process,
 /// so stderr logging keeps running after this returns. A second call keeps
 /// the first handle; its own subscriber is not installed either.
-fn init_logging(config: &Config, syslog_identifier: &str) {
+fn init_logging(config: &Config, syslog_identifier: &str, role: ProcessRole) {
     let log_format = if config.daemon.json_logs {
         LogFormat::Json
     } else {
@@ -187,6 +187,7 @@ fn init_logging(config: &Config, syslog_identifier: &str) {
         diagnostics: config.diagnostics.clone(),
         version: env!("CARGO_PKG_VERSION").into(),
         enable_journald: true,
+        role,
     });
     // After subscriber install so startup guidance is not dropped.
     config.warn_unsupported_options();
@@ -209,7 +210,78 @@ fn init_logging(config: &Config, syslog_identifier: &str) {
             "diagnostics.share_reports=true — redacted reports POST to Worker /submit (B2 via Cloudflare)"
         );
     }
+    start_usage_checkins(config, &logging.diagnostics, role);
     keep_logging(logging);
+}
+
+/// How often the check-in thread looks whether a weekly check-in is due.
+const CHECKIN_POLL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+/// With `diagnostics.share_usage` on (and not a demo copy), loads the
+/// install's random ID, attaches it to diagnostics uploads and starts a
+/// thread that sends the weekly check-in (see `docs/server/diagnostics.md`).
+///
+/// # Arguments
+///
+/// * `config` - The loaded configuration (files directory, diagnostics).
+/// * `diagnostics` - The process's diagnostics handle.
+/// * `role` - What kind of process this is, reported as the check-in's kind.
+fn start_usage_checkins(
+    config: &Config,
+    diagnostics: &bookclerk_config::DiagnosticsHandle,
+    role: ProcessRole,
+) {
+    if !config.diagnostics.share_usage || config.diagnostics.demo {
+        return;
+    }
+    let files_dir = config.paths().files_dir.clone();
+    let id = match bookclerk_config::InstallId::load_or_create(&files_dir) {
+        Ok(id) => id,
+        Err(err) => {
+            tracing::warn!(error = %err, "usage check-ins off: the install ID could not be read or written");
+            return;
+        }
+    };
+    diagnostics.set_install_id(&id);
+    let settings = config.diagnostics.clone();
+    let checkin = bookclerk_config::CheckIn {
+        install_id: id.as_str().to_string(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        os: std::env::consts::OS.into(),
+        arch: std::env::consts::ARCH.into(),
+        kind: role.as_str().into(),
+    };
+    tracing::info!(
+        "diagnostics.share_usage=true — a weekly anonymous check-in goes to the collector"
+    );
+    let spawned = std::thread::Builder::new()
+        .name("bookclerk-checkin".into())
+        .spawn(move || loop {
+            let now = unix_now_ms();
+            if bookclerk_config::checkin_due(&files_dir, now) {
+                match bookclerk_config::send_checkin(&settings, &checkin) {
+                    Ok(()) => {
+                        if let Err(err) = bookclerk_config::record_checkin(&files_dir, now) {
+                            tracing::warn!(error = %err, "usage check-in sent but not recorded");
+                        }
+                    }
+                    Err(err) => {
+                        tracing::debug!(error = %err, "usage check-in not sent; retrying later")
+                    }
+                }
+            }
+            std::thread::sleep(CHECKIN_POLL);
+        });
+    if let Err(err) = spawned {
+        tracing::warn!(error = %err, "usage check-ins off: the thread could not start");
+    }
+}
+
+/// Wall-clock Unix milliseconds, or 0 before the epoch.
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// The process's logging handle, kept until the process exits: it owns the
@@ -682,10 +754,10 @@ mod logging_tests {
     fn logging_outlives_its_setup_and_a_second_setup_keeps_the_first() {
         let files = tempfile::tempdir().unwrap();
         let config = Config::load(Some(files.path().to_path_buf()), None).unwrap();
-        init_logging(&config, "bookclerkd-test");
+        init_logging(&config, "bookclerkd-test", super::ProcessRole::Daemon);
         let first = kept();
         assert!(first.is_some(), "the handle must outlive init_logging");
-        init_logging(&config, "bookclerkd-test");
+        init_logging(&config, "bookclerkd-test", super::ProcessRole::Daemon);
         assert_eq!(kept(), first, "a second setup keeps the first handle");
     }
 }

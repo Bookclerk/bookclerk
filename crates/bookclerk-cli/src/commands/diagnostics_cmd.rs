@@ -21,15 +21,30 @@ pub enum DiagnosticsCommand {
         #[arg(long, default_value = "cli_manual")]
         trigger: String,
     },
+    /// Replace this install's random usage ID (diagnostics.share_usage) with a new one.
+    ///
+    /// The next check-in then counts as a new install. Restart the daemon so
+    /// its reports carry the new ID.
+    ResetId,
 }
 
 /// Dispatches a diagnostics subcommand against the process-global ring buffer.
 pub fn run(
     command: DiagnosticsCommand,
-    _config: &Config,
+    config: &Config,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     match command {
+        DiagnosticsCommand::ResetId => {
+            bookclerk_config::InstallId::reset(&config.paths().files_dir)?;
+            let payload = json!({ "reset": true, "share_usage": config.diagnostics.share_usage });
+            emit(format, &payload, || {
+                println!("install ID replaced; restart bookclerkd so reports use it");
+                if !config.diagnostics.share_usage {
+                    println!("diagnostics.share_usage is off, so the ID is not sent anywhere");
+                }
+            })
+        }
         DiagnosticsCommand::Show { limit } => {
             let Some(diag) = bookclerk_config::diagnostics_global() else {
                 anyhow::bail!("diagnostics not initialized");
