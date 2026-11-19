@@ -1237,4 +1237,50 @@ mod tests {
         let failed = Err(anyhow::anyhow!("database unreachable"));
         assert!(bare_output_body(failed, &bookclerk_config::OutputConfig::default()).is_err());
     }
+
+    /// The naming preview finds a title by any id, asks for an account
+    /// when two accounts hold it, and says how to scan when none does.
+    #[tokio::test]
+    async fn the_preview_title_is_found_by_id_and_account() {
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("sqlite memory"),
+        );
+        for account in ["acct", "other"] {
+            store
+                .upsert_account("audible", account, "us", None, true, "audible")
+                .await
+                .unwrap();
+            store
+                .upsert_book(&bookclerk_library::NewBook::minimal(
+                    "B0PREVIEW1",
+                    account,
+                    "us",
+                    "Preview",
+                ))
+                .await
+                .unwrap();
+        }
+        let ambiguous = resolve_book_for_preview(&store, "b0preview1", None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(ambiguous.contains("pass --account"), "{ambiguous}");
+        let title = resolve_book_for_preview(&store, "B0PREVIEW1", Some("other"))
+            .await
+            .unwrap();
+        assert_eq!(title.account_id, "other");
+        assert_eq!(title.title, "Preview");
+        let missing = resolve_book_for_preview(&store, "B0NOTHERE1", None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("library scan"), "{missing}");
+        let missing = resolve_book_for_preview(&store, "B0NOTHERE1", Some("acct"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("for account acct"), "{missing}");
+    }
 }
