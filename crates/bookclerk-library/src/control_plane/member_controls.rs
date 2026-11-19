@@ -3,10 +3,11 @@
 //!
 //! Six switches, each on out of the box ([`MemberControl`]). The library's
 //! default (the `core.member_controls` cluster document) sets every switch
-//! for all patrons; an Administrator can override single switches for one
-//! patron (a `patron_controls` row), and the rest keep following the
-//! default. Owners and Administrators are never limited, and a user who
-//! is not active may do none of it.
+//! for Members; single switches can be overridden for one patron (a
+//! `patron_controls` row), and a Member's other switches keep following
+//! the default. An Administrator follows no default: only overrides an
+//! Owner or the operator set limit them. Owners are never limited, and a
+//! user who is not active may do none of it.
 //!
 //! The scope's visibility rules ([`super::PatronScope`]) are separate: a
 //! patron's own rules replace the default rules as a whole, while a
@@ -508,11 +509,10 @@ pub async fn set_member_control_overrides(
 ///
 /// # Errors
 ///
-/// Returns [`LibraryError::Conflict`] when the user's role changed since
-/// `user` was read, even when the stored overrides already matched (the
-/// caller authorized against a role the user no longer has, so it reads
-/// again), [`LibraryError::NotFound`] when
-/// the user is gone, or the read or write error.
+/// Returns [`LibraryError::Conflict`] when the user did not have the role
+/// in `user` as the batch ran (nothing was written; whether the role
+/// changes again afterwards does not matter), [`LibraryError::NotFound`]
+/// when the user is gone, or the read or write error.
 pub async fn set_member_control_overrides_for(
     store: &LibraryStore,
     user: &UserRecord,
@@ -526,52 +526,74 @@ pub async fn set_member_control_overrides_for(
         "patron-controls-{user_id}-{}",
         uuid::Uuid::new_v4().simple()
     );
-    let statements = if overrides.is_empty() {
-        vec![batch::exec(
-            &format!("DELETE FROM patron_controls WHERE user_id = ? AND {same_role}"),
-            vec![int(user_id), int(user_id), text(role)],
-        )]
+    // Every statement carries the role guard, and the reply's row counts
+    // say whether it held: with overrides, exactly one of the update and
+    // the insert touches a row when it did; without, a guarded placeholder
+    // insert makes sure the guarded delete has a row to remove.
+    let (statements, guard_rows): (Vec<_>, &[usize]) = if overrides.is_empty() {
+        (
+            vec![
+                batch::exec(
+                    &format!(
+                        "INSERT OR IGNORE INTO patron_controls (user_id, controls_json, updated_at) \
+                         SELECT ?, '{{}}', ? WHERE {same_role}"
+                    ),
+                    vec![int(user_id), text(&now), int(user_id), text(role)],
+                ),
+                batch::exec(
+                    &format!("DELETE FROM patron_controls WHERE user_id = ? AND {same_role}"),
+                    vec![int(user_id), int(user_id), text(role)],
+                ),
+            ],
+            &[1],
+        )
     } else {
         let json = serde_json::to_string(&overrides).map_err(|err| invalid(&err.to_string()))?;
-        vec![
-            batch::exec(
-                &format!(
-                    "UPDATE patron_controls SET controls_json = ?, updated_at = ? \
-                     WHERE user_id = ? AND {same_role}"
+        (
+            vec![
+                batch::exec(
+                    &format!(
+                        "UPDATE patron_controls SET controls_json = ?, updated_at = ? \
+                         WHERE user_id = ? AND {same_role}"
+                    ),
+                    vec![
+                        text(&json),
+                        text(&now),
+                        int(user_id),
+                        int(user_id),
+                        text(role),
+                    ],
                 ),
-                vec![
-                    text(&json),
-                    text(&now),
-                    int(user_id),
-                    int(user_id),
-                    text(role),
-                ],
-            ),
-            batch::exec(
-                &format!(
-                    "INSERT OR IGNORE INTO patron_controls (user_id, controls_json, updated_at) \
-                     SELECT ?, ?, ? WHERE {same_role}"
+                batch::exec(
+                    &format!(
+                        "INSERT OR IGNORE INTO patron_controls (user_id, controls_json, updated_at) \
+                         SELECT ?, ?, ? WHERE {same_role}"
+                    ),
+                    vec![
+                        int(user_id),
+                        text(&json),
+                        text(&now),
+                        int(user_id),
+                        text(role),
+                    ],
                 ),
-                vec![
-                    int(user_id),
-                    text(&json),
-                    text(&now),
-                    int(user_id),
-                    text(role),
-                ],
-            ),
-        ]
+            ],
+            &[0, 1],
+        )
     };
-    store
+    let reply = store
         .execute_host_batch(batch::request(&operation_id, statements))
         .await?;
+    let written: u64 = guard_rows
+        .iter()
+        .map(|index| batch::rows_affected(&reply, *index))
+        .sum();
     let Some(current) = store.get_user(user_id).await? else {
         return Err(LibraryError::not_found(EntityKind::User, user_id));
     };
-    if current.role != user.role {
+    if written == 0 {
         return Err(LibraryError::Conflict(format!(
-            "user {user_id} became {} while their controls were being set; read them again",
-            current.role.as_str()
+            "user {user_id} is no longer {role} as their controls were read; read them again"
         )));
     }
     assigned_member_controls(store, &current).await

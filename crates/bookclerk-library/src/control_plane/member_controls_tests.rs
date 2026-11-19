@@ -425,5 +425,35 @@ async fn a_promotion_after_authorization_stops_the_override_write() {
             .await
             .unwrap_err();
         assert!(matches!(err, LibraryError::Conflict(_)), "{name}: {err:?}");
+        // Clearing under a stale role is refused too, and keeps the row.
+        let err = set_member_control_overrides_for(store, &pat, ControlOverrides::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LibraryError::Conflict(_)), "{name}: {err:?}");
+        assert_eq!(
+            member_control_overrides(store, pat.id).await.unwrap(),
+            overrides,
+            "{name}"
+        );
+        // Back to the role the caller read as the batch runs: the guard
+        // holds, so the write goes through.
+        store.set_user_role(pat.id, UserRole::Member).await.unwrap();
+        let cleared = set_member_control_overrides_for(store, &pat, ControlOverrides::default())
+            .await
+            .unwrap();
+        assert!(cleared.overrides.is_empty(), "{name}");
+        // A role change after the write leaves it in place.
+        set_member_control_overrides_for(store, &pat, overrides)
+            .await
+            .unwrap();
+        store
+            .set_user_role(pat.id, UserRole::Administrator)
+            .await
+            .unwrap();
+        assert_eq!(
+            member_control_overrides(store, pat.id).await.unwrap(),
+            overrides,
+            "{name}"
+        );
     }
 }

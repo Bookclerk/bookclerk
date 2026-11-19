@@ -448,7 +448,14 @@ pub(crate) async fn put_user_controls(
             )),
         )
         .await;
-    Ok(Json(user_controls_json(&user, assigned)))
+    // `assigned` comes from the user as they are now; describe that role
+    // too, should it have changed since the write.
+    let current = library
+        .get_user(user_id)
+        .await
+        .map_err(|err| library_error(ROUTE, err))?
+        .unwrap_or(user);
+    Ok(Json(user_controls_json(&current, assigned)))
 }
 
 /// Reads the library's default member controls, which every Member
