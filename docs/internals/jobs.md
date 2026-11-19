@@ -581,11 +581,22 @@ holds across plugin instances and every node of the cluster.
   job records the cool-down and stops with the store's answer instead of
   retrying into the throttle. `paced` is part of the dedup key, so a
   hand-started acquire is never folded into a waiting automatic one.
-- **Ledger.** Every title whose fetch reached the store is a row in
-  `account_downloads` (start time, job, paced or not), once per title
-  however many attempts it took. A copy matched in storage or taken from
-  a joined library is not counted. Rows older than two days are pruned
+- **Ledger.** Every title Bookclerk may have fetched from the store is a
+  row in `account_downloads` (start time, job, paced or not), once per
+  title however many attempts it took. That includes a title that failed
+  after its fetch (converting or storing it), since the store download
+  already happened. A copy matched in storage or taken from a joined
+  library is not counted, nor is a title no destination takes or one the
+  store refused with `rateLimited`. Rows older than two days are pruned
   when the account records its next download.
+- **Where it runs.** A paced acquire is claimed only by a node that holds
+  the library database (`control_plane::claimant_may_run`), like a forced
+  or PDF-only one: a Host runs handed acquires without the library, so it
+  could neither check nor record the pace.
+- **Changing the pace.** Setting an account's pace or clearing its pause
+  wakes every parked paced acquire that names that account or no account
+  (`LibraryStore::wake_paced_acquires`), so it checks the new pace at once
+  instead of sleeping out the old deadline.
 
 A paced run checks the account's pace before each title, while it holds
 the account's cluster semaphore, so no other node downloads on the account

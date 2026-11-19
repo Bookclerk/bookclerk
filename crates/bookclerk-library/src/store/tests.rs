@@ -2543,6 +2543,60 @@ async fn defer_job_parks_without_an_attempt_or_checkpoint() {
         .unwrap()
         .is_none());
     assert!(!store.defer_job(&fence, wake, "again").await.unwrap());
+    // Another account's pace change leaves it parked; its own wakes it.
+    store
+        .upsert_account("audible", "a1", "us", None, true, "audible")
+        .await
+        .unwrap();
+    assert_eq!(store.wake_paced_acquires("other").await.unwrap(), 1);
+    let parked = store.get_job(&id).await.unwrap().unwrap();
+    assert!(parked.run_after <= chrono::Utc::now());
+    assert_eq!(store.wake_paced_acquires("a1").await.unwrap(), 0);
+    let woken = claim_job(&store, "worker-woken").await;
+    assert_eq!(woken.id, id);
+}
+
+#[tokio::test]
+async fn waking_paced_acquires_skips_other_accounts_and_unpaced_jobs() {
+    let store = kit_store().await;
+    store
+        .upsert_account("audible", "a1", "us", None, true, "audible")
+        .await
+        .unwrap();
+    let later = chrono::Utc::now() + chrono::Duration::hours(6);
+    let mut ids = Vec::new();
+    for (account, paced) in [("a1", true), ("a2", true), ("a1", false)] {
+        let created = store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Acquire,
+                payload: JobPayload {
+                    paced,
+                    account: Some(account.into()),
+                    trigger: JobTrigger::Scheduler,
+                    ..Default::default()
+                },
+                priority: 0,
+                max_attempts: 3,
+                max_pending: 8,
+                run_after: Some(later),
+            })
+            .await
+            .unwrap();
+        let EnqueueOutcome::Created { id } = created else {
+            panic!("expected created: {created:?}");
+        };
+        ids.push(id);
+    }
+    store.clear_account_cooldown("audible", "a1").await.unwrap();
+    let now = chrono::Utc::now();
+    let run_after = |i: usize| {
+        let store = &store;
+        let id = ids[i].clone();
+        async move { store.get_job(&id).await.unwrap().unwrap().run_after }
+    };
+    assert!(run_after(0).await <= now, "a1's paced acquire is woken");
+    assert!(run_after(1).await > now, "a2's stays parked");
+    assert!(run_after(2).await > now, "an unpaced job is left alone");
 }
 
 #[tokio::test]

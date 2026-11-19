@@ -102,7 +102,8 @@ impl LibraryStore {
     }
 
     /// Stores the operator's override of an account's pace (the cool-down
-    /// is kept).
+    /// is kept), and wakes parked paced acquires that may download on it so
+    /// they look at the new pace ([`Self::wake_paced_acquires`]).
     ///
     /// # Errors
     ///
@@ -149,7 +150,9 @@ impl LibraryStore {
             None,
             &now,
         )
-        .await
+        .await?;
+        self.wake_paced_acquires(account_id).await?;
+        Ok(())
     }
 
     /// Records the store's cool-down for an account, unless one that ends
@@ -189,7 +192,9 @@ impl LibraryStore {
         .await
     }
 
-    /// Clears an account's cool-down (the operator knows better).
+    /// Clears an account's cool-down (the operator knows better), and wakes
+    /// parked paced acquires that may download on it
+    /// ([`Self::wake_paced_acquires`]).
     ///
     /// # Errors
     ///
@@ -210,6 +215,7 @@ impl LibraryStore {
             )],
         ))
         .await?;
+        self.wake_paced_acquires(account_id).await?;
         Ok(())
     }
 

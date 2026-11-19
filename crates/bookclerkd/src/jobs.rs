@@ -1268,13 +1268,17 @@ async fn wait_for_pace(
     }
 }
 
-/// Whether an acquire attempt's outcome means the store was asked for the
-/// title, so it counts against the account's pace.
+/// Whether an acquire attempt's outcome may mean the store was asked for
+/// the title, so it counts against the account's pace.
 ///
 /// A copy matched in storage or taken from a joined library never reached
-/// the store, and neither did a title no destination takes. A source error
-/// other than `rateLimited` did (the store answered); other failures are
-/// local (storage, media, database) and might not have.
+/// the store, a title no destination takes is refused before any fetch, and
+/// a `rateLimited` answer means the store refused it. Any other failure
+/// counts: a source error is the store's own answer, and a storage, media
+/// or database failure can come after the store download finished (the
+/// pipeline fetches before it converts and stores). Counting a local
+/// failure that happened before the fetch only makes the pace stricter,
+/// and a title is counted once however many attempts it takes.
 fn reached_store(
     result: &Result<bookclerk_acquire::AcquireResult, bookclerk_acquire::AcquireError>,
 ) -> bool {
@@ -1282,15 +1286,15 @@ fn reached_store(
     match result {
         Ok(result) => !result.matched_existing && !result.from_library,
         Err(AcquireError::Source(bookclerk_source::SourceError::RateLimited(_))) => false,
-        Err(AcquireError::Source(_)) => true,
+        Err(AcquireError::NoDestinationAccepts) => false,
         Err(
-            AcquireError::Storage(_)
+            AcquireError::Source(_)
+            | AcquireError::Storage(_)
             | AcquireError::Media(_)
             | AcquireError::Library(_)
             | AcquireError::Io(_)
-            | AcquireError::NoDestinationAccepts
             | AcquireError::Other(_),
-        ) => false,
+        ) => true,
     }
 }
 
@@ -1618,7 +1622,7 @@ mod tests {
     }
 
     #[test]
-    fn only_store_answers_count_as_downloads() {
+    fn fetches_count_even_when_later_steps_fail() {
         use bookclerk_acquire::AcquireError;
         use bookclerk_source::SourceError;
 
@@ -1629,7 +1633,8 @@ mod tests {
             SourceError::RateLimited(None)
         ))));
         assert!(!reached_store(&Err(AcquireError::NoDestinationAccepts)));
-        assert!(!reached_store(&Err(AcquireError::Other(anyhow::anyhow!(
+        // A failure after the fetch (converting, storing) still counts.
+        assert!(reached_store(&Err(AcquireError::Other(anyhow::anyhow!(
             "disk full"
         )))));
     }

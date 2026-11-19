@@ -260,6 +260,78 @@ impl LibraryStore {
         ))
     }
 
+    /// Makes parked paced acquires that may download on an account ready
+    /// to run now, after its pace was relaxed or its pause cleared.
+    ///
+    /// A paced acquire parked by the pace ([`Self::defer_job`]) waits until
+    /// the moment its account was due to download again. When a person or
+    /// the operator loosens the limit, the job must look again rather than
+    /// sleep out the old deadline. Every pending paced acquire that names
+    /// `account_id`, or names no account, and whose `run_after` is later
+    /// than now is moved to now; on its next claim it checks the pace and
+    /// parks again if it still has to wait. Each write is a compare-and-swap
+    /// on `state = 'pending'` and the generation it read, which it bumps, so
+    /// a job claimed meanwhile is left alone.
+    ///
+    /// # Returns
+    ///
+    /// How many jobs were woken.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read or write fails.
+    pub async fn wake_paced_acquires(&self, account_id: &str) -> Result<u32> {
+        let now = Utc::now();
+        let mut woken = 0u32;
+        let mut after: Option<String> = None;
+        loop {
+            let (page, next) = self.list_pending_jobs_page(after.as_deref(), 64).await?;
+            for job in page {
+                let names_account = job
+                    .payload
+                    .account
+                    .as_deref()
+                    .is_none_or(|named| named == account_id);
+                if job.kind != JobKind::Acquire
+                    || !job.payload.paced
+                    || !names_account
+                    || job.run_after <= now
+                {
+                    continue;
+                }
+                let res = self
+                    .exec_bumped(
+                        jobs::Entity::update_many()
+                            .col_expr(
+                                jobs::Column::RunAfter,
+                                sea_orm::sea_query::Expr::value(now.to_rfc3339()),
+                            )
+                            .col_expr(
+                                jobs::Column::LeaseGeneration,
+                                sea_orm::sea_query::Expr::value(job.lease_generation + 1),
+                            )
+                            .col_expr(
+                                jobs::Column::UpdatedAt,
+                                sea_orm::sea_query::Expr::value(now_str()),
+                            )
+                            .filter(jobs::Column::Id.eq(&job.id))
+                            .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
+                            .filter(jobs::Column::LeaseGeneration.eq(job.lease_generation)),
+                        LiveTopic::Jobs,
+                        Bump::Always,
+                    )
+                    .await?;
+                if res == 1 {
+                    woken += 1;
+                }
+            }
+            match next {
+                Some(next) => after = Some(next),
+                None => return Ok(woken),
+            }
+        }
+    }
+
     /// Replaces the payload of a pending job read at `lease_generation`.
     ///
     /// A compare-and-swap on `state = 'pending'` and the generation, which it
