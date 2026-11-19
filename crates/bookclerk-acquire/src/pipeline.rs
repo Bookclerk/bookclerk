@@ -1339,15 +1339,37 @@ enum CopyCover {
     Skip,
 }
 
-/// True when this install can store audio like `probe` under the
-/// request's output options.
+/// True when this install could store audio like `probe` under the
+/// request's output options, going by what a library says of its copy.
 ///
 /// Output that keeps the files as delivered stores anything. Every other
 /// output decodes or repackages the audio in the media worker, which
-/// reads lossy MP4 and MP3 audio only.
+/// reads lossy MP4 and MP3 audio only. The encoding itself is checked on
+/// the downloaded file ([`output_can_decode`]).
 fn output_can_use(req: &AcquireRequest, probe: &FileProbe) -> bool {
     req.options.is_noop_output()
         || (!probe.lossless && matches!(probe.content_type.as_str(), "audio/mp4" | "audio/mpeg"))
+}
+
+/// True when the request's output can be made from audio encoded as
+/// `codec`: any audio when the files are kept as delivered, and otherwise
+/// only what the media worker decodes (AAC and MP3).
+fn output_can_decode(req: &AcquireRequest, codec: Option<bookclerk_tags::AudioCodec>) -> bool {
+    use bookclerk_tags::AudioCodec;
+    if req.options.is_noop_output() {
+        return true;
+    }
+    match codec {
+        Some(AudioCodec::Aac | AudioCodec::Mp3) => true,
+        Some(
+            AudioCodec::Alac
+            | AudioCodec::Flac
+            | AudioCodec::Opus
+            | AudioCodec::Eac3
+            | AudioCodec::Ac4,
+        )
+        | None => false,
+    }
 }
 
 /// Records the offered copy as taken, before anything of it is stored: a
@@ -1397,16 +1419,32 @@ fn primary_audio(fetch: &PlainFetch) -> Option<&Path> {
 }
 
 /// Probes `path` in the confined media worker.
-async fn probe_scratch_audio(media: &bookclerk_media::MediaPool, path: &Path) -> Option<FileProbe> {
-    let probe = media.probe_file(path).await.ok()?;
-    Some(FileProbe {
-        content_type: probe.content_type.to_owned(),
-        bitrate_kbps: probe
-            .bitrate_kbps
-            .map(|kbps| kbps.min(FileProbe::MAX_BITRATE_KBPS)),
-        lossless: probe.lossless,
-        source_store: None,
-    })
+///
+/// # Returns
+///
+/// The probe and the audio's encoding (`None` when the tag reader does
+/// not know it), or `None` when the file cannot be read as audio.
+async fn probe_scratch_audio(
+    media: &bookclerk_media::MediaPool,
+    path: &Path,
+) -> Option<(FileProbe, Option<bookclerk_tags::AudioCodec>)> {
+    let size = tokio::fs::metadata(path).await.ok()?.len();
+    let record = media
+        .read_tags(size, &bookclerk_media::FileRange::new(path))
+        .await
+        .ok()?;
+    let probe = bookclerk_media::AudioProbe::from_record(size, &record);
+    Some((
+        FileProbe {
+            content_type: probe.content_type.to_owned(),
+            bitrate_kbps: probe
+                .bitrate_kbps
+                .map(|kbps| kbps.min(FileProbe::MAX_BITRATE_KBPS)),
+            lossless: probe.lossless,
+            source_store: None,
+        },
+        record.codec,
+    ))
 }
 
 /// Compares the title's own store download with the copy a library holds
@@ -1417,7 +1455,7 @@ async fn probe_scratch_audio(media: &bookclerk_media::MediaPool, path: &Path) ->
 /// The library's copy is downloaded only when the library's own probe says
 /// it is better, and replaces the store download only when this install's
 /// probe of the downloaded file agrees and the request's output can use
-/// that kind of audio ([`output_can_use`]). In every other case (equal copies,
+/// that kind of audio ([`output_can_use`], [`output_can_decode`]). In every other case (equal copies,
 /// a download that cannot be probed, a copy that does not arrive or cannot
 /// be recorded as taken) the store download is kept.
 async fn replace_with_better_copy(
@@ -1431,7 +1469,7 @@ async fn replace_with_better_copy(
     let Some(own_audio) = primary_audio(&own).map(Path::to_path_buf) else {
         return Compared::Own(own);
     };
-    let Some(own_probe) = probe_scratch_audio(&media, &own_audio).await else {
+    let Some((own_probe, _)) = probe_scratch_audio(&media, &own_audio).await else {
         return Compared::Own(own);
     };
     let said = offer.copy.probe();
@@ -1456,9 +1494,11 @@ async fn replace_with_better_copy(
         Some(path) => probe_scratch_audio(&media, path).await,
         None => None,
     };
-    if !theirs
-        .is_some_and(|theirs| theirs.is_better_than(&own_probe) && output_can_use(req, &theirs))
-    {
+    if !theirs.is_some_and(|(theirs, codec)| {
+        theirs.is_better_than(&own_probe)
+            && output_can_use(req, &theirs)
+            && output_can_decode(req, codec)
+    }) {
         tracing::warn!(
             id = %status_key(req),
             copy_store = %offer.store,
@@ -4537,6 +4577,35 @@ mod tests {
         ));
         assert_eq!(fetched.load(Ordering::SeqCst), 0);
         assert!(work_dir.join("own.mp3").exists());
+
+        // A lossy MP4 copy is used by an output that repackages audio
+        // only when its encoding is one the media worker decodes: the
+        // same file with an Opus sample entry is downloaded, read and
+        // dropped, and the store's download is kept.
+        let bigger_m4b = |entry: &[u8; 4]| {
+            let mut file = bookclerk_tags::fixtures::tagged_m4b();
+            let at = file.windows(4).position(|w| w == b"mp4a").unwrap();
+            file[at..at + 4].copy_from_slice(entry);
+            file.extend(bookclerk_tags::fixtures::mp4_box(
+                b"free",
+                // Enough to give the 90 s fixture a higher bitrate than
+                // the download's.
+                &vec![0; 2 << 20],
+            ));
+            file
+        };
+        for (entry, used) in [(b"mp4a", true), (b"Opus", false)] {
+            let (mut req, fetched, _) = compare((Some(900), false), bigger_m4b(entry), "Twin.m4b");
+            req.options.format = bookclerk_config::OutputFormat::EnrichedM4b;
+            let offer = offered_copy(&store, &req).await.unwrap();
+            let own_fetch = own(&work_dir);
+            let compared =
+                replace_with_better_copy(&store, &req, &work_dir, &offer, own_fetch).await;
+            assert_eq!(matches!(compared, Compared::Library(_)), used, "{entry:?}");
+            assert_eq!(fetched.load(Ordering::SeqCst), 1);
+            assert_eq!(work_dir.join("own.mp3").exists(), !used);
+            remove_library_copy(&work_dir.join(LIBRARY_COPY_DIR)).await;
+        }
 
         // A better copy that cannot be recorded as taken is not used.
         let mut copy = MemoryCopy::new(

@@ -827,8 +827,9 @@ library it joined, in turn, for the copy of that listing.
   keeps its own, as it does when the two don't fit in the acquire's
   scratch budget together. A lossless copy (FLAC or ALAC) is taken only
   by a branch whose output keeps files as delivered: every other output
-  repackages the audio, and the media worker decodes lossy MP4 and MP3
-  audio only. The comparison runs once, in that acquire. The stored
+  repackages the audio, and the media worker decodes AAC and MP3
+  audio only (so a copy in another encoding, such as Opus, is not taken
+  by such a branch either). The comparison runs once, in that acquire. The stored
   file's row names the store the audio really came from, and the cover
   and companion PDF of the branch's own download are kept (the library's
   cover is used only when the store sent none).
