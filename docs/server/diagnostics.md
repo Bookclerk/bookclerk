@@ -355,8 +355,10 @@ case, hyphens and spaces, and read `O` as `0` and `I` or `L` as `1`.
   `report_access` table, never the code, and never in the B2 object, so
   the ingest Action, triage and GitHub never see it. Hashes are compared
   in constant time.
-- The row counts against `DASHBOARD_INDEX_DAILY_ROWS` like an index row.
-  Past the cap the report is stored without a code. The cron deletes rows
+- Codes have their own daily count in `index_days`, capped at
+  `DASHBOARD_INDEX_DAILY_ROWS` like the index rows. A slot is reserved
+  before the row is written, so overlapping uploads cannot pass the cap.
+  Past it the report is stored without a code. The cron deletes rows
   older than 181 days, once a day.
 - `POST /lookup` takes `{"report_id", "access_code"}` as JSON (what
   Bookclerk sends) or as a form (the page) in the body, never the URL. A
@@ -729,8 +731,9 @@ downloads that one object with the Worker's B2 credentials, never
 
 Because `/submit` is open, indexing stops at `DASHBOARD_INDEX_DAILY_ROWS`
 reports a UTC day. The default is 10,000. Each report writes six D1 rows,
-and its access code one more, so that is at most 70,000 of D1's 100,000
-free daily row writes. A report past the cap is still stored.
+and its access code two more (the code and its own daily count, capped at
+the same number), so that is at most 80,000 of D1's 100,000 free daily row
+writes. A report past the cap is still stored.
 
 `/checkin` is open too, so it stores at most `CHECKIN_DAILY_ROWS` check-ins
 a UTC day (default 5,000) and answers 429 past that. Each writes four

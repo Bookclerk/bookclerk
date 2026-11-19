@@ -201,17 +201,30 @@ export type AccessRow = {
 };
 
 /**
- * Records a new report's code, unless today's index cap is reached.
+ * The `index_days` key of a UTC day's access-code count, kept beside the
+ * day's index count (`YYYY-MM-DD`) so neither spends the other's slots.
  *
- * The code row counts against the same daily cap as the dashboard's index
- * rows (`DASHBOARD_INDEX_DAILY_ROWS`), so an open `/submit` cannot spend the
- * D1 write allowance through it either. Past the cap the report is stored
- * as usual, only without a code.
+ * @param day - The UTC day, `YYYY-MM-DD`.
+ * @returns The counter's key.
+ */
+export function accessCounterDay(day: string): string {
+  return `${day} access`;
+}
+
+/**
+ * Records a new report's code, unless today's cap on codes is reached.
+ *
+ * Codes have their own daily count, capped like the dashboard's index rows
+ * (`DASHBOARD_INDEX_DAILY_ROWS`), so an open `/submit` cannot spend the D1
+ * write allowance through them either. The slot is reserved atomically
+ * before the row is written (the same pattern as the index's
+ * `reserveIndex`), so overlapping submissions cannot all slip under the
+ * cap. Past the cap the report is stored as usual, only without a code.
  *
  * @param db - Dashboard database.
  * @param row - The report and when it arrived.
  * @param code - Its canonical code.
- * @param cap - Reports the dashboard may index per UTC day.
+ * @param cap - Codes the collector may issue per UTC day.
  * @returns Whether the code was stored (and may be handed out).
  */
 export async function storeAccess(
@@ -220,22 +233,36 @@ export async function storeAccess(
   code: string,
   cap: number,
 ): Promise<boolean> {
-  const day = new Date(row.created_at).toISOString().slice(0, 10);
-  const res = await db
+  if (!(cap > 0)) return false;
+  const counter = accessCounterDay(new Date(row.created_at).toISOString().slice(0, 10));
+  const reserved = await db
     .prepare(
-      `INSERT INTO report_access (report_id, code_hash, object_key, created_at)
-       SELECT ?, ?, ?, ? WHERE COALESCE((SELECT rows FROM index_days WHERE day = ?), 0) < ?`,
+      `INSERT INTO index_days (day, rows) VALUES (?, 1)
+       ON CONFLICT (day) DO UPDATE SET rows = rows + 1 WHERE rows < ?`,
     )
-    .bind(
-      row.report_id,
-      await accessHash(row.report_id, code),
-      row.object_key,
-      row.created_at,
-      day,
-      cap,
-    )
+    .bind(counter, cap)
     .run();
-  return Number(res.meta.changes ?? 0) === 1;
+  if (Number(reserved.meta.changes ?? 0) === 0) return false;
+  let stored = false;
+  try {
+    const res = await db
+      .prepare(
+        `INSERT INTO report_access (report_id, code_hash, object_key, created_at)
+         VALUES (?, ?, ?, ?) ON CONFLICT (report_id) DO NOTHING`,
+      )
+      .bind(row.report_id, await accessHash(row.report_id, code), row.object_key, row.created_at)
+      .run();
+    stored = Number(res.meta.changes ?? 0) === 1;
+  } finally {
+    if (!stored) {
+      // Nothing written: hand the slot back.
+      await db
+        .prepare("UPDATE index_days SET rows = rows - 1 WHERE day = ? AND rows > 0")
+        .bind(counter)
+        .run();
+    }
+  }
+  return stored;
 }
 
 /**

@@ -203,8 +203,10 @@ async function gather(
       )
       .bind(tracking.number)
       .first<{ fixed_in: string | null; pr_number: number | null }>();
+    // Only the tracking issue's own pull requests: a report linked to
+    // several issues lists every issue's.
     const merged = (found?.prs ?? [])
-      .filter((p) => p.state === "merged")
+      .filter((p) => p.state === "merged" && Number(p.issue_number) === tracking.number)
       .sort((a, b) => Number(b.merged_at) - Number(a.merged_at))[0];
     const prNumber =
       row?.pr_number != null ? Number(row.pr_number) : merged ? Number(merged.pr_number) : null;

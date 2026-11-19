@@ -17,8 +17,9 @@ TRIAGE_MODEL = "@cf/ibm-granite/granite-4.0-h-micro"
 TRIAGE_DAILY_NEURONS = "2000"
 # Dashboard: most reports /submit indexes per UTC day, so an open /submit
 # cannot spend the D1 write allowance (100,000 rows a day on the free plan).
-# Each indexed report writes six rows, and its access code one more
-# (report-access.ts), so this spends at most 70,000.
+# Each indexed report writes six rows, and its access code two more (the
+# code and its own daily count, capped at the same number; report-access.ts),
+# so this spends at most 80,000.
 DASHBOARD_INDEX_DAILY_ROWS = "10000"
 # Most usage check-ins /checkin stores per UTC day, for the same reason.
 # Each writes four rows, so this spends at most 20,000.

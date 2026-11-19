@@ -15,6 +15,7 @@ import {
   formatAccessCode,
   newAccessCode,
   normalizeAccessCode,
+  accessCounterDay,
   pruneAccess,
   storeAccess,
 } from "./report-access.ts";
@@ -160,14 +161,26 @@ describe("access codes", () => {
   it("stop at the daily index cap and are pruned after their reports", async () => {
     const db = createD1();
     const day = new Date(NOW).toISOString().slice(0, 10);
-    await db.prepare("INSERT INTO index_days (day, rows) VALUES (?, 2)").bind(day).run();
+    await db
+      .prepare("INSERT INTO index_days (day, rows) VALUES (?, 2)")
+      .bind(accessCounterDay(day))
+      .run();
     const row = (id: string, at: number) => ({
       report_id: id,
       object_key: `k/${id}`,
       created_at: at,
     });
     assert.equal(await storeAccess(db, row("a", NOW), "K7QM3XRDPW9TH2CF", 3), true);
-    assert.equal(await storeAccess(db, row("b", NOW), "K7QM3XRDPW9TH2CF", 2), false);
+    assert.equal(await storeAccess(db, row("b", NOW), "K7QM3XRDPW9TH2CF", 3), false);
+    assert.equal(await storeAccess(db, row("a", NOW), "K7QM3XRDPW9TH2CF", 9), false);
+    assert.equal(await storeAccess(db, row("z", NOW), "K7QM3XRDPW9TH2CF", 0), false);
+    // The report index's own count is untouched, and a refused duplicate
+    // handed its slot back.
+    assert.equal(await first(db, "SELECT rows FROM index_days WHERE day = ?", day), null);
+    assert.equal(
+      (await first(db, "SELECT rows FROM index_days WHERE day = ?", accessCounterDay(day)))?.rows,
+      3,
+    );
     assert.equal(
       await storeAccess(db, row("c", NOW - ACCESS_RETENTION_MS - 1), "K7QM3XRDPW9TH2CF", 3),
       true,
@@ -279,6 +292,57 @@ describe("/lookup", () => {
     };
     return makeB2(objects, deleted);
   }
+
+  it("takes a fix only from the tracking issue's own pull requests", async () => {
+    const { env, id, code, key, objects } = await setUp();
+    const db = env.DASHBOARD_DB!;
+    await db.batch([
+      db.prepare("DELETE FROM issue_fix"),
+      db
+        .prepare(
+          "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (43, 'Other', 'closed', 'triage', ?, ?)",
+        )
+        .bind(NOW, NOW),
+      db
+        .prepare(
+          "INSERT INTO report_issue (report_id, issue_number, source) VALUES (?, 43, 'body')",
+        )
+        .bind(id),
+      db
+        .prepare(
+          "INSERT INTO issue_pr (issue_number, pr_number, title, state, merged_at) VALUES (43, 88, 'Fix other', 'merged', ?)",
+        )
+        .bind(NOW),
+    ]);
+    const look = async (): Promise<LookupAnswer> => {
+      const res = await lookupFetch(
+        post("/lookup", JSON.stringify({ report_id: id, access_code: code })),
+        env,
+        "/lookup",
+        b2For(key, objects),
+        NOW,
+      );
+      assert.equal(res?.status, 200);
+      return res!.json<LookupAnswer>();
+    };
+    const first = await look();
+    assert.deepEqual(
+      first.issues.map((i) => i.number),
+      [42, 43],
+    );
+    assert.equal(first.fix, null, "another issue's pull request is not this report's fix");
+    await db
+      .prepare(
+        "INSERT INTO issue_pr (issue_number, pr_number, title, state, merged_at) VALUES (42, 70, 'Fix scan', 'merged', ?)",
+      )
+      .bind(NOW - 1)
+      .run();
+    assert.deepEqual((await look()).fix, {
+      pr_number: 70,
+      pr_url: "https://github.com/Bookclerk/bookclerk/pull/70",
+      fixed_in: null,
+    });
+  });
 
   it("serves the form page with no script", async () => {
     const { env } = await setUp();
