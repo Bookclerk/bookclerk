@@ -199,6 +199,8 @@ export function layout(p: {
   nav?: string;
   body: SafeHtml;
   bodyClass?: string;
+  /** False to leave out dashboard.js (the public lookup pages need none). */
+  script?: boolean;
 }): SafeHtml {
   const navItem = (id: string, label: string, href: string): SafeHtml =>
     html`<a href="${href}"${p.nav === id ? raw(' class="on" aria-current="page"') : ""}>${label}</a>`;
@@ -217,7 +219,7 @@ export function layout(p: {
 <meta name="robots" content="noindex, nofollow">
 <title>${p.title} · Bookclerk Diagnostics</title>
 <link rel="stylesheet" href="${ASSET_URLS["dashboard.css"]}"><link rel="icon" href="/static/mark.svg" type="image/svg+xml">
-<script src="${ASSET_URLS["dashboard.js"]}" defer></script></head>
+${p.script === false ? "" : html`<script src="${ASSET_URLS["dashboard.js"]}" defer></script>`}</head>
 <body${p.bodyClass ? html` class="${p.bodyClass}"` : ""}>${header}<main>${p.body}</main></body></html>`;
 }
 
@@ -993,7 +995,9 @@ export function reportPage(d: ReportData): SafeHtml {
           ${
             d.stored
               ? html`<div class="log-tools"><div class="filters" role="group" aria-label="Levels">${filters}</div>${log.crates.length > 1 ? html`<div class="filters crate-tools" role="group" aria-label="Crates" hidden>${log.crates.map((c) => html`<button type="button" class="lvl-toggle crate-toggle" data-crate="${c.crate}" aria-pressed="true">${c.crate} ${c.n}</button>`)}</div>` : ""}${log.problem ? html`<a class="fine" href="#first-problem">Jump to the first warning or error</a>` : ""}<div class="copy-tools" hidden><button type="button" class="log-copy" data-copy="shown">Copy shown</button><button type="button" class="log-copy" data-copy="all">Copy all</button><button type="button" class="log-copy" data-copy="issue" title="Markdown for a GitHub issue: the report's facts and the shown lines">Copy for issue</button><span class="fine" id="copy-status" role="status"></span></div></div><div class="log" id="log" role="log" aria-label="Report events" data-report="${r.report_id}" data-version="${r.version}" data-platform="${`${r.os} ${r.arch}`.trim()}" data-trigger="${r.trigger}" data-signature="${r.signature_label ?? ""}" data-route="${r.route}">${log.rows}</div>`
-              : html`<p class="banner">The stored report could not be read from storage. The index entry above is all that is available.</p>`
+              : r.deleted_at
+                ? html`<p class="banner">The report's sender deleted its stored copy on ${fmtTime(Number(r.deleted_at))} UTC. The index entry and the issue links above stay, so the report still counts.</p>`
+                : html`<p class="banner">The stored report could not be read from storage. The index entry above is all that is available.</p>`
           }
         </section>
         <section class="panel s6" data-live="sig-days"><h2>Same signature, last 14 days</h2>${r.signature ? histogram(d.sigDays, d.sigMarker, "Reports per day with this signature") : html`<p class="fine">This report has no errors or warnings to group by.</p>`}</section>
@@ -1395,4 +1399,156 @@ export function demoPage(d: DemoData): SafeHtml {
         }</tbody></table></div></section>
       </div></div>`,
   });
+}
+
+/** What a sender's lookup shows (lookup.ts). */
+export type LookupView = {
+  /** The report's ID. */
+  reportId: string;
+  /** Its access code, canonical, for the delete form's hidden field. */
+  code: string;
+  /** When it arrived, Unix ms. */
+  receivedAt: number;
+  /** When its sender deleted the stored copy, Unix ms, or null. */
+  deletedAt: number | null;
+  /** The stored report, or null when deleted or unreadable. */
+  stored: JsonObject | null;
+  /** Issues tracking it, tracking issue first. */
+  issues: { number: number; title: string; state: "open" | "closed"; url: string }[];
+  /** The tracking issue's fix, or null. */
+  fix: { prNumber: number | null; prUrl: string | null; fixedIn: string | null } | null;
+};
+
+/**
+ * A public card page (lookup, deleted, errors): no dashboard header and no
+ * script.
+ *
+ * @param title - Heading.
+ * @param body - Content.
+ * @param wide - Whether to use the full page width (a report) rather than a card.
+ * @returns The document.
+ */
+function publicPage(title: string, body: SafeHtml, wide: boolean = false): SafeHtml {
+  const brand = html`<div class="brand ink">${MARK}<span>Bookclerk</span> <small>Diagnostics</small></div>`;
+  return layout({
+    title,
+    script: false,
+    bodyClass: wide ? "" : "center",
+    body: wide
+      ? html`<div class="wrap"><div class="toolbar column">${brand}<h1>${title}</h1></div>${body}</div>`
+      : html`<div class="card signin">${brand}<h1>${title}</h1>${body}</div>`,
+  });
+}
+
+/**
+ * The lookup form: a report ID and its access code.
+ *
+ * @param message - A notice above the form (a refusal), or null.
+ * @param values - Values to fill back in after a refusal.
+ * @returns The document.
+ */
+export function lookupFormPage(
+  message: string | null = null,
+  values: { reportId?: string } = {},
+): SafeHtml {
+  return publicPage(
+    "Look up your report",
+    html`<p>Bookclerk gives each problem report it sends an ID and an access code. Find both in Bookclerk under Settings, Server Settings, Diagnostics, with <code>bookclerk diagnostics reports</code>, or in <code>diagnostics/reports.json</code> in Bookclerk's files folder.</p>
+      ${message ? html`<p class="banner" role="alert">${message}</p>` : ""}
+      <form method="post" action="/lookup" class="lookup-form">
+        <label for="report_id">Report ID</label>
+        <input class="sel" id="report_id" name="report_id" required autocomplete="off" spellcheck="false" maxlength="64" placeholder="3f2a9c4e-7b1d-4e8a-9c0f-1a2b3c4d5e6f" value="${values.reportId ?? ""}">
+        <label for="access_code">Access code</label>
+        <input class="sel" id="access_code" name="access_code" required autocomplete="off" spellcheck="false" maxlength="64" placeholder="K7QM-3XRD-PW9T-H2CF">
+        <button class="button" type="submit">Look up</button>
+      </form>
+      <p class="fine">Only the access code opens a report. The report ID alone, as it appears on GitHub, does not.</p>`,
+  );
+}
+
+/**
+ * A report as its sender sees it, with a form to delete the stored copy.
+ *
+ * @param v - The lookup's results.
+ * @returns The document.
+ */
+export function lookupResultPage(v: LookupView): SafeHtml {
+  const p = asObject(v.stored?.payload);
+  const text = (value: unknown, max: number): string =>
+    typeof value === "string" ? value.slice(0, max) : "";
+  const log = eventLog(p.events);
+  const platform = `${text(p.os, 32)} ${text(p.arch, 32)}`.trim();
+  const fix = v.fix;
+  const fixLine = fix
+    ? html`<div class="link-item"><span class="chip ${fix.fixedIn ? "merged" : "none"}">${fix.fixedIn ? "Fixed" : "Fix merged"}</span><span class="fine">${fix.fixedIn ? `in Bookclerk ${fix.fixedIn}` : "not in a release yet"}${fix.prNumber !== null && fix.prUrl ? html`, by ${externalLink(fix.prUrl, `#${fix.prNumber}`)}` : ""}</span></div>`
+    : "";
+  return publicPage(
+    `Report ${v.reportId.slice(0, 8)}`,
+    html`<div class="grid">
+      <section class="panel s8"><h2>Report</h2><dl class="meta">
+        <div><dt>ID</dt><dd class="mono">${v.reportId}</dd></div>
+        <div><dt>Received</dt><dd class="num">${fmtTime(v.receivedAt)} UTC</dd></div>
+        ${v.stored ? html`<div><dt>Version</dt><dd class="mono">${text(p.version, 64)}</dd></div><div><dt>Platform</dt><dd>${platform}${text(p.distro, 64) ? `, ${text(p.distro, 64)}` : ""}</dd></div><div><dt>Trigger</dt><dd>${text(p.trigger, 32)}</dd></div>` : ""}
+      </dl></section>
+      <section class="panel s4"><h2>Tracked by</h2><div class="links">
+        ${
+          v.issues.length
+            ? v.issues.map(
+                (i) =>
+                  html`<div class="link-item"><span class="chip ${i.state}">${i.state === "open" ? "Open" : "Closed"}</span>${externalLink(i.url, `#${i.number} ${i.title}`)}</div>`,
+              )
+            : html`<p class="fine">No issue lists this report yet. Reports are grouped into issues once a day, and some are judged noise.</p>`
+        }
+        ${fixLine}
+      </div></section>
+      <section class="panel s12"><h2>Event log <span class="note">secrets were removed before the report left your computer</span></h2>
+        ${
+          v.deletedAt !== null
+            ? html`<p class="banner">You deleted this report on ${fmtTime(v.deletedAt)} UTC. Its event log is gone; the issue links above stay.</p>`
+            : v.stored
+              ? html`<div class="log" role="log" aria-label="Report events">${log.rows}</div>`
+              : html`<p class="banner">The stored report could not be read just now. Try again in a minute.</p>`
+        }
+      </section>
+      ${
+        v.deletedAt === null
+          ? html`<section class="panel s12"><h2>Delete this report</h2>
+        <p>Deleting removes the stored report and its event log for good. The project keeps a one-line summary (version, system and type of error, without the log) and the link to its issue, so the problem still counts.</p>
+        <form method="post" action="/lookup/delete">
+          <input type="hidden" name="report_id" value="${v.reportId}"><input type="hidden" name="access_code" value="${v.code}">
+          <label><input type="checkbox" name="confirm" value="yes" required> I want to delete this report</label>
+          <button class="button" type="submit">Delete report</button>
+        </form></section>`
+          : ""
+      }
+    </div>`,
+    true,
+  );
+}
+
+/**
+ * The page after a deletion.
+ *
+ * @param reportId - The deleted report.
+ * @returns The document.
+ */
+export function lookupDeletedPage(reportId: string): SafeHtml {
+  return publicPage(
+    "Report deleted",
+    html`<p>The stored copy of report <span class="mono">${reportId}</span> and its event log are deleted. The issue it was filed under, if any, still lists its ID.</p><a class="button" href="/lookup">Look up another report</a>`,
+  );
+}
+
+/**
+ * A refusal or failure on the public lookup pages.
+ *
+ * @param title - Heading.
+ * @param message - What happened.
+ * @returns The document.
+ */
+export function lookupMessagePage(title: string, message: string): SafeHtml {
+  return publicPage(
+    title,
+    html`<p>${message}</p><a class="button" href="/lookup">Back to lookup</a>`,
+  );
 }

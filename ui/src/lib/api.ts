@@ -2935,6 +2935,84 @@ export interface DiagnosticsReport {
   version: string;
   /** When the collector accepted it, Unix milliseconds. */
   sent_at_unix_ms: number;
+  /** The code that reads it back or deletes it (`XXXX-XXXX-XXXX-XXXX`), or null when the collector issued none. */
+  access_code: string | null;
+  /** When this install deleted the collector's stored copy, Unix milliseconds, or null. */
+  deleted_at_unix_ms: number | null;
+}
+
+/** One logged event in a stored report. */
+export interface DiagnosticsReportEvent {
+  /** When it happened, Unix milliseconds, or 0 when unknown. */
+  ts_unix_ms: number;
+  /** Severity. */
+  level: "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE";
+  /** Where it was logged. */
+  target: string;
+  /** The redacted message. */
+  message: string;
+  /** Redacted fields recorded with it. */
+  fields: { name: string; value: string }[];
+}
+
+/** A report read back from the collector (`GET /api/diagnostics/reports/{id}`). */
+export interface DiagnosticsReportLookup {
+  /** The report's ID. */
+  report_id: string;
+  /** When the collector received it, Unix milliseconds. */
+  received_at_unix_ms: number;
+  /** When its stored copy was deleted, Unix milliseconds, or null. */
+  deleted_at_unix_ms: number | null;
+  /** The stored report, or null once deleted. */
+  report: {
+    /** Version that sent it. */
+    version: string;
+    /** Why it was sent. */
+    trigger: string;
+    /** Operating system. */
+    os: string;
+    /** CPU architecture. */
+    arch: string;
+    /** Linux distribution, or empty. */
+    distro: string;
+    /** Events, oldest first. */
+    events: DiagnosticsReportEvent[];
+  } | null;
+  /** GitHub issues tracking it, the tracking issue first. */
+  issues: { number: number; title: string; state: "open" | "closed"; url: string }[];
+  /** The tracking issue's fix, or null. */
+  fix: { pr_number: number | null; pr_url: string | null; fixed_in: string | null } | null;
+}
+
+/**
+ * Reads a sent report back from the collector with its access code (operator only).
+ *
+ * @param reportId - The report's ID.
+ * @returns The report, its issues and its fix.
+ */
+export async function fetchDiagnosticsReport(reportId: string): Promise<DiagnosticsReportLookup> {
+  const res = await fetch(`/api/diagnostics/reports/${encodeURIComponent(reportId)}`, {
+    credentials: "include",
+  });
+  return parseJson<DiagnosticsReportLookup>(res);
+}
+
+/**
+ * Deletes the collector's stored copy of a sent report; its summary and issue
+ * links stay (operator only).
+ *
+ * @param reportId - The report's ID.
+ * @returns When the copy was deleted, Unix milliseconds.
+ */
+export async function deleteDiagnosticsReport(reportId: string): Promise<number> {
+  const res = await fetch(`/api/diagnostics/reports/${encodeURIComponent(reportId)}`, {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  const body = await parseJson<{ deleted_at_unix_ms: number }>(res);
+  return body.deleted_at_unix_ms;
 }
 
 /**

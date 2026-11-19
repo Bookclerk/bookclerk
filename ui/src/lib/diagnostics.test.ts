@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diagnosticsIssueSearchUrl, formatReportTime } from "./diagnostics";
+import { diagnosticsIssueSearchUrl, formatReportTime, isHttpsLink } from "./diagnostics";
 
 describe("diagnosticsIssueSearchUrl", () => {
   it("searches the issues for the quoted report ID", () => {
@@ -26,5 +26,14 @@ describe("formatReportTime", () => {
     expect(formatReportTime(0)).toBe("unknown time");
     expect(formatReportTime(Number.NaN)).toBe("unknown time");
     expect(formatReportTime(9e15)).toBe("unknown time");
+  });
+});
+
+describe("isHttpsLink", () => {
+  it("lets only https links through", () => {
+    expect(isHttpsLink("https://github.com/o/r/issues/1")).toBe(true);
+    for (const bad of ["javascript:alert(1)", "http://example.com", "", null, undefined]) {
+      expect(isHttpsLink(bad)).toBe(false);
+    }
   });
 });

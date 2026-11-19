@@ -67,12 +67,16 @@ named "server error response" with the same fields, and counts toward
 ### Your report history
 
 Each report the collector accepts gets a report ID (see
-[Report IDs](#report-ids)). The install keeps the IDs of the last 200
-reports it sent, with when and why each was sent, in
-`$BOOKCLERK_FILES_DIR/diagnostics/reports.json`. To follow up on a report,
-search the project's GitHub issues for its ID: the issue the dashboard
-files for it, and its summary comment, name the IDs it tracks. Or give the
-ID to a maintainer, who can open the report itself.
+[Report IDs](#report-ids)) and an access code. The install keeps the last
+200 reports it sent, with when and why each was sent and its code, in
+`$BOOKCLERK_FILES_DIR/diagnostics/reports.json`. The file is readable by
+its owner only, and the codes are registered with log redaction, so they
+never show in logs or in a later report.
+
+To follow up on a report, search the project's GitHub issues for its ID:
+the issue the dashboard files for it, and its summary comment, name the
+IDs it tracks. Or give the ID to a maintainer, who can open the report
+itself.
 
 The operator sees the history under **Settings → Server Settings →
 Diagnostics**, where each ID has a copy button and a link that searches
@@ -83,6 +87,34 @@ bookclerk diagnostics reports
 ```
 
 The API is `GET /api/diagnostics/reports` (operator only), newest first.
+
+### Reading a report back
+
+The access code is the credential for one report. The ID alone opens
+nothing, so anyone who reads a GitHub issue can see the IDs it tracks but
+not pull the reports.
+
+- **View** in the history (or `bookclerk diagnostics view <report-id>`)
+  reads the report back from the collector: the redacted log lines as they
+  were sent, the GitHub issues tracking it, whether each is open, and the
+  fix with the first release that has it, once one is recorded.
+- **Delete** (or `bookclerk diagnostics delete <report-id>`) removes the
+  collector's stored copy. Its one-line summary (version, system and type
+  of error, no log) and its issue links stay, so the report still counts
+  toward the issue it joined. The history marks it deleted.
+- If neither the web app nor the CLI can start, open
+  `https://diagnostics.bookclerk.app/lookup` (your collector's `/lookup`)
+  and paste the ID and code from `diagnostics/reports.json`. The page shows
+  the same report and has the same delete button.
+
+The daemon makes these calls on the operator's behalf with
+`GET /api/diagnostics/reports/{id}` and
+`DELETE /api/diagnostics/reports/{id}` (operator only), so the web app's
+CSP and the collector's closed CORS stay as they are.
+
+Reports sent before the collector issued codes, or past its daily index
+cap, have none: their rows show the ID only. A collector without the
+dashboard database issues no codes and answers lookups with `503`.
 
 ## Local verbosity vs ring buffer
 
@@ -311,6 +343,36 @@ shows that it couldn't be loaded.
 
 Each `/submit` gets a UUID `report_id`. The B2 object is named
 `diagnostics/<version>/<report_id>.json`.
+
+### Access codes
+
+When the dashboard database is configured, `/submit` also answers with an
+`access_code`: 16 characters of Crockford's base32 alphabet (80 random
+bits), shown in groups of four (`K7QM-3XRD-PW9T-H2CF`). Typed codes ignore
+case, hyphens and spaces, and read `O` as `0` and `I` or `L` as `1`.
+
+- The collector keeps only a SHA-256 hash of `<report_id>:<code>` in the
+  `report_access` table, never the code, and never in the B2 object, so
+  the ingest Action, triage and GitHub never see it. Hashes are compared
+  in constant time.
+- The row counts against `DASHBOARD_INDEX_DAILY_ROWS` like an index row.
+  Past the cap the report is stored without a code. The cron deletes rows
+  older than 181 days, once a day.
+- `POST /lookup` takes `{"report_id", "access_code"}` as JSON (what
+  Bookclerk sends) or as a form (the page) in the body, never the URL. A
+  wrong code and an unknown ID both get the same `404`.
+- `POST /lookup/delete` deletes every B2 version of the object, then marks
+  the report deleted in `report_access` and in the dashboard's index row.
+  The index row, the issue links and the ledger stay. A form must tick the
+  confirmation (`confirm=yes`).
+- Attempts are limited to 10 a minute per report ID with the
+  `LOOKUP_LIMIT` rate-limiting binding, so no IP address is involved.
+- `GET /lookup` is the public form, with no script and the dashboard's
+  security headers.
+
+For deletion the Worker's B2 key needs `deleteFiles`, besides the
+`listFiles` that `/report` already uses. Without it a delete answers `502`
+and marks nothing, so the sender can try again.
 
 Every diagnostics issue ends with the IDs it was filed with, in an HTML
 comment GitHub doesn't render:
@@ -667,8 +729,8 @@ downloads that one object with the Worker's B2 credentials, never
 
 Because `/submit` is open, indexing stops at `DASHBOARD_INDEX_DAILY_ROWS`
 reports a UTC day. The default is 10,000. Each report writes six D1 rows,
-so that is at most 60,000 of D1's 100,000 free daily row writes. A report
-past the cap is still stored.
+and its access code one more, so that is at most 70,000 of D1's 100,000
+free daily row writes. A report past the cap is still stored.
 
 `/checkin` is open too, so it stores at most `CHECKIN_DAILY_ROWS` check-ins
 a UTC day (default 5,000) and answers 429 past that. Each writes four
