@@ -291,10 +291,6 @@ impl utoipa::PartialSchema for CopyQuality {
 impl utoipa::ToSchema for CopyQuality {}
 
 /// One copy of every acquired book: a format at a quality.
-///
-/// It reads only from an object of exactly `format` and `quality`: an
-/// array of the two values, which serde's derive would also take, is
-/// refused, so the reader matches the documented shape.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OutputCopy {
@@ -304,6 +300,9 @@ pub struct OutputCopy {
     pub quality: CopyQuality,
 }
 
+// Reads only from an object of exactly `format` and `quality`: an array of
+// the two values, which serde's derive would also take, is refused, so the
+// reader matches the documented shape.
 impl<'de> Deserialize<'de> for OutputCopy {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         /// The two fields an output copy object holds.
