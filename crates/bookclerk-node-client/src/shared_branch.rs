@@ -1141,14 +1141,21 @@ mod tests {
             .into_iter()
             .find(|line| line.contains("wrote the shared branch bootstrap"))
             .expect("the bootstrap is logged");
+        // The messages never print the line or the secret: a failure must
+        // not put the test's secrets in the test output either.
         assert!(
             line.contains("this install starts as a shared node of the library"),
-            "{line}"
+            "the line says what this install starts as"
         );
-        assert!(line.contains("cluster-1"), "{line}");
-        for secret in ["pw-logged", "joiner-logged-pass"] {
-            assert!(!line.contains(secret), "{secret} reached the log: {line}");
-        }
+        assert!(line.contains("cluster-1"), "the line names the library");
+        assert!(
+            !line.contains("pw-logged"),
+            "the database URL reached the log"
+        );
+        assert!(
+            !line.contains("joiner-logged-pass"),
+            "the joiner's password reached the log"
+        );
     }
 
     #[test]
