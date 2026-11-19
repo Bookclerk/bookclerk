@@ -198,7 +198,7 @@ Set in `wrangler.toml` `[vars]`:
 | --- | --- | --- |
 | `MAX_LIVE_SESSIONS` | 20 | Sessions running at once (also the container `max_instances`) |
 | `DAILY_BUDGET_HOURS` | 40 | Visitor-hours reserved per UTC day; unused time is refunded |
-| `SESSION_MINUTES` | 30 | Length of one session |
+| `SESSION_MINUTES` | 30 | Length of one session, at most 1440 (one day) |
 | `SESSIONS_PER_HOUR` | 3 | Sessions one IP may start per hour |
 | `SIGNINS_PER_SESSION` | 5 | Store sign-in starts per session |
 | `SIGNINS_PER_DAY` | 10 | Store sign-in starts per IP per day |

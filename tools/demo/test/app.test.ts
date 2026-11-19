@@ -15,7 +15,7 @@ import {
 } from "../src/app.ts";
 import { CACHE_CONTROL, cacheClassOf } from "../src/cache-control.ts";
 import type { Env, PortalHandoff, SessionApi } from "../src/env.ts";
-import { finish, recordStartup } from "../src/limits.ts";
+import { finish, limitsFrom, MAX_SESSION_MINUTES, recordStartup } from "../src/limits.ts";
 import type { LiveStatus } from "../src/live.ts";
 import type { RunEvent } from "../src/usage.ts";
 import { createD1 } from "../test-support/d1.ts";
@@ -238,6 +238,17 @@ function assertClosed(res: Response, what: string): void {
   assert.equal(res.headers.get("Access-Control-Allow-Origin"), null, what);
   assert.equal(res.headers.get("Access-Control-Allow-Credentials"), null, what);
 }
+
+describe("session length", () => {
+  it("keeps sessions within the length the collector records", () => {
+    assert.equal(limitsFrom(makeEnv()).sessionSeconds, 30 * 60);
+    assert.equal(limitsFrom(makeEnv({ SESSION_MINUTES: "420" })).sessionSeconds, 420 * 60);
+    assert.equal(limitsFrom(makeEnv({ SESSION_MINUTES: "1440" })).sessionSeconds, 86_400);
+    assert.equal(limitsFrom(makeEnv({ SESSION_MINUTES: "1441" })).sessionSeconds, 86_400);
+    assert.equal(limitsFrom(makeEnv({ SESSION_MINUTES: "1500" })).sessionSeconds, 86_400);
+    assert.equal(MAX_SESSION_MINUTES * 60, 86_400);
+  });
+});
 
 describe("cross-origin headers", () => {
   it("close every Worker answer to other origins, even with a foreign Origin", async () => {

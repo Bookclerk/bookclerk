@@ -22,6 +22,13 @@ export type Limits = {
   signinsPerDay: number;
 };
 
+/**
+ * Longest session `SESSION_MINUTES` may set, in minutes: one day. The
+ * diagnostics collector refuses run events longer than this (its
+ * `MAX_RUN_SECONDS`), so a longer session would go unrecorded.
+ */
+export const MAX_SESSION_MINUTES = 24 * 60;
+
 export const DEFAULT_LIMITS: Limits = Object.freeze({
   maxLive: 20,
   dailyBudgetSeconds: 40 * 3600,
@@ -49,14 +56,16 @@ function positive(raw: unknown, fallback: number): number {
  * @param env - Worker env (`MAX_LIVE_SESSIONS`,
  *   `DAILY_BUDGET_HOURS`, `SESSION_MINUTES`, `SESSIONS_PER_HOUR`,
  *   `SIGNINS_PER_SESSION`, `SIGNINS_PER_DAY`).
- * @returns Limits, with defaults for missing or malformed vars.
+ * @returns Limits, with defaults for missing or malformed vars;
+ *   `SESSION_MINUTES` is capped at {@link MAX_SESSION_MINUTES}.
  */
 export function limitsFrom(env: Env): Limits {
   const d = DEFAULT_LIMITS;
   return {
     maxLive: positive(env.MAX_LIVE_SESSIONS, d.maxLive),
     dailyBudgetSeconds: positive(env.DAILY_BUDGET_HOURS, d.dailyBudgetSeconds / 3600) * 3600,
-    sessionSeconds: positive(env.SESSION_MINUTES, d.sessionSeconds / 60) * 60,
+    sessionSeconds:
+      Math.min(positive(env.SESSION_MINUTES, d.sessionSeconds / 60), MAX_SESSION_MINUTES) * 60,
     sessionsPerHour: positive(env.SESSIONS_PER_HOUR, d.sessionsPerHour),
     signinsPerSession: positive(env.SIGNINS_PER_SESSION, d.signinsPerSession),
     signinsPerDay: positive(env.SIGNINS_PER_DAY, d.signinsPerDay),
