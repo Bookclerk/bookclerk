@@ -565,7 +565,14 @@ pub async fn set_default_patron_scope(
         )
         .await?
         {
-            ReplaceOutcome::Applied(stored) => return parse_default(stored),
+            ReplaceOutcome::Applied(stored) => {
+                // Open Library pages of patrons who follow the default
+                // reload to show what it now allows.
+                store
+                    .bump_live_topic(crate::control_plane::LiveTopic::Library)
+                    .await?;
+                return parse_default(stored);
+            }
             ReplaceOutcome::Conflict { .. } | ReplaceOutcome::Replayed { .. } => {}
         }
     }
@@ -708,6 +715,11 @@ pub async fn set_patron_scope(
             vec![int(user_id)],
         )],
     };
+    // The patron's open Library pages reload to show the new scope.
+    let mut statements = statements;
+    statements.push(crate::control_plane::bump(
+        crate::control_plane::LiveTopic::Library,
+    ));
     store
         .execute_host_batch(batch::request(&operation_id, statements))
         .await?;
@@ -835,6 +847,101 @@ mod tests {
             Some(MAX_SCOPE_JSON_BYTES),
             usize::try_from(bookclerk_plugin_abi::db_execute::HOST_MIN_CELL_BYTES).ok(),
             "a stored scope fits the smallest cell a database plugin may return"
+        );
+    }
+
+    /// A scope of the most rules whose compact JSON is exactly `bytes` long.
+    fn scope_of_json_length(bytes: usize) -> PatronScope {
+        let mut scope = largest_scope();
+        let short = serde_json::to_vec(&scope).unwrap().len();
+        let last = scope.rules.last_mut().unwrap();
+        last.value.push_str(&"x".repeat(bytes - short));
+        assert_eq!(serde_json::to_vec(&scope).unwrap().len(), bytes);
+        scope
+    }
+
+    #[tokio::test]
+    async fn a_scope_at_the_json_limit_round_trips() {
+        use crate::test_support::{sqlite, Profile};
+        for profile in Profile::ALL {
+            let name = profile.name();
+            let kit = sqlite::memory(profile).await;
+            let store = kit.store();
+            let sam = store
+                .create_user(UserRole::Member, Some("Sam"), None)
+                .await
+                .unwrap();
+            let admin = store
+                .create_user(UserRole::Administrator, Some("Ada"), None)
+                .await
+                .unwrap();
+            let actor = verify_patron_administrator(store, admin.id).await.unwrap();
+            let at_limit = scope_of_json_length(MAX_SCOPE_JSON_BYTES);
+            set_default_patron_scope(store, &actor, at_limit.clone())
+                .await
+                .unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert_eq!(
+                default_patron_scope(store).await.unwrap(),
+                at_limit,
+                "{name}"
+            );
+            set_patron_scope(store, sam.id, Some(at_limit.clone()))
+                .await
+                .unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert_eq!(
+                assigned_patron_scope(store, sam.id).await.unwrap().scope,
+                at_limit,
+                "{name}"
+            );
+            let over = scope_of_json_length(MAX_SCOPE_JSON_BYTES + 1);
+            assert!(
+                set_default_patron_scope(store, &actor, over.clone())
+                    .await
+                    .is_err(),
+                "{name}"
+            );
+            assert!(
+                set_patron_scope(store, sam.id, Some(over)).await.is_err(),
+                "{name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn scope_writes_reload_open_library_pages() {
+        use crate::control_plane::{live_revisions, LiveRevisions, LiveTopic};
+        use crate::test_support::{sqlite, Profile};
+        let library = |revisions: &LiveRevisions| {
+            revisions
+                .iter()
+                .find(|(topic, _)| *topic == LiveTopic::Library)
+                .map(|(_, revision)| revision.0)
+                .unwrap()
+        };
+        let kit = sqlite::memory(Profile::D1).await;
+        let store = kit.store();
+        let sam = store
+            .create_user(UserRole::Member, Some("Sam"), None)
+            .await
+            .unwrap();
+        let admin = store
+            .create_user(UserRole::Administrator, Some("Ada"), None)
+            .await
+            .unwrap();
+        let actor = verify_patron_administrator(store, admin.id).await.unwrap();
+        let kids = PatronScope {
+            rules: vec![rule(ScopeField::Genre, "Kids", RuleEffect::Include)],
+        };
+        let before = library(&live_revisions(store).await.unwrap());
+        set_patron_scope(store, sam.id, Some(kids.clone()))
+            .await
+            .unwrap();
+        let after_own = library(&live_revisions(store).await.unwrap());
+        assert!(after_own > before, "a patron's own scope");
+        set_default_patron_scope(store, &actor, kids).await.unwrap();
+        assert!(
+            library(&live_revisions(store).await.unwrap()) > after_own,
+            "the default"
         );
     }
 
