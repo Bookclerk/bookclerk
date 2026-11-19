@@ -1535,7 +1535,7 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
         "webauthn_challenges",
         "oidc_rp_states",
         "user_title_state",
-        "member_account_rules",
+        "patron_controls",
         "patron_scopes",
         "copy_grants",
     ] {
