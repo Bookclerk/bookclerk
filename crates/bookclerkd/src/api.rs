@@ -3840,8 +3840,10 @@ pub(crate) struct DiagnosticsReportView {
     #[schema(example = "error_burst")]
     trigger: String,
     /// The Bookclerk version that sent it.
+    #[schema(example = "0.4.0")]
     version: String,
     /// When the collector accepted it, Unix milliseconds.
+    #[schema(example = 1_763_520_000_000_u64)]
     sent_at_unix_ms: u64,
 }
 

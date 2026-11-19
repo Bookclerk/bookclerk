@@ -34332,12 +34332,14 @@
           },
           "version": {
             "type": "string",
-            "description": "The Bookclerk version that sent it."
+            "description": "The Bookclerk version that sent it.",
+            "example": "0.4.0"
           },
           "sent_at_unix_ms": {
             "type": "integer",
             "format": "int64",
             "description": "When the collector accepted it, Unix milliseconds.",
+            "example": 1763520000000,
             "minimum": 0
           }
         }
