@@ -52,6 +52,15 @@ for (const id of storyIds()) {
       );
       // Self-hosted fonts: wait for them so text never renders in a fallback.
       await page.evaluate(() => document.fonts.ready);
+      // Storybook fades the story in; axe-core would otherwise measure contrast
+      // mid-fade. Finish every running animation and transition first (an
+      // endless one, such as a spinner, is left to the screenshot's own
+      // animation freeze).
+      await page.evaluate(() => {
+        for (const animation of document.getAnimations()) {
+          if (animation.effect?.getComputedTiming().endTime !== Infinity) animation.finish();
+        }
+      });
 
       const axe = await new AxeBuilder({ page })
         .include("#storybook-root")
