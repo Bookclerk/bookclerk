@@ -190,6 +190,7 @@ export const NAV: NavSpec[] = [
       "contributing/build-from-source",
       "contributing/devcontainer",
       "contributing/ui/README",
+      "contributing/ui/visual-testing",
       "contributing/ci",
       "contributing/fuzzing",
       "contributing/automation",

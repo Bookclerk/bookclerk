@@ -1,0 +1,1 @@
+{"action": "created", "comment": {"id": 9, "user": {"login": "d", "type": "User"}, "body": "@bookclerk approve-visuals"}, "issue": {"number": 990, "pull_request": {}}, "sender": {"login": "x[bot]", "type": "Bot"}}

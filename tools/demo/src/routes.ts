@@ -262,6 +262,11 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
 
   // Users: only the visitor exists; no invites or changes.
   ["GET", "/api/users", "allow"],
+  // Member controls: readable, never changed.
+  ["GET", "/api/users/default-controls", "allow"],
+  ["PUT", "/api/users/default-controls", "deny"],
+  ["GET", "/api/users/{id}/controls", "allow"],
+  ["PUT", "/api/users/{id}/controls", "deny"],
   ["POST", "/api/users", "deny"],
   ["DELETE", "/api/users/{id}", "deny"],
   ["PATCH", "/api/users/{id}", "deny"],
