@@ -1099,10 +1099,9 @@ pub async fn run_acquire(
             library_copies: library_copies.clone(),
         };
         let mut attempts = 0u32;
-        let started_at = Utc::now();
-        let mut counted = false;
         loop {
             attempts += 1;
+            let started_at = Utc::now();
             let result = if mode.pdf_only {
                 bookclerk_acquire::acquire_pdf_only(
                     &library,
@@ -1121,10 +1120,11 @@ pub async fn run_acquire(
                 )
                 .await
             };
-            // One download per title, however many attempts it takes. A
-            // row that cannot be written stays pending (`unrecorded`).
-            if !counted && reached_store(&result) {
-                counted = true;
+            // Each attempt that asked the store is one download, at the
+            // time it started, so a retry moves the gap on. A row that
+            // cannot be written stays pending (`unrecorded`) under its one
+            // identity.
+            if reached_store(&result) {
                 let download_id = DownloadId::new();
                 if !record_download(
                     &library,
@@ -1486,7 +1486,7 @@ async fn wait_for_pace(
 /// or database failure can come after the store download finished (the
 /// pipeline fetches before it converts and stores). Counting a local
 /// failure that happened before the fetch only makes the pace stricter,
-/// and a title is counted once however many attempts it takes.
+/// and each attempt that asked the store counts.
 fn reached_store(
     result: &Result<bookclerk_acquire::AcquireResult, bookclerk_acquire::AcquireError>,
 ) -> bool {

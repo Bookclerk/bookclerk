@@ -588,7 +588,8 @@ holds across plugin instances and every node of the cluster.
   hand-started acquire is never folded into a waiting automatic one.
 - **Ledger.** Every title Bookclerk may have fetched from the store is a
   row in `account_downloads` (start time, job, paced or not), once per
-  title however many attempts it took. Each row's id is made once per
+  attempt that asked the store, at the time it started, so a retried
+  title counts each try and its retry moves the gap on. Each row's id is made once per
   download, so a write retried after a lost answer adds no second row. That includes a title that failed
   after its fetch (converting or storing it), since the store download
   already happened, and a store download that a better copy from a
