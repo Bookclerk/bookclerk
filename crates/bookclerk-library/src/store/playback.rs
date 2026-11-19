@@ -699,10 +699,6 @@ impl LibraryStore {
         &self,
         new: NewPlaybackSession<'_>,
     ) -> Result<PlaybackSession> {
-        let before = self.playback_progress(new.user_id, new.edition_id).await?;
-        let start = before
-            .filter(|progress| !progress.is_finished)
-            .map_or(PlaybackMs::ZERO, |progress| progress.position);
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_str();
         let client_name = truncated(new.client_name.trim(), MAX_PLAYER_NAME_BYTES);
@@ -718,11 +714,16 @@ impl LibraryStore {
                     batch::text(&now),
                 ],
             ),
+            // The start is decided from the row as this statement finds
+            // it, not from an earlier read, so a report landing just
+            // before the batch is where the session starts: a finished
+            // edition starts over, any other goes on from its position.
             batch::exec(
-                "UPDATE playback_progress SET position_ms = ?, is_finished = 0, updated_at = ? \
+                "UPDATE playback_progress SET \
+                 position_ms = CASE WHEN is_finished = 1 THEN 0 ELSE position_ms END, \
+                 is_finished = 0, updated_at = ? \
                  WHERE user_id = ? AND edition_id = ?",
                 vec![
-                    batch::int(start.stored()),
                     batch::text(&now),
                     batch::int(new.user_id),
                     batch::text(new.edition_id),
@@ -733,7 +734,8 @@ impl LibraryStore {
                  (id, user_id, edition_id, serving_node_id, destination, files_digest, \
                   client_kind, client_name, start_position_ms, position_ms, listened_ms, \
                   started_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                 SELECT ?, ?, ?, ?, ?, ?, ?, ?, position_ms, position_ms, 0, ?, ? \
+                 FROM playback_progress WHERE user_id = ? AND edition_id = ?",
                 vec![
                     batch::text(&id),
                     batch::int(new.user_id),
@@ -743,10 +745,10 @@ impl LibraryStore {
                     batch::text(new.files_digest),
                     batch::text(new.client_kind.as_str()),
                     batch::text(client_name),
-                    batch::int(start.stored()),
-                    batch::int(start.stored()),
                     batch::text(&now),
                     batch::text(&now),
+                    batch::int(new.user_id),
+                    batch::text(new.edition_id),
                 ],
             ),
             bump(LiveTopic::Playback),
