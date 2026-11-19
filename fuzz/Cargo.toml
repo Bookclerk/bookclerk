@@ -375,6 +375,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "destination_filter"
+path = "fuzz_targets/destination_filter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "destination_id"
 path = "fuzz_targets/destination_id.rs"
 test = false

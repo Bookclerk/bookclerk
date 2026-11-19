@@ -104,6 +104,8 @@ impl BranchShelf for DaemonShelf {
         bookclerk_plugin_host::build_acquire_destinations(
             &cfg,
             &*self.state.destinations.read().await,
+            // Only the primary backend is read; no acquire is placed.
+            &std::collections::BTreeMap::new(),
         )
         .ok()?
         .items

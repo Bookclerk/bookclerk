@@ -190,6 +190,7 @@ pub(crate) fn recording_destinations_probed_by(
                 None => item.backend.clone_box(),
             },
             options: item.options.clone(),
+            filter: item.filter.clone(),
         })
         .collect();
     AcquireDestinations {

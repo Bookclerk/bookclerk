@@ -744,6 +744,7 @@ Commands:
 - [`bookclerk plugins instances list`](#bookclerk-plugins-instances-list): List instances with their deployments on every node
 - [`bookclerk plugins instances create`](#bookclerk-plugins-instances-create): Create another instance of a plugin that has a pinned schema
 - [`bookclerk plugins instances delete`](#bookclerk-plugins-instances-delete): Delete an instance that has no deployment on any node
+- [`bookclerk plugins instances filter`](#bookclerk-plugins-instances-filter): Show or change which books a storage destination takes
 
 #### `bookclerk plugins instances list`
 
@@ -785,6 +786,61 @@ bookclerk plugins instances delete [OPTIONS] <INSTANCE>
 Arguments:
 
 - `<INSTANCE>`: Plugin instance id
+
+#### `bookclerk plugins instances filter`
+
+Show or change which books a storage destination takes
+
+```text
+bookclerk plugins instances filter [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk plugins instances filter get`](#bookclerk-plugins-instances-filter-get): Show a destination's filter
+- [`bookclerk plugins instances filter set`](#bookclerk-plugins-instances-filter-set): Replace a destination's filter. Each rule is `FIELD=VALUE`, where FIELD is `patron` (a user id), `storefront` (a plugin alias such as `audible`), `account` (a store account id) or `media_kind` (`book` or `podcast`). With any `--include`, the destination takes only books that match one; an `--exclude` always wins. Acquires that start afterwards use the new filter
+- [`bookclerk plugins instances filter clear`](#bookclerk-plugins-instances-filter-clear): Remove a destination's filter so it takes every book
+
+##### `bookclerk plugins instances filter get`
+
+Show a destination's filter
+
+```text
+bookclerk plugins instances filter get [OPTIONS] <INSTANCE>
+```
+
+Arguments:
+
+- `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id of the destination
+
+##### `bookclerk plugins instances filter set`
+
+Replace a destination's filter. Each rule is `FIELD=VALUE`, where FIELD is `patron` (a user id), `storefront` (a plugin alias such as `audible`), `account` (a store account id) or `media_kind` (`book` or `podcast`). With any `--include`, the destination takes only books that match one; an `--exclude` always wins. Acquires that start afterwards use the new filter
+
+```text
+bookclerk plugins instances filter set [OPTIONS] <INSTANCE>
+```
+
+Arguments:
+
+- `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id of the destination
+
+Options:
+
+- `--include <FIELD=VALUE>`: Take books that match this rule (repeatable)
+- `--exclude <FIELD=VALUE>`: Refuse books that match this rule (repeatable)
+
+##### `bookclerk plugins instances filter clear`
+
+Remove a destination's filter so it takes every book
+
+```text
+bookclerk plugins instances filter clear [OPTIONS] <INSTANCE>
+```
+
+Arguments:
+
+- `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id of the destination
 
 ### `bookclerk plugins config`
 

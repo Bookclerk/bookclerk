@@ -71,6 +71,12 @@ pub struct AcquireRequest {
     /// When set, only write prepared audio to these destinations
     /// (`output.multi_destination = refetch_missing`).
     pub write_destinations: Option<Vec<DestinationId>>,
+    /// What the destination filters know about the book. When set, the
+    /// acquire writes only to the destinations whose filter takes it
+    /// ([`AcquireDestinations::for_book`]) and fails before fetching when
+    /// none does. `None` writes to every destination given: a host
+    /// acquiring for an owner gets destinations the owner already chose.
+    pub placement: Option<bookclerk_config::PlacementFacts>,
     /// Durable daemon job id that owns this acquire's scratch directory.
     pub job_id: Option<String>,
     /// Refuse a new scratch dir when registered temps already exceed this.
@@ -223,10 +229,30 @@ pub async fn acquire_book_indexed(
     index: Option<&mut StorageIndex>,
     source: &dyn ContentSource,
 ) -> Result<AcquireResult> {
+    let placed = placed_destinations(destinations, &req)?;
+    let destinations = placed.as_ref().unwrap_or(destinations);
     let owner = file_owner_of_request(library, &req).await?;
     pin_library_id(&mut req, owner.as_ref());
     let recorded = recording_destinations(library, destinations, owner.as_ref(), &req.source);
     acquire_book_recorded(library, &recorded, req, index, source).await
+}
+
+/// The target set of `req`: the destinations whose filter takes the book
+/// when the request carries its [`AcquireRequest::placement`], else `None`
+/// (every destination given).
+///
+/// # Errors
+///
+/// Returns [`AcquireError::NoDestinationAccepts`] when no destination takes
+/// the book.
+fn placed_destinations(
+    destinations: &AcquireDestinations,
+    req: &AcquireRequest,
+) -> Result<Option<AcquireDestinations>> {
+    req.placement
+        .as_ref()
+        .map(|facts| destinations.for_book(facts))
+        .transpose()
 }
 
 /// Names the whole acquire with the library id of the edition `owner`
@@ -3020,6 +3046,8 @@ pub async fn acquire_pdf_only(
     req: &AcquireRequest,
     source: &dyn ContentSource,
 ) -> Result<AcquireResult> {
+    let placed = placed_destinations(destinations, req)?;
+    let destinations = placed.as_ref().unwrap_or(destinations);
     let owner = file_owner_of_request(library, req).await?;
     let mut req = req.clone();
     pin_library_id(&mut req, owner.as_ref());
@@ -3499,6 +3527,7 @@ mod tests {
             cache_dir: cache.to_path_buf(),
             force: false,
             write_destinations: None,
+            placement: None,
             job_id,
             temp_quota_bytes: quota,
             library_id: None,
@@ -4254,6 +4283,7 @@ mod tests {
                     puts,
                 }),
                 options,
+                filter: bookclerk_config::DestinationFilter::default(),
             }],
             primary: DestinationId::new("local").unwrap(),
             multi_destination: MultiDestinationMode::RefetchAll,
@@ -4564,6 +4594,118 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    /// What the destination filters see of an Audible book held by user
+    /// 3's `user-1` account.
+    fn audible_placement() -> bookclerk_config::PlacementFacts {
+        bookclerk_config::PlacementFacts {
+            patrons: vec![3],
+            storefront: "audible".into(),
+            account: "user-1".into(),
+            media_kind: bookclerk_config::PlacementMediaKind::Book,
+        }
+    }
+
+    /// A filter of one rule on the storefront.
+    fn storefront_filter(
+        value: &str,
+        effect: bookclerk_config::FilterEffect,
+    ) -> bookclerk_config::DestinationFilter {
+        bookclerk_config::DestinationFilter {
+            rules: vec![bookclerk_config::FilterRule {
+                field: bookclerk_config::FilterField::Storefront,
+                value: value.into(),
+                effect,
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn a_book_no_destination_takes_fails_before_it_is_fetched() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00NONE", "user-1", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut destinations = title_named_destinations(&tmp.path().join("dest"), puts.clone());
+        destinations.items[0].filter =
+            storefront_filter("audible", bookclerk_config::FilterEffect::Exclude);
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: Some("https://example.invalid/book.pdf".into()),
+        };
+        let job = job_id(&store).await;
+
+        let mut req = edition_req(&cache, job.clone(), "B00NONE", "user-1", &uuid);
+        req.placement = Some(audible_placement());
+        let err = acquire_book(&store, &destinations, req.clone(), &source)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AcquireError::NoDestinationAccepts), "{err}");
+        let err = acquire_pdf_only(&store, &destinations, &req, &source)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AcquireError::NoDestinationAccepts), "{err}");
+        assert_eq!(fetches.load(Ordering::SeqCst), 0, "nothing is fetched");
+        assert_eq!(puts.load(Ordering::SeqCst), 0, "nothing is written");
+
+        // A request without placement facts writes to every destination
+        // given, as a host acquiring for an owner does.
+        req.placement = None;
+        acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        assert_eq!(puts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_book_is_written_only_to_the_destinations_that_take_it() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00SOME", "user-1", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let refused_puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let taken_puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // The primary takes only Libro.fm books; the second takes the rest.
+        let mut destinations =
+            title_named_destinations(&tmp.path().join("libro"), refused_puts.clone());
+        destinations.items[0].filter =
+            storefront_filter("libro", bookclerk_config::FilterEffect::Include);
+        let mut second = title_named_destinations(&tmp.path().join("rest"), taken_puts.clone())
+            .items
+            .remove(0);
+        second.id = DestinationId::new("rest").unwrap();
+        second.filter = storefront_filter("libro", bookclerk_config::FilterEffect::Exclude);
+        destinations.items.push(second);
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+
+        let mut req = edition_req(&cache, job, "B00SOME", "user-1", &uuid);
+        req.placement = Some(audible_placement());
+        let result = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert_eq!(refused_puts.load(Ordering::SeqCst), 0);
+        assert_eq!(taken_puts.load(Ordering::SeqCst), 1);
+        assert!(store
+            .edition_file("rest", &result.storage_key)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .edition_file("local", &result.storage_key)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

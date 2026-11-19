@@ -11,7 +11,8 @@ files.
 
 - Each destination is a plugin instance, deployed per host.
 - Several can be on at once. An acquire writes to every destination
-  deployed on the host that runs it.
+  deployed on the host that runs it whose filter takes the book (see
+  [Choosing which books a destination takes](#choosing-which-books-a-destination-takes)).
 - A destination's settings are its plugin settings. Change them with
   `bookclerk plugins config …` or in **Settings → Plugins**; see
   [Managing plugins](plugins.md#enabling-and-settings-database).
@@ -270,6 +271,50 @@ is matched once and both accounts see it as acquired. When the file is
 gone, the account whose acquire recorded it marks the book not acquired.
 `bookclerk library convert` also converts each edition once, through that
 account.
+
+## Choosing which books a destination takes
+
+Every destination takes every book until you give it a filter. A filter
+is a list of rules, each a field, one value and include or exclude:
+
+| Field | Value |
+| --- | --- |
+| `patron` | A user id: books held by a store account linked to that user |
+| `storefront` | A storefront plugin's alias, such as `audible` or `libro` (case does not matter) |
+| `account` | A store account's id at its store |
+| `media_kind` | `book` or `podcast` (a podcast episode is a podcast) |
+
+With no include rule, the destination takes every book the exclude rules
+allow. With any include rule, it takes only books that match at least one.
+An exclude rule always wins.
+
+1. Find the destination's instance id with
+   `bookclerk plugins instances list`.
+2. Set its filter, for example to keep podcasts out of a bucket:
+
+   ```sh
+   bookclerk plugins instances filter set <instance> --exclude media_kind=podcast
+   ```
+
+3. Check it with `bookclerk plugins instances filter get <instance>`, or
+   remove it with `bookclerk plugins instances filter clear <instance>`.
+
+The web API reads and writes the same filter at
+`/api/config/plugin-instances/{id}/filter`.
+
+Before an acquire of a book starts, Bookclerk works out which destinations
+take it. The book is written to those destinations only. When none takes
+it, the acquire of that book fails at once with "no destination accepts
+this book", before anything is downloaded.
+
+> [!NOTE]
+> A changed filter applies to acquires that start afterwards. Files that
+> are already stored stay where they are.
+
+> [!NOTE]
+> For now filters apply to acquires that run on the library itself. A
+> branch that acquires for the library still writes to every destination
+> the library names; that changes in a later release.
 
 ## Several destinations
 

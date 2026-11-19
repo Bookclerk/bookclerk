@@ -22,6 +22,7 @@ mod connections_request;
 mod copies;
 mod cron_fires;
 mod deployments;
+mod destination_filters;
 mod documents;
 mod enrollment;
 mod identity;
@@ -132,6 +133,11 @@ pub use deployments::{
     load_deployment, load_deployment_for_node, load_observation, present_plugin_keys_for_node,
     replace_plugin_deployment, upsert_observation, DeploymentObservation, DeploymentReplace,
     DeploymentStatus, DesiredState, PluginDeployment, MAX_OBSERVATION_DETAIL_BYTES,
+};
+pub use destination_filters::{
+    destination_filter, destination_filters, destination_key, load_destination_placement,
+    set_destination_filter, DestinationPlacementV1, DESTINATION_NAMESPACE,
+    DESTINATION_SCHEMA_VERSION,
 };
 pub use documents::{
     audit_count, change_count, ConfigActor, DocumentKey, ReplaceOutcome, StoredDocument,

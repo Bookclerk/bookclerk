@@ -1005,7 +1005,9 @@ mod registry_tests {
     async fn acquire_and_listing_use_every_deployed_destination() {
         let config = bookclerk_config::Config::default();
         let empty = DestinationRegistry::default();
-        let Err(err) = crate::build_acquire_destinations(&config, &empty) else {
+        let Err(err) =
+            crate::build_acquire_destinations(&config, &empty, &std::collections::BTreeMap::new())
+        else {
             panic!("no destination must refuse an acquire");
         };
         assert!(err.to_string().contains("no output destination"), "{err}");
@@ -1043,7 +1045,12 @@ mod registry_tests {
             &dirs[1],
         )
         .unwrap();
-        let acquire = crate::build_acquire_destinations(&config, &registry).unwrap();
+        let acquire = crate::build_acquire_destinations(
+            &config,
+            &registry,
+            &std::collections::BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(
             acquire.primary.as_str(),
             "z-local",

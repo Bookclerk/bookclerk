@@ -760,7 +760,7 @@ async fn existing_receipt_outcome(
 }
 
 /// Maps a SeaORM row onto the domain document.
-fn stored_from_model(row: configuration_documents::Model) -> StoredDocument {
+pub(super) fn stored_from_model(row: configuration_documents::Model) -> StoredDocument {
     StoredDocument {
         key: DocumentKey {
             scope_type: row.scope_type,

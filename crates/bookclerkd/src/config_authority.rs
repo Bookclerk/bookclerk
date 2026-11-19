@@ -1464,6 +1464,126 @@ pub async fn put_plugin_instance_config(
     }))
 }
 
+/// `GET` and `PUT /api/config/plugin-instances/{id}/filter` body: which
+/// books a storage destination takes.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct DestinationFilterResponse {
+    /// The destination's plugin instance id.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    plugin_instance_id: String,
+    /// Revision of the destination's `core.destination` document; `0` when
+    /// none was written, so the destination takes every book.
+    #[schema(example = 2)]
+    revision: i64,
+    /// The filter; no rules take every book.
+    #[schema(example = json!({"rules": [{"field": "storefront", "value": "libro", "effect": "include"}]}))]
+    filter: bookclerk_config::DestinationFilter,
+}
+
+/// Loads `id` as an existing plugin instance.
+///
+/// # Errors
+///
+/// Returns the `400` response for an id that is not an instance id, `404`
+/// for an unknown instance, and `500` for a failed read.
+async fn existing_instance(
+    library: &bookclerk_library::LibraryStore,
+    id: &str,
+) -> Result<bookclerk_library::control_plane::PluginInstanceId, Response> {
+    use bookclerk_library::control_plane::{load_plugin_instance, PluginInstanceId};
+    let instance_id = PluginInstanceId::parse(id).map_err(events_error)?;
+    if load_plugin_instance(library, &instance_id)
+        .await
+        .map_err(events_error)?
+        .is_none()
+    {
+        return Err(events_error(bookclerk_library::LibraryError::not_found(
+            EntityKind::PluginInstance,
+            &instance_id,
+        )));
+    }
+    Ok(instance_id)
+}
+
+/// `GET /api/config/plugin-instances/{id}/filter`: which books the storage
+/// destination takes.
+#[utoipa::path(
+    get,
+    path = "/api/config/plugin-instances/{id}/filter",
+    params(("id" = String, Path, description = "Plugin instance id of the destination.")),
+    responses(
+        (status = 200, description = "The destination's filter.", body = DestinationFilterResponse),
+        (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage, example = json!({"error": "invalid plugin instance id: expected a UUID"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
+        (status = 500, description = "The filter could not be read.", body = ErrorMessage, example = json!({"error": "invalid core.destination: destination filter: unknown field `genre`"})),
+    ),
+)]
+pub async fn get_destination_filter(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<DestinationFilterResponse>, Response> {
+    let library = state.library_snapshot().await;
+    let instance_id = existing_instance(&library, &id).await?;
+    let stored = bookclerk_library::control_plane::load_destination_placement(
+        &library,
+        instance_id.as_str(),
+    )
+    .await
+    .map_err(events_error)?;
+    Ok(Json(match stored {
+        Some(document) => DestinationFilterResponse {
+            plugin_instance_id: instance_id.to_string(),
+            revision: document.revision,
+            filter: document.body.filter,
+        },
+        None => DestinationFilterResponse {
+            plugin_instance_id: instance_id.to_string(),
+            revision: 0,
+            filter: bookclerk_config::DestinationFilter::default(),
+        },
+    }))
+}
+
+/// `PUT /api/config/plugin-instances/{id}/filter`: replaces which books the
+/// storage destination takes. Acquires that start afterwards use it; files
+/// already stored stay where they are.
+///
+/// Operator principal only. The route is mounted on the operator router.
+#[utoipa::path(
+    put,
+    path = "/api/config/plugin-instances/{id}/filter",
+    params(("id" = String, Path, description = "Plugin instance id of the destination.")),
+    request_body = bookclerk_config::DestinationFilter,
+    responses(
+        (status = 200, description = "The filter after the change.", body = DestinationFilterResponse),
+        (status = 400, description = "The filter is invalid.", body = ErrorMessage, example = json!({"error": "invalid: a patron rule takes a user id, not `me`"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
+        (status = 409, description = "The filter kept changing underneath the write.", body = ErrorMessage, example = json!({"error": "the filter of destination 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b kept changing; retry"})),
+        (status = 500, description = "The filter could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
+    ),
+)]
+pub async fn put_destination_filter(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(filter): Json<bookclerk_config::DestinationFilter>,
+) -> Result<Json<DestinationFilterResponse>, Response> {
+    let library = state.library_snapshot().await;
+    let instance_id = existing_instance(&library, &id).await?;
+    let stored = bookclerk_library::control_plane::set_destination_filter(
+        &library,
+        &operator_actor(),
+        instance_id.as_str(),
+        filter,
+    )
+    .await
+    .map_err(events_error)?;
+    Ok(Json(DestinationFilterResponse {
+        plugin_instance_id: instance_id.to_string(),
+        revision: stored.revision,
+        filter: stored.body.filter,
+    }))
+}
+
 /// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}` body.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutPluginDeployment {
@@ -2865,6 +2985,75 @@ mod tests {
         .unwrap();
         let state = std::sync::Arc::new(control_plane_test_state(store.clone(), config));
         (state, store, session.node.node_id, files)
+    }
+
+    #[tokio::test]
+    async fn destination_filter_routes_read_and_replace_the_filter() {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        use serde_json::{json, Value};
+        let (state, store, _node, _files) = daemon_state().await;
+        let instance = bookclerk_library::control_plane::create_plugin_instance(
+            &store,
+            &super::operator_actor(),
+            "s3",
+            "Backup",
+        )
+        .await
+        .unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/api/config/plugin-instances/{id}/filter",
+                get(super::get_destination_filter).put(super::put_destination_filter),
+            )
+            .with_state(std::sync::Arc::clone(&state));
+        let uri = format!("/api/config/plugin-instances/{}/filter", instance.id);
+
+        let (status, empty) = send(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{empty}");
+        assert_eq!(empty["revision"], 0);
+        assert_eq!(empty["filter"]["rules"], json!([]));
+
+        let rules = json!({"rules": [
+            {"field": "storefront", "value": " libro ", "effect": "include"},
+            {"field": "media_kind", "value": "podcast", "effect": "exclude"}
+        ]});
+        let (status, put) = send(&app, "PUT", &uri, rules).await;
+        assert_eq!(status, StatusCode::OK, "{put}");
+        assert_eq!(put["filter"]["rules"][0]["value"], "libro");
+        assert!(put["revision"].as_i64().unwrap() >= 1);
+        let (status, read) = send(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(read, put);
+
+        // An invalid rule and an unknown shape are refused and change nothing.
+        let (status, bad) = send(
+            &app,
+            "PUT",
+            &uri,
+            json!({"rules": [{"field": "patron", "value": "me", "effect": "include"}]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        let (status, _) = send(&app, "PUT", &uri, json!({"rules": [], "extra": 1})).await;
+        assert!(status.is_client_error());
+        let (_, after) = send(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(after, put);
+
+        // An unknown instance and a malformed id.
+        let missing = "/api/config/plugin-instances/3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b/filter";
+        let (status, _) = send(&app, "GET", missing, Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = send(&app, "PUT", missing, json!({})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = send(
+            &app,
+            "GET",
+            "/api/config/plugin-instances/nope/filter",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

@@ -206,9 +206,13 @@ pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<O
         }
         return Ok(out);
     }
-    let destinations =
-        bookclerk_plugin_host::build_acquire_destinations(&cfg, &*state.destinations.read().await)
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let destinations = bookclerk_plugin_host::build_acquire_destinations(
+        &cfg,
+        &*state.destinations.read().await,
+        // Plans and uploads name every destination; no title is placed here.
+        &std::collections::BTreeMap::new(),
+    )
+    .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     Ok(destinations
         .items
         .into_iter()
