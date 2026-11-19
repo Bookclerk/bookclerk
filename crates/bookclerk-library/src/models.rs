@@ -199,9 +199,6 @@ pub enum UserRole {
     Owner,
     /// Library / user administration without Operator elevation.
     Administrator,
-    /// Member who administers the nodes they own (budgets, drain, name).
-    /// Not trusted with other users' work; promote to Administrator for that.
-    Host,
     /// Library member with scoped portal access (no operator token).
     Member,
 }
@@ -213,7 +210,6 @@ impl UserRole {
         match self {
             Self::Owner => "owner",
             Self::Administrator => "administrator",
-            Self::Host => "host",
             Self::Member => "member",
         }
     }
@@ -224,7 +220,6 @@ impl UserRole {
         match s {
             "owner" => Some(Self::Owner),
             "administrator" => Some(Self::Administrator),
-            "host" => Some(Self::Host),
             "member" => Some(Self::Member),
             _ => None,
         }
@@ -243,12 +238,11 @@ impl UserRole {
     }
 
     /// Whether this role reaches the node administration routes even while
-    /// the user owns no node (Host, Administrator, Owner). Any other active
-    /// user reaches them once they own a node: owning a node does not
-    /// require a role.
+    /// the user owns no node (Administrator, Owner). A Member reaches them
+    /// once they own a node: owning a node does not require a role.
     #[must_use]
     pub fn can_administer_owned_nodes(self) -> bool {
-        matches!(self, Self::Owner | Self::Administrator | Self::Host)
+        matches!(self, Self::Owner | Self::Administrator)
     }
 }
 

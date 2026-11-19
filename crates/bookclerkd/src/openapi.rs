@@ -142,7 +142,7 @@ impl Access {
             }
             Access::OperatorOrOwner => "The operator, or a signed-in Owner.",
             Access::OperatorOrNodeOwner => {
-                "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
+                "The operator, a signed-in Owner or Administrator, or a Member who owns at least one node."
             }
             Access::OperatorOrUser => "The operator, or any signed-in user.",
             Access::OperatorOrPortal => {

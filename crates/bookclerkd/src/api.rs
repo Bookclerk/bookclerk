@@ -1240,7 +1240,7 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
 ///
 /// The group's routes, without auth layers (see [`route_groups`]).
 // Node administration: operators see and edit every node; a user who
-// owns nodes (Host, Administrator, Owner) sees and edits only those. An
+// owns nodes, or is an Administrator or Owner, sees and edits only those. An
 // Owner also sees and removes every shared node (the shared branches).
 #[inline(never)]
 fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
@@ -1268,7 +1268,7 @@ fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
 fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         // Any active user queues scans and acquires; the planner limits a
-        // Member or Host to the store accounts linked to them.
+        // Member to the store accounts linked to them.
         .routes(routes!(trigger_scan))
         .routes(routes!(trigger_acquire))
         // How listings resolve: the handlers admit only the operator, an

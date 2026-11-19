@@ -266,7 +266,6 @@ describe("canChangeBranchSharing", () => {
     expect(canChangeBranchSharing("operator", true)).toBe(false);
     expect(canChangeBranchSharing("administrator")).toBe(false);
     expect(canChangeBranchSharing("member")).toBe(false);
-    expect(canChangeBranchSharing("host")).toBe(false);
     expect(canChangeBranchSharing("")).toBe(false);
   });
 });

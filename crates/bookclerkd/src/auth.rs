@@ -393,7 +393,7 @@ pub struct AuthMeResponse {
     /// Whether the request resolved to an operator, portal, or impersonated session.
     #[schema(example = true)]
     pub authenticated: bool,
-    /// `operator`, `owner`, `administrator`, `host`, or `member` (legacy clients may
+    /// `operator`, `owner`, `administrator`, or `member` (legacy clients may
     /// still send `portal`).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = "administrator")]
@@ -410,6 +410,11 @@ pub struct AuthMeResponse {
     /// True when this operator session was created via Owner elevate.
     #[schema(example = false)]
     pub elevated: bool,
+    /// Whether this session reaches the node administration routes and the
+    /// library Status page: the operator, an Owner or Administrator, or a
+    /// Member who owns at least one node (a branch they linked).
+    #[schema(example = false)]
+    pub administers_nodes: bool,
     /// Present when the operator is impersonating a User.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub impersonating: Option<AuthMeImpersonating>,
@@ -1355,7 +1360,7 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "Who the caller is (operator, portal user, or impersonation).", body = AuthMeResponse),
-        (status = 401, description = "Nobody is signed in: the same body with `authenticated` false, so the app can show the sign-in screen.", body = AuthMeResponse, example = json!({"authenticated": false, "default_view": "discover", "can_acquire": false, "elevated": false})),
+        (status = 401, description = "Nobody is signed in: the same body with `authenticated` false, so the app can show the sign-in screen.", body = AuthMeResponse, example = json!({"authenticated": false, "default_view": "discover", "can_acquire": false, "elevated": false, "administers_nodes": false})),
         (status = 503, description = "The portal session could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than showing the sign-in screen.", body = crate::http_error::ErrorJson, headers(("Retry-After" = u64, description = "Seconds to wait before asking again.")), example = json!({"error": "session_check_unavailable", "message": "Your sign-in could not be checked yet. Try again in a moment.", "status": 503})),
     ),
 )]
@@ -1373,6 +1378,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                 default_view,
                 can_acquire: true,
                 elevated: false,
+                administers_nodes: true,
                 impersonating: None,
                 portal: None,
                 user: None,
@@ -1394,6 +1400,9 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
             let default_view = default_view_for_subject(&library, &prefs_key, identity_id).await;
             let (role, can_acquire, user, portal) =
                 impersonation_caller_identity(&library, target_id).await;
+            // A missing or disabled target administers nothing.
+            let administers_nodes =
+                user.is_some() && user_administers_nodes(&library, &role, target_id).await;
             return (
                 StatusCode::OK,
                 Json(AuthMeResponse {
@@ -1402,6 +1411,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                     default_view,
                     can_acquire,
                     elevated: false,
+                    administers_nodes,
                     impersonating,
                     portal,
                     user: match user {
@@ -1441,6 +1451,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                 default_view,
                 can_acquire: true,
                 elevated: op.elevated_from_user_id.is_some(),
+                administers_nodes: true,
                 impersonating: None,
                 portal: None,
                 user,
@@ -1461,6 +1472,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                 default_view,
                 can_acquire: true,
                 elevated: false,
+                administers_nodes: true,
                 impersonating: None,
                 portal: None,
                 user: None,
@@ -1481,6 +1493,10 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
     if let Some(identity) = identity {
         let (role, can_acquire, user, prefs_key) =
             resolve_portal_caller_identity(&library, &identity).await;
+        let administers_nodes = match identity.user_id {
+            Some(user_id) => user_administers_nodes(&library, &role, user_id).await,
+            None => false,
+        };
         let default_view = default_view_for_subject(&library, &prefs_key, Some(identity.id)).await;
         return (
             StatusCode::OK,
@@ -1490,6 +1506,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                 default_view,
                 can_acquire,
                 elevated: false,
+                administers_nodes,
                 impersonating: None,
                 portal: Some(PortalMeInfo {
                     identity_id: identity.id,
@@ -1518,6 +1535,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
             default_view: String::from("discover"),
             can_acquire: false,
             elevated: false,
+            administers_nodes: false,
             impersonating: None,
             portal: None,
             user: None,
@@ -1620,8 +1638,8 @@ pub async fn require_operator_or_owner_auth(
 pub enum NodeAdminCaller {
     /// Operator token or session, or auth disabled: every node.
     Operator,
-    /// A portal user who owns nodes, or whose role (Host, Administrator,
-    /// Owner) reaches node administration. Sees and edits only owned nodes.
+    /// A portal user who owns nodes, or whose role (Administrator, Owner)
+    /// reaches node administration. Sees and edits only owned nodes.
     NodeOwner {
         /// Calling user.
         user_id: i64,
@@ -1629,7 +1647,7 @@ pub enum NodeAdminCaller {
 }
 
 /// True when a user may use the node administration routes: their role
-/// always may (Host, Administrator, Owner), or they own at least one node.
+/// always may (Administrator, Owner), or they own at least one node.
 /// A lookup failure fails closed.
 async fn user_administers_nodes(
     library: &bookclerk_library::LibraryStore,
@@ -4177,7 +4195,7 @@ pub(crate) async fn authorize_provisioner(
 ///
 /// # Errors
 ///
-/// 401 when no one is signed in, 403 for a Member, Host or a session
+/// 401 when no one is signed in, 403 for a Member or a session
 /// without a user.
 pub(crate) async fn library_administrator(
     state: &AppState,
@@ -4206,7 +4224,7 @@ async fn provisioner_for_impersonated_user(
     match user.role {
         UserRole::Owner => Ok(Provisioner::Owner { user_id }),
         UserRole::Administrator => Ok(Provisioner::Administrator { user_id }),
-        UserRole::Host | UserRole::Member => Err(StatusCode::FORBIDDEN),
+        UserRole::Member => Err(StatusCode::FORBIDDEN),
     }
 }
 
@@ -8400,7 +8418,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn node_routes_admit_operators_and_node_owning_roles_only() {
+    async fn node_routes_admit_operators_administrators_and_node_owners_only() {
         use axum::body::Body;
         use axum::http::{header, Request, StatusCode};
         use axum::routing::get;
@@ -8411,14 +8429,39 @@ pub(crate) mod tests {
         let _dek = process_dek_lock().await;
         let token = "op-token-node-owner";
         let (state, _app, library) = phase2_harness(token).await;
-        let host = library
-            .upsert_portal_identity("test", "host-ext", Some("Hosting"))
+        // A Member who owns a node reaches the node routes like an
+        // administrator; owning a node needs no role.
+        let keeper = library
+            .upsert_portal_identity("test", "keeper-ext", Some("Keeper"))
             .await
             .unwrap();
+        let keeper_id = keeper.user_id.expect("bridged keeper");
         library
-            .set_user_role(host.user_id.expect("bridged host"), UserRole::Host)
+            .set_user_role(keeper_id, UserRole::Member)
             .await
             .unwrap();
+        let files = tempfile::tempdir().unwrap();
+        let node_id = bookclerk_library::control_plane::bootstrap_control_plane(
+            &library,
+            files.path(),
+            &files.path().join("cache"),
+            None,
+            &bookclerk_config::Config::default(),
+        )
+        .await
+        .unwrap()
+        .node
+        .node_id;
+        bookclerk_library::control_plane::set_node_owner(
+            &library,
+            &bookclerk_library::control_plane::ConfigActor::Operator {
+                id: "operator".into(),
+            },
+            &node_id,
+            Some(keeper_id),
+        )
+        .await
+        .unwrap();
         // Echoes the caller the middleware resolved.
         let probe = axum::Router::new()
             .route(
@@ -8456,19 +8499,49 @@ pub(crate) mod tests {
 
         let (status, body) = call(Some((header::AUTHORIZATION, format!("Bearer {token}")))).await;
         assert_eq!((status, body.as_str()), (StatusCode::OK, "operator"));
-        let host_cookie = portal_cookie_for(&library, "test", "host-ext").await;
-        let (status, body) = call(Some((header::COOKIE, host_cookie))).await;
+        let keeper_cookie = portal_cookie_for(&library, "test", "keeper-ext").await;
+        let (status, body) = call(Some((header::COOKIE, keeper_cookie))).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, format!("owner:{}", host.user_id.unwrap()));
+        assert_eq!(body, format!("owner:{keeper_id}"));
         let admin_cookie = portal_cookie_for(&library, "test", "administrator-ext").await;
         let (status, body) = call(Some((header::COOKIE, admin_cookie))).await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.starts_with("owner:"), "{body}");
         let member_cookie = portal_cookie_for(&library, "test", "member-ext").await;
-        let (status, _) = call(Some((header::COOKIE, member_cookie))).await;
+        let (status, _) = call(Some((header::COOKIE, member_cookie.clone()))).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _) = call(None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // `/api/auth/me` tells the web app the same, so it shows Status to
+        // the Member who owns a node and not to one who owns none.
+        let me_route = axum::Router::new()
+            .route("/me", get(me))
+            .with_state(state.clone());
+        for (cookie, expected) in [
+            (
+                portal_cookie_for(&library, "test", "keeper-ext").await,
+                true,
+            ),
+            (member_cookie, false),
+        ] {
+            let response = me_route
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/me")
+                        .header(header::COOKIE, cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["role"], "member");
+            assert_eq!(json["administers_nodes"], expected, "{json}");
+        }
     }
 
     #[tokio::test]

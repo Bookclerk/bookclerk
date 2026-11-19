@@ -15,7 +15,7 @@ export type AppView = "discover" | "library" | "accounts" | "wishlist" | "status
 /**
  * Session role returned by the daemon auth APIs.
  */
-export type AuthRole = "operator" | "owner" | "administrator" | "host" | "member";
+export type AuthRole = "operator" | "owner" | "administrator" | "member";
 
 /**
  * Linked portal identity attached to a user session.
@@ -82,6 +82,11 @@ export interface AuthSession {
   default_view: AppView;
   can_acquire: boolean;
   elevated?: boolean;
+  /**
+   * Whether the session reaches node administration and the Status page:
+   * the operator, an Owner or Administrator, or a Member who owns a node.
+   */
+  administers_nodes?: boolean;
   impersonating?: AuthMeImpersonating;
   portal?: PortalInfo;
   user?: AuthMeUser;
@@ -530,13 +535,7 @@ function normalizeView(raw: string | undefined): AppView {
 }
 
 function normalizeRole(raw: string | undefined): AuthRole | undefined {
-  if (
-    raw === "operator" ||
-    raw === "owner" ||
-    raw === "administrator" ||
-    raw === "host" ||
-    raw === "member"
-  ) {
+  if (raw === "operator" || raw === "owner" || raw === "administrator" || raw === "member") {
     return raw;
   }
   // Legacy portal sessions map to member.
@@ -660,6 +659,11 @@ function toAuthSession(body: {
   default_view?: string;
   can_acquire?: boolean;
   elevated?: boolean;
+  /**
+   * Whether the session reaches node administration and the Status page:
+   * the operator, an Owner or Administrator, or a Member who owns a node.
+   */
+  administers_nodes?: boolean;
   impersonating?: AuthMeImpersonating;
   portal?: PortalInfo;
   user?: AuthMeUser;
@@ -3175,7 +3179,7 @@ export async function portalRevokeConnection(source: string, accountId: string):
  * @returns Resolves when logout completes.
  */
 export async function signOut(role?: AuthRole): Promise<void> {
-  if (role === "administrator" || role === "host" || role === "member") {
+  if (role === "administrator" || role === "member") {
     await portalLogout();
     return;
   }

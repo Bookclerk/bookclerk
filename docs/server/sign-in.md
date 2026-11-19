@@ -366,9 +366,12 @@ the library ended it). See
 | Library cards (clerk side) | `GET /api/config/clerk`, `POST /api/config/clerk/inspect`, `/start`, `/callback`, `/sign-out` (operator or Owner) |
 
 `GET /api/auth/me` returns
-`{ authenticated, role, default_view, can_acquire, elevated, impersonating?, portal?, user?, second_factor? }`:
+`{ authenticated, role, default_view, can_acquire, elevated, administers_nodes, impersonating?, portal?, user?, second_factor? }`:
 
 - `role` is `operator`, `owner`, `administrator` or `member`.
+- `administers_nodes` is true for the operator, an Owner or Administrator,
+  and a Member who owns a node. The web app shows Status, and the nodes in
+  Settings, only when it is true.
 - `user` is the first-party user, when there is one.
 - `default_view` comes from the caller's preferences.
 - Portal users also get

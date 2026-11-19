@@ -408,6 +408,7 @@
                   "$ref": "#/components/schemas/AuthMeResponse"
                 },
                 "example": {
+                  "administers_nodes": false,
                   "authenticated": false,
                   "can_acquire": false,
                   "default_view": "discover",
@@ -2104,7 +2105,7 @@
           "Users"
         ],
         "summary": "Gives a patron their own scope, or returns them to the library's\ndefault with `\"scope\": null`.",
-        "description": "Nobody sets their own scope. Owners and Administrators always see the\nwhole library, so a scope stored for one only applies if their role\nchanges to Member or Host.",
+        "description": "Nobody sets their own scope. Owners and Administrators always see the\nwhole library, so a scope stored for one only applies if their role\nchanges to Member.",
         "operationId": "put_user_scope",
         "parameters": [
           {
@@ -11390,7 +11391,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
+        "x-bookclerk-access": "The operator, a signed-in Owner or Administrator, or a Member who owns at least one node."
       }
     },
     "/api/config/nodes/{node_id}": {
@@ -11565,7 +11566,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
+        "x-bookclerk-access": "The operator, a signed-in Owner or Administrator, or a Member who owns at least one node."
       }
     },
     "/api/config/shared-branches": {
@@ -11690,7 +11691,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
+        "x-bookclerk-access": "The operator, a signed-in Owner or Administrator, or a Member who owns at least one node."
       }
     },
     "/api/config/nodes/{node_id}/runtime": {
@@ -11908,7 +11909,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
+        "x-bookclerk-access": "The operator, a signed-in Owner or Administrator, or a Member who owns at least one node."
       }
     },
     "/api/library-status": {
@@ -12033,7 +12034,7 @@
             "portalSession": []
           }
         ],
-        "x-bookclerk-access": "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
+        "x-bookclerk-access": "The operator, a signed-in Owner or Administrator, or a Member who owns at least one node."
       }
     },
     "/api/library/scan": {
@@ -31796,7 +31797,8 @@
           "authenticated",
           "default_view",
           "can_acquire",
-          "elevated"
+          "elevated",
+          "administers_nodes"
         ],
         "properties": {
           "authenticated": {
@@ -31809,7 +31811,7 @@
               "string",
               "null"
             ],
-            "description": "`operator`, `owner`, `administrator`, `host`, or `member` (legacy clients may\nstill send `portal`).",
+            "description": "`operator`, `owner`, `administrator`, or `member` (legacy clients may\nstill send `portal`).",
             "example": "administrator"
           },
           "default_view": {
@@ -31825,6 +31827,11 @@
           "elevated": {
             "type": "boolean",
             "description": "True when this operator session was created via Owner elevate.",
+            "example": false
+          },
+          "administers_nodes": {
+            "type": "boolean",
+            "description": "Whether this session reaches the node administration routes and the\nlibrary Status page: the operator, an Owner or Administrator, or a\nMember who owns at least one node (a branch they linked).",
             "example": false
           },
           "impersonating": {
@@ -46013,7 +46020,6 @@
         "enum": [
           "owner",
           "administrator",
-          "host",
           "member"
         ]
       },
