@@ -116,6 +116,8 @@ paths = [
     "fuzz/oracles/sharing_request.rs",
     "fuzz/corpus/connections_request/**",
     "fuzz/oracles/connections_request.rs",
+    "fuzz/corpus/pace_request/**",
+    "fuzz/oracles/pace_request.rs",
 ]
 
 # The desktop window's custom-scheme oracle, shared the same way.

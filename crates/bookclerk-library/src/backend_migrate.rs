@@ -7,10 +7,10 @@
 use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, TransactionTrait};
 
 use crate::entities::{
-    account_credential_revisions, account_links, account_shares, accounts, books, claim_tickets,
-    contributors, credits, edition_acquisitions, edition_files, edition_identifiers, editions,
-    embeddings, encrypted_secrets, expressions, holdings, ignored_titles, job_temp_paths, jobs,
-    listening_progress, listing_offers, member_account_rules, oidc_auth_codes, oidc_clients,
+    account_credential_revisions, account_links, account_pace, account_shares, accounts, books,
+    claim_tickets, contributors, credits, edition_acquisitions, edition_files, edition_identifiers,
+    editions, embeddings, encrypted_secrets, expressions, holdings, ignored_titles, job_temp_paths,
+    jobs, listening_progress, listing_offers, member_account_rules, oidc_auth_codes, oidc_clients,
     oidc_refresh_tokens, oidc_rp_states, operator_sessions, patron_scope_keys, patron_scopes,
     portal_identities, portal_sessions, resolution_conflicts, resolution_overrides, saved_filters,
     security_audit_events, series, series_entries, store_listings, title_request_sources,
@@ -104,6 +104,8 @@ pub async fn migrate_library_backend(
     // FK-safe order (users before portal_identities.user_id).
     copy!(users, "users");
     copy!(accounts, "accounts");
+    // The operator's pace overrides; the download ledger is transient.
+    copy!(account_pace, "account_pace");
     copy!(portal_identities, "portal_identities");
     // Shows before their episodes (`works.parent_work_id`).
     summary
@@ -219,6 +221,7 @@ async fn dry_run_counts(
     }
     count!(users, "users");
     count!(accounts, "accounts");
+    count!(account_pace, "account_pace");
     count!(portal_identities, "portal_identities");
     count!(works, "works");
     count!(work_identifiers, "work_identifiers");

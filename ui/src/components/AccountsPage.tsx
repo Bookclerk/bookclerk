@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link2, RefreshCw, Share2, Unlink } from "lucide-react";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
+import { ConnectionPace } from "@/components/ConnectionPace";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -421,6 +422,19 @@ export function AccountsPage({
                         </Button>
                       ) : null}
                     </div>
+                    <ConnectionPace
+                      connection={c}
+                      busy={busy}
+                      onChanged={(pace) =>
+                        setConnections((list) =>
+                          list.map((item) =>
+                            item.plugin_key === c.plugin_key && item.account_id === c.account_id
+                              ? { ...item, pace }
+                              : item,
+                          ),
+                        )
+                      }
+                    />
                   </li>
                 ))}
               </ul>

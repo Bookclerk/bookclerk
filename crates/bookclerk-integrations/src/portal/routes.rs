@@ -89,6 +89,7 @@ pub fn portal_spa_routes() -> OpenApiRouter<PortalState> {
         .routes(routes!(audible_start))
         .routes(routes!(connections))
         .routes(routes!(revoke_connection))
+        .routes(routes!(set_connection_pace))
 }
 
 /// The SPA Accounts / claim routes with their state, ready to nest.
@@ -839,7 +840,15 @@ async fn connections(
         };
         // Still list (and allow revoke of) connections even when the source
         // plugin is not deployed here — only new connect/login needs it.
-        let source_enabled = find_source(&state, &link.plugin_key).await.is_some();
+        let content = find_source(&state, &link.plugin_key).await;
+        let source_enabled = content.is_some();
+        let pace = pace_view(
+            &library,
+            &link.plugin_key,
+            &link.account_id,
+            content.map(|c| c.acquire_pace()),
+        )
+        .await?;
         connections.push(ConnectionInfo {
             plugin_key: link.plugin_key,
             account_id: link.account_id,
@@ -855,9 +864,190 @@ async fn connections(
                 accent: b.accent.into(),
                 logo: (state.image_src)(b.logo_href()).unwrap_or_default(),
             }),
+            pace,
         });
     }
     Ok(Json(ConnectionsResponse { connections }))
+}
+
+/// How fast Bookclerk downloads from one store account when it starts the
+/// downloads itself, for the Accounts page.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+struct PaceView {
+    /// `default` (the store's pace), `custom` or `unlimited`.
+    #[schema(example = "default")]
+    mode: &'static str,
+    /// Downloads allowed in any rolling 24 hours now in force; `null` for
+    /// no daily budget.
+    #[schema(example = 100)]
+    downloads_per_day: Option<u32>,
+    /// Seconds between two downloads now in force.
+    #[schema(example = 30)]
+    min_gap_seconds: u64,
+    /// The store's declared daily budget; `null` when it declares none or
+    /// its plugin is not deployed here.
+    #[schema(example = 100)]
+    store_downloads_per_day: Option<u32>,
+    /// The store's declared gap in seconds; `null` when its plugin is not
+    /// deployed here.
+    #[schema(example = 30)]
+    store_min_gap_seconds: Option<u64>,
+    /// Custom daily budget the operator set, when `mode` is `custom`.
+    #[schema(example = json!(null))]
+    custom_downloads_per_day: Option<u32>,
+    /// Custom gap the operator set, when `mode` is `custom`.
+    #[schema(example = json!(null))]
+    custom_min_gap_seconds: Option<u32>,
+    /// Downloads from this account in the last 24 hours, by hand or not.
+    #[schema(example = 12)]
+    downloads_last_day: usize,
+    /// End of the cool-down the store asked for (RFC 3339), when one is
+    /// running.
+    #[schema(example = json!(null))]
+    cooldown_until: Option<String>,
+    /// When the next automatic download may start (RFC 3339); `null` when
+    /// one may start now.
+    #[schema(example = json!(null))]
+    next_automatic_at: Option<String>,
+}
+
+/// Builds the [`PaceView`] of one account.
+///
+/// # Arguments
+///
+/// * `library` - The library store.
+/// * `plugin_key` - The account's plugin.
+/// * `account_id` - The account.
+/// * `declared` - The storefront's declared pace, when its plugin is
+///   deployed here (otherwise the host default stands in).
+///
+/// # Errors
+///
+/// Returns an error when the pace state cannot be read.
+async fn pace_view(
+    library: &LibraryStore,
+    plugin_key: &str,
+    account_id: &str,
+    declared: Option<bookclerk_library::pacing::AcquirePace>,
+) -> Result<PaceView, PortalError> {
+    use bookclerk_library::pacing::{decide, PaceOverride, PaceVerdict};
+    let now = chrono::Utc::now();
+    let state = library
+        .account_pace_state(plugin_key, account_id, now)
+        .await?;
+    let store = declared.unwrap_or_default();
+    let pace = store.with_override(&state.override_);
+    let (custom_downloads_per_day, custom_min_gap_seconds) = match state.override_ {
+        PaceOverride::Custom {
+            downloads_per_day,
+            min_gap_seconds,
+        } => (
+            downloads_per_day.map(std::num::NonZeroU32::get),
+            min_gap_seconds,
+        ),
+        PaceOverride::Default | PaceOverride::Unlimited => (None, None),
+    };
+    let rfc3339 =
+        |at: chrono::DateTime<chrono::Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let next_automatic_at = match decide(&pace, &state.window, state.cooldown_until, now) {
+        PaceVerdict::Go => None,
+        PaceVerdict::Wait { until, .. } => Some(rfc3339(until)),
+    };
+    Ok(PaceView {
+        mode: state.override_.mode_str(),
+        downloads_per_day: pace.downloads_per_day.map(std::num::NonZeroU32::get),
+        min_gap_seconds: pace.min_gap.as_secs(),
+        store_downloads_per_day: declared
+            .and_then(|d| d.downloads_per_day)
+            .map(std::num::NonZeroU32::get),
+        store_min_gap_seconds: declared.map(|d| d.min_gap.as_secs()),
+        custom_downloads_per_day,
+        custom_min_gap_seconds,
+        downloads_last_day: state.window.count(),
+        cooldown_until: state
+            .cooldown_until
+            .filter(|until| *until > now)
+            .map(rfc3339),
+        next_automatic_at,
+    })
+}
+
+/// Changes how fast Bookclerk downloads from one of the caller's store
+/// accounts when it starts the downloads itself, and returns the result.
+///
+/// The body sets `mode` (`default`, `custom` or `unlimited`); a custom pace
+/// carries `downloads_per_day` (1 to 10000) and/or `min_gap_seconds` (0 to
+/// 86400). `clear_cooldown: true` also ends a cool-down the store asked
+/// for. Downloads a person starts are never held, whatever the pace.
+#[utoipa::path(
+    operation_id = "portal_set_connection_pace",
+    post,
+    path = "/sources/{source}/connections/{account_id}/pace",
+    params(("source" = String, Path, description = "Source plugin id or PluginKey."), ("account_id" = String, Path, description = "Store account id.")),
+    request_body(content = PaceRequestBody, content_type = "application/json"),
+    security(("portalSession" = [])),
+    responses(
+        (status = 200, description = "The pace was stored; the account's pace as it now stands.", body = PaceView),
+        (status = 400, description = "The body breaks a rule, or the account is not linked to this identity.", body = PortalErrorBody, examples(
+            ("invalid" = (summary = "A custom pace with no values.", value = json!({"error": "invalid input: pace body: a custom pace needs downloads_per_day or min_gap_seconds"}))),
+            ("not_linked" = (summary = "No link between this identity and the account.", value = json!({"error": "account not linked to this identity"}))),
+        )),
+        (status = 401, description = "The caller is not signed in, or the portal session expired.", body = PortalErrorBody, examples(
+            ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
+            ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
+        )),
+    ),
+)]
+async fn set_connection_pace(
+    State(state): State<PortalState>,
+    headers: HeaderMap,
+    Path((source, account_id)): Path<(String, String)>,
+    body: axum::body::Bytes,
+) -> Result<Json<PaceView>, PortalError> {
+    let identity = require_identity(&state, &headers).await?;
+    let request = bookclerk_library::pacing::parse_pace_request(&body)?;
+    let library = state.library_snapshot().await;
+    let links = library.list_account_links(identity.id).await?;
+    let Some(link) = links.iter().find(|l| {
+        l.account_id == account_id
+            && (l.plugin_key == source || l.source.eq_ignore_ascii_case(&source))
+    }) else {
+        return Err(PortalError::bad("account not linked to this identity"));
+    };
+    library
+        .set_account_pace_override(&link.plugin_key, &link.account_id, &request.override_)
+        .await?;
+    if request.clear_cooldown {
+        library
+            .clear_account_cooldown(&link.plugin_key, &link.account_id)
+            .await?;
+    }
+    let declared = find_source(&state, &link.plugin_key)
+        .await
+        .map(|c| c.acquire_pace());
+    Ok(Json(
+        pace_view(&library, &link.plugin_key, &link.account_id, declared).await?,
+    ))
+}
+
+/// Request body of the pace route, for the API reference (the route reads
+/// the raw bytes with `bookclerk_library::pacing::parse_pace_request`).
+#[derive(Debug, utoipa::ToSchema)]
+// Read by the schema only; the route parses the bytes itself.
+#[allow(dead_code)]
+struct PaceRequestBody {
+    /// `default`, `custom` or `unlimited`.
+    #[schema(example = "custom")]
+    mode: String,
+    /// Custom downloads per rolling 24 hours (1 to 10000); `custom` only.
+    #[schema(example = 20)]
+    downloads_per_day: Option<u32>,
+    /// Custom seconds between downloads (0 to 86400); `custom` only.
+    #[schema(example = 60)]
+    min_gap_seconds: Option<u32>,
+    /// Also end a cool-down the store asked for.
+    #[schema(example = false)]
+    clear_cooldown: Option<bool>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -891,6 +1081,9 @@ struct ConnectionInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Storefront or integration brand when a plugin or fallback palette is available.
     brand: Option<BrandInfo>,
+    /// How fast Bookclerk downloads from this account when it starts the
+    /// downloads itself.
+    pace: PaceView,
 }
 
 /// Marks a store account revoked, signs it out, deletes its stored credentials, then unlinks it.

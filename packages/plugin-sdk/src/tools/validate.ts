@@ -50,6 +50,18 @@ export type Manifest = {
     fetches?: string[];
   };
   /**
+   * `[acquire]` — how fast the host may download from one store account when
+   * it starts the downloads itself. Optional, storefronts only.
+   */
+  acquire?: {
+    /** Downloads per store account in any rolling 24 hours (1 to 10000). */
+    downloads_per_day?: number;
+    /** Seconds between two downloads on one store account (0 to 86400). */
+    min_gap_seconds?: number;
+    /** Seconds to pause after `rateLimited` without a retry time (1 to 604800). */
+    cooldown_seconds?: number;
+  };
+  /**
    * `[metadata_files]` — the metadata file dialects a `metadataFiles` plugin
    * implements. Required for that entrypoint, forbidden for others.
    */
@@ -975,6 +987,7 @@ export function validateManifest(m: Manifest): void {
     validateLogo(String(m.logo));
   }
   validateMedia(m);
+  validateAcquire(m);
   validateMetadataFiles(m);
   validateSurface(m);
   validateSettings(m);
@@ -1091,6 +1104,42 @@ function validateMedia(m: Manifest): void {
     throw new Error(
       `plugin.toml: \`[media].fetches\` names \`${unlisted}\`, which \`lists\` does not`,
     );
+  }
+}
+
+/** Each `[acquire]` field with its allowed range, in check order. */
+const ACQUIRE_RANGES = [
+  ["downloads_per_day", 1, 10_000],
+  ["min_gap_seconds", 0, 86_400],
+  ["cooldown_seconds", 1, 604_800],
+] as const;
+
+/**
+ * Checks `[acquire]` against the entrypoints and its ranges, with the host's
+ * rules and messages (`manifest-cases.json`).
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} When a plugin without the `storefront` entrypoint declares
+ *   the table, or a value is not a whole number in its range.
+ */
+function validateAcquire(m: Manifest): void {
+  const acquire = m.acquire;
+  if (acquire == null) {
+    return;
+  }
+  const entrypoints = (m.entrypoints ?? []) as readonly string[];
+  if (!entrypoints.includes("storefront")) {
+    throw new Error("plugin.toml: `[acquire]` needs the `storefront` entrypoint");
+  }
+  for (const [field, min, max] of ACQUIRE_RANGES) {
+    const raw: unknown = acquire[field];
+    if (raw === undefined) {
+      continue;
+    }
+    const value = typeof raw === "bigint" ? Number(raw) : raw;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+      throw new Error(`plugin.toml: \`[acquire].${field}\` must be between ${min} and ${max}`);
+    }
   }
 }
 

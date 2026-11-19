@@ -6,11 +6,14 @@ use std::time::Duration;
 use bookclerk_acquire::{acquire_book_indexed, AcquireRequest, MatchStorageOptions};
 use bookclerk_config::BadBookAction;
 use bookclerk_library::control_plane::ScanRequester;
+use bookclerk_library::pacing::{decide, AcquirePace, PaceVerdict, WaitReason};
+use bookclerk_library::DownloadStarter;
 use bookclerk_library::{
     is_downloadable, AcquireStatus, AcquireTitle, EnqueueJobSpec, EnqueueOutcome, JobKind,
     JobPayload, JobTrigger,
 };
 use bookclerk_source::ScanOptions;
+use chrono::{DateTime, Utc};
 use tracing::{error, info, warn};
 
 use crate::api::AppState;
@@ -358,6 +361,9 @@ pub struct AcquireAsk {
     pub force: bool,
     /// Fetch only each title's companion PDF.
     pub pdf_only: bool,
+    /// The host started this acquire itself, so each download waits for
+    /// its store account's pace (`bookclerk_library::pacing`).
+    pub paced: bool,
 }
 
 /// Admit acquire jobs through the acquire planner.
@@ -407,6 +413,7 @@ pub async fn enqueue_acquire(
         );
         spec.payload.force = ask.force;
         spec.payload.pdf_only = ask.pdf_only;
+        spec.payload.paced = ask.paced;
         admitted.push(admit_into(&state, &library, spec).await?);
     }
     Ok(admitted)
@@ -824,6 +831,9 @@ pub struct AcquireMode {
     pub force: bool,
     /// Fetch only each title's companion PDF.
     pub pdf_only: bool,
+    /// The host started this acquire itself, so each download waits for
+    /// its store account's pace (`bookclerk_library::pacing`).
+    pub paced: bool,
 }
 
 /// Acquire pending titles synchronously.
@@ -832,7 +842,16 @@ pub struct AcquireMode {
 ///
 /// `plugin_instance_id` pins every fetch to that deployed instance of the
 /// book's plugin; otherwise the plugin's default instance is used. `mode`
-/// carries the job's `force` and `pdf_only` flags.
+/// carries the job's `force`, `pdf_only` and `paced` flags.
+///
+/// Every download that reaches a store is recorded against its account's
+/// pace. A paced run checks the pace before each title: a wait of at most
+/// [`PACE_SLEEP_IN_PLACE`] is slept in place; a longer one sets the
+/// account's titles aside, and once the other titles are done the job is
+/// parked until the earliest account may download again
+/// ([`bookclerk_library::LibraryStore::defer_job`]). When a store answers
+/// `rateLimited`, its account's cool-down is recorded and a paced run sets
+/// the account aside the same way; a run a person started stops there.
 pub async fn run_acquire(
     state: &AppState,
     title: Option<&str>,
@@ -926,7 +945,22 @@ pub async fn run_acquire(
     // A library this install joined, or holds a card for, may already
     // hold a title's copy.
     let library_copies = crate::clerk_link::copies::acquire_copies(&library);
+    // Accounts whose downloads must wait, keyed by (plugin key, account),
+    // with when each may download again and why.
+    let mut held: std::collections::BTreeMap<(String, String), (DateTime<Utc>, WaitReason)> =
+        std::collections::BTreeMap::new();
+    let mut set_aside = 0u32;
+    let starter = if mode.paced {
+        DownloadStarter::Host
+    } else {
+        DownloadStarter::Person
+    };
     for (idx, book) in targets.into_iter().enumerate() {
+        let account_key = (book.plugin_key.clone(), book.account_id.clone());
+        if held.contains_key(&account_key) {
+            set_aside += 1;
+            continue;
+        }
         if let Some(ctx) = ctx {
             if ctx.is_cancelled()
                 || library
@@ -949,6 +983,32 @@ pub async fn run_acquire(
         let content_source = registry
             .require_routed(&book.plugin_key, plugin_instance_id)
             .map_err(|err| anyhow::anyhow!("{err} (title {})", book.asin_or_isbn()))?;
+        let declared_pace = content_source.acquire_pace();
+        if mode.paced {
+            match wait_for_pace(
+                &library,
+                &book.plugin_key,
+                &book.account_id,
+                &declared_pace,
+                ctx,
+            )
+            .await?
+            {
+                PaceGate::Go => {}
+                PaceGate::Hold { until, reason } => {
+                    info!(
+                        plugin_key = %book.plugin_key,
+                        account = %book.account_id,
+                        %until,
+                        reason = reason.phrase(),
+                        "run_acquire: account must wait; its titles are set aside"
+                    );
+                    held.insert(account_key, (until, reason));
+                    set_aside += 1;
+                    continue;
+                }
+            }
+        }
         // Each title is written only to the destinations whose filter takes
         // it (`AcquireRequest::placement`). Filters are read now, so an edit
         // made during a long run applies to the titles that start after it,
@@ -994,6 +1054,8 @@ pub async fn run_acquire(
             library_copies: library_copies.clone(),
         };
         let mut attempts = 0u32;
+        let started_at = Utc::now();
+        let mut counted = false;
         loop {
             attempts += 1;
             let result = if mode.pdf_only {
@@ -1014,6 +1076,52 @@ pub async fn run_acquire(
                 )
                 .await
             };
+            // One download per title, however many attempts it takes.
+            if !counted && reached_store(&result) {
+                counted = true;
+                if let Err(err) = library
+                    .record_account_download(
+                        &book.plugin_key,
+                        &book.account_id,
+                        started_at,
+                        ctx.map(|c| c.fence.job_id.as_str()),
+                        starter,
+                    )
+                    .await
+                {
+                    warn!(account = %book.account_id, error = %err, "could not record a download against the account's pace");
+                }
+            }
+            if let Err(bookclerk_acquire::AcquireError::Source(
+                bookclerk_source::SourceError::RateLimited(retry_after),
+            )) = &result
+            {
+                let until = bookclerk_library::pacing::cooldown_end(
+                    &declared_pace,
+                    *retry_after,
+                    Utc::now(),
+                );
+                library
+                    .extend_account_cooldown(&book.plugin_key, &book.account_id, until)
+                    .await?;
+                warn!(
+                    asin = %book.asin_or_isbn(),
+                    account = %book.account_id,
+                    %until,
+                    "the store asked to slow down; downloads on this account pause"
+                );
+                if !mode.paced {
+                    anyhow::bail!(
+                        "{} asked to slow down downloads on account {} until {until}; \
+                         acquired={ok} matched={matched} failed={failed}",
+                        book.source,
+                        book.account_id
+                    );
+                }
+                held.insert(account_key.clone(), (until, WaitReason::Cooldown));
+                set_aside += 1;
+                break;
+            }
             match result {
                 Ok(result) if result.matched_existing => {
                     info!(asin = %result.asin, key = %result.storage_key, "matched existing");
@@ -1052,6 +1160,31 @@ pub async fn run_acquire(
         }
     }
     let detail = format!("acquired={ok} matched={matched} failed={failed}");
+    if let Some((until, reason)) = held.values().min_by_key(|(until, _)| *until).copied() {
+        if let Some(scan_id) = index.scan_id() {
+            let _ = library.storage_scan_delete(scan_id).await;
+        }
+        let progress = format!(
+            "{detail}; {set_aside} title(s) waiting for {} until {}",
+            reason.phrase(),
+            until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        );
+        info!(
+            acquired = ok,
+            matched,
+            failed,
+            set_aside,
+            %until,
+            "run_acquire: parked until an account may download again"
+        );
+        let Some(ctx) = ctx else {
+            return Ok(progress);
+        };
+        if !library.defer_job(&ctx.fence, until, &progress).await? {
+            anyhow::bail!("could not park the acquire (lease fence lost)");
+        }
+        return Ok(format!("{JOB_SUSPENDED_DETAIL_PREFIX}{until} ({progress})"));
+    }
     info!(
         title = title.unwrap_or("*"),
         account = account.unwrap_or("*"),
@@ -1068,6 +1201,97 @@ pub async fn run_acquire(
         let _ = library.storage_scan_delete(scan_id).await;
     }
     Ok(detail)
+}
+
+/// Longest pace wait a run sleeps through in place; a longer one parks the
+/// job instead, so a short gap between downloads does not cost a new
+/// storage scan.
+pub const PACE_SLEEP_IN_PLACE: Duration = Duration::from_secs(120);
+
+/// What [`wait_for_pace`] decided for one title.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaceGate {
+    /// Download now (any short wait has been slept).
+    Go,
+    /// The account must wait longer than [`PACE_SLEEP_IN_PLACE`].
+    Hold {
+        /// When the account may download again.
+        until: DateTime<Utc>,
+        /// What it waits for.
+        reason: WaitReason,
+    },
+}
+
+/// Checks an account's pace before a paced download, sleeping through a
+/// short wait.
+///
+/// The job holds the account's cluster semaphore while it runs, so no
+/// other node downloads on the account between this check and the fetch.
+///
+/// # Errors
+///
+/// Returns an error when the pace state cannot be read, or when the job is
+/// cancelled during a sleep.
+async fn wait_for_pace(
+    library: &bookclerk_library::LibraryStore,
+    plugin_key: &str,
+    account_id: &str,
+    declared: &AcquirePace,
+    ctx: Option<&JobExecCtx>,
+) -> anyhow::Result<PaceGate> {
+    loop {
+        let now = Utc::now();
+        let state = library
+            .account_pace_state(plugin_key, account_id, now)
+            .await?;
+        let pace = declared.with_override(&state.override_);
+        match decide(&pace, &state.window, state.cooldown_until, now) {
+            PaceVerdict::Go => return Ok(PaceGate::Go),
+            PaceVerdict::Wait { until, reason } => {
+                let wait = (until - now).to_std().unwrap_or(Duration::ZERO);
+                if wait > PACE_SLEEP_IN_PLACE {
+                    return Ok(PaceGate::Hold { until, reason });
+                }
+                // Sleep in one-second steps so a cancel is seen promptly.
+                let deadline = tokio::time::Instant::now() + wait;
+                while tokio::time::Instant::now() < deadline {
+                    if job_cancelled(ctx, library).await {
+                        anyhow::bail!("cancelled while waiting for {}", reason.phrase());
+                    }
+                    let step = deadline
+                        .saturating_duration_since(tokio::time::Instant::now())
+                        .min(Duration::from_secs(1));
+                    tokio::time::sleep(step).await;
+                }
+            }
+        }
+    }
+}
+
+/// Whether an acquire attempt's outcome means the store was asked for the
+/// title, so it counts against the account's pace.
+///
+/// A copy matched in storage or taken from a joined library never reached
+/// the store, and neither did a title no destination takes. A source error
+/// other than `rateLimited` did (the store answered); other failures are
+/// local (storage, media, database) and might not have.
+fn reached_store(
+    result: &Result<bookclerk_acquire::AcquireResult, bookclerk_acquire::AcquireError>,
+) -> bool {
+    use bookclerk_acquire::AcquireError;
+    match result {
+        Ok(result) => !result.matched_existing && !result.from_library,
+        Err(AcquireError::Source(bookclerk_source::SourceError::RateLimited(_))) => false,
+        Err(AcquireError::Source(_)) => true,
+        Err(
+            AcquireError::Storage(_)
+            | AcquireError::Media(_)
+            | AcquireError::Library(_)
+            | AcquireError::Io(_)
+            | AcquireError::NoDestinationAccepts
+            | AcquireError::Other(_),
+        ) => false,
+    }
 }
 
 /// Run a remote integration library scan synchronously.
@@ -1312,6 +1536,104 @@ mod tests {
         )
     }
 
+    /// A paced title goes when the account is clear, sleeps through a short
+    /// gap, and is set aside for a long wait.
+    #[tokio::test]
+    async fn the_pace_gate_goes_sleeps_or_holds() {
+        use bookclerk_library::pacing::AcquirePace;
+        use std::num::NonZeroU32;
+
+        let store = test_store().await;
+        store
+            .upsert_account("audible", "a1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let pace = AcquirePace {
+            downloads_per_day: NonZeroU32::new(2),
+            min_gap: Duration::from_secs(1),
+            cooldown: Duration::from_secs(3600),
+        };
+        assert_eq!(
+            wait_for_pace(&store, "audible", "a1", &pace, None)
+                .await
+                .unwrap(),
+            PaceGate::Go
+        );
+        store
+            .record_account_download("audible", "a1", Utc::now(), None, DownloadStarter::Host)
+            .await
+            .unwrap();
+        // One download a moment ago: the one-second gap is slept in place.
+        let started = std::time::Instant::now();
+        assert_eq!(
+            wait_for_pace(&store, "audible", "a1", &pace, None)
+                .await
+                .unwrap(),
+            PaceGate::Go
+        );
+        assert!(started.elapsed() >= Duration::from_millis(500));
+        store
+            .record_account_download("audible", "a1", Utc::now(), None, DownloadStarter::Person)
+            .await
+            .unwrap();
+        // Two in the last day with a budget of two: wait about a day.
+        match wait_for_pace(&store, "audible", "a1", &pace, None)
+            .await
+            .unwrap()
+        {
+            PaceGate::Hold { until, reason } => {
+                assert_eq!(reason, WaitReason::DailyBudget);
+                assert!(until > Utc::now() + chrono::Duration::hours(23));
+            }
+            PaceGate::Go => panic!("a used-up budget must hold"),
+        }
+        // A cool-down holds even an unlimited account.
+        store
+            .set_account_pace_override(
+                "audible",
+                "a1",
+                &bookclerk_library::pacing::PaceOverride::Unlimited,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            wait_for_pace(&store, "audible", "a1", &pace, None)
+                .await
+                .unwrap(),
+            PaceGate::Go
+        );
+        store
+            .extend_account_cooldown("audible", "a1", Utc::now() + chrono::Duration::hours(2))
+            .await
+            .unwrap();
+        assert!(matches!(
+            wait_for_pace(&store, "audible", "a1", &pace, None)
+                .await
+                .unwrap(),
+            PaceGate::Hold {
+                reason: WaitReason::Cooldown,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn only_store_answers_count_as_downloads() {
+        use bookclerk_acquire::AcquireError;
+        use bookclerk_source::SourceError;
+
+        assert!(reached_store(&Err(AcquireError::Source(SourceError::api(
+            "boom"
+        )))));
+        assert!(!reached_store(&Err(AcquireError::Source(
+            SourceError::RateLimited(None)
+        ))));
+        assert!(!reached_store(&Err(AcquireError::NoDestinationAccepts)));
+        assert!(!reached_store(&Err(AcquireError::Other(anyhow::anyhow!(
+            "disk full"
+        )))));
+    }
+
     async fn book_with(
         store: &LibraryStore,
         acquire: AcquireStatus,
@@ -1519,18 +1841,22 @@ mod tests {
         let pdf_only = AcquireMode {
             force: false,
             pdf_only: true,
+            paced: false,
         };
         let forced_pdf = AcquireMode {
             force: true,
             pdf_only: true,
+            paced: false,
         };
         let forced = AcquireMode {
             force: true,
             pdf_only: false,
+            paced: false,
         };
         let plain = AcquireMode {
             force: false,
             pdf_only: false,
+            paced: false,
         };
         assert!(!acquire_mode_includes(&done, pdf_only, true, true));
         assert!(acquire_mode_includes(&done, forced_pdf, true, true));

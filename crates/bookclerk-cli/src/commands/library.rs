@@ -45,6 +45,31 @@ pub enum LibraryCommand {
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         scan: bool,
     },
+    /// Show or set how fast Bookclerk downloads from an account when it
+    /// starts the downloads itself (auto-acquire, upgrades, requests from
+    /// other libraries). With no option, prints the account's pace.
+    SetPace {
+        /// Account id, auth-file stem, or nickname.
+        account: String,
+        /// Content source, when the same account id exists on several plugins.
+        #[arg(long)]
+        source: Option<String>,
+        /// Downloads allowed in any rolling 24 hours (1 to 10000).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        per_day: Option<u32>,
+        /// Seconds between two downloads (0 to 86400).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=86_400))]
+        gap_seconds: Option<u32>,
+        /// No daily budget and no gap (a store's cool-down still applies).
+        #[arg(long, conflicts_with_all = ["per_day", "gap_seconds", "default"])]
+        unlimited: bool,
+        /// Go back to the storefront's declared pace.
+        #[arg(long, conflicts_with_all = ["per_day", "gap_seconds"])]
+        default: bool,
+        /// End the cool-down the store asked for.
+        #[arg(long)]
+        clear_cooldown: bool,
+    },
     /// Show token validity / refresh health across sources.
     Status {
         /// Content source filter. Omit for all.
@@ -791,6 +816,58 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             ));
             Ok(())
         }
+        LibraryCommand::SetPace {
+            account,
+            source,
+            per_day,
+            gap_seconds,
+            unlimited,
+            default,
+            clear_cooldown,
+        } => {
+            let plugin_key = match source.as_deref() {
+                Some(needle) => {
+                    let registry = sources(&host).await?;
+                    Some(account_plugin_key(&store, &registry, needle).await?)
+                }
+                None => None,
+            };
+            let acct = store
+                .find_account(&account, plugin_key.as_deref())
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "account `{account}` not found — run `bookclerk library accounts`"
+                    )
+                })?;
+            let new_override = if unlimited {
+                Some(bookclerk_library::pacing::PaceOverride::Unlimited)
+            } else if default {
+                Some(bookclerk_library::pacing::PaceOverride::Default)
+            } else if per_day.is_some() || gap_seconds.is_some() {
+                Some(bookclerk_library::pacing::PaceOverride::Custom {
+                    downloads_per_day: per_day.and_then(std::num::NonZeroU32::new),
+                    min_gap_seconds: gap_seconds,
+                })
+            } else {
+                None
+            };
+            if let Some(new_override) = new_override {
+                store
+                    .set_account_pace_override(&acct.plugin_key, &acct.account_id, &new_override)
+                    .await?;
+            }
+            if clear_cooldown {
+                store
+                    .clear_account_cooldown(&acct.plugin_key, &acct.account_id)
+                    .await?;
+            }
+            let state = store
+                .account_pace_state(&acct.plugin_key, &acct.account_id, chrono::Utc::now())
+                .await?;
+            format_out::line(pace_line(&acct.account_id, &state, chrono::Utc::now()));
+            Ok(())
+        }
         LibraryCommand::Status { source } => {
             let registry = sources(&host).await?;
             let sources: Vec<_> = match source.as_deref() {
@@ -947,6 +1024,39 @@ async fn list_all_accounts(
         eprintln!("no accounts configured — connect a store in the Bookclerk Accounts UI");
     }
     Ok(())
+}
+
+/// One line describing an account's pace for `library set-pace`.
+fn pace_line(
+    account_id: &str,
+    state: &bookclerk_library::AccountPaceState,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    use bookclerk_library::pacing::PaceOverride;
+    let pace = match state.override_ {
+        PaceOverride::Default => "the store's default pace".to_string(),
+        PaceOverride::Unlimited => "no limit".to_string(),
+        PaceOverride::Custom {
+            downloads_per_day,
+            min_gap_seconds,
+        } => {
+            let budget =
+                downloads_per_day.map_or("store default".to_string(), |n| format!("{n} a day"));
+            let gap = min_gap_seconds.map_or("store default".to_string(), |s| format!("{s} s"));
+            format!("{budget}, gap {gap}")
+        }
+    };
+    let mut line = format!(
+        "account {account_id} pace: {pace}; {} download(s) in the last 24 hours",
+        state.window.count()
+    );
+    if let Some(until) = state.cooldown_until.filter(|until| *until > now) {
+        line.push_str(&format!(
+            "; cool-down until {}",
+            until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        ));
+    }
+    line
 }
 
 /// Resolves `--source` to the plugin key that owns an account.

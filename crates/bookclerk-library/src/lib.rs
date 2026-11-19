@@ -37,6 +37,7 @@ pub mod migrations;
 mod models;
 mod named_atomic;
 pub mod operator_token;
+pub mod pacing;
 pub mod password;
 pub mod proxy_txn;
 mod schema_state;
@@ -187,6 +188,7 @@ pub use store::{
     },
     listening::{ListeningIdentifiers, ListeningMatch, ListeningProgressWrite},
     overrides::{ConflictCursor, PinOutcome, ResolutionConflict, MAX_CONFLICT_PAGE},
+    pacing::{AccountPaceState, DownloadStarter},
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
     prefer_enrichment_source,

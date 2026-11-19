@@ -30,6 +30,13 @@ It then runs two schedules:
 > Keep `library.auto_acquire = false` until you are happy with where
 > files land.
 
+Auto-acquire and other downloads the daemon starts itself follow each
+store account's download pace: a daily budget, a gap between downloads
+and a pause after the store throttles. A held job waits without spending
+an attempt and picks up where it stopped. Change one account's pace with
+`bookclerk library set-pace` or from **Accounts**; see
+[Download pacing](../internals/jobs.md#download-pacing).
+
 ### Listen addresses
 
 By default the daemon listens on **both** loopbacks:

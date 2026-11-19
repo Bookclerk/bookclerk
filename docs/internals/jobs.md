@@ -200,7 +200,7 @@ stateDiagram-v2
 | Kind | Dedup key | Resource class | Handler |
 | --- | --- | --- | --- |
 | `scan` | `scan:account={id\|all}`, then `:instance={id}` when pinned | `network` | `run_scan` |
-| `acquire` | `acquire:title={id\|all}:account={id\|all}`, then `:force=1`, `:pdf=1` and `:instance={id}` when set | `network` | `run_acquire` |
+| `acquire` | `acquire:title={id\|all}:account={id\|all}`, then `:force=1`, `:pdf=1`, `:paced=1` and `:instance={id}` when set | `network` | `run_acquire` |
 | `listen_sync` | `listen_sync` | `network` | `run_listen_sync` |
 | `integration_scan` | `integration_scan:id={id}:force={0\|1}` | `network` | `run_integration_scan` |
 | `plugin_copy` | `plugin_copy:plugin={id}:from={key}:to={key}` | `network` | ABI `JobRunner` stream-copy (`run_plugin_copy`) |
@@ -548,6 +548,59 @@ A companion PDF that exceeds the remaining scratch budget is soft-failed
 `acquire --pdf` still fails the job when the PDF cannot be stored; that
 path always unregisters its `acquire-pdf` scratch reservation, including
 on fetch/quota errors.
+
+## Download pacing
+
+Stores throttle an account that downloads too much, usually without
+publishing the limit, so the host paces the downloads it starts itself
+(`bookclerk_library::pacing`, `run_acquire`). The pace is per store
+account, keyed `(plugin_key, account_id)` like accounts themselves, so it
+holds across plugin instances and every node of the cluster.
+
+- **Limits.** A storefront declares a daily budget, counted over any
+  rolling 24 hours, and a minimum gap between downloads in its manifest
+  ([`[acquire]`](../plugins/manifest.md#acquire-download-pace)). The
+  person an account is linked to may override them on the **Accounts**
+  page (`POST /api/portal/sources/{source}/connections/{account_id}/pace`),
+  and an operator with `bookclerk library set-pace`: the store's pace, a
+  custom budget and gap, or no limit. The override is stored in
+  `account_pace`.
+- **Cool-down.** When `fetchTitle` answers `rateLimited`, the host records
+  a cool-down on the account until the store's `retryAfterMs`, or for the
+  storefront's `cooldown_seconds` (one hour when it declares none), capped
+  at a week. Automatic downloads on the account wait for it, even with no
+  limit set, until it ends or someone clears it. The Audible plugin answers
+  `rateLimited` when Audible refuses a license because it is throttling the
+  account, and declares a 24-hour cool-down.
+- **Who waits.** An acquire job whose payload has `paced` set waits for the
+  pace: scheduled auto-acquire and the acquire a branch queues for a
+  request it accepted from a library (which is how "Acquire all of this
+  branch's members' books" reaches it). An acquire a person starts in the
+  web app or CLI leaves `paced` unset: its downloads count against the
+  budget but are never held, and when the store answers `rateLimited` the
+  job records the cool-down and stops with the store's answer instead of
+  retrying into the throttle. `paced` is part of the dedup key, so a
+  hand-started acquire is never folded into a waiting automatic one.
+- **Ledger.** Every title whose fetch reached the store is a row in
+  `account_downloads` (start time, job, paced or not), once per title
+  however many attempts it took. A copy matched in storage or taken from
+  a joined library is not counted. Rows older than two days are pruned
+  when the account records its next download.
+
+A paced run checks the account's pace before each title, while it holds
+the account's cluster semaphore, so no other node downloads on the account
+between the check and the fetch. A wait of up to two minutes (a short gap)
+is slept in place, checking for cancel each second. A longer one sets that
+account's titles aside, and the run goes on with the other accounts'
+titles. At the end, a run that set titles aside is parked
+(`LibraryStore::defer_job`): it goes back to `pending` with `run_after` at
+the moment the first held account may download again and its progress
+saying why ("3 title(s) waiting for the daily download budget until
+…"). Parking does not spend an attempt and drops the storage-scan
+checkpoint, so the next claim starts fresh and skips titles already
+acquired. An auto-acquire of a large library this way drains over several
+days, and the next scheduled auto-acquire is folded into the parked job by
+its dedup key.
 
 ## Routing to a compatible node
 

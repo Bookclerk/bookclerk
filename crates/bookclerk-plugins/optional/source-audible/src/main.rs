@@ -73,6 +73,17 @@ fn internal(err: impl std::fmt::Display) -> PluginError {
     PluginError::internal(err.to_string())
 }
 
+/// The plugin error for a failed `fetchTitle`: `rateLimited` (with no
+/// retry time, so the host applies the declared `cooldown_seconds`) when
+/// Audible is throttling the account, otherwise internal.
+fn fetch_error(err: bookclerk_plugin_source_audible::AudibleError) -> PluginError {
+    if err.is_throttled() {
+        PluginError::rate_limited(err.to_string(), None)
+    } else {
+        internal(err)
+    }
+}
+
 fn hits(hits: Vec<bookclerk_storefront::CatalogHit>) -> Vec<CatalogHit> {
     hits.into_iter().map(Into::into).collect()
 }
@@ -127,7 +138,7 @@ impl ContentSourceRole for AudibleContentSource {
             &params.fetch,
         )
         .await
-        .map_err(internal)
+        .map_err(fetch_error)
     }
 
     async fn revoke_account(&self, params: RevokeAccountParams) -> Result<(), PluginError> {

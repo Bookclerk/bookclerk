@@ -15,6 +15,14 @@ works = ["book", "podcast"]
 lists = ["audio"]
 fetches = ["audio"]
 
+# Audible throttles an account that downloads too much (licenses are refused
+# for a day or two) without publishing the limit, so automatic downloads stay
+# well under it and pause a day when Audible says to slow down.
+[acquire]
+downloads_per_day = 100
+min_gap_seconds = 30
+cooldown_seconds = 86400
+
 [capabilities.network]
 mode = "outbound"
 tcp = [

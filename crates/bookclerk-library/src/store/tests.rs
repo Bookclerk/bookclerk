@@ -2488,6 +2488,63 @@ async fn suspend_job_commits_checkpoint_and_stale_fence_cannot() {
     assert!(!store.suspend_job(&fence, &checkpoint, wake).await.unwrap());
 }
 
+/// A deferred job waits as `pending` with its reason, spends no attempt,
+/// drops any checkpoint, and a stale fence cannot defer it.
+#[tokio::test]
+async fn defer_job_parks_without_an_attempt_or_checkpoint() {
+    let store = kit_store().await;
+    let created = store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::Acquire,
+            payload: JobPayload {
+                paced: true,
+                trigger: JobTrigger::Scheduler,
+                checkpoint: Some(bookclerk_plugin_abi::JobCheckpoint {
+                    schema_version: 1,
+                    json: "{}".into(),
+                }),
+                ..Default::default()
+            },
+            priority: 0,
+            max_attempts: 3,
+            max_pending: 8,
+            run_after: None,
+        })
+        .await
+        .unwrap();
+    let EnqueueOutcome::Created { id } = created else {
+        panic!("expected created: {created:?}");
+    };
+    let first = claim_job(&store, "worker-defer").await;
+    let fence = fence_of(&first);
+    let wake = chrono::Utc::now() + chrono::Duration::hours(1);
+    assert!(store
+        .defer_job(&fence, wake, "waiting for the daily download budget")
+        .await
+        .unwrap());
+    let parked = store.get_job(&id).await.unwrap().unwrap();
+    assert_eq!(parked.state, JobState::Pending);
+    assert!(parked.lease_owner.is_none());
+    assert_eq!(
+        parked.progress.as_deref(),
+        Some("waiting for the daily download budget")
+    );
+    assert!(parked.payload.checkpoint.is_none());
+    assert!(parked.payload.resume_pending);
+    assert!(parked.payload.paced);
+    assert!(store
+        .claim_next_job(
+            JobResourceClass::Network,
+            "worker-early",
+            60,
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert!(!store.defer_job(&fence, wake, "again").await.unwrap());
+}
+
 #[tokio::test]
 async fn suspend_lost_fence_does_not_commit_and_reclaim_sees_checkpoint() {
     use bookclerk_plugin_abi::JobCheckpoint;

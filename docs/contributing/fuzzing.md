@@ -75,6 +75,7 @@ boundary extends it.
 | `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
+| `pace_request` | A person's pace for one of their store accounts, the body of `POST /api/portal/sources/{source}/connections/{account_id}/pace` | `bookclerk-library::pacing::parse_pace_request` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
 
 Some boundaries need more than a cell:
@@ -572,6 +573,15 @@ only that. The others check:
   or a boolean, and nothing else. Anything else is refused as `Invalid`.
   The shared oracle is `fuzz/oracles/connections_request.rs`, replayed
   from `bookclerk-library`.
+- **`pace_request`**: reads the body as an untyped JSON value. It is
+  accepted exactly when it is one object with no repeated keys and no keys
+  besides `mode`, `downloads_per_day`, `min_gap_seconds` and
+  `clear_cooldown`; `mode` is `default`, `custom` or `unlimited`;
+  `clear_cooldown` is absent, `null` or a boolean; and each number is
+  absent, `null` or a whole number in range (1 to 10000 downloads, 0 to
+  86400 seconds). Only `custom` may carry a number, and it needs at least
+  one. Anything else is refused as `Invalid`. The shared oracle is
+  `fuzz/oracles/pace_request.rs`, replayed from `bookclerk-library`.
 - **`window_policy`**: restates the policy from the bytes. A request is
   refused as foreign exactly when its `Origin` is not byte for byte one of
   the two app origins, or when it has no `Origin`, is a write, and its

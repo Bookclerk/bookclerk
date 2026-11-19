@@ -273,6 +273,15 @@ pub trait ContentSource: Send + Sync {
         false
     }
 
+    /// How fast the host may download from one store account of this
+    /// storefront when it starts the downloads itself (the manifest's
+    /// `[acquire]` table; see `bookclerk_library::pacing`).
+    ///
+    /// Default: no budget, no gap, the host's default cool-down.
+    fn acquire_pace(&self) -> bookclerk_library::pacing::AcquirePace {
+        bookclerk_library::pacing::AcquirePace::default()
+    }
+
     /// [`Self::purchase_hints`] with each query's title-search records
     /// ([`PricedAnswer::records`]), one answer per query in order.
     ///

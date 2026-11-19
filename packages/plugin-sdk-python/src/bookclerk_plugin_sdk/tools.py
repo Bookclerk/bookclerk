@@ -759,6 +759,39 @@ _MEDIA_CARRIERS = ("unspecified", "audio", "ebook", "print")
 """Carriers a ``[media].lists`` / ``[media].fetches`` entry may name."""
 
 
+_ACQUIRE_RANGES = (
+    ("downloads_per_day", 1, 10_000),
+    ("min_gap_seconds", 0, 86_400),
+    ("cooldown_seconds", 1, 604_800),
+)
+"""Each ``[acquire]`` field with its allowed range, in check order."""
+
+
+def _validate_acquire(m: dict[str, Any]) -> None:
+    """Check ``[acquire]`` against the entrypoints and its ranges.
+
+    Uses the host's rules and messages (``manifest-cases.json``).
+
+    Args:
+        m: Manifest dictionary.
+
+    Raises:
+        ValueError: If a plugin without the ``storefront`` entrypoint declares
+            the table, or a value is not a whole number in its range.
+    """
+    acquire = m.get("acquire")
+    if acquire is None:
+        return
+    if "storefront" not in (m.get("entrypoints") or []):
+        raise ValueError("plugin.toml: `[acquire]` needs the `storefront` entrypoint")
+    for field, low, high in _ACQUIRE_RANGES:
+        value = acquire.get(field)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            raise ValueError(f"plugin.toml: `[acquire].{field}` must be between {low} and {high}")
+
+
 def _validate_media(m: dict[str, Any]) -> None:
     """Check ``[media]`` against the entrypoints with the host's rules and messages.
 
@@ -991,6 +1024,7 @@ def validate_manifest(m: dict[str, Any]) -> None:
     if m.get("logo") is not None:
         validate_logo(str(m["logo"]))
     _validate_media(m)
+    _validate_acquire(m)
     _validate_metadata_files(m)
     _validate_surface(m)
     runtime = m.get("runtime") or "native"

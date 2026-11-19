@@ -644,6 +644,91 @@ impl LibraryStore {
         Ok(res == 1)
     }
 
+    /// Parks a running job as `pending` until `wake_at` without spending an
+    /// attempt, with `progress` saying why it waits.
+    ///
+    /// For a job that cannot go on yet and has nothing to resume from, such
+    /// as an acquire waiting for its store account's download pace
+    /// (`crate::pacing`). Unlike [`Self::suspend_job`] it drops any stored
+    /// checkpoint, so the next claim starts fresh. The CAS matches
+    /// [`Self::complete_job`]: `state=running` and the caller's fence.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the row was parked; `false` when `fence` no longer owns
+    /// the running generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read or update fails, or
+    /// [`LibraryError::Other`] when the stored payload is not valid JSON.
+    pub async fn defer_job(
+        &self,
+        fence: &JobFence,
+        wake_at: chrono::DateTime<Utc>,
+        progress: &str,
+    ) -> Result<bool> {
+        let Some(model) = jobs::Entity::find_by_id(&fence.job_id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(false);
+        };
+        if model.state != JobState::Running.as_str()
+            || model.lease_owner.as_deref() != Some(fence.owner.as_str())
+            || model.lease_generation != fence.generation
+        {
+            return Ok(false);
+        }
+        let mut payload: JobPayload = serde_json::from_str(&model.payload)
+            .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
+        payload.checkpoint = None;
+        payload.resume_pending = true;
+        let payload_json = serde_json::to_string(&payload)
+            .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
+        let res = self
+            .exec_bumped(
+                jobs::Entity::update_many()
+                    .col_expr(
+                        jobs::Column::State,
+                        sea_orm::sea_query::Expr::value(JobState::Pending.as_str()),
+                    )
+                    .col_expr(
+                        jobs::Column::Payload,
+                        sea_orm::sea_query::Expr::value(payload_json),
+                    )
+                    .col_expr(
+                        jobs::Column::RunAfter,
+                        sea_orm::sea_query::Expr::value(wake_at.to_rfc3339()),
+                    )
+                    .col_expr(
+                        jobs::Column::LeaseOwner,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        jobs::Column::LeaseExpiresAt,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        jobs::Column::Progress,
+                        sea_orm::sea_query::Expr::value(Some(progress.to_string())),
+                    )
+                    .col_expr(
+                        jobs::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now_str()),
+                    )
+                    .filter(jobs::Column::Id.eq(&fence.job_id))
+                    .filter(jobs::Column::State.eq(JobState::Running.as_str()))
+                    .filter(jobs::Column::LeaseOwner.eq(&fence.owner))
+                    .filter(jobs::Column::LeaseGeneration.eq(fence.generation)),
+                LiveTopic::Jobs,
+                Bump::Always,
+            )
+            .await?;
+        Ok(res == 1)
+    }
+
     /// Replaces `payload.checkpoint` while `fence` still owns the running job.
     ///
     /// Unlike [`Self::suspend_job`], the row stays `running` and `resume_pending`
