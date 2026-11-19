@@ -176,6 +176,12 @@ pub struct AcquireResult {
     /// joined already held, instead of fetched from the store.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub from_library: bool,
+    /// True when this acquire downloaded the title from the store, even if
+    /// a better copy from a joined library replaced that download
+    /// afterwards. Download pacing counts it against the account
+    /// (`bookclerk_library::pacing`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fetched_from_store: bool,
 }
 
 /// Run the acquire pipeline for one book.
@@ -335,6 +341,7 @@ async fn acquire_book_recorded(
                     written_keys: Vec::new(),
                     matched_existing: true,
                     from_library: false,
+                    fetched_from_store: false,
                 });
             }
             let backends: Vec<(&str, &dyn StorageBackend)> = destinations
@@ -355,6 +362,7 @@ async fn acquire_book_recorded(
                     written_keys: Vec::new(),
                     matched_existing: true,
                     from_library: false,
+                    fetched_from_store: false,
                 });
             }
         }
@@ -385,6 +393,7 @@ async fn acquire_book_recorded(
                     written_keys: Vec::new(),
                     matched_existing: true,
                     from_library: false,
+                    fetched_from_store: false,
                 });
             }
             ExistingPlan::SyncMissing {
@@ -428,6 +437,7 @@ async fn acquire_book_recorded(
                     written_keys: written,
                     matched_existing: true,
                     from_library: false,
+                    fetched_from_store: false,
                 });
             }
             ExistingPlan::Fetch {
@@ -1213,6 +1223,7 @@ async fn run_source_pipeline(
         }
         Some(_) | None => None,
     };
+    let fetched_from_store = taken.is_none();
     let (fetch, library_pdf, from_library) = match taken {
         Some(taken) => (taken.fetch, taken.pdf, true),
         None => {
@@ -1256,6 +1267,7 @@ async fn run_source_pipeline(
     }
     let mut result = result?;
     result.from_library = from_library;
+    result.fetched_from_store = fetched_from_store;
     Ok(result)
 }
 
@@ -1947,6 +1959,7 @@ async fn store_plain_fetch(
         written_keys,
         matched_existing: false,
         from_library: false,
+        fetched_from_store: false,
     })
 }
 
@@ -2022,6 +2035,7 @@ async fn store_plain_parts(
         written_keys,
         matched_existing: false,
         from_library: false,
+        fetched_from_store: false,
     })
 }
 
@@ -3563,6 +3577,7 @@ async fn acquire_pdf_only_recorded(
                 written_keys: Vec::new(),
                 matched_existing: true,
                 from_library: false,
+                fetched_from_store: false,
             });
         }
     }
@@ -3655,6 +3670,7 @@ async fn download_and_store_companion_pdf(
         written_keys,
         matched_existing: false,
         from_library: false,
+        fetched_from_store: true,
     })
 }
 
@@ -4167,6 +4183,7 @@ mod tests {
             .await
             .unwrap();
         assert!(result.from_library);
+        assert!(!result.fetched_from_store);
         assert!(!result.matched_existing);
         assert_eq!(fetches.load(Ordering::SeqCst), 0, "the store is not asked");
         assert_eq!(copy_fetches.load(Ordering::SeqCst), 1, "only the audio");
@@ -4252,6 +4269,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.from_library);
+        assert!(result.fetched_from_store);
         assert_eq!(fetches.load(Ordering::SeqCst), before + 1);
         assert_eq!(taken.load(Ordering::SeqCst), 0);
 
@@ -4264,6 +4282,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.from_library);
+        assert!(result.fetched_from_store);
         assert_eq!(fetches.load(Ordering::SeqCst), before + 1);
         assert_eq!(none.asked.lock().unwrap().len(), 1);
     }

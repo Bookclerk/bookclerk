@@ -1271,8 +1271,11 @@ async fn wait_for_pace(
 /// Whether an acquire attempt's outcome may mean the store was asked for
 /// the title, so it counts against the account's pace.
 ///
-/// A copy matched in storage or taken from a joined library never reached
-/// the store, a title no destination takes is refused before any fetch, and
+/// A success counts when the store download ran
+/// ([`bookclerk_acquire::AcquireResult::fetched_from_store`]), even if a
+/// better copy from a joined library replaced it; a copy matched in storage
+/// or taken from a joined library instead never reached the store. A title
+/// no destination takes is refused before any fetch, and
 /// a `rateLimited` answer means the store refused it. Any other failure
 /// counts: a source error is the store's own answer, and a storage, media
 /// or database failure can come after the store download finished (the
@@ -1284,7 +1287,7 @@ fn reached_store(
 ) -> bool {
     use bookclerk_acquire::AcquireError;
     match result {
-        Ok(result) => !result.matched_existing && !result.from_library,
+        Ok(result) => result.fetched_from_store,
         Err(AcquireError::Source(bookclerk_source::SourceError::RateLimited(_))) => false,
         Err(AcquireError::NoDestinationAccepts) => false,
         Err(
@@ -1633,6 +1636,18 @@ mod tests {
             SourceError::RateLimited(None)
         ))));
         assert!(!reached_store(&Err(AcquireError::NoDestinationAccepts)));
+        let done = |fetched_from_store, from_library| bookclerk_acquire::AcquireResult {
+            asin: "B00TEST".into(),
+            storage_key: "key".into(),
+            written_keys: Vec::new(),
+            matched_existing: false,
+            from_library,
+            fetched_from_store,
+        };
+        // A store download replaced by a better library copy still counts;
+        // a copy taken straight from the library does not.
+        assert!(reached_store(&Ok(done(true, true))));
+        assert!(!reached_store(&Ok(done(false, true))));
         // A failure after the fetch (converting, storing) still counts.
         assert!(reached_store(&Err(AcquireError::Other(anyhow::anyhow!(
             "disk full"

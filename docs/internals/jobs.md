@@ -585,8 +585,10 @@ holds across plugin instances and every node of the cluster.
   row in `account_downloads` (start time, job, paced or not), once per
   title however many attempts it took. That includes a title that failed
   after its fetch (converting or storing it), since the store download
-  already happened. A copy matched in storage or taken from a joined
-  library is not counted, nor is a title no destination takes or one the
+  already happened, and a store download that a better copy from a
+  joined library then replaced (`AcquireResult::fetched_from_store`). A
+  copy matched in storage or taken straight from a joined library is not
+  counted, nor is a title no destination takes or one the
   store refused with `rateLimited`. Rows older than two days are pruned
   when the account records its next download.
 - **Where it runs.** A paced acquire is claimed only by a node that holds
