@@ -875,8 +875,7 @@ test("a page back from the cache keeps its request language unless another is ke
 });
 
 test("GitHub alert blockquotes render as callouts, other blockquotes stay quotes", () => {
-  const html = (source: string): string =>
-    renderDoc(source, "branches", { blobBase: BLOB }).html;
+  const html = (source: string): string => renderDoc(source, "branches", { blobBase: BLOB }).html;
   assert.equal(
     html("> [!WARNING]\n> Leave **Auto acquire** off.\n"),
     '<div class="callout callout-warning" role="note"><p class="callout-title">Warning</p>\n<p>Leave <strong>Auto acquire</strong> off.</p>\n</div>\n',
