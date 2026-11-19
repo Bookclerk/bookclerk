@@ -466,6 +466,10 @@ async fn discover_answers_drop_prices_for_a_patron_who_may_not_see_them() {
     )
     .await
     .unwrap();
+    // The session check tells the app, so it builds no store links either.
+    let (status, me) = send(&app, "GET", "/api/auth/me", &member_cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(me["see_prices"], false, "{me}");
     let query = r#"{"title":"The Left Hand of Darkness","isbn":"9780441478125"}"#;
     let (status, body) = send(
         &app,

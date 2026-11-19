@@ -422,6 +422,12 @@ pub struct AuthMeResponse {
     /// Password-login second-factor policy and this user's enrollment.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub second_factor: Option<AuthSecondFactor>,
+    /// Whether the caller's "See prices and store links" member control
+    /// allows prices and store links. The library already drops them from
+    /// its answers when it does not; the app uses this to show no store
+    /// links of its own either. Always true for the operator.
+    #[schema(example = true)]
+    pub see_prices: bool,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -1348,6 +1354,17 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     (StatusCode::OK, hdrs, Json(OkResponse::OK)).into_response()
 }
 
+/// Whether the caller may see prices and store links, as Discover decides
+/// it ([`crate::patron_scopes::caller_may`]).
+async fn sees_prices(state: &AppState, headers: &HeaderMap) -> bool {
+    crate::patron_scopes::caller_may(
+        state,
+        headers,
+        bookclerk_library::control_plane::MemberControl::SeePrices,
+    )
+    .await
+}
+
 /// Resolves the caller and returns `/me` JSON; unauthenticated callers get 401.
 #[utoipa::path(
     get,
@@ -1355,7 +1372,7 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "Who the caller is (operator, portal user, or impersonation).", body = AuthMeResponse),
-        (status = 401, description = "Nobody is signed in: the same body with `authenticated` false, so the app can show the sign-in screen.", body = AuthMeResponse, example = json!({"authenticated": false, "default_view": "discover", "can_acquire": false, "elevated": false})),
+        (status = 401, description = "Nobody is signed in: the same body with `authenticated` false, so the app can show the sign-in screen.", body = AuthMeResponse, example = json!({"authenticated": false, "default_view": "discover", "can_acquire": false, "elevated": false, "see_prices": false})),
         (status = 503, description = "The portal session could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than showing the sign-in screen.", body = crate::http_error::ErrorJson, headers(("Retry-After" = u64, description = "Seconds to wait before asking again.")), example = json!({"error": "session_check_unavailable", "message": "Your sign-in could not be checked yet. Try again in a moment.", "status": 503})),
     ),
 )]
@@ -1377,6 +1394,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                 portal: None,
                 user: None,
                 second_factor: None,
+                see_prices: true,
             }),
         )
             .into_response();
@@ -1412,6 +1430,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                         None => None,
                     },
                     second_factor: second_factor_for(&state, &library, Some(target_id)).await,
+                    see_prices: sees_prices(&state, &headers).await,
                 }),
             )
                 .into_response();
@@ -1445,6 +1464,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                 portal: None,
                 user,
                 second_factor: None,
+                see_prices: true,
             }),
         )
             .into_response();
@@ -1465,6 +1485,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                 portal: None,
                 user: None,
                 second_factor: None,
+                see_prices: true,
             }),
         )
             .into_response();
@@ -1505,6 +1526,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                     None => None,
                 },
                 second_factor: second_factor_for(&state, &library, identity.user_id).await,
+                see_prices: sees_prices(&state, &headers).await,
             }),
         )
             .into_response();
@@ -1522,6 +1544,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
             portal: None,
             user: None,
             second_factor: None,
+            see_prices: false,
         }),
     )
         .into_response()

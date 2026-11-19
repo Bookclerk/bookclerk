@@ -7,6 +7,7 @@ const SIGNED_IN: AuthSession = {
   default_view: "library",
   can_acquire: true,
   elevated: false,
+  see_prices: true,
 };
 
 function busy(retryAfter: string | null): Response {

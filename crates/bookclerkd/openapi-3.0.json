@@ -411,7 +411,8 @@
                   "authenticated": false,
                   "can_acquire": false,
                   "default_view": "discover",
-                  "elevated": false
+                  "elevated": false,
+                  "see_prices": false
                 }
               }
             }
@@ -32263,7 +32264,8 @@
           "authenticated",
           "default_view",
           "can_acquire",
-          "elevated"
+          "elevated",
+          "see_prices"
         ],
         "properties": {
           "authenticated": {
@@ -32447,6 +32449,11 @@
               }
             },
             "nullable": true
+          },
+          "see_prices": {
+            "type": "boolean",
+            "description": "Whether the caller's \"See prices and store links\" member control\nallows prices and store links. The library already drops them from\nits answers when it does not; the app uses this to show no store\nlinks of its own either. Always true for the operator.",
+            "example": true
           }
         }
       },

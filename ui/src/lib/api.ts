@@ -86,6 +86,12 @@ export interface AuthSession {
   portal?: PortalInfo;
   user?: AuthMeUser;
   second_factor?: AuthSecondFactor;
+  /**
+   * Whether the caller may see prices and store links. When false the
+   * library already drops them from its answers, and the app shows no
+   * store links of its own either.
+   */
+  see_prices: boolean;
 }
 
 /** What a work is: a book, or a podcast (its show). */
@@ -111,7 +117,14 @@ export type WorkSort = "title" | "author" | "series" | "purchased" | "added" | "
  * the caller's own tags, or their progress (`finished` / `not_finished`).
  */
 export type WorkFacet =
-  "author" | "narrator" | "series" | "genre" | "publisher" | "source" | "tag" | "progress";
+  | "author"
+  | "narrator"
+  | "series"
+  | "genre"
+  | "publisher"
+  | "source"
+  | "tag"
+  | "progress";
 
 /** One value of a facet, from `GET /api/library/works/facets/{facet}`. */
 export interface FacetValue {
@@ -438,6 +451,7 @@ const ANON_SESSION: AuthSession = {
   authenticated: false,
   default_view: "discover",
   can_acquire: false,
+  see_prices: false,
 };
 
 /**
@@ -664,6 +678,7 @@ function toAuthSession(body: {
   portal?: PortalInfo;
   user?: AuthMeUser;
   second_factor?: AuthSecondFactor;
+  see_prices?: boolean;
 }): AuthSession {
   return {
     authenticated: body.authenticated,
@@ -675,6 +690,8 @@ function toAuthSession(body: {
     portal: body.portal,
     user: body.user,
     second_factor: body.second_factor,
+    // An older server that does not send it never hid prices.
+    see_prices: body.see_prices !== false,
   };
 }
 
@@ -757,6 +774,7 @@ export async function authMe(): Promise<AuthSession> {
     portal?: PortalInfo;
     user?: AuthMeUser;
     second_factor?: AuthSecondFactor;
+    see_prices?: boolean;
   }>(res);
   return toAuthSession(body);
 }
@@ -789,6 +807,7 @@ export async function login(token: string): Promise<AuthSession> {
     role: normalizeRole(body.role) ?? "operator",
     default_view: normalizeView(body.default_view),
     can_acquire: true,
+    see_prices: true,
   };
 }
 
@@ -1564,7 +1583,12 @@ export async function putDefaultScope(scope: PatronScope): Promise<{ scope: Patr
 
 /** One thing an administrator may allow or refuse a patron. */
 export type MemberControl =
-  "link_accounts" | "download" | "edit_metadata" | "upload" | "request_books" | "see_prices";
+  | "link_accounts"
+  | "download"
+  | "edit_metadata"
+  | "upload"
+  | "request_books"
+  | "see_prices";
 
 /** A value for every member control (`true` = allowed). */
 export type MemberControls = Record<MemberControl, boolean>;
@@ -2847,7 +2871,10 @@ export interface RemoteGrantView {
 
 /** Where an owner plugin's request to run here stands. */
 export type RemoteConsentState =
-  "consented" | "awaiting_host_consent" | "awaiting_host_reapproval" | "invalid_grant";
+  | "consented"
+  | "awaiting_host_consent"
+  | "awaiting_host_reapproval"
+  | "invalid_grant";
 
 /** One owner plugin's request to run on this host, and this host's answer. */
 export interface RemoteConsentView {
@@ -3946,7 +3973,13 @@ export interface CatalogSearchHit {
  * Server-supported Discover catalog sort keys.
  */
 export type CatalogSearchSort =
-  "relevance" | "popularity" | "rating" | "title" | "author" | "price" | "length";
+  | "relevance"
+  | "popularity"
+  | "rating"
+  | "title"
+  | "author"
+  | "price"
+  | "length";
 
 /**
  * Ascending or descending catalog sort direction.
