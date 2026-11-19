@@ -158,17 +158,30 @@ jobs:
           path: ${{ runner.temp }}/packages
           merge-multiple: true
 
+      # Each artifact keeps its `deb/`, `appimage/`, `nsis/` or `dmg/`
+      # folder (the upload's common root is `target/release/bundle`), so
+      # gather the installers into one flat folder before attesting.
+      - name: Collect the installers
+        env:
+          SRC: ${{ runner.temp }}/packages
+          DIR: ${{ runner.temp }}/release-assets
+        run: |
+          set -euo pipefail
+          mkdir -p "$DIR"
+          find "$SRC" -type f \( -name '*.deb' -o -name '*.AppImage' \
+            -o -name '*.exe' -o -name '*.dmg' \) -exec mv -n -t "$DIR" {} +
+
       - name: Attest build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: ${{ runner.temp }}/packages/*
+          subject-path: ${{ runner.temp }}/release-assets/*
 
       - name: Attach the packages
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.release-tag }}
-          DIR: ${{ runner.temp }}/packages
+          DIR: ${{ runner.temp }}/release-assets
         run: |
           set -euo pipefail
           shopt -s nullglob
