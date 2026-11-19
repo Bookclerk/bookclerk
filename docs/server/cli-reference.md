@@ -1674,9 +1674,9 @@ Commands:
 - [`bookclerk nodes set`](#bookclerk-nodes-set): Set a node's scheduling budget or drain it. Applies at that node's next heartbeat
 - [`bookclerk nodes label`](#bookclerk-nodes-label): Add or remove placement labels on a node (`nas`, `zone=eu`)
 - [`bookclerk nodes owner`](#bookclerk-nodes-owner): Assign a node to the user who administers it, or clear its owner. The owner (any active user) may then change the node's budgets, drain switch, and name. Work the node is trusted with still follows the owner's role
-- [`bookclerk nodes invite`](#bookclerk-nodes-invite): Mint a single-use link that enrolls one host node for a user. The link (with its secret in the URL fragment) is printed once
+- [`bookclerk nodes invite`](#bookclerk-nodes-invite): Mint a single-use link that enrolls one branch node for a user. The link (with its secret in the URL fragment) is printed once
 - [`bookclerk nodes invites`](#bookclerk-nodes-invites): List or revoke enrollment links
-- [`bookclerk nodes revoke`](#bookclerk-nodes-revoke): Revoke an enrolled host node's credential. Its connection closes and it receives no more work
+- [`bookclerk nodes revoke`](#bookclerk-nodes-revoke): Revoke an enrolled branch node's credential. Its connection closes and it receives no more work
 
 ### `bookclerk nodes list`
 
@@ -1745,7 +1745,7 @@ Options:
 
 ### `bookclerk nodes invite`
 
-Mint a single-use link that enrolls one host node for a user. The link (with its secret in the URL fragment) is printed once
+Mint a single-use link that enrolls one branch node for a user. The link (with its secret in the URL fragment) is printed once
 
 ```text
 bookclerk nodes invite [OPTIONS] --user <USER>
@@ -1753,7 +1753,7 @@ bookclerk nodes invite [OPTIONS] --user <USER>
 
 Options:
 
-- `--user <USER>`: Login name or user id of the user who will own the host node (required)
+- `--user <USER>`: Login name or user id of the user who will own the branch node (required)
 - `--ttl <TTL>`: How long the link stays valid (`30m`, `24h`, `7d`; 5m to 7d) (default `24h`)
 - `--label <LABEL>`: Label shown in `nodes invites list` (default ``)
 
@@ -1792,7 +1792,7 @@ Arguments:
 
 ### `bookclerk nodes revoke`
 
-Revoke an enrolled host node's credential. Its connection closes and it receives no more work
+Revoke an enrolled branch node's credential. Its connection closes and it receives no more work
 
 ```text
 bookclerk nodes revoke [OPTIONS] <NODE>
@@ -1800,7 +1800,7 @@ bookclerk nodes revoke [OPTIONS] <NODE>
 
 Arguments:
 
-- `<NODE>`: Host node id
+- `<NODE>`: Branch node id
 
 ## `bookclerk queues`
 

@@ -13,7 +13,7 @@
 //! sealed to the host's box key. The route sits outside the cookie and
 //! operator auth layers (the token is the credential) and runs the
 //! transport policy first. Refusals: 401 `unauthorized` (no such upload,
-//! wrong or expired token), 421 `misdirected` (another owner node received
+//! wrong or expired token), 421 `misdirected` (another shared node received
 //! the grant), 409 `lost` (the job's fence is gone), 422 `refused`.
 //!
 //! A file is never staged on the owner. Its body is read once and teed,
@@ -47,7 +47,7 @@
 //! of the title or an acquire that wrote the key since keeps its file,
 //! however late the stale cleanup runs.
 //! Files go straight to the destinations, so deletion is the rollback. An
-//! upload received by another owner node is that node's to clean: this
+//! upload received by another shared node is that node's to clean: this
 //! node only logs it.
 //!
 //! The PUTs of one declared file run one at a time on this node
@@ -111,7 +111,7 @@ const MAX_COMMIT_BODY: usize = 16 * 1024;
 /// Longest job outcome text a commit records.
 const MAX_DETAIL_BYTES: usize = 4 * 1024;
 
-/// One output destination deployed on this owner node.
+/// One output destination deployed on this shared node.
 pub(crate) struct OwnerDestination {
     /// Its id in plans and manifests: its storage plugin's alias.
     pub id: String,
@@ -270,7 +270,7 @@ fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
     (scheme == UPLOAD_AUTH_SCHEME && !token.is_empty()).then_some(token.trim())
 }
 
-/// This owner node's id.
+/// This shared node's id.
 fn this_node(state_files: &std::path::Path) -> Option<String> {
     load_or_create_node_identity(state_files)
         .ok()
@@ -335,7 +335,7 @@ async fn discard_file(
 /// Deletes every copy an aborted upload had received from this node's
 /// destinations, so an abort leaves no partial title behind; a copy whose
 /// key was written again since is left alone ([`discard_copy`]). An upload
-/// another owner node received is left to that node (logged).
+/// another shared node received is left to that node (logged).
 pub(crate) async fn discard_received(
     state: &AppState,
     library: &LibraryStore,
@@ -350,7 +350,7 @@ pub(crate) async fn discard_received(
             upload_id = %session.upload_id,
             job_id = %session.job_id,
             receiving_node_id = %session.receiving_node_id,
-            "an aborted upload was received by another owner node; its files stay there"
+            "an aborted upload was received by another shared node; its files stay there"
         );
         return;
     }
@@ -1184,14 +1184,14 @@ pub async fn put_file(
     let destinations = match owner_destinations(&state).await {
         Ok(destinations) if !destinations.is_empty() => destinations,
         Ok(_) | Err(_) => {
-            tracing::warn!(upload_id = %session.upload_id, "no output destination is deployed on this owner node");
+            tracing::warn!(upload_id = %session.upload_id, "no output destination is deployed on this shared node");
             return unavailable();
         }
     };
     if destination_ids(&destinations) != session.destinations {
         // The host named the files for the destinations it was planned
         // with; writing them to a changed set would mis-name or skip one.
-        tracing::warn!(upload_id = %session.upload_id, "this owner node's destinations changed since the upload was granted; aborted");
+        tracing::warn!(upload_id = %session.upload_id, "this shared node's destinations changed since the upload was granted; aborted");
         abort_and_discard(&state, &library, &session.upload_id).await;
         return refused("destinations_changed");
     }
@@ -1284,12 +1284,12 @@ pub async fn post_commit(
         match owner_destinations(&state).await {
             Ok(destinations) if destination_ids(&destinations) == session.destinations => {}
             Ok(destinations) if !destinations.is_empty() => {
-                tracing::warn!(upload_id = %session.upload_id, "this owner node's destinations changed before the upload's commit; aborted");
+                tracing::warn!(upload_id = %session.upload_id, "this shared node's destinations changed before the upload's commit; aborted");
                 abort_and_discard(&state, &library, &session.upload_id).await;
                 return refused("destinations_changed");
             }
             Ok(_) | Err(_) => {
-                tracing::warn!(upload_id = %session.upload_id, "no output destination is deployed on this owner node");
+                tracing::warn!(upload_id = %session.upload_id, "no output destination is deployed on this shared node");
                 return unavailable();
             }
         }

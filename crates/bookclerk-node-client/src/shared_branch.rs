@@ -1,4 +1,4 @@
-//! Joining a library as a shared branch (an owner node that shares the library's
+//! Joining a library as a shared branch (a shared node that shares the library's
 //! database and DEK), the joining side.
 //!
 //! 1. The sign-in starts with [`crate::authorize_join`] offering a shared branch;
@@ -13,8 +13,8 @@
 //!    into a `0600` file named by `url_file`), the DEK into `master.key`
 //!    (wrapped with this install's own `BOOKCLERK_AUTH_PASSWORD` or
 //!    `[auth].password` when set), and `node-identity.json` with the node
-//!    id the library recorded (`kind = owner`). The daemon then starts
-//!    again on it as an owner node.
+//!    id the library recorded (`kind = shared`). The daemon then starts
+//!    again on it as a shared node.
 //!
 //! [`install_problem`] is what the joining side checks first: only an
 //! empty install (no library data of its own) may join as a shared branch, and no
@@ -59,7 +59,7 @@ pub const DATABASE_ENV_OVERRIDES: &[&str] = &[
 pub struct SharedBranchJoined {
     /// The library's cluster id.
     pub cluster_id: String,
-    /// The node id the library recorded (`kind = owner`).
+    /// The node id the library recorded (`kind = shared`).
     pub node_id: String,
     /// The opened bootstrap.
     pub bootstrap: SharedBranchBootstrap,
@@ -926,7 +926,7 @@ pub fn apply_shared_branch_bootstrap(
         node_id = %bootstrap.node_id,
         database = database.as_str(),
         wrapped = password.is_some(),
-        "wrote the shared branch bootstrap; this install starts as an owner node of the library"
+        "wrote the shared branch bootstrap; this install starts as a shared node of the library"
     );
     Ok(AppliedSharedBranch {
         database,
@@ -1087,6 +1087,75 @@ mod tests {
         ] {
             assert!(checked_d1_api_base(refused).is_err(), "{refused}");
         }
+    }
+
+    /// Log records this test binary's code wrote through the `log` crate.
+    ///
+    /// No test here installs a `tracing` subscriber, so `tracing` events
+    /// reach `log` (its fallback when no subscriber was ever set); a
+    /// subscriber installed by a later test would end that fallback.
+    struct LogRecords(std::sync::Mutex<Vec<String>>);
+
+    impl log::Log for LogRecords {
+        fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if let Ok(mut records) = self.0.lock() {
+                records.push(record.args().to_string());
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    /// The process-wide record sink, shared by every test that reads logs.
+    static LOG_RECORDS: LogRecords = LogRecords(std::sync::Mutex::new(Vec::new()));
+
+    /// Installs [`LOG_RECORDS`] as the `log` logger at every level (once per
+    /// process) and returns every record written so far.
+    fn log_records() -> Vec<String> {
+        let _ = log::set_logger(&LOG_RECORDS);
+        log::set_max_level(log::LevelFilter::Trace);
+        LOG_RECORDS.0.lock().unwrap().clone()
+    }
+
+    /// Applying a bootstrap logs which library and node this install now
+    /// starts as, and never the database URL or the joiner's password.
+    #[test]
+    fn applying_a_bootstrap_logs_the_shared_node_without_secrets() {
+        log_records();
+        let files = tempfile::tempdir().unwrap();
+        let config = files.path().join("config.toml");
+        apply_shared_branch_bootstrap(
+            files.path(),
+            &config,
+            &bootstrap(SharedBranchDatabase::Postgres {
+                url: SecretValue::new(b"postgres://u:pw-logged@db/lib".to_vec()),
+            }),
+            Some("joiner-logged-pass"),
+        )
+        .unwrap();
+        let line = log_records()
+            .into_iter()
+            .find(|line| line.contains("wrote the shared branch bootstrap"))
+            .expect("the bootstrap is logged");
+        // The messages never print the line or the secret: a failure must
+        // not put the test's secrets in the test output either.
+        assert!(
+            line.contains("this install starts as a shared node of the library"),
+            "the line says what this install starts as"
+        );
+        assert!(line.contains("cluster-1"), "the line names the library");
+        assert!(
+            !line.contains("pw-logged"),
+            "the database URL reached the log"
+        );
+        assert!(
+            !line.contains("joiner-logged-pass"),
+            "the joiner's password reached the log"
+        );
     }
 
     #[test]

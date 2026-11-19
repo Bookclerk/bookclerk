@@ -16,7 +16,7 @@ export interface SharedBranchesPanelProps {
 
 /**
  * Settings → Shared branches on the library (operator or Owner): the servers that
- * share this library's database and keys (owner nodes), including this one.
+ * share this library's database and keys (shared nodes), including this one.
  * A shared branch that no longer runs can be removed here; a running one is stopped
  * on its own server first. Branches are listed under Branches, not here.
  */

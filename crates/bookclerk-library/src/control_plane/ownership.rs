@@ -1,7 +1,7 @@
 //! Node ownership: which user may administer a node.
 //!
 //! An operator assigns a node to a user (`nodes.owner_user_id`), or the
-//! user enrolls a host node of their own (see `enrollment`). That user
+//! user enrolls a branch node of their own (see `enrollment`). That user
 //! may then change the node's `node.runtime` document (budgets, drain,
 //! display name) without operator authority, through a
 //! [`ConfigActor::NodeOwner`] that only [`verify_node_owner`] builds.

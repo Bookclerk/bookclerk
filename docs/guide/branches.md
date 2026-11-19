@@ -183,6 +183,35 @@ downloads from the store as usual. A card has no setting to turn this off.
 A server that is already a branch of a library shows your books there
 through that link, so it can't also hold a card for it.
 
+## Core and local branches
+
+Every install is a library of its own, with its own database, people and
+operator. What sets installs apart is whether other computers can reach
+them:
+
+- A **core branch** has an address that other installs can connect to
+  (its `public_origin`, see [Configuration](../server/configuration.md)).
+  Other branches can join it.
+- A **local branch** has no such address, such as a laptop or a computer
+  at home. It connects out to the core branches it joins and never waits
+  for anyone to connect to it.
+
+When one install joins another, the relationship has a name too:
+
+| Relationship | What it is |
+| --- | --- |
+| Local branch | A local branch contributing to a core branch. |
+| Remote branch | A core branch contributing to another core branch. |
+| Shared branch | Two installs sharing one database, so one library runs on more than one machine. See [Shared branches](#shared-branches). |
+
+You can only join a core branch. A local branch and a remote branch work
+the same way and follow the same rules; the only difference is whether the
+branch that joins can be reached itself. A branch that gets an address
+later becomes a remote branch without joining again.
+
+A **clerk** is not a branch: it only shows a person their books (see
+[Sign in with a library card](#sign-in-with-a-library-card)).
+
 ## Leave a library
 
 On the branch, open **Settings → Library → Leave library**.
@@ -192,7 +221,7 @@ The library's operator or an Owner can also remove a branch from
 
 ## Shared branches
 
-A branch can also share the library's own database instead of keeping one
-of its own. It is then an extra copy of the library itself, so the library
-runs on more than one machine. Setting one up is an operator task; see
+A branch can also share another install's database instead of keeping one
+of its own. It is then an extra copy of that library, so the
+library runs on more than one machine. Setting one up is an operator task; see
 [Shared branches](../server/cluster-hosts.md#shared-branches).

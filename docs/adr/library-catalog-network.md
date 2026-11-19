@@ -172,6 +172,19 @@ how it relates to other libraries:
   holds a clerk socket (`/api/clerk/v1/connect`) with the same card for
   changed topics and pages of the person's books. A clerk can later be
   turned into a branch.
+- Amended 2026-11-18, naming: every install is a library (its own
+  database, people and operator). A **core branch** is an install with an
+  address its branches can dial (its `public_origin`); a **local branch**
+  has none and only dials out. Relationships: a **local branch** is a
+  local branch contributing to a core branch, a **remote branch** a core
+  branch contributing to another core branch, and a **shared branch** two
+  installs sharing one database (core and local may mix; the library is
+  reachable through its core installs). Only core branches can be joined. Remote and local branches use the same dial-out
+  websocket and the rules above; which one a link is follows from whether
+  the contributing branch reports a `public_origin`, so gaining an address
+  needs no new join. A clerk is not a branch. Features that need inbound
+  connections from outside services, such as plugin webhooks, need a core
+  branch whose address is on the Internet.
 
 This replaces the first version of this section, which made a branch with
 "Use this computer to download" turned off a **window**: a node that

@@ -1,4 +1,4 @@
-//! Host-node enrollment over HTTP.
+//! Branch-node enrollment over HTTP.
 //!
 //! `/api/config/node-invites` lets a signed-in user mint, list, and revoke
 //! enrollment links (the library decides who may act for whom). A minted
@@ -24,7 +24,7 @@
 //! `GET /api/clerk/v1/connect` is a clerk's live link ([`clerk_socket`]),
 //! held with a library card rather than a node key.
 //!
-//! `GET /api/node/v1/connect` is the host-node WebSocket ([`ws`]); it also
+//! `GET /api/node/v1/connect` is the branch-node WebSocket ([`ws`]); it also
 //! sits outside those layers and authenticates with the node's enrolled
 //! Ed25519 key. `GET /api/node/v1/artifacts/{sha256}` ([`artifacts`])
 //! serves owner plugin archives to nodes on a node-signed request.
@@ -171,7 +171,7 @@ pub struct NodeInviteRevoked {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 /// A host's node credential as the credentials routes show it; never its keys.
 pub struct NodeCredentialView {
-    /// Host node.
+    /// Branch node.
     #[schema(example = "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c")]
     pub node_id: String,
     /// Link that enrolled it.
@@ -198,7 +198,7 @@ pub struct NodeCredentialRevoked {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 /// The host-enrollment switch.
 pub struct HostEnrollment {
-    /// Whether host nodes may enroll into this cluster.
+    /// Whether branch nodes may enroll into this cluster.
     #[schema(example = true)]
     pub enabled: bool,
     /// Stored revision; `null` while the default (enabled) applies.
@@ -459,7 +459,7 @@ pub(crate) fn node_routes() -> OpenApiRouter<Arc<AppState>> {
         // A clerk's live link: its library card is the credential, after
         // the transport policy.
         .routes(routes!(clerk_socket::get_clerk_connect))
-        // Host-node socket: the node's Ed25519 key is the credential.
+        // Branch-node socket: the node's Ed25519 key is the credential.
         .routes(routes!(ws::get_connect))
         // Owner plugin archives: a node-signed request is the credential.
         .routes(routes!(artifacts::get_artifact))
@@ -550,7 +550,7 @@ fn credential_json(credential: &NodeCredential) -> NodeCredentialView {
 ///
 /// * `caller` - Who is asking; the operator or an Owner may revoke any host,
 ///   any other active user only the hosts they own.
-/// * `node_id` - The host node to revoke.
+/// * `node_id` - The branch node to revoke.
 ///
 /// # Returns
 ///
@@ -596,12 +596,12 @@ pub async fn delete_node_credential(
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PutHostEnrollment {
-    /// Whether host nodes may enroll into this cluster.
+    /// Whether branch nodes may enroll into this cluster.
     #[schema(example = true)]
     enabled: bool,
 }
 
-/// `GET /api/config/host-enrollment`: whether host nodes may enroll.
+/// `GET /api/config/host-enrollment`: whether branch nodes may enroll.
 ///
 /// # Returns
 ///
@@ -615,7 +615,7 @@ pub(crate) struct PutHostEnrollment {
     get,
     path = "/api/config/host-enrollment",
     responses(
-        (status = 200, description = "Whether host nodes may enroll.", body = HostEnrollment),
+        (status = 200, description = "Whether branch nodes may enroll.", body = HostEnrollment),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
             ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
@@ -920,7 +920,10 @@ pub(crate) mod tests {
         let node = bookclerk_library::control_plane::load_node(&store, node_id)
             .await
             .unwrap();
-        assert_eq!(node.kind, bookclerk_library::control_plane::NodeKind::Host);
+        assert_eq!(
+            node.kind,
+            bookclerk_library::control_plane::NodeKind::Branch
+        );
         assert_eq!(node.owner_user_id, Some(member.id));
 
         // Single use: different keys are refused with one generic answer.

@@ -21,9 +21,9 @@ onnx-embeddings = ["bookclerk-discover/onnx"]
 
 [dependencies]
 anyhow.workspace = true
-# `ws`: the host-node socket at /api/node/v1/connect.
+# `ws`: the branch-node socket at /api/node/v1/connect.
 axum = { workspace = true, features = ["ws"] }
-# The host side of the node API (this daemon as a host node).
+# The host side of the node API (this daemon as a branch node).
 bookclerk-node-client.workspace = true
 bookclerk-node-proto.workspace = true
 bookclerk-window-policy.workspace = true

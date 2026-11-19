@@ -386,11 +386,11 @@ describe("isSharedBranchJoined", () => {
 });
 
 describe("sharedBranchNodes", () => {
-  it("lists owner nodes only, this server first", () => {
-    const node = (node_id: string, kind: "owner" | "host", this_node = false) =>
+  it("lists shared nodes only, this server first", () => {
+    const node = (node_id: string, kind: "shared" | "branch", this_node = false) =>
       ({ node_id, kind, this_node }) as ConfigNodeView;
     expect(
-      sharedBranchNodes([node("b", "owner"), node("h", "host"), node("a", "owner", true)]).map(
+      sharedBranchNodes([node("b", "shared"), node("h", "branch"), node("a", "shared", true)]).map(
         (n) => n.node_id,
       ),
     ).toEqual(["a", "b"]);

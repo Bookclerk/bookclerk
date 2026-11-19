@@ -1236,13 +1236,13 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
 /// The group's routes, without auth layers (see [`route_groups`]).
 // Node administration: operators see and edit every node; a user who
 // owns nodes (Host, Administrator, Owner) sees and edits only those. An
-// Owner also sees and removes every owner node (the shared branches).
+// Owner also sees and removes every shared node (the shared branches).
 #[inline(never)]
 fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(crate::config_authority::get_nodes))
-        .routes(routes!(crate::config_authority::delete_owner_node))
-        // Settings → Shared branches: every owner node for the operator or an Owner.
+        .routes(routes!(crate::config_authority::delete_shared_node))
+        // Settings → Shared branches: every shared node for the operator or an Owner.
         .routes(routes!(crate::config_authority::get_shared_branches))
         .routes(routes!(crate::config_authority::put_node_runtime))
         .routes(routes!(crate::config_authority::get_cluster_status))
@@ -1527,7 +1527,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             .split_for_parts();
         app = app.merge(routes);
     }
-    // Host-node enrollment and socket: never behind the cookie/auth
+    // Branch-node enrollment and socket: never behind the cookie/auth
     // layers; the transport policy runs first.
     app = app.merge(crate::node_api::node_router(state.clone()));
     app = app.merge(

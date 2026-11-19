@@ -884,17 +884,17 @@ across nodes.
 
 Decided 2026-10-14 with the owner. A cluster has two kinds of node:
 
-- **Owner nodes** share the library database and `master.key` and give the
+- **Shared nodes** share the library database and `master.key` and give the
   cluster its HA. Every node described above is one; `nodes.kind` is
   `owner`.
-- **Host nodes** are independent Bookclerk installs with their own database
+- **Branch nodes** are independent Bookclerk installs with their own database
   and their own operator, who enroll in an owner cluster to contribute
-  work. They reach an owner node over HTTPS and never hold the cluster's
+  work. They reach a shared node over HTTPS and never hold the cluster's
   database credentials or DEK. Enrollment, the transport policy, the
   node socket, the work frames, the host client, host consent, and
   results and uploads are built (sections below; operator guide in
   [Libraries and branches](../server/cluster-hosts.md)). A redeemed
-  enrollment link records the node with `nodes.kind = host`.
+  enrollment link records the node with `nodes.kind = branch`.
 
 Who may administer a node is separate from its kind. `nodes.owner_user_id`
 names the user who owns it, assigned by an operator (`bookclerk nodes
@@ -933,16 +933,16 @@ Decided then, built since in H-4 steps 3 and 8-10 (sections below):
 - Outputs that need the owner's credentials (S3 keys, the owner's own
   `local` disk) are not run on a Host's node. When a Host's work finishes
   there, the node writes its own local output and uploads the result
-  through a secure upload endpoint on an owner node, which writes the
+  through a secure upload endpoint on a shared node, which writes the
   cluster's outputs with credentials the Host never holds. Both nodes end
   up with a local copy.
-- Host nodes and the SPA use WebSockets rather than polling.
-- Owner nodes serve the node API over Let's Encrypt TLS, behind a detected
+- Branch nodes and the SPA use WebSockets rather than polling.
+- Shared nodes serve the node API over Let's Encrypt TLS, behind a detected
   TLS-terminating proxy, or only within loopback and private address space.
   (Amended 2026-10-15: plain HTTP is allowed on loopback only; a private
   network uses a pinned self-signed certificate.)
 
-### Host-node enrollment and transport
+### Branch-node enrollment and transport
 
 Decided 2026-10-15 with the owner, for the H-4 design:
 
@@ -961,7 +961,7 @@ Decided 2026-10-15 with the owner, for the H-4 design:
 3. **Token write-back.** A host may write back a refreshed store token only
    for a secret ref handed out under a live fence.
 4. **Uploads.** Streamed through the owner to each output destination,
-   never staged on an owner node's disk.
+   never staged on a shared node's disk.
 5. **Enrollment.** The operator or an Owner turns host enrollment on or off
    for the cluster (`core.host_enrollment`, on by default). While it is on,
    any active user may mint a link for themselves and enroll their own
@@ -991,13 +991,13 @@ Built in the first H-4 slice:
 - Redeem is one canonical batch: the claim `UPDATE` re-checks the hash,
   expiry, single use, revocation, the link user's status, and that
   `core.host_enrollment` is still the revision read as enabled; the same
-  batch inserts the `nodes` row (`kind = host`, owned by the link's user),
+  batch inserts the `nodes` row (`kind = branch`, owned by the link's user),
   `node_credentials`, and a receipt. A retry with the same secret and keys
   answers from the receipt; anything else is one generic 403. Two
   concurrent redeems create one node on SQLite and PostgreSQL.
 - `bookclerk nodes revoke <node>` (or the node's own owner) sets
   `node_credentials.revoked_at` and publishes `node.revoked` to every node
-  queue; the owner node holding that host's socket closes it with 4403.
+  queue; the shared node holding that host's socket closes it with 4403.
 - `classify_transport` in `bookclerkd` (`node_api/transport.rs`), a pure
   function of the connection, headers, and the bootstrap `[daemon.node_api]`
   table (`mode`, `acme_contact`, `tls_listen`). `POST /api/node/v1/enroll`
@@ -1056,7 +1056,7 @@ Built 2026-10-15 (H-4 step 5), on the routed claim above.
 
 - **Trust predicate** (`control_plane/trust.rs`). `node_trust` reads the
   claiming node's `nodes` row, its `node_credentials`, and its owner's
-  `users` row on every call: an owner node (stored kind exactly `owner`)
+  `users` row on every call: a shared node (stored kind exactly `shared`)
   and a Host owned by an active Owner or Administrator are trusted with
   every job; a Host owned by any other active user is trusted only with
   that user's work; a Host with no owner, a disabled or unknown owner, an
@@ -1197,9 +1197,9 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   with the diagnostics ring at TRACE, so a plaintext value would land in
   diagnostics. Sealed in both directions, no secret is ever frame text.
   Secret types redact in `Debug` and zeroize on drop.
-- **Wakes.** While a Host's socket is live, the owner node holding it
+- **Wakes.** While a Host's socket is live, the shared node holding it
   registers as the consumer of `node.<host_id>` (catalog row
-  `node:<host_id>` on that owner node, heartbeated with the session),
+  `node:<host_id>` on that shared node, heartbeated with the session),
   claims deliveries, and sends `deployment.changed`, `install.changed`
   and `configuration.changed` as `wake` frames; each is acked only after
   the Host's `ack`. Other messages are acked at once; unknown bodies are
@@ -1223,7 +1223,7 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
 - **Resume.** A hello lists held fences; after `welcome` the owner
   answers `resumed {renewed, lost, unchecked}`, renewing each through
   the same path as `renew`. Nothing else is released on disconnect and no
-  session keeps work state, so a Host may resume on any owner node; a
+  session keeps work state, so a Host may resume on any shared node; a
   fence reclaimed while it was away is lost, and every later frame under
   it is refused. A fence whose renewal failed with an error (a transient
   database fault) is `unchecked`, not lost: the Host keeps the work, and
@@ -1320,7 +1320,7 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   owner plugin, and a Host runs one only after its own operator approves
   it. Rejected: claiming and
   failing what cannot run, which would spend owner attempts and starve
-  owner nodes.
+  shared nodes.
 - **Not decided at step 7.** How a Host's scan returns its results (book
   rows) to the owner; library SQL for owner plugins on a Host is a
   non-goal. Decided in step 9: fenced `scan.results` batches (*Host
@@ -1536,7 +1536,7 @@ the handed credentials only. There is no in-process fallback.
 - **Acquire plan.** `acquire.plan` answers `acquire.targets {targets,
   destinations}`: the titles the job covers whose edition is not acquired
   yet (read from the account holdings, as a local acquire reads them) and every
-  output destination deployed on the answering owner node, each with an
+  output destination deployed on the answering shared node, each with an
   id and its own naming options. The Host acquires each title into an
   outbox with one sub-directory per destination, so each destination's
   keys come out as a local acquire on the owner would name them (a fix
@@ -1562,7 +1562,7 @@ the handed credentials only. There is no in-process fallback.
   canonical batch gated on the live fence and credential: it marks the
   title acquired, publishes `book_acquired`, and completes the job with
   the closing upload (an acquire never completes with `complete`).
-  Refusals: 401 (token), 421 (another owner node granted it), 409 (lost
+  Refusals: 401 (token), 421 (another shared node granted it), 409 (lost
   fence), 422. Limits: 512 files, 8 GiB per file, 16 copies, 1 KiB keys.
 - **Node-local instances (H-2).** `plugin_instances.owner_node_id` marks
   an instance local to one node: deploying it elsewhere and placing it
@@ -1618,7 +1618,7 @@ the handed credentials only. There is no in-process fallback.
   acquired but whose companion PDF is missing is left to an acquire on a
   node holding the library, since a Host would fetch and upload the audio
   again and a missing PDF is a soft failure that never keeps a job open.
-  The commit's gate also carries the node's trust (an owner node, or an
+  The commit's gate also carries the node's trust (a shared node, or an
   active owning user who is privileged or still linked to the title's
   account), so a user disabled or an account unlinked after the preflight
   commits nothing.
@@ -1627,14 +1627,14 @@ the handed credentials only. There is no in-process fallback.
   fence lost before a later file or the commit, the destinations changed,
   the title re-sent, or the job finished, was released, or lost its fence
   without it)
-  has every received copy deleted by the receiving owner node, and so has
+  has every received copy deleted by the receiving shared node, and so has
   an upload left open when the closing commit completes the job. A failed
   or released run's uploads are deleted before the job ends and its
   permits are given back. A copy is deleted only while `edition_files` still
   names that upload as the key's latest writer, so a cleanup that runs
   late (after a lost fence) leaves alone a file a later upload or acquire
   wrote. A file that finished streaming just as its upload was aborted is
-  deleted at once. An upload received by another owner node is left to
+  deleted at once. An upload received by another shared node is left to
   that node and logged.
 - **Token lifetime.** The upload token is accepted for an hour past its
   latest extension. The grant, each accepted file, and each renewal of the
@@ -1643,7 +1643,7 @@ the handed credentials only. There is no in-process fallback.
 - **Not done.** If a Host vanishes mid-title, so that no further file,
   commit, renewal or finish arrives, its open upload is not swept: the
   files it had received stay until a later attempt of the job re-sends
-  that title through the same owner node.
+  that title through the same shared node.
 - **Tests.** Library: an acquire completes only through its upload; a
   stale fence cannot write scan rows or open uploads; a commit acquires
   the title and completes the job; manifests that skip or invent a
@@ -1658,7 +1658,7 @@ the handed credentials only. There is no in-process fallback.
 
 ### Live socket and the host consent screen
 
-H-4 step 10 ("Host nodes and the SPA use WebSockets rather than
+H-4 step 10 ("Branch nodes and the SPA use WebSockets rather than
 polling"). `GET /api/live` (subprotocol `bookclerk-live.v1`) tells the SPA
 which topics changed; the SPA then re-reads its ordinary routes.
 
@@ -1683,7 +1683,7 @@ which topics changed; the SPA then re-reads its ordinary routes.
   `jobs`, `event_deliveries`, `remote_plugin_consents` and `users`, the
   newest `node_status.heartbeat_at`, the newest
   `configuration_changes` id, and for `cluster_links`, which has no
-  change stamp, a digest of its rows), so a change made on any owner node
+  change stamp, a digest of its rows), so a change made on any shared node
   or by `bookclerk clusters join|leave` is seen; in-process pokes
   (consent approve/revoke, a link revoked by its owner) are immediate.
   The baseline is read before `hello` is sent, so a write after the
@@ -1739,7 +1739,7 @@ Step 11 is the operator guide, [Libraries and branches](../server/cluster-hosts.
 ### Join a library (sign-in) and branch invites
 
 A later step (decided 2026-10-18) makes joining UI-first. The UI calls an
-owner cluster a **library** and a host node a **branch**; code, API and CLI
+owner cluster a **library** and a branch node a **branch**; code, API and CLI
 names are unchanged.
 
 - **Sign-in instead of a link.** The owner's OAuth server (`oidc.rs`) gains
@@ -1819,13 +1819,13 @@ names are unchanged.
   parsing, the consent redirect check, invite shape, countdown, and
   error copy.
 
-### Join as a shared branch (an owner node over a sign-in)
+### Join as a shared branch (a shared node over a sign-in)
 
 Decided 2026-10-18. The consent page can let a joining install become an
-**owner node** (`kind = owner`) that shares the library's database and DEK,
-instead of a host node. The UI calls it a **shared branch** ("Join as a shared branch of
+**shared node** (`kind = shared`) that shares the library's database and DEK,
+instead of a branch node. The UI calls it a **shared branch** ("Join as a shared branch of
 this library" or "Join as a branch with its own database"; Settings → **Shared branches**); code keeps
-owner node and host node.
+shared node and branch node.
 
 - **Who may choose.** Only an Owner of the library (the stored role,
   `verify_cluster_owner`, read at consent and again at redeem) is offered
@@ -1881,18 +1881,18 @@ owner node and host node.
   otherwise). `config.toml` is written last. It then restarts cleanly: the
   listeners drain as on SIGTERM and the binary re-execs itself with the
   same arguments and environment (same PID on Unix). It comes back as an
-  owner node of the library. `clusters join --as shared-branch` writes the same
+  shared node of the library. `clusters join --as shared-branch` writes the same
   files and asks the operator to restart `bookclerkd`.
-- **Removing a shared branch.** Settings → Shared branches lists the owner nodes
+- **Removing a shared branch.** Settings → Shared branches lists the shared nodes
   (`GET /api/config/shared-branches`: all of them for the operator or an Owner,
   the owned ones for another user, by the same rule as removal);
   `DELETE /api/config/nodes/{node_id}` removes one that is not running
-  (operator or Owner; never this node or a host node). Removal does not
+  (operator or Owner; never this node or a branch node). Removal does not
   take back the database credentials or DEK it held: rotate them when it
   is no longer trusted.
 - **Audit.** `shared_branch_authorize`, `shared_branch_authorize_refused`,
   `shared_branch_enroll_refused`, `shared_branch_enrolled` (owner), `shared_branch_joined`
-  (joiner), `owner_node_removed`.
+  (joiner), `shared_node_removed`.
 - **Tests.** Proto: the bootstrap opens only with the node key and its ids,
   and never prints its secrets. Daemon: shared branch refused to non-Owners, with
   SQLite, without a second factor, without the joiner's offer; step-up
@@ -1942,7 +1942,7 @@ Built 2026-10-18. Library work no longer runs where it is asked for.
   handed exactly those accounts' secrets. An unpinned acquire that names
   no account now runs the plugins of the rows it matches
   (`job_plugin_keys`), so a host's claim filter and `acquire.plan` see
-  them. A forced or PDF-only acquire runs only on an owner node
+  them. A forced or PDF-only acquire runs only on a shared node
   (`claimant_may_run`): the host acquire path does neither.
 - **Scan All from any node** (decision 2). A host's operator runs
   `bookclerk clusters scan`, which its daemon sends over the link as
@@ -2210,7 +2210,7 @@ Not in this phase, and not claimed as production HA:
   on storage every placed host can read through its `file://` path.
 - Database-adapter plugins as instances and multiple database targets
   (Phase 4).
-- Host nodes: Pebble in CI, delivery claims and the KV, queue and EVENTS
+- Branch nodes: Pebble in CI, delivery claims and the KV, queue and EVENTS
   binding frames over the node socket, per-item trust for deliveries and
   instance ownership (`plugin_instances.owner_user_id`; instance
   `SECRETS` reach only a node trusted with every job). Uploaded objects

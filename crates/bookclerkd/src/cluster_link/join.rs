@@ -25,7 +25,7 @@
 //!   library's database guest is installed here, writes the bootstrap as
 //!   this install's own (`[database]`, `master.key` wrapped with this
 //!   install's password, `node-identity.json`), answers, and restarts on it
-//!   ([`crate::restart`]): this install is then an owner node of the
+//!   ([`crate::restart`]): this install is then a shared node of the
 //!   library.
 //! - `POST /api/config/join/invite` `{link}`: joins with a pasted branch
 //!   invite; the link is used once and not kept.
@@ -200,7 +200,7 @@ pub struct JoinStarted {
 pub enum JoinCompleted {
     /// Joined as a branch; the link's client starts at once.
     Branch(BranchJoined),
-    /// Joined as a shared branch: this install restarts as an owner node of the library.
+    /// Joined as a shared branch: this install restarts as a shared node of the library.
     SharedBranch(SharedBranchJoined),
 }
 
@@ -302,7 +302,7 @@ pub struct SharedBranchJoined {
     /// Whether the shared master key was wrapped with this install's password.
     #[schema(example = true)]
     pub master_key_wrapped: bool,
-    /// Always `true`: the daemon restarts as an owner node right after answering.
+    /// Always `true`: the daemon restarts as a shared node right after answering.
     #[schema(example = true)]
     pub restarting: bool,
 }
@@ -605,7 +605,7 @@ pub struct StartBody {
     #[serde(default)]
     #[schema(example = "study-mini")]
     branch_name: Option<String>,
-    /// Offer to join as a shared branch (an owner node that shares the library's
+    /// Offer to join as a shared branch (a shared node that shares the library's
     /// database): only an empty install may, and its data is replaced.
     #[serde(default)]
     #[schema(example = false)]
@@ -1160,7 +1160,7 @@ async fn join_as_shared_branch(
     tracing::info!(
         cluster_id = %joined.cluster_id,
         node_id = %joined.node_id,
-        "joined the library as a shared branch; restarting as an owner node"
+        "joined the library as a shared branch; restarting as a shared node"
     );
     // Answer first; the restart waits for in-flight requests.
     tokio::spawn(async {

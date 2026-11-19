@@ -1,6 +1,6 @@
-//! Joining a library as a **shared branch**: an owner node (`kind = owner`) that
+//! Joining a library as a **shared branch**: a shared node (`kind = shared`) that
 //! shares the library's database and data-encryption key (DEK), as opposed
-//! to a **branch** (a host node with its own database).
+//! to a **branch** (a branch node with its own database).
 //!
 //! The connection type is chosen on the library's consent page and bound to
 //! the authorization code there: a branch code is granted [`BRANCH_SCOPE`],
@@ -46,10 +46,10 @@ pub const DEK_LEN: usize = 32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionType {
-    /// A host node: its own database, work over the node socket (default).
+    /// A branch node: its own database, work over the node socket (default).
     #[default]
     Branch,
-    /// An owner node: shares the library's database and DEK.
+    /// A shared node: shares the library's database and DEK.
     SharedBranch,
 }
 
@@ -144,7 +144,7 @@ impl std::fmt::Debug for SharedBranchDatabase {
 }
 
 /// What a shared branch receives at redeem: the `[database]` bootstrap and the DEK,
-/// for the node id the library recorded (`kind = owner`). `Debug` prints no
+/// for the node id the library recorded (`kind = shared`). `Debug` prints no
 /// secret.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

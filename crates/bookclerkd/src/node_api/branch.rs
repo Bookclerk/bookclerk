@@ -37,7 +37,7 @@
 //! **Shared branches.** When the joining install offers it ([`bookclerk_node_proto::SHARED_BRANCH_OFFER_PARAM`]:
 //! it is empty) and the signed-in user is an Owner (the stored role, read
 //! at consent and again at redeem), the consent page also offers "Join as
-//! a shared branch of this library": an owner node (`kind = owner`) that shares
+//! a shared branch of this library": a shared node (`kind = shared`) that shares
 //! this library's database and DEK. That needs a database more than one
 //! server can open (PostgreSQL or D1, never the SQLite file:
 //! [`shared_database`]) and a fresh second factor on the consent page
@@ -257,8 +257,8 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
     }
     let connection = body.connection;
     let kind = match connection {
-        ConnectionType::Branch => NodeKind::Host,
-        ConnectionType::SharedBranch => NodeKind::Owner,
+        ConnectionType::Branch => NodeKind::Branch,
+        ConnectionType::SharedBranch => NodeKind::Shared,
     };
     // The link's secret binds the kind, so a link recorded for a branch
     // never redeems as a shared branch (or the other way round), even after a
@@ -760,7 +760,7 @@ async fn shared_branch_answer(
         tracing::info!(
             node_id = %enrolled.node_id,
             owner_user_id = enrolled.owner_user_id,
-            "a server joined the library as a shared branch (owner node); its bootstrap was sealed to its node key"
+            "a server joined the library as a shared branch (shared node); its bootstrap was sealed to its node key"
         );
     }
     no_store(
@@ -1217,7 +1217,7 @@ pub struct BranchesResponse {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-/// One branch (host node) of this library.
+/// One branch (branch node) of this library.
 pub struct BranchView {
     /// The branch's node id.
     #[schema(example = "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c")]
@@ -1944,7 +1944,7 @@ pub async fn get_branches(
     .into_response()
 }
 
-/// Every branch (host node) of this library, newest first: its owner,
+/// Every branch (branch node) of this library, newest first: its owner,
 /// whether it is still joined, its two sharing settings as it last
 /// reported them (`null` until its first catalog sync), and counts of the
 /// titles it shared.
@@ -1954,7 +1954,7 @@ async fn branches_json(
     let mut nodes: Vec<_> = list_nodes(library)
         .await?
         .into_iter()
-        .filter(|node| node.kind == NodeKind::Host)
+        .filter(|node| node.kind == NodeKind::Branch)
         .collect();
     nodes.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     let mut out = Vec::with_capacity(nodes.len());

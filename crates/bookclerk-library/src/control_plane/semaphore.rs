@@ -317,7 +317,7 @@ pub async fn live_permits(
 /// with `holder_prefix`, expired ones included.
 ///
 /// A worker that holds permits only by name (a host that reconnected to
-/// another owner node) finds them again with this. An expired slot nobody
+/// another shared node) finds them again with this. An expired slot nobody
 /// took over is still returned, since [`renew_fenced_lease`] still renews
 /// it; a slot another holder took is not.
 ///

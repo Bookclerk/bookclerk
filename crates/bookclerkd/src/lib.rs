@@ -442,7 +442,7 @@ async fn assemble_host(
     config_authority::spawn_config_reconciler(state.clone());
     config_authority::spawn_deployment_reconciler(state.clone());
     heartbeat::spawn_heartbeat(state.clone());
-    // This install as a host node of the owner clusters it enrolled into.
+    // This install as a branch node of the owner clusters it enrolled into.
     cluster_link::spawn_cluster_links(state.clone());
     // The libraries this install holds a library card for (as a clerk).
     clerk_link::spawn_clerk_links(state.clone());

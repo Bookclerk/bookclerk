@@ -116,7 +116,7 @@ async fn add_node(store: &LibraryStore, node_id: &str, kind: &str, owner: Option
     .insert(store.db())
     .await
     .unwrap();
-    if kind == "host" {
+    if kind == "branch" {
         node_credentials::ActiveModel {
             node_id: Set(node_id.into()),
             sign_public_key: Set(vec![1; 32]),
@@ -174,7 +174,7 @@ async fn host_trust_follows_its_owners_role(owner_db: LibraryStore, host_db: Lib
     add_account(&owner_db, PLUGIN, "sam-acct", true).await;
     link(&owner_db, riley, PLUGIN, "riley-acct").await;
     link(&owner_db, sam, PLUGIN, "sam-acct").await;
-    add_node(&owner_db, HOST, "host", Some(riley)).await;
+    add_node(&owner_db, HOST, "branch", Some(riley)).await;
 
     let all = scan(&owner_db, None).await;
     let sams = scan(&owner_db, Some("sam-acct")).await;
@@ -224,11 +224,11 @@ async fn host_trust_follows_its_owners_role(owner_db: LibraryStore, host_db: Lib
 
 /// A demotion that lands after the claim but before handoff denies: the job
 /// returns to pending with no attempt spent and its permits released, and
-/// the owner node then runs it.
+/// the shared node then runs it.
 async fn demotion_before_handoff_denies(owner_db: LibraryStore, host_db: LibraryStore) {
     let riley = user(&owner_db, UserRole::Administrator, "Riley").await;
     add_account(&owner_db, PLUGIN, "sam-acct", true).await;
-    add_node(&owner_db, HOST, "host", Some(riley)).await;
+    add_node(&owner_db, HOST, "branch", Some(riley)).await;
     let job = scan(&owner_db, Some("sam-acct")).await;
 
     let host_request = request(HOST, Claimant::Remote, HOST);
@@ -269,7 +269,7 @@ async fn demotion_before_handoff_denies(owner_db: LibraryStore, host_db: Library
     assert!(claim(&host_db, HOST, Claimant::Remote).await.is_none());
     let local = claim(&owner_db, "node-owner", Claimant::Local)
         .await
-        .expect("the owner node's worker runs it");
+        .expect("the shared node's worker runs it");
     assert_eq!(local.job.id, job);
     assert_eq!(local.job.attempt_count, 1);
 }
@@ -280,7 +280,7 @@ async fn demotion_before_handoff_denies(owner_db: LibraryStore, host_db: Library
 /// and only the expired claim's own row and permits are released.
 async fn stale_claim_handoff_denies(owner_db: LibraryStore, host_db: LibraryStore) {
     let riley = user(&owner_db, UserRole::Administrator, "Riley").await;
-    add_node(&owner_db, HOST, "host", Some(riley)).await;
+    add_node(&owner_db, HOST, "branch", Some(riley)).await;
     let job = scan(&owner_db, Some("acct")).await;
     let host_request = request(HOST, Claimant::Remote, HOST);
 
@@ -332,7 +332,7 @@ async fn stale_claim_handoff_denies(owner_db: LibraryStore, host_db: LibraryStor
     // does not disturb the new holder.
     let local = claim(&owner_db, "node-owner", Claimant::Local)
         .await
-        .expect("the owner node's worker claims it");
+        .expect("the shared node's worker claims it");
     assert!(handoff_routed_job(&host_db, &host_request, claimed.clone())
         .await
         .unwrap()
@@ -364,7 +364,7 @@ async fn stale_claim_handoff_denies(owner_db: LibraryStore, host_db: LibraryStor
 }
 
 /// Nodes that are trusted with nothing: an unknown remote node, a Host with
-/// no owner, a disabled owner, and a revoked credential. An owner node is
+/// no owner, a disabled owner, and a revoked credential. A shared node is
 /// trusted with everything.
 async fn untrusted_nodes_claim_nothing(owner_db: LibraryStore, host_db: LibraryStore) {
     // Another Owner, so Riley is not the last one and may be disabled.
@@ -372,9 +372,9 @@ async fn untrusted_nodes_claim_nothing(owner_db: LibraryStore, host_db: LibraryS
     let riley = user(&owner_db, UserRole::Owner, "Riley").await;
     add_account(&owner_db, PLUGIN, "acct", true).await;
     link(&owner_db, riley, PLUGIN, "acct").await;
-    add_node(&owner_db, HOST, "host", Some(riley)).await;
-    add_node(&owner_db, "host-orphan", "host", None).await;
-    add_node(&owner_db, "owner-node", "owner", None).await;
+    add_node(&owner_db, HOST, "branch", Some(riley)).await;
+    add_node(&owner_db, "host-orphan", "branch", None).await;
+    add_node(&owner_db, "shared-node", "shared", None).await;
     scan(&owner_db, Some("acct")).await;
 
     for (node, claimant) in [
@@ -390,7 +390,7 @@ async fn untrusted_nodes_claim_nothing(owner_db: LibraryStore, host_db: LibraryS
         assert!(claim(&host_db, node, claimant).await.is_none(), "{node}");
     }
     assert_eq!(
-        node_trust(&host_db, "owner-node", Claimant::Remote)
+        node_trust(&host_db, "shared-node", Claimant::Remote)
             .await
             .unwrap(),
         NodeTrust::All
@@ -441,7 +441,7 @@ async fn scoped_trust_refuses_unowned_secrets(owner_db: LibraryStore, host_db: L
     add_account(&owner_db, OTHER_PLUGIN, "shared-id", true).await;
     link(&owner_db, riley, PLUGIN, "shared-id").await;
     link(&owner_db, sam, OTHER_PLUGIN, "shared-id").await;
-    add_node(&owner_db, HOST, "host", Some(riley)).await;
+    add_node(&owner_db, HOST, "branch", Some(riley)).await;
     let trust = node_trust(&host_db, HOST, Claimant::Remote).await.unwrap();
     assert_eq!(trust, NodeTrust::OwnedBy(riley));
 
@@ -562,7 +562,7 @@ async fn untrusted_window_does_not_hide_trusted_jobs(
 ) {
     let riley = user(&owner_db, UserRole::Member, "Riley").await;
     let sam = user(&owner_db, UserRole::Member, "Sam").await;
-    add_node(&owner_db, HOST, "host", Some(riley)).await;
+    add_node(&owner_db, HOST, "branch", Some(riley)).await;
     let ahead = ROUTED_CLAIM_CANDIDATES + 1;
     for n in 0..ahead {
         let account = format!("sam-{n}");
@@ -778,8 +778,8 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
     add_book(&owner_db, "a2", "s1", "B0SAM").await;
     add_book(&owner_db, "a1", "x1", "B0BOTH").await;
     add_book(&owner_db, "a2", "x2", "B0BOTH").await;
-    add_node(&owner_db, HOST, "host", Some(riley)).await;
-    add_node(&owner_db, "host-ownerless", "host", None).await;
+    add_node(&owner_db, HOST, "branch", Some(riley)).await;
+    add_node(&owner_db, "host-ownerless", "branch", None).await;
     let trust = node_trust(&host_db, HOST, Claimant::Remote).await.unwrap();
     assert_eq!(trust, NodeTrust::OwnedBy(riley));
 
@@ -1213,7 +1213,7 @@ async fn shared_account_id_pins_a_members_title(owner_db: LibraryStore, host_db:
     // Riley's Host may follow the scan pinned to Riley's store that the
     // planner admitted, though Sam holds the same id on another store; an
     // unpinned scan of that id touches Sam's account too, so it stays hidden.
-    add_node(&owner_db, HOST, "host", Some(riley)).await;
+    add_node(&owner_db, HOST, "branch", Some(riley)).await;
     let instance_id = instance.id.to_string();
     let pinned = plan_scan(
         &host_db,

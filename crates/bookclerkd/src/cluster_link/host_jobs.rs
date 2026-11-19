@@ -135,10 +135,10 @@ pub struct HostScan {
     pub sync_tokens: HashMap<String, String>,
 }
 
-/// One output destination of the owner node an acquire was planned with.
+/// One output destination of the shared node an acquire was planned with.
 #[derive(Debug, Clone)]
 pub struct HostDestination {
-    /// Its id on the owner node (`local`, `s3`, ...).
+    /// Its id on the shared node (`local`, `s3`, ...).
     pub id: DestinationId,
     /// Its naming and packaging options.
     pub options: DownloadOptions,
@@ -180,7 +180,7 @@ pub struct HostTitle {
     pub library_id: Option<String>,
     /// The podcast parent's library id on the owner.
     pub parent_library_id: Option<String>,
-    /// The owner node's destinations, the primary first; never empty.
+    /// The shared node's destinations, the primary first; never empty.
     pub destinations: Vec<HostDestination>,
 }
 

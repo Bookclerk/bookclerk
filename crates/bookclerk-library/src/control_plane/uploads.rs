@@ -1,9 +1,9 @@
-//! Streamed uploads from a Host node (H-4 design, section 6; decision 4).
+//! Streamed uploads from a Branch node (H-4 design, section 6; decision 4).
 //!
 //! An acquire a Host runs returns its files to the owner as streams: the
 //! Host asks for an upload of one title ([`grant_upload`]), streams each
 //! declared file to the owner's upload endpoint, and commits the title
-//! ([`commit_upload`]). The owner node streams every file straight on to
+//! ([`commit_upload`]). The shared node streams every file straight on to
 //! its output destinations; nothing is staged on the owner, and this
 //! module stores only the upload's bookkeeping (`node_upload_sessions`).
 //!
@@ -72,7 +72,7 @@ const STATE_ABORTED: &str = "aborted";
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Manifest {
-    /// The receiving owner node's destination ids when the upload was
+    /// The receiving shared node's destination ids when the upload was
     /// granted, the primary first.
     #[serde(default)]
     destinations: Vec<String>,
@@ -99,7 +99,7 @@ pub const UPLOAD_NAME_WILDCARD: char = '\u{1}';
 /// where a part or chapter number goes.
 pub const UPLOAD_NUMBER_WILDCARD: char = '\u{2}';
 
-/// One output destination of the receiving owner node an upload is
+/// One output destination of the receiving shared node an upload is
 /// granted for, with where the title may be written there.
 ///
 /// The owner computes the scope itself, from its own library row of the
@@ -239,7 +239,7 @@ pub struct UploadGrantRequest<'a> {
     pub pdf_key: Option<&'a str>,
     /// Every file, in upload order.
     pub files: &'a [UploadFile],
-    /// The receiving owner node's output destinations, the primary first,
+    /// The receiving shared node's output destinations, the primary first,
     /// each with the title's key scope there. Each must receive at least
     /// one file and every copy must name one of them and lie in its scope,
     /// so each destination is written only under the title's own keys (a
@@ -296,13 +296,13 @@ impl std::fmt::Debug for UploadGrant {
 pub struct UploadSession {
     /// Upload id.
     pub upload_id: String,
-    /// Host node it was granted to.
+    /// Branch node it was granted to.
     pub node_id: String,
     /// Acquire job.
     pub job_id: String,
     /// Lease generation it is bound to.
     pub generation: i64,
-    /// Owner node that receives the files.
+    /// Shared node that receives the files.
     pub receiving_node_id: String,
     /// The title's holding (`holdings.id`; empty for the job's closing
     /// upload).
@@ -1563,7 +1563,7 @@ async fn already_committed(
 /// account unlinked, after the preflight leaves the library untouched
 /// (credential revocation is gated separately).
 ///
-/// The node is an owner node, or its owning user is active and either
+/// The node is a shared node, or its owning user is active and either
 /// privileged (`owner`, `administrator`) or, for a title (`account`, its
 /// `(plugin_key, account_id)`), a `host` or `member` still linked to the
 /// title's store account. The closing upload (`account` is `None`) carries
@@ -1583,7 +1583,7 @@ pub(super) fn commit_trust_gate(
         None => ("1 = 1", Vec::new()),
     };
     let sql = format!(
-        "EXISTS (SELECT 1 FROM nodes WHERE nodes.node_id = ? AND (nodes.kind = 'owner' \
+        "EXISTS (SELECT 1 FROM nodes WHERE nodes.node_id = ? AND (nodes.kind = 'shared' \
            OR EXISTS (SELECT 1 FROM users WHERE users.id = nodes.owner_user_id \
              AND users.status = 'active' \
              AND (users.role IN ('owner', 'administrator') \

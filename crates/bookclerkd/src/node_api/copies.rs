@@ -197,7 +197,7 @@ pub(super) async fn grant(
     let not_found = |id| error(id, "not_found", "no copy of that edition for this person");
     let holder = CopyHolder::Node(&host.node_id);
     let (opened, copy, files) =
-        match open_for(library, &host.state, holder, &host.owner_node_id, listing).await? {
+        match open_for(library, &host.state, holder, &host.shared_node_id, listing).await? {
             Granted::Refused => return Ok(error(id, "refused", "not_a_branch")),
             Granted::NotFound => return Ok(not_found(id)),
             Granted::Unavailable => return Ok(error(id, "unavailable", "storage is unavailable")),

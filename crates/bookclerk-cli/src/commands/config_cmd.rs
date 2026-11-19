@@ -733,7 +733,7 @@ async fn set_events_setting(
 /// Config key of the cluster's host-enrollment switch (`core.host_enrollment`).
 const HOST_ENROLLMENT_ENABLED_KEY: &str = "host_enrollment.enabled";
 
-/// Prints whether host nodes may enroll into this cluster.
+/// Prints whether branch nodes may enroll into this cluster.
 async fn get_host_enrollment(config: &Config, format: OutputFormat) -> anyhow::Result<()> {
     let (store, _session) = open_control_plane(config).await?;
     let settings = load_host_enrollment(&store).await?;

@@ -48,7 +48,7 @@ pub struct Model {
     pub kind: String,
     /// User who owns this node and may administer it, when one is assigned.
     pub owner_user_id: Option<i64>,
-    /// For a branch (host node): "Share this branch's books with *library*"
+    /// For a branch (branch node): "Share this branch's books with *library*"
     /// as the branch last reported it (`catalog.begin`); empty until then.
     pub share_books: Option<i64>,
     /// For a branch: "Include books from my own branches", as reported.

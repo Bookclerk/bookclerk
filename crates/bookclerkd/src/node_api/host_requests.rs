@@ -1,4 +1,4 @@
-//! Library work a host node asks the owner cluster for (H-5).
+//! Library work a branch node asks the owner cluster for (H-5).
 //!
 //! | Frame | Answer |
 //! |---|---|
@@ -31,7 +31,7 @@ pub(super) async fn scan_request(
     plugin_instance_id: Option<String>,
 ) -> bookclerk_library::Result<Frame> {
     let Some(requester) = remote_node_requester(library, &host.node_id).await? else {
-        tracing::warn!(node_id = %host.node_id, "refused a scan request from an untrusted host node");
+        tracing::warn!(node_id = %host.node_id, "refused a scan request from an untrusted branch node");
         return Ok(error(
             id,
             "forbidden",
@@ -73,7 +73,7 @@ pub(super) async fn scan_request(
         created = created.len(),
         duplicates = duplicates.len(),
         queue_full,
-        "queued a scan a host node asked for"
+        "queued a scan a branch node asked for"
     );
     Ok(Frame::new(
         id,

@@ -271,7 +271,7 @@ pub use semaphore::{
     SemaphoreRequest, MAX_SEMAPHORE_LIMIT, SEMAPHORE_LEASE_PREFIX,
 };
 pub use shared_branches::{
-    library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents,
+    library_contents, remove_shared_node, shared_nodes_visible_to, LibraryContents,
 };
 pub use template::{strip_install_state, TemplateStrip};
 pub use trust::{

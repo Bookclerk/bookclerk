@@ -220,7 +220,7 @@ ticker claims a due fire with a compare-and-swap on the instance's
 dedup key holds one fire per schedule, so a fire that comes due while the
 previous one is still active is skipped. A failed fire retries up to 3
 attempts with the same `scheduled_time_ms`. A pinned fire can only be
-claimed by a node trusted with every job (an owner node, or a Host whose
+claimed by a node trusted with every job (a shared node, or a Host whose
 owner is an Owner or Administrator). When no such node runs the instance
 past the requirements sweep's grace period, the sweep fails the fire as
 `unroutable`. That covers an instance deployed nowhere and one deployed only
@@ -487,7 +487,7 @@ Every scan and acquire is admitted through a planner, whoever asks:
   title (or none in `account`) is 400; one whose titles are all in other
   people's accounts is 403. The title is then planned like any other.
 - `force` (re-download acquired titles) and `pdf_only` (companion PDFs only)
-  are part of the acquire's dedup key and run only on owner nodes; a host
+  are part of the acquire's dedup key and run only on shared nodes; a host
   is never handed such a job. A pinned instance is part of the key too, so
   a pinned acquire never stands in for an unpinned one or another pin.
 
@@ -506,8 +506,8 @@ from events (see [Search index](#search-index)). `library acquire
 --dry-run` plans keys locally without queueing. `library acquire` has no `--license` or `-o key=value` flags
 (both were removed, never implemented); a queued acquire runs with the
 settings of the node that claims it.
-A host node's operator asks its owner cluster for a scan with `bookclerk
-clusters scan` ([Clusters and host nodes](../server/cluster-hosts.md)).
+A branch node's operator asks its owner cluster for a scan with `bookclerk
+clusters scan` ([Clusters and branch nodes](../server/cluster-hosts.md)).
 
 ## Leases and crash recovery
 
@@ -643,7 +643,7 @@ nothing; the holder's timer picks the change up within 30 s.
 
 Before requirements and permits, the routed claim filters candidates
 through the trust predicate (`control_plane::trust`). The daemon's own
-worker holds the database and is trusted with every job. A Host node
+worker holds the database and is trusted with every job. A Branch node
 (H-4) owned by a user who is not an Owner or Administrator may claim only
 a scan or acquire of a named account linked to that user; a scan-all, any
 pinned or instance-bound job, listen sync, integration scans, and plugin
