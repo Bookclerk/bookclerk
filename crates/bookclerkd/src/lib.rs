@@ -51,6 +51,7 @@ mod openapi;
 mod openapi_contract;
 mod origin;
 mod passkeys;
+mod patron_scopes;
 mod placement;
 mod plugin_installs;
 mod profile;

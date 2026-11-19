@@ -80,6 +80,11 @@ pub enum ConfigActor {
     /// operator write. Built by [`super::verify_cluster_owner`], which reads
     /// the user's stored role and status.
     ClusterOwner(VerifiedClusterOwner),
+    /// An active portal Owner or Administrator. Writes the library's
+    /// default patron scope (`core.patron_scope`) only. Built by
+    /// [`super::verify_patron_administrator`], which reads the user's
+    /// stored role and status.
+    PatronAdministrator(VerifiedPatronAdministrator),
 }
 
 /// Proof that a user was an active Owner when the write was authorized.
@@ -95,6 +100,26 @@ pub struct VerifiedClusterOwner {
 
 impl VerifiedClusterOwner {
     /// Owner's user id.
+    #[must_use]
+    pub fn user_id(&self) -> i64 {
+        self.user_id
+    }
+}
+
+/// Proof that a user was an active Owner or Administrator when a patron
+/// scope write was authorized.
+///
+/// Only [`super::verify_patron_administrator`] constructs one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedPatronAdministrator {
+    /// The user's id.
+    pub(super) user_id: i64,
+    /// Audit id (`user:<user_id>`).
+    pub(super) audit: String,
+}
+
+impl VerifiedPatronAdministrator {
+    /// The user's id.
     #[must_use]
     pub fn user_id(&self) -> i64 {
         self.user_id
@@ -137,6 +162,7 @@ impl ConfigActor {
             Self::Scheduler => "scheduler",
             Self::NodeOwner(owner) => &owner.audit,
             Self::ClusterOwner(owner) => &owner.audit,
+            Self::PatronAdministrator(admin) => &admin.audit,
         }
     }
 
@@ -149,6 +175,11 @@ impl ConfigActor {
                 key.scope_type == CLUSTER_SCOPE_TYPE
                     && key.scope_id == CLUSTER_SCOPE_ID
                     && key.namespace == super::HOST_ENROLLMENT_NAMESPACE
+            }
+            Self::PatronAdministrator(_) => {
+                key.scope_type == CLUSTER_SCOPE_TYPE
+                    && key.scope_id == CLUSTER_SCOPE_ID
+                    && key.namespace == super::PATRON_SCOPE_NAMESPACE
             }
             Self::Administrator { .. } | Self::Member { .. } | Self::Scheduler => false,
         }

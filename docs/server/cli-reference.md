@@ -38,6 +38,7 @@ These options work with every command. Some commands have their own option of th
 - [`bookclerk events`](#bookclerk-events): Durable domain-event outbox and deliveries
 - [`bookclerk clusters`](#bookclerk-clusters): Owner clusters this install hosts for, and consent to their plugins
 - [`bookclerk nodes`](#bookclerk-nodes): Cluster nodes: liveness, capacity, budgets, and placement labels
+- [`bookclerk users`](#bookclerk-users): The library's people: patron scopes
 - [`bookclerk queues`](#bookclerk-queues): Plugin-owned queues on the outbox: counters, consumers, messages
 - [`bookclerk login`](#bookclerk-login): Print a loopback operator sign-in URL (requires a running daemon)
 - [`bookclerk diagnostics`](#bookclerk-diagnostics): Diagnostics ring buffer and opt-in upload
@@ -1857,6 +1858,66 @@ bookclerk nodes revoke [OPTIONS] <NODE>
 Arguments:
 
 - `<NODE>`: Branch node id
+
+## `bookclerk users`
+
+The library's people: patron scopes
+
+```text
+bookclerk users [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk users scope`](#bookclerk-users-scope): Read or set which part of the library a patron sees
+
+### `bookclerk users scope`
+
+Read or set which part of the library a patron sees
+
+```text
+bookclerk users scope [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk users scope get`](#bookclerk-users-scope-get): Print a patron's scope, or the library's default
+- [`bookclerk users scope set`](#bookclerk-users-scope-set): Replace a patron's scope, or the library's default. With no `--include` or `--exclude`, the scope hides nothing
+
+#### `bookclerk users scope get`
+
+Print a patron's scope, or the library's default
+
+```text
+bookclerk users scope get [OPTIONS] [USER]
+```
+
+Arguments:
+
+- `[USER]`: Login name or user id
+
+Options:
+
+- `--default`: The library's default scope, which patrons without their own follow
+
+#### `bookclerk users scope set`
+
+Replace a patron's scope, or the library's default. With no `--include` or `--exclude`, the scope hides nothing
+
+```text
+bookclerk users scope set [OPTIONS] [USER]
+```
+
+Arguments:
+
+- `[USER]`: Login name or user id
+
+Options:
+
+- `--default`: Set the library's default scope instead of one patron's
+- `--include <FIELD=VALUE>`: Show only books with this value (`genre=Kids`); fields are genre, series, author and narrator. Repeatable: a book needs one
+- `--exclude <FIELD=VALUE>`: Hide books with this value, whatever `--include` says. Repeatable
+- `--follow-default`: Drop the patron's own scope so they follow the library's default
 
 ## `bookclerk queues`
 

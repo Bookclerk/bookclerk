@@ -4,7 +4,8 @@
 //! handlers ([`crate::guest`]); the host stores the credentials they return.
 
 use bookclerk_storefront::{
-    CatalogHit, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts, SourcePurchaseHint,
+    CatalogHit, CatalogSearchOpts, ExpandSeed, PriceLookup, PricedAnswer, PricedListing,
+    PurchaseHintOpts, SourcePurchaseHint,
 };
 
 use crate::catalog::{
@@ -271,6 +272,145 @@ impl GraphicAudioSource {
         }
         Ok(hint)
     }
+
+    /// Resolves a title's GraphicAudio product and price, with every
+    /// listing a title search matched.
+    ///
+    /// A known product id, or a host that did not ask for a title search
+    /// (`lookup` other than [`PriceLookup::Title`]), gets
+    /// [`Self::purchase_hint`]'s answer. A title search reads the product
+    /// page of each of up to `TITLE_RECORDS` (3) matching results (series sets
+    /// left out) once, for its full record (author, cast, ISBN, release
+    /// date, running time) and its price, and returns them as priced
+    /// records for the host to place. The store's pick is the best title
+    /// match.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bookclerk_storefront::SourceError::RateLimited`] when the
+    /// store answers 429. Other failures are soft: a failed search answers
+    /// nothing, and a product page that cannot be read leaves that record
+    /// lean and unpriced.
+    pub async fn purchase_answer(
+        &self,
+        opts: &PurchaseHintOpts,
+    ) -> bookclerk_storefront::Result<PricedAnswer> {
+        let known = opts
+            .product_id
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|s| !s.is_empty());
+        let title = opts.title.as_deref().unwrap_or("").trim();
+        if known || opts.lookup != PriceLookup::Title || title.is_empty() {
+            return self.purchase_hint(opts).await.map(PricedAnswer::from);
+        }
+        let Ok(http) = catalog_http_client() else {
+            return Ok(PricedAnswer::default());
+        };
+        let q = match opts
+            .authors
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(a) => format!("{title} {a}"),
+            None => title.to_string(),
+        };
+        let hits = match crate::catalog::search_catalog(&http, &self.store_url, &q).await {
+            Ok(hits) => hits,
+            Err(err) => {
+                tracing::debug!(error = %err, "graphicaudio purchase search failed");
+                return Ok(PricedAnswer::default());
+            }
+        };
+        let mut records = Vec::new();
+        for hit in title_matches(title, &hits) {
+            records.push(self.priced_listing(hit, opts.with_price).await?);
+        }
+        Ok(PricedAnswer {
+            hint: records.first().map(|priced| priced.hint.clone()),
+            records,
+        })
+    }
+
+    /// One search result read in full from its product page, with its
+    /// purchase link and, when `with_price`, its price.
+    ///
+    /// # Errors
+    ///
+    /// Only the store's 429; a page that cannot be read or parsed leaves
+    /// the record as the search showed it, unpriced.
+    async fn priced_listing(
+        &self,
+        hit: &MagentoCatalogProduct,
+        with_price: bool,
+    ) -> bookclerk_storefront::Result<PricedListing> {
+        let page = fetch_ga_page(hit.url.as_deref(), &hit.product_id, &self.store_url).await?;
+        let detail = page
+            .as_deref()
+            .and_then(crate::detail::parse_product_detail)
+            .filter(|detail| detail.product_id == hit.product_id);
+        let price = match (&detail, page.as_deref()) {
+            (Some(detail), _) if detail.price_cents.is_some() => {
+                detail.price_cents.zip(detail.price_label.clone())
+            }
+            (_, Some(html)) => parse_ga_price_html(html),
+            (_, None) => None,
+        };
+        let record = detail.unwrap_or_else(|| ga_catalog_hit(hit, String::from("purchase search")));
+        let mut hint = SourcePurchaseHint {
+            product_id: hit.product_id.clone(),
+            title: Some(record.title.clone()).filter(|t| !t.is_empty()),
+            url: hit.url.clone().or_else(|| {
+                Some(format!(
+                    "{}/catalog/product/view/id/{}",
+                    self.store_url.trim_end_matches('/'),
+                    hit.product_id
+                ))
+            }),
+            ..Default::default()
+        };
+        if let (true, Some((cents, label))) = (with_price, price) {
+            hint.price_cents = Some(cents);
+            hint.currency = Some(String::from("USD"));
+            hint.price_label = Some(label);
+        }
+        Ok(PricedListing { record, hint })
+    }
+}
+
+/// Most listings one title search answers as records. Each costs a product
+/// page fetch, so this stays a handful.
+pub const TITLE_RECORDS: usize = 3;
+
+/// The search results whose titles match `query_title`, best match first:
+/// at most [`TITLE_RECORDS`], series sets left out.
+fn title_matches<'a>(
+    query_title: &str,
+    hits: &'a [MagentoCatalogProduct],
+) -> Vec<&'a MagentoCatalogProduct> {
+    let q = normalize_ga_title(query_title);
+    if q.is_empty() {
+        return Vec::new();
+    }
+    let mut matches: Vec<(f32, &MagentoCatalogProduct)> = hits
+        .iter()
+        .filter(|h| !h.is_series_set())
+        .filter(|h| ga_titles_match(&q, &normalize_ga_title(&h.title)))
+        .map(|h| (ga_title_score(&q, &normalize_ga_title(&h.title)), h))
+        .collect();
+    // Stable, so equally good matches keep the store's order.
+    matches.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut out: Vec<&MagentoCatalogProduct> = Vec::new();
+    for (_, hit) in matches {
+        if out.len() >= TITLE_RECORDS {
+            break;
+        }
+        if !out.iter().any(|h| h.product_id == hit.product_id) {
+            out.push(hit);
+        }
+    }
+    out
 }
 
 /// Maps a Magento catalog product onto a [`CatalogHit`] (no authors or pricing).
@@ -382,6 +522,27 @@ async fn fetch_ga_price(
     product_id: &str,
     store_url: &str,
 ) -> bookclerk_storefront::Result<Option<(i64, String)>> {
+    Ok(fetch_ga_page(product_url, product_id, store_url)
+        .await?
+        .and_then(|html| parse_ga_price_html(&html)))
+}
+
+/// Fetches a Magento product page: `product_url`, else the page for
+/// `product_id` under `store_url`.
+///
+/// # Returns
+///
+/// The page's HTML; `None` when it cannot be fetched.
+///
+/// # Errors
+///
+/// Returns [`bookclerk_storefront::SourceError::RateLimited`] when the
+/// store answers 429, with its `Retry-After` when it sent one.
+async fn fetch_ga_page(
+    product_url: Option<&str>,
+    product_id: &str,
+    store_url: &str,
+) -> bookclerk_storefront::Result<Option<String>> {
     let Ok(http) = catalog_http_client() else {
         return Ok(None);
     };
@@ -411,7 +572,7 @@ async fn fetch_ga_price(
     let Ok(html) = resp.text().await else {
         return Ok(None);
     };
-    Ok(parse_ga_price_html(&html))
+    Ok(Some(html))
 }
 
 /// Reads `data-price-amount` or a `$` amount near Magento price wrappers; returns cents and a USD label.

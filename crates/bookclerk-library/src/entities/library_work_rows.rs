@@ -55,6 +55,10 @@ pub struct Model {
     /// RFC 3339 timestamp at which the refresh that wrote this row read the
     /// model; a refresh that read earlier never overwrites it.
     pub refreshed_at: String,
+    /// 1 once every `library_work_facets` row of the refresh that wrote
+    /// this row is in place, 0 while they are being replaced. A patron
+    /// scope admits only rows at 1.
+    pub facets_ready: i64,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).

@@ -252,6 +252,11 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/users/{id}/avatar", "allow"],
   ["POST", "/api/users/{id}/claim-ticket", "deny"],
   ["POST", "/api/users/{id}/reset-password", "deny"],
+  // Patron scopes: readable, never changed.
+  ["GET", "/api/users/default-scope", "allow"],
+  ["PUT", "/api/users/default-scope", "deny"],
+  ["GET", "/api/users/{id}/scope", "allow"],
+  ["PUT", "/api/users/{id}/scope", "deny"],
 
   // The host as an OpenID provider, and the legacy unprefixed routes.
   ["GET", "/.well-known/openid-configuration", "deny"],

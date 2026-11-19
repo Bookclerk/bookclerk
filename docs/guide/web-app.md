@@ -41,6 +41,9 @@ Everyone in a library has a role. It decides what they can do:
 | Administrator | Everything a Member can, plus scan, download books and add people |
 | Owner | Everything an Administrator can, plus manage sign-in options and other Administrators |
 
+An Owner or Administrator can limit which books a Member or Host sees; see
+[Limit what a patron sees](sharing.md#limit-what-a-patron-sees).
+
 The **operator** is not a person in the library. It is the key to the
 server itself: the operator token. It is used to set up the server, turn on
 plugins and change server settings.

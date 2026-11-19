@@ -167,7 +167,7 @@ pub use sql_plan::{
 pub use store::event_outbox::{EVENT_STREAM_SCAN_FACTOR, EVENT_STREAM_SETTLE_SECS};
 pub use store::library_index::{
     facet_key, sort_title, FacetValue, FacetValuesOf, FacetValuesPage, LibraryWorkRow, WorkCursor,
-    WorkFacet, WorkFilter, WorkPage, WorkPageQuery, WorkSort, LIBRARY_INDEX_LAYOUT,
+    WorkFacet, WorkFilter, WorkPage, WorkPageQuery, WorkScope, WorkSort, LIBRARY_INDEX_LAYOUT,
 };
 pub use store::work_detail::{
     EditionDetail, EditionListing, HoldingHolder, ListingHolding, WorkDetail,

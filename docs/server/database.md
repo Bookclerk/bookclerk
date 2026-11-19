@@ -668,8 +668,8 @@ collection deletes unreferenced objects.
 Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `accounts`, `books`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
-`operator_sessions`, `account_links`, `member_account_rules`,
-`account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
+`operator_sessions`, `account_links`, `member_account_rules`, `patron_scopes`,
+`patron_scope_keys`, `account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `discover_candidates`, `discover_store_calls`,
 `discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
@@ -681,7 +681,13 @@ model tables below.
 
 `member_account_rules` holds the operator's per-member rule on store
 accounts: a row with `may_connect = 0` stops that user from connecting
-store accounts here, and no row allows it. `account_shares` records each
+store accounts here, and no row allows it. `patron_scopes` holds a
+Member's own patron scope as JSON; a Member with no row follows the
+library's default scope (see [Sharing](../guide/sharing.md#limit-what-a-patron-sees)). `patron_scope_keys`
+holds a scope's include and exclude values as rows, keyed by a hash of
+the whole value set, so the Library filter joins them with a fixed
+number of parameters however many rules a scope has; the rows are
+written the first time a scope is used and never change. `account_shares` records each
 account a person's join sent to a branch (`sent`, peer `node:<id>`) or
 received from a library (`received`, peer `link:<cluster id>`); it is
 removed with the account. `account_credential_revisions` holds, per account
@@ -772,7 +778,9 @@ library holds as works, expressions and editions:
   author, narrator, series, genre, publisher or source a held top-level
   work has, keyed by the lower-cased value. Written with the work's
   `library_work_rows` row and fenced by its refresh stamp; an unheld work
-  has none.
+  has none. A refresh's facets can span several batches, so the row's
+  `facets_ready` is 0 until the last of them is written, and a patron
+  scope admits only rows at 1.
 - `user_title_state`: one user's finished flag, ratings and tags for a
   work, keyed `(user_id, work_id)`. Fields imported for an account reach
   every user linked to that account, and each user edits their own with

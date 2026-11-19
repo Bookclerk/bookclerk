@@ -72,6 +72,7 @@ boundary extends it.
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
 | `members_books_request` | A library operator's "Acquire all of this branch's members' books" choice, the body of `PUT /api/config/branches/members-books` | `bookclerk-library::control_plane::parse_members_books_request` |
+| `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
@@ -530,6 +531,19 @@ only that. The others check:
   and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/members_books_request.rs`, replayed from
   `bookclerk-library`.
+- **`patron_scope_request`**: the first byte picks the body (`d` for the
+  default scope, `u` for a user's) and the oracle reads the rest as an
+  untyped JSON value. A scope is accepted exactly when it is one object
+  with no repeated keys at any depth and at most the key `rules`, an array
+  of at most 16 rules, each exactly `field` (`genre`, `series`, `author` or
+  `narrator`), `value` (a string, 1 to 256 bytes once trimmed, no NUL) and
+  `effect` (`include` or `exclude`), with no two rules sharing field,
+  effect and lowercase trimmed value, and the trimmed rules come to at
+  most 1,024 bytes as compact JSON. A user's body is at most the key
+  `scope`, `null` or such a scope. The parser then returns the rules in
+  order with trimmed values, and otherwise refuses the body as `Invalid`.
+  The shared oracle is `fuzz/oracles/patron_scope_request.rs`, replayed
+  from `bookclerk-library`.
 - **`work_split_request`**: reads the body as an untyped JSON value. It
   is accepted exactly when it is one object with no repeated keys and
   exactly the key `expression_ids`, an array of strings each 1 to 64 bytes

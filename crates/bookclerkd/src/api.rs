@@ -1423,6 +1423,14 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(auth::password_login, auth::set_password))
         .routes(routes!(auth::list_users, auth::create_user))
         .routes(routes!(auth::patch_user, auth::delete_user))
+        .routes(routes!(
+            crate::patron_scopes::get_default_scope,
+            crate::patron_scopes::put_default_scope
+        ))
+        .routes(routes!(
+            crate::patron_scopes::get_user_scope,
+            crate::patron_scopes::put_user_scope
+        ))
         .routes(routes!(auth::create_user_claim_ticket))
         .routes(routes!(auth::reset_user_password))
 }

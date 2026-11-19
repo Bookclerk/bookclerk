@@ -303,6 +303,25 @@ impl From<abi::PurchaseHintResult> for PricedAnswer {
     }
 }
 
+impl From<PricedAnswer> for abi::PurchaseHintResult {
+    /// A guest's answer as it goes over the wire: `found` when the store
+    /// picked a hint, plus every priced title-search record.
+    fn from(answer: PricedAnswer) -> Self {
+        Self {
+            found: answer.hint.is_some(),
+            hint: answer.hint.map(abi::PurchaseHint::from).unwrap_or_default(),
+            records: answer
+                .records
+                .into_iter()
+                .map(|priced| abi::PricedRecord {
+                    record: abi::CatalogHit::from(priced.record),
+                    hint: abi::PurchaseHint::from(priced.hint),
+                })
+                .collect(),
+        }
+    }
+}
+
 impl From<CatalogSearchSort> for abi::CatalogSort {
     /// Host-only re-rank modes (`price`, `length`) have no upstream sort; they
     /// travel as `relevance` and the host re-ranks the merged result.
@@ -669,6 +688,52 @@ mod tests {
         let missing = PricedAnswer::from(abi::PurchaseHintResult::default());
         assert!(missing.hint.is_none());
         assert!(missing.records.is_empty());
+    }
+
+    /// A guest's answer survives the trip to the wire and back: the pick,
+    /// `found`, and every record with its price.
+    #[test]
+    fn priced_answers_round_trip_through_the_wire_result() {
+        let listing = |id: &str, cents: i64| PricedListing {
+            record: CatalogHit {
+                product_id: id.into(),
+                title: "The Sunlit Man".into(),
+                ..Default::default()
+            },
+            hint: SourcePurchaseHint {
+                product_id: id.into(),
+                price_cents: Some(cents),
+                ..Default::default()
+            },
+        };
+        let answer = PricedAnswer {
+            hint: Some(listing("narrated", 1000).hint),
+            records: vec![listing("narrated", 1000), listing("cast", 2000)],
+        };
+        let wire = abi::PurchaseHintResult::from(answer);
+        assert!(wire.found);
+        assert_eq!(wire.records.len(), 2);
+        let back = PricedAnswer::from(wire);
+        assert_eq!(
+            back.hint.map(|h| (h.product_id, h.price_cents)),
+            Some(("narrated".to_string(), Some(1000)))
+        );
+        let records: Vec<(String, Option<i64>)> = back
+            .records
+            .into_iter()
+            .map(|p| (p.record.product_id, p.hint.price_cents))
+            .collect();
+        assert_eq!(
+            records,
+            vec![
+                ("narrated".to_string(), Some(1000)),
+                ("cast".to_string(), Some(2000))
+            ]
+        );
+
+        let nothing = abi::PurchaseHintResult::from(PricedAnswer::default());
+        assert!(!nothing.found);
+        assert!(nothing.records.is_empty());
     }
 
     #[test]

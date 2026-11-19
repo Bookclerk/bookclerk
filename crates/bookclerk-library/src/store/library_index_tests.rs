@@ -3,7 +3,9 @@
 
 use bookclerk_resolve::{MediaKind, WorkKind};
 
-use super::{FacetValuesOf, WorkCursor, WorkFacet, WorkFilter, WorkPageQuery, WorkSort};
+use super::{
+    facet_key, FacetValuesOf, WorkCursor, WorkFacet, WorkFilter, WorkPageQuery, WorkScope, WorkSort,
+};
 use crate::models::AcquireStatus;
 use crate::store::holdings::HoldingSelection;
 use crate::store::{LibraryStore, NewBook};
@@ -690,7 +692,12 @@ async fn facets_filter_works_and_list_their_values_under(profile: Profile) {
     let mut after: Option<String> = None;
     loop {
         let page = store
-            .library_facet_values(FacetValuesOf::Facet(WorkFacet::Genre), after.as_deref(), 2)
+            .library_facet_values(
+                FacetValuesOf::Facet(WorkFacet::Genre),
+                after.as_deref(),
+                2,
+                None,
+            )
             .await
             .unwrap();
         values.extend(page.values);
@@ -825,7 +832,7 @@ async fn tags_and_progress_filter_by_the_users_own_state_under(profile: Profile)
     let mut after: Option<String> = None;
     loop {
         let page = store
-            .library_facet_values(FacetValuesOf::Tags(ana.id), after.as_deref(), 10)
+            .library_facet_values(FacetValuesOf::Tags(ana.id), after.as_deref(), 10, None)
             .await
             .unwrap();
         tags.extend(page.values);
@@ -917,7 +924,7 @@ async fn one_refresh_of_many_works_writes_each_row_and_its_values_under(profile:
             let mut after: Option<String> = None;
             loop {
                 let page = store
-                    .library_facet_values(FacetValuesOf::Facet(facet), after.as_deref(), 500)
+                    .library_facet_values(FacetValuesOf::Facet(facet), after.as_deref(), 500, None)
                     .await
                     .unwrap();
                 values.extend(page.values);
@@ -1093,4 +1100,296 @@ async fn a_works_cover_comes_from_its_edition_listing_or_work() {
         edition_cover(&store, &edition).await.as_deref(),
         Some("https://img.example/store.jpg")
     );
+}
+
+#[tokio::test]
+async fn a_patron_scope_filters_lists_search_and_facets() {
+    for profile in Profile::ALL {
+        a_patron_scope_filters_lists_search_and_facets_under(profile).await;
+    }
+}
+
+/// [`a_patron_scope_filters_lists_search_and_facets`] under one profile.
+async fn a_patron_scope_filters_lists_search_and_facets_under(profile: Profile) {
+    let store = store_under(profile).await;
+    let hobbit = scan(&store, "B001", "acct-1", "The Hobbit", "J. R. R. Tolkien").await;
+    let dune = scan(&store, "B002", "acct-1", "Dune", "Frank Herbert").await;
+    let anathem = scan(&store, "B003", "acct-2", "Anathem", "Neal Stephenson").await;
+    let ids = [hobbit.clone(), dune.clone(), anathem.clone()];
+    store.refresh_library_works(&ids).await.unwrap();
+    let author = |name: &str| (WorkFacet::Author, facet_key(name));
+    let scoped = |scope: WorkScope| WorkPageQuery {
+        limit: 10,
+        scope: Some(scope),
+        ..WorkPageQuery::default()
+    };
+
+    let tolkien_only = WorkScope {
+        include: vec![author("J. R. R. Tolkien")],
+        ..WorkScope::default()
+    };
+    assert_eq!(
+        walk(&store, scoped(tolkien_only.clone())).await,
+        ["The Hobbit"],
+        "{profile:?}: include"
+    );
+    let no_herbert = WorkScope {
+        exclude: vec![author(" FRANK HERBERT ")],
+        ..WorkScope::default()
+    };
+    assert_eq!(
+        walk(&store, scoped(no_herbert)).await,
+        ["Anathem", "The Hobbit"],
+        "{profile:?}: exclude"
+    );
+    let both = WorkScope {
+        include: vec![author("J. R. R. Tolkien"), author("Frank Herbert")],
+        exclude: vec![author("Frank Herbert")],
+        ..WorkScope::default()
+    };
+    assert_eq!(
+        walk(&store, scoped(both)).await,
+        ["The Hobbit"],
+        "{profile:?}: exclude wins"
+    );
+
+    // A refresh that has replaced only some of a work's facets hides it
+    // from scoped patrons until the last of them is written.
+    let half_written = |ready: i64| {
+        let store = store.clone();
+        let dune = dune.clone();
+        async move {
+            use sea_orm::ConnectionTrait as _;
+            store
+                .db()
+                .execute_unprepared(&format!(
+                    "UPDATE library_work_rows SET facets_ready = {ready} WHERE work_id = '{dune}'"
+                ))
+                .await
+                .unwrap();
+            store
+                .db()
+                .execute_unprepared(&format!(
+                    "DELETE FROM library_work_facets WHERE work_id = '{dune}'"
+                ))
+                .await
+                .unwrap();
+        }
+    };
+    half_written(0).await;
+    let no_tolkien = WorkScope {
+        exclude: vec![author("J. R. R. Tolkien")],
+        ..WorkScope::default()
+    };
+    assert_eq!(
+        walk(&store, scoped(no_tolkien.clone())).await,
+        ["Anathem"],
+        "{profile:?}: half-written facets"
+    );
+    assert_eq!(
+        walk(
+            &store,
+            WorkPageQuery {
+                limit: 10,
+                ..WorkPageQuery::default()
+            }
+        )
+        .await
+        .len(),
+        3,
+        "{profile:?}: unscoped reads still see it"
+    );
+    store.refresh_library_works(&ids).await.unwrap();
+    assert_eq!(
+        walk(&store, scoped(no_tolkien)).await,
+        ["Anathem", "Dune"],
+        "{profile:?}: a finished refresh shows it again"
+    );
+
+    // What the patron's own account holds always passes.
+    let patron = |name: &'static str, plugin: &'static str| {
+        let store = store.clone();
+        async move {
+            let user = store
+                .create_user(crate::models::UserRole::Member, Some(name), None)
+                .await
+                .unwrap();
+            store
+                .upsert_account(plugin, "acct-2", "us", None, true, plugin)
+                .await
+                .unwrap();
+            let identity = store
+                .ensure_local_portal_identity(user.id, None)
+                .await
+                .unwrap();
+            store
+                .link_account(identity.id, plugin, "acct-2", plugin)
+                .await
+                .unwrap();
+            user.id
+        }
+    };
+    let own = WorkScope {
+        include: vec![author("J. R. R. Tolkien")],
+        exclude: vec![author("Neal Stephenson")],
+        owner: Some(patron("Sam", "audible").await),
+    };
+    assert_eq!(
+        walk(&store, scoped(own.clone())).await,
+        ["Anathem", "The Hobbit"],
+        "{profile:?}: own books"
+    );
+    let other_plugin = WorkScope {
+        owner: Some(patron("Kim", "libro").await),
+        ..own
+    };
+    assert_eq!(
+        walk(&store, scoped(other_plugin)).await,
+        ["The Hobbit"],
+        "{profile:?}: own accounts match by plugin too"
+    );
+
+    // Search results and work pages read through the same filter.
+    let found = store
+        .library_works_by_ids(&ids, &scoped(tolkien_only.clone()))
+        .await
+        .unwrap();
+    assert_eq!(
+        found.iter().map(|w| w.work_id.as_str()).collect::<Vec<_>>(),
+        [hobbit.as_str()],
+        "{profile:?}: search"
+    );
+
+    // Facet values count only the works in scope.
+    assert_eq!(
+        author_values(&store, Some(&tolkien_only)).await,
+        ["J. R. R. Tolkien"],
+        "{profile:?}: facet values"
+    );
+    assert_eq!(
+        author_values(&store, Some(&WorkScope::default()))
+            .await
+            .len(),
+        3,
+        "{profile:?}: empty scope"
+    );
+}
+
+#[tokio::test]
+async fn a_scope_of_the_most_rules_fits_every_bind_budget() {
+    for profile in Profile::ALL {
+        a_scope_of_the_most_rules_fits_every_bind_budget_under(profile).await;
+    }
+}
+
+/// [`a_scope_of_the_most_rules_fits_every_bind_budget`] under one profile:
+/// a scope of [`crate::control_plane::MAX_SCOPE_RULES`] values still reads
+/// through every Library path, because its values are joined from
+/// `patron_scope_keys` rather than bound one by one.
+async fn a_scope_of_the_most_rules_fits_every_bind_budget_under(profile: Profile) {
+    let store = store_under(profile).await;
+    let hobbit = scan(&store, "B001", "acct-1", "The Hobbit", "J. R. R. Tolkien").await;
+    let dune = scan(&store, "B002", "acct-1", "Dune", "Frank Herbert").await;
+    let anathem = scan(&store, "B003", "acct-2", "Anathem", "Neal Stephenson").await;
+    let ids = [hobbit.clone(), dune.clone(), anathem.clone()];
+    store.refresh_library_works(&ids).await.unwrap();
+    let user = store
+        .create_user(crate::models::UserRole::Member, Some("Sam"), None)
+        .await
+        .unwrap();
+    let identity = store
+        .ensure_local_portal_identity(user.id, None)
+        .await
+        .unwrap();
+    store
+        .link_account(identity.id, "audible", "acct-2", "audible")
+        .await
+        .unwrap();
+
+    let half = crate::control_plane::MAX_SCOPE_RULES / 2;
+    let mut include = vec![(WorkFacet::Author, facet_key("J. R. R. Tolkien"))];
+    include.extend((1..half).map(|n| (WorkFacet::Genre, format!("genre {n}"))));
+    let mut exclude = vec![(WorkFacet::Author, facet_key("Frank Herbert"))];
+    exclude.extend((1..half).map(|n| (WorkFacet::Series, format!("series {n}"))));
+    let scope = WorkScope {
+        include,
+        exclude,
+        owner: Some(user.id),
+    };
+    assert_eq!(
+        scope.include.len() + scope.exclude.len(),
+        crate::control_plane::MAX_SCOPE_RULES
+    );
+    let query = WorkPageQuery {
+        limit: 1,
+        scope: Some(scope.clone()),
+        filter: Some(WorkFilter::Facet {
+            facet: WorkFacet::Author,
+            value: "J. R. R. Tolkien".into(),
+        }),
+        ..WorkPageQuery::default()
+    };
+    assert_eq!(walk(&store, query).await, ["The Hobbit"], "{profile:?}");
+    let all = WorkPageQuery {
+        limit: 1,
+        scope: Some(scope.clone()),
+        ..WorkPageQuery::default()
+    };
+    assert_eq!(
+        walk(&store, all.clone()).await,
+        ["Anathem", "The Hobbit"],
+        "{profile:?}: own books pass"
+    );
+    let found = store.library_works_by_ids(&ids, &all).await.unwrap();
+    assert_eq!(found.len(), 2, "{profile:?}: search");
+    assert!(store.work_in_scope(&hobbit, &scope).await.unwrap());
+    assert!(!store.work_in_scope(&dune, &scope).await.unwrap());
+    assert_eq!(
+        author_values(&store, Some(&scope)).await,
+        ["J. R. R. Tolkien", "Neal Stephenson"],
+        "{profile:?}: facet values"
+    );
+
+    // The value set's rows are written once and shared by an equal scope.
+    let rows = || async {
+        use sea_orm::{EntityTrait as _, PaginatorTrait as _};
+        crate::entities::patron_scope_keys::Entity::find()
+            .count(store.db())
+            .await
+            .unwrap()
+    };
+    let written = rows().await;
+    assert_eq!(
+        written,
+        u64::try_from(crate::control_plane::MAX_SCOPE_RULES).unwrap(),
+        "{profile:?}"
+    );
+    let mut reordered = scope.clone();
+    reordered.include.reverse();
+    reordered.owner = None;
+    assert_eq!(reordered.key_set_id(), scope.key_set_id());
+    assert!(store.work_in_scope(&hobbit, &reordered).await.unwrap());
+    assert_eq!(rows().await, written, "{profile:?}: shared rows");
+}
+
+/// Every author value inside `scope`, page by page.
+async fn author_values(store: &LibraryStore, scope: Option<&WorkScope>) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let page = store
+            .library_facet_values(
+                FacetValuesOf::Facet(WorkFacet::Author),
+                after.as_deref(),
+                50,
+                scope,
+            )
+            .await
+            .unwrap();
+        values.extend(page.values.into_iter().map(|v| v.value));
+        match page.next {
+            Some(next) => after = Some(next),
+            None => return values,
+        }
+    }
 }

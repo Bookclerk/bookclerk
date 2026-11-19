@@ -7,7 +7,7 @@
 use bookclerk_plugin_source_libro::APP_VER;
 use bookclerk_plugin_source_libro::{explore_search_path, LibroSource, CATALOG_USER_AGENT};
 use bookclerk_storefront::{
-    CatalogSearchOpts, ExpandSeed, PurchaseHintOpts, DEFAULT_CATALOG_SEARCH_LIMIT,
+    CatalogSearchOpts, ExpandSeed, PriceLookup, PurchaseHintOpts, DEFAULT_CATALOG_SEARCH_LIMIT,
 };
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -702,4 +702,128 @@ async fn an_isbn_10_finds_its_isbn_13_search_row() {
         .unwrap()
         .unwrap();
     assert_eq!(hint.product_id, "9780306406157");
+}
+
+/// The host asked whether Libro.fm sells this exact ISBN: an unsold edition
+/// answers nothing, never another edition the title search would find.
+#[tokio::test]
+async fn an_isbn_lookup_never_falls_back_to_a_title_search() {
+    let server = MockServer::start().await;
+    mount_details(
+        &server,
+        "9780000000099",
+        200,
+        details(9780000000099, "Dune (Region Locked)", "9.99", false, vec![]),
+    )
+    .await;
+    mount_search(
+        &server,
+        "Dune",
+        page(vec![row(9781427201447, "Dune", "Frank Herbert")]),
+    )
+    .await;
+    let source = LibroSource::with_base_url(server.uri());
+
+    let exact = source
+        .purchase_answer(&PurchaseHintOpts {
+            isbn: Some("9780000000099".into()),
+            title: Some("Dune".into()),
+            with_price: true,
+            lookup: PriceLookup::Isbn,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(exact.hint.is_none());
+    assert!(exact.records.is_empty());
+}
+
+/// A title search answers every row Libro.fm sells as a priced record, in
+/// search order, with the first as the store's pick; an unsold row is left
+/// out and a row whose details miss is offered as the search showed it.
+#[tokio::test]
+async fn a_title_search_returns_every_for_sale_row_as_a_record() {
+    let server = MockServer::start().await;
+    mount_search(
+        &server,
+        "Dune Frank Herbert",
+        page(vec![
+            row(9781427201447, "Dune", "Frank Herbert"),
+            row(9780000000099, "Dune (Region Locked)", "Frank Herbert"),
+            row(9781250000001, "Dune (Full Cast)", "Frank Herbert"),
+            row(9781250000002, "Dune (Unlisted)", "Frank Herbert"),
+        ]),
+    )
+    .await;
+    mount_details(
+        &server,
+        "9781427201447",
+        200,
+        details(9781427201447, "Dune", "29.99", true, vec![]),
+    )
+    .await;
+    mount_details(
+        &server,
+        "9780000000099",
+        200,
+        details(9780000000099, "Dune (Region Locked)", "9.99", false, vec![]),
+    )
+    .await;
+    mount_details(
+        &server,
+        "9781250000001",
+        200,
+        details(9781250000001, "Dune (Full Cast)", "39.99", true, vec![]),
+    )
+    .await;
+    let source = LibroSource::with_base_url(server.uri());
+
+    let answer = source
+        .purchase_answer(&PurchaseHintOpts {
+            title: Some("Dune".into()),
+            authors: Some("Frank Herbert".into()),
+            with_price: true,
+            lookup: PriceLookup::Title,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let records: Vec<(String, Option<String>, Option<i64>)> = answer
+        .records
+        .iter()
+        .map(|p| {
+            (
+                p.record.product_id.clone(),
+                p.record.isbn(),
+                p.hint.price_cents,
+            )
+        })
+        .collect();
+    assert_eq!(
+        records,
+        vec![
+            (
+                "9781427201447".to_string(),
+                Some("9781427201447".to_string()),
+                Some(2999)
+            ),
+            (
+                "9781250000001".to_string(),
+                Some("9781250000001".to_string()),
+                Some(3999)
+            ),
+            (
+                "9781250000002".to_string(),
+                Some("9781250000002".to_string()),
+                None
+            ),
+        ]
+    );
+    assert_eq!(
+        answer.records[0].record.publisher.as_deref(),
+        Some("Macmillan Audio")
+    );
+    let pick = answer.hint.unwrap();
+    assert_eq!(pick.product_id, "9781427201447");
+    assert_eq!(pick.price_cents, Some(2999));
 }

@@ -1958,6 +1958,69 @@ pub async fn caller_portal_identity(
     timed_portal_identity_from_headers(&library, headers).await
 }
 
+/// Who an admitted request acts as, for checks that must fail closed.
+///
+/// Unlike [`caller_portal_identity`], which folds "nobody", "the operator"
+/// and "the library did not answer" into `None`, this keeps them apart so a
+/// patron limit (scope or member control) is lifted only for a caller that
+/// is positively the operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallerSubject {
+    /// The operator (token, operator session not impersonating, or auth
+    /// turned off): never limited.
+    Operator,
+    /// A signed-in person, or an operator impersonating one. `None` when
+    /// the session's identity is linked to no library user, which is
+    /// limited like a patron with no store accounts of their own.
+    Person(Option<i64>),
+    /// The session cookie or card no longer names a live session.
+    SignedOut,
+    /// The library failed or did not answer, so the caller is unknown.
+    Unavailable,
+}
+
+/// Resolves who an admitted request acts as ([`CallerSubject`]).
+///
+/// # Arguments
+///
+/// * `state` - Daemon state holding the auth configuration.
+/// * `library` - The library the request reads, so the caller is resolved
+///   against the same store as the rows it then sees.
+/// * `headers` - Request headers carrying the operator token, operator
+///   session or portal session.
+///
+/// # Returns
+///
+/// [`CallerSubject::Unavailable`] when a library read fails or times out.
+pub(crate) async fn caller_subject(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    headers: &HeaderMap,
+) -> CallerSubject {
+    let auth = state.auth_snapshot().await;
+    if !auth.enabled {
+        return CallerSubject::Operator;
+    }
+    match lookup_operator_session(library, headers).await {
+        OperatorSessionLookup::Found(op) => {
+            return match op.impersonating_user_id {
+                Some(user_id) => CallerSubject::Person(Some(user_id)),
+                None => CallerSubject::Operator,
+            };
+        }
+        OperatorSessionLookup::Unavailable => return CallerSubject::Unavailable,
+        OperatorSessionLookup::Absent => {}
+    }
+    if authorize_operator_bearer_only(&auth, headers) {
+        return CallerSubject::Operator;
+    }
+    match portal_lookup_from_headers(library, headers).await {
+        PortalLookup::SignedIn(identity) => CallerSubject::Person(identity.user_id),
+        PortalLookup::SignedOut => CallerSubject::SignedOut,
+        PortalLookup::Unavailable => CallerSubject::Unavailable,
+    }
+}
+
 /// Subject key + optional portal identity id for the caller's preferences row.
 ///
 /// Portal callers must resolve to their own prefs key. If the portal-identity
@@ -2394,6 +2457,44 @@ pub(crate) struct ResolvedOperatorSession {
     pub(crate) impersonating_user_id: Option<i64>,
 }
 
+/// What looking up an operator session cookie found.
+pub(crate) enum OperatorSessionLookup {
+    /// The cookie names a live operator session.
+    Found(ResolvedOperatorSession),
+    /// No operator session cookie, or one naming no session.
+    Absent,
+    /// The library failed or did not answer in time.
+    Unavailable,
+}
+
+/// Looks up the hashed operator session cookie in `library`, keeping a
+/// failed or timed-out read apart from a missing session.
+async fn lookup_operator_session(
+    library: &bookclerk_library::LibraryStore,
+    headers: &HeaderMap,
+) -> OperatorSessionLookup {
+    let Some(session_id) = session_id_from_headers(headers) else {
+        return OperatorSessionLookup::Absent;
+    };
+    let token_hash = hash_token(&session_id);
+    match timeout(AUTH_DB_TIMEOUT, library.get_operator_session(&token_hash)).await {
+        Ok(Ok(Some(session))) => OperatorSessionLookup::Found(ResolvedOperatorSession {
+            token_hash,
+            elevated_from_user_id: session.elevated_from_user_id,
+            impersonating_user_id: session.impersonating_user_id,
+        }),
+        Ok(Ok(None)) => OperatorSessionLookup::Absent,
+        Ok(Err(err)) => {
+            tracing::warn!(error = %err, "operator session lookup failed");
+            OperatorSessionLookup::Unavailable
+        }
+        Err(_) => {
+            tracing::warn!("operator session lookup timed out");
+            OperatorSessionLookup::Unavailable
+        }
+    }
+}
+
 /// Looks up the hashed session cookie; missing, timed-out, or failed lookups fail closed.
 pub(crate) async fn resolve_operator_session(
     state: &AppState,
@@ -2401,24 +2502,11 @@ pub(crate) async fn resolve_operator_session(
     headers: &HeaderMap,
 ) -> Option<ResolvedOperatorSession> {
     let _ = auth;
-    let session_id = session_id_from_headers(headers)?;
-    let token_hash = hash_token(&session_id);
+    session_id_from_headers(headers)?;
     let library = state.library_snapshot().await;
-    match timeout(AUTH_DB_TIMEOUT, library.get_operator_session(&token_hash)).await {
-        Ok(Ok(Some(session))) => Some(ResolvedOperatorSession {
-            token_hash,
-            elevated_from_user_id: session.elevated_from_user_id,
-            impersonating_user_id: session.impersonating_user_id,
-        }),
-        Ok(Ok(None)) => None,
-        Ok(Err(err)) => {
-            tracing::warn!(error = %err, "operator session lookup failed");
-            None
-        }
-        Err(_) => {
-            tracing::warn!("operator session lookup timed out");
-            None
-        }
+    match lookup_operator_session(&library, headers).await {
+        OperatorSessionLookup::Found(session) => Some(session),
+        OperatorSessionLookup::Absent | OperatorSessionLookup::Unavailable => None,
     }
 }
 
@@ -3967,7 +4055,7 @@ pub async fn set_password(
 
 /// Who may provision users, and which roles they may assign or manage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Provisioner {
+pub(crate) enum Provisioner {
     /// Daemon operator token or session (no first-party `users` row).
     Operator,
     /// Elevated owner principal for privileged operator actions.
@@ -3989,7 +4077,7 @@ enum Provisioner {
 
 impl Provisioner {
     /// Security-audit actor string (`operator` or `user:{id}`).
-    fn audit_actor(self) -> String {
+    pub(crate) fn audit_actor(self) -> String {
         match self {
             Self::Operator => String::from("operator"),
             Self::ElevatedOwner { user_id }
@@ -3999,7 +4087,7 @@ impl Provisioner {
     }
 
     /// First-party user id for portal provisioners; `None` for the operator principal.
-    fn user_id(self) -> Option<i64> {
+    pub(crate) fn user_id(self) -> Option<i64> {
         match self {
             Self::Operator => None,
             Self::ElevatedOwner { user_id }
@@ -4009,7 +4097,7 @@ impl Provisioner {
     }
 
     /// Whether this principal may assign `role` (operators and elevated owners: any; owners: not Owner; admins: Member only).
-    fn can_assign_role(self, role: UserRole) -> bool {
+    pub(crate) fn can_assign_role(self, role: UserRole) -> bool {
         match self {
             Self::Operator | Self::ElevatedOwner { .. } => true,
             Self::Owner { .. } => !matches!(role, UserRole::Owner),
@@ -4019,7 +4107,7 @@ impl Provisioner {
 
     /// Profile patch / self-delete may target the caller. Authenticator reset,
     /// claim remint, and `PUT /api/auth/password` with `user_id` must not.
-    fn can_manage_target(self, target_role: UserRole, is_self: bool) -> bool {
+    pub(crate) fn can_manage_target(self, target_role: UserRole, is_self: bool) -> bool {
         if is_self {
             return true;
         }
@@ -4036,7 +4124,7 @@ impl Provisioner {
 ///
 /// Impersonation uses the target user's role (Owner / Administrator), not
 /// operator privileges.
-async fn authorize_provisioner(
+pub(crate) async fn authorize_provisioner(
     state: &AppState,
     auth: &OperatorAuthState,
     headers: &HeaderMap,
