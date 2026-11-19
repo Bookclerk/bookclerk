@@ -42,7 +42,7 @@ use bookclerk_library::control_plane::{
     FORWARDABLE_KEYS_MAX_PAGE,
 };
 use bookclerk_library::{
-    AcquireStatus, AcquiredBookKey, BookRecord, LibraryStore, ACQUIRED_KEYS_MAX_PAGE,
+    AcquireStatus, AcquireTitle, AcquiredTitleKey, LibraryStore, ACQUIRED_KEYS_MAX_PAGE,
 };
 use bookclerk_node_client::{CatalogSession, HostClientHandle, OwnerCallError};
 use bookclerk_node_proto::{
@@ -50,6 +50,7 @@ use bookclerk_node_proto::{
     UploadProbe, MAX_CATALOG_BATCH_TITLES, MAX_UPLOAD_FILES,
 };
 use bookclerk_storage::StorageBackend;
+use chrono::{DateTime, Utc};
 use sha2::Digest as _;
 use tokio::io::AsyncReadExt as _;
 use tokio::sync::watch;
@@ -133,8 +134,8 @@ pub struct SyncReport {
 /// pass never holds every title's metadata at once.
 #[derive(Debug, Clone)]
 enum Source {
-    /// A book acquired on this install.
-    Own(AcquiredBookKey),
+    /// A store account's title of an edition acquired on this install.
+    Own(AcquiredTitleKey),
     /// A title one of this install's branches shared, files delivered.
     Branch(ForwardableBranchKey),
 }
@@ -142,8 +143,8 @@ enum Source {
 /// The full row behind a [`Source`], read just before it is used.
 #[derive(Debug, Clone)]
 enum Loaded {
-    /// A book acquired on this install.
-    Own(Box<BookRecord>),
+    /// A store account's title of an edition acquired on this install.
+    Own(Box<AcquireTitle>),
     /// A title one of this install's branches shared, files delivered.
     Branch(Box<ForwardableBranchTitle>),
 }
@@ -206,7 +207,7 @@ fn own_marketplace(marketplace: &str) -> String {
 }
 
 /// Metadata of an own book.
-fn own_metadata(book: &BookRecord) -> CatalogMetadata {
+fn own_metadata(book: &AcquireTitle) -> CatalogMetadata {
     CatalogMetadata {
         title: book.title.clone(),
         subtitle: book.subtitle.clone(),
@@ -218,7 +219,7 @@ fn own_metadata(book: &BookRecord) -> CatalogMetadata {
         isbn: book.isbn.clone(),
         publisher: book.publisher.clone(),
         length_minutes: book.length_minutes,
-        content_kind: Some(book.content_kind.clone()),
+        content_kind: Some(book.content_kind.to_string()),
         language: book.language.clone(),
         published_at: book.published_at.map(|at| at.to_rfc3339()),
     }
@@ -347,8 +348,10 @@ impl<S: BranchShelf> CatalogSync<S> {
         members_books: bool,
     ) -> anyhow::Result<Vec<Entry>> {
         let mut seen = BTreeSet::new();
+        // Where each own title's entry sits in `out`, and its change time.
+        let mut own: BTreeMap<CatalogRef, (usize, DateTime<Utc>)> = BTreeMap::new();
         let mut out = Vec::new();
-        let mut after = None;
+        let mut after: Option<String> = None;
         // The branch owner's own books go up (and, when the library
         // acquires all of this branch's members' books, every book this
         // branch lists to it), never one the library acquired itself and
@@ -357,38 +360,25 @@ impl<S: BranchShelf> CatalogSync<S> {
         loop {
             let page = self
                 .library
-                .acquired_book_keys_page(after, ENTRY_PAGE)
+                .acquired_title_keys_page(after.as_deref(), ENTRY_PAGE)
                 .await?;
-            let full = u64::try_from(page.len()).unwrap_or(u64::MAX) >= ENTRY_PAGE;
-            after = page.last().map(|key| key.id);
-            for key in page {
-                if !owners.admits(&key) {
-                    continue;
-                }
+            for key in owners.admit_editions(page.keys) {
                 let reference = CatalogRef {
                     store: store_id(&key.source),
                     product_id: key.product_id.clone(),
                 };
-                if !seen.insert(reference.clone()) {
-                    continue;
-                }
                 // A requested book counts as changed when it was last
                 // asked for, so one already past the cursor still goes up.
                 let changed = owners
                     .requested_at(&key)
                     .map_or(key.updated_at, |asked| asked.max(key.updated_at));
-                out.push(Entry {
-                    order: format!(
-                        "{}|own|{}",
-                        changed.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-                        key.uuid
-                    ),
-                    reference,
-                    source: Source::Own(key),
-                });
+                if push_own(&mut out, &mut own, reference.clone(), key, changed) {
+                    seen.insert(reference);
+                }
             }
-            if !full {
-                break;
+            match page.next {
+                Some(next) => after = Some(next),
+                None => break,
             }
         }
         if include_branches {
@@ -436,12 +426,12 @@ impl<S: BranchShelf> CatalogSync<S> {
         Ok(match &entry.source {
             Source::Own(key) => self
                 .library
-                .get_book_by_uuid(&key.uuid)
+                .acquire_title_of_holding(&key.holding_id)
                 .await?
-                .filter(|book| {
-                    book.acquire_status == AcquireStatus::Acquired && book.storage_key.is_some()
+                .filter(|title| {
+                    title.status == AcquireStatus::Acquired && title.storage_key.is_some()
                 })
-                .map(|book| Loaded::Own(Box::new(book))),
+                .map(|title| Loaded::Own(Box::new(title))),
             Source::Branch(key) => forwardable_branch_title(&self.library, &key.id)
                 .await?
                 .map(|row| Loaded::Branch(Box::new(row))),
@@ -771,6 +761,63 @@ fn call_error(what: &str, err: &OwnerCallError) -> anyhow::Error {
         OwnerCallError::Refused(reason) => anyhow::anyhow!("the library refused {what}: {reason}"),
         OwnerCallError::Unavailable => anyhow::anyhow!("the library was unavailable for {what}"),
     }
+}
+
+/// Adds own title `key`, changed at `changed`, to the pass's entries, one
+/// entry per store and product id.
+///
+/// The first key of a title represents it; a later sibling holding of the
+/// same title (another account, or another marketplace's listing) only
+/// moves the entry's change time forward, so a sibling's newer change or
+/// request still sends the title past the cursor.
+///
+/// # Arguments
+///
+/// * `out` - The pass's entries so far.
+/// * `own` - Where each own title's entry sits in `out`, and its change
+///   time.
+/// * `reference` - The title's catalog reference.
+/// * `key` - The account holding to add.
+/// * `changed` - When `key` last changed or was last asked for.
+///
+/// # Returns
+///
+/// `true` when `key` started a new entry.
+fn push_own(
+    out: &mut Vec<Entry>,
+    own: &mut BTreeMap<CatalogRef, (usize, DateTime<Utc>)>,
+    reference: CatalogRef,
+    key: AcquiredTitleKey,
+    changed: DateTime<Utc>,
+) -> bool {
+    if let Some(&(at, earlier)) = own.get(&reference) {
+        if changed > earlier {
+            if let Some(entry) = out.get_mut(at) {
+                if let Source::Own(first) = &entry.source {
+                    entry.order = own_order(changed, &first.holding_id);
+                }
+            }
+            own.insert(reference, (at, changed));
+        }
+        return false;
+    }
+    own.insert(reference.clone(), (out.len(), changed));
+    out.push(Entry {
+        order: own_order(changed, &key.holding_id),
+        reference,
+        source: Source::Own(key),
+    });
+    true
+}
+
+/// The sync order of an own title that changed at `changed`, represented
+/// by holding `holding_id`: change time first, so a pass resumes past the
+/// cursor, then the holding to break ties.
+fn own_order(changed: DateTime<Utc>, holding_id: &str) -> String {
+    format!(
+        "{}|own|{holding_id}",
+        changed.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+    )
 }
 
 #[cfg(test)]

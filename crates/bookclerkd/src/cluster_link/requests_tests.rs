@@ -230,8 +230,11 @@ async fn a_branch_takes_its_librarys_request_for_a_members_book() {
     )
     .await
     .unwrap();
-    let keys = b.acquired_book_keys_page(None, 100).await.unwrap();
-    let key = keys.iter().find(|k| k.uuid == sams.uuid).unwrap();
+    let keys = b.acquired_title_keys_page(None, 100).await.unwrap().keys;
+    let key = keys
+        .iter()
+        .find(|k| k.account_id == "sam-acct" && k.product_id == sams.product_id)
+        .unwrap();
     assert!(OwnerShareFilter::load(&b, &link.owner_cluster_id, false)
         .await
         .unwrap()

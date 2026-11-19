@@ -53,6 +53,10 @@ mod trust;
 mod uploads;
 mod versions;
 mod window_books;
+/// The reply-capped library fixture, for store tests outside the control
+/// plane.
+#[cfg(test)]
+pub(crate) use window_books::tests::capped_store;
 
 use crate::EntityKind;
 use std::path::Path;

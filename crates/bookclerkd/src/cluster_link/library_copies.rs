@@ -19,11 +19,9 @@
 //! A copy whose store the library does not know is never offered.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use bookclerk_acquire::{
     from_store, LibraryCopies, LibraryCopy, LibraryCopyError, LibraryCopyFile, LibraryCopyListing,
-    LibraryCopySource,
 };
 use bookclerk_library::control_plane::{
     list_cluster_links, record_copy_taken_from_link, ClusterLink, TakenCopy,
@@ -66,11 +64,6 @@ impl LinkCopies {
             handle_of: Box::new(handle_of),
         }
     }
-}
-
-/// What the acquires of `library` ask before a store: its links.
-pub(crate) fn acquire_copies(library: &LibraryStore) -> LibraryCopySource {
-    LibraryCopySource::new(Arc::new(LinkCopies::new(library.clone())))
 }
 
 /// True when this install takes copies from the library `link` joins: the
@@ -140,7 +133,7 @@ impl LibraryCopies for LinkCopies {
 }
 
 /// A granted file as the acquire pipeline lists it.
-fn listed(file: &bookclerk_node_proto::CopyFile) -> LibraryCopyFile {
+pub(crate) fn listed(file: &bookclerk_node_proto::CopyFile) -> LibraryCopyFile {
     LibraryCopyFile {
         name: file.name.clone(),
         role: match file.role {

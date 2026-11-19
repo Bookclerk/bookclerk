@@ -640,6 +640,74 @@ async fn clerk_with_card(
     (state, store, "fake-library".into())
 }
 
+/// As [`clerk_with_card`], for a library with cluster id `cluster_id`, so
+/// its reader is the only one this process lists under that id.
+async fn clerk_with_card_of(
+    files: &tempfile::TempDir,
+    origin: &str,
+    cluster_id: &str,
+) -> LibraryStore {
+    let (_state, store) = crate::node_api::tests::test_state(files).await;
+    bookclerk_library::control_plane::record_clerk_link(
+        &store,
+        &bookclerk_library::control_plane::NewClerkLink {
+            library_cluster_id: cluster_id.into(),
+            origin: origin.into(),
+            spki_pin: None,
+            library_name: "fake".into(),
+            remote_user_id: 7,
+            display_name: None,
+            clerk_name: "Laptop".into(),
+        },
+        &bookclerk_library::control_plane::LibraryCard::new("c".repeat(43)).unwrap(),
+    )
+    .await
+    .unwrap();
+    store
+}
+
+/// The next frame the clerk sends, of any kind.
+async fn heard(socket: &mut FakeSocket) -> Option<bookclerk_node_proto::ClerkFrame> {
+    use futures::StreamExt as _;
+    while let Some(Ok(message)) = socket.next().await {
+        if let tokio_tungstenite::tungstenite::Message::Text(text) = message {
+            return Some(
+                bookclerk_node_proto::parse_clerk_frame(text.as_bytes())
+                    .expect("the clerk sends frames the library reads"),
+            );
+        }
+    }
+    None
+}
+
+/// A copy the library grants of `product_id`, with one 10-byte audio file
+/// downloaded from `source_store`.
+fn granted_copy(product_id: &str, source_store: &str) -> bookclerk_node_proto::ClerkCopy {
+    use bookclerk_node_proto::{ClerkCopy, CopyFile, CopyRole, CopyToken, WindowCopy};
+    ClerkCopy {
+        store: "audible".into(),
+        marketplace: "us".into(),
+        product_id: product_id.into(),
+        copy_id: "6f1c2b7e-0d4a-4e8b-9a51-2c3d4e5f6a7b".into(),
+        token: CopyToken::new("dG9rZW4"),
+        expires_in_secs: 3600,
+        copy: WindowCopy {
+            source_store: Some(source_store.into()),
+            content_type: "audio/mp4".into(),
+            bitrate_kbps: Some(64),
+            lossless: false,
+            version: "v1".into(),
+        },
+        files: vec![CopyFile {
+            name: "Title.m4b".into(),
+            role: CopyRole::Audio,
+            size: 10,
+            content_type: Some("audio/mp4".into()),
+            probe: None,
+        }],
+    }
+}
+
 /// Runs one session of a reader for `cluster_id` on `store`.
 async fn one_session(store: &LibraryStore, cluster_id: &str) -> anyhow::Result<super::SessionEnd> {
     let (_stop, mut shutdown) = watch::channel(false);
@@ -745,6 +813,7 @@ async fn a_misbehaving_library_ends_the_session_with_an_error() {
         ("a cursor that does not move", 2),
         ("a binary frame", 3),
         ("a page nobody asked for", 4),
+        ("an error nobody asked for", 5),
     ];
     for (what, which) in scripts {
         let origin = fake_library(Upgrade::Accept, move |mut socket| async move {
@@ -781,6 +850,25 @@ async fn a_misbehaving_library_ends_the_session_with_an_error() {
                         ))
                         .await
                         .unwrap();
+                }
+                5 => {
+                    // Answer the page, then an error for nothing asked.
+                    say(
+                        &mut socket,
+                        LibraryFrame::BooksPage {
+                            after: cursor(""),
+                            works: Vec::new(),
+                            next: None,
+                        },
+                    )
+                    .await;
+                    say(
+                        &mut socket,
+                        LibraryFrame::Error {
+                            code: ClerkSocketError::Unavailable,
+                        },
+                    )
+                    .await;
                 }
                 _ => {
                     // Answer with an error, then send a page anyway.
@@ -958,4 +1046,434 @@ async fn a_callback_without_consent_or_code_is_refused_and_old_sign_ins_are_drop
     )
     .await;
     assert_eq!(status, StatusCode::GONE, "{expired}");
+}
+
+/// The listing an acquire on the clerk asks with for `product_id`.
+fn listing(product_id: &str) -> bookclerk_acquire::LibraryCopyListing<'_> {
+    bookclerk_acquire::LibraryCopyListing {
+        store: "audible",
+        plugin_key: PLUGIN,
+        account_id: "riley-acct",
+        marketplace: "us",
+        product_id,
+    }
+}
+
+/// An acquire's `copy.grant` goes over the card's socket between pages,
+/// each answer goes to the frame it answers in the order asked (an
+/// `error` is no copy, `copy.granted` is the copy), a copy from another
+/// store is passed over, nothing is asked of a library whose reader is not
+/// connected, and a copy of another edition ends the session.
+#[tokio::test]
+async fn a_grant_is_answered_in_order_and_a_copy_of_another_edition_ends_the_session() {
+    use bookclerk_acquire::LibraryCopies as _;
+    use bookclerk_node_proto::{ClerkFrame, ClerkSocketError, LibraryFrame};
+
+    use super::copies::{reader_of, CardCopies};
+
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let origin = fake_library(Upgrade::Accept, |mut socket| async move {
+        // The read on connect, answered once the first grant is asked, so
+        // the library answers the page before the grant.
+        assert!(matches!(
+            heard(&mut socket).await,
+            Some(ClerkFrame::Books { .. })
+        ));
+        let Some(ClerkFrame::CopyGrant { product_id, .. }) = heard(&mut socket).await else {
+            panic!("an acquire asks for a copy");
+        };
+        assert_eq!(product_id, "B0GRANT001");
+        say(
+            &mut socket,
+            LibraryFrame::BooksPage {
+                after: cursor(""),
+                works: vec![work("B0GRANT001")],
+                next: None,
+            },
+        )
+        .await;
+        say(
+            &mut socket,
+            LibraryFrame::Error {
+                code: ClerkSocketError::NotFound,
+            },
+        )
+        .await;
+        // Asked again: granted.
+        assert!(matches!(
+            heard(&mut socket).await,
+            Some(ClerkFrame::CopyGrant { .. })
+        ));
+        say(
+            &mut socket,
+            LibraryFrame::CopyGranted(Box::new(granted_copy("B0GRANT001", "audible"))),
+        )
+        .await;
+        // Asked a third time: a copy from another store.
+        assert!(matches!(
+            heard(&mut socket).await,
+            Some(ClerkFrame::CopyGrant { .. })
+        ));
+        say(
+            &mut socket,
+            LibraryFrame::CopyGranted(Box::new(granted_copy("B0GRANT001", "libro"))),
+        )
+        .await;
+        // Asked a fourth time: a copy of another edition.
+        assert!(matches!(
+            heard(&mut socket).await,
+            Some(ClerkFrame::CopyGrant { .. })
+        ));
+        say(
+            &mut socket,
+            LibraryFrame::CopyGranted(Box::new(granted_copy("B0OTHER001", "audible"))),
+        )
+        .await;
+        while heard(&mut socket).await.is_some() {}
+    })
+    .await;
+    let files = tempfile::tempdir().unwrap();
+    let store = clerk_with_card_of(&files, &origin, "fake-grants").await;
+    let copies = CardCopies::new(store.clone());
+    // No reader: the library is not asked.
+    assert!(copies.copy_of(listing("B0GRANT001")).await.is_none());
+
+    let (_stop, mut shutdown) = watch::channel(false);
+    let session = {
+        let store = store.clone();
+        tokio::spawn(async move {
+            ClerkReader {
+                library: store,
+                cluster_id: "fake-grants".into(),
+            }
+            .session(&mut shutdown)
+            .await
+        })
+    };
+    eventually("the reader to connect", 20, || async {
+        reader_of("fake-grants").is_some()
+    })
+    .await;
+
+    // Not found: no copy, and the page asked before it still lands.
+    assert!(copies.copy_of(listing("B0GRANT001")).await.is_none());
+    assert_eq!(titles(&store).await, vec!["Title B0GRANT001"]);
+
+    let copy = copies
+        .copy_of(listing("B0GRANT001"))
+        .await
+        .expect("the library grants its copy");
+    assert_eq!(copy.source_store(), Some("audible"));
+    let files_listed: Vec<(&str, bookclerk_library::FileRole, u64)> = copy
+        .files()
+        .iter()
+        .map(|file| (file.name.as_str(), file.role, file.size))
+        .collect();
+    assert_eq!(
+        files_listed,
+        [("Title.m4b", bookclerk_library::FileRole::Audio, 10)]
+    );
+    // A file the grant does not list is refused before anything is asked.
+    assert!(copy
+        .fetch_file(1, &files.path().join("none"))
+        .await
+        .is_err());
+    // The grant's token is kept out of logs while the copy is held, and
+    // leaves the redaction registry with it.
+    assert!(bookclerk_config::contains_registered_secret("dG9rZW4"));
+    drop(copy);
+    assert!(!bookclerk_config::contains_registered_secret("dG9rZW4"));
+
+    // A copy from another store is offered when no library has one from
+    // the title's own, with what the library says of it, so the acquire
+    // can compare it with its own download.
+    let other = copies
+        .copy_of(listing("B0GRANT001"))
+        .await
+        .expect("a copy from another store is offered");
+    assert_eq!(other.source_store(), Some("libro"));
+    let probe = other.probe();
+    assert_eq!(probe.content_type, "audio/mp4");
+    assert_eq!(probe.bitrate_kbps, Some(64));
+    assert!(!probe.lossless);
+    assert_eq!(probe.source_store.as_deref(), Some("libro"));
+    drop(other);
+    assert!(reader_of("fake-grants").is_some());
+
+    assert!(copies.copy_of(listing("B0GRANT001")).await.is_none());
+    let ended = tokio::time::timeout(Duration::from_secs(20), session)
+        .await
+        .expect("the session ends")
+        .unwrap();
+    assert!(ended.is_err(), "a copy of another edition was accepted");
+    // The reader is no longer listed once its socket ends.
+    assert!(reader_of("fake-grants").is_none());
+}
+
+/// A grant that arrives after the clerk signed in again was granted to the
+/// old card: it is not used, and the session dialed with that card ends.
+#[tokio::test]
+async fn a_grant_answered_after_a_new_sign_in_is_not_used() {
+    use bookclerk_acquire::LibraryCopies as _;
+    use bookclerk_node_proto::{ClerkFrame, LibraryFrame};
+
+    use super::copies::{reader_of, CardCopies};
+
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let asked = Arc::new(tokio::sync::Notify::new());
+    let answer = Arc::new(tokio::sync::Notify::new());
+    let origin = {
+        let (asked, answer) = (Arc::clone(&asked), Arc::clone(&answer));
+        fake_library(Upgrade::Accept, move |mut socket| {
+            let (asked, answer) = (Arc::clone(&asked), Arc::clone(&answer));
+            async move {
+                assert!(matches!(
+                    heard(&mut socket).await,
+                    Some(ClerkFrame::Books { .. })
+                ));
+                say(
+                    &mut socket,
+                    LibraryFrame::BooksPage {
+                        after: cursor(""),
+                        works: vec![],
+                        next: None,
+                    },
+                )
+                .await;
+                assert!(matches!(
+                    heard(&mut socket).await,
+                    Some(ClerkFrame::CopyGrant { .. })
+                ));
+                asked.notify_one();
+                // Held until the clerk has signed in again.
+                answer.notified().await;
+                say(
+                    &mut socket,
+                    LibraryFrame::CopyGranted(Box::new(granted_copy("B0LATE0001", "audible"))),
+                )
+                .await;
+                while heard(&mut socket).await.is_some() {}
+            }
+        })
+        .await
+    };
+    let files = tempfile::tempdir().unwrap();
+    let store = clerk_with_card_of(&files, &origin, "fake-late-grant").await;
+
+    let (_stop, mut shutdown) = watch::channel(false);
+    let session = {
+        let store = store.clone();
+        tokio::spawn(async move {
+            ClerkReader {
+                library: store,
+                cluster_id: "fake-late-grant".into(),
+            }
+            .session(&mut shutdown)
+            .await
+        })
+    };
+    eventually("the reader to connect", 20, || async {
+        reader_of("fake-late-grant").is_some()
+    })
+    .await;
+
+    let acquire = {
+        let copies = CardCopies::new(store.clone());
+        tokio::spawn(async move { copies.copy_of(listing("B0LATE0001")).await.is_some() })
+    };
+    asked.notified().await;
+    // Signed in again while the grant is on its way.
+    let link = load_clerk_link(&store, "fake-late-grant")
+        .await
+        .unwrap()
+        .unwrap();
+    bookclerk_library::control_plane::record_clerk_link(
+        &store,
+        &bookclerk_library::control_plane::NewClerkLink {
+            library_cluster_id: link.library_cluster_id.clone(),
+            origin: link.origin.clone(),
+            spki_pin: link.spki_pin.clone(),
+            library_name: link.library_name.clone(),
+            remote_user_id: link.remote_user_id,
+            display_name: link.display_name.clone(),
+            clerk_name: link.clerk_name.clone(),
+        },
+        &bookclerk_library::control_plane::LibraryCard::new("d".repeat(43)).unwrap(),
+    )
+    .await
+    .unwrap();
+    answer.notify_one();
+
+    let took = tokio::time::timeout(Duration::from_secs(20), acquire)
+        .await
+        .expect("the acquire is answered")
+        .unwrap();
+    assert!(!took, "a copy granted to the old card was used");
+    assert!(!bookclerk_config::contains_registered_secret("dG9rZW4"));
+    let ended = tokio::time::timeout(Duration::from_secs(20), session)
+        .await
+        .expect("the session ends")
+        .unwrap();
+    assert_eq!(ended.unwrap(), super::SessionEnd::Lost);
+}
+
+/// A clerk's own acquire takes the copy the library holds of its person's
+/// book: the reader asks over the card, the files download with the
+/// grant's token, and the taken copy is recorded as the library's.
+#[tokio::test]
+async fn a_card_takes_the_librarys_copy_of_its_persons_book() {
+    use bookclerk_acquire::LibraryCopies as _;
+    use bookclerk_library::control_plane::books_imported_from_link;
+
+    use super::copies::{install_copies, reader_of, CardCopies};
+
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let library_files = tempfile::tempdir().unwrap();
+    let library_out = tempfile::tempdir().unwrap();
+    let (library_state, library_store, origin, member) = library(&library_files).await;
+    crate::node_api::uploads::set_test_destination(library_files.path(), library_out.path());
+    hold(&library_store, member, "riley-acct", "B0COPY0001").await;
+    hold(&library_store, member, "riley-acct", "B0COPY0002").await;
+    // The library acquired the first from Audible and probed it.
+    const KEY: &str = "Ann Author/Title/Title.m4b";
+    let audio: Vec<u8> = (0..70_000u32).map(|i| (i % 239) as u8).collect();
+    std::fs::create_dir_all(library_out.path().join("Ann Author/Title")).unwrap();
+    std::fs::write(library_out.path().join(KEY), &audio).unwrap();
+    library_store
+        .set_acquire_status(
+            "B0COPY0001",
+            "riley-acct",
+            AcquireStatus::Acquired,
+            Some(KEY),
+            None,
+        )
+        .await
+        .unwrap();
+    library_store
+        .set_acquire_status(
+            "B0COPY0002",
+            "riley-acct",
+            AcquireStatus::NotAcquired,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let book = library_store
+        .get_book("B0COPY0001", "riley-acct")
+        .await
+        .unwrap()
+        .unwrap();
+    let owner = library_store
+        .file_owner_of_book(&book.uuid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(library_store
+        .record_edition_file("local", KEY, &owner, bookclerk_library::FileRole::Audio)
+        .await
+        .unwrap());
+    assert!(library_store
+        .set_edition_file_probe(
+            "local",
+            KEY,
+            &owner,
+            &bookclerk_library::FileProbe {
+                content_type: "audio/mp4".into(),
+                bitrate_kbps: Some(64),
+                lossless: false,
+                source_store: Some("audible".into()),
+            },
+        )
+        .await
+        .unwrap());
+
+    let clerk_files = tempfile::tempdir().unwrap();
+    let (clerk_state, clerk_store) = crate::node_api::tests::test_state(&clerk_files).await;
+    let clerk = clerk_routes(&clerk_state, UserCaller::Operator);
+    let cluster_id = sign_in(&clerk, &library_state, &origin, member).await;
+    let (stop, shutdown) = watch::channel(false);
+    let reader = tokio::spawn(
+        ClerkReader {
+            library: clerk_store.clone(),
+            cluster_id: cluster_id.clone(),
+        }
+        .run(shutdown),
+    );
+    eventually("the reader to connect", 20, || async {
+        reader_of(&cluster_id).is_some()
+    })
+    .await;
+
+    // Asked as the clerk's acquires ask: its branch links (none here),
+    // then its cards.
+    let copies = install_copies(&clerk_store);
+    let copy = copies
+        .copy_of(listing("B0COPY0001"))
+        .await
+        .expect("the library holds the person's copy");
+    assert_eq!(copy.source_store(), Some("audible"));
+    assert_eq!(copy.files().len(), 1);
+    assert_eq!(copy.files()[0].size, 70_000);
+    let taken = tempfile::tempdir().unwrap();
+    let dest = taken.path().join("000.m4b");
+    copy.fetch_file(0, &dest).await.unwrap();
+    assert_eq!(std::fs::read(&dest).unwrap(), audio);
+
+    // The title is on a store account connected to the clerk.
+    clerk_store
+        .upsert_account(PLUGIN, "riley-acct", "us", None, true, PLUGIN)
+        .await
+        .unwrap();
+    copy.taken().await.unwrap();
+    assert_eq!(
+        books_imported_from_link(&clerk_store, &cluster_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>(),
+        [(
+            PLUGIN.to_string(),
+            "us".to_string(),
+            "B0COPY0001".to_string(),
+            "riley-acct".to_string()
+        )]
+    );
+
+    // A book the library has not acquired has no copy, and the socket
+    // keeps serving.
+    assert!(copies.copy_of(listing("B0COPY0002")).await.is_none());
+    assert!(copies.copy_of(listing("B0COPY0001")).await.is_some());
+
+    // Signed in again (a new card): the session dialed with the old card
+    // grants nothing and makes way for one with the new card.
+    let link = load_clerk_link(&clerk_store, &cluster_id)
+        .await
+        .unwrap()
+        .unwrap();
+    bookclerk_library::control_plane::record_clerk_link(
+        &clerk_store,
+        &bookclerk_library::control_plane::NewClerkLink {
+            library_cluster_id: cluster_id.clone(),
+            origin: link.origin.clone(),
+            spki_pin: link.spki_pin.clone(),
+            library_name: link.library_name.clone(),
+            remote_user_id: link.remote_user_id,
+            display_name: link.display_name.clone(),
+            clerk_name: link.clerk_name.clone(),
+        },
+        &bookclerk_library::control_plane::LibraryCard::new("d".repeat(43)).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(CardCopies::new(clerk_store.clone())
+        .copy_of(listing("B0COPY0001"))
+        .await
+        .is_none());
+
+    let _ = stop.send(true);
+    tokio::time::timeout(Duration::from_secs(5), reader)
+        .await
+        .expect("the reader stops")
+        .unwrap();
 }

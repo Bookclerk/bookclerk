@@ -173,6 +173,15 @@ card too. If the library can't be reached, end it later from your session
 list on the library. If the library ends the card first, the list says so
 and offers **Remove**; sign in again to get a new card.
 
+While the card is signed in and the library is connected, your server
+can also use the library's copies of your books. When it downloads one of
+your books, it first asks the library for its copy and uses it the way a
+branch does with **Keep copies on this computer** on: a copy from the
+same store is used instead of downloading from the store again, and a
+copy from another store is used only when it is better than your own
+download. If no library answers with a usable copy, your server
+downloads from the store as usual. A card has no setting to turn this off.
+
 A server that is already a branch of a library shows your books there
 through that link, so it can't also hold a card for it.
 

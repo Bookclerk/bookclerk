@@ -5352,3 +5352,103 @@ async fn a_branch_that_keeps_no_copies_still_runs_its_librarys_work() {
     assert!(!handle.consented_plugins().is_empty());
     assert_eq!(transport.runs().len(), 2);
 }
+
+/// The owner's grant and a host's acquire name a title from the same
+/// fields: an acquire request built from the owner's holding view and one
+/// built from the host's scratch row of the target the owner sent agree,
+/// and the target's dates survive the trip (a malformed one is dropped).
+#[tokio::test]
+async fn the_grant_and_the_host_name_a_title_from_the_same_fields() {
+    use super::host_jobs::{acquire_request, scratch_book};
+    let dir = tempfile::tempdir().unwrap();
+    let owner = host_store(dir.path()).await;
+    owner
+        .upsert_account("audible", "riley-acct", "us", None, true, "audible")
+        .await
+        .unwrap();
+    let mut book = bookclerk_library::NewBook::minimal("B0NAMES01", "riley-acct", "us", "Dune");
+    book.authors = Some("Frank Herbert".into());
+    book.narrators = Some("Scott Brick".into());
+    book.series = Some("Dune Chronicles".into());
+    book.series_index = Some("1".into());
+    let row = owner.upsert_book(&book).await.unwrap();
+    let holding = owner
+        .title_holding_of_book(&row.uuid)
+        .await
+        .unwrap()
+        .expect("the title's holding")
+        .holding_id;
+    let title = owner
+        .acquire_title_of_holding(&holding)
+        .await
+        .unwrap()
+        .expect("the holding's title");
+    let files = tempfile::tempdir().unwrap();
+    std::fs::write(files.path().join("config.toml"), "").unwrap();
+    let cfg = bookclerk_config::Config::load(
+        Some(files.path().to_path_buf()),
+        Some(files.path().join("config.toml")),
+    )
+    .unwrap();
+    let options = bookclerk_source::DownloadOptions::default();
+    let granted = acquire_request(&cfg, (&title).into(), &options);
+
+    let target = bookclerk_node_proto::TargetTitle {
+        product_id: title.product_id.clone(),
+        source: title.source.clone(),
+        marketplace: title.marketplace.clone(),
+        asin: title.asin.clone(),
+        isbn: None,
+        title: title.title.clone(),
+        subtitle: None,
+        authors: title.authors.clone(),
+        narrators: title.narrators.clone(),
+        series: title.series.clone(),
+        series_index: title.series_index.clone(),
+        series_product_id: None,
+        publisher: None,
+        categories: None,
+        length_minutes: Some(1260),
+        is_abridged: false,
+        content_kind: title.content_kind.to_string(),
+        purchased_at: Some("not a date".into()),
+        published_at: Some("2020-01-02T03:04:05+00:00".into()),
+    };
+    let insert = scratch_book(
+        &title.plugin_key,
+        &title.account_id,
+        Some(holding.clone()),
+        &target,
+    );
+    assert_eq!(insert.uuid.as_deref(), Some(holding.as_str()));
+    assert_eq!(insert.series_asin, None);
+    assert_eq!(insert.purchased_at, None, "a malformed date is left out");
+    assert_eq!(
+        insert.published_at.map(|at| at.to_rfc3339()),
+        Some("2020-01-02T03:04:05+00:00".into())
+    );
+    let scratch_dir = tempfile::tempdir().unwrap();
+    let scratch = host_store(scratch_dir.path()).await;
+    scratch
+        .scope(insert.plugin_key.as_str(), insert.source.as_str())
+        .ensure_account(&insert.account_id, &insert.marketplace, None)
+        .await
+        .unwrap();
+    let scratch_row = scratch.upsert_book(&insert).await.unwrap();
+    let hosted = acquire_request(&cfg, (&scratch_row).into(), &options);
+    let naming = |r: &bookclerk_acquire::AcquireRequest| {
+        (
+            r.asin.clone(),
+            r.source.clone(),
+            r.account_id.clone(),
+            r.title.clone(),
+            r.authors.clone(),
+            r.narrators.clone(),
+            r.series.clone(),
+            r.series_index.clone(),
+        )
+    };
+    assert_eq!(naming(&granted), naming(&hosted));
+    assert_eq!(hosted.book_uuid.as_deref(), Some(holding.as_str()));
+    assert_eq!(granted.book_uuid.as_deref(), Some(row.uuid.as_str()));
+}
