@@ -14,6 +14,11 @@
 //! - every call number an `acquire.targets` frame carries is 1 to 16 ASCII
 //!   letters and digits, checked byte by byte here rather than through the
 //!   parser's own rule, since a host names storage keys with it;
+//! - every target of an `acquire.targets` frame the host would accept
+//!   (`target_destinations_problem` finds nothing) names only destinations
+//!   its plan lists, each once and in the plan's order, checked here
+//!   against the plan directly, since the host writes the title to exactly
+//!   those destinations and the owner refuses an upload to any other;
 //! - every probe on a file an `upload.grant` or `catalog.upload` frame the
 //!   library would accept (`UploadFile::is_well_formed`) states a bitrate
 //!   of 1 to 20000 kbit/s when it states one, and names a storefront of 1
@@ -76,9 +81,9 @@ use std::collections::BTreeSet;
 
 use bookclerk_node_proto::{
     claimed_problem, copy_grant_problem, copy_granted_problem, finish_problem, found_problem,
-    questions_problem, scan_pass_end_problem, scan_removed_problem, window_page_problem,
-    Availability, Body, CopyGrantedFrame, CopyRole, Frame, LookupScheme, LookupWork, WindowCursor,
-    FRAME_VERSION, MAX_CALL_NUMBER_BYTES, MAX_FRAME_BYTES,
+    questions_problem, scan_pass_end_problem, scan_removed_problem, target_destinations_problem,
+    window_page_problem, Availability, Body, CopyGrantedFrame, CopyRole, Frame, LookupScheme,
+    LookupWork, WindowCursor, FRAME_VERSION, MAX_CALL_NUMBER_BYTES, MAX_FRAME_BYTES,
 };
 use serde_json::Value;
 
@@ -92,8 +97,28 @@ pub fn check(data: &[u8]) {
     };
     assert!(text.len() <= MAX_FRAME_BYTES, "an oversized frame parsed");
     assert_eq!(frame.v, FRAME_VERSION, "another frame version parsed");
-    if let Body::AcquireTargets { targets, .. } = &frame.body {
+    if let Body::AcquireTargets {
+        targets,
+        destinations,
+    } = &frame.body
+    {
         for target in targets {
+            if target_destinations_problem(target, destinations).is_none() {
+                if let Some(chosen) = &target.destinations {
+                    let mut at = 0usize;
+                    for id in chosen {
+                        let found = destinations
+                            .iter()
+                            .skip(at)
+                            .position(|planned| planned.id == *id);
+                        let Some(found) = found else {
+                            panic!("target destination {id:?} outside its plan accepted");
+                        };
+                        at += found + 1;
+                    }
+                    assert!(chosen.len() <= destinations.len(), "a longer list accepted");
+                }
+            }
             for id in [&target.call_number, &target.parent_call_number]
                 .into_iter()
                 .flatten()
