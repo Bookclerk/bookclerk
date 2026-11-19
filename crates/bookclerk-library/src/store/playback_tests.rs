@@ -235,6 +235,93 @@ async fn a_session_moves_progress_and_finishes_the_work_under_every_profile() {
     }
 }
 
+/// Reports that overlap (each read the session before the other wrote)
+/// both count their listened time, and one that lost the race with the
+/// session's close finishes nothing, the work included.
+#[tokio::test]
+async fn overlapping_reports_add_up_and_a_late_one_finishes_nothing_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let (user, edition, work) = listener(&store, "B0PLAY0005").await;
+        let read_once = open(&store, user, &edition).await;
+        let hour = ms(3_600_000);
+        let report = |position: u64, listened: u64, close: bool| PlaybackSync {
+            position: ms(position),
+            listened: ms(listened),
+            duration: Some(hour),
+            close,
+        };
+
+        for position in [10_000, 20_000] {
+            store
+                .sync_playback_session(&read_once, Some(&work), &report(position, 1000, false))
+                .await
+                .unwrap()
+                .expect("an open session syncs");
+        }
+        let stored = store
+            .playback_session(&read_once.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.listened, ms(2000), "{name}: both reports count");
+
+        // The total never passes the longest timeline.
+        store
+            .sync_playback_session(
+                &read_once,
+                Some(&work),
+                &report(30_000, MAX_PLAYBACK_MS, false),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let stored = store
+            .playback_session(&read_once.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.listened, ms(MAX_PLAYBACK_MS), "{name}");
+
+        // A close lands; then a report that read the session while it was
+        // open says the listener reached the end.
+        store
+            .sync_playback_session(&read_once, Some(&work), &report(40_000, 0, true))
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .delete_playback_progress(user, &edition)
+            .await
+            .unwrap();
+        assert!(
+            store
+                .sync_playback_session(&read_once, Some(&work), &report(3_599_000, 0, false))
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}: the session had closed"
+        );
+        assert!(
+            store
+                .playback_progress(user, &edition)
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}: a late report does not start progress again"
+        );
+        assert!(
+            !store
+                .user_title_state(user, &work)
+                .await
+                .unwrap()
+                .is_some_and(|state| state.is_finished),
+            "{name}: a late report does not finish the work"
+        );
+    }
+}
+
 /// Progress set outright creates the row, decides finished from the
 /// position, takes an explicit flag either way, and is forgotten on
 /// delete.

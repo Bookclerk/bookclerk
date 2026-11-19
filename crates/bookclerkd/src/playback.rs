@@ -49,10 +49,10 @@ use bookclerk_library::control_plane::{
     authorize_playback, load_or_create_node_identity, plan_playback, PlaybackPlan, PlaybackTrack,
 };
 use bookclerk_library::{
-    parse_track_path, Bookmark, EntityKind, LibraryError, LibraryStore, NewPlaybackSession,
-    PlaybackChange, PlaybackEdition, PlaybackEvent, PlaybackMs, PlaybackProgress,
-    PlaybackProgressEdit, PlaybackSession, PlaybackSyncBody, PlayerKind, ProgressCursor,
-    MAX_BOOKMARK_TITLE_BYTES, MAX_PLAYBACK_MS, MAX_PLAYBACK_TRACKS, MAX_PLAYER_NAME_BYTES,
+    parse_track_path, Bookmark, BookmarkEditBody, EntityKind, LibraryError, LibraryStore,
+    NewBookmarkBody, NewPlaybackSession, OpenSessionBody, PlaybackChange, PlaybackEdition,
+    PlaybackEvent, PlaybackMs, PlaybackProgress, PlaybackSession, PlaybackSyncBody, ProgressCursor,
+    ProgressEditBody, MAX_PLAYBACK_TRACKS,
 };
 use serde::{Deserialize, Serialize};
 
@@ -414,44 +414,6 @@ pub(crate) async fn get_edition_playback(
     }))
 }
 
-/// The kind of first-party player that opens a session here. Outside
-/// player apps open theirs through the player API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum PlayerKindParam {
-    /// The web app in a browser.
-    #[default]
-    Web,
-    /// The desktop window.
-    Desktop,
-}
-
-impl From<PlayerKindParam> for PlayerKind {
-    fn from(value: PlayerKindParam) -> Self {
-        match value {
-            PlayerKindParam::Web => Self::Web,
-            PlayerKindParam::Desktop => Self::Desktop,
-        }
-    }
-}
-
-/// `POST /api/playback/sessions` body.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct OpenSessionBody {
-    /// The edition to play.
-    #[schema(example = "5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d")]
-    edition_id: String,
-    /// What kind of player asks; `web` when left out.
-    #[serde(default)]
-    player: PlayerKindParam,
-    /// The player's own name, shown in listening history; at most 64
-    /// bytes are kept.
-    #[serde(default)]
-    #[schema(example = "Firefox on Linux")]
-    player_name: String,
-}
-
 /// `POST /api/playback/sessions` answer.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct SessionJson {
@@ -486,6 +448,7 @@ pub(crate) struct SessionJson {
     request_body = OpenSessionBody,
     responses(
         (status = 200, description = "The session, its tracks and where to start.", body = SessionJson),
+        (status = 400, description = "The edition id is empty or over 128 bytes.", body = ErrorMessage, example = json!({"error": "edition_id must be 1 to 128 bytes"})),
         (status = 401, description = "The session ended.", body = ErrorMessage, example = json!({"error": "sign in again"})),
         (status = 403, description = "The session has no library user.", body = ErrorMessage, example = json!({"error": "this session has no library user to keep listening state for"})),
         (status = 404, description = "No such edition (`edition ... not found`), or no copy of it on this node that the caller may play (`not_playable`).", body = ErrorMessage, examples(("unknown" = (summary = "No such edition", value = json!({"error": "edition 5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d not found"}))), ("not_playable" = (summary = "Nothing to play here", value = json!({"error": "not_playable"}))))),
@@ -499,9 +462,11 @@ pub(crate) async fn post_session(
     Json(body): Json<OpenSessionBody>,
 ) -> Result<Json<SessionJson>, PlaybackError> {
     const ROUTE: &str = "POST /api/playback/sessions";
+    // The same check the fuzz target drives (`parse_open_session_request`).
+    let open = checked(body.validate(), ROUTE)?;
     let user_id = listener(&state, &headers).await?;
     let library = state.library_snapshot().await;
-    let edition = edition_in_scope(&state, &library, &headers, &body.edition_id, ROUTE).await?;
+    let edition = edition_in_scope(&state, &library, &headers, &open.edition_id, ROUTE).await?;
     let not_playable = || refuse(StatusCode::NOT_FOUND, "not_playable");
     let unavailable = || refuse(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     let plan = plan_playback(&library, user_id, &edition.edition_id)
@@ -522,12 +487,6 @@ pub(crate) async fn post_session(
         tracing::warn!(error = %err, route = ROUTE, "no node identity to play from");
         unavailable()
     })?;
-    let name: String = body
-        .player_name
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(MAX_PLAYER_NAME_BYTES)
-        .collect();
     let session = library
         .open_playback_session(NewPlaybackSession {
             user_id,
@@ -535,8 +494,8 @@ pub(crate) async fn post_session(
             serving_node_id: &this_node.node_id,
             destination: &destination.id,
             files_digest: &digest,
-            client_kind: body.player.into(),
-            client_name: &name,
+            client_kind: open.player,
+            client_name: &open.player_name,
         })
         .await
         .map_err(|err| write_failed(ROUTE, &err))?;
@@ -619,14 +578,8 @@ async fn report(
     close: bool,
     route: &str,
 ) -> Result<Json<SyncJson>, PlaybackError> {
-    // The same parse the fuzz target drives (`parse_playback_sync_request`).
-    let sync = match body.validate(close) {
-        Ok(sync) => sync,
-        Err(LibraryError::Invalid(message)) => {
-            return Err(refuse(StatusCode::BAD_REQUEST, message))
-        }
-        Err(err) => return Err(write_failed(route, &err)),
-    };
+    // The same check the fuzz target drives (`parse_playback_sync_request`).
+    let sync = checked(body.validate(close), route)?;
     let user_id = listener(state, headers).await?;
     let library = state.library_snapshot().await;
     let session = own_session(&library, user_id, id, route).await?;
@@ -939,38 +892,14 @@ pub(crate) async fn list_progress(
     }))
 }
 
-/// `PUT /api/playback/progress/{edition_id}` body: the fields of the
-/// caller's progress to set. A field left out keeps its stored value.
-#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ProgressEditBody {
-    /// Position in milliseconds (at most sixty days).
-    #[serde(default)]
-    #[schema(example = 0)]
-    position_ms: Option<u64>,
-    /// The edition's runtime in milliseconds, when the page knows it.
-    #[serde(default)]
-    #[schema(example = 41_400_000)]
-    duration_ms: Option<u64>,
-    /// True marks the edition and its work finished; false clears the
-    /// edition's flag (the work's stays, and is changed with the work's
-    /// own state). Left out, the position decides.
-    #[serde(default)]
-    #[schema(example = true)]
-    is_finished: Option<bool>,
-}
-
-/// A body length as a timeline length, or the 400 naming `field`.
-fn length(field: &str, ms: Option<u64>) -> Result<Option<PlaybackMs>, PlaybackError> {
-    ms.map(|ms| {
-        PlaybackMs::new(ms).ok_or_else(|| {
-            refuse(
-                StatusCode::BAD_REQUEST,
-                format!("{field} must be at most {MAX_PLAYBACK_MS}"),
-            )
-        })
-    })
-    .transpose()
+/// A body the library's playback parsers checked, or the 400 (for what
+/// the body says) or 500 it is refused with.
+fn checked<T>(checked: Result<T, LibraryError>, route: &str) -> Result<T, PlaybackError> {
+    match checked {
+        Ok(value) => Ok(value),
+        Err(LibraryError::Invalid(message)) => Err(refuse(StatusCode::BAD_REQUEST, message)),
+        Err(err) => Err(write_failed(route, &err)),
+    }
 }
 
 /// Sets the caller's progress in an edition outright: Mark finished,
@@ -996,11 +925,8 @@ pub(crate) async fn put_progress(
     Json(body): Json<ProgressEditBody>,
 ) -> Result<Json<SyncJson>, PlaybackError> {
     const ROUTE: &str = "PUT /api/playback/progress/{edition_id}";
-    let edit = PlaybackProgressEdit {
-        position: length("position_ms", body.position_ms)?,
-        duration: length("duration_ms", body.duration_ms)?,
-        finished: body.is_finished,
-    };
+    // The same check the fuzz target drives (`parse_progress_edit_request`).
+    let edit = checked(body.validate(), ROUTE)?;
     let user_id = listener(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let edition = edition_in_scope(&state, &library, &headers, &edition_id, ROUTE).await?;
@@ -1099,38 +1025,6 @@ pub(crate) async fn list_edition_bookmarks(
     }))
 }
 
-/// `POST /api/library/editions/{id}/bookmarks` body.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct NewBookmarkBody {
-    /// The place to mark, in milliseconds (at most sixty days).
-    #[schema(example = 754_000)]
-    position_ms: u64,
-    /// A note for it, at most 200 bytes, no control characters; empty
-    /// when left out.
-    #[serde(default)]
-    #[schema(example = "The storm")]
-    title: String,
-}
-
-/// A bookmark title as stored, or the 400 it is refused with.
-fn bookmark_title(title: &str) -> Result<&str, PlaybackError> {
-    let title = title.trim();
-    if title.len() > MAX_BOOKMARK_TITLE_BYTES {
-        return Err(refuse(
-            StatusCode::BAD_REQUEST,
-            format!("title must be at most {MAX_BOOKMARK_TITLE_BYTES} bytes"),
-        ));
-    }
-    if title.chars().any(char::is_control) {
-        return Err(refuse(
-            StatusCode::BAD_REQUEST,
-            "title must not contain control characters",
-        ));
-    }
-    Ok(title)
-}
-
 /// Adds a bookmark of the caller's in an edition.
 #[utoipa::path(
     post,
@@ -1154,13 +1048,13 @@ pub(crate) async fn post_edition_bookmark(
     Json(body): Json<NewBookmarkBody>,
 ) -> Result<Json<BookmarkJson>, PlaybackError> {
     const ROUTE: &str = "POST /api/library/editions/{id}/bookmarks";
-    let position = length("position_ms", Some(body.position_ms))?.unwrap_or(PlaybackMs::ZERO);
-    let title = bookmark_title(&body.title)?;
+    // The same check the fuzz target drives (`parse_new_bookmark_request`).
+    let new = checked(body.validate(), ROUTE)?;
     let user_id = listener(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let edition = edition_in_scope(&state, &library, &headers, &id, ROUTE).await?;
     let bookmark = library
-        .add_bookmark(user_id, &edition.edition_id, position, title)
+        .add_bookmark(user_id, &edition.edition_id, new.position, &new.title)
         .await
         .map_err(|err| write_failed(ROUTE, &err))?
         .ok_or_else(|| {
@@ -1174,21 +1068,6 @@ pub(crate) async fn post_edition_bookmark(
         })?;
     crate::live::poke(bookclerk_library::control_plane::LiveTopic::Playback);
     Ok(Json(bookmark_json(bookmark)))
-}
-
-/// `PUT /api/playback/bookmarks/{id}` body: what to change. A field left
-/// out keeps its stored value.
-#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct BookmarkEditBody {
-    /// The new place, in milliseconds.
-    #[serde(default)]
-    #[schema(example = 760_000)]
-    position_ms: Option<u64>,
-    /// The new note; an empty string clears it.
-    #[serde(default)]
-    #[schema(example = "The storm breaks")]
-    title: Option<String>,
 }
 
 /// The 404 a bookmark that is not the caller's gets.
@@ -1217,13 +1096,18 @@ pub(crate) async fn put_bookmark(
     Json(body): Json<BookmarkEditBody>,
 ) -> Result<Json<BookmarkJson>, PlaybackError> {
     const ROUTE: &str = "PUT /api/playback/bookmarks/{id}";
-    let position = length("position_ms", body.position_ms)?;
-    let title = body.title.as_deref().map(bookmark_title).transpose()?;
+    // The same check the fuzz target drives (`parse_bookmark_edit_request`).
+    let edit = checked(body.validate(), ROUTE)?;
     let user_id = listener(&state, &headers).await?;
     let path = parse_track_path(&id, "0").ok_or_else(no_bookmark)?;
     let library = state.library_snapshot().await;
     let bookmark = library
-        .edit_bookmark(user_id, &path.session_id, position, title)
+        .edit_bookmark(
+            user_id,
+            &path.session_id,
+            edit.position,
+            edit.title.as_deref(),
+        )
         .await
         .map_err(|err| write_failed(ROUTE, &err))?
         .ok_or_else(no_bookmark)?;

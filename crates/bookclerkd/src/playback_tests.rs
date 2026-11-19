@@ -729,6 +729,19 @@ async fn a_member_keeps_progress_and_bookmarks_of_their_own() {
     .json();
     assert_eq!(page["items"].as_array().unwrap().len(), 1);
 
+    // A session body is an object naming an edition of a sane length.
+    for (body, status) in [
+        (json!({"edition_id": ""}), StatusCode::BAD_REQUEST),
+        (
+            json!({"edition_id": "e".repeat(129)}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (json!([first]), StatusCode::UNPROCESSABLE_ENTITY),
+    ] {
+        let answer = post(&world, "/api/playback/sessions", Some(riley), body).await;
+        assert_eq!(answer.status, status);
+    }
+
     // Bookmarks.
     let bookmarks = format!("/api/library/editions/{first}/bookmarks");
     let answer = post(
@@ -744,7 +757,7 @@ async fn a_member_keeps_progress_and_bookmarks_of_their_own() {
     post(&world, &bookmarks, Some(riley), json!({"position_ms": 500})).await;
     for body in [
         json!({"position_ms": 1, "title": "a\u{7}b"}),
-        json!({"position_ms": 1, "title": "x".repeat(MAX_BOOKMARK_TITLE_BYTES + 1)}),
+        json!({"position_ms": 1, "title": "x".repeat(bookclerk_library::MAX_BOOKMARK_TITLE_BYTES + 1)}),
         json!({"position_ms": 5_184_000_001u64}),
     ] {
         let answer = post(&world, &bookmarks, Some(riley), body).await;

@@ -73,7 +73,12 @@ of its tracks.
   on the same library answers `421`.
 - **Limits:** a position or runtime is at most sixty days, a session
   lists at most 512 tracks, and a person keeps at most 200 bookmarks in
-  one edition.
+  one edition. A bookmark's note is at most 200 bytes with no control
+  characters, and a player's name is kept to 64 bytes.
+- **Request bodies** are JSON objects with only the documented fields.
+  One out of range gets `400`; one of another shape gets `422`.
+- **Time listened** in a session is the sum of what its reports carry,
+  so reports that overlap all count.
 - **Cross-site requests** are refused like every other cookie-signed
   write: `POST`, `PUT` and `DELETE` need the app's own `Origin`.
 

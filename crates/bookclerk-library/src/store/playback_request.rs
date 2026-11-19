@@ -4,13 +4,20 @@
 //!
 //! - the body of `POST /api/playback/sessions/{id}/sync` and `.../close`
 //!   ([`parse_playback_sync_request`]), which moves a person's progress;
+//! - the bodies that open a session, set progress outright and add or
+//!   change a bookmark ([`parse_open_session_request`],
+//!   [`parse_progress_edit_request`], [`parse_new_bookmark_request`],
+//!   [`parse_bookmark_edit_request`]);
 //! - the path of `GET /api/playback/sessions/{id}/tracks/{n}`
 //!   ([`parse_track_path`]), which names the file a stream request reads.
 //!   Its `Range` header is `bookclerk_node_proto::parse_copy_range`'s.
 
 use serde::Deserialize;
 
-use super::playback::{PlaybackMs, PlaybackSync, MAX_PLAYBACK_MS};
+use super::playback::{
+    PlaybackMs, PlaybackProgressEdit, PlaybackSync, PlayerKind, MAX_BOOKMARK_TITLE_BYTES,
+    MAX_PLAYBACK_MS, MAX_PLAYER_NAME_BYTES,
+};
 use crate::error::{LibraryError, Result};
 
 /// Largest sync body the routes read, in bytes; a real one is under 100.
@@ -125,6 +132,441 @@ pub fn parse_playback_sync_request(body: &[u8], close: bool) -> Result<PlaybackS
         .validate(close)
 }
 
+/// Largest body the other playback parsers read, in bytes: room for an
+/// escaped bookmark title or a long player name.
+pub const MAX_PLAYBACK_BODY_BYTES: usize = 4096;
+
+/// Longest edition id a session is opened for, in bytes; a real one is a
+/// 36-byte UUID.
+pub const MAX_EDITION_ID_BYTES: usize = 128;
+
+/// A body length as a timeline length.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] naming `field` when `ms` is past
+/// [`MAX_PLAYBACK_MS`].
+fn length(field: &str, ms: u64) -> Result<PlaybackMs> {
+    PlaybackMs::new(ms)
+        .ok_or_else(|| LibraryError::Invalid(format!("{field} must be at most {MAX_PLAYBACK_MS}")))
+}
+
+/// Reads one of the bodies below from raw bytes: at most
+/// [`MAX_PLAYBACK_BODY_BYTES`] of JSON in the body's shape.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] naming `what` for a longer body or
+/// bytes that are not the body's JSON shape.
+fn read_body<'de, T: Deserialize<'de>>(body: &'de [u8], what: &str) -> Result<T> {
+    if body.len() > MAX_PLAYBACK_BODY_BYTES {
+        return Err(LibraryError::Invalid(format!(
+            "{what} is at most {MAX_PLAYBACK_BODY_BYTES} bytes"
+        )));
+    }
+    serde_json::from_slice(body).map_err(|err| LibraryError::Invalid(format!("{what}: {err}")))
+}
+
+/// The kind of first-party player that opens a session. Outside player
+/// apps open theirs through the player API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PlayerKindParam {
+    /// The web app in a browser.
+    #[default]
+    Web,
+    /// The desktop window.
+    Desktop,
+}
+
+impl From<PlayerKindParam> for PlayerKind {
+    fn from(value: PlayerKindParam) -> Self {
+        match value {
+            PlayerKindParam::Web => Self::Web,
+            PlayerKindParam::Desktop => Self::Desktop,
+        }
+    }
+}
+
+/// `POST /api/playback/sessions` body.
+#[derive(Debug, utoipa::ToSchema)]
+// Read by the schema only (no unknown fields); `OpenSessionFields`
+// enforces it.
+#[serde(deny_unknown_fields)]
+pub struct OpenSessionBody {
+    /// The edition to play (1 to 128 bytes).
+    #[schema(example = "5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d")]
+    edition_id: String,
+    /// What kind of player asks; `web` when left out.
+    #[serde(default)]
+    player: PlayerKindParam,
+    /// The player's own name, shown in listening history. Control
+    /// characters are dropped and at most 64 bytes are kept.
+    #[serde(default)]
+    #[schema(example = "Firefox on Linux")]
+    player_name: String,
+}
+
+/// [`OpenSessionBody`]'s fields as JSON carries them; read only from a
+/// JSON object, never from an array.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenSessionFields {
+    /// See [`OpenSessionBody::edition_id`].
+    edition_id: String,
+    /// See [`OpenSessionBody::player`].
+    #[serde(default)]
+    player: PlayerKindParam,
+    /// See [`OpenSessionBody::player_name`].
+    #[serde(default)]
+    player_name: String,
+}
+
+impl<'de> Deserialize<'de> for OpenSessionBody {
+    /// Reads the body from a JSON object only.
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let fields: OpenSessionFields =
+            crate::control_plane::from_object(deserializer, "a JSON object with edition_id")?;
+        Ok(Self {
+            edition_id: fields.edition_id,
+            player: fields.player,
+            player_name: fields.player_name,
+        })
+    }
+}
+
+/// A checked request to open a play session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenSessionRequest {
+    /// The edition to play, as sent.
+    pub edition_id: String,
+    /// What kind of player asks.
+    pub player: PlayerKind,
+    /// The player's name as stored: no control characters, trimmed, at
+    /// most [`MAX_PLAYER_NAME_BYTES`] bytes.
+    pub player_name: String,
+}
+
+impl OpenSessionBody {
+    /// Checks the body and tidies the player's name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] for an empty edition id or one
+    /// over [`MAX_EDITION_ID_BYTES`].
+    pub fn validate(self) -> Result<OpenSessionRequest> {
+        if self.edition_id.is_empty() || self.edition_id.len() > MAX_EDITION_ID_BYTES {
+            return Err(LibraryError::Invalid(format!(
+                "edition_id must be 1 to {MAX_EDITION_ID_BYTES} bytes"
+            )));
+        }
+        let name: String = self
+            .player_name
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        let name = name.trim();
+        let mut end = name.len().min(MAX_PLAYER_NAME_BYTES);
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        Ok(OpenSessionRequest {
+            edition_id: self.edition_id,
+            player: self.player.into(),
+            player_name: name[..end].to_string(),
+        })
+    }
+}
+
+/// Parses and validates a `POST /api/playback/sessions` body from its raw
+/// bytes, sans IO: JSON into [`OpenSessionBody`], then
+/// [`OpenSessionBody::validate`].
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for a body over
+/// [`MAX_PLAYBACK_BODY_BYTES`], bytes that are not the body's JSON shape
+/// (unknown or repeated fields, wrong types, a missing `edition_id`, an
+/// unknown `player`, an array instead of an object) or an edition id that
+/// is empty or too long.
+pub fn parse_open_session_request(body: &[u8]) -> Result<OpenSessionRequest> {
+    read_body::<OpenSessionBody>(body, "session body")?.validate()
+}
+
+/// `PUT /api/playback/progress/{edition_id}` body: what to set. A field
+/// left out keeps its stored value.
+#[derive(Debug, Default, utoipa::ToSchema)]
+// Read by the schema only (no unknown fields); `ProgressEditFields`
+// enforces it.
+#[serde(deny_unknown_fields)]
+pub struct ProgressEditBody {
+    /// Position in milliseconds (at most sixty days).
+    #[serde(default)]
+    #[schema(example = 0)]
+    position_ms: Option<u64>,
+    /// The edition's runtime in milliseconds, when the page knows it.
+    #[serde(default)]
+    #[schema(example = 41_400_000)]
+    duration_ms: Option<u64>,
+    /// True marks the edition and its work finished; false clears the
+    /// edition's flag (the work's stays, and is changed with the work's
+    /// own state). Left out, the position decides.
+    #[serde(default)]
+    #[schema(example = true)]
+    is_finished: Option<bool>,
+}
+
+/// [`ProgressEditBody`]'s fields as JSON carries them; read only from a
+/// JSON object, never from an array.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProgressEditFields {
+    /// See [`ProgressEditBody::position_ms`].
+    #[serde(default)]
+    position_ms: Option<u64>,
+    /// See [`ProgressEditBody::duration_ms`].
+    #[serde(default)]
+    duration_ms: Option<u64>,
+    /// See [`ProgressEditBody::is_finished`].
+    #[serde(default)]
+    is_finished: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for ProgressEditBody {
+    /// Reads the body from a JSON object only.
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let fields: ProgressEditFields =
+            crate::control_plane::from_object(deserializer, "a JSON object")?;
+        Ok(Self {
+            position_ms: fields.position_ms,
+            duration_ms: fields.duration_ms,
+            is_finished: fields.is_finished,
+        })
+    }
+}
+
+impl ProgressEditBody {
+    /// Checks the body: every length at most [`MAX_PLAYBACK_MS`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] naming the field that is too
+    /// large.
+    pub fn validate(self) -> Result<PlaybackProgressEdit> {
+        Ok(PlaybackProgressEdit {
+            position: self
+                .position_ms
+                .map(|ms| length("position_ms", ms))
+                .transpose()?,
+            duration: self
+                .duration_ms
+                .map(|ms| length("duration_ms", ms))
+                .transpose()?,
+            finished: self.is_finished,
+        })
+    }
+}
+
+/// Parses and validates a `PUT /api/playback/progress/{edition_id}` body
+/// from its raw bytes, sans IO.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for a body over
+/// [`MAX_PLAYBACK_BODY_BYTES`], bytes that are not the body's JSON shape
+/// or a length past [`MAX_PLAYBACK_MS`].
+pub fn parse_progress_edit_request(body: &[u8]) -> Result<PlaybackProgressEdit> {
+    read_body::<ProgressEditBody>(body, "progress body")?.validate()
+}
+
+/// A bookmark title as stored.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] when the trimmed title is over
+/// [`MAX_BOOKMARK_TITLE_BYTES`] or has a control character.
+fn bookmark_title(title: &str) -> Result<String> {
+    let title = title.trim();
+    if title.len() > MAX_BOOKMARK_TITLE_BYTES {
+        return Err(LibraryError::Invalid(format!(
+            "title must be at most {MAX_BOOKMARK_TITLE_BYTES} bytes"
+        )));
+    }
+    if title.chars().any(char::is_control) {
+        return Err(LibraryError::Invalid(
+            "title must not contain control characters".into(),
+        ));
+    }
+    Ok(title.to_string())
+}
+
+/// `POST /api/library/editions/{id}/bookmarks` body.
+#[derive(Debug, utoipa::ToSchema)]
+// Read by the schema only (no unknown fields); `NewBookmarkFields`
+// enforces it.
+#[serde(deny_unknown_fields)]
+pub struct NewBookmarkBody {
+    /// The place to mark, in milliseconds (at most sixty days).
+    #[schema(example = 754_000)]
+    position_ms: u64,
+    /// A note for it, at most 200 bytes, no control characters; empty
+    /// when left out.
+    #[serde(default)]
+    #[schema(example = "The storm")]
+    title: String,
+}
+
+/// [`NewBookmarkBody`]'s fields as JSON carries them; read only from a
+/// JSON object, never from an array.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewBookmarkFields {
+    /// See [`NewBookmarkBody::position_ms`].
+    position_ms: u64,
+    /// See [`NewBookmarkBody::title`].
+    #[serde(default)]
+    title: String,
+}
+
+impl<'de> Deserialize<'de> for NewBookmarkBody {
+    /// Reads the body from a JSON object only.
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let fields: NewBookmarkFields =
+            crate::control_plane::from_object(deserializer, "a JSON object with position_ms")?;
+        Ok(Self {
+            position_ms: fields.position_ms,
+            title: fields.title,
+        })
+    }
+}
+
+/// A checked bookmark to add.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewBookmarkRequest {
+    /// The place to mark.
+    pub position: PlaybackMs,
+    /// The note, trimmed; may be empty.
+    pub title: String,
+}
+
+impl NewBookmarkBody {
+    /// Checks the body.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] for a position past
+    /// [`MAX_PLAYBACK_MS`], or a title that is too long or has a control
+    /// character.
+    pub fn validate(self) -> Result<NewBookmarkRequest> {
+        Ok(NewBookmarkRequest {
+            position: length("position_ms", self.position_ms)?,
+            title: bookmark_title(&self.title)?,
+        })
+    }
+}
+
+/// Parses and validates a `POST /api/library/editions/{id}/bookmarks`
+/// body from its raw bytes, sans IO.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for a body over
+/// [`MAX_PLAYBACK_BODY_BYTES`], bytes that are not the body's JSON shape,
+/// a position past [`MAX_PLAYBACK_MS`] or a refused title.
+pub fn parse_new_bookmark_request(body: &[u8]) -> Result<NewBookmarkRequest> {
+    read_body::<NewBookmarkBody>(body, "bookmark body")?.validate()
+}
+
+/// `PUT /api/playback/bookmarks/{id}` body: what to change. A field left
+/// out keeps its stored value.
+#[derive(Debug, Default, utoipa::ToSchema)]
+// Read by the schema only (no unknown fields); `BookmarkEditFields`
+// enforces it.
+#[serde(deny_unknown_fields)]
+pub struct BookmarkEditBody {
+    /// The new place, in milliseconds.
+    #[serde(default)]
+    #[schema(example = 760_000)]
+    position_ms: Option<u64>,
+    /// The new note; an empty string clears it.
+    #[serde(default)]
+    #[schema(example = "The storm breaks")]
+    title: Option<String>,
+}
+
+/// [`BookmarkEditBody`]'s fields as JSON carries them; read only from a
+/// JSON object, never from an array.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BookmarkEditFields {
+    /// See [`BookmarkEditBody::position_ms`].
+    #[serde(default)]
+    position_ms: Option<u64>,
+    /// See [`BookmarkEditBody::title`].
+    #[serde(default)]
+    title: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for BookmarkEditBody {
+    /// Reads the body from a JSON object only.
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let fields: BookmarkEditFields =
+            crate::control_plane::from_object(deserializer, "a JSON object")?;
+        Ok(Self {
+            position_ms: fields.position_ms,
+            title: fields.title,
+        })
+    }
+}
+
+/// A checked change to a bookmark.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BookmarkEditRequest {
+    /// The new place; `None` keeps it.
+    pub position: Option<PlaybackMs>,
+    /// The new note, trimmed; `None` keeps it.
+    pub title: Option<String>,
+}
+
+impl BookmarkEditBody {
+    /// Checks the body.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] for a position past
+    /// [`MAX_PLAYBACK_MS`], or a title that is too long or has a control
+    /// character.
+    pub fn validate(self) -> Result<BookmarkEditRequest> {
+        Ok(BookmarkEditRequest {
+            position: self
+                .position_ms
+                .map(|ms| length("position_ms", ms))
+                .transpose()?,
+            title: self.title.as_deref().map(bookmark_title).transpose()?,
+        })
+    }
+}
+
+/// Parses and validates a `PUT /api/playback/bookmarks/{id}` body from
+/// its raw bytes, sans IO.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for a body over
+/// [`MAX_PLAYBACK_BODY_BYTES`], bytes that are not the body's JSON shape,
+/// a position past [`MAX_PLAYBACK_MS`] or a refused title.
+pub fn parse_bookmark_edit_request(body: &[u8]) -> Result<BookmarkEditRequest> {
+    read_body::<BookmarkEditBody>(body, "bookmark body")?.validate()
+}
+
 /// The file a stream request names ([`parse_track_path`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackPath {
@@ -221,6 +663,158 @@ mod tests {
             " ".repeat(MAX_PLAYBACK_SYNC_BYTES)
         );
         assert!(parse_playback_sync_request(long.as_bytes(), false).is_err());
+    }
+
+    #[test]
+    fn a_session_body_names_an_edition_and_tidies_the_players_name() {
+        let open = parse_open_session_request(br#"{"edition_id": "ed1"}"#).unwrap();
+        assert_eq!(
+            open,
+            OpenSessionRequest {
+                edition_id: "ed1".into(),
+                player: PlayerKind::Web,
+                player_name: String::new(),
+            }
+        );
+        let long = format!(
+            r#"{{"edition_id": "ed1", "player": "desktop", "player_name": " a\u0007b{}"}}"#,
+            "é".repeat(40)
+        );
+        let open = parse_open_session_request(long.as_bytes()).unwrap();
+        assert_eq!(open.player, PlayerKind::Desktop);
+        assert_eq!(open.player_name, format!("ab{}", "é".repeat(31)));
+        let id = "e".repeat(MAX_EDITION_ID_BYTES);
+        assert!(
+            parse_open_session_request(format!(r#"{{"edition_id": "{id}"}}"#).as_bytes()).is_ok()
+        );
+        for refused in [
+            &br#"["ed1"]"#[..],
+            br#"{}"#,
+            br#"{"edition_id": ""}"#,
+            br#"{"edition_id": 7}"#,
+            br#"{"edition_id": "ed1", "player": "app"}"#,
+            br#"{"edition_id": "ed1", "player": null}"#,
+            br#"{"edition_id": "ed1", "edition_id": "ed2"}"#,
+            br#"{"edition_id": "ed1", "extra": 1}"#,
+            format!(r#"{{"edition_id": "{id}e"}}"#).as_bytes(),
+            format!(
+                r#"{{"edition_id": "ed1"{}}}"#,
+                " ".repeat(MAX_PLAYBACK_BODY_BYTES)
+            )
+            .as_bytes(),
+        ] {
+            assert!(
+                matches!(
+                    parse_open_session_request(refused),
+                    Err(LibraryError::Invalid(_))
+                ),
+                "{:?}",
+                String::from_utf8_lossy(refused)
+            );
+        }
+    }
+
+    #[test]
+    fn a_progress_body_sets_only_what_it_names() {
+        assert_eq!(
+            parse_progress_edit_request(b"{}").unwrap(),
+            PlaybackProgressEdit {
+                position: None,
+                duration: None,
+                finished: None
+            }
+        );
+        let edit = parse_progress_edit_request(
+            br#"{"position_ms": 5, "duration_ms": null, "is_finished": false}"#,
+        )
+        .unwrap();
+        assert_eq!(edit.position.map(PlaybackMs::get), Some(5));
+        assert_eq!(edit.duration, None);
+        assert_eq!(edit.finished, Some(false));
+        for refused in [
+            &b"[1, 2, true]"[..],
+            br#"{"position_ms": 5184000001}"#,
+            br#"{"duration_ms": 5184000001}"#,
+            br#"{"is_finished": 1}"#,
+            br#"{"finished": true}"#,
+        ] {
+            assert!(
+                matches!(
+                    parse_progress_edit_request(refused),
+                    Err(LibraryError::Invalid(_))
+                ),
+                "{:?}",
+                String::from_utf8_lossy(refused)
+            );
+        }
+    }
+
+    #[test]
+    fn a_bookmark_body_has_a_place_and_a_short_plain_title() {
+        let new =
+            parse_new_bookmark_request(br#"{"position_ms": 9, "title": "  The storm "}"#).unwrap();
+        assert_eq!(new.position.get(), 9);
+        assert_eq!(new.title, "The storm");
+        assert_eq!(
+            parse_new_bookmark_request(br#"{"position_ms": 9}"#)
+                .unwrap()
+                .title,
+            ""
+        );
+        let longest = "é".repeat(MAX_BOOKMARK_TITLE_BYTES / 2);
+        assert!(parse_new_bookmark_request(
+            format!(r#"{{"position_ms": 1, "title": "{longest}"}}"#).as_bytes()
+        )
+        .is_ok());
+        for refused in [
+            &b"[9]"[..],
+            br#"{"title": "x"}"#,
+            br#"{"position_ms": 5184000001}"#,
+            br#"{"position_ms": 1, "title": "a\nb"}"#,
+            br#"{"position_ms": 1, "title": null}"#,
+            format!(r#"{{"position_ms": 1, "title": "{longest}x"}}"#).as_bytes(),
+        ] {
+            assert!(
+                matches!(
+                    parse_new_bookmark_request(refused),
+                    Err(LibraryError::Invalid(_))
+                ),
+                "{:?}",
+                String::from_utf8_lossy(refused)
+            );
+        }
+
+        assert_eq!(
+            parse_bookmark_edit_request(b"{}").unwrap(),
+            BookmarkEditRequest {
+                position: None,
+                title: None
+            }
+        );
+        let edit = parse_bookmark_edit_request(br#"{"position_ms": 3, "title": " "}"#).unwrap();
+        assert_eq!(edit.position.map(PlaybackMs::get), Some(3));
+        assert_eq!(edit.title.as_deref(), Some(""));
+        assert_eq!(
+            parse_bookmark_edit_request(br#"{"title": null}"#)
+                .unwrap()
+                .title,
+            None
+        );
+        for refused in [
+            &b"[]"[..],
+            br#"{"position_ms": 5184000001}"#,
+            br#"{"title": "a\u0000b"}"#,
+            br#"{"note": "x"}"#,
+        ] {
+            assert!(
+                matches!(
+                    parse_bookmark_edit_request(refused),
+                    Err(LibraryError::Invalid(_))
+                ),
+                "{:?}",
+                String::from_utf8_lossy(refused)
+            );
+        }
     }
 
     #[test]

@@ -386,26 +386,59 @@ fn truncated(text: &str, max: usize) -> &str {
     &text[..end]
 }
 
+/// The condition, for a statement later in a sync's batch, that the
+/// batch's own session update took effect: the session row carries the
+/// batch's timestamp. Binds the session id, then that timestamp.
+const SESSION_MOVED: &str =
+    "EXISTS (SELECT 1 FROM playback_sessions WHERE id = ? AND updated_at = ?)";
+
 /// The two statements that set a work's finished flag for one person,
 /// keeping their ratings and tags: `UPDATE`, then `INSERT OR IGNORE`
 /// guarded on the work existing.
-fn work_finished(user_id: i64, work_id: &str, now: &str) -> [TypedDbStatement; 2] {
+///
+/// # Arguments
+///
+/// * `user_id` - The person.
+/// * `work_id` - The work.
+/// * `now` - The batch's timestamp.
+/// * `moved_session` - For a sync's batch, the session whose update the
+///   flag depends on ([`SESSION_MOVED`]): a report that lost a race with
+///   the session's close must not finish the work.
+fn work_finished(
+    user_id: i64,
+    work_id: &str,
+    now: &str,
+    moved_session: Option<&str>,
+) -> [TypedDbStatement; 2] {
+    let guard = moved_session.map_or_else(String::new, |_| format!(" AND {SESSION_MOVED}"));
+    let mut update = vec![batch::text(now), batch::int(user_id), batch::text(work_id)];
+    let mut insert = vec![
+        batch::int(user_id),
+        batch::text(work_id),
+        batch::text(now),
+        batch::text(work_id),
+    ];
+    if let Some(session_id) = moved_session {
+        for binds in [&mut update, &mut insert] {
+            binds.push(batch::text(session_id));
+            binds.push(batch::text(now));
+        }
+    }
     [
         batch::exec(
-            "UPDATE user_title_state SET is_finished = 1, updated_at = ? \
-             WHERE user_id = ? AND work_id = ?",
-            vec![batch::text(now), batch::int(user_id), batch::text(work_id)],
+            &format!(
+                "UPDATE user_title_state SET is_finished = 1, updated_at = ? \
+                 WHERE user_id = ? AND work_id = ?{guard}"
+            ),
+            update,
         ),
         batch::exec(
-            "INSERT OR IGNORE INTO user_title_state \
-             (user_id, work_id, is_finished, updated_at) \
-             SELECT ?, ?, 1, ? WHERE EXISTS (SELECT 1 FROM works WHERE id = ?)",
-            vec![
-                batch::int(user_id),
-                batch::text(work_id),
-                batch::text(now),
-                batch::text(work_id),
-            ],
+            &format!(
+                "INSERT OR IGNORE INTO user_title_state \
+                 (user_id, work_id, is_finished, updated_at) \
+                 SELECT ?, ?, 1, ? WHERE EXISTS (SELECT 1 FROM works WHERE id = ?){guard}"
+            ),
+            insert,
         ),
     ]
 }
@@ -600,7 +633,7 @@ impl LibraryStore {
             ),
         ];
         if let (true, Some(work_id)) = (became_finished, work_id) {
-            statements.extend(work_finished(user_id, work_id, &now));
+            statements.extend(work_finished(user_id, work_id, &now, None));
         }
         statements.push(bump(LiveTopic::Playback));
         let operation_id = format!("playback-progress-{}", uuid::Uuid::new_v4());
@@ -770,34 +803,39 @@ impl LibraryStore {
         let became_finished =
             !was_finished && duration.is_some_and(|duration| reaches_end(sync.position, duration));
         let now = now_str();
-        let listened = session
-            .listened
-            .get()
-            .saturating_add(sync.listened.get())
-            .min(MAX_PLAYBACK_MS);
-        let open_session =
-            "EXISTS (SELECT 1 FROM playback_sessions WHERE id = ? AND updated_at = ?)";
+        let open_session = SESSION_MOVED;
         let mut statements = vec![
             // The person may have forgotten their progress while the
-            // session played: the next report starts the row again.
+            // session played: the next report starts the row again, as
+            // long as the session is still open.
             batch::exec(
                 "INSERT OR IGNORE INTO playback_progress \
                  (user_id, edition_id, position_ms, is_finished, started_at, updated_at) \
-                 VALUES (?, ?, 0, 0, ?, ?)",
+                 SELECT ?, ?, 0, 0, ?, ? WHERE EXISTS (SELECT 1 FROM playback_sessions \
+                 WHERE id = ? AND user_id = ? AND closed_at IS NULL)",
                 vec![
                     batch::int(session.user_id),
                     batch::text(&session.edition_id),
                     batch::text(&now),
                     batch::text(&now),
+                    batch::text(&session.id),
+                    batch::int(session.user_id),
                 ],
             ),
+            // Time listened is added to the stored total inside the
+            // statement, so two reports that overlap both count.
             batch::exec(
-                "UPDATE playback_sessions SET position_ms = ?, listened_ms = ?, updated_at = ?, \
+                "UPDATE playback_sessions SET position_ms = ?, \
+                 listened_ms = CASE WHEN listened_ms + ? > ? THEN ? ELSE listened_ms + ? END, \
+                 updated_at = ?, \
                  closed_at = CASE WHEN ? = 1 THEN ? ELSE closed_at END \
                  WHERE id = ? AND user_id = ? AND closed_at IS NULL",
                 vec![
                     batch::int(sync.position.stored()),
-                    batch::int(PlaybackMs(listened).stored()),
+                    batch::int(sync.listened.stored()),
+                    batch::int(PlaybackMs(MAX_PLAYBACK_MS).stored()),
+                    batch::int(PlaybackMs(MAX_PLAYBACK_MS).stored()),
+                    batch::int(sync.listened.stored()),
                     batch::text(&now),
                     batch::int(i64::from(sync.close)),
                     batch::text(&now),
@@ -828,7 +866,12 @@ impl LibraryStore {
             ),
         ];
         if let (true, Some(work_id)) = (became_finished, work_id) {
-            statements.extend(work_finished(session.user_id, work_id, &now));
+            statements.extend(work_finished(
+                session.user_id,
+                work_id,
+                &now,
+                Some(&session.id),
+            ));
         }
         if sync.close || became_finished {
             statements.push(bump(LiveTopic::Playback));

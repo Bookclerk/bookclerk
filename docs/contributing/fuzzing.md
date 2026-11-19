@@ -73,7 +73,7 @@ boundary extends it.
 | `members_books_request` | A library operator's "Acquire all of this branch's members' books" choice, the body of `PUT /api/config/branches/members-books` | `bookclerk-library::control_plane::parse_members_books_request` |
 | `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
-| `playback_request` | A player's progress report and stream path: the bodies of `POST /api/playback/sessions/{id}/sync` and `.../close`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_track_path` |
+| `playback_request` | What a player sends the playback routes: the bodies of `POST /api/playback/sessions`, `.../{id}/sync` and `.../close`, `PUT /api/playback/progress/{edition_id}`, `POST /api/library/editions/{id}/bookmarks` and `PUT /api/playback/bookmarks/{id}`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_open_session_request`, `parse_progress_edit_request`, `parse_new_bookmark_request`, `parse_bookmark_edit_request`, `parse_track_path` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
 
@@ -550,8 +550,17 @@ only that. The others check:
   body as `Invalid`. For `t` the rest is a stream path's session id and
   track index, checked byte by byte: accepted exactly when the id is a
   lowercase hyphenated UUID and the index a number from 0 to 511 with no
-  sign or leading zero. The shared oracle is
-  `fuzz/oracles/playback_request.rs`, replayed from `bookclerk-library`.
+  sign or leading zero. For `o` (open a session), `p` (set progress),
+  `b` (add a bookmark) and `e` (change one) the rest is that route's
+  body, at most 4,096 bytes and one object with no repeated or unknown
+  keys. A session body has an `edition_id` of 1 to 128 bytes, a `player`
+  that is absent, `web` or `desktop`, and an optional `player_name`,
+  returned with control characters dropped, trimmed and cut to 64 bytes
+  on a character boundary. A progress body's two lengths and its
+  `is_finished` flag are each absent, `null` or in range. A bookmark
+  body's title, trimmed, is at most 200 bytes with no control character.
+  The shared oracle is `fuzz/oracles/playback_request.rs`, replayed from
+  `bookclerk-library`.
 - **`sharing_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
   besides `cluster_id`, `share_books`, `include_branches`,
