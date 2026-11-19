@@ -1385,25 +1385,22 @@ async fn store_copies(
             );
         }
     }
-    finish_copies(result, several)
+    finish_copies(result)
 }
 
 /// The acquire's result once every copy is stored: refused when no copy
-/// was stored, or when several copies were planned and none wrote a key
-/// (every destination that was to be written refuses every copy), so an
-/// acquire never records an empty storage key.
+/// was stored or none wrote a key (every destination that was to be
+/// written refuses every copy, as with `refetch_missing` choosing a
+/// destination whose copy rules take none), so an acquire never records an
+/// empty storage key.
 ///
 /// # Errors
 ///
 /// Returns [`AcquireError::NoDestinationAccepts`] in both cases.
-fn finish_copies(result: Option<AcquireResult>, several: bool) -> Result<AcquireResult> {
-    match result {
-        Some(result) if several && result.storage_key.is_empty() => {
-            Err(AcquireError::NoDestinationAccepts)
-        }
-        Some(result) => Ok(result),
-        None => Err(AcquireError::NoDestinationAccepts),
-    }
+fn finish_copies(result: Option<AcquireResult>) -> Result<AcquireResult> {
+    result
+        .filter(|result| !result.storage_key.is_empty())
+        .ok_or(AcquireError::NoDestinationAccepts)
 }
 
 /// Folds one stored copy's result into the acquire's: the first copy that
@@ -5606,15 +5603,11 @@ mod tests {
         fold_copy_result(&mut result, stored("m4b/a.m4b", &[]));
         let unwritten = Some(stored("", &["skipped.json"]));
         assert!(matches!(
-            finish_copies(unwritten.clone(), true),
+            finish_copies(unwritten),
             Err(AcquireError::NoDestinationAccepts)
         ));
-        assert!(
-            finish_copies(unwritten, false).is_ok(),
-            "one copy keeps its result"
-        );
-        assert!(finish_copies(None, false).is_err());
-        let result = finish_copies(result, true).unwrap();
+        assert!(finish_copies(None).is_err());
+        let result = finish_copies(result).unwrap();
         assert_eq!(result.storage_key, "mp3/a.mp3");
         assert_eq!(
             result.written_keys,
