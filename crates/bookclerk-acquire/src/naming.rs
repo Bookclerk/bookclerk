@@ -82,9 +82,9 @@ pub struct NamingContext {
     pub is_abridged: bool,
     /// Title kind (`book`, `episode`, …) for naming templates.
     pub content_kind: Option<String>,
-    /// The edition's short Bookclerk id for `<library id>`; `None` for a
+    /// The edition's short Bookclerk id for `<call number>`; `None` for a
     /// title with no edition, which then names by its product id.
-    pub library_id: Option<String>,
+    pub call_number: Option<String>,
     /// Chapter-specific: 1-based index.
     pub chapter_number: Option<u32>,
     /// Total chapter count when naming a split chapter file.
@@ -136,7 +136,7 @@ fn to_book_context(ctx: &NamingContext) -> BookContext {
 
     BookContext {
         isbn: ctx.asin.clone(),
-        library_id: ctx.library_id.clone().unwrap_or_else(|| ctx.asin.clone()),
+        call_number: ctx.call_number.clone().unwrap_or_else(|| ctx.asin.clone()),
         // Audible title (no subtitle) — drives `<audible title>` / `<title short>`.
         title: Some(ctx.title.clone()),
         subtitle: ctx.subtitle.clone(),

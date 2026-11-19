@@ -1,5 +1,5 @@
 //! Plugin cron fires: exactly one `plugin_scheduled` job per schedule fire,
-//! cluster-wide.
+//! library-wide.
 //!
 //! Every node that runs a plugin instance with `[triggers] crons` ticks its
 //! schedules. A `plugin_cron_cursors` row per `(instance, cron)` records the

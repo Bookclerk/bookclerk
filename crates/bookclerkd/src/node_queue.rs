@@ -80,7 +80,7 @@ pub fn wake_for(message: &NodeMessage) {
             PLACEMENT_WAKEUP.notify_one();
         }
         NodeMessage::ConfigurationChanged { .. } => {
-            // Cluster settings feed the config reconciler; instance documents
+            // Library settings feed the config reconciler; instance documents
             // change what a running guest was spawned with.
             CONFIG_WAKEUP.notify_one();
             DEPLOYMENT_WAKEUP.notify_one();
@@ -315,7 +315,7 @@ mod tests {
             .await
             .expect("deployment permit stored");
         wake_for(&NodeMessage::ConfigurationChanged {
-            scope_type: "cluster".into(),
+            scope_type: "library".into(),
             scope_id: "c".into(),
             namespace: "core.events".into(),
             revision: 3,

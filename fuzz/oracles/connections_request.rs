@@ -11,10 +11,10 @@
 //! typed bodies:
 //!
 //! - An add body is accepted exactly when it is one JSON object with no
-//!   repeated keys anywhere, no keys besides `cluster_id` (a string) and
+//!   repeated keys anywhere, no keys besides `library_id` (a string) and
 //!   `accounts` (both present), and `accounts` is an array of 1 to 64
 //!   objects, each with exactly a string `plugin_key` and a string
-//!   `account_id`. It yields the trimmed `cluster_id` and the accounts as
+//!   `account_id`. It yields the trimmed `library_id` and the accounts as
 //!   sent, in order.
 //! - A disconnect body is accepted exactly when it is one JSON object with no
 //!   repeated keys, a string `plugin_key`, a string `account_id`, and
@@ -75,11 +75,11 @@ fn check_add(data: &[u8], object: Option<&Map<String, Value>>) -> bool {
             );
             false
         }
-        Some((cluster_id, accounts)) => {
+        Some((library_id, accounts)) => {
             let request = got.unwrap_or_else(|err| {
                 panic!("add {:?} refused: {err:?}", String::from_utf8_lossy(data))
             });
-            assert_eq!(request.cluster_id, cluster_id);
+            assert_eq!(request.library_id, library_id);
             assert_eq!(request.accounts, accounts);
             true
         }
@@ -119,7 +119,7 @@ fn expected_add(fields: &Map<String, Value>) -> Option<(String, Vec<AccountRef>)
     if fields.len() != 2 {
         return None;
     }
-    let Some(Value::String(cluster_id)) = fields.get("cluster_id") else {
+    let Some(Value::String(library_id)) = fields.get("library_id") else {
         return None;
     };
     let Some(Value::Array(items)) = fields.get("accounts") else {
@@ -135,7 +135,7 @@ fn expected_add(fields: &Map<String, Value>) -> Option<(String, Vec<AccountRef>)
             _ => None,
         })
         .collect::<Option<Vec<_>>>()?;
-    Some((cluster_id.trim().to_string(), accounts))
+    Some((library_id.trim().to_string(), accounts))
 }
 
 /// The account and `everywhere` a disconnect body should yield, or `None`

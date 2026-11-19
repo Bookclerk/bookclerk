@@ -6,7 +6,7 @@
 //! the operator grant carries the `plugin_kv` binding token. The namespace's
 //! `max_value_bytes` and `max_keys` are enforced by the library store, so a
 //! native and a workerd guest see the same refusals. Values live in the
-//! cluster: an instance moved to another host reads its own keys.
+//! library: an instance moved to another host reads its own keys.
 
 use std::sync::Arc;
 

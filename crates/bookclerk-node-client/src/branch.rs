@@ -4,7 +4,7 @@
 //!
 //! The joining side is used by the daemon (the SPA's Join wizard, which
 //! keeps the verifier and keys in a pending-join row) and by `bookclerk
-//! clusters join --url` (which keeps them in memory and listens on a
+//! libraries join --url` (which keeps them in memory and listens on a
 //! loopback callback):
 //!
 //! 1. [`inspect_library`] reads `GET /api/node/v1/info` under the transport
@@ -15,14 +15,14 @@
 //!    the authorize URL the browser goes to.
 //! 3. [`redeem_branch_code`] sends the code, the verifier and the public
 //!    keys to `POST /api/node/v1/enroll/oauth`, then seals the keys and
-//!    records the link exactly as [`crate::join_cluster`] does.
+//!    records the link exactly as [`crate::join_library`] does.
 
 use std::time::Duration;
 
 use base64::Engine as _;
 use bookclerk_library::control_plane::{
-    branch_person, import_carried_accounts, record_cluster_link, set_cluster_link_person,
-    CarriedImport, ClusterLink, ClusterLinkKeys, NewClusterLink,
+    branch_person, import_carried_accounts, record_library_link, set_library_link_person,
+    CarriedImport, LibraryLink, LibraryLinkKeys, NewLibraryLink,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{
@@ -122,7 +122,7 @@ pub async fn inspect_library(address: &str) -> Result<InspectedLibrary, JoinErro
     }
     // The library is named by its public host: a DNS name, longer than a
     // branch name may be.
-    if !is_library_name(&info.library_name) || info.cluster_id.trim().is_empty() {
+    if !is_library_name(&info.library_name) || info.library_id.trim().is_empty() {
         return Err(JoinError::Record("malformed library info".into()));
     }
     Ok(InspectedLibrary {
@@ -141,7 +141,7 @@ pub struct BranchAuthorization {
     /// The PKCE verifier; never leaves this install.
     pub verifier: Zeroizing<String>,
     /// The node keys the branch will enroll.
-    pub keys: ClusterLinkKeys,
+    pub keys: LibraryLinkKeys,
     /// The redirect URI in the URL.
     pub redirect_uri: String,
 }
@@ -223,7 +223,7 @@ pub fn authorize_join(
         authorize_url: url.into(),
         state,
         verifier,
-        keys: ClusterLinkKeys::generate(),
+        keys: LibraryLinkKeys::generate(),
         redirect_uri: redirect_uri.to_string(),
     })
 }
@@ -234,8 +234,8 @@ pub struct BranchRedeem<'a> {
     pub origin: &'a str,
     /// The pin confirmed for a self-signed library.
     pub spki_pin: Option<&'a str>,
-    /// The cluster id the library reported before sign-in.
-    pub cluster_id: &'a str,
+    /// The library id the library reported before sign-in.
+    pub library_id: &'a str,
     /// The code from the callback.
     pub code: &'a str,
     /// The PKCE verifier.
@@ -287,7 +287,7 @@ fn ancestry_error(err: JoinError, enrolled: Option<&str>) -> JoinError {
 pub struct RedeemedBranch {
     /// The recorded link, as stored after this enrollment (another join
     /// may have replaced it since).
-    pub link: ClusterLink,
+    pub link: LibraryLink,
     /// The node id this enrollment was minted: what the join binds its
     /// person to, whatever the stored link names by then.
     pub node_id: String,
@@ -316,7 +316,7 @@ pub enum BroughtConnections {
 /// The binding names the node this join's own enrollment minted
 /// ([`RedeemedBranch::node_id`]), so a join another one replaced meanwhile
 /// binds nothing. A failure, or no person to name, leaves the link unbound
-/// (as [`record_cluster_link`] stored it): nobody can use it until the
+/// (as [`record_library_link`] stored it): nobody can use it until the
 /// branch joins again.
 ///
 /// # Arguments
@@ -341,9 +341,9 @@ pub async fn bind_join_person(
             return None;
         }
     };
-    match set_cluster_link_person(
+    match set_library_link_person(
         store,
-        &redeemed.link.owner_cluster_id,
+        &redeemed.link.parent_library_id,
         &redeemed.node_id,
         Some(person),
     )
@@ -389,7 +389,7 @@ pub async fn keep_brought_connections(
         return Ok(BroughtConnections::NoPerson(bundle.accounts.len()));
     };
     let report =
-        import_carried_accounts(store, person, &bundle.cluster_id, &bundle.accounts).await?;
+        import_carried_accounts(store, person, &bundle.library_id, &bundle.accounts).await?;
     tracing::info!(
         imported = report.imported.len(),
         already_here = report.already_here.len(),
@@ -410,7 +410,7 @@ pub async fn keep_brought_connections(
 ///
 /// Returns [`JoinError`] when the library is unreachable or refuses; once
 /// the library has enrolled a node, a malformed answer or one for another
-/// cluster gives [`JoinError::Unsaved`], which names that node so it can be
+/// library gives [`JoinError::Unsaved`], which names that node so it can be
 /// revoked there, as does a link this install refuses to record. A failed
 /// database or disk write gives [`JoinError::SaveFailed`] (redeeming the
 /// same code again with the same verifier and keys gets the same node, so
@@ -419,7 +419,7 @@ pub async fn keep_brought_connections(
 pub async fn redeem_branch_code(
     store: &LibraryStore,
     redeem: &BranchRedeem<'_>,
-    keys: &ClusterLinkKeys,
+    keys: &LibraryLinkKeys,
 ) -> Result<RedeemedBranch, JoinError> {
     // Checked before the code is spent: the library's ancestry may have
     // changed since the operator started. On a retry of an exchange the
@@ -436,7 +436,7 @@ pub async fn redeem_branch_code(
     let node_id = enrolled.node_id.clone();
     // A box that does not open loses only the connections, never the join.
     let accounts = enrolled.accounts.as_deref().and_then(|sealed| {
-        open_account_bundle(keys.box_secret(), &enrolled.cluster_id, &node_id, sealed)
+        open_account_bundle(keys.box_secret(), &enrolled.library_id, &node_id, sealed)
             .map_err(|err| {
                 tracing::warn!(
                     error = %err,
@@ -446,10 +446,10 @@ pub async fn redeem_branch_code(
             .ok()
     });
     let enrolled_node_id = enrolled.node_id.clone();
-    let mut recorded = record_cluster_link(
+    let mut recorded = record_library_link(
         store,
-        &NewClusterLink {
-            owner_cluster_id: enrolled.cluster_id,
+        &NewLibraryLink {
+            parent_library_id: enrolled.library_id,
             owner_origin: endpoint.origin().to_string(),
             remote_node_id: enrolled.node_id,
             spki_pin: redeem.spki_pin.map(str::to_string),
@@ -475,7 +475,7 @@ pub async fn redeem_branch_code(
     })?;
     crate::enroll::record_ancestry(store, &mut recorded, &ancestry).await;
     tracing::info!(
-        cluster_id = %recorded.owner_cluster_id,
+        library_id = %recorded.parent_library_id,
         node_id = %recorded.remote_node_id,
         origin = %recorded.owner_origin,
         pinned = recorded.spki_pin.is_some(),
@@ -490,7 +490,7 @@ pub async fn redeem_branch_code(
 
 /// Sends the code, the verifier and the public keys to `POST
 /// /api/node/v1/enroll/oauth` for `connection`, and checks the answer is
-/// for the cluster the library reported and that connection type.
+/// for the library the library reported and that connection type.
 ///
 /// The code and verifier are registered for redaction first, so an answer
 /// (or an error string from the library) that echoes either is redacted
@@ -500,11 +500,11 @@ pub async fn redeem_branch_code(
 ///
 /// Returns [`JoinError`] when the library is unreachable or refuses. Once
 /// the library has enrolled a node, a malformed answer, or one for another
-/// cluster or connection type, gives [`JoinError::Unsaved`] naming that
+/// library or connection type, gives [`JoinError::Unsaved`] naming that
 /// node.
 pub(crate) async fn post_redeem(
     redeem: &BranchRedeem<'_>,
-    keys: &ClusterLinkKeys,
+    keys: &LibraryLinkKeys,
     connection: ConnectionType,
 ) -> Result<(OwnerEndpoint, OAuthEnrollAnswer), JoinError> {
     let endpoint = OwnerEndpoint::new(redeem.origin, redeem.spki_pin)?;
@@ -546,10 +546,10 @@ pub(crate) async fn post_redeem(
                 .and_then(|value| value.get("node_id")?.as_str().map(str::to_string)),
             reason: "malformed enroll answer".into(),
         })?;
-    if enrolled.cluster_id != redeem.cluster_id {
+    if enrolled.library_id != redeem.library_id {
         return Err(JoinError::Unsaved {
             node_id: Some(enrolled.node_id),
-            reason: "the library answered for another cluster".into(),
+            reason: "the library answered for another library".into(),
         });
     }
     if enrolled.connection != connection {
@@ -583,13 +583,13 @@ impl HostJobRunner for NoJobs {
 /// A running client for the same link is superseded by this connection;
 /// the library then revokes the node, so that client stops too.
 pub async fn announce_leaving(
-    link: ClusterLink,
-    keys: ClusterLinkKeys,
+    link: LibraryLink,
+    keys: LibraryLinkKeys,
     software_version: &str,
     sampler: Box<dyn HeartbeatSource>,
     timeout: Duration,
 ) -> bool {
-    let cluster_id = link.owner_cluster_id.clone();
+    let library_id = link.parent_library_id.clone();
     let config = HostClientConfig {
         link,
         keys,
@@ -617,9 +617,9 @@ pub async fn announce_leaving(
     let _ = stop.send(true);
     let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
     if accepted {
-        tracing::info!(%cluster_id, "told the library this install is leaving");
+        tracing::info!(%library_id, "told the library this install is leaving");
     } else {
-        tracing::warn!(%cluster_id, "the library did not answer node.leaving");
+        tracing::warn!(%library_id, "the library did not answer node.leaving");
     }
     accepted
 }
@@ -689,7 +689,7 @@ mod tests {
     fn the_authorize_url_carries_the_challenge_not_the_verifier() {
         let library = InspectedLibrary {
             info: OwnerInfo {
-                cluster_id: "c".into(),
+                library_id: "c".into(),
                 library_name: "owner.example".into(),
                 origin: "https://owner.example".into(),
                 transport: "acme".into(),

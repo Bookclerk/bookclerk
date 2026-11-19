@@ -468,7 +468,7 @@ fn only_library_and_discover_reach_a_clerk() {
         LiveTopic::Nodes,
         LiveTopic::Config,
         LiveTopic::Consents,
-        LiveTopic::Clusters,
+        LiveTopic::Libraries,
         LiveTopic::Users,
     ]
     .into_iter()

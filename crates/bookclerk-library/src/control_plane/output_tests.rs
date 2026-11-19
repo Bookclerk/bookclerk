@@ -37,7 +37,7 @@ async fn output_is_imported_once_and_later_seeds_are_ignored() {
         .await
         .unwrap();
     assert_eq!(session.output.namespace, OUTPUT_NAMESPACE);
-    assert_eq!(session.output.scope_type, CLUSTER_SCOPE_TYPE);
+    assert_eq!(session.output.scope_type, LIBRARY_SCOPE_TYPE);
     assert_eq!(session.output.revision, 1);
     assert_eq!(session.output.schema_version, OUTPUT_SCHEMA_VERSION);
     assert_eq!(session.output.updated_by, "bootstrap");
@@ -69,7 +69,7 @@ async fn output_is_imported_once_and_later_seeds_are_ignored() {
     assert_eq!(config.output_revision, Some(1));
     assert_eq!(
         config.output_authority.as_deref(),
-        Some(session.cluster_id.as_str())
+        Some(session.library_id.as_str())
     );
 }
 
@@ -218,7 +218,7 @@ async fn assert_two_connections_share_output(store_a: &LibraryStore, store_b: &L
     )
     .await
     .unwrap();
-    assert_eq!(session_a.cluster_id, session_b.cluster_id);
+    assert_eq!(session_a.library_id, session_b.library_id);
     assert_ne!(session_a.node.node_id, session_b.node.node_id);
     assert_eq!(session_a.output, session_b.output);
     assert!(session_b.output.body.widevine);
@@ -324,8 +324,8 @@ fn a_legacy_seed_keeps_naming_templates_that_are_valid_together() {
     // The id is in both file templates, not the folder: valid as a set.
     let together = OutputConfig {
         folder_template: Some("<author>".into()),
-        file_template: Some("<title> [<library id>]".into()),
-        chapter_file_template: Some("<ch#> [<library id>]".into()),
+        file_template: Some("<title> [<call number>]".into()),
+        chapter_file_template: Some("<ch#> [<call number>]".into()),
         ..OutputConfig::default()
     };
     let (settings, replaced) = OutputSettingsV1::from_seed_lenient(&together);
@@ -333,7 +333,7 @@ fn a_legacy_seed_keeps_naming_templates_that_are_valid_together() {
     assert!(replaced.is_empty(), "{replaced:?}");
     assert_eq!(
         settings.file_template.as_deref(),
-        Some("<title> [<library id>]")
+        Some("<title> [<call number>]")
     );
 
     // A classic seed whose folder override drops the id loses only that

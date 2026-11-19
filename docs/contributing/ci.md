@@ -492,7 +492,7 @@ Every selected check lists what a clean runner needs, with a reason:
 - **`windows_cluster`**: `cargo build -p bookclerk-plugin-database-sqlite
   -p bookclerk-jail -p bookclerk-workerd` and pinned `workerd`, then the
   existing identity filters and
-  `cargo test -p bookclerk-cli --test cluster_secret_startup`. The CLI
+  `cargo test -p bookclerk-cli --test library_secret_startup`. The CLI
   target still sets `plugins.isolation = "required"` and keeps its
   assertions, and `BOOKCLERK_REQUIRE_TEST_GUESTS=1` is set for it.
 
@@ -572,6 +572,7 @@ when a step matches no test. Name such tests `postgres_*`.
 | `postgres 16/17/18` | An owning package's unit tests are affected | Only the owners' steps, on every supported major |
 | `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite; never on a pull request | See [Windows cluster](#windows-cluster-startup-and-identity) |
 | `website + collector Workers` | See [Workers](#website-and-collector-workers) | `site_test`, `site_audit`, `collector_test`, `demo_test`; no Rust toolchain |
+| `UI visual and accessibility` | A file under `ui/` changed, or the full suite | `ui_visual` in the pinned Playwright image; see [UI visual job](#ui-visual-job) |
 | `CI Gate` | Always | The stable required check (see the [contract](#plan--execution-contract)) |
 
 The postgres owners are the library, the db guest, the postgres guest and
@@ -740,8 +741,8 @@ On every OS (on macOS, as a step of the [macOS job](#macos-job)) it runs
 ### Windows cluster startup and identity
 
 On `windows-latest` only, the job runs identity create, restart and
-binding, and different-cluster rejection. Then it runs the full
-`cluster_secret_startup` target with the sqlite guest, the jail,
+binding, and different-library rejection. Then it runs the full
+`library_secret_startup` target with the sqlite guest, the jail,
 `bookclerk-workerd` and pinned `workerd`.
 
 Its job saves no cache. Its `bookclerk-cli` and `bookclerk-library` test
@@ -767,6 +768,21 @@ policy (`bookclerk-window-policy`), or the embedded host it drives
 on every package the window links, which is most of the host. The full
 suite, in the merge queue and on `main`, always runs it, which catches a
 host change that breaks the window. Windows and macOS don't run it yet.
+
+### UI visual job
+
+The web app's Storybook stories, each checked with axe-core and compared
+with a baseline screenshot at two viewports in light and dark. The job runs
+inside the Playwright image pinned by digest, so every run renders with the
+same browser and fonts, and needs no Rust toolchain (the image already has
+the Python the plan scripts need). It builds Storybook, runs the checks and
+uploads the `ui-visual` artifact.
+
+Only a change under `ui/` selects it, not a change to the host that serves
+`ui/dist`. Baselines live in a separate repository, named by
+`ui/visual/baselines.lock`; the job records a set every run and compares
+with the locked one when there is one. See
+[Visual and accessibility testing](ui/visual-testing.md#baselines).
 
 ### Small-VPS envelope
 
@@ -1719,7 +1735,8 @@ about 35 minutes and averages about 6 runners.
 Those figures predate splitting the unit tests into three parts (see
 [Test runner and retries](#test-runner-and-retries)). A group now asks for
 two more jobs, the tests take about 14 minutes, and the release build is
-the longest job. The [desktop job](#desktop-job) adds one more short job.
+the longest job. The [desktop job](#desktop-job) and the
+[UI visual job](#ui-visual-job) add one more short job each.
 
 | Build concurrency | Merge-group runners (peak, typical) | Left for pull requests |
 | --- | --- | --- |

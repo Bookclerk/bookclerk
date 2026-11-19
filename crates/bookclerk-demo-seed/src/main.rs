@@ -148,7 +148,7 @@ async fn run() -> anyhow::Result<()> {
     }
     match seed(
         &host.store,
-        &host.session.cluster_id,
+        &host.session.library_id,
         &plugin_keys,
         &records,
         Utc::now(),
@@ -338,7 +338,7 @@ async fn bake_finish(config: &Config) -> anyhow::Result<()> {
             .await
             .context("strip install state")?;
         eprintln!(
-            "bookclerk-demo-seed: stripped {} cluster identity row(s), {} lease(s), {} heartbeat(s)",
+            "bookclerk-demo-seed: stripped {} library identity row(s), {} lease(s), {} heartbeat(s)",
             stripped.identity_rows, stripped.leases, stripped.node_status
         );
     }

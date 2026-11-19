@@ -1,5 +1,5 @@
 //! `bookclerk plugins install|update|rollback|remove|approve|versions` for
-//! cluster versions.
+//! library versions.
 //!
 //! Installing installs a version: the package is resolved and verified once
 //! (publisher trust, archive and payload digests, `plugin.toml`), recorded

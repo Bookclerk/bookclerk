@@ -91,7 +91,7 @@ impl<'de> Deserialize<'de> for BranchRequestBody {
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
         let fields: BranchRequestFields =
-            super::cluster_links::from_object(deserializer, "a JSON object with work_id")?;
+            super::library_links::from_object(deserializer, "a JSON object with work_id")?;
         Ok(Self {
             work_id: fields.work_id,
             node_id: fields.node_id,
@@ -419,7 +419,7 @@ pub async fn finish_branch_request(
     })
 }
 
-/// On a branch: records that the library `cluster_id` asked for `title`
+/// On a branch: records that the library `library_id` asked for `title`
 /// (by its holding account and store listing), so the catalog sync sends
 /// it there. Asking again moves the request to now.
 ///
@@ -428,12 +428,12 @@ pub async fn finish_branch_request(
 /// Returns an error when the write fails.
 pub async fn record_link_request(
     store: &LibraryStore,
-    cluster_id: &str,
+    library_id: &str,
     title: &AcquireTitle,
 ) -> Result<()> {
     let row = link_requests::ActiveModel {
         id: NotSet,
-        cluster_id: Set(cluster_id.to_string()),
+        library_id: Set(library_id.to_string()),
         plugin_key: Set(title.plugin_key.clone()),
         account_id: Set(title.account_id.clone()),
         marketplace: Set(bookclerk_resolve::stored_marketplace(&title.marketplace)),
@@ -443,7 +443,7 @@ pub async fn record_link_request(
     link_requests::Entity::insert(row)
         .on_conflict(
             OnConflict::columns([
-                link_requests::Column::ClusterId,
+                link_requests::Column::LibraryId,
                 link_requests::Column::PluginKey,
                 link_requests::Column::AccountId,
                 link_requests::Column::Marketplace,
@@ -477,7 +477,7 @@ struct RequestRow {
     created_at: String,
 }
 
-/// On a branch: every book the library `cluster_id` asked for, by store
+/// On a branch: every book the library `library_id` asked for, by store
 /// identity, with when it last asked (an unreadable stamp reads as now, so
 /// the book is sent rather than skipped). Read in keyset pages no larger
 /// than the database plugin's `maxResultRows`.
@@ -487,7 +487,7 @@ struct RequestRow {
 /// Returns an error when a read fails.
 pub async fn books_requested_by_link(
     store: &LibraryStore,
-    cluster_id: &str,
+    library_id: &str,
 ) -> Result<BTreeMap<HeldBookKey, DateTime<Utc>>> {
     let page = match store.db_capabilities().max_result_rows {
         0 => REQUESTED_PAGE,
@@ -505,7 +505,7 @@ pub async fn books_requested_by_link(
             .column(link_requests::Column::Marketplace)
             .column(link_requests::Column::ProductId)
             .column(link_requests::Column::CreatedAt)
-            .filter(link_requests::Column::ClusterId.eq(cluster_id))
+            .filter(link_requests::Column::LibraryId.eq(library_id))
             .order_by_asc(link_requests::Column::Id);
         if let Some(after) = after {
             query = query.filter(link_requests::Column::Id.gt(after));

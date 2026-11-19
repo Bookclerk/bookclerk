@@ -43,7 +43,7 @@ const IMPORT_PAGE: u64 = 256;
 #[derive(Debug, Clone, Copy)]
 pub struct LinkImport<'a> {
     /// The library this branch acquired the title for.
-    pub cluster_id: &'a str,
+    pub library_id: &'a str,
     /// The title as the library sent it (its `uuid`, when set, is the
     /// library's and is not reused here).
     pub book: &'a NewBook,
@@ -145,7 +145,7 @@ pub async fn import_link_title(
             )
             .await?;
     }
-    record_import(store, import.cluster_id, &record).await?;
+    record_import(store, import.library_id, &record).await?;
     let stored = store
         .get_book_by_uuid(&record.uuid)
         .await?
@@ -162,17 +162,17 @@ fn new_book(book: &NewBook) -> NewBook {
     }
 }
 
-/// Records that `book` was imported from the library `cluster_id`. A book
+/// Records that `book` was imported from the library `library_id`. A book
 /// already recorded for that library is left as it is; one imported from
 /// several libraries is recorded once for each.
 ///
 /// # Errors
 ///
 /// Returns an error when the write fails.
-async fn record_import(store: &LibraryStore, cluster_id: &str, book: &BookRecord) -> Result<()> {
+async fn record_import(store: &LibraryStore, library_id: &str, book: &BookRecord) -> Result<()> {
     record_copy_taken_from_link(
         store,
-        cluster_id,
+        library_id,
         TakenCopy {
             plugin_key: &book.plugin_key,
             account_id: &book.account_id,
@@ -199,7 +199,7 @@ pub struct TakenCopy<'a> {
 }
 
 /// Records that this install took its copy of `book` from the library
-/// `cluster_id`, so the catalog sync never sends that library a book it
+/// `library_id`, so the catalog sync never sends that library a book it
 /// provided itself ([`books_imported_from_link`]). A book already
 /// recorded for that library is left as it is; one taken from several
 /// libraries is recorded once for each.
@@ -209,12 +209,12 @@ pub struct TakenCopy<'a> {
 /// Returns an error when the write fails.
 pub async fn record_copy_taken_from_link(
     store: &LibraryStore,
-    cluster_id: &str,
+    library_id: &str,
     book: TakenCopy<'_>,
 ) -> Result<()> {
     let row = link_imports::ActiveModel {
         id: NotSet,
-        cluster_id: Set(cluster_id.to_string()),
+        library_id: Set(library_id.to_string()),
         plugin_key: Set(book.plugin_key.to_string()),
         account_id: Set(book.account_id.to_string()),
         marketplace: Set(bookclerk_resolve::stored_marketplace(book.marketplace)),
@@ -224,7 +224,7 @@ pub async fn record_copy_taken_from_link(
     link_imports::Entity::insert(row)
         .on_conflict(
             OnConflict::columns([
-                link_imports::Column::ClusterId,
+                link_imports::Column::LibraryId,
                 link_imports::Column::PluginKey,
                 link_imports::Column::AccountId,
                 link_imports::Column::Marketplace,
@@ -258,7 +258,7 @@ struct ImportRow {
 /// marketplace, stored product id, account_id)`.
 pub type HeldBookKey = (String, String, String, String);
 
-/// Every book imported from the library `cluster_id`, by store identity:
+/// Every book imported from the library `library_id`, by store identity:
 /// the books the catalog sync must not send back to it. Read in keyset
 /// pages no larger than the database plugin's `maxResultRows`.
 ///
@@ -267,7 +267,7 @@ pub type HeldBookKey = (String, String, String, String);
 /// Returns an error when a read fails.
 pub async fn books_imported_from_link(
     store: &LibraryStore,
-    cluster_id: &str,
+    library_id: &str,
 ) -> Result<BTreeSet<HeldBookKey>> {
     let page = match store.db_capabilities().max_result_rows {
         0 => IMPORT_PAGE,
@@ -283,7 +283,7 @@ pub async fn books_imported_from_link(
             .column(link_imports::Column::AccountId)
             .column(link_imports::Column::Marketplace)
             .column(link_imports::Column::ProductId)
-            .filter(link_imports::Column::ClusterId.eq(cluster_id))
+            .filter(link_imports::Column::LibraryId.eq(library_id))
             .order_by_asc(link_imports::Column::Id);
         if let Some(after) = after {
             query = query.filter(link_imports::Column::Id.gt(after));
@@ -310,7 +310,7 @@ pub async fn books_imported_from_link(
     }
 }
 
-/// The books the library `cluster_id` asked for that this branch still
+/// The books the library `library_id` asked for that this branch still
 /// lists to it: none once the link is gone or "Share this branch's books"
 /// is off, and a member's only while "List my members' books" is on and
 /// they did not opt out (the rules a request was accepted under).
@@ -320,15 +320,15 @@ pub async fn books_imported_from_link(
 /// Returns an error when a read fails.
 async fn still_listed_requests(
     store: &LibraryStore,
-    cluster_id: &str,
+    library_id: &str,
 ) -> Result<BTreeMap<HeldBookKey, DateTime<Utc>>> {
-    let Some(link) = super::load_cluster_link(store, cluster_id).await? else {
+    let Some(link) = super::load_library_link(store, library_id).await? else {
         return Ok(BTreeMap::new());
     };
     if !link.share_books {
         return Ok(BTreeMap::new());
     }
-    let requested = super::books_requested_by_link(store, cluster_id).await?;
+    let requested = super::books_requested_by_link(store, library_id).await?;
     let accounts: BTreeSet<super::AccountKey> = requested
         .keys()
         .map(|(plugin, _, _, account)| (plugin.clone(), account.clone()))
@@ -343,7 +343,7 @@ async fn still_listed_requests(
         .collect())
 }
 
-/// The store accounts this branch lists to the library `cluster_id` now,
+/// The store accounts this branch lists to the library `library_id` now,
 /// under the catalog answers' rules (`super::catalog_lookup::listable_accounts`):
 /// none once the link is gone or "Share this branch's books" is off.
 ///
@@ -352,9 +352,9 @@ async fn still_listed_requests(
 /// Returns an error when a read fails.
 async fn listed_accounts(
     store: &LibraryStore,
-    cluster_id: &str,
+    library_id: &str,
 ) -> Result<BTreeSet<super::AccountKey>> {
-    let Some(link) = super::load_cluster_link(store, cluster_id).await? else {
+    let Some(link) = super::load_library_link(store, library_id).await? else {
         return Ok(BTreeSet::new());
     };
     if !link.share_books {
@@ -398,7 +398,7 @@ async fn linked_accounts(store: &LibraryStore) -> Result<BTreeSet<super::Account
 }
 
 /// Which of this install's acquired books the catalog sync sends the
-/// library `cluster_id`: the branch owner's own books, those held by a
+/// library `library_id`: the branch owner's own books, those held by a
 /// store account connected here to the branch's person
 /// ([`super::branch_person`]); the books that library asked for through an
 /// interlibrary request and this branch still lists to it
@@ -422,7 +422,7 @@ pub struct OwnerShareFilter {
 }
 
 impl OwnerShareFilter {
-    /// Reads the filter for the library `cluster_id` now.
+    /// Reads the filter for the library `library_id` now.
     ///
     /// # Arguments
     ///
@@ -432,21 +432,21 @@ impl OwnerShareFilter {
     /// # Errors
     ///
     /// Returns an error when a read fails.
-    pub async fn load(store: &LibraryStore, cluster_id: &str, members_books: bool) -> Result<Self> {
+    pub async fn load(store: &LibraryStore, library_id: &str, members_books: bool) -> Result<Self> {
         let accounts = match branch_person(store, None).await? {
             Some(person) => accounts_owned_by(store, person).await?,
             None => BTreeSet::new(),
         };
         let listed = if members_books {
-            listed_accounts(store, cluster_id).await?
+            listed_accounts(store, library_id).await?
         } else {
             BTreeSet::new()
         };
         Ok(Self {
             accounts,
             listed,
-            requested: still_listed_requests(store, cluster_id).await?,
-            imported: books_imported_from_link(store, cluster_id).await?,
+            requested: still_listed_requests(store, library_id).await?,
+            imported: books_imported_from_link(store, library_id).await?,
         })
     }
 

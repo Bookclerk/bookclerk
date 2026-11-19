@@ -235,7 +235,7 @@ and `wrap` fails when `master.key` is missing.
 A **branch node** is another Bookclerk install that joins this library
 with a single-use link and runs its scans and acquires. This section is
 the library side's configuration. Joining, consent, uploads and the
-protocol are in [Libraries and branches](cluster-hosts.md), and the
+protocol are in [Libraries and branches](branches.md), and the
 design is in
 [ADR: Control plane](../adr/control-plane.md#branch-node-enrollment-and-transport).
 
@@ -286,7 +286,7 @@ there only in `self_signed` mode.
   can reach.
 - A link lasts 24 hours by default (5 minutes to 7 days) and works once.
 - The host's operator redeems it in **Join a library → I have an
-  invite**, or with `bookclerk clusters join`, which reads it from stdin
+  invite**, or with `bookclerk libraries join`, which reads it from stdin
   or a prompt, never from the command line.
 
 ### Node API transport
@@ -551,7 +551,7 @@ The web app edits this document in **Settings → Output**.
 
 ## Image cache
 
-The `core.cache` cluster document limits each node's cache of cover and
+The `core.cache` library document limits each node's cache of cover and
 other images (see [Cache retention](integrations.md#cache-retention)).
 It has no `config.toml` table: until someone sets a value, every node
 uses the defaults.
@@ -568,7 +568,7 @@ bookclerk config set cache.unviewed_days 30
 
 - **Per node.** `bookclerk nodes set --cache-budget <BYTES>` stores a
   budget in that node's `node.runtime` document, which wins over
-  `cache.budget_bytes`; `--cluster-cache-budget` removes it.
+  `cache.budget_bytes`; `--library-cache-budget` removes it.
 - **Over HTTP.** `PATCH /api/settings` accepts `cache.*` keys, and
   `GET /api/settings` lists their values. A request mixing them with
   other authorities' keys is rejected before anything is written.

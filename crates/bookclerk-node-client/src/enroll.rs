@@ -1,9 +1,9 @@
-//! Joining an owner cluster with an enrollment link (H-4 design, section 2).
+//! Joining a library with an enrollment link (H-4 design, section 2).
 
 use base64::Engine as _;
 use bookclerk_library::control_plane::{
-    join_cycle, join_overflows_ancestry, parse_enrollment_token, record_cluster_link,
-    set_cluster_link_ancestry, ClusterLink, ClusterLinkKeys, NewClusterLink,
+    join_cycle, join_overflows_ancestry, parse_enrollment_token, record_library_link,
+    set_library_link_ancestry, LibraryLink, LibraryLinkKeys, NewLibraryLink,
 };
 use bookclerk_library::LibraryStore;
 use serde::Deserialize;
@@ -106,7 +106,7 @@ impl JoinError {
 const MAX_INFO_BYTES: usize = 64 * 1024;
 
 /// Reads the library's `info` over `endpoint` and refuses a library whose
-/// ancestry names this install's own cluster id (A ← B ← A). Answers its
+/// ancestry names this install's own library id (A ← B ← A). Answers its
 /// ancestry, to record on the link.
 ///
 /// # Errors
@@ -132,7 +132,7 @@ pub async fn check_join_ancestry(
     Ok(info.ancestry)
 }
 
-/// Refuses `ancestry` when it names this install's own cluster id, is
+/// Refuses `ancestry` when it names this install's own library id, is
 /// malformed, or would take this library's ancestry past what one can name
 /// ([`join_overflows_ancestry`]).
 ///
@@ -147,7 +147,7 @@ pub async fn refuse_cycle(store: &LibraryStore, ancestry: &[String]) -> Result<(
     match join_cycle(store, ancestry).await {
         Ok(None) => {}
         Ok(Some(own)) => {
-            tracing::warn!(cluster_id = %own, "refused to join a library whose ancestry names this one");
+            tracing::warn!(library_id = %own, "refused to join a library whose ancestry names this one");
             return Err(JoinError::Cycle);
         }
         Err(err) => return Err(JoinError::Record(err.to_string())),
@@ -170,14 +170,14 @@ pub async fn refuse_cycle(store: &LibraryStore, ancestry: &[String]) -> Result<(
 /// again.
 pub(crate) async fn record_ancestry(
     store: &LibraryStore,
-    link: &mut ClusterLink,
+    link: &mut LibraryLink,
     ancestry: &[String],
 ) {
-    match set_cluster_link_ancestry(store, &link.owner_cluster_id, ancestry).await {
+    match set_library_link_ancestry(store, &link.parent_library_id, ancestry).await {
         Ok(true) => link.ancestry = ancestry.to_vec(),
         Ok(false) => {}
         Err(err) => tracing::warn!(
-            cluster_id = %link.owner_cluster_id,
+            library_id = %link.parent_library_id,
             error = %err,
             "could not record the library's ancestry"
         ),
@@ -187,17 +187,17 @@ pub(crate) async fn record_ancestry(
 /// `POST /api/node/v1/enroll` answer.
 #[derive(Deserialize)]
 struct Enrolled {
-    /// Owner cluster id.
-    cluster_id: String,
+    /// Library id.
+    library_id: String,
     /// The node id minted for this host.
     node_id: String,
 }
 
-/// Enrolls this install into the owner cluster named by `link`.
+/// Enrolls this install into the library named by `link`.
 ///
 /// Generates fresh node keys, redeems the link at the owner (under the
 /// transport policy and the link's SPKI pin), then seals the keys into this
-/// install's `encrypted_secrets` and records the `cluster_links` row. The
+/// install's `encrypted_secrets` and records the `library_links` row. The
 /// link secret is sent once in the request body and never logged.
 ///
 /// `link` is the whole link as minted (`https://owner/enroll#bcn1...`):
@@ -207,11 +207,11 @@ struct Enrolled {
 ///
 /// Returns [`JoinError`] when the link is malformed, the owner is
 /// unreachable or refuses, or the local write fails.
-pub async fn join_cluster(
+pub async fn join_library(
     store: &LibraryStore,
     link: &str,
     software_version: &str,
-) -> Result<ClusterLink, JoinError> {
+) -> Result<LibraryLink, JoinError> {
     let link = link.trim();
     let token = parse_enrollment_token(link).map_err(|err| JoinError::Link(err.to_string()))?;
     let origin = link.rsplit_once('#').map(|(url, _)| url).ok_or_else(|| {
@@ -220,7 +220,7 @@ pub async fn join_cluster(
     let endpoint = OwnerEndpoint::new(origin, token.spki_pin.as_deref())?;
     // Before the link is spent: never join this library or one below it.
     let ancestry = check_join_ancestry(store, &endpoint).await?;
-    let keys = ClusterLinkKeys::generate();
+    let keys = LibraryLinkKeys::generate();
     let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
     let body = Zeroizing::new(
         serde_json::to_vec(&serde_json::json!({
@@ -251,10 +251,10 @@ pub async fn join_cluster(
         reason: "malformed enroll answer".into(),
     })?;
     let node_id = enrolled.node_id.clone();
-    let mut recorded = record_cluster_link(
+    let mut recorded = record_library_link(
         store,
-        &NewClusterLink {
-            owner_cluster_id: enrolled.cluster_id,
+        &NewLibraryLink {
+            parent_library_id: enrolled.library_id,
             owner_origin: endpoint.origin().to_string(),
             remote_node_id: enrolled.node_id,
             spki_pin: token.spki_pin.clone(),
@@ -268,11 +268,11 @@ pub async fn join_cluster(
     })?;
     record_ancestry(store, &mut recorded, &ancestry).await;
     tracing::info!(
-        cluster_id = %recorded.owner_cluster_id,
+        library_id = %recorded.parent_library_id,
         node_id = %recorded.remote_node_id,
         origin = %recorded.owner_origin,
         pinned = recorded.spki_pin.is_some(),
-        "enrolled into the owner cluster"
+        "enrolled into the library"
     );
     Ok(recorded)
 }

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
@@ -13,6 +13,8 @@ export default defineConfig({
   test: {
     // Vitest blanks CSS by default; src/fonts.test.ts reads index.css?raw.
     css: { include: [/index\.css/] },
+    // Playwright's visual checks (`npm run test:visual`), not Vitest suites.
+    exclude: [...configDefaults.exclude, "visual/**"],
   },
   server: {
     port: 5173,

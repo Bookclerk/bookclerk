@@ -1,6 +1,6 @@
 # ADR: Library data model (works, expressions, editions, holdings)
 
-- **Status:** Accepted; steps 1 to 4 implemented, and step 5's holdings and branch titles (of file quality, moved to step 5, the probe of each stored file is recorded and the comparison is still to come); the naming discriminator replaced by a required `<library id>` tag (see [Status of the work](#status-of-the-work)). Amended 2026-11-13: the kind enums were reshaped for mixed media and every kind became required (decisions 1 and 5). A later record, [Metadata claims and file sync](metadata-claims-and-file-sync.md), decides to replace the work-level matcher of decision 4 with weighed evidence and to add a `catalog_id` slot; that work has not started
+- **Status:** Accepted; steps 1 to 4 implemented, and step 5's holdings and branch titles (of file quality, moved to step 5, the probe of each stored file is recorded and the comparison is still to come); the naming discriminator replaced by a required `<call number>` tag (see [Status of the work](#status-of-the-work)). Amended 2026-11-13: the kind enums were reshaped for mixed media and every kind became required (decisions 1 and 5). A later record, [Metadata claims and file sync](metadata-claims-and-file-sync.md), decides to replace the work-level matcher of decision 4 with weighed evidence and to add a `catalog_id` slot; that work has not started
 - **Date:** 2026-11-04
 - **Related:** [Schema versioning](schema-versioning.md),
   [SQL database contract](sql-database-contract.md),
@@ -27,7 +27,7 @@ This shape causes four problems:
 1. **Mixed media.** Audible and OpenLibrary return podcasts, print and
    ebook editions. `ScanBook.contentKind` is optional text and `CatalogHit`
    has no kind at all, so everything looks like an audiobook.
-2. **Record clashes in a cluster.** Two accounts that own the same edition
+2. **Record clashes in a library.** Two accounts that own the same edition
    are two rows that acquire to the same naming-template path. Branch titles
    live in `branch_titles`, keyed `(provenance, store, product_id)`, and only
    match a library row with the same store and product id, so an Audible
@@ -157,7 +157,7 @@ write at a key that is already recorded:
 | Same edition, same role | Better quality (higher bitrate or a lossless source) | Replace |
 | Same edition, same role | Same or worse quality | Keep; the upload is refused |
 | Same edition, another role | A sidecar, PDF or transcript | Add at its own key |
-| Another edition | Anything | Never written there: naming templates must write the edition's `<library id>`, so its path is its own |
+| Another edition | Anything | Never written there: naming templates must write the edition's `<call number>`, so its path is its own |
 
 This is the rule [#300](https://github.com/Bookclerk/bookclerk/issues/300)
 asks for. Keys a title will write are derived from its edition and the
@@ -299,7 +299,7 @@ not found ([#559](https://github.com/Bookclerk/bookclerk/issues/559)).
 ## Consequences
 
 - Two stores or two accounts selling one edition meet in one place, so the
-  cluster can deduplicate acquires and branch deliveries by edition.
+  library can deduplicate acquires and branch deliveries by edition.
 - Mixed media is typed end to end, and print and ebook editions can show in
   discover without ever being acquired.
 - Per-user state means members sharing a library no longer overwrite each
@@ -325,8 +325,8 @@ Planned as separate pull requests, in this order:
    maps the structured fields onto the current `books` row.
 3. Schema and resolver, with its fuzz target.
 4. Acquire and files: per-edition acquisition, `edition_files`, and the
-   required `<library id>` naming tag.
-5. Cluster: branch titles become holdings; node frames carry identifiers and
+   required `<call number>` naming tag.
+5. Library: branch titles become holdings; node frames carry identifiers and
    media kind.
 6. Web API and UI.
 7. The `metadata` entrypoint, with OpenLibrary and Audnexus moved into plugins.
@@ -351,7 +351,7 @@ the step that moves their last reader off them: `title_files` with step 4,
 Step 4 records every file in `edition_files` with its edition and role,
 and acquires an edition once for all its account rows from one store.
 Instead of a discriminator appended on a clash, naming templates must
-write the edition's short `<library id>` (in the folder template, or in
+write the edition's short `<call number>` (in the folder template, or in
 both file templates), so two editions never plan one path; the built-in
 profiles carry it, saving templates without it is refused, and an acquire
 whose name another edition still holds is refused rather than overwrite
@@ -360,7 +360,7 @@ stores has two, and podcast feeds, some storefronts and imported files
 have no ISBN or ASIN. An edition's id is a version 5 UUID over the store
 listing that first named it (plugin key, marketplace, product id), so
 libraries that see the same listing first agree on its id and its
-`<library id>`, which is the first 40 bits of that UUID in Crockford
+`<call number>`, which is the first 40 bits of that UUID in Crockford
 base32. If that id is already taken (the listing left the library while
 its first edition stayed, holding other listings), the new edition gets a
 random id instead.
@@ -401,7 +401,7 @@ identifier, and the edition records who enriched it (`enrich_source`).
 
 Step 6 also adds the page index the *Consequences* call for:
 `library_work_rows`, one row per held top-level work, refreshed by a
-cluster-wide `host:library-index` event consumer and rebuilt by a
+library-wide `host:library-index` event consumer and rebuilt by a
 `library_index_rebuild` job when the index has no finished build of the
 current layout. `GET /api/library/works` pages it by keyset cursor, and
 `GET /api/library/works/{id}` reads one work with its editions, listings,

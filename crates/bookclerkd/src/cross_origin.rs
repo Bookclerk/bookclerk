@@ -37,7 +37,7 @@ pub(crate) const CLOSED_HEADERS: &[(&str, &str)] = &[
     ("cross-origin-embedder-policy", "require-corp"),
     ("x-frame-options", "DENY"),
     ("x-content-type-options", "nosniff"),
-    ("origin-agent-cluster", "?1"),
+    ("origin-agent-library", "?1"),
     ("x-permitted-cross-domain-policies", "none"),
     ("x-xss-protection", "0"),
 ];

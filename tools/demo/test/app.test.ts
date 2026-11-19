@@ -15,8 +15,9 @@ import {
 } from "../src/app.ts";
 import { CACHE_CONTROL, cacheClassOf } from "../src/cache-control.ts";
 import type { Env, PortalHandoff, SessionApi } from "../src/env.ts";
-import { finish, recordStartup } from "../src/limits.ts";
+import { finish, limitsFrom, MAX_SESSION_MINUTES, recordStartup } from "../src/limits.ts";
 import type { LiveStatus } from "../src/live.ts";
+import type { RunEvent } from "../src/usage.ts";
 import { createD1 } from "../test-support/d1.ts";
 import { SECURITY_HEADERS } from "../src/pages.ts";
 
@@ -238,6 +239,17 @@ function assertClosed(res: Response, what: string): void {
   assert.equal(res.headers.get("Access-Control-Allow-Credentials"), null, what);
 }
 
+describe("session length", () => {
+  it("keeps sessions within the length the collector records", () => {
+    assert.equal(limitsFrom(makeEnv()).sessionSeconds, 30 * 60);
+    assert.equal(limitsFrom(makeEnv({ SESSION_MINUTES: "420" })).sessionSeconds, 420 * 60);
+    assert.equal(limitsFrom(makeEnv({ SESSION_MINUTES: "1440" })).sessionSeconds, 86_400);
+    assert.equal(limitsFrom(makeEnv({ SESSION_MINUTES: "1441" })).sessionSeconds, 86_400);
+    assert.equal(limitsFrom(makeEnv({ SESSION_MINUTES: "1500" })).sessionSeconds, 86_400);
+    assert.equal(MAX_SESSION_MINUTES * 60, 86_400);
+  });
+});
+
 describe("cross-origin headers", () => {
   it("close every Worker answer to other origins, even with a foreign Origin", async () => {
     const env = makeEnv();
@@ -418,7 +430,7 @@ describe("launch and admission", () => {
         reason: "visitor",
         revoked: 0,
         failed: 0,
-      }),
+      }).then((row) => row !== null),
       true,
     );
     assert.equal((await startSession(env, deps, "198.51.100.4")).res.status, 429);
@@ -431,7 +443,7 @@ describe("launch and admission", () => {
         reason: "visitor",
         revoked: 0,
         failed: 0,
-      }),
+      }).then((row) => row !== null),
       true,
     );
     assert.equal((await startSession(env, deps, "198.51.100.5")).res.status, 303);
@@ -819,6 +831,51 @@ describe("sweep", () => {
     assert.notEqual(row!.ended_at, null);
     assert.equal(row!.revoke_failed, 1);
     assert.equal(await sweep(env, deps), 0);
+  });
+});
+
+describe("live usage reports", () => {
+  it("reports a run's start and its stop under one random run ID", async () => {
+    const events: RunEvent[] = [];
+    const env = makeEnv({
+      USAGE: {
+        record: async (event) => {
+          events.push(event);
+          return true;
+        },
+      },
+    });
+    const deps = makeDeps();
+    await startSession(env, deps);
+    deps.advance(1800_000 + 121_000);
+    assert.equal(await sweep(env, deps), 1);
+    assert.deepEqual(
+      events.map((e) => e.kind),
+      ["start", "stop"],
+    );
+    const [start, stop] = events;
+    assert.match(
+      start!.run_id,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    assert.equal(stop!.run_id, start!.run_id);
+    const row = await env.DB.prepare("SELECT id, run_id FROM sessions").first();
+    assert.equal(row!.run_id, start!.run_id);
+    assert.notEqual(row!.id, start!.run_id, "the run ID is not the session id");
+    assert.equal(start!.ends_at - start!.started_at, 1800);
+    assert.equal(stop?.kind === "stop" ? stop.reason : null, "sweep");
+  });
+
+  it("starts the demo even when the collector fails", async () => {
+    const env = makeEnv({
+      USAGE: {
+        record: async () => {
+          throw new Error("collector down");
+        },
+      },
+    });
+    const { res } = await startSession(env, makeDeps());
+    assert.equal(res.status, 303);
   });
 });
 

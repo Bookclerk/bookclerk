@@ -321,7 +321,7 @@ mod tests {
         let work = work();
         assert_eq!(work.problem(), None);
         let text = serde_json::to_string(&work).unwrap();
-        for forbidden in ["account", "user", "token", "node", "cluster", "owner"] {
+        for forbidden in ["account", "user", "token", "node", "library", "owner"] {
             assert!(!text.contains(forbidden), "{forbidden} in {text}");
         }
         let mut value = serde_json::to_value(&work).unwrap();

@@ -33,7 +33,7 @@ async fn add_node(store: &LibraryStore, node_id: &str, kind: &str, owner: Option
     let now = chrono::Utc::now().to_rfc3339();
     nodes::ActiveModel {
         node_id: Set(node_id.into()),
-        cluster_id: Set("cluster".into()),
+        library_id: Set("library".into()),
         created_at: Set(now.clone()),
         incarnation: Set("test".into()),
         heartbeat_at: Set(now.clone()),
@@ -730,32 +730,32 @@ async fn ancestry_lists_this_library_then_every_parent_and_refuses_cycles() {
     let store = store_in(dir.path()).await;
     assert!(library_ancestry(&store).await.unwrap().is_empty());
     assert_eq!(join_cycle(&store, &["x".into()]).await.unwrap(), None);
-    super::super::align_cluster_root(&store, dir.path(), None)
+    super::super::align_library_root(&store, dir.path(), None)
         .await
         .unwrap();
-    let own = super::super::load_cluster_row(&store)
+    let own = super::super::load_library_row(&store)
         .await
         .unwrap()
         .unwrap()
-        .cluster_id;
+        .library_id;
     assert_eq!(library_ancestry(&store).await.unwrap(), vec![own.clone()]);
-    record_cluster_link(
+    record_library_link(
         &store,
-        &NewClusterLink {
-            owner_cluster_id: "parent".into(),
+        &NewLibraryLink {
+            parent_library_id: "parent".into(),
             owner_origin: "https://parent.example".into(),
             remote_node_id: "node-1".into(),
             spki_pin: None,
         },
-        &ClusterLinkKeys::generate(),
+        &LibraryLinkKeys::generate(),
     )
     .await
     .unwrap();
-    set_cluster_link_ancestry(&store, "parent", &["parent".into(), "root".into()])
+    set_library_link_ancestry(&store, "parent", &["parent".into(), "root".into()])
         .await
         .unwrap();
     assert!(
-        set_cluster_link_ancestry(&store, "parent", &["not ok".into()])
+        set_library_link_ancestry(&store, "parent", &["not ok".into()])
             .await
             .is_err()
     );
@@ -771,16 +771,16 @@ async fn ancestry_lists_this_library_then_every_parent_and_refuses_cycles() {
     );
     assert_eq!(join_cycle(&store, &["root".into()]).await.unwrap(), None);
     // The settings default on and are kept.
-    let link = load_cluster_link(&store, "parent").await.unwrap().unwrap();
+    let link = load_library_link(&store, "parent").await.unwrap().unwrap();
     assert!(link.share_books && link.include_branches);
-    assert!(set_cluster_link_sharing(&store, "parent", false, true)
+    assert!(set_library_link_sharing(&store, "parent", false, true)
         .await
         .unwrap());
-    let link = load_cluster_link(&store, "parent").await.unwrap().unwrap();
+    let link = load_library_link(&store, "parent").await.unwrap().unwrap();
     assert!(!link.share_books && link.include_branches);
     // Settings → Library writes every setting at once, keeping the ones it
     // leaves out.
-    let settings = ClusterLinkSettings {
+    let settings = LibraryLinkSettings {
         share_books: true,
         include_branches: false,
         list_members_books: Some(false),
@@ -788,18 +788,18 @@ async fn ancestry_lists_this_library_then_every_parent_and_refuses_cycles() {
         keep_member_copies: None,
         keep_copies: Some(false),
     };
-    assert!(set_cluster_link_settings(&store, "parent", settings)
+    assert!(set_library_link_settings(&store, "parent", settings)
         .await
         .unwrap());
-    let link = load_cluster_link(&store, "parent").await.unwrap().unwrap();
+    let link = load_library_link(&store, "parent").await.unwrap().unwrap();
     assert!(link.share_books && !link.include_branches && !link.list_members_books);
     assert!(link.work_for_members && !link.keep_member_copies);
     assert!(!link.keep_copies, "keep copies is written with the rest");
-    assert!(!set_cluster_link_settings(&store, "elsewhere", settings)
+    assert!(!set_library_link_settings(&store, "elsewhere", settings)
         .await
         .unwrap());
     // A left link no longer counts.
-    leave_cluster_link(&store, "parent", None).await.unwrap();
+    leave_library_link(&store, "parent", None).await.unwrap();
     assert_eq!(library_ancestry(&store).await.unwrap(), vec![own]);
 }
 
@@ -813,14 +813,14 @@ async fn a_join_past_the_ancestry_limit_is_refused() {
     let store = store_in(dir.path()).await;
     let chain = |len: usize| -> Vec<String> { (0..len).map(|at| format!("lib{at}")).collect() };
     let limit = bookclerk_node_proto::MAX_ANCESTRY;
-    // Without a cluster identity yet, the one this install gets counts.
+    // Without a library identity yet, the one this install gets counts.
     assert!(!join_overflows_ancestry(&store, &chain(limit - 1))
         .await
         .unwrap());
     assert!(join_overflows_ancestry(&store, &chain(limit))
         .await
         .unwrap());
-    super::super::align_cluster_root(&store, dir.path(), None)
+    super::super::align_library_root(&store, dir.path(), None)
         .await
         .unwrap();
     assert!(!join_overflows_ancestry(&store, &chain(limit - 1))
@@ -831,19 +831,19 @@ async fn a_join_past_the_ancestry_limit_is_refused() {
         .await
         .unwrap());
     // Another parent's ancestry counts too; one already named does not.
-    record_cluster_link(
+    record_library_link(
         &store,
-        &NewClusterLink {
-            owner_cluster_id: "other".into(),
+        &NewLibraryLink {
+            parent_library_id: "other".into(),
             owner_origin: "https://other.example".into(),
             remote_node_id: "node-1".into(),
             spki_pin: None,
         },
-        &ClusterLinkKeys::generate(),
+        &LibraryLinkKeys::generate(),
     )
     .await
     .unwrap();
-    set_cluster_link_ancestry(&store, "other", &["other".into(), "lib0".into()])
+    set_library_link_ancestry(&store, "other", &["other".into(), "lib0".into()])
         .await
         .unwrap();
     assert!(join_overflows_ancestry(&store, &chain(limit - 1))
@@ -1594,7 +1594,7 @@ async fn insert_node_holding(
     store
         .db()
         .execute_unprepared(&format!(
-            "INSERT OR IGNORE INTO nodes (node_id, cluster_id, created_at, incarnation, \
+            "INSERT OR IGNORE INTO nodes (node_id, library_id, created_at, incarnation, \
              heartbeat_at, software_version, schema_state, compatible, kind, share_books) \
              VALUES ('{BRANCH}', 'c', '2026-01-01T00:00:00Z', 'i', '2026-01-01T00:00:00Z', \
              'v', 's', 1, 'branch', 1)"

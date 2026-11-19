@@ -4,7 +4,7 @@
 //! claim is handed back, a job whose lease goes unconfirmed (or whose
 //! client shuts down) is cancelled, and a waiting report keeps renewing.
 
-use bookclerk_library::control_plane::{ClusterLinkKeys, CLUSTER_LINK_ACTIVE};
+use bookclerk_library::control_plane::{LibraryLinkKeys, LIBRARY_LINK_ACTIVE};
 use bookclerk_node_proto::{box_public_key, encode_nonce, ClaimScope, SUBPROTOCOL};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
@@ -13,8 +13,8 @@ use tokio_tungstenite::WebSocketStream;
 
 use super::*;
 
-/// Owner cluster id of the scripted owner.
-const CLUSTER: &str = "cluster-1";
+/// Library id of the scripted owner.
+const LIBRARY: &str = "library-1";
 
 /// This host's node id there.
 const NODE: &str = "3f2b8c1e-7a4d-4e5f-9b0a-1c2d3e4f5a6b";
@@ -149,12 +149,12 @@ fn start_configured<R: HostJobRunner>(
     watch::Sender<bool>,
     JoinHandle<ClientExit>,
 ) {
-    let link = ClusterLink {
-        owner_cluster_id: CLUSTER.into(),
+    let link = LibraryLink {
+        parent_library_id: LIBRARY.into(),
         owner_origin: format!("http://127.0.0.1:{port}"),
         remote_node_id: NODE.into(),
         spki_pin: None,
-        state: CLUSTER_LINK_ACTIVE.into(),
+        state: LIBRARY_LINK_ACTIVE.into(),
         enrolled_at: "2026-10-17T00:00:00Z".into(),
         share_books: true,
         include_branches: true,
@@ -169,7 +169,7 @@ fn start_configured<R: HostJobRunner>(
     let (client, handle) = HostClient::new(
         HostClientConfig {
             link,
-            keys: ClusterLinkKeys::generate(),
+            keys: LibraryLinkKeys::generate(),
             software_version: "1.0.0".into(),
             incarnation: "inc".into(),
             max_jobs,
@@ -266,7 +266,7 @@ async fn accept(listener: &TcpListener) -> OwnerSide {
         "challenge",
         Body::Challenge {
             nonce: encode_nonce(&rand::random::<[u8; 32]>()),
-            cluster_id: CLUSTER.into(),
+            library_id: LIBRARY.into(),
         },
     )
     .await;
@@ -279,7 +279,7 @@ async fn accept(listener: &TcpListener) -> OwnerSide {
         "welcome",
         Body::Welcome {
             node_id: NODE.into(),
-            cluster_id: CLUSTER.into(),
+            library_id: LIBRARY.into(),
             box_key: base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .encode(box_public_key(&[3u8; 32])),
         },

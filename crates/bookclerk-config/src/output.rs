@@ -8,7 +8,7 @@
 //! # in_progress = "/var/tmp/bookclerk"
 //! ```
 //!
-//! The shared table is the `core.output` cluster configuration document in
+//! The shared table is the `core.output` library configuration document in
 //! the library database. This TOML table (plus `BOOKCLERK_OUTPUT_*`) only
 //! seeds that document the first time a host enrolls against a database
 //! without one; after that, edit it with `bookclerk config set output.*`,

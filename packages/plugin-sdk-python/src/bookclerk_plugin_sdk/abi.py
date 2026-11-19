@@ -2433,7 +2433,7 @@ class KvNamespace(Protocol):
     """Durable key/value namespace: a Workers `KVNamespace`-shaped binding the host
     serves from the library database, scoped to the plugin and the namespace a
     `[[kv_namespaces]]` row names, granted through `Bindings.kv`. Values live in
-    the cluster, so an instance moved to another host reads its own keys.
+    the library, so an instance moved to another host reads its own keys.
     """
 
     async def get(self, key: str) -> KvGetReply:

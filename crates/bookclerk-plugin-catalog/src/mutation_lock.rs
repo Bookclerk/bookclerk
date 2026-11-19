@@ -8,7 +8,7 @@
 //! distinct `$BOOKCLERK_FILES_DIR` values have independent locks and do not
 //! coordinate through a shared PostgreSQL/D1 database. That is intentional:
 //! the same alias and PluginKey may be installed on Host A and Host B
-//! without cluster-wide serialization.
+//! without library-wide serialization.
 //!
 //! A future stable `NodeId` (for example `$FILES_DIR/host.json`) is expected
 //! to map naturally onto this files-dir namespace for placement/scheduling.
@@ -54,7 +54,7 @@ impl PluginMutationLock {
     /// Acquires an exclusive inter-process lock for `files_dir`.
     ///
     /// Blocks until the lock is available. Creates `files_dir` and the lock
-    /// file when missing. Does not take a shared-database or cluster lock.
+    /// file when missing. Does not take a shared-database or library lock.
     ///
     /// Operator-selected roots may contain `..` spelling; they are resolved via
     /// canonicalize. Escaping or dangling leaf symlinks at the lock path are

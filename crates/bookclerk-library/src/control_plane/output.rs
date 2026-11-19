@@ -1,6 +1,6 @@
 //! `core.output`: the shared acquire-packaging domain (formerly `[output]`).
 //!
-//! One cluster document holds format, Widevine, naming profile and templates,
+//! One library document holds format, Widevine, naming profile and templates,
 //! sidecars, path sanitization, LAME knobs, and the multi-destination policy.
 //! Per-destination roots, prefixes, and naming overrides stay on the `local` /
 //! `s3` plugin instances. The host-local scratch directory
@@ -310,7 +310,7 @@ type CopyField = fn(&mut OutputSettingsV1, &OutputSettingsV1);
 
 /// The [`SEED_FIELDS`] judged together in
 /// [`OutputSettingsV1::from_seed_lenient`]: whether one writes
-/// `<library id>` depends on the others.
+/// `<call number>` depends on the others.
 const NAMING_SET: &[&str] = &["folder_template", "file_template", "chapter_file_template"];
 
 /// Every field [`OutputSettingsV1::validate`] bounds, by `output.*` name,
@@ -443,7 +443,7 @@ impl OutputSettingsV1 {
             replaced.push("copies");
         }
         // The naming templates are judged as one set, after the other
-        // fields: `<library id>` may sit in the folder or in both file
+        // fields: `<call number>` may sit in the folder or in both file
         // templates, so a template is valid or not only beside the others
         // (and the seed's naming profile). The whole set is kept when it
         // validates; otherwise the first single override whose default
@@ -613,7 +613,7 @@ impl OutputSettingsV1 {
             self.file_template.as_deref(),
             self.chapter_file_template.as_deref(),
         );
-        bookclerk_naming::require_library_id(
+        bookclerk_naming::require_call_number(
             &templates.folder,
             &templates.file,
             &templates.chapter_file,
@@ -939,30 +939,30 @@ impl OutputSettingsV1 {
     }
 }
 
-/// Copies the authoritative output document onto `config` for `cluster_id`.
+/// Copies the authoritative output document onto `config` for `library_id`.
 ///
-/// Revisions are only comparable within one cluster. Callers that switch
-/// databases pass the new cluster id explicitly.
+/// Revisions are only comparable within one library. Callers that switch
+/// databases pass the new library id explicitly.
 pub fn overlay_output(
     config: &mut bookclerk_config::Config,
     output: &ConfigurationDocument<OutputSettingsV1>,
-    cluster_id: &str,
+    library_id: &str,
 ) {
     let files_dir = config.paths.as_ref().map(|paths| paths.files_dir.clone());
     output
         .body
         .apply_to(&mut config.output, files_dir.as_deref());
     config.output_revision = Some(output.revision);
-    config.output_authority = Some(cluster_id.to_string());
+    config.output_authority = Some(library_id.to_string());
 }
 
-/// Loads the cluster output document.
+/// Loads the library output document.
 ///
 /// # Errors
 ///
 /// Returns an error when the document is missing, unsupported, or invalid.
 pub async fn load_output(store: &LibraryStore) -> Result<ConfigurationDocument<OutputSettingsV1>> {
-    let stored = load_document(store, &DocumentKey::cluster(OUTPUT_NAMESPACE))
+    let stored = load_document(store, &DocumentKey::library(OUTPUT_NAMESPACE))
         .await?
         .ok_or_else(|| LibraryError::not_found(EntityKind::Configuration, "core.output"))?;
     parse_output(stored)
@@ -992,7 +992,7 @@ pub fn portable_output_seed(seed: &OutputConfig, files_dir: &Path) -> OutputConf
     portable
 }
 
-/// Inserts `[output]` when the cluster document is absent.
+/// Inserts `[output]` when the library document is absent.
 ///
 /// An existing document is parsed and returned without reading the seed, so
 /// an obsolete or out-of-range TOML/environment value cannot fail startup or
@@ -1010,7 +1010,7 @@ pub async fn import_output_if_absent(
     seed: &OutputConfig,
     operation_id: &str,
 ) -> Result<ConfigurationDocument<OutputSettingsV1>> {
-    let key = DocumentKey::cluster(OUTPUT_NAMESPACE);
+    let key = DocumentKey::library(OUTPUT_NAMESPACE);
     if let Some(existing) = load_document(store, &key).await? {
         return parse_output(existing);
     }
@@ -1034,7 +1034,7 @@ pub async fn import_output_if_absent(
     parse_output(stored)
 }
 
-/// Replaces the cluster output document.
+/// Replaces the library output document.
 ///
 /// # Errors
 ///
@@ -1051,7 +1051,7 @@ pub async fn replace_output(
     match replace_document(
         store,
         actor,
-        &DocumentKey::cluster(OUTPUT_NAMESPACE),
+        &DocumentKey::library(OUTPUT_NAMESPACE),
         OUTPUT_SCHEMA_VERSION,
         expected_revision,
         &json,
@@ -1340,7 +1340,7 @@ mod tests {
         body.set("output.bad_book_action", "Abort").unwrap();
         assert_eq!(body.get("output.bad_book_action").as_deref(), Some("abort"));
         assert!(body.clone().set("output.file_template", "<title>").is_err());
-        body.set("output.folder_template", "<author> [<library id>]")
+        body.set("output.folder_template", "<author> [<call number>]")
             .unwrap();
         body.set("output.folder_template", "").unwrap();
         assert_eq!(body.folder_template, None);

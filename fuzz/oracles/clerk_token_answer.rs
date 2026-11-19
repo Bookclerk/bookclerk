@@ -11,7 +11,7 @@
 //! an untyped JSON value: the answer parses exactly when it is at most
 //! 8 KiB and one object, none of the fields below is written twice,
 //! `token` is 43
-//! base64url characters, `cluster_id` is 1 to 128 bytes of ASCII letters,
+//! base64url characters, `library_id` is 1 to 128 bytes of ASCII letters,
 //! digits, `-`, `_`, `.` and `:`, `user` is an object whose `id` is a positive integer and whose `display_name`, when present
 //! and not `null`, is a string of at most 128 bytes with no control
 //! characters, and `idle_secs` is an integer from 1 to a year (31,622,400
@@ -54,9 +54,9 @@ pub fn check(data: &[u8]) -> bool {
     let text = String::from_utf8_lossy(data);
     match (&parsed, &expected) {
         (None, None) => false,
-        (Some(answer), Some((token, cluster_id, id, name, idle))) => {
+        (Some(answer), Some((token, library_id, id, name, idle))) => {
             assert_eq!(&answer.token, token, "{text:?}");
-            assert_eq!(&answer.cluster_id, cluster_id, "{text:?}");
+            assert_eq!(&answer.library_id, library_id, "{text:?}");
             assert_eq!(answer.user.id, *id, "{text:?}");
             assert_eq!(&answer.user.display_name, name, "{text:?}");
             assert_eq!(answer.idle_secs, *idle, "{text:?}");
@@ -67,7 +67,7 @@ pub fn check(data: &[u8]) -> bool {
     }
 }
 
-/// The fields of a good answer: token, cluster id, user id, display name
+/// The fields of a good answer: token, library id, user id, display name
 /// and idle seconds.
 type Fields = (String, String, i64, Option<String>, i64);
 
@@ -87,9 +87,9 @@ fn expected(data: &[u8]) -> Option<Fields> {
         && token
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    let cluster_id = fields.get("cluster_id")?.as_str()?;
-    let cluster_ok = (1..=128).contains(&cluster_id.len())
-        && cluster_id
+    let library_id = fields.get("library_id")?.as_str()?;
+    let library_ok = (1..=128).contains(&library_id.len())
+        && library_id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'));
     let Value::Object(user) = fields.get("user")? else {
@@ -108,8 +108,8 @@ fn expected(data: &[u8]) -> Option<Fields> {
         .get("idle_secs")?
         .as_i64()
         .filter(|idle| (1..=YEAR_SECS).contains(idle))?;
-    (token_ok && cluster_ok && name_ok)
-        .then(|| (token.to_owned(), cluster_id.to_owned(), id, name, idle))
+    (token_ok && library_ok && name_ok)
+        .then(|| (token.to_owned(), library_id.to_owned(), id, name, idle))
 }
 
 /// The keys written at the top level, and those written in each `user`
@@ -208,14 +208,14 @@ fn count(keys: &[String], name: &str) -> usize {
 }
 
 /// True when a field the answer reads is written twice: a top-level
-/// `token`, `cluster_id`, `user` or `idle_secs`, or `id` or
+/// `token`, `library_id`, `user` or `idle_secs`, or `id` or
 /// `display_name` inside `user`. Other keys may repeat.
 fn repeats_key(data: &[u8]) -> bool {
     let mut de = serde_json::Deserializer::from_slice(data);
     let Ok(written) = de.deserialize_map(Top) else {
         return false;
     };
-    ["token", "cluster_id", "user", "idle_secs"]
+    ["token", "library_id", "user", "idle_secs"]
         .iter()
         .any(|name| count(&written.top, name) > 1)
         || written

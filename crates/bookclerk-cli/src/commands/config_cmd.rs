@@ -440,7 +440,7 @@ async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Resu
                 is_abridged: book.is_abridged,
                 content_kind: Some(book.content_kind.clone()),
                 // The edition's id, as an acquire of this title names it.
-                library_id: bookclerk_acquire::library_id_of(&store, &book.uuid).await?,
+                call_number: bookclerk_acquire::call_number_of(&store, &book.uuid).await?,
                 ..Default::default()
             };
             let naming_profile = profile
@@ -735,10 +735,10 @@ async fn set_events_setting(
     })
 }
 
-/// Config key of the cluster's host-enrollment switch (`core.host_enrollment`).
+/// Config key of the library's host-enrollment switch (`core.host_enrollment`).
 const HOST_ENROLLMENT_ENABLED_KEY: &str = "host_enrollment.enabled";
 
-/// Prints whether branch nodes may enroll into this cluster.
+/// Prints whether branch nodes may enroll into this library.
 async fn get_host_enrollment(config: &Config, format: OutputFormat) -> anyhow::Result<()> {
     let (store, _session) = open_control_plane(config).await?;
     let settings = load_host_enrollment(&store).await?;
@@ -757,7 +757,7 @@ async fn get_host_enrollment(config: &Config, format: OutputFormat) -> anyhow::R
     })
 }
 
-/// Turns host enrollment on or off for the cluster.
+/// Turns host enrollment on or off for the library.
 async fn set_host_enrollment(
     config: &Config,
     value: &str,

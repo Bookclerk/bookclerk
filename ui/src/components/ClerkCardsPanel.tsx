@@ -61,7 +61,7 @@ export function ClerkCardsPanel({ onSessionExpired }: ClerkCardsPanelProps) {
     void refresh();
   }, [refresh]);
   // A sign-in, a sign-out, or the library ending a card.
-  useLiveRefresh(["clusters"], refresh, { pollMs: 60_000, openPollMs: 300_000 });
+  useLiveRefresh(["libraries"], refresh, { pollMs: 60_000, openPollMs: 300_000 });
 
   return (
     <section className="space-y-4" aria-labelledby="library-cards-heading">
@@ -111,7 +111,7 @@ export function ClerkCardsPanel({ onSessionExpired }: ClerkCardsPanelProps) {
         <ul className="divide-y divide-ink/10 bg-card">
           {cards.map((card) => (
             <CardRow
-              key={card.cluster_id}
+              key={card.library_id}
               card={card}
               onSignedOut={(message) => {
                 setNotice(message);
@@ -146,7 +146,7 @@ function CardRow({
     setBusy(true);
     setError(null);
     try {
-      const done = await signOutClerkCard(card.cluster_id);
+      const done = await signOutClerkCard(card.library_id);
       onSignedOut(
         done.library_signed_out || card.state === "signed_out"
           ? `Signed out of ${library}.`

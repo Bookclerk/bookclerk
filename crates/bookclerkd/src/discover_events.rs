@@ -3,7 +3,7 @@
 //! Stored shelves go stale when someone's taste changes: a wish is added or
 //! dropped (`wishlist_changed`), a listening sync shows someone started or
 //! finished a book (`listening_synced`), or the household acquires a book
-//! (`book_acquired`). The daemon registers one cluster-wide consumer,
+//! (`book_acquired`). The daemon registers one library-wide consumer,
 //! [`DISCOVER_CONSUMER_ID`], on the durable outbox for those types, and each
 //! delivery queues the Discover jobs the change affects, each claimable only
 //! after [`EVENT_DEBOUNCE`] so a burst of changes folds into one refresh per
@@ -30,7 +30,7 @@ use crate::request_queue_job::{enqueue_request_queue_rank, request_queue_ranked_
 /// key provenance (`cargo:`, `platform:`, `path:` …) nor a node consumer
 /// (`node:`), so it never collides with a plugin's deliveries. Every node
 /// registers the same id; the catalog collapses them into one subscriber,
-/// so each event is handled once in the cluster.
+/// so each event is handled once in the library.
 pub const DISCOVER_CONSUMER_ID: &str = "host:discover";
 
 /// How long a queued refresh waits before it may run, so the changes of
@@ -38,9 +38,16 @@ pub const DISCOVER_CONSUMER_ID: &str = "host:discover";
 pub const EVENT_DEBOUNCE: Duration = Duration::from_secs(30);
 
 /// How long the wish owner's own fetch waits: they are looking at the page,
-/// so their shelves follow their wish quickly, while a few wishes in a row
-/// still fold into one job.
-pub const OWNER_DEBOUNCE: Duration = Duration::from_secs(5);
+/// so their shelves follow their wish quickly, while wishes clicked in a
+/// row still fold into one job.
+pub const OWNER_DEBOUNCE: Duration = Duration::from_secs(2);
+
+/// How long an owner's wish waits before it is tried again when the fetch
+/// it needs had already started (it may have read the wishlist before the
+/// wish). Shorter than [`EVENT_DEBOUNCE`], so a wish clicked during a fetch
+/// gets its own fetch soon after; [`MAX_RETRIES`] of these still outlast a
+/// slow fetch (a store's 20 s deadline plus the ranking).
+pub const OWNER_RETRY: Duration = Duration::from_secs(5);
 
 /// Redeliveries before a delivery is dead-lettered. A delivery is retried
 /// (after [`EVENT_DEBOUNCE`]) only while a job it needs has already started,
@@ -360,7 +367,13 @@ pub async fn run_discover_delivery(
     let result = match queue_for(state, library, taste, event.created_at).await {
         Ok(Queued::Done) => library.ack_event_delivery(&fence).await,
         Ok(Queued::Later) => {
-            let run_after = chrono::Duration::from_std(EVENT_DEBOUNCE)
+            let wait = match taste {
+                Taste::Wishlist {
+                    identity_id: Some(_),
+                } => OWNER_RETRY,
+                Taste::Wishlist { identity_id: None } | Taste::Household => EVENT_DEBOUNCE,
+            };
+            let run_after = chrono::Duration::from_std(wait)
                 .map(|d| Utc::now() + d)
                 .unwrap_or_else(|_| Utc::now());
             library
@@ -581,7 +594,7 @@ mod tests {
             .await
             .expect("catalog");
         let subscribers = catalog_subscribers_for_event(&catalog, &event);
-        assert_eq!(subscribers.len(), 1, "one consumer across the cluster");
+        assert_eq!(subscribers.len(), 1, "one consumer across the library");
         library
             .dispatch_event_deliveries(&event.id, &subscribers, &uuid::Uuid::new_v4().to_string())
             .await

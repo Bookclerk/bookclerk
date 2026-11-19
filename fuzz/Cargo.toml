@@ -417,6 +417,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "diagnostics_submit_reply"
+path = "fuzz_targets/diagnostics_submit_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "libro_catalog"
 path = "fuzz_targets/libro_catalog.rs"
 test = false

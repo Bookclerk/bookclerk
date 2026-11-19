@@ -12,6 +12,8 @@ conventions every change follows are in
 - [Dev Container](devcontainer.md): a ready-made build environment.
 - [Web UI development](ui/README.md): the React app, the tray, brand
   assets, and the UI library reference.
+- [Visual and accessibility testing](ui/visual-testing.md): Storybook
+  stories, axe-core checks and screenshot baselines in CI.
 - [Continuous integration](ci.md): the planner, the jobs and `CI Gate`.
 - [Fuzzing](fuzzing.md): fuzz targets in CI and crash triage.
 - [Repository automation](automation.md): dependency updates, advisories,

@@ -1,8 +1,8 @@
 /**
  * Join a library: the SPA side of the branch flow (H-4).
  *
- * The UI calls a host a **branch** and an owner cluster a **library**; the
- * API keeps the code names (`clusters`, `nodes`, `host`).
+ * The UI calls a host a **branch** and a library a **library**; the
+ * API keeps the code names (`libraries`, `nodes`, `host`).
  *
  * - On the joining install, the operator's wizard calls its own daemon
  *   (`/api/config/join/*`), which reads the library, keeps the PKCE
@@ -30,8 +30,8 @@ import type { ClerkCardView } from "@/lib/clerk";
 
 /** What a library says about itself, read by this install's daemon. */
 export interface LibraryInfoView {
-  /** The library's owner cluster id: stable, and what a branch link is keyed by. */
-  cluster_id: string;
+  /** The library's parent library id: stable, and what a branch link is keyed by. */
+  library_id: string;
   /** The library's public host name, from its origin (at most 253 bytes). */
   library_name: string;
   /** The library's canonical origin (`https://library.example`). */
@@ -48,8 +48,8 @@ export interface LibraryInfoView {
 
 /** A library this install is a branch of (no key material). */
 export interface BranchLinkView {
-  /** The library's owner cluster id. */
-  cluster_id: string;
+  /** The library's parent library id. */
+  library_id: string;
   /** The library's canonical origin this install dials. */
   owner_origin: string;
   /** The node id the library minted for this install when it joined. */
@@ -185,7 +185,7 @@ export type SharedBranchStepUp =
 /** `POST /api/config/join/callback` for a shared branch: this server restarts. */
 export interface SharedBranchJoined {
   connection: "shared_branch";
-  cluster_id: string;
+  library_id: string;
   node_id: string;
   library_name: string;
   /** `postgres` or `d1`. */
@@ -198,7 +198,7 @@ export interface SharedBranchJoined {
 /** `POST /api/config/join/callback` for a branch. */
 export interface BranchJoined {
   connection?: "branch";
-  cluster: BranchLinkView;
+  library: BranchLinkView;
   library_name: string;
   running: boolean;
   /** The store connections that came with the join, when the person brought them. */
@@ -433,20 +433,20 @@ export function isSharedBranchJoined(
  */
 export function joinWithInvite(
   link: string,
-): Promise<{ cluster: BranchLinkView; running: boolean }> {
+): Promise<{ library: BranchLinkView; running: boolean }> {
   return request("/api/config/join/invite", { method: "POST", body: { link: link.trim() } });
 }
 
 /**
  * Leave library: tells the library, deletes the node keys, stops the client.
  *
- * @param clusterId - The library to leave.
+ * @param libraryId - The library to leave.
  * @returns The link as left, and whether the library heard.
  */
 export function leaveLibrary(
-  clusterId: string,
-): Promise<{ cluster: BranchLinkView; owner_notified: boolean }> {
-  return request("/api/config/join/leave", { method: "POST", body: { cluster_id: clusterId } });
+  libraryId: string,
+): Promise<{ library: BranchLinkView; owner_notified: boolean }> {
+  return request("/api/config/join/leave", { method: "POST", body: { library_id: libraryId } });
 }
 
 /**
@@ -468,7 +468,7 @@ export function canChangeBranchSharing(role: string | undefined, impersonating =
  *
  * @returns The libraries.
  */
-export function fetchBranchSharing(): Promise<{ clusters: BranchLinkView[] }> {
+export function fetchBranchSharing(): Promise<{ libraries: BranchLinkView[] }> {
   return request("/api/config/join/sharing");
 }
 
@@ -489,22 +489,22 @@ export interface BranchWorkSettings {
  * settings. The library hears the sharing settings at once; the work
  * settings apply to the next job this server asks for.
  *
- * @param clusterId - The library.
+ * @param libraryId - The library.
  * @param shareBooks - "Share this branch's books with <library>".
  * @param includeBranches - "Include books from my own branches".
  * @param work - The work settings to change; each one left out keeps its stored value.
  * @returns The link with the stored settings.
  */
 export function setBranchSharing(
-  clusterId: string,
+  libraryId: string,
   shareBooks: boolean,
   includeBranches: boolean,
   work?: BranchWorkSettings,
-): Promise<{ cluster: BranchLinkView }> {
+): Promise<{ library: BranchLinkView }> {
   return request("/api/config/join/sharing", {
     method: "POST",
     body: {
-      cluster_id: clusterId,
+      library_id: libraryId,
       share_books: shareBooks,
       include_branches: includeBranches,
       ...(work?.workForMembers === undefined ? {} : { work_for_members: work.workForMembers }),
@@ -524,17 +524,17 @@ export const MAX_OFFERED_JOB_CAP = 8;
  * of the machine after this server's own work; 0 runs nothing for it.
  * Jobs already running finish.
  *
- * @param clusterId - The library.
+ * @param libraryId - The library.
  * @param maxJobs - The cap in jobs, or `null` for an equal share.
  * @returns The link with the stored cap and its share now.
  */
 export function setBranchJobCap(
-  clusterId: string,
+  libraryId: string,
   maxJobs: number | null,
-): Promise<{ cluster: BranchLinkView }> {
+): Promise<{ library: BranchLinkView }> {
   return request("/api/config/join/capacity", {
     method: "POST",
-    body: { cluster_id: clusterId, max_jobs: maxJobs },
+    body: { library_id: libraryId, max_jobs: maxJobs },
   });
 }
 
@@ -564,13 +564,13 @@ export function jobShareSummary(maxJobs: number | null | undefined, jobShare?: n
  * @returns The link with the stored settings.
  */
 export function setMembersListing(
-  link: Pick<BranchLinkView, "cluster_id" | "share_books" | "include_branches">,
+  link: Pick<BranchLinkView, "library_id" | "share_books" | "include_branches">,
   listMembersBooks: boolean,
-): Promise<{ cluster: BranchLinkView }> {
+): Promise<{ library: BranchLinkView }> {
   return request("/api/config/join/sharing", {
     method: "POST",
     body: {
-      cluster_id: link.cluster_id,
+      library_id: link.library_id,
       share_books: link.share_books ?? true,
       include_branches: link.include_branches ?? true,
       list_members_books: listMembersBooks,
@@ -598,17 +598,17 @@ export interface ConnectionsAdded {
  * "Add my connections to <library>": sends some of the branch person's
  * store connections up the link. Only the person this branch belongs to may.
  *
- * @param clusterId - The library to add them to.
+ * @param libraryId - The library to add them to.
  * @param accounts - The connections, by plugin key and store account id.
  * @returns What the library kept.
  */
 export function addConnectionsToLibrary(
-  clusterId: string,
+  libraryId: string,
   accounts: { plugin_key: string; account_id: string }[],
 ): Promise<ConnectionsAdded> {
   return request("/api/config/join/connections", {
     method: "POST",
-    body: { cluster_id: clusterId, accounts },
+    body: { library_id: libraryId, accounts },
   });
 }
 
@@ -616,7 +616,7 @@ export function addConnectionsToLibrary(
 export interface ConnectionDisconnected {
   /** It was the person's here and is disconnected here now. */
   here: boolean;
-  /** Linked libraries (cluster ids) that confirmed the disconnect. */
+  /** Linked libraries (library ids) that confirmed the disconnect. */
   libraries: string[];
   /** Linked libraries that could not be reached or refused. */
   unreached: string[];
@@ -673,13 +673,13 @@ export function connectionsAddedLine(library: string, report: ConnectionsAdded):
  * @returns The link with the stored settings.
  */
 export function setLinkKeepCopies(
-  link: Pick<BranchLinkView, "cluster_id" | "share_books" | "include_branches">,
+  link: Pick<BranchLinkView, "library_id" | "share_books" | "include_branches">,
   keepCopies: boolean,
-): Promise<{ cluster: BranchLinkView }> {
+): Promise<{ library: BranchLinkView }> {
   return request("/api/config/join/sharing", {
     method: "POST",
     body: {
-      cluster_id: link.cluster_id,
+      library_id: link.library_id,
       share_books: link.share_books ?? true,
       include_branches: link.include_branches ?? true,
       keep_copies: keepCopies,
@@ -689,8 +689,8 @@ export function setLinkKeepCopies(
 
 /** One edition in the window view, and the library that holds it. */
 export interface WindowEditionView {
-  /** The library (cluster id) that holds it. */
-  cluster_id: string;
+  /** The library (library id) that holds it. */
+  library_id: string;
   /** The library's origin. */
   owner_origin: string;
   /** The store's plain id (`audible`, `libro`, ...). */
@@ -735,7 +735,7 @@ export interface WindowEntryView {
 /** `GET /api/config/join/window`. */
 export interface WindowBooks {
   /** The libraries this server is an active branch of. */
-  clusters: BranchLinkView[];
+  libraries: BranchLinkView[];
   /** The libraries this server holds an active library card for. */
   cards: ClerkCardView[];
   /** Their books, every one they list for a member, by title. */
@@ -760,10 +760,10 @@ export function fetchWindowBooks(): Promise<WindowBooks> {
  * @param view - The window view.
  * @returns For example `["books.example.com", "other.example"]`.
  */
-export function windowLibraries(view: Pick<WindowBooks, "clusters" | "cards">): string[] {
+export function windowLibraries(view: Pick<WindowBooks, "libraries" | "cards">): string[] {
   const hosts: string[] = [];
   for (const origin of [
-    ...view.clusters.map((link) => link.owner_origin),
+    ...view.libraries.map((link) => link.owner_origin),
     ...(view.cards ?? []).map((card) => card.origin),
   ]) {
     let host = origin;

@@ -1,4 +1,4 @@
-//! Counted cluster semaphores built from fenced `cluster_leases` rows.
+//! Counted library semaphores built from fenced `library_leases` rows.
 //!
 //! A semaphore `name` with limit `N` is the lease rows `sem:<name>#0` …
 //! `sem:<name>#<N-1>`. A permit is one of those slot leases: a holder, a
@@ -28,8 +28,8 @@ use chrono::Utc;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
-use super::{acquire_lease, release_lease, ClusterLease};
-use crate::entities::cluster_leases;
+use super::{acquire_lease, release_lease, LibraryLease};
+use crate::entities::library_leases;
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
@@ -44,7 +44,7 @@ pub const MAX_SEMAPHORE_LIMIT: u32 = 256;
 pub struct SemaphoreRequest {
     /// Semaphore name (for example `jobs:network` or `account:<key>:<id>`).
     pub name: String,
-    /// Permits the semaphore grants cluster-wide (at least 1).
+    /// Permits the semaphore grants library-wide (at least 1).
     pub limit: u32,
 }
 
@@ -67,7 +67,7 @@ pub struct SemaphorePermit {
     /// Slot index below the limit the permit was taken under.
     pub slot: u32,
     /// The slot lease (holder, fencing token, expiry).
-    pub lease: ClusterLease,
+    pub lease: LibraryLease,
 }
 
 /// Outcome of [`acquire_permits`].
@@ -98,7 +98,7 @@ async fn load_slots(
     store: &LibraryStore,
     name: &str,
     limit: u32,
-) -> Result<BTreeMap<u32, cluster_leases::Model>> {
+) -> Result<BTreeMap<u32, library_leases::Model>> {
     let names: Vec<String> = (0..slots(limit))
         .map(|slot| semaphore_slot_lease_name(name, slot))
         .collect();
@@ -107,8 +107,8 @@ async fn load_slots(
     let mut rows = Vec::new();
     for chunk in names.chunks(SLOT_READ_CHUNK) {
         rows.extend(
-            cluster_leases::Entity::find()
-                .filter(cluster_leases::Column::Name.is_in(chunk.to_vec()))
+            library_leases::Entity::find()
+                .filter(library_leases::Column::Name.is_in(chunk.to_vec()))
                 .all(store.db())
                 .await
                 .map_err(LibraryError::Orm)?,
@@ -128,15 +128,15 @@ async fn load_slots(
 async fn load_all_slots(
     store: &LibraryStore,
     name: &str,
-) -> Result<BTreeMap<u32, cluster_leases::Model>> {
+) -> Result<BTreeMap<u32, library_leases::Model>> {
     let prefix = format!("{SEMAPHORE_LEASE_PREFIX}{name}#");
     // The LIKE is a coarse pre-filter that may match more rows than the
     // semaphore's (`%` / `_` in a name, case-insensitive engines); the exact
     // prefix check below drops the extras. A backslash (an escape on some
     // engines) could make it match fewer, so the pattern stops before one.
     let pattern_prefix = prefix.split('\\').next().unwrap_or_default();
-    let rows = cluster_leases::Entity::find()
-        .filter(cluster_leases::Column::Name.like(format!("{pattern_prefix}%")))
+    let rows = library_leases::Entity::find()
+        .filter(library_leases::Column::Name.like(format!("{pattern_prefix}%")))
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?;
@@ -303,7 +303,7 @@ pub async fn live_permits(
         .map(|(slot, row)| SemaphorePermit {
             semaphore: name.to_string(),
             slot,
-            lease: ClusterLease {
+            lease: LibraryLease {
                 name: row.name,
                 holder: row.holder,
                 token: row.token,
@@ -337,7 +337,7 @@ pub async fn permits_held_by(
         .map(|(slot, row)| SemaphorePermit {
             semaphore: name.to_string(),
             slot,
-            lease: ClusterLease {
+            lease: LibraryLease {
                 name: row.name,
                 holder: row.holder,
                 token: row.token,
@@ -364,9 +364,9 @@ pub async fn permits_with_holder_prefix(
     // A coarse LIKE pre-filter, as in `load_all_slots`; the exact checks
     // below drop the extras.
     let pattern_prefix = holder_prefix.split('\\').next().unwrap_or_default();
-    let rows = cluster_leases::Entity::find()
-        .filter(cluster_leases::Column::Holder.like(format!("{pattern_prefix}%")))
-        .filter(cluster_leases::Column::Name.like(format!("{SEMAPHORE_LEASE_PREFIX}%")))
+    let rows = library_leases::Entity::find()
+        .filter(library_leases::Column::Holder.like(format!("{pattern_prefix}%")))
+        .filter(library_leases::Column::Name.like(format!("{SEMAPHORE_LEASE_PREFIX}%")))
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?;
@@ -382,7 +382,7 @@ pub async fn permits_with_holder_prefix(
             Some(SemaphorePermit {
                 semaphore: semaphore.to_string(),
                 slot,
-                lease: ClusterLease {
+                lease: LibraryLease {
                     name: row.name.clone(),
                     holder: row.holder,
                     token: row.token,
@@ -408,25 +408,25 @@ pub async fn permits_with_holder_prefix(
 /// Returns an error when the write fails.
 pub async fn renew_fenced_lease(
     store: &LibraryStore,
-    lease: &ClusterLease,
+    lease: &LibraryLease,
     ttl: Duration,
 ) -> Result<bool> {
     let now = Utc::now();
     let expires_at_ms = now
         .timestamp_millis()
         .saturating_add(i64::try_from(ttl.as_millis()).unwrap_or(i64::MAX));
-    let res = cluster_leases::Entity::update_many()
+    let res = library_leases::Entity::update_many()
         .col_expr(
-            cluster_leases::Column::ExpiresAtMs,
+            library_leases::Column::ExpiresAtMs,
             Expr::value(expires_at_ms),
         )
         .col_expr(
-            cluster_leases::Column::RenewedAt,
+            library_leases::Column::RenewedAt,
             Expr::value(now.to_rfc3339()),
         )
-        .filter(cluster_leases::Column::Name.eq(lease.name.as_str()))
-        .filter(cluster_leases::Column::Holder.eq(lease.holder.as_str()))
-        .filter(cluster_leases::Column::Token.eq(lease.token))
+        .filter(library_leases::Column::Name.eq(lease.name.as_str()))
+        .filter(library_leases::Column::Holder.eq(lease.holder.as_str()))
+        .filter(library_leases::Column::Token.eq(lease.token))
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;

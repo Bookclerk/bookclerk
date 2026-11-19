@@ -7,9 +7,9 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "clerk_links")]
 pub struct Model {
-    /// The library's cluster id, as its token answer named it.
+    /// The library id, as its token answer named it.
     #[sea_orm(primary_key, auto_increment = false)]
-    pub library_cluster_id: String,
+    pub library_id: String,
     /// The library's canonical origin (`https://library.example`).
     pub origin: String,
     /// SPKI pin confirmed for a self-signed library, when it is one.

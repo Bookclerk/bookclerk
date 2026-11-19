@@ -50,7 +50,7 @@ The same page also sets:
 - whether to save the cover image, a companion PDF and chapter information
   beside each book.
 
-Every book's path carries a short library id, such as `[1a2b3c4d]`. With
+Every book's path carries a short call number, such as `[1a2b3c4d]`. With
 the audiobookshelf profile it ends the file name, for example
 `Author/Series/1 - Title/Title [1a2b3c4d].m4b`. With the classic profile it
 ends the folder name instead, for example

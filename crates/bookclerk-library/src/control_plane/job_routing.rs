@@ -1,4 +1,4 @@
-//! Routing durable jobs to nodes that can run them, under cluster semaphores.
+//! Routing durable jobs to nodes that can run them, under library semaphores.
 //!
 //! A job records at admission the plugin instances the claiming node must
 //! run ([`crate::JobPayload::requires`]): an instance the job is pinned to,
@@ -12,7 +12,7 @@
 //! by that node only.
 //!
 //! Before the claim's compare-and-swap, the claimer takes one permit of
-//! every cluster semaphore the job counts against
+//! every library semaphore the job counts against
 //! ([`super::semaphore`]): its resource class (`jobs:network`), each
 //! required instance (`plugin-instance:<id>`), and each store account it
 //! touches (`account:<plugin_key>:<account_id>`, one at a time). Permits live
@@ -65,30 +65,30 @@ pub const ACCOUNT_SEMAPHORE_LIMIT: u32 = 1;
 /// pages on until it claims a job or the ready rows run out).
 pub const ROUTED_CLAIM_CANDIDATES: u64 = 16;
 
-/// Name of the cluster semaphore for one resource class.
+/// Name of the library semaphore for one resource class.
 #[must_use]
 pub fn class_semaphore(class: JobResourceClass) -> String {
     format!("jobs:{}", class.as_str())
 }
 
-/// Name of the cluster semaphore for one plugin instance.
+/// Name of the library semaphore for one plugin instance.
 #[must_use]
 pub fn instance_semaphore(instance_id: &str) -> String {
     format!("plugin-instance:{instance_id}")
 }
 
-/// Name of the cluster semaphore for one store account.
+/// Name of the library semaphore for one store account.
 #[must_use]
 pub fn account_semaphore(plugin_key: &str, account_id: &str) -> String {
     format!("account:{plugin_key}:{account_id}")
 }
 
-/// Cluster-wide permit counts a routed claim enforces.
+/// Library-wide permit counts a routed claim enforces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JobClaimLimits {
-    /// Running jobs of the claimed resource class, cluster-wide.
+    /// Running jobs of the claimed resource class, library-wide.
     pub class: u32,
-    /// Running jobs that require one plugin instance, cluster-wide.
+    /// Running jobs that require one plugin instance, library-wide.
     pub plugin_instance: u32,
 }
 
@@ -303,7 +303,7 @@ pub struct RoutedJobClaim {
 /// is a valid instance id with at least one deployment that should run, so a
 /// job pinned to an undeployed instance is claimed anywhere and fails there
 /// as before rather than waiting forever. For [`JobKind::Acquire`], every
-/// cluster instance of a plugin key in `node_bound_plugin_keys` that is
+/// library instance of a plugin key in `node_bound_plugin_keys` that is
 /// deployed to run somewhere is added: the acquire writes to that output, so
 /// it must run where the output's disk is. A node-local instance (H-2,
 /// `owner_node_id` set) is not: it adds to the outputs of its own node only,
@@ -500,7 +500,7 @@ pub async fn node_can_run_job(
     Ok(true)
 }
 
-/// The cluster semaphores `job` counts against under `limits`.
+/// The library semaphores `job` counts against under `limits`.
 ///
 /// Every job takes its class semaphore and one per required instance. Scan
 /// and acquire also take one per store account they touch: the payload's
@@ -597,7 +597,7 @@ pub fn job_permit_holder_prefix(owner: &str, job_id: &str, generation: i64) -> S
     format!("{owner}/{job_id}/g{generation}/")
 }
 
-/// Claims the best ready job this node can run, under the cluster semaphores.
+/// Claims the best ready job this node can run, under the library semaphores.
 ///
 /// Pages through the ready pending jobs of the class, best first
 /// ([`ROUTED_CLAIM_CANDIDATES`] per page); skips those the node is not

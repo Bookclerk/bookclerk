@@ -16,15 +16,15 @@
 #      the visitor waits. The cache is keyed by image URL, not by the
 #      signing key step 4 deletes, so the entries stay valid.
 #   4. bookclerk-demo-seed --bake-finish strips this install's own state:
-#      the cluster secret fingerprint, leases and heartbeats in the library
+#      the library secret fingerprint, leases and heartbeats in the library
 #      (refusing a library that holds any sealed secret or session), and
 #      master.key, the covers URL key, plugin sessions and logs on disk.
 #   5. The check below fails the build if any secret file is left.
 #
-# The node identity (node-identity.json: node_id and cluster_id) is baked
+# The node identity (node-identity.json: node_id and library_id) is baked
 # too, so every demo container shares the same two ids. That is acceptable:
 # each visitor's container is a VM and library of its own that never joins
-# a cluster, the ids carry no secret (the cluster secret is the per-container
+# a library, the ids carry no secret (the library secret is the per-container
 # master.key), and the baked plugin deployments are keyed by the node id, so
 # a new id would orphan them. The ids also appear in the diagnostics reports
 # the copies send, where every demo shares them.
