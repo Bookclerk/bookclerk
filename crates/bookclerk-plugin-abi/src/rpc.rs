@@ -293,6 +293,18 @@ fn fill_put_result(mut out: crate::plugin_capnp::put_result::Builder<'_>, put: &
     }
 }
 
+/// Decodes a guest's [`PluginError`] leniently: unreadable text becomes
+/// empty, an unknown code maps through [`PluginError::from_wire`], and
+/// `details` that are not one JSON object within the scalar ceiling are
+/// dropped.
+///
+/// # Arguments
+///
+/// * `r` - The wire error, as the guest sent it.
+///
+/// # Returns
+///
+/// The error the host acts on; decoding never fails.
 pub(super) fn read_error(r: plugin_error::Reader<'_>) -> PluginError {
     let code = r.get_code().ok().map(text_of).unwrap_or_default();
     let message = r.get_message().ok().map(text_of).unwrap_or_default();
@@ -5291,12 +5303,41 @@ impl QueueProducer for QueueProducerClient {
     }
 }
 
+/// Decodes a standalone `EmptyReply` message the way the host decodes a
+/// guest's payload-free reply, for the `abi_decode` fuzz target and its
+/// corpus replay.
+///
+/// # Errors
+///
+/// Returns the guest's [`PluginError`] for an `err` reply, or a decode
+/// failure when the buffer is not a valid unpacked single-segment message.
+pub fn decode_empty_reply_bytes(bytes: &[u8]) -> Result<()> {
+    let reader = crate::db_rpc::read_unpacked_message_within(bytes, crate::MAX_SCALAR_BYTES)?;
+    read_empty(reader.get_root().map_err(from_capnp)?)
+}
+
+/// Decodes a standalone `PluginError` message the way the host decodes a
+/// guest's error, for the `abi_decode` fuzz target and its corpus replay.
+///
+/// # Errors
+///
+/// Returns a decode failure when the buffer is not a valid unpacked
+/// single-segment message; the error itself is the `Ok` value.
+pub fn decode_plugin_error_bytes(bytes: &[u8]) -> Result<PluginError> {
+    let reader = crate::db_rpc::read_unpacked_message_within(bytes, crate::MAX_SCALAR_BYTES)?;
+    Ok(read_error(reader.get_root().map_err(from_capnp)?))
+}
+
 /// Decode an empty success/error union.
+///
+/// Every guest reply without a payload (`RemoteLibrary.start/stop`, event
+/// and queue acknowledgements, destination writes, `revokeAccount`) goes
+/// through here, on the plugin client and the host adapter session alike.
 ///
 /// # Errors
 ///
 /// Returns the nested [`PluginError`] or a Cap'n Proto read failure.
-fn read_empty(result: empty_reply::Reader<'_>) -> Result<()> {
+pub(crate) fn read_empty(result: empty_reply::Reader<'_>) -> Result<()> {
     match result.which().map_err(from_capnp)? {
         empty_reply::Ok(()) => Ok(()),
         empty_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),

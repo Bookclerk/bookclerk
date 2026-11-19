@@ -28,7 +28,7 @@ boundary extends it.
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
-| `abi_decode` | Every generated Cap'n Proto `read_*` codec and the database envelope decoders | `bookclerk-plugin-abi` |
+| `abi_decode` | Every generated Cap'n Proto `read_*` codec, the database envelope decoders, and the reply helpers every payload-free guest reply and guest error goes through (`read_empty`, `read_error`) | `bookclerk-plugin-abi` |
 | `db_stream` | `executeStreamed` frames an adapter sends, reassembled by the host and the SDKs under the streamed result budget. The TypeScript and Python SDK tests replay the same corpus as shared vectors against their own decoders | `bookclerk-plugin-abi::ExecuteStreamDecoder` |
 | `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
@@ -126,7 +126,13 @@ only that. The others check:
 - **`abi_decode`**: the traversal budget is derived from the input size.
   Structured seeds cover the book records, the metadata replies and the
   cover request and reply (`structured_*.bin`), plus the typed
-  `limit_exceeded` envelopes (`limit_error_reply.bin`, `caps_reply_*.bin`).
+  `limit_exceeded` envelopes (`limit_error_reply.bin`, `caps_reply_*.bin`,
+  `empty_reply_*.bin`, `plugin_error_*.bin`). A guest error's `details`
+  are kept only as one JSON object that serializes back to itself.
+  Selectors 0 to 5 are the hand-written decoders and the generated table
+  follows, so adding a hand-written decoder moves every generated seed's
+  selector byte (`structured_book_record_seeds_are_current` rewrites the
+  structured seeds with `UPDATE_FUZZ_SEEDS=1`).
 - **`db_stream`**: decoding a frame stream in one push and in chunks of
   any size agree (both the same reply, or both refused), an accepted
   reply has no statement over the row cap, and it re-encodes to frames

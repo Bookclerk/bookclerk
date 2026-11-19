@@ -1,6 +1,8 @@
 //! Coverage-guided decoding of guest-produced Cap'n Proto messages
 //! (`bookclerk-plugin-abi`): every generated `read_*` codec through
-//! `read_any_message`, plus the hand-written database envelope decoders.
+//! `read_any_message`, plus the hand-written database envelope decoders and
+//! the hand-written reply helpers every payload-free guest reply and guest
+//! error goes through (`read_empty`, `read_error`).
 //!
 //! The first input byte selects the decoder; the rest is the unpacked
 //! single-segment message. Each decoder runs with the traversal budget the
@@ -14,14 +16,14 @@
 #![no_main]
 
 use bookclerk_plugin_abi::{
-    decode_db_capabilities_reply_bytes, decode_db_value_bytes, decode_execute_request_bytes,
-    decode_execute_result_reply_bytes, read_any_message, LimitExceeded, PluginError,
-    READ_ANY_COUNT,
+    decode_db_capabilities_reply_bytes, decode_db_value_bytes, decode_empty_reply_bytes,
+    decode_execute_request_bytes, decode_execute_result_reply_bytes, decode_plugin_error_bytes,
+    read_any_message, LimitExceeded, PluginError, READ_ANY_COUNT,
 };
 use libfuzzer_sys::fuzz_target;
 
 /// Hand-written decoders ahead of the generated table.
-const HAND_WRITTEN: u8 = 4;
+const HAND_WRITTEN: u8 = 6;
 
 /// Largest message worth decoding; the wire caps replies far below this.
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -51,6 +53,17 @@ fuzz_target!(|data: &[u8]| {
                 check_limit_parsers(&err);
             }
         }
+        4 => {
+            if let Err(err) = decode_empty_reply_bytes(bytes) {
+                check_limit_parsers(&err);
+            }
+        }
+        5 => {
+            if let Ok(err) = decode_plugin_error_bytes(bytes) {
+                check_details(&err);
+                check_limit_parsers(&err);
+            }
+        }
         generated => {
             let _ = read_any_message(generated - HAND_WRITTEN, bytes);
         }
@@ -71,6 +84,17 @@ fn check_limit_parsers(err: &PluginError) {
         );
     }
     check_limit_message(&err.message);
+}
+
+/// A guest error's `details` survive decoding only as one JSON object, and
+/// what the host keeps serializes to text that parses back to itself.
+fn check_details(err: &PluginError) {
+    if let Some(details) = &err.details {
+        let text = serde_json::Value::Object(details.clone()).to_string();
+        let again: Option<serde_json::Map<String, serde_json::Value>> =
+            serde_json::from_str(&text).ok();
+        assert_eq!(again.as_ref(), Some(details), "kept details must round-trip");
+    }
 }
 
 /// Parses arbitrary text as a limit message; a hit must round-trip.
