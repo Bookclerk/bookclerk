@@ -334,12 +334,19 @@ time:
    due on a destination it has deployed; the destinations that already
    hold the edition are left alone. An acquire of one title tries its
    pending copies at once, without waiting for the delay.
+5. A destination that cannot be listed when an acquire run starts sits
+   that run out. The titles go to the destinations that answer, and the
+   run clears nothing as missing and moves no files, since a title it
+   cannot see may be on the destination that did not answer. A later run
+   writes the copies it missed. The run fails only when no destination
+   answers.
 
 An acquire run also visits an edition that is already acquired when a
 destination that takes it has no copy at all: one deployed after the
 acquire, or one whose filter took the edition later. A failed copy is
-left for you: a forced acquire of the title (`bookclerk library acquire
---force`) tries it again.
+left for you: other acquires of the edition write nothing there, and a
+forced acquire of the title (`bookclerk library acquire --force`) tries it
+again.
 
 > [!NOTE]
 > Editions acquired before copies were recorded get their copies from

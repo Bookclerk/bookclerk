@@ -292,12 +292,17 @@ enum StoredCopies {
     /// The title has no library row, so no copies are recorded for it.
     Untracked,
     /// The destinations with a stored copy (`edition_copies`), each with
-    /// the edition's primary audio key there, and whether that is every
-    /// destination in the target set.
+    /// the edition's primary audio key there, the destinations whose copy
+    /// failed for good, and whether those two cover every destination in
+    /// the target set.
     Tracked {
         /// Destinations holding the edition, with their keys.
         present: Vec<(DestinationId, String)>,
-        /// True when no destination in the target set lacks the edition.
+        /// Destinations whose copy is `failed`: an acquire leaves them
+        /// alone until a forced one tries them again.
+        held: Vec<DestinationId>,
+        /// True when every destination in the target set holds the
+        /// edition or is held.
         complete: bool,
     },
 }
@@ -310,6 +315,15 @@ impl StoredCopies {
         match self {
             Self::Untracked => true,
             Self::Tracked { complete, .. } => *complete,
+        }
+    }
+
+    /// Whether `destination`'s copy failed for good, so an unforced
+    /// acquire writes nothing there.
+    fn is_held(&self, destination: &DestinationId) -> bool {
+        match self {
+            Self::Untracked => false,
+            Self::Tracked { held, .. } => held.contains(destination),
         }
     }
 
@@ -346,6 +360,7 @@ async fn stored_copies(
     if !acquired {
         return Ok(StoredCopies::Tracked {
             present: Vec::new(),
+            held: Vec::new(),
             complete: false,
         });
     }
@@ -363,8 +378,22 @@ async fn stored_copies(
                 .map(|key| (dest.id.clone(), key))
         })
         .collect();
-    let complete = present.len() == destinations.items.len();
-    Ok(StoredCopies::Tracked { present, complete })
+    let held: Vec<DestinationId> = destinations
+        .items
+        .iter()
+        .filter(|dest| {
+            copies
+                .iter()
+                .any(|copy| copy.destination == dest.id.as_str() && copy.state == CopyState::Failed)
+        })
+        .map(|dest| dest.id.clone())
+        .collect();
+    let complete = present.len() + held.len() == destinations.items.len();
+    Ok(StoredCopies::Tracked {
+        present,
+        held,
+        complete,
+    })
 }
 
 /// Records each destination's outcome as `edition`'s copy there: stored
@@ -1046,8 +1075,15 @@ async fn plan_existing_destinations(
     let mut present: Vec<(DestinationId, String)> = Vec::new();
     let mut missing_ids: Vec<DestinationId> = Vec::new();
     let mut primary_key = None;
+    // A destination whose copy failed for good is neither checked nor
+    // written: it waits for a forced acquire.
+    let mut held = false;
 
     for dest in &destinations.items {
+        if stored.is_held(&dest.id) {
+            held = true;
+            continue;
+        }
         // A recorded stored copy whose key is still there needs no listing.
         if let Some(key) = stored_key_present(stored, dest).await {
             if dest.id == destinations.primary {
@@ -1110,9 +1146,14 @@ async fn plan_existing_destinations(
             present,
         });
     }
+    // The write set when the fetch writes every destination it checked:
+    // all of them, or only the missing ones when some are held.
+    let missing_only = |missing: Vec<(DestinationId, String)>| {
+        held.then(|| missing.into_iter().map(|(id, _)| id).collect())
+    };
     if present.is_empty() {
         return Ok(ExistingPlan::Fetch {
-            only_ids: None,
+            only_ids: missing_only(missing),
             present,
         });
     }
@@ -1148,6 +1189,14 @@ async fn plan_existing_destinations(
             only_ids: Some(missing.into_iter().map(|(k, _)| k).collect()),
             present,
         }),
+        MultiDestinationMode::RefetchAll if held => {
+            let mut ids: Vec<DestinationId> = present.into_iter().map(|(id, _)| id).collect();
+            ids.extend(missing.into_iter().map(|(id, _)| id));
+            Ok(ExistingPlan::Fetch {
+                only_ids: Some(ids),
+                present: Vec::new(),
+            })
+        }
         MultiDestinationMode::RefetchAll => Ok(ExistingPlan::Fetch {
             only_ids: None,
             present: Vec::new(),
@@ -5779,6 +5828,78 @@ mod tests {
                 .matched_existing
         );
         assert_eq!(second_puts.load(Ordering::SeqCst), puts_before);
+    }
+
+    /// A copy that failed for good waits for a forced acquire: an acquire
+    /// that fills another destination's missing copy leaves it alone.
+    #[tokio::test]
+    async fn a_failed_copy_is_left_alone_while_another_destination_is_filled() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00SOME", "user-1", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let failed_puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let local_only = title_named_destinations(&tmp.path().join("local"), Arc::default());
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let req = edition_req(&cache, job.clone(), "B00SOME", "user-1", &uuid);
+        let first = acquire_book(&store, &local_only, req, &source)
+            .await
+            .unwrap();
+        let edition = store.edition_of_book(&uuid).await.unwrap().unwrap();
+        let now = chrono::Utc::now();
+        for _ in 0..bookclerk_library::MAX_COPY_ATTEMPTS {
+            store
+                .set_copy_pending(&edition, "broken", "offline", now)
+                .await
+                .unwrap();
+        }
+
+        let mut destinations = title_named_destinations(&tmp.path().join("local"), Arc::default());
+        for (id, puts) in [("broken", failed_puts.clone()), ("fresh", Arc::default())] {
+            let mut extra = title_named_destinations(&tmp.path().join(id), puts)
+                .items
+                .remove(0);
+            extra.id = DestinationId::new(id).unwrap();
+            destinations.items.push(extra);
+        }
+        destinations.multi_destination = MultiDestinationMode::SyncMissing;
+        let req = edition_req(&cache, job, "B00SOME", "user-1", &uuid);
+        let again = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert!(again.matched_existing);
+        assert_eq!(fetches.load(Ordering::SeqCst), 1, "no second fetch");
+        assert_eq!(failed_puts.load(Ordering::SeqCst), 0, "nothing written");
+        let Some(CopyResult::Stored { key }) = again
+            .copies
+            .iter()
+            .find(|copy| copy.destination.as_str() == "fresh")
+            .map(|copy| copy.result.clone())
+        else {
+            panic!("{again:?}");
+        };
+        assert_eq!(
+            std::fs::read(tmp.path().join("fresh").join(&key)).unwrap(),
+            std::fs::read(tmp.path().join("local").join(&first.storage_key)).unwrap()
+        );
+        assert_eq!(
+            copy_states(&store, &uuid).await,
+            vec![
+                (
+                    "broken".to_owned(),
+                    CopyState::Failed,
+                    bookclerk_library::MAX_COPY_ATTEMPTS
+                ),
+                ("fresh".to_owned(), CopyState::Stored, 0),
+                ("local".to_owned(), CopyState::Stored, 0),
+            ]
+        );
     }
 
     #[tokio::test]

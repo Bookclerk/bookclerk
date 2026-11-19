@@ -421,9 +421,10 @@ const COPY_RETRY_BATCH: u64 = 32;
 /// unavailable gets the files once its delay passes, without a fetch when
 /// another destination already holds them.
 ///
-/// Each acquire names one title of the edition. The acquire's candidate
-/// selection sees the due copy and visits the title though it is acquired
-/// (see `titles_lacking_copies`). Admission drops a duplicate of a job
+/// Each acquire names one title of the edition, and every title of it is
+/// queued. The acquire's candidate selection sees the due copy and visits
+/// the title though it is acquired, when a destination with the due copy
+/// takes that title (see `titles_lacking_copies`). Admission drops a duplicate of a job
 /// still queued, so a pass that runs before the last one's jobs did adds
 /// nothing.
 ///
@@ -458,11 +459,14 @@ async fn queue_copy_retries_on(state: Arc<AppState>, deployed: &[String]) -> any
     let due = library
         .due_copy_editions(now, deployed, COPY_RETRY_BATCH)
         .await?;
+    // Every title of the edition is named: the holdings may sit on
+    // different accounts, and a destination's filter may take one and not
+    // another. A title's acquire whose filters take none of its due copies
+    // finds nothing to do, and once one acquire stores a copy the others
+    // find it complete.
     let mut titles = Vec::with_capacity(due.len());
     for edition in &due {
-        if let Some(book) = library.books_of_edition(edition).await?.into_iter().next() {
-            titles.push(book);
-        }
+        titles.extend(library.books_of_edition(edition).await?);
     }
     if titles.is_empty() {
         return Ok(0);
@@ -922,11 +926,19 @@ pub async fn run_acquire(
     paths.ensure_dirs()?;
     let library = state.library.read().await.clone();
     // Filters are read before each title (below), not once per run.
-    let mut destinations = bookclerk_plugin_host::build_acquire_destinations(
+    let deployed = bookclerk_plugin_host::build_acquire_destinations(
         &cfg,
         &*state.destinations.read().await,
         &std::collections::BTreeMap::new(),
     )?;
+    // A destination that cannot be listed now sits this run out: the
+    // titles go to the ones that answer, and its missing copies are
+    // written by a later run once it is back.
+    let (mut destinations, unreachable) = deployed.reachable().await?;
+    for (id, error) in &unreachable {
+        tracing::warn!(destination = %id, %error, "run_acquire: destination unreachable, left out of this run");
+    }
+    let partial = !unreachable.is_empty();
     let destination_ids: Vec<String> = destinations
         .items
         .iter()
@@ -938,21 +950,25 @@ pub async fn run_acquire(
     let options = destinations.primary_destination().options.clone();
     let registry = registry_for_job(state).await;
 
+    // A checkpoint is bound to the listing of every destination, so a run
+    // that left one out scans afresh.
     let mut index = bookclerk_acquire::scan_storage(
         &library,
         storage.as_ref(),
         ctx.map(|c| &c.fence),
-        ctx.and_then(|c| c.checkpoint.as_ref()),
+        ctx.and_then(|c| c.checkpoint.as_ref()).filter(|_| !partial),
         true,
     )
     .await?;
+    // With a destination left out, a title missing from the listing may
+    // simply be there: nothing is cleared or moved.
     let _ = bookclerk_acquire::match_storage_using_index(
         &library,
         storage.as_ref(),
         MatchStorageOptions {
             account: account.map(str::to_string),
-            clear_missing: true,
-            fix_layout: cfg.library.fix_storage_layout,
+            clear_missing: !partial,
+            fix_layout: cfg.library.fix_storage_layout && !partial,
             download: options.clone(),
             ..Default::default()
         },
@@ -1777,16 +1793,37 @@ mod tests {
                 .unwrap(),
             0
         );
+        // A second holding of the edition, on another account: a filter
+        // may take its account and not the first one's, so both titles are
+        // queued.
+        store
+            .upsert_account("audible", "user-2", "us", None, true, "audible")
+            .await
+            .unwrap();
+        store
+            .upsert_book(&NewBook::minimal("B00TEST", "user-2", "us", "Test"))
+            .await
+            .unwrap();
+        let sibling = store
+            .acquire_title("audible", "user-2", "us", "B00TEST")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sibling.edition_id, book.edition_id);
         assert_eq!(
             queue_copy_retries_on(state.clone(), &deployed)
                 .await
                 .unwrap(),
-            1
+            2
         );
         let jobs = store.list_jobs(10).await.unwrap();
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].kind, JobKind::Acquire);
-        assert_eq!(jobs[0].payload.title, book.book_uuid);
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs.iter().all(|job| job.kind == JobKind::Acquire));
+        let mut queued: Vec<_> = jobs.iter().map(|job| job.payload.title.clone()).collect();
+        queued.sort();
+        let mut expected = vec![book.book_uuid.clone(), sibling.book_uuid.clone()];
+        expected.sort();
+        assert_eq!(queued, expected);
         // The queued acquire carries the retry: the next pass adds nothing.
         assert_eq!(
             queue_copy_retries_on(state.clone(), &deployed)

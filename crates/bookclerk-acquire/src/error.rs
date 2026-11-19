@@ -31,6 +31,14 @@ pub enum AcquireError {
     #[error("no destination accepts this book")]
     NoDestinationAccepts,
 
+    /// No deployed destination answered a listing, so an acquire run has
+    /// nowhere to write.
+    #[error("no destination is reachable ({errors})")]
+    NoDestinationReachable {
+        /// Each destination with its listing error, `; `-separated.
+        errors: String,
+    },
+
     /// Catch-all for otherwise unclassified failures.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
