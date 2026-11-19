@@ -628,6 +628,11 @@ async fn dir_size(path: &Path) -> u64 {
 }
 
 /// Bytes still allowed for `work_dir` under the job or cache-wide quota.
+///
+/// The work directory's own bytes are left out of the used total on both
+/// paths (its reservation on a job, its size on disk without one), because
+/// every caller compares the remainder with `dir_size(work_dir)`: counting
+/// them in both places would fail a work directory over half the quota.
 async fn remaining_temp_budget(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -647,7 +652,39 @@ async fn remaining_temp_budget(
             .unwrap_or(0);
         return Ok(quota.saturating_sub(used.saturating_sub(this)));
     }
-    Ok(quota.saturating_sub(scratch_usage(&req.cache_dir).await))
+    let used = scratch_usage(&req.cache_dir).await;
+    let this = if counted_in_scratch(&req.cache_dir, work_dir) {
+        dir_size(work_dir).await
+    } else {
+        0
+    };
+    Ok(quota.saturating_sub(used.saturating_sub(this)))
+}
+
+/// Bytes a new file written into `work_dir` may take: the remaining budget
+/// less what the work directory already holds.
+///
+/// [`remaining_temp_budget`] leaves the work directory out of the used total
+/// because its callers measure the whole directory; a single new download
+/// (a companion PDF, a library's copy) is measured alone, so it is capped
+/// at what is left beside the files already there.
+async fn remaining_for_new_file(
+    library: &LibraryStore,
+    req: &AcquireRequest,
+    work_dir: &Path,
+) -> Result<u64> {
+    let budget = remaining_temp_budget(library, req, work_dir).await?;
+    if budget == u64::MAX {
+        return Ok(budget);
+    }
+    Ok(budget.saturating_sub(dir_size(work_dir).await))
+}
+
+/// Whether `work_dir` lies under a directory [`scratch_usage`] counts.
+fn counted_in_scratch(cache_dir: &Path, work_dir: &Path) -> bool {
+    ["acquire", "acquire-pdf"]
+        .iter()
+        .any(|name| work_dir.starts_with(cache_dir.join(name)))
 }
 
 /// Fetches a title while a watchdog cancels the source if the cache exceeds quota.
@@ -1584,13 +1621,9 @@ async fn take_library_copy(
     offer: &OfferedCopy,
     cover: CopyCover,
 ) -> Option<LibraryFetch> {
-    let budget = remaining_temp_budget(library, req, work_dir).await.ok()?;
-    // A job's budget is for the whole work directory, which already holds
-    // the store's download when a copy from another store is compared.
-    let budget = match req.job_id {
-        Some(_) if budget != u64::MAX => budget.saturating_sub(dir_size(work_dir).await),
-        Some(_) | None => budget,
-    };
+    // The work directory already holds the store's download when a copy
+    // from another store is compared.
+    let budget = remaining_for_new_file(library, req, work_dir).await.ok()?;
     let dir = work_dir.join(LIBRARY_COPY_DIR);
     let media = req.library_copies.media();
     let wants = CopyWants {
@@ -2349,7 +2382,7 @@ async fn store_companion_pdf_sidecars(
         }
     }
 
-    let remaining = remaining_temp_budget(library, req, work_dir).await?;
+    let remaining = remaining_for_new_file(library, req, work_dir).await?;
     if remaining == 0 {
         record_companion_pdf_failure(
             library,
@@ -3880,7 +3913,7 @@ async fn download_and_store_companion_pdf(
     };
 
     let pdf_path = work_dir.join(format!("{}.pdf", primary_req.asin));
-    let remaining = remaining_temp_budget(library, primary_req, work_dir).await?;
+    let remaining = remaining_for_new_file(library, primary_req, work_dir).await?;
     if remaining == 0 {
         return Err(AcquireError::Other(anyhow::anyhow!(
             "acquire scratch quota exceeded (0 bytes remaining)"
@@ -4220,6 +4253,69 @@ mod tests {
         .await
         .expect_err("quota must fail after an oversized packaging write");
         assert!(err.to_string().contains("quota"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn without_a_job_the_work_dir_counts_once_against_the_quota() {
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path();
+        let work_dir = cache.join("acquire").join("B00TEST");
+        let req = dummy_req(cache, None, Some(100));
+        prepare_work_dir(&store, &req, &work_dir).await.unwrap();
+        tokio::fs::write(work_dir.join("fetched.mp3"), vec![0u8; 60])
+            .await
+            .unwrap();
+
+        // 60 bytes of a 100-byte quota leave the whole directory 100 bytes,
+        // and a new file 40.
+        assert_eq!(
+            remaining_temp_budget(&store, &req, &work_dir)
+                .await
+                .unwrap(),
+            100
+        );
+        assert_eq!(
+            remaining_for_new_file(&store, &req, &work_dir)
+                .await
+                .unwrap(),
+            40
+        );
+
+        // A stage that leaves 90 bytes fits; one that leaves 110 does not.
+        run_stage_enforcing_quota(&store, &req, &work_dir, async {
+            tokio::fs::write(work_dir.join("packaged.m4b"), vec![0u8; 30]).await?;
+            Ok(())
+        })
+        .await
+        .expect("a work directory over half the quota still fits");
+        let err = run_stage_enforcing_quota(&store, &req, &work_dir, async {
+            tokio::fs::write(work_dir.join("more.m4b"), vec![0u8; 20]).await?;
+            Ok(())
+        })
+        .await
+        .expect_err("total scratch over the quota must fail");
+        assert!(err.to_string().contains("quota"), "unexpected error: {err}");
+
+        // Another acquire's scratch still counts against this one.
+        let other = cache.join("acquire").join("B00OTHER");
+        tokio::fs::create_dir_all(&other).await.unwrap();
+        tokio::fs::write(other.join("x"), vec![0u8; 15])
+            .await
+            .unwrap();
+        assert_eq!(
+            remaining_temp_budget(&store, &req, &work_dir)
+                .await
+                .unwrap(),
+            85
+        );
+
+        // A directory outside the counted scratch is not subtracted.
+        assert!(!counted_in_scratch(cache, &cache.join("elsewhere")));
+        assert!(counted_in_scratch(
+            cache,
+            &cache.join("acquire-pdf").join("x")
+        ));
     }
 
     async fn serve_http_body(body: Vec<u8>) -> String {
