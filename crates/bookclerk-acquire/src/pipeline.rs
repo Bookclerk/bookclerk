@@ -1482,6 +1482,13 @@ async fn store_copies_from(
         let at = progress.next;
         let mut copy_req = req.clone();
         copy_req.options = target.destinations.primary_destination().options.clone();
+        // The first copy stores and records the title's companion PDF as an
+        // acquire of one copy does; a later copy's PDF goes only to the
+        // destinations no earlier copy reached ([`store_extra_copy_pdf`]).
+        let extra_pdf = at > 0 && copy_req.options.download_pdf;
+        if extra_pdf {
+            copy_req.options.download_pdf = false;
+        }
         let copy_dir = if several {
             let dir = work_dir.join(format!("copy-{at}"));
             tokio::fs::create_dir_all(&dir).await?;
@@ -1506,6 +1513,22 @@ async fn store_copies_from(
             library_pdf,
         ))
         .await?;
+        let mut stored = stored;
+        if extra_pdf {
+            copy_req.options.download_pdf = true;
+            let served = &copies[..at];
+            stored.written_keys.extend(
+                store_extra_copy_pdf(
+                    library,
+                    &target.destinations,
+                    served,
+                    &copy_req,
+                    &copy_dir,
+                    CompanionPdf::of(fetch.pdf_url.as_deref(), library_pdf),
+                )
+                .await,
+            );
+        }
         // Some packaging paths leave their scratch behind; a finished
         // copy's files are stored, so they go before the next copy is made
         // and several copies never hold the scratch quota together.
@@ -2530,6 +2553,109 @@ async fn store_companion_pdf_sidecars(
     }
 
     Ok(put_companion_pdf(library, destinations, req, &pdf_path).await)
+}
+
+/// Stores the companion PDF beside a copy other than the first, on each of
+/// its destinations that no earlier copy of the acquire (`served`) wrote
+/// to: a destination that takes only an extra copy (an MP3-only phone)
+/// gets the PDF in that copy's folder, and one that also takes an earlier
+/// copy keeps the one PDF it already has.
+///
+/// The title's recorded PDF key stays the first copy's: nothing is
+/// recorded here. A destination already holding the PDF at the copy's key
+/// is skipped unless the request is forced. The store's PDF is downloaded
+/// only when some destination needs it; failures are logged and the copy's
+/// audio keeps its status.
+///
+/// # Returns
+///
+/// The keys written.
+async fn store_extra_copy_pdf(
+    library: &LibraryStore,
+    destinations: &AcquireDestinations,
+    served: &[CopyTarget],
+    req: &AcquireRequest,
+    copy_dir: &Path,
+    pdf: CompanionPdf<'_>,
+) -> Vec<String> {
+    let mut wanted = Vec::new();
+    for dest in &destinations.items {
+        let reached = served
+            .iter()
+            .any(|earlier| earlier.destinations.destination(&dest.id).is_some());
+        if reached {
+            continue;
+        }
+        let dest_req = request_for_destination(req, dest);
+        if !dest_req.options.download_pdf {
+            continue;
+        }
+        let pdf_key = sidecar_key(&planned_storage_key(library, &dest_req).await, "pdf");
+        if !req.force && dest.backend.exists(&pdf_key).await.unwrap_or(false) {
+            continue;
+        }
+        wanted.push((dest, dest_req, pdf_key));
+    }
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let downloaded;
+    let pdf_path = match pdf {
+        CompanionPdf::Library(path) => path,
+        CompanionPdf::Store(url) => {
+            let Some(url) = url.map(str::trim).filter(|url| !url.is_empty()) else {
+                return Vec::new();
+            };
+            downloaded = copy_dir.join(format!("{}.pdf", req.asin));
+            if let Err(err) = download_copy_pdf(library, req, copy_dir, url, &downloaded).await {
+                tracing::warn!(id = %status_key(req), error = %err, "copy PDF download failed");
+                return Vec::new();
+            }
+            downloaded.as_path()
+        }
+    };
+    let mut written = Vec::new();
+    for (dest, dest_req, pdf_key) in wanted {
+        let asin_str = object_asin_for(library, &dest_req).await;
+        let meta = sidecar_meta(&asin_str, &dest_req.title, "application/pdf", pdf_path).await;
+        match dest.backend.put_file(&pdf_key, pdf_path, meta).await {
+            Ok(()) => written.push(pdf_key),
+            Err(err) => {
+                tracing::warn!(id = %status_key(req), error = %err, "copy PDF store failed");
+            }
+        }
+    }
+    written
+}
+
+/// Downloads the store's companion PDF at `url` to `path` in `copy_dir`,
+/// within the scratch left beside what the work directory holds.
+///
+/// # Errors
+///
+/// Returns the budget lookup's, the request's or the capped write's
+/// failure; a partial file is removed.
+async fn download_copy_pdf(
+    library: &LibraryStore,
+    req: &AcquireRequest,
+    copy_dir: &Path,
+    url: &str,
+    path: &Path,
+) -> Result<()> {
+    // Packaging may have removed the copy's scratch directory already.
+    tokio::fs::create_dir_all(copy_dir).await?;
+    let remaining = remaining_for_new_file(library, req, copy_dir).await?;
+    let response = download_http_client()
+        .get(url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|err| AcquireError::Other(anyhow::anyhow!("PDF download failed: {err}")))?;
+    if let Err(err) = write_http_body_capped(response, path, remaining).await {
+        let _ = tokio::fs::remove_file(path).await;
+        return Err(err);
+    }
+    Ok(())
 }
 
 /// Where an acquire's companion PDF comes from.
@@ -6217,6 +6343,115 @@ mod tests {
 
         copies.truncate(1);
         check_copy_folders(&store, &copies, &req).await.unwrap();
+    }
+
+    /// With companion PDFs on, a destination that takes only an extra copy
+    /// gets the PDF beside that copy, in its folder; one that takes the main
+    /// copy too keeps the one PDF beside the main copy, and the title's
+    /// recorded PDF stays the main copy's.
+    #[tokio::test]
+    async fn a_destination_with_only_an_extra_copy_gets_the_pdf_beside_it() {
+        media_in_process();
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00PDFCOPY", "user-1", "Twin", None).await;
+        let owner = store.file_owner_of_book(&uuid).await.unwrap().unwrap();
+        let id = short_id(&store, &uuid).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut destinations = title_named_destinations(&tmp.path().join("local"), puts.clone());
+        destinations.items[0].options.copies = vec![output_copy("mp3:64k")];
+        let mut phone = title_named_destinations(&tmp.path().join("phone"), puts)
+            .items
+            .remove(0);
+        phone.id = DestinationId::new("phone").unwrap();
+        phone.filter = format_filter("mp3", bookclerk_config::FilterEffect::Include);
+        destinations.items.push(phone);
+        for item in &mut destinations.items {
+            item.options.download_pdf = true;
+        }
+        let copies: Vec<CopyTarget> = destinations
+            .copy_plan()
+            .into_iter()
+            .map(|(copy, targets)| CopyTarget {
+                destinations: recording_copy_destinations(
+                    &store,
+                    &targets,
+                    Some(&owner),
+                    "audible",
+                    &crate::library_copies::StoredFrom::default(),
+                    &copy,
+                ),
+                copy,
+            })
+            .collect();
+        assert_eq!(copies.len(), 2);
+        let job = job_id(&store).await;
+        let mut req = edition_req(&cache, job, "B00PDFCOPY", "user-1", &uuid);
+        req.options = destinations.primary_destination().options.clone();
+        pin_call_number(&mut req, Some(&owner));
+        let work_dir = cache.join("acquire").join(&uuid);
+        tokio::fs::create_dir_all(&work_dir).await.unwrap();
+        let m4b = work_dir.join("store.m4b");
+        real_m4b(&m4b);
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetch = PlainFetch {
+            parts: Vec::new(),
+            m4b_path: Some(m4b),
+            cover_path: None,
+            chapters: Vec::new(),
+            pdf_url: Some(serve_http_body_loop(b"%PDF-1.4 companion".to_vec(), hits.clone()).await),
+        };
+
+        let result = store_copies(&store, &copies, &req, &work_dir, fetch, None)
+            .await
+            .unwrap();
+        let main_pdf = format!("Twin [{id}]/Twin.pdf");
+        let copy_pdf = format!("mp3 64k/Twin [{id}]/Twin.pdf");
+        let local = tmp.path().join("local");
+        let phone = tmp.path().join("phone");
+        assert_eq!(
+            std::fs::read(local.join(&main_pdf)).unwrap(),
+            b"%PDF-1.4 companion"
+        );
+        assert!(
+            !local.join(&copy_pdf).exists(),
+            "a destination with the main copy keeps one PDF"
+        );
+        assert_eq!(
+            std::fs::read(phone.join(&copy_pdf)).unwrap(),
+            b"%PDF-1.4 companion",
+            "the phone gets the PDF beside its copy"
+        );
+        assert!(!phone.join(&main_pdf).exists());
+        assert!(result.written_keys.contains(&copy_pdf), "{result:?}");
+        let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
+        assert_eq!(book.pdf_storage_key.as_deref(), Some(main_pdf.as_str()));
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "once per copy that needs it"
+        );
+
+        // Acquired again, the phone already holds its PDF: nothing is
+        // downloaded for it, and the main copy's PDF is reused.
+        let work_dir = cache.join("acquire").join(&uuid);
+        tokio::fs::create_dir_all(&work_dir).await.unwrap();
+        let m4b = work_dir.join("store.m4b");
+        real_m4b(&m4b);
+        let url = serve_http_body_loop(b"%PDF-1.4 companion".to_vec(), hits.clone()).await;
+        let fetch = PlainFetch {
+            parts: Vec::new(),
+            m4b_path: Some(m4b),
+            cover_path: None,
+            chapters: Vec::new(),
+            pdf_url: Some(url),
+        };
+        store_copies(&store, &copies, &req, &work_dir, fetch, None)
+            .await
+            .unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "no PDF is fetched again");
     }
 
     #[tokio::test]

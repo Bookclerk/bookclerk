@@ -381,6 +381,13 @@ each destination one copy with filters
 when a player scans the whole destination, so it doesn't see the book
 twice.
 
+With companion PDFs on (`output.download_pdf`), each destination gets
+one PDF. A destination that takes the main output keeps it beside the
+main output, at the usual name. A destination that takes only extra
+copies gets it beside the first of them, in that copy's folder:
+`mp3 64k-mono/Title [1a2b3c4d]/Title.pdf`. The PDF the library records
+for the title stays the main output's.
+
 Each copy's files are recorded on the edition with the copy's format and
 quality, beside the probe of each audio file (see
 [Media](media.md)). The main output's file is the one the library records
