@@ -133,7 +133,7 @@ pub async fn catalog_detail(
 /// Libro.fm seed gets more titles by its first author and a seed from
 /// another store gets a title-and-author search. The seed itself is never
 /// returned. Every row is then read in full from its details
-/// ([`read_in_full`]), since the lists leave out the language and price.
+/// (`read_in_full`), since the lists leave out the language and price.
 ///
 /// # Arguments
 ///
