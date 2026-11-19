@@ -32,6 +32,8 @@
     clippy::unwrap_used
 )]
 
+mod aac_fdk;
+pub mod capabilities;
 mod chapter_align;
 mod chapters_mp4;
 mod cover_worker;

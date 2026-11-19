@@ -165,6 +165,8 @@ impl AlignReader {
             track_id,
             sample_rate,
             channels,
+            // Every window seeks first, so the primed PCM is not used.
+            primed: _,
         } = opened;
 
         Ok(Self {

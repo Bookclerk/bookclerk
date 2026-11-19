@@ -518,8 +518,21 @@ pub(crate) mod tests {
     #[async_trait::async_trait]
     impl LibraryCopy for MemoryCopy {
         fn probe(&self) -> bookclerk_library::FileProbe {
+            // The media type follows the first file's extension, as a
+            // library's probe would name the file it read.
+            let ext = self
+                .listed
+                .first()
+                .and_then(|f| f.name.rsplit_once('.'))
+                .map(|(_, ext)| ext.to_ascii_lowercase());
+            let content_type = match ext.as_deref() {
+                Some("flac") => "audio/flac",
+                Some("mp3") => "audio/mpeg",
+                Some("ogg") => "audio/ogg",
+                _ => "audio/mp4",
+            };
             bookclerk_library::FileProbe {
-                content_type: "audio/mp4".into(),
+                content_type: content_type.into(),
                 bitrate_kbps: self.claims.0,
                 lossless: self.claims.1,
                 source_store: self.store.clone(),

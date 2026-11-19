@@ -8,8 +8,6 @@
 //!   This is typically much faster than realtime playback for a single encode
 //!   pass.
 
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use fdk_aac::enc::{AudioObjectType, BitRate, ChannelMode, Encoder, EncoderParams, Transport};
@@ -146,6 +144,42 @@ pub(crate) fn package_m4b_from_pcm_cbr(
     )
 }
 
+/// Encodes interleaved PCM as HE-AAC (`v2` adds parametric stereo) at
+/// `bitrate_bps` and muxes an M4B, the way FDK signals it by default
+/// (implicitly: the container states the half-rate AAC-LC core). Builds
+/// sources for the HE-AAC decode tests and fuzz seeds.
+///
+/// # Errors
+///
+/// Returns an error when the encoder or muxer fails.
+#[cfg(test)]
+pub(crate) fn package_he_aac_m4b_from_pcm(
+    pcm: &[i16],
+    sample_rate: u32,
+    channels: u16,
+    bitrate_bps: u32,
+    v2: bool,
+    output: &Path,
+) -> Result<()> {
+    let object_type = if v2 {
+        AudioObjectType::Mpeg4HeAacV2
+    } else {
+        AudioObjectType::Mpeg4HeAac
+    };
+    let mut session = StreamingAacSession::new_with_object_type(
+        sample_rate,
+        channels,
+        bitrate_bps,
+        output,
+        object_type,
+    )?;
+    let stride = sample_rate.max(1) as usize * usize::from(channels);
+    for chunk in pcm.chunks(stride) {
+        session.push_pcm(chunk)?;
+    }
+    session.finish()
+}
+
 /// Shared PCM-to-M4B body for the speech default and an explicit CBR.
 fn package_m4b_from_pcm_at(
     pcm: &[i16],
@@ -194,42 +228,18 @@ fn package_m4b_from_pcm_at(
 pub(crate) fn package_m4b_from_parts_native(
     req: &PackageM4bRequest,
 ) -> Result<(MediaOutcome, Vec<(String, u64)>)> {
-    if req.parts.iter().all(|p| looks_like_aac_mp4_part(p)) {
+    if req.parts.iter().all(|p| is_clear_aac_mp4_part(p)) {
         return package_m4b_remux_aac_parts(req);
     }
     package_m4b_transcode_parts(req)
 }
 
-/// True when the path or `ftyp` major brand looks like clear AAC MP4/M4A/M4B.
-fn looks_like_aac_mp4_part(path: &Path) -> bool {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("m4a" | "m4b" | "mp4") => true,
-        Some("mp3") => false,
-        _ => sniff_ftyp_major_brand(path).is_some_and(|b| {
-            matches!(
-                b.as_slice(),
-                b"M4A " | b"M4B " | b"mp42" | b"isom" | b"iso2" | b"mp41"
-            )
-        }),
-    }
-}
-
-/// Reads the 4-byte `ftyp` major brand, or `None` if the header is not ISO-BMFF.
-fn sniff_ftyp_major_brand(path: &Path) -> Option<[u8; 4]> {
-    let mut file = File::open(path).ok()?;
-    let mut hdr = [0u8; 12];
-    file.read_exact(&mut hdr).ok()?;
-    if &hdr[4..8] != b"ftyp" {
-        return None;
-    }
-    let mut brand = [0u8; 4];
-    brand.copy_from_slice(&hdr[8..12]);
-    Some(brand)
+/// True when the part is an MP4 whose audio track is clear AAC (`mp4a`),
+/// which can be remuxed without decoding. Decided by parsing the file, not
+/// by its name: an `.m4a` holding ALAC (or Opus, FLAC, encrypted audio) is
+/// transcoded instead.
+fn is_clear_aac_mp4_part(path: &Path) -> bool {
+    parse_mp4(path).is_ok_and(|mp4| mp4.audio.sample_entry_kind == SampleEntryKind::Mp4a)
 }
 
 /// Losslessly concatenate clear AAC MP4/M4A parts into one progressive M4B.
@@ -474,6 +484,23 @@ impl StreamingAacSession {
     /// `output` is the M4B, and the encoder writes each access unit into it as
     /// it comes out.
     fn new(sample_rate: u32, pcm_channels: u16, bitrate_bps: u32, output: &Path) -> Result<Self> {
+        Self::new_with_object_type(
+            sample_rate,
+            pcm_channels,
+            bitrate_bps,
+            output,
+            AudioObjectType::Mpeg4LowComplexity,
+        )
+    }
+
+    /// [`Self::new`] for an explicit AAC object type (HE-AAC test sources).
+    fn new_with_object_type(
+        sample_rate: u32,
+        pcm_channels: u16,
+        bitrate_bps: u32,
+        output: &Path,
+        audio_object_type: AudioObjectType,
+    ) -> Result<Self> {
         let channel_mode = match pcm_channels {
             1 => ChannelMode::Mono,
             _ => ChannelMode::Stereo,
@@ -484,7 +511,7 @@ impl StreamingAacSession {
             sample_rate,
             transport: Transport::Raw,
             channels: channel_mode,
-            audio_object_type: AudioObjectType::Mpeg4LowComplexity,
+            audio_object_type,
         })
         .map_err(|err| MediaError::Native(format!("fdk-aac init failed: {err}")))?;
 
@@ -607,7 +634,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bookclerk_mp4::parse_mp4;
+    use bookclerk_mp4::{parse_mp4, track_duration_ms};
 
     #[test]
     fn package_silent_pcm_to_m4b() {
@@ -776,5 +803,38 @@ mod tests {
             a.audio.samples.len() + b.audio.samples.len()
         );
         assert!(out.metadata().unwrap().len() > 100);
+    }
+
+    #[test]
+    fn lossless_parts_named_like_aac_are_transcoded_not_remuxed() {
+        // An ALAC `.m4a` and a FLAC part (ffmpeg-made fuzz seeds, 0.25 s
+        // each at 16 kHz stereo): the ALAC part must not reach the AAC
+        // remuxer just because of its name.
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/media_decode");
+        let dir = tempfile::tempdir().unwrap();
+        let alac = dir.path().join("a.m4a");
+        let flac = dir.path().join("b.flac");
+        std::fs::copy(corpus.join("tone_2ch_alac.m4a"), &alac).unwrap();
+        std::fs::copy(corpus.join("tone_2ch.flac"), &flac).unwrap();
+        assert!(!is_clear_aac_mp4_part(&alac));
+
+        for parts in [vec![alac.clone()], vec![alac, flac]] {
+            let out = dir.path().join(format!("joined{}.m4b", parts.len()));
+            let titles = (1..=parts.len()).map(|i| format!("Part {i}")).collect();
+            let n = parts.len();
+            let (_outcome, chapters) = package_m4b_from_parts_native(&PackageM4bRequest {
+                parts,
+                output: out.clone(),
+                chapter_titles: titles,
+            })
+            .unwrap();
+            assert_eq!(chapters.len(), n);
+            let mp4 = parse_mp4(&out).unwrap();
+            assert_eq!(mp4.audio.sample_entry_kind, SampleEntryKind::Mp4a);
+            assert!(is_clear_aac_mp4_part(&out));
+            let ms = track_duration_ms(&mp4.audio);
+            let want = 250 * u64::try_from(n).unwrap();
+            assert!(ms.abs_diff(want) < 150, "{ms} ms for {n} parts");
+        }
     }
 }

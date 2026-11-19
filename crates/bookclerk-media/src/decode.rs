@@ -10,22 +10,32 @@
 //! ([`decode_pcm_bytes`]) drives the `media_decode` fuzz target and its
 //! corpus replay test, so the fuzzer exercises the code the worker runs.
 //!
-//! Today this is Symphonia with its AAC-LC, MP3 and PCM decoders and its
-//! MP4 demuxer (the crate's enabled features). More codecs join here.
+//! Demuxing is Symphonia's. Decoding is Symphonia's for every codec but
+//! AAC, which goes through FDK ([`crate::aac_fdk`]) so HE-AAC, HE-AAC v2
+//! and xHE-AAC decode at their real rate and layout.
+//!
+//! The PCM layout is the decoder's, not the container's: the stream is
+//! primed by decoding up to its first audible packet when it is opened, so
+//! an implicitly signalled HE-AAC track the container calls 22.05 kHz mono
+//! is reported, and encoded, as the 44.1 kHz stereo it decodes to.
 
 use std::fs::File;
 use std::io::Cursor;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use symphonia::core::audio::GenericAudioBufferRef;
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
+use symphonia::core::codecs::registry::CodecRegistry;
 use symphonia::core::codecs::CodecParameters;
+use symphonia::core::common::Tier;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, TrackType};
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 
+use crate::aac_fdk::FdkAacDecoder;
 use crate::error::{MediaError, Result};
 
 /// Highest sample rate a decoded stream may report, in Hz. Anything above
@@ -60,13 +70,32 @@ pub(crate) struct OpenedAudio {
     pub(crate) decoder: Box<dyn AudioDecoder>,
     /// The audio track decoded; packets of other tracks are skipped.
     pub(crate) track_id: u32,
-    /// The track's sample rate in Hz.
+    /// The decoded sample rate in Hz: the first audible packet's, else the
+    /// track's stated rate. Packets at another rate are skipped.
     pub(crate) sample_rate: u32,
-    /// The track's channel count, at least 1 (1 when the track omits it).
+    /// The decoded channel count, at least 1: the first audible packet's,
+    /// else the track's stated count (1 when it states none).
     pub(crate) channels: usize,
+    /// The first audible packet's PCM, interleaved with [`Self::channels`]
+    /// channels, decoded while priming and handed out first by
+    /// [`Self::decode_each`]. A caller that seeks ignores it.
+    pub(crate) primed: Vec<i16>,
 }
 
-/// Opens the audio in `source` for decoding.
+/// The codec registry the decode front uses: Symphonia's enabled decoders,
+/// with FDK preferred for AAC.
+fn codecs() -> &'static CodecRegistry {
+    static REGISTRY: OnceLock<CodecRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut registry = CodecRegistry::new();
+        symphonia::default::register_enabled_codecs(&mut registry);
+        registry.register_audio_decoder_at_tier::<FdkAacDecoder>(Tier::Preferred);
+        registry
+    })
+}
+
+/// Opens the audio in `source` for decoding, primed to its first audible
+/// packet so the layout reported is the decoder's.
 ///
 /// # Arguments
 ///
@@ -77,7 +106,7 @@ pub(crate) struct OpenedAudio {
 ///
 /// [`MediaError::Native`] when no known container is found, it has no
 /// audio track, the track states no usable sample rate, or no decoder
-/// handles its codec.
+/// handles its codec; or a demux or fatal decode error while priming.
 pub(crate) fn open_audio(source: Box<dyn MediaSource>, seek_index: bool) -> Result<OpenedAudio> {
     let mss = MediaSourceStream::new(source, Default::default());
     // No extension hint: the probe recognises the container by its bytes.
@@ -112,16 +141,19 @@ pub(crate) fn open_audio(source: Box<dyn MediaSource>, seek_index: bool) -> Resu
         .map(symphonia::core::audio::Channels::count)
         .unwrap_or(1)
         .max(1);
-    let decoder = symphonia::default::get_codecs()
+    let decoder = codecs()
         .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
         .map_err(|err| MediaError::Native(format!("decoder init failed: {err}")))?;
-    Ok(OpenedAudio {
+    let mut opened = OpenedAudio {
         format,
         decoder,
         track_id: track.id,
         sample_rate,
         channels,
-    })
+        primed: Vec::new(),
+    };
+    opened.prime()?;
+    Ok(opened)
 }
 
 /// Opens the audio file at `path` for decoding ([`open_audio`]).
@@ -137,7 +169,71 @@ pub(crate) fn open_audio_file(path: &Path, seek_index: bool) -> Result<OpenedAud
     open_audio(Box::new(File::open(path)?), seek_index)
 }
 
+/// What the next packet of the track gave.
+enum NextPcm<'a> {
+    /// A decoded buffer, possibly empty (decoder delay).
+    Buffer(GenericAudioBufferRef<'a>),
+    /// A packet skipped: another track's, or one the decoder rejected as
+    /// corrupt.
+    Skipped,
+    /// The end of the stream.
+    End,
+}
+
 impl OpenedAudio {
+    /// Demuxes and decodes the next packet.
+    ///
+    /// # Errors
+    ///
+    /// [`MediaError::Native`] on a demux or fatal decode error.
+    fn next_pcm(&mut self) -> Result<NextPcm<'_>> {
+        let packet = match self.format.next_packet() {
+            Ok(Some(packet)) => packet,
+            Ok(None) => return Ok(NextPcm::End),
+            Err(SymphoniaError::ResetRequired) => {
+                self.decoder.reset();
+                return Ok(NextPcm::Skipped);
+            }
+            Err(err) => return Err(MediaError::Native(format!("demux error: {err}"))),
+        };
+        if packet.track_id != self.track_id {
+            return Ok(NextPcm::Skipped);
+        }
+        match self.decoder.decode(&packet) {
+            Ok(buf) => Ok(NextPcm::Buffer(buf)),
+            Err(SymphoniaError::DecodeError(_)) => Ok(NextPcm::Skipped),
+            Err(err) => Err(MediaError::Native(format!("decode error: {err}"))),
+        }
+    }
+
+    /// Decodes up to the first packet that gives samples, takes the stream
+    /// layout from it and keeps its PCM in [`Self::primed`]. A stream with
+    /// no audible packet keeps the track's stated layout.
+    ///
+    /// # Errors
+    ///
+    /// [`MediaError::Native`] on a demux or fatal decode error.
+    fn prime(&mut self) -> Result<()> {
+        loop {
+            let buf = match self.next_pcm()? {
+                NextPcm::Buffer(buf) if buf.frames() > 0 => buf,
+                NextPcm::Buffer(_) | NextPcm::Skipped => continue,
+                NextPcm::End => return Ok(()),
+            };
+            let rate = buf.spec().rate();
+            if !(1..=MAX_SAMPLE_RATE_HZ).contains(&rate) {
+                continue;
+            }
+            let channels = buf.spec().channels().count().max(1);
+            let mut primed = Vec::new();
+            buf.copy_to_vec_interleaved(&mut primed);
+            self.sample_rate = rate;
+            self.channels = channels;
+            self.primed = primed;
+            return Ok(());
+        }
+    }
+
     /// The layout PCM comes out in when decoded to `out`.
     pub(crate) fn pcm_format(&self, out: OutChannels) -> PcmFormat {
         let channels = match out {
@@ -175,26 +271,26 @@ impl OpenedAudio {
         // Reused across packets so decode does not allocate per access unit.
         let mut interleaved = Vec::new();
         let mut decoded_any = false;
+        let primed = std::mem::take(&mut self.primed);
+        if !primed.is_empty() {
+            mix_interleaved(&primed, self.channels, out_channels, &mut pcm);
+            decoded_any = true;
+            on_pcm(&pcm)?;
+        }
+        let rate = self.sample_rate;
         loop {
-            let packet = match self.format.next_packet() {
-                Ok(Some(packet)) => packet,
-                Ok(None) => break,
-                Err(SymphoniaError::ResetRequired) => {
-                    self.decoder.reset();
-                    continue;
-                }
-                Err(err) => return Err(MediaError::Native(format!("demux error: {err}"))),
+            let buf = match self.next_pcm()? {
+                NextPcm::Buffer(buf) => buf,
+                NextPcm::Skipped => continue,
+                NextPcm::End => break,
             };
-            if packet.track_id != self.track_id {
+            // A packet at another rate cannot join this stream without
+            // resampling; it is skipped like a corrupt one.
+            if buf.frames() > 0 && buf.spec().rate() != rate {
                 continue;
             }
-            let decoded = match self.decoder.decode(&packet) {
-                Ok(buf) => buf,
-                Err(SymphoniaError::DecodeError(_)) => continue,
-                Err(err) => return Err(MediaError::Native(format!("decode error: {err}"))),
-            };
             pcm.clear();
-            append_pcm_i16(&decoded, out_channels, &mut interleaved, &mut pcm);
+            append_pcm_i16(&buf, out_channels, &mut interleaved, &mut pcm);
             if !pcm.is_empty() {
                 decoded_any = true;
                 on_pcm(&pcm)?;
@@ -258,10 +354,28 @@ pub(crate) fn append_pcm_i16(
     let need = frames.saturating_mul(in_channels);
     interleaved.resize(need, 0);
     buf.copy_to_slice_interleaved(&mut interleaved[..need]);
+    mix_interleaved(&interleaved[..need], in_channels, out_channels, dst);
+}
 
+/// Appends interleaved PCM with `in_channels` channels to `dst` with
+/// `out_channels` channels (1 or 2), mixing from the first two source
+/// channels: mono is their mean, stereo copies them (a mono source is
+/// duplicated). A trailing partial frame is dropped.
+pub(crate) fn mix_interleaved(
+    src: &[i16],
+    in_channels: usize,
+    out_channels: u16,
+    dst: &mut Vec<i16>,
+) {
+    let in_channels = in_channels.max(1);
+    let out_ch = usize::from(out_channels.clamp(1, 2));
+    if out_ch == in_channels {
+        dst.extend_from_slice(&src[..src.len() - src.len() % in_channels]);
+        return;
+    }
     let mix_channels = in_channels.min(2);
-    dst.reserve(frames.saturating_mul(out_ch));
-    for frame in interleaved[..need].chunks_exact(in_channels) {
+    dst.reserve((src.len() / in_channels).saturating_mul(out_ch));
+    for frame in src.chunks_exact(in_channels) {
         if out_ch == 1 {
             let sum: i32 = frame.iter().take(mix_channels).map(|s| i32::from(*s)).sum();
             // The mean of at most two i16 values fits an i16.
@@ -331,6 +445,104 @@ mod tests {
         }
     }
 
+    /// Two seconds of a stereo 44.1 kHz tone, encoded as HE-AAC (or v2).
+    fn he_aac_bytes(v2: bool) -> Vec<u8> {
+        let dir = tempfile::tempdir().expect("dir");
+        let pcm: Vec<i16> = (0..44_100 * 2)
+            .flat_map(|i| {
+                let t = i as f32 / 44_100.0;
+                let left = (f32::sin(t * 440.0 * std::f32::consts::TAU) * 8000.0) as i16;
+                let right = (f32::sin(t * 660.0 * std::f32::consts::TAU) * 8000.0) as i16;
+                [left, right]
+            })
+            .collect();
+        let out = dir.path().join("he.m4b");
+        let bitrate = if v2 { 24_000 } else { 48_000 };
+        crate::package_m4b::package_he_aac_m4b_from_pcm(&pcm, 44_100, 2, bitrate, v2, &out)
+            .expect("encode");
+        std::fs::read(out).expect("read")
+    }
+
+    #[test]
+    fn he_aac_decodes_at_its_full_rate_and_length() {
+        for v2 in [false, true] {
+            let mut frames = 0usize;
+            let format =
+                decode_pcm_bytes(he_aac_bytes(v2), OutChannels::SourceUpToStereo, |f, pcm| {
+                    frames += pcm.len() / usize::from(f.channels);
+                    Ok(())
+                })
+                .expect("decode");
+            // The container states the 22.05 kHz core (implicit SBR); the
+            // decoder's layout wins.
+            assert_eq!(
+                format,
+                PcmFormat {
+                    sample_rate: 44_100,
+                    channels: 2
+                },
+                "v2={v2}"
+            );
+            // Two seconds, give or take encoder padding and decoder delay.
+            assert!(
+                (88_200..88_200 + 3 * 2048 + 4096).contains(&frames),
+                "v2={v2} frames={frames}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_input_container_and_codec_decodes() {
+        // Quarter-second 16 kHz tones made with ffmpeg; they double as
+        // `media_decode` fuzz seeds.
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/media_decode");
+        for (name, channels) in [
+            ("tone_1ch.flac", 1),
+            ("tone_2ch.flac", 2),
+            ("tone_2ch_alac.m4a", 2),
+            ("tone_1ch.wav", 1),
+            ("tone_2ch_adpcm.wav", 2),
+            ("tone_2ch.aiff", 2),
+            ("tone_1ch.caf", 1),
+            ("tone_2ch.mp2", 2),
+            ("tone_1ch.aac", 1),
+        ] {
+            let bytes = std::fs::read(corpus.join(name)).expect(name);
+            let mut frames = 0usize;
+            let format = decode_pcm_bytes(bytes, OutChannels::SourceUpToStereo, |f, pcm| {
+                frames += pcm.len() / usize::from(f.channels);
+                Ok(())
+            })
+            .unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert_eq!(
+                format,
+                PcmFormat {
+                    sample_rate: 16_000,
+                    channels
+                },
+                "{name}"
+            );
+            // 4,000 frames, give or take a codec frame of padding.
+            assert!((3_000..=6_000).contains(&frames), "{name}: {frames} frames");
+        }
+    }
+
+    #[test]
+    fn mix_interleaved_folds_and_widens() {
+        let mut dst = Vec::new();
+        mix_interleaved(&[10, 20, 30, 40, 50], 2, 1, &mut dst);
+        assert_eq!(dst, [15, 35]);
+        dst.clear();
+        mix_interleaved(&[7, 8], 1, 2, &mut dst);
+        assert_eq!(dst, [7, 7, 8, 8]);
+        dst.clear();
+        mix_interleaved(&[1, 2, 3, 4, 5, 6, 7], 3, 2, &mut dst);
+        assert_eq!(dst, [1, 2, 4, 5]);
+        dst.clear();
+        mix_interleaved(&[1, 2, 3], 2, 2, &mut dst);
+        assert_eq!(dst, [1, 2]);
+    }
+
     #[test]
     fn garbage_and_empty_input_are_refused() {
         for bytes in [Vec::new(), b"definitely not audio".to_vec()] {
@@ -361,7 +573,9 @@ mod tests {
 
     /// Writes the generated `media_decode` seeds when `UPDATE_FUZZ_SEEDS` is
     /// set: real AAC-in-MP4 and MP3 files from the crate's own encoders,
-    /// mono and stereo, whole, cut short and with a damaged middle. The
+    /// mono and stereo, whole, cut short and with a damaged middle, and
+    /// half a second of HE-AAC and HE-AAC v2. The ffmpeg-made seeds for the
+    /// other containers are checked in as they are. The
     /// replay test in `tests/fuzz_corpus.rs` checks every seed.
     #[test]
     fn generate_fuzz_seeds() {
@@ -405,6 +619,14 @@ mod tests {
                 ));
                 seeds.push((format!("damaged_{channels}ch.{ext}"), damaged));
             }
+        }
+        for v2 in [false, true] {
+            let pcm: Vec<i16> = tone(2).into_iter().cycle().take(32_000).collect();
+            let out = dir.path().join(format!("he{v2}.m4b"));
+            crate::package_m4b::package_he_aac_m4b_from_pcm(&pcm, 32_000, 2, 16_000, v2, &out)
+                .expect("he-aac");
+            let name = if v2 { "he_aac_v2.m4b" } else { "he_aac.m4b" };
+            seeds.push((name.into(), std::fs::read(&out).expect("read")));
         }
         seeds.push((
             "not_audio.txt".into(),

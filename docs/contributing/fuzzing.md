@@ -213,7 +213,10 @@ only that. The others check:
   stream has a sample rate from 1 Hz to 768 kHz and one or two channels,
   and every chunk is whole frames; the same bytes always give the same
   PCM; and the mono decode accepts exactly the files the source decode
-  does, with the same rate and length. The shared oracle is
+  does, with the same rate and length. A plain 16-bit PCM WAV must decode
+  to exactly the samples an independent parser in the oracle reads from
+  it. Seeds cover every container and codec the worker reads, including
+  HE-AAC and HE-AAC v2. The shared oracle is
   `fuzz/oracles/media_decode.rs`, replayed from `bookclerk-media`.
 - **`cache_headers`**: the first byte, modulo 4, picks a mode. A built
   `If-None-Match` list of well-formed tags matches exactly when one of
