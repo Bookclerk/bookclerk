@@ -1,5 +1,7 @@
 //! Destination-specific storage backends for one acquire operation.
 
+use std::collections::BTreeMap;
+
 use bookclerk_config::{DestinationFilter, DestinationId, MultiDestinationMode, PlacementFacts};
 use bookclerk_source::DownloadOptions;
 use bookclerk_storage::{FanoutBackend, StorageBackend};
@@ -55,6 +57,21 @@ impl AcquireDestinations {
     #[must_use]
     pub fn destination(&self, id: &DestinationId) -> Option<&AcquireDestination> {
         self.items.iter().find(|dest| &dest.id == id)
+    }
+
+    /// Replaces every destination's filter with the one stored for it now.
+    ///
+    /// A long acquire run calls this before each book's target set is
+    /// chosen, so a filter edited mid-run applies to the books that start
+    /// afterwards. A destination absent from `filters` takes every book.
+    ///
+    /// # Arguments
+    ///
+    /// * `filters` - Stored filters by plugin instance id.
+    pub fn set_filters(&mut self, filters: &BTreeMap<String, DestinationFilter>) {
+        for dest in &mut self.items {
+            dest.filter = filters.get(dest.id.as_str()).cloned().unwrap_or_default();
+        }
     }
 
     /// The destinations that take the book `facts` describes: the target
@@ -223,5 +240,25 @@ mod tests {
         let err = all.for_book(&podcast()).err().unwrap();
         assert!(matches!(err, AcquireError::NoDestinationAccepts));
         assert_eq!(err.to_string(), "no destination accepts this book");
+    }
+
+    #[test]
+    fn set_filters_replaces_every_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut all = AcquireDestinations {
+            items: vec![
+                destination(tmp.path(), "books", kind("podcast", FilterEffect::Exclude)),
+                destination(tmp.path(), "pods", DestinationFilter::default()),
+            ],
+            primary: DestinationId::new("books").unwrap(),
+            multi_destination: MultiDestinationMode::RefetchAll,
+        };
+        let fresh = BTreeMap::from([("pods".to_string(), kind("book", FilterEffect::Include))]);
+        all.set_filters(&fresh);
+        assert!(all.items[0].filter.takes_everything(), "a cleared filter");
+        assert_eq!(all.items[1].filter, kind("book", FilterEffect::Include));
+        let placed = all.for_book(&podcast()).unwrap();
+        let ids: Vec<&str> = placed.items.iter().map(|dest| dest.id.as_str()).collect();
+        assert_eq!(ids, ["books"]);
     }
 }

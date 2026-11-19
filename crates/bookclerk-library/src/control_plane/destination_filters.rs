@@ -13,7 +13,6 @@
 use std::collections::BTreeMap;
 
 use bookclerk_config::DestinationFilter;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::Serialize;
 
 use super::documents::{
@@ -21,7 +20,6 @@ use super::documents::{
     StoredDocument, PLUGIN_INSTANCE_SCOPE_TYPE,
 };
 use super::{document, ConfigActor, ConfigurationDocument};
-use crate::entities::configuration_documents;
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
@@ -89,31 +87,38 @@ pub async fn destination_filter(
         .unwrap_or_default())
 }
 
-/// Every stored destination filter, keyed by plugin instance id.
+/// The stored filters of the given destinations, keyed by plugin instance id.
 ///
-/// Instances without a document are absent: they take every book.
+/// Each document is read by its primary key, one row per read, so the
+/// lookup stays inside the smallest result limits an adapter may advertise
+/// however many destinations have stored a filter. Pass the destinations
+/// deployed on this host; ids without a document are absent from the map
+/// and take every book.
+///
+/// # Arguments
+///
+/// * `store` - The library database.
+/// * `instance_ids` - The destinations to read, by plugin instance id.
 ///
 /// # Errors
 ///
 /// Returns the read error, or a parse error for any stored document; an
 /// acquire fails closed on it rather than writing where a filter said not
 /// to.
-pub async fn destination_filters(
+pub async fn destination_filters<'a>(
     store: &LibraryStore,
+    instance_ids: impl IntoIterator<Item = &'a str>,
 ) -> Result<BTreeMap<String, DestinationFilter>> {
-    let rows = configuration_documents::Entity::find()
-        .filter(configuration_documents::Column::ScopeType.eq(PLUGIN_INSTANCE_SCOPE_TYPE))
-        .filter(configuration_documents::Column::Namespace.eq(DESTINATION_NAMESPACE))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    rows.into_iter()
-        .map(|row| {
-            let stored = documents::stored_from_model(row);
-            let id = stored.key.scope_id.clone();
-            parse_placement(stored).map(|document| (id, document.body.filter))
-        })
-        .collect()
+    let mut filters = BTreeMap::new();
+    for id in instance_ids {
+        if filters.contains_key(id) {
+            continue;
+        }
+        if let Some(document) = load_destination_placement(store, id).await? {
+            filters.insert(id.to_string(), document.body.filter);
+        }
+    }
+    Ok(filters)
 }
 
 /// Replaces one destination's filter under compare-and-swap, creating the
@@ -252,7 +257,7 @@ mod tests {
             .await
             .unwrap()
             .takes_everything());
-        assert!(destination_filters(&store).await.unwrap().is_empty());
+        assert!(destination_filters(&store, ["a"]).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -277,7 +282,9 @@ mod tests {
                 .await
                 .unwrap();
         assert!(cleared.revision > first.revision);
-        let all = destination_filters(&store).await.unwrap();
+        let all = destination_filters(&store, ["a", "b", "c", "a"])
+            .await
+            .unwrap();
         assert_eq!(all.len(), 2);
         assert!(all["a"].takes_everything());
         assert_eq!(all["b"], storefront("libro"));
@@ -298,7 +305,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, LibraryError::Invalid(_)), "{err}");
-        assert!(destination_filters(&store).await.unwrap().is_empty());
+        assert!(destination_filters(&store, ["a"]).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -332,7 +339,36 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(destination_filters(&store).await.is_err());
+        assert!(destination_filters(&store, ["a"]).await.is_err());
+        assert!(
+            destination_filters(&store, ["b"]).await.unwrap().is_empty(),
+            "only the destinations asked for are read"
+        );
         assert!(destination_filter(&store, "a").await.is_err());
+    }
+
+    /// Several stored filters are read within every profile's limits,
+    /// including the minimum's one row per statement and no streamed reads.
+    #[tokio::test]
+    async fn many_filters_load_under_every_database_profile() {
+        for profile in crate::test_support::Profile::ALL {
+            let name = profile.name();
+            let kit = crate::test_support::sqlite::memory(profile).await;
+            let store = kit.store();
+            let ids = ["a", "b", "c", "d"];
+            for id in ids {
+                set_destination_filter(store, &operator(), id, storefront(id))
+                    .await
+                    .unwrap_or_else(|err| panic!("{name}: {err}"));
+            }
+            let all = destination_filters(store, ids.into_iter().chain(["e"]))
+                .await
+                .unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert_eq!(all.len(), 4, "{name}");
+            for id in ids {
+                assert_eq!(all[id], storefront(id), "{name}");
+            }
+            assert_eq!(kit.refused_begins(), 0, "{name}");
+        }
     }
 }

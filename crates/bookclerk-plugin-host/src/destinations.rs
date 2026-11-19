@@ -27,7 +27,8 @@ const NO_DESTINATION: &str =
 /// * `config` - The host's configuration, for download options.
 /// * `destinations` - The deployed destinations.
 /// * `filters` - Stored destination filters by plugin instance id
-///   (`bookclerk_library::control_plane::destination_filters`); a
+///   (`bookclerk_library::control_plane::destination_filters`), or an
+///   empty map when the caller sets them later; a
 ///   destination without one takes every book.
 ///
 /// # Errors

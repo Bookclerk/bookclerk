@@ -847,15 +847,17 @@ pub async fn run_acquire(
     let paths = cfg.paths();
     paths.ensure_dirs()?;
     let library = state.library.read().await.clone();
-    // Each title is written only to the destinations whose filter takes it
-    // (`AcquireRequest::placement`); a stored filter that cannot be read
-    // fails the job rather than writing where it said not to.
-    let filters = bookclerk_library::control_plane::destination_filters(&library).await?;
-    let destinations = bookclerk_plugin_host::build_acquire_destinations(
+    // Filters are read before each title (below), not once per run.
+    let mut destinations = bookclerk_plugin_host::build_acquire_destinations(
         &cfg,
         &*state.destinations.read().await,
-        &filters,
+        &std::collections::BTreeMap::new(),
     )?;
+    let destination_ids: Vec<String> = destinations
+        .items
+        .iter()
+        .map(|dest| dest.id.as_str().to_string())
+        .collect();
     let storage = destinations.listing_backend()?;
     // The primary destination's options carry its naming overrides and
     // prefix, so match, layout, and acquire agree on keys.
@@ -946,6 +948,18 @@ pub async fn run_acquire(
         let content_source = registry
             .require_routed(&book.plugin_key, plugin_instance_id)
             .map_err(|err| anyhow::anyhow!("{err} (title {})", book.asin_or_isbn()))?;
+        // Each title is written only to the destinations whose filter takes
+        // it (`AcquireRequest::placement`). Filters are read now, so an edit
+        // made during a long run applies to the titles that start after it,
+        // and the set stays fixed through this title's retries. A stored
+        // filter that cannot be read fails the job rather than writing where
+        // it said not to.
+        let filters = bookclerk_library::control_plane::destination_filters(
+            &library,
+            destination_ids.iter().map(String::as_str),
+        )
+        .await?;
+        destinations.set_filters(&filters);
         let req = AcquireRequest {
             asin: book.product_id.clone(),
             book_uuid: book.book_uuid.clone(),
