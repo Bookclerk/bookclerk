@@ -724,6 +724,10 @@ pub async fn resolve_purchase_hints_batch(
         }
         None => None,
     };
+    // Records the pool could not place this time may hide the card's price,
+    // so such a query is answered incomplete and not cached.
+    let placement_failed = library.is_some() && placed.is_none();
+    let mut unplaced: Vec<bool> = vec![false; queries.len()];
 
     for store in &stores {
         for ((&i, query_opts), answer) in pending.iter().zip(&store.opts).zip(&store.answers) {
@@ -734,6 +738,9 @@ pub async fn resolve_purchase_hints_batch(
                 continue;
             }
             answered[i] = true;
+            if placement_failed && !answer.records.is_empty() {
+                unplaced[i] = true;
+            }
             let pool = placed.as_ref().map(|p| p.view(i, &store.plugin_key));
             for hint in evaluate_answer(&store.id, &queries[i], query_opts, answer, pool) {
                 merge_or_push(&mut hints[i], hint);
@@ -751,9 +758,9 @@ pub async fn resolve_purchase_hints_batch(
         let response = PurchaseHintsResponse {
             hints: found,
             best,
-            incomplete: !answered[i],
+            incomplete: !answered[i] || unplaced[i],
         };
-        if answered[i] {
+        if answered[i] && !unplaced[i] {
             purchase_hints_cache().insert(
                 purchase_hints_cache_key(query, &regions[i]),
                 response.clone(),

@@ -785,7 +785,8 @@ carries the card's ISBN or ASIN or the pool placed it in the same
 expression as the card's own store editions. Titles are never compared, and
 the store's own pick is not used. Placing the records shares the batch's
 deadline; when it fails or runs out, only records that carry the card's
-ISBN or ASIN price it. An exact ISBN or ASIN answer is the card's edition
+ISBN or ASIN price it, and the answer is marked `incomplete` and not
+cached, so the card asks again. An exact ISBN or ASIN answer is the card's edition
 and is kept as is. A store that answers a title search with one bare hint
 and no records (a guest from before records) is kept only when the hint's
 title and authors match the card's, as before. The single-title route
