@@ -270,6 +270,112 @@ async fn expand_searches_title_and_author_for_other_stores() {
     assert!(hits[0].origin.starts_with("libro catalog search"));
 }
 
+/// A details body for `isbn` whose audio is in `language` (a MARC code,
+/// as the live API sends it).
+fn details_in(isbn: u64, title: &str, language: &str, for_sale: bool) -> serde_json::Value {
+    let mut body = details(isbn, title, "14.99", for_sale, Vec::new());
+    body["data"]["audiobook"]["audiobook_info"]["audio_language"] = language.into();
+    body
+}
+
+/// Search and related rows carry no language, so each is read in full:
+/// the candidates come back with the language and price their details
+/// give, a title Libro.fm does not sell is left out, and a row whose
+/// details miss stays as the list showed it.
+#[tokio::test]
+async fn expand_reads_each_row_in_full_for_its_language() {
+    let server = MockServer::start().await;
+    mount_search(
+        &server,
+        "Project Hail Mary Andy Weir",
+        page(vec![
+            row(9781603935470, "Project Hail Mary", "Andy Weir"),
+            row(9788466372206, "Proyecto Hail Mary", "Andy Weir"),
+            row(9781603935471, "Unsold", "Andy Weir"),
+            row(9781603935472, "No details", "Andy Weir"),
+        ]),
+    )
+    .await;
+    mount_details(
+        &server,
+        "9781603935470",
+        200,
+        details_in(9781603935470, "Project Hail Mary", "eng", true),
+    )
+    .await;
+    mount_details(
+        &server,
+        "9788466372206",
+        200,
+        details_in(9788466372206, "Proyecto Hail Mary", "spa", true),
+    )
+    .await;
+    mount_details(
+        &server,
+        "9781603935471",
+        200,
+        details_in(9781603935471, "Unsold", "eng", false),
+    )
+    .await;
+    let source = LibroSource::with_base_url(server.uri());
+    let seed = seed(
+        "audible",
+        "B08FHBV4ZX",
+        "Project Hail Mary",
+        Some("Andy Weir"),
+    );
+    let hits = source.expand_candidates(&seed, 4).await.unwrap();
+    let rows: Vec<_> = hits
+        .iter()
+        .map(|h| (h.title.as_str(), h.language.as_deref(), h.price_cents))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("Project Hail Mary", Some("eng"), Some(1499)),
+            ("Proyecto Hail Mary", Some("spa"), Some(1499)),
+            ("No details", None, None),
+        ]
+    );
+    assert!(hits
+        .iter()
+        .all(|h| h.origin == "libro catalog search (“Project Hail Mary”)"));
+}
+
+/// A Libro.fm seed's related titles are read in full too.
+#[tokio::test]
+async fn expand_reads_related_titles_in_full() {
+    let server = MockServer::start().await;
+    mount_details(
+        &server,
+        "9781427201447",
+        200,
+        details(
+            9781427201447,
+            "Dune",
+            "19.99",
+            true,
+            vec![row(9789464303018, "Duin", "Frank Herbert")],
+        ),
+    )
+    .await;
+    mount_details(
+        &server,
+        "9789464303018",
+        200,
+        details_in(9789464303018, "Duin", "dut", true),
+    )
+    .await;
+    let source = LibroSource::with_base_url(server.uri());
+    let hits = source
+        .expand_candidates(&seed("libro", "9781427201447", "Dune", None), 5)
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].language.as_deref(), Some("dut"));
+    assert_eq!(hits[0].origin, "libro related to “Dune”");
+}
+
 #[tokio::test]
 async fn purchase_hint_prefers_the_isbn_then_falls_back_to_title() {
     let server = MockServer::start().await;
