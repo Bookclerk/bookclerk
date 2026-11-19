@@ -5,7 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use id3::frame::{ExtendedText, Picture, PictureType};
+use id3::frame::{
+    Chapter as Id3Chapter, ExtendedText, Frame, Picture, PictureType, TableOfContents,
+};
 use id3::{Tag as Id3Tag, TagLike, Version as Id3Version};
 use mp4ameta::{Data, FreeformIdent, Img, ImgFmt, MediaType, Tag as Mp4Tag, WriteConfig};
 
@@ -38,9 +40,12 @@ pub struct FixupRequest {
     pub narrator: Option<String>,
     /// Optional cover image path to embed (JPEG/PNG).
     pub cover: Option<PathBuf>,
-    /// Chapter titles + start offsets in milliseconds (embedded for M4B).
+    /// Chapter titles + start offsets in milliseconds, embedded as a
+    /// QuickTime chapter track in an M4B and as ID3 `CHAP`/`CTOC` frames in
+    /// an MP3.
     pub chapters: Vec<(String, u64)>,
-    /// When true, replace any existing M4B chapter list/track with [`Self::chapters`]
+    /// When true, replace any chapters the file already has (an M4B chapter
+    /// list/track, or MP3 `CHAP`/`CTOC` frames) with [`Self::chapters`]
     /// (used when overlaying Audible chapter trees onto Libro packaged M4Bs).
     /// When false, preserve existing chapters if the file already has them.
     pub replace_chapters: bool,
@@ -349,7 +354,7 @@ fn set_txxx(tag: &mut Id3Tag, description: &str, value: &str) {
     });
 }
 
-/// Writes ID3v2.4 audiobook tags onto an MP3; chapters stay in cue/json sidecars.
+/// Writes ID3v2.4 audiobook tags, cover and chapters onto an MP3.
 fn fixup_mp3(req: &FixupRequest) -> Result<()> {
     let mut tag = Id3Tag::read_from_path(&req.output).unwrap_or_else(|_| Id3Tag::new());
     let tool = tool_string(req);
@@ -425,14 +430,223 @@ fn fixup_mp3(req: &FixupRequest) -> Result<()> {
         }
     }
     if !req.chapters.is_empty() {
-        tracing::debug!(
-            chapters = req.chapters.len(),
-            "MP3 fixup skips embedded chapters; use cue/json sidecars"
-        );
+        write_mp3_chapters(&mut tag, req)?;
     }
     tag.write_to_path(&req.output, Id3Version::Id3v24)
         .map_err(|err| MediaError::Native(format!("id3 write failed: {err}")))?;
     Ok(())
+}
+
+/// Element id of the table of contents that lists the chapters Bookclerk writes.
+const MP3_TOC_ID: &str = "toc";
+
+/// Writes `req.chapters` as ID3 `CHAP` frames listed by a top-level, ordered
+/// `CTOC` (with child tables past 255 chapters), unless the file already has chapters and `replace_chapters` is off.
+///
+/// Each chapter ends where the next one starts; the last ends at the file's
+/// running time, read from its headers by the same reader the tag worker uses.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read to find its running time.
+fn write_mp3_chapters(tag: &mut Id3Tag, req: &FixupRequest) -> Result<()> {
+    let has_existing = tag.chapters().next().is_some() || tag.tables_of_contents().next().is_some();
+    if has_existing && !req.replace_chapters {
+        tracing::info!(
+            incoming = req.chapters.len(),
+            "preserving existing MP3 chapters; skipping manifest rewrite"
+        );
+        return Ok(());
+    }
+    let Some(duration) = audio_duration(&req.output)? else {
+        tracing::warn!(
+            chapters = req.chapters.len(),
+            "MP3 running time unknown; chapters not embedded"
+        );
+        return Ok(());
+    };
+    let spans = mp3_chapter_spans(&req.chapters, duration);
+    if spans.is_empty() {
+        tracing::warn!(
+            chapters = req.chapters.len(),
+            duration_ms = duration.ms,
+            "no chapter starts inside the MP3's running time; chapters not embedded"
+        );
+        return Ok(());
+    }
+    tag.remove_all_chapters();
+    tag.remove_all_tables_of_contents();
+    let mut elements = Vec::with_capacity(spans.len());
+    for (index, span) in spans.into_iter().enumerate() {
+        let element_id = format!("ch{index}");
+        tag.add_frame(Id3Chapter {
+            element_id: element_id.clone(),
+            start_time: span.start_ms,
+            end_time: span.end_ms,
+            // All ones: "no byte offset", so readers use the times.
+            start_offset: u32::MAX,
+            end_offset: u32::MAX,
+            frames: vec![Frame::text("TIT2", span.title)],
+        });
+        elements.push(element_id);
+    }
+    for toc in mp3_tables_of_contents(elements) {
+        tag.add_frame(toc);
+    }
+    Ok(())
+}
+
+/// Most entries one ID3 `CTOC` frame can list: its entry count is one byte.
+const MP3_MAX_TOC_CHILDREN: usize = 255;
+
+/// Most chapters Bookclerk writes into one MP3: a top-level `CTOC` listing
+/// [`MP3_MAX_TOC_CHILDREN`] child tables of the same size each.
+const MP3_MAX_CHAPTERS: usize = MP3_MAX_TOC_CHILDREN * MP3_MAX_TOC_CHILDREN;
+
+/// Builds the ordered tables of contents that list `chapter_ids` in order.
+///
+/// Up to [`MP3_MAX_TOC_CHILDREN`] chapters fit in the one top-level table.
+/// Beyond that, the top-level table lists child tables (`toc0`, `toc1`, …),
+/// each listing up to that many chapters, so no table overflows its one-byte
+/// entry count. The caller keeps `chapter_ids` within [`MP3_MAX_CHAPTERS`];
+/// anything past that is not listed.
+///
+/// # Returns
+///
+/// The top-level table first, then the child tables in order.
+fn mp3_tables_of_contents(chapter_ids: Vec<String>) -> Vec<TableOfContents> {
+    let table = |element_id: String, top_level: bool, elements: Vec<String>| TableOfContents {
+        element_id,
+        top_level,
+        ordered: true,
+        elements,
+        frames: Vec::new(),
+    };
+    if chapter_ids.len() <= MP3_MAX_TOC_CHILDREN {
+        return vec![table(MP3_TOC_ID.to_string(), true, chapter_ids)];
+    }
+    let children: Vec<TableOfContents> = chapter_ids
+        .chunks(MP3_MAX_TOC_CHILDREN)
+        .take(MP3_MAX_TOC_CHILDREN)
+        .enumerate()
+        .map(|(index, ids)| table(format!("{MP3_TOC_ID}{index}"), false, ids.to_vec()))
+        .collect();
+    let top = table(
+        MP3_TOC_ID.to_string(),
+        true,
+        children
+            .iter()
+            .map(|child| child.element_id.clone())
+            .collect(),
+    );
+    std::iter::once(top).chain(children).collect()
+}
+
+/// One chapter as an ID3 `CHAP` frame states it: title and a half-open
+/// window `[start_ms, end_ms)` in milliseconds from the start of the audio.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Mp3ChapterSpan {
+    /// Chapter title (the frame's `TIT2`).
+    title: String,
+    /// Start in milliseconds.
+    start_ms: u32,
+    /// End in milliseconds; never before `start_ms`.
+    end_ms: u32,
+}
+
+/// Turns chapter starts into `CHAP` windows over a file `duration` long.
+///
+/// Chapters are ordered by start, and two chapters starting at the same
+/// time keep the first. At most [`MP3_MAX_CHAPTERS`] are kept, the earliest.
+/// Every start that does not fit the frame's 32-bit
+/// millisecond field is dropped. When the running time is exact, starts at
+/// or past it are dropped too, since a player could never reach them. An
+/// estimated running time (a variable bit rate MP3 without a frame count)
+/// can be far too short, so no start is dropped for it and the last
+/// chapter ends at the later of the estimate and its own start.
+///
+/// # Returns
+///
+/// The windows in order: each ends where the next starts, the last at the
+/// running time (capped to the field).
+fn mp3_chapter_spans(
+    chapters: &[(String, u64)],
+    duration: bookclerk_tags::Duration,
+) -> Vec<Mp3ChapterSpan> {
+    let reachable = |start: u64| match duration.precision {
+        bookclerk_tags::DurationPrecision::Exact => start < duration.ms,
+        bookclerk_tags::DurationPrecision::Estimated => true,
+    };
+    let mut starts: Vec<(u32, &str)> = chapters
+        .iter()
+        .filter(|(_, start)| reachable(*start))
+        .filter_map(|(title, start)| u32::try_from(*start).ok().map(|s| (s, title.as_str())))
+        .collect();
+    starts.sort_by_key(|(start, _)| *start);
+    starts.dedup_by_key(|(start, _)| *start);
+    // Cap before closing the windows, so the last kept chapter still ends
+    // at the running time and not at the first dropped start.
+    if starts.len() > MP3_MAX_CHAPTERS {
+        tracing::warn!(
+            chapters = starts.len(),
+            kept = MP3_MAX_CHAPTERS,
+            "more chapters than two levels of ID3 tables of contents can list; extra chapters dropped"
+        );
+        starts.truncate(MP3_MAX_CHAPTERS);
+    }
+    let end_of_file = u32::try_from(duration.ms).unwrap_or(u32::MAX);
+    let next_starts = starts
+        .iter()
+        .skip(1)
+        .map(|(start, _)| *start)
+        .chain(std::iter::once(end_of_file));
+    starts
+        .iter()
+        .zip(next_starts)
+        .map(|((start_ms, title), end_ms)| Mp3ChapterSpan {
+            title: (*title).to_string(),
+            start_ms: *start_ms,
+            end_ms: end_ms.max(*start_ms),
+        })
+        .collect()
+}
+
+/// Running time of the audio file at `path`, read from its headers by
+/// [`bookclerk_tags::TagReader`], with whether it is exact or estimated.
+///
+/// # Returns
+///
+/// `None` when the reader cannot parse the file or it states no running time.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be opened or read.
+fn audio_duration(path: &Path) -> Result<Option<bookclerk_tags::Duration>> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let mut file = std::fs::File::open(path)?;
+    let size = file.metadata()?.len();
+    let mut reader = bookclerk_tags::TagReader::new(size);
+    loop {
+        match reader.poll() {
+            bookclerk_tags::Poll::Done(record) => {
+                return Ok(record.ok().and_then(|r| r.duration));
+            }
+            bookclerk_tags::Poll::Need(spans) => {
+                for span in spans {
+                    let len = usize::try_from(span.len).map_err(|_| {
+                        MediaError::Native(format!("tag span of {} bytes", span.len))
+                    })?;
+                    let mut bytes = vec![0; len];
+                    file.seek(SeekFrom::Start(span.offset))?;
+                    file.read_exact(&mut bytes)?;
+                    if reader.supply(span.offset, bytes).is_err() {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Detects PNG/BMP/JPEG from magic bytes, then falls back to the file extension.
@@ -461,6 +675,233 @@ fn guess_img_fmt(path: &Path, bytes: &[u8]) -> ImgFmt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An exact running time of `ms` milliseconds.
+    fn exact(ms: u64) -> bookclerk_tags::Duration {
+        bookclerk_tags::Duration {
+            ms,
+            precision: bookclerk_tags::DurationPrecision::Exact,
+        }
+    }
+
+    #[test]
+    fn chapter_spans_keep_starts_past_an_estimated_running_time() {
+        let chapters = vec![("One".to_string(), 0), ("Ten seconds".to_string(), 10_000)];
+        let estimated = bookclerk_tags::Duration {
+            ms: 4_937,
+            precision: bookclerk_tags::DurationPrecision::Estimated,
+        };
+        let spans = mp3_chapter_spans(&chapters, estimated);
+        let windows: Vec<(u32, u32)> = spans.iter().map(|s| (s.start_ms, s.end_ms)).collect();
+        assert_eq!(windows, vec![(0, 10_000), (10_000, 10_000)]);
+        assert_eq!(mp3_chapter_spans(&chapters, exact(4_937)).len(), 1);
+    }
+
+    #[test]
+    fn chapter_spans_past_the_cap_still_end_at_the_running_time() {
+        let chapters: Vec<(String, u64)> = (0..=MP3_MAX_CHAPTERS as u64)
+            .map(|index| (format!("Chapter {index}"), index * 1_000))
+            .collect();
+        let spans = mp3_chapter_spans(&chapters, exact(100_000_000));
+        assert_eq!(spans.len(), MP3_MAX_CHAPTERS);
+        let last = spans.last().expect("last chapter");
+        assert_eq!(last.start_ms, 65_024_000);
+        assert_eq!(last.end_ms, 100_000_000);
+    }
+
+    /// A fix-up of the MP3 at `path` in place, carrying `chapters`.
+    fn mp3_request(path: &Path, chapters: &[(&str, u64)], replace: bool) -> FixupRequest {
+        FixupRequest {
+            input: path.to_path_buf(),
+            output: path.to_path_buf(),
+            title: "The Book".into(),
+            author: None,
+            narrator: None,
+            cover: None,
+            chapters: chapters
+                .iter()
+                .map(|(title, start)| ((*title).to_string(), *start))
+                .collect(),
+            replace_chapters: replace,
+            subtitle: None,
+            publisher: None,
+            year: None,
+            genre: None,
+            series: None,
+            series_index: None,
+            asin: None,
+            isbn: None,
+            description: None,
+            language: None,
+            tool: None,
+        }
+    }
+
+    /// Chapters the tag reader finds in the file at `path`, as `(title, start)`.
+    fn read_chapters(path: &Path) -> Vec<(String, u64)> {
+        let record = bookclerk_tags::read_all(&std::fs::read(path).expect("read")).expect("tags");
+        record
+            .chapters
+            .into_iter()
+            .map(|chapter| (chapter.title, chapter.start_ms))
+            .collect()
+    }
+
+    /// The fixture MP3 written to a fresh temporary file.
+    fn fixture_mp3(with_chapters: bool) -> tempfile::NamedTempFile {
+        let mut bytes = bookclerk_tags::fixtures::tagged_mp3();
+        if !with_chapters {
+            let mut tag = Id3Tag::read_from2(std::io::Cursor::new(&bytes)).expect("tag");
+            tag.remove_all_chapters();
+            let audio = bytes.split_off(bytes.len() - 8 * 417);
+            bytes.clear();
+            tag.write_to(&mut bytes, Id3Version::Id3v24).expect("write");
+            bytes.extend(audio);
+        }
+        let file = tempfile::Builder::new()
+            .suffix(".mp3")
+            .tempfile()
+            .expect("tmp");
+        std::fs::write(file.path(), bytes).expect("write");
+        file
+    }
+
+    #[test]
+    fn mp3_fixup_embeds_chapters_the_tag_reader_reads_back() {
+        let file = fixture_mp3(false);
+        let duration = audio_duration(file.path())
+            .expect("read")
+            .expect("duration")
+            .ms;
+        assert!(duration > 100, "fixture runs {duration} ms");
+        let req = mp3_request(
+            file.path(),
+            &[("Two", 100), ("One", 0), ("Past the end", duration)],
+            false,
+        );
+        fixup_audiobook_sync(&req).expect("fixup");
+        assert_eq!(
+            read_chapters(file.path()),
+            vec![("One".to_string(), 0), ("Two".to_string(), 100)]
+        );
+        let tag = Id3Tag::read_from_path(file.path()).expect("tag");
+        let ends: Vec<u32> = tag.chapters().map(|c| c.end_time).collect();
+        assert_eq!(ends, vec![100, u32::try_from(duration).expect("fits")]);
+        let toc = tag.tables_of_contents().next().expect("toc");
+        assert!(toc.top_level && toc.ordered);
+        assert_eq!(toc.elements, vec!["ch0", "ch1"]);
+    }
+
+    #[test]
+    fn mp3_tables_of_contents_split_past_255_chapters_and_round_trip() {
+        let small = mp3_tables_of_contents(vec!["ch0".into(), "ch1".into()]);
+        assert_eq!(small.len(), 1);
+        assert!(small[0].top_level && small[0].ordered);
+        assert_eq!(small[0].elements, vec!["ch0", "ch1"]);
+
+        let ids: Vec<String> = (0..600).map(|index| format!("ch{index}")).collect();
+        let mut tag = Id3Tag::new();
+        for toc in mp3_tables_of_contents(ids.clone()) {
+            tag.add_frame(toc);
+        }
+        let mut bytes = Vec::new();
+        tag.write_to(&mut bytes, Id3Version::Id3v24).expect("write");
+        let read = Id3Tag::read_from2(std::io::Cursor::new(&bytes)).expect("read");
+        let tables: Vec<&TableOfContents> = read.tables_of_contents().collect();
+        let top: Vec<&&TableOfContents> = tables.iter().filter(|toc| toc.top_level).collect();
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].elements, vec!["toc0", "toc1", "toc2"]);
+        let mut listed = Vec::new();
+        for child_id in &top[0].elements {
+            let child = tables
+                .iter()
+                .find(|toc| &toc.element_id == child_id)
+                .expect("child table");
+            assert!(!child.top_level && child.ordered);
+            assert!(child.elements.len() <= MP3_MAX_TOC_CHILDREN);
+            listed.extend(child.elements.iter().cloned());
+        }
+        assert_eq!(listed, ids);
+
+        let too_many: Vec<String> = (0..MP3_MAX_CHAPTERS + 1)
+            .map(|i| format!("ch{i}"))
+            .collect();
+        let tables = mp3_tables_of_contents(too_many);
+        assert_eq!(tables[0].elements.len(), MP3_MAX_TOC_CHILDREN);
+        assert_eq!(tables.len(), MP3_MAX_TOC_CHILDREN + 1);
+    }
+
+    #[test]
+    fn mp3_fixup_keeps_existing_chapters_unless_told_to_replace() {
+        let file = fixture_mp3(true);
+        let before = read_chapters(file.path());
+        assert_eq!(before.len(), 2);
+        fixup_audiobook_sync(&mp3_request(file.path(), &[("New", 0)], false)).expect("fixup");
+        assert_eq!(read_chapters(file.path()), before);
+
+        fixup_audiobook_sync(&mp3_request(file.path(), &[("New", 0)], true)).expect("fixup");
+        assert_eq!(read_chapters(file.path()), vec![("New".to_string(), 0)]);
+        let tag = Id3Tag::read_from_path(file.path()).expect("tag");
+        assert_eq!(tag.chapters().count(), 1);
+        assert_eq!(tag.tables_of_contents().count(), 1);
+    }
+
+    #[test]
+    fn mp3_fixup_skips_chapters_that_all_start_past_the_end() {
+        let file = fixture_mp3(false);
+        fixup_audiobook_sync(&mp3_request(file.path(), &[("Late", 3_600_000)], false))
+            .expect("fixup");
+        assert!(read_chapters(file.path()).is_empty());
+        assert_eq!(
+            Id3Tag::read_from_path(file.path())
+                .expect("tag")
+                .chapters()
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn chapter_spans_are_ordered_deduplicated_and_closed_at_the_end() {
+        let chapters = vec![
+            ("b".to_string(), 2_000),
+            ("a".to_string(), 0),
+            ("a again".to_string(), 0),
+            ("late".to_string(), 10_000),
+            ("huge".to_string(), u64::MAX),
+        ];
+        let spans = mp3_chapter_spans(&chapters, exact(5_000));
+        assert_eq!(
+            spans,
+            vec![
+                Mp3ChapterSpan {
+                    title: "a".into(),
+                    start_ms: 0,
+                    end_ms: 2_000
+                },
+                Mp3ChapterSpan {
+                    title: "b".into(),
+                    start_ms: 2_000,
+                    end_ms: 5_000
+                },
+            ]
+        );
+        assert!(mp3_chapter_spans(&chapters, exact(0)).is_empty());
+    }
+
+    #[test]
+    fn chapter_spans_cap_a_running_time_past_the_frame_field() {
+        let long = u64::from(u32::MAX) + 10;
+        let spans = mp3_chapter_spans(&[("only".to_string(), 5)], exact(long));
+        assert_eq!(spans[0].end_ms, u32::MAX);
+    }
+
+    #[test]
+    fn duration_of_a_file_the_reader_refuses_is_unknown() {
+        let file = tempfile::NamedTempFile::new().expect("tmp");
+        std::fs::write(file.path(), b"not audio at all").expect("write");
+        assert_eq!(audio_duration(file.path()).expect("read"), None);
+    }
 
     #[test]
     fn tool_tag_includes_binary_name_and_version() {

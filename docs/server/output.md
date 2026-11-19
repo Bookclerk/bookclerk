@@ -437,6 +437,13 @@ If a sidecar file fails, Bookclerk logs it and still keeps the audio.
 With `fixup_metadata` on, an M4B also records which Bookclerk version
 tagged it, in the freeform item `----:app.bookclerk:TOOL`.
 
+`fixup_metadata` also embeds the chapters: as a chapter track in an M4B,
+and as ID3 `CHAP` frames listed by one `CTOC` frame in a single MP3, which
+Audiobookshelf and most players read. Each chapter ends where the next one
+starts and the last ends with the audio. A file that already carries
+chapters keeps them, unless Bookclerk overlays Audible's chapter list on a
+book from another store.
+
 Audible's own options (Widevine, xHE-AAC, brand trim) are on the
 [Stores](stores.md#audible) page.
 
