@@ -1153,6 +1153,59 @@ async fn a_patron_scope_filters_lists_search_and_facets_under(profile: Profile) 
         "{profile:?}: exclude wins"
     );
 
+    // A refresh that has replaced only some of a work's facets hides it
+    // from scoped patrons until the last of them is written.
+    let half_written = |ready: i64| {
+        let store = store.clone();
+        let dune = dune.clone();
+        async move {
+            use sea_orm::ConnectionTrait as _;
+            store
+                .db()
+                .execute_unprepared(&format!(
+                    "UPDATE library_work_rows SET facets_ready = {ready} WHERE work_id = '{dune}'"
+                ))
+                .await
+                .unwrap();
+            store
+                .db()
+                .execute_unprepared(&format!(
+                    "DELETE FROM library_work_facets WHERE work_id = '{dune}'"
+                ))
+                .await
+                .unwrap();
+        }
+    };
+    half_written(0).await;
+    let no_tolkien = WorkScope {
+        exclude: vec![author("J. R. R. Tolkien")],
+        ..WorkScope::default()
+    };
+    assert_eq!(
+        walk(&store, scoped(no_tolkien.clone())).await,
+        ["Anathem"],
+        "{profile:?}: half-written facets"
+    );
+    assert_eq!(
+        walk(
+            &store,
+            WorkPageQuery {
+                limit: 10,
+                ..WorkPageQuery::default()
+            }
+        )
+        .await
+        .len(),
+        3,
+        "{profile:?}: unscoped reads still see it"
+    );
+    store.refresh_library_works(&ids).await.unwrap();
+    assert_eq!(
+        walk(&store, scoped(no_tolkien)).await,
+        ["Anathem", "Dune"],
+        "{profile:?}: a finished refresh shows it again"
+    );
+
     // What the patron's own account holds always passes.
     let patron = |name: &'static str, plugin: &'static str| {
         let store = store.clone();

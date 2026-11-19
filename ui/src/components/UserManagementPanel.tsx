@@ -1354,7 +1354,7 @@ export function UserManagementPanel({
 
               {selectedEditable && currentUserId !== selected.id ? (
                 <PatronScopeEditor
-                  key={selected.id}
+                  key={`${selected.id}:${selected.role}`}
                   target={{ kind: "user", userId: selected.id }}
                   disabled={busy}
                 />

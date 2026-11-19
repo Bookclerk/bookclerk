@@ -773,7 +773,9 @@ library holds as works, expressions and editions:
   author, narrator, series, genre, publisher or source a held top-level
   work has, keyed by the lower-cased value. Written with the work's
   `library_work_rows` row and fenced by its refresh stamp; an unheld work
-  has none.
+  has none. A refresh's facets can span several batches, so the row's
+  `facets_ready` is 0 until the last of them is written, and a patron
+  scope admits only rows at 1.
 - `user_title_state`: one user's finished flag, ratings and tags for a
   work, keyed `(user_id, work_id)`. Fields imported for an account reach
   every user linked to that account, and each user edits their own with

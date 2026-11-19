@@ -1983,29 +1983,38 @@ pub(crate) enum CallerSubject {
 ///
 /// # Arguments
 ///
-/// * `state` - Daemon state holding the auth configuration and library.
+/// * `state` - Daemon state holding the auth configuration.
+/// * `library` - The library the request reads, so the caller is resolved
+///   against the same store as the rows it then sees.
 /// * `headers` - Request headers carrying the operator token, operator
 ///   session or portal session.
 ///
 /// # Returns
 ///
 /// [`CallerSubject::Unavailable`] when a library read fails or times out.
-pub(crate) async fn caller_subject(state: &AppState, headers: &HeaderMap) -> CallerSubject {
+pub(crate) async fn caller_subject(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    headers: &HeaderMap,
+) -> CallerSubject {
     let auth = state.auth_snapshot().await;
     if !auth.enabled {
         return CallerSubject::Operator;
     }
-    if let Some(op) = resolve_operator_session(state, &auth, headers).await {
-        return match op.impersonating_user_id {
-            Some(user_id) => CallerSubject::Person(Some(user_id)),
-            None => CallerSubject::Operator,
-        };
+    match lookup_operator_session(library, headers).await {
+        OperatorSessionLookup::Found(op) => {
+            return match op.impersonating_user_id {
+                Some(user_id) => CallerSubject::Person(Some(user_id)),
+                None => CallerSubject::Operator,
+            };
+        }
+        OperatorSessionLookup::Unavailable => return CallerSubject::Unavailable,
+        OperatorSessionLookup::Absent => {}
     }
     if authorize_operator_bearer_only(&auth, headers) {
         return CallerSubject::Operator;
     }
-    let library = state.library_snapshot().await;
-    match portal_lookup_from_headers(&library, headers).await {
+    match portal_lookup_from_headers(library, headers).await {
         PortalLookup::SignedIn(identity) => CallerSubject::Person(identity.user_id),
         PortalLookup::SignedOut => CallerSubject::SignedOut,
         PortalLookup::Unavailable => CallerSubject::Unavailable,
@@ -2448,6 +2457,44 @@ pub(crate) struct ResolvedOperatorSession {
     pub(crate) impersonating_user_id: Option<i64>,
 }
 
+/// What looking up an operator session cookie found.
+pub(crate) enum OperatorSessionLookup {
+    /// The cookie names a live operator session.
+    Found(ResolvedOperatorSession),
+    /// No operator session cookie, or one naming no session.
+    Absent,
+    /// The library failed or did not answer in time.
+    Unavailable,
+}
+
+/// Looks up the hashed operator session cookie in `library`, keeping a
+/// failed or timed-out read apart from a missing session.
+async fn lookup_operator_session(
+    library: &bookclerk_library::LibraryStore,
+    headers: &HeaderMap,
+) -> OperatorSessionLookup {
+    let Some(session_id) = session_id_from_headers(headers) else {
+        return OperatorSessionLookup::Absent;
+    };
+    let token_hash = hash_token(&session_id);
+    match timeout(AUTH_DB_TIMEOUT, library.get_operator_session(&token_hash)).await {
+        Ok(Ok(Some(session))) => OperatorSessionLookup::Found(ResolvedOperatorSession {
+            token_hash,
+            elevated_from_user_id: session.elevated_from_user_id,
+            impersonating_user_id: session.impersonating_user_id,
+        }),
+        Ok(Ok(None)) => OperatorSessionLookup::Absent,
+        Ok(Err(err)) => {
+            tracing::warn!(error = %err, "operator session lookup failed");
+            OperatorSessionLookup::Unavailable
+        }
+        Err(_) => {
+            tracing::warn!("operator session lookup timed out");
+            OperatorSessionLookup::Unavailable
+        }
+    }
+}
+
 /// Looks up the hashed session cookie; missing, timed-out, or failed lookups fail closed.
 pub(crate) async fn resolve_operator_session(
     state: &AppState,
@@ -2455,24 +2502,11 @@ pub(crate) async fn resolve_operator_session(
     headers: &HeaderMap,
 ) -> Option<ResolvedOperatorSession> {
     let _ = auth;
-    let session_id = session_id_from_headers(headers)?;
-    let token_hash = hash_token(&session_id);
+    session_id_from_headers(headers)?;
     let library = state.library_snapshot().await;
-    match timeout(AUTH_DB_TIMEOUT, library.get_operator_session(&token_hash)).await {
-        Ok(Ok(Some(session))) => Some(ResolvedOperatorSession {
-            token_hash,
-            elevated_from_user_id: session.elevated_from_user_id,
-            impersonating_user_id: session.impersonating_user_id,
-        }),
-        Ok(Ok(None)) => None,
-        Ok(Err(err)) => {
-            tracing::warn!(error = %err, "operator session lookup failed");
-            None
-        }
-        Err(_) => {
-            tracing::warn!("operator session lookup timed out");
-            None
-        }
+    match lookup_operator_session(&library, headers).await {
+        OperatorSessionLookup::Found(session) => Some(session),
+        OperatorSessionLookup::Absent | OperatorSessionLookup::Unavailable => None,
     }
 }
 

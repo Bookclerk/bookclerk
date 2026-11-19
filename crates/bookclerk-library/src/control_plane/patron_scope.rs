@@ -41,10 +41,17 @@ pub const PATRON_SCOPE_NAMESPACE: &str = "core.patron_scope";
 pub const PATRON_SCOPE_SCHEMA_VERSION: i64 = 1;
 
 /// Most rules one scope may hold.
-pub const MAX_SCOPE_RULES: usize = 64;
+pub const MAX_SCOPE_RULES: usize = 16;
 
 /// Longest rule value, in UTF-8 bytes.
 pub const MAX_SCOPE_VALUE_BYTES: usize = 256;
+
+/// Largest scope as compact JSON, in bytes: one cell of the smallest reply
+/// the host accepts from a database plugin
+/// ([`HOST_MIN_CELL_BYTES`](bookclerk_plugin_abi::db_execute::HOST_MIN_CELL_BYTES)),
+/// so a stored scope can be read back on every supported database. Sixteen
+/// rules fit when their values are short.
+pub const MAX_SCOPE_JSON_BYTES: usize = 1024;
 
 /// The book field a [`ScopeRule`] matches one value of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, utoipa::ToSchema)]
@@ -106,8 +113,10 @@ pub struct ScopeRule {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PatronScope {
-    /// Visibility rules, at most 64. Empty means every book is visible.
+    /// Visibility rules, at most 16 and 1,024 bytes as JSON. Empty means
+    /// every book is visible.
     #[serde(default)]
+    #[schema(max_items = 16)]
     pub rules: Vec<ScopeRule>,
 }
 
@@ -140,8 +149,9 @@ impl PatronScope {
     /// # Errors
     ///
     /// Returns [`LibraryError::Invalid`] for more than [`MAX_SCOPE_RULES`]
-    /// rules, an empty or over-long value, or a rule given twice (the same
-    /// field, value and effect, compared without case).
+    /// rules, an empty or over-long value, a rule given twice (the same
+    /// field, value and effect, compared without case), or a scope longer
+    /// than [`MAX_SCOPE_JSON_BYTES`] as JSON.
     pub fn validate(&self) -> Result<()> {
         if self.rules.len() > MAX_SCOPE_RULES {
             return Err(invalid(&format!(
@@ -162,6 +172,14 @@ impl PatronScope {
             if !seen.insert((rule.field, crate::facet_key(value), rule.effect)) {
                 return Err(invalid(&format!("the rule `{value}` is given twice")));
             }
+        }
+        let size = serde_json::to_vec(&self.clone().normalized())
+            .map_err(|err| invalid(&format!("the scope could not be written: {err}")))?
+            .len();
+        if size > MAX_SCOPE_JSON_BYTES {
+            return Err(invalid(&format!(
+                "a scope is at most {MAX_SCOPE_JSON_BYTES} bytes as JSON"
+            )));
         }
         Ok(())
     }
@@ -785,6 +803,62 @@ mod tests {
             "Kids",
             "values are trimmed"
         );
+    }
+
+    /// A scope of the most rules, as long as the JSON limit allows.
+    fn largest_scope() -> PatronScope {
+        PatronScope {
+            rules: (0..MAX_SCOPE_RULES)
+                .map(|n| rule(ScopeField::Genre, &format!("g{n:02}"), RuleEffect::Include))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn validation_bounds_the_written_size() {
+        let largest = largest_scope();
+        largest.validate().unwrap();
+        assert!(serde_json::to_vec(&largest).unwrap().len() <= MAX_SCOPE_JSON_BYTES);
+        let longest = PatronScope {
+            rules: (0..MAX_SCOPE_RULES)
+                .map(|n| {
+                    rule(
+                        ScopeField::Genre,
+                        &format!("{n:03}{}", "x".repeat(MAX_SCOPE_VALUE_BYTES - 3)),
+                        RuleEffect::Include,
+                    )
+                })
+                .collect(),
+        };
+        assert!(longest.validate().is_err(), "the most values of 256 bytes");
+        assert_eq!(
+            Some(MAX_SCOPE_JSON_BYTES),
+            usize::try_from(bookclerk_plugin_abi::db_execute::HOST_MIN_CELL_BYTES).ok(),
+            "a stored scope fits the smallest cell a database plugin may return"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_largest_default_scope_is_stored() {
+        use crate::test_support::{sqlite, Profile};
+        for profile in Profile::ALL {
+            let kit = sqlite::memory(profile).await;
+            let store = kit.store();
+            let admin = store
+                .create_user(UserRole::Administrator, Some("Ada"), None)
+                .await
+                .unwrap();
+            let actor = verify_patron_administrator(store, admin.id).await.unwrap();
+            set_default_patron_scope(store, &actor, largest_scope())
+                .await
+                .unwrap_or_else(|err| panic!("{}: {err}", profile.name()));
+            assert_eq!(
+                default_patron_scope(store).await.unwrap(),
+                largest_scope(),
+                "{}",
+                profile.name()
+            );
+        }
     }
 
     #[tokio::test]

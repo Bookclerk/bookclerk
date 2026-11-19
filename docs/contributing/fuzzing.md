@@ -515,10 +515,11 @@ only that. The others check:
   default scope, `u` for a user's) and the oracle reads the rest as an
   untyped JSON value. A scope is accepted exactly when it is one object
   with no repeated keys at any depth and at most the key `rules`, an array
-  of at most 64 rules, each exactly `field` (`genre`, `series`, `author` or
+  of at most 16 rules, each exactly `field` (`genre`, `series`, `author` or
   `narrator`), `value` (a string, 1 to 256 bytes once trimmed, no NUL) and
   `effect` (`include` or `exclude`), with no two rules sharing field,
-  effect and lowercase trimmed value. A user's body is at most the key
+  effect and lowercase trimmed value, and the trimmed rules come to at
+  most 1,024 bytes as compact JSON. A user's body is at most the key
   `scope`, `null` or such a scope. The parser then returns the rules in
   order with trimmed values, and otherwise refuses the body as `Invalid`.
   The shared oracle is `fuzz/oracles/patron_scope_request.rs`, replayed

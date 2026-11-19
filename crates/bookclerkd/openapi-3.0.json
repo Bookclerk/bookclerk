@@ -39717,7 +39717,8 @@
             "items": {
               "$ref": "#/components/schemas/ScopeRule"
             },
-            "description": "Visibility rules, at most 64. Empty means every book is visible."
+            "description": "Visibility rules, at most 16 and 1,024 bytes as JSON. Empty means\nevery book is visible.",
+            "maxItems": 16
           }
         },
         "additionalProperties": false
@@ -43091,7 +43092,8 @@
                 "items": {
                   "$ref": "#/components/schemas/ScopeRule"
                 },
-                "description": "Visibility rules, at most 64. Empty means every book is visible."
+                "description": "Visibility rules, at most 16 and 1,024 bytes as JSON. Empty means\nevery book is visible.",
+                "maxItems": 16
               }
             },
             "additionalProperties": false,

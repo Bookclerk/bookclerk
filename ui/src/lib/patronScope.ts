@@ -7,10 +7,13 @@
 import type { PatronScope, RuleEffect, ScopeField, ScopeRule } from "@/lib/api";
 
 /** Most rules one scope holds (the server's bound). */
-export const MAX_SCOPE_RULES = 64;
+export const MAX_SCOPE_RULES = 16;
 
 /** Longest rule value in UTF-8 bytes (the server's bound). */
 export const MAX_SCOPE_VALUE_BYTES = 256;
+
+/** Largest scope as compact JSON in UTF-8 bytes (the server's bound). */
+export const MAX_SCOPE_JSON_BYTES = 1024;
 
 /** The fields a rule can match, in menu order, with their labels. */
 export const SCOPE_FIELDS: readonly { value: ScopeField; label: string }[] = [
@@ -56,6 +59,12 @@ export function scopeProblem(scope: PatronScope): string | null {
     const key = `${rule.field}\u0000${value.toLowerCase()}\u0000${rule.effect}`;
     if (seen.has(key)) return `The rule "${value}" is there twice.`;
     seen.add(key);
+  }
+  const trimmed = {
+    rules: scope.rules.map((r) => ({ field: r.field, value: r.value.trim(), effect: r.effect })),
+  };
+  if (new TextEncoder().encode(JSON.stringify(trimmed)).length > MAX_SCOPE_JSON_BYTES) {
+    return "These rules are too long together. Use fewer or shorter values.";
   }
   return null;
 }

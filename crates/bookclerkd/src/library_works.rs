@@ -578,6 +578,10 @@ async fn caller_user_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
 /// stored role is never scoped, sees the whole library. A session linked to
 /// no user (or to a user that no longer exists) gets the library default.
 ///
+/// The caller, their user and their scope are read from `library`, the
+/// handle the route then reads its rows from, so a database reload between
+/// the two cannot pair one store's scope with another's rows.
+///
 /// # Errors
 ///
 /// A 500 when the caller, the user or their scope cannot be read, and a
@@ -585,10 +589,11 @@ async fn caller_user_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
 /// closed rather than show a patron books outside their scope.
 async fn caller_scope(
     state: &AppState,
+    library: &bookclerk_library::LibraryStore,
     headers: &HeaderMap,
     route: &str,
 ) -> Result<Option<WorkScope>, WorksError> {
-    let user_id = match crate::auth::caller_subject(state, headers).await {
+    let user_id = match crate::auth::caller_subject(state, library, headers).await {
         crate::auth::CallerSubject::Operator => return Ok(None),
         crate::auth::CallerSubject::Person(user_id) => user_id,
         crate::auth::CallerSubject::SignedOut => {
@@ -605,7 +610,6 @@ async fn caller_scope(
             ));
         }
     };
-    let library = state.library_snapshot().await;
     let user = match user_id {
         Some(user_id) => library
             .get_user(user_id)
@@ -614,10 +618,10 @@ async fn caller_scope(
         None => None,
     };
     match user {
-        Some(user) => bookclerk_library::control_plane::work_scope_for_user(&library, &user)
+        Some(user) => bookclerk_library::control_plane::work_scope_for_user(library, &user)
             .await
             .map_err(|err| read_failed(route, &err)),
-        None => bookclerk_library::control_plane::default_work_scope(&library)
+        None => bookclerk_library::control_plane::default_work_scope(library)
             .await
             .map_err(|err| read_failed(route, &err)),
     }
@@ -893,6 +897,7 @@ where
 /// 500 when the index or the library cannot be read.
 async fn search_page(
     state: &AppState,
+    library: &bookclerk_library::LibraryStore,
     q: &str,
     cursor: Option<&str>,
     filters: &WorkPageQuery,
@@ -929,7 +934,7 @@ async fn search_page(
                 )
             }
         })?;
-    let library = state.library_snapshot().await;
+    let library = library.clone();
     let limit = usize::try_from(filters.limit).unwrap_or(usize::MAX);
     let (rows, used) = fill_search_page(
         &window.ids,
@@ -985,6 +990,7 @@ pub(crate) async fn list_works(
         _ => None,
     };
     let filter = work_filter(query.facet, query.value.as_deref(), user_id)?;
+    let library = state.library_snapshot().await;
     let mut filters = WorkPageQuery {
         sort: query.sort.unwrap_or_default().into(),
         media_kind: query.media_kind.map(Into::into),
@@ -992,13 +998,12 @@ pub(crate) async fn list_works(
         status: query.status,
         account: query.account.filter(|a| !a.is_empty()),
         filter,
-        scope: caller_scope(&state, &headers, "GET /api/library/works").await?,
+        scope: caller_scope(&state, &library, &headers, "GET /api/library/works").await?,
         after: None,
         limit: query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT),
     };
-    let library = state.library_snapshot().await;
     let (rows, next_cursor) = match query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-        Some(q) => search_page(&state, q, cursor, &filters).await?,
+        Some(q) => search_page(&state, &library, q, cursor, &filters).await?,
         None => {
             if let Some(token) = cursor {
                 filters.after =
@@ -1069,7 +1074,7 @@ pub(crate) async fn get_work(
                 )),
             )
         })?;
-    let scope = caller_scope(&state, &headers, "GET /api/library/works/{id}").await?;
+    let scope = caller_scope(&state, &library, &headers, "GET /api/library/works/{id}").await?;
     require_in_scope(
         &library,
         scope.as_ref(),
@@ -1387,10 +1392,9 @@ pub(crate) async fn list_facet_values(
             ))
         }
     };
-    let scope = caller_scope(&state, &headers, ROUTE).await?;
-    let page = state
-        .library_snapshot()
-        .await
+    let library = state.library_snapshot().await;
+    let scope = caller_scope(&state, &library, &headers, ROUTE).await?;
+    let page = library
         .library_facet_values(of, after.as_deref(), limit, scope.as_ref())
         .await
         .map_err(|err| read_failed(ROUTE, &err))?;
@@ -1426,7 +1430,7 @@ pub(crate) async fn get_edition_cover(
 ) -> Result<Response, WorksError> {
     const ROUTE: &str = "GET /api/library/editions/{id}/cover";
     let library = state.library_snapshot().await;
-    let scope = caller_scope(&state, &headers, ROUTE).await?;
+    let scope = caller_scope(&state, &library, &headers, ROUTE).await?;
     let Some(work_id) = library
         .work_of_edition(&id)
         .await

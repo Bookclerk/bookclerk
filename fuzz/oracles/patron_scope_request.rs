@@ -12,12 +12,13 @@
 //! an untyped JSON value rather than the typed body:
 //!
 //! - A scope is one JSON object with no repeated keys and at most the key
-//!   `rules`, an array (missing means no rules) of at most 64 rules. Each
+//!   `rules`, an array (missing means no rules) of at most 16 rules. Each
 //!   rule is an object with no repeated keys and exactly the keys `field`
 //!   (`genre`, `series`, `author` or `narrator`), `value` (a string) and
 //!   `effect` (`include` or `exclude`). Each value, trimmed, is 1 to 256
-//!   bytes with no NUL, and no two rules share field, effect and trimmed
-//!   lowercase value.
+//!   bytes with no NUL, no two rules share field, effect and trimmed
+//!   lowercase value, and the rules with trimmed values come to at most
+//!   1,024 bytes as compact JSON.
 //! - A user's body is one object with no repeated keys and at most the key
 //!   `scope`, which is `null` (or missing) or such a scope.
 //!
@@ -33,15 +34,18 @@ use bookclerk_library::LibraryError;
 use serde::de::{Deserializer as _, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
-/// Largest input worth checking; a full scope of 64 long rules is about
-/// 20 KiB.
-pub const MAX_INPUT_BYTES: usize = 32 * 1024;
+/// Largest input worth checking: eight times the largest scope's JSON,
+/// room for whitespace and escapes that the limit counts compactly.
+pub const MAX_INPUT_BYTES: usize = 8 * 1024;
 
 /// Most rules the routes document.
-const DOCUMENTED_MAX_RULES: usize = 64;
+const DOCUMENTED_MAX_RULES: usize = 16;
 
 /// Longest trimmed rule value the routes document, in bytes.
 const DOCUMENTED_MAX_VALUE_BYTES: usize = 256;
+
+/// Largest scope as compact JSON, in bytes, as the API documents it.
+const DOCUMENTED_MAX_SCOPE_JSON_BYTES: usize = 1024;
 
 /// One rule as the oracle reads it: field, trimmed value, effect.
 type Rule = (ScopeField, String, RuleEffect);
@@ -160,6 +164,7 @@ fn scope_rules(fields: &Map<String, Value>) -> Option<Vec<Rule>> {
     }
     let mut seen = BTreeSet::new();
     let mut rules = Vec::with_capacity(items.len());
+    let mut written = Vec::with_capacity(items.len());
     for item in items {
         let Value::Object(rule) = item else {
             return None;
@@ -195,7 +200,18 @@ fn scope_rules(fields: &Map<String, Value>) -> Option<Vec<Rule>> {
         if !seen.insert((field, value.to_lowercase(), effect)) {
             return None;
         }
+        written.push(serde_json::json!({
+            "field": rule.get("field")?,
+            "value": value,
+            "effect": rule.get("effect")?,
+        }));
         rules.push((field, value.to_string(), effect));
+    }
+    let size = serde_json::to_vec(&serde_json::json!({ "rules": written }))
+        .ok()?
+        .len();
+    if size > DOCUMENTED_MAX_SCOPE_JSON_BYTES {
+        return None;
     }
     Some(rules)
 }

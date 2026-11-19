@@ -1640,7 +1640,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // `sort_series`, `length_minutes` and `purchased_at` are sort keys:
     // series then position (works with no series last), the longest held
     // edition's runtime (0 when unknown) and the newest purchase time
-    // (empty when no store reported one).
+    // (empty when no store reported one). `facets_ready` is 1 once every
+    // `library_work_facets` row of this refresh is written: a patron scope
+    // admits only such rows, so a half-written refresh hides the work
+    // rather than slipping it past an exclude rule.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS library_work_rows (
         work_id TEXT PRIMARY KEY NOT NULL REFERENCES works(id) ON DELETE CASCADE,
@@ -1660,7 +1663,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         sort_series TEXT NOT NULL,
         length_minutes INTEGER NOT NULL,
         purchased_at TEXT NOT NULL,
-        refreshed_at TEXT NOT NULL
+        refreshed_at TEXT NOT NULL,
+        facets_ready INTEGER NOT NULL DEFAULT 0
     )",
     ),
     MigrationOp::Schema(

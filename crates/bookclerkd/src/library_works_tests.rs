@@ -1083,13 +1083,15 @@ async fn a_scoped_member_sees_only_their_scope_on_every_library_screen() {
     let (status, body) = get_json(&app, Some(&cookie), &format!("/api/library/works/{dune}")).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "work page: {body}");
     assert_eq!(body["error"], format!("work {dune} not found"));
-    let (status, _) = get_json(
+    let (status, body) = get_json(
         &app,
         Some(&cookie),
         &format!("/api/library/editions/{dune_edition}/cover"),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "cover");
+    // The scope's answer, not "has no cover on this node".
+    assert_eq!(body["error"], format!("edition {dune_edition} not found"));
     let (status, body) = get_json(
         &app,
         Some(&cookie),

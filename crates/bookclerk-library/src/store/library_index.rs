@@ -601,6 +601,7 @@ pub(crate) fn build_work_row(
         length_minutes,
         purchased_at: purchased_at.to_string(),
         refreshed_at: refreshed_at.to_string(),
+        facets_ready: 0,
     })
 }
 
@@ -993,8 +994,8 @@ impl LibraryStore {
                             work_id, kind, title, sort_title, authors, sort_author, series, \
                             series_position, cover_edition_id, media_kinds, acquire_status, \
                             edition_count, holding_count, added_at, sort_series, length_minutes, \
-                            purchased_at, refreshed_at\
-                         ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? \
+                            purchased_at, refreshed_at, facets_ready\
+                         ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 \
                          WHERE EXISTS (SELECT 1 FROM works WHERE id = ?)",
                         insert,
                     ),
@@ -1003,7 +1004,8 @@ impl LibraryStore {
                             authors = ?, sort_author = ?, series = ?, series_position = ?, \
                             cover_edition_id = ?, media_kinds = ?, acquire_status = ?, \
                             edition_count = ?, holding_count = ?, added_at = ?, sort_series = ?, \
-                            length_minutes = ?, purchased_at = ?, refreshed_at = ? \
+                            length_minutes = ?, purchased_at = ?, refreshed_at = ?, \
+                            facets_ready = 0 \
                          WHERE work_id = ? AND refreshed_at <= ?",
                         update,
                     ),
@@ -1034,6 +1036,13 @@ impl LibraryStore {
                     ],
                 ))?;
             }
+            // Batches run in order, so this lands after every facet above;
+            // until it does, scoped patrons don't see the work.
+            plan.push(batch::exec(
+                "UPDATE library_work_rows SET facets_ready = 1 \
+                 WHERE work_id = ? AND refreshed_at = ?",
+                vec![batch::text(work_id), batch::text(refreshed_at)],
+            ))?;
         }
         let mut changed = 0;
         for (statements, counted) in plan.finish() {
@@ -1591,7 +1600,9 @@ fn scope_condition(scope: &WorkScope) -> Condition {
         return Condition::all();
     }
     let key_set = scope.key_set_id();
-    let mut permitted = Condition::all();
+    // A row whose facets are still being replaced could slip past an
+    // exclude rule, so a scope admits only rows with all their facets.
+    let mut permitted = Condition::all().add(C::FacetsReady.eq(1));
     if !scope.include.is_empty() {
         permitted =
             permitted.add(C::WorkId.in_subquery(scope_works_subquery(&key_set, SCOPE_INCLUDE)));
@@ -2073,6 +2084,7 @@ mod tests {
             length_minutes: 0,
             purchased_at: String::new(),
             refreshed_at: "r".into(),
+            facets_ready: 1,
         };
         let row = LibraryWorkRow::from_model(model.clone()).unwrap();
         assert_eq!(row.kind, WorkKind::Podcast);

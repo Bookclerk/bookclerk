@@ -27,12 +27,19 @@ describe("scopeProblem", () => {
     expect(
       scopeProblem({ rules: [{ field: "author", value: "x".repeat(257), effect: "include" }] }),
     ).toMatch(/256 bytes/);
-    const many = Array.from({ length: 65 }, (_, n) => ({
+    const many = Array.from({ length: 17 }, (_, n) => ({
       field: "author" as const,
       value: `a${n}`,
       effect: "include" as const,
     }));
-    expect(scopeProblem({ rules: many })).toMatch(/64 rules/);
+    expect(scopeProblem({ rules: many })).toMatch(/16 rules/);
+    const long = Array.from({ length: 16 }, (_, n) => ({
+      field: "author" as const,
+      value: `a${n}`.padEnd(100, "x"),
+      effect: "include" as const,
+    }));
+    expect(scopeProblem({ rules: long })).toMatch(/too long together/);
+    expect(scopeProblem({ rules: many.slice(0, 16) })).toBeNull();
   });
 });
 

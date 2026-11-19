@@ -245,6 +245,11 @@ export function PatronScopeEditor({ target, disabled = false }: PatronScopeEdito
           {error}
         </p>
       ) : null}
+      {error && !loaded ? (
+        <Button type="button" variant="secondary" onClick={() => void load()}>
+          Try again
+        </Button>
+      ) : null}
     </section>
   );
 }
