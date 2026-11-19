@@ -715,7 +715,12 @@ fn interleave_seeds(books: Vec<SeedTitle>, wishes: Vec<SeedTitle>) -> Vec<SeedTi
 }
 
 /// Asks one store for its deals, then about each seed, then for each
-/// starter genre, in at most `budget` calls.
+/// starter genre, making at most `budget` calls to the store.
+///
+/// An answer the store-call cache already holds costs no call, so it never
+/// uses up the budget: a person's new wishes are asked about on top of the
+/// books whose answers are cached, instead of pushing those books' titles
+/// off the shelves.
 ///
 /// # Returns
 ///
@@ -769,12 +774,13 @@ async fn fetch_one_store(
         )
     };
     let starter_key = |genre: &str| call_key(&id, "starter", &[genre, region]);
-    // Every call the budget can reach, in the order they are made: their
+    // Every call this fetch may make, in the order they are made: their
     // cached answers are read together up front instead of one by one.
+    // Cached answers cost no store call, so every key is read, not only
+    // those the budget reaches.
     let planned: Vec<String> = std::iter::once(deal_key.clone())
         .chain(seeds.iter().map(|seed| seed_key(&seed.seed)))
         .chain(starter_genres.iter().map(|genre| starter_key(genre)))
-        .take(budget)
         .collect();
     let mut cache = AnswerCache::read(library, &id, &planned).await;
     let keep = |p: &PooledCandidate| {
@@ -782,29 +788,32 @@ async fn fetch_one_store(
             && id.eq_ignore_ascii_case("graphicaudio")
             && crate::candidates::looks_like_series_set(&p.candidate.title))
     };
-    if let Some(answer) = cached_or_call(library, &store, &mut cache, &deal_key, || {
+    let (answer, asked) = cached_or_call(library, &store, &mut cache, &deal_key, || {
         source.list_deals(32)
     })
-    .await
-    {
+    .await;
+    calls += usize::from(asked);
+    if let Some(answer) = answer {
         complete &= answer.complete;
         let hits = answer.candidates;
         answered += usize::from(!hits.is_empty());
         out.extend(hits.into_iter().filter(|p| keep(p)));
     }
-    calls += 1;
     let started = std::time::Instant::now();
     for seed in seeds {
-        if calls >= budget || started.elapsed() >= STORE_FETCH_DEADLINE {
-            break;
+        let key = seed_key(&seed.seed);
+        // A cached answer is still read once the budget or the deadline is
+        // spent; only a new store call is not made.
+        let can_ask = calls < budget && started.elapsed() < STORE_FETCH_DEADLINE;
+        if !can_ask && !cache.holds(&key) {
+            continue;
         }
         let s = &seed.seed;
-        let key = seed_key(s);
-        let answer = cached_or_call(library, &store, &mut cache, &key, || {
+        let (answer, asked) = cached_or_call(library, &store, &mut cache, &key, || {
             source.expand_candidates(s, 24)
         })
         .await;
-        calls += 1;
+        calls += usize::from(asked);
         let Some(answer) = answer else { continue };
         complete &= answer.complete;
         let hits = answer.candidates;
@@ -815,10 +824,11 @@ async fn fetch_one_store(
         }
     }
     for genre in starter_genres {
-        if calls >= budget || started.elapsed() >= STORE_FETCH_DEADLINE {
-            break;
-        }
         let key = starter_key(genre);
+        let can_ask = calls < budget && started.elapsed() < STORE_FETCH_DEADLINE;
+        if !can_ask && !cache.holds(&key) {
+            continue;
+        }
         let search = CatalogSearchOpts {
             query: genre.clone(),
             region: region.to_string(),
@@ -828,11 +838,11 @@ async fn fetch_one_store(
             field: Some(CatalogSearchField::Genre),
             language: None,
         };
-        let answer = cached_or_call(library, &store, &mut cache, &key, || {
+        let (answer, asked) = cached_or_call(library, &store, &mut cache, &key, || {
             source.search_catalog(&search)
         })
         .await;
-        calls += 1;
+        calls += usize::from(asked);
         let Some(answer) = answer else { continue };
         complete &= answer.complete;
         let hits = answer.candidates;
@@ -895,12 +905,42 @@ struct StoreRef<'a> {
 ///
 /// # Returns
 ///
-/// `None` when the call failed or timed out; the failure is logged, not
-/// cached. An empty answer is returned but not cached either, since it may
+/// The answer, and whether the store was asked (`false` for a cached
+/// answer). The answer is `None` when the call failed or timed out; the
+/// failure is logged, not cached. An empty answer is returned but not cached either, since it may
 /// be a guest failure the adapter softened, so the next subject asks again.
 /// An answer with titles that could not be placed in the pool is returned
 /// without them, marked incomplete, and not cached.
 async fn cached_or_call<F, Fut>(
+    library: &LibraryStore,
+    store: &StoreRef<'_>,
+    cache: &mut AnswerCache,
+    key: &str,
+    call: F,
+) -> (Option<StoreAnswer>, bool)
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = bookclerk_source::Result<Vec<CatalogHit>>>,
+{
+    // A listing the answer named is gone when this is `None`; ask the
+    // store again.
+    if let Some(found) = cache.answer(store.id, key) {
+        let answer = StoreAnswer {
+            candidates: found,
+            complete: true,
+        };
+        return (Some(answer), false);
+    }
+    (call_and_pool(library, store, cache, key, call).await, true)
+}
+
+/// The store-call half of [`cached_or_call`]: makes the call, resolves its
+/// titles into the pool and caches the listings.
+///
+/// # Returns
+///
+/// As [`cached_or_call`]'s answer.
+async fn call_and_pool<F, Fut>(
     library: &LibraryStore,
     store: &StoreRef<'_>,
     cache: &mut AnswerCache,
@@ -912,14 +952,6 @@ where
     Fut: std::future::Future<Output = bookclerk_source::Result<Vec<CatalogHit>>>,
 {
     let id = store.id;
-    // A listing the answer named is gone when this is `None`; ask the
-    // store again.
-    if let Some(found) = cache.answer(id, key) {
-        return Some(StoreAnswer {
-            candidates: found,
-            complete: true,
-        });
-    }
     let hits = match tokio::time::timeout(STORE_CALL_TIMEOUT, call()).await {
         Ok(Ok(hits)) => hits,
         Ok(Err(err)) => {
@@ -1067,6 +1099,15 @@ impl AnswerCache {
     /// none or a listing it names is no longer in the pool.
     fn answer(&self, source: &str, key: &str) -> Option<Vec<PooledCandidate>> {
         candidates_from(source, self.calls.get(key)?, &self.listings)
+    }
+
+    /// Whether the answer to `key` can be read without asking the store:
+    /// it is cached and every listing it names is still in the pool.
+    fn holds(&self, key: &str) -> bool {
+        self.calls.get(key).is_some_and(|hits| {
+            hits.iter()
+                .all(|hit| self.listings.contains_key(&hit.listing_id))
+        })
     }
 }
 
@@ -2343,6 +2384,57 @@ mod tests {
         assert_eq!(rows[0].listing.product_id, "old");
         // The empty deals answer was not cached, so both fetches asked.
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// A cached answer costs no store call, so it does not use up the
+    /// store's budget: with room for one seed call, a second fetch reads
+    /// the first seed's answer from the cache and asks about the next seed,
+    /// and both seeds' titles stay among the candidates.
+    #[tokio::test]
+    async fn cached_answers_leave_the_budget_for_new_seeds() {
+        let subject = DiscoverSubject::Operator;
+        let calls = std::sync::Arc::default();
+        let mut registry = SourceRegistry::new();
+        registry.register(std::sync::Arc::new(FakeStore {
+            id: "one",
+            deals: Some(vec!["d1"]),
+            calls: std::sync::Arc::clone(&calls),
+            price_calls: std::sync::Arc::default(),
+        }));
+        let (library, _) = two_member_library().await;
+        // Deals plus one seed.
+        let opts = RecommendOptions {
+            storefront_max_remote_calls: 2,
+            ..RecommendOptions::default()
+        };
+        let near = |library: &LibraryStore| {
+            let library = library.clone();
+            async move {
+                let mut ids: Vec<String> = library
+                    .list_discover_candidates(&DiscoverSubject::Operator)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|c| c.listing.product_id)
+                    .filter(|id| id.starts_with("near-"))
+                    .collect();
+                ids.sort();
+                ids
+            }
+        };
+        fetch_subject_candidates(&library, &registry, &subject, &opts)
+            .await
+            .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(near(&library).await.len(), 1, "one seed fits the budget");
+        fetch_subject_candidates(&library, &registry, &subject, &opts)
+            .await
+            .unwrap();
+        assert_eq!(
+            near(&library).await,
+            ["near-a1", "near-b1"],
+            "the cached seed is read and the next seed asked"
+        );
     }
 
     #[tokio::test]

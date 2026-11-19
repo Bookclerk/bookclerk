@@ -38,9 +38,16 @@ pub const DISCOVER_CONSUMER_ID: &str = "host:discover";
 pub const EVENT_DEBOUNCE: Duration = Duration::from_secs(30);
 
 /// How long the wish owner's own fetch waits: they are looking at the page,
-/// so their shelves follow their wish quickly, while a few wishes in a row
-/// still fold into one job.
-pub const OWNER_DEBOUNCE: Duration = Duration::from_secs(5);
+/// so their shelves follow their wish quickly, while wishes clicked in a
+/// row still fold into one job.
+pub const OWNER_DEBOUNCE: Duration = Duration::from_secs(2);
+
+/// How long an owner's wish waits before it is tried again when the fetch
+/// it needs had already started (it may have read the wishlist before the
+/// wish). Shorter than [`EVENT_DEBOUNCE`], so a wish clicked during a fetch
+/// gets its own fetch soon after; [`MAX_RETRIES`] of these still outlast a
+/// slow fetch (a store's 20 s deadline plus the ranking).
+pub const OWNER_RETRY: Duration = Duration::from_secs(5);
 
 /// Redeliveries before a delivery is dead-lettered. A delivery is retried
 /// (after [`EVENT_DEBOUNCE`]) only while a job it needs has already started,
@@ -360,7 +367,13 @@ pub async fn run_discover_delivery(
     let result = match queue_for(state, library, taste, event.created_at).await {
         Ok(Queued::Done) => library.ack_event_delivery(&fence).await,
         Ok(Queued::Later) => {
-            let run_after = chrono::Duration::from_std(EVENT_DEBOUNCE)
+            let wait = match taste {
+                Taste::Wishlist {
+                    identity_id: Some(_),
+                } => OWNER_RETRY,
+                Taste::Wishlist { identity_id: None } | Taste::Household => EVENT_DEBOUNCE,
+            };
+            let run_after = chrono::Duration::from_std(wait)
                 .map(|d| Utc::now() + d)
                 .unwrap_or_else(|_| Utc::now());
             library
