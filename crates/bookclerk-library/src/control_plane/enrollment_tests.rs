@@ -34,8 +34,8 @@ fn config_operator() -> ConfigActor {
     ConfigActor::Operator { id: "cli".into() }
 }
 
-/// A store with a cluster identity, plus its files directory.
-async fn cluster() -> (LibraryStore, TempDir) {
+/// A store with a library identity, plus its files directory.
+async fn library() -> (LibraryStore, TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let store = file_store(&dir.path().join("library.db")).await;
     bootstrap(&store, &dir).await;
@@ -80,7 +80,7 @@ fn assert_forbidden(err: &LibraryError) {
 #[tokio::test]
 async fn a_link_redeems_once_into_a_branch_node_owned_by_its_user() {
     let _guard = master_key_test_lock_async().await;
-    let (store, _dir) = cluster().await;
+    let (store, _dir) = library().await;
     let riley = user(&store, UserRole::Member, "Riley").await;
     let minted = mint_enrollment_link(&store, &operator(), riley, "desk", None)
         .await
@@ -97,7 +97,7 @@ async fn a_link_redeems_once_into_a_branch_node_owned_by_its_user() {
     let node = load_node(&store, &enrolled.node_id).await.unwrap();
     assert_eq!(node.kind, NodeKind::Branch);
     assert_eq!(node.owner_user_id, Some(riley));
-    assert_eq!(node.cluster_id, enrolled.cluster_id);
+    assert_eq!(node.library_id, enrolled.library_id);
     assert_eq!(node.software_version, "1.2.3");
     let credential = load_node_credential(&store, &enrolled.node_id)
         .await
@@ -149,7 +149,7 @@ async fn a_link_redeems_once_into_a_branch_node_owned_by_its_user() {
 #[tokio::test]
 async fn the_database_holds_only_the_secret_hash() {
     let _guard = master_key_test_lock_async().await;
-    let (store, _dir) = cluster().await;
+    let (store, _dir) = library().await;
     let riley = user(&store, UserRole::Member, "Riley").await;
     let minted = mint_enrollment_link(&store, &operator(), riley, "", None)
         .await
@@ -204,7 +204,7 @@ async fn the_database_holds_only_the_secret_hash() {
 #[tokio::test]
 async fn an_expired_or_revoked_link_does_not_redeem() {
     let _guard = master_key_test_lock_async().await;
-    let (store, _dir) = cluster().await;
+    let (store, _dir) = library().await;
     let riley = user(&store, UserRole::Member, "Riley").await;
     let expiring = mint_enrollment_link(&store, &operator(), riley, "", Some(MIN_LINK_TTL))
         .await
@@ -275,7 +275,7 @@ async fn an_expired_or_revoked_link_does_not_redeem() {
 #[tokio::test]
 async fn a_disable_after_the_switch_read_mints_nothing() {
     let _guard = master_key_test_lock_async().await;
-    let (store, _dir) = cluster().await;
+    let (store, _dir) = library().await;
     let riley = user(&store, UserRole::Member, "Riley").await;
     // The mint read the switch as enabled, then a disable committed.
     let seen = load_host_enrollment(&store).await.unwrap();
@@ -321,7 +321,7 @@ async fn a_disable_after_the_switch_read_mints_nothing() {
 #[tokio::test]
 async fn disabling_enrollment_refuses_mint_and_redeem() {
     let _guard = master_key_test_lock_async().await;
-    let (store, _dir) = cluster().await;
+    let (store, _dir) = library().await;
     let riley = user(&store, UserRole::Member, "Riley").await;
     let owner = user(&store, UserRole::Owner, "Olive").await;
     let admin = user(&store, UserRole::Administrator, "Ada").await;
@@ -341,8 +341,8 @@ async fn disabling_enrollment_refuses_mint_and_redeem() {
             .await
             .unwrap_err(),
     );
-    assert_forbidden(&verify_cluster_owner(&store, admin).await.unwrap_err());
-    let owner_actor = verify_cluster_owner(&store, owner).await.unwrap();
+    assert_forbidden(&verify_library_owner(&store, admin).await.unwrap_err());
+    let owner_actor = verify_library_owner(&store, owner).await.unwrap();
     let off = set_host_enrollment_enabled(&store, &owner_actor, false)
         .await
         .unwrap();
@@ -389,7 +389,7 @@ async fn disabling_enrollment_refuses_mint_and_redeem() {
 #[tokio::test]
 async fn a_user_mints_for_themselves_and_only_an_owner_for_others() {
     let _guard = master_key_test_lock_async().await;
-    let (store, _dir) = cluster().await;
+    let (store, _dir) = library().await;
     let riley = user(&store, UserRole::Member, "Riley").await;
     let sam = user(&store, UserRole::Member, "Sam").await;
     let admin = user(&store, UserRole::Administrator, "Ada").await;
@@ -462,7 +462,7 @@ async fn a_user_mints_for_themselves_and_only_an_owner_for_others() {
 #[tokio::test]
 async fn revoking_a_node_marks_its_credential_and_wakes_every_node() {
     let _guard = master_key_test_lock_async().await;
-    let (store, _dir) = cluster().await;
+    let (store, _dir) = library().await;
     let riley = user(&store, UserRole::Member, "Riley").await;
     let sam = user(&store, UserRole::Member, "Sam").await;
     let minted = mint_enrollment_link(&store, &operator(), riley, "", None)
@@ -621,7 +621,7 @@ async fn postgres_concurrent_redeems_on_two_pools_create_one_node() {
 #[tokio::test]
 async fn redeem_refuses_keys_that_are_not_prime_order_points() {
     let _guard = master_key_test_lock_async().await;
-    let (store, _dir) = cluster().await;
+    let (store, _dir) = library().await;
     let riley = user(&store, UserRole::Member, "Riley").await;
     let minted = mint_enrollment_link(&store, &operator(), riley, "", None)
         .await
@@ -796,7 +796,7 @@ fn log_records() -> Vec<String> {
 async fn removing_a_shared_node_is_audited_or_logged() {
     let _guard = master_key_test_lock_async().await;
     log_records();
-    let (store, dir) = cluster().await;
+    let (store, dir) = library().await;
     let this_node = load_or_create_node_identity(dir.path()).unwrap().node_id;
     let owner = user(&store, UserRole::Owner, "Morgan").await;
     let as_owner = EnrollmentActor::User { user_id: owner };
@@ -870,7 +870,7 @@ async fn event_subscriber_nodes_for(store: &LibraryStore) -> Vec<String> {
 #[tokio::test]
 async fn a_shared_branch_redeem_records_a_shared_node_with_no_socket_credential() {
     let _guard = master_key_test_lock_async().await;
-    let (store, dir) = cluster().await;
+    let (store, dir) = library().await;
     let this_node = load_or_create_node_identity(dir.path()).unwrap().node_id;
     let owner = user(&store, UserRole::Owner, "Morgan").await;
     let member = user(&store, UserRole::Member, "Riley").await;
@@ -1064,7 +1064,7 @@ async fn a_shared_branch_redeem_records_a_shared_node_with_no_socket_credential(
 #[tokio::test]
 async fn library_contents_counts_what_an_install_holds() {
     let _guard = master_key_test_lock_async().await;
-    let (store, _dir) = cluster().await;
+    let (store, _dir) = library().await;
     let empty = library_contents(&store).await.unwrap();
     assert!(empty.is_empty(), "{empty:?}");
     assert!(empty.reasons().is_empty());
@@ -1111,7 +1111,7 @@ fn parsing_a_link_registers_its_secret_for_redaction() {
 #[tokio::test]
 async fn a_link_for_a_missing_user_names_the_user() {
     let _guard = master_key_test_lock_async().await;
-    let (store, _dir) = cluster().await;
+    let (store, _dir) = library().await;
     let err = mint_enrollment_link(&store, &operator(), 9_999, "", None)
         .await
         .expect_err("no such user");

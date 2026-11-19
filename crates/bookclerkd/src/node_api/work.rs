@@ -24,7 +24,7 @@
 //! permits and the CAS, so a job the host would refuse is never claimed.
 //! The reads a host makes after a wake are scoped to the deployments that
 //! target it; an instance's secrets go only to a node trusted with every
-//! job (instance secrets are the cluster operator's), sealed to its box
+//! job (instance secrets are the library operator's), sealed to its box
 //! key and bound to the instance and document revision.
 //!
 //! A job's secrets are unsealed only after the handoff trust re-check and

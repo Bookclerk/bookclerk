@@ -302,7 +302,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     // Where a store account travelled with its person: `sent` to a branch
     // (`peer = node:<node_id>`) or `received` from a library this install
-    // joined (`peer = link:<cluster_id>`). Read to disconnect an account
+    // joined (`peer = link:<library_id>`). Read to disconnect an account
     // everywhere and to keep a single-keeper login in step.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS account_shares (
@@ -1121,9 +1121,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_plugin_databases_plugin ON plugin_databases(plugin_id)",
     ),
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS cluster_identity (
+        r"CREATE TABLE IF NOT EXISTS library_identity (
         id INTEGER PRIMARY KEY NOT NULL,
-        cluster_id TEXT NOT NULL,
+        library_id TEXT NOT NULL,
         secret_fingerprint TEXT NOT NULL,
         schema_state TEXT NOT NULL,
         created_at TEXT NOT NULL
@@ -1132,7 +1132,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS nodes (
         node_id TEXT PRIMARY KEY NOT NULL,
-        cluster_id TEXT NOT NULL,
+        library_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
         incarnation TEXT NOT NULL,
         heartbeat_at TEXT NOT NULL,
@@ -1438,7 +1438,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         cache_swept_ms INTEGER
     )",
     ),
-    MigrationOp::Schema(super::CLUSTER_LEASES_DDL),
+    MigrationOp::Schema(super::LIBRARY_LEASES_DDL),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS plugin_artifacts (
         sha256 TEXT PRIMARY KEY NOT NULL,
@@ -1486,8 +1486,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS cluster_links (
-        owner_cluster_id TEXT PRIMARY KEY NOT NULL,
+        r"CREATE TABLE IF NOT EXISTS library_links (
+        parent_library_id TEXT PRIMARY KEY NOT NULL,
         owner_origin TEXT NOT NULL,
         remote_node_id TEXT NOT NULL,
         spki_pin TEXT,
@@ -1506,7 +1506,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS remote_plugin_consents (
-        owner_cluster_id TEXT NOT NULL,
+        parent_library_id TEXT NOT NULL,
         plugin_key TEXT NOT NULL,
         requested_version TEXT NOT NULL,
         requested_grant_json TEXT NOT NULL,
@@ -1523,7 +1523,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         approved_by TEXT,
         revoked_at TEXT,
         updated_at TEXT NOT NULL,
-        PRIMARY KEY (owner_cluster_id, plugin_key)
+        PRIMARY KEY (parent_library_id, plugin_key)
     )",
     ),
     // H-4 step 9: one title's streamed upload from a branch node. Only the
@@ -1632,7 +1632,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // The library's page index (docs/adr/library-data-model.md, decision 8
     // and Consequences): one row per held top-level work, so list views
     // page one table instead of joining works, editions, listings and
-    // holdings. A cluster-wide event consumer refreshes a work's row when
+    // holdings. A library-wide event consumer refreshes a work's row when
     // its editions or holdings change; `refreshed_at` is when that refresh
     // read the model, and a refresh never overwrites one that read later.
     // `media_kinds` is the sorted, comma-joined set of the work's edition
@@ -1739,7 +1739,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_users_updated ON users(updated_at)"),
     // Join a library: on a joining host, one sign-in in progress. The PKCE
     // verifier and node keys are sealed in `encrypted_secrets` (`kind =
-    // cluster_join`); only the hash of `state` is stored here. Rows live
+    // library_join`); only the hash of `state` is stored here. Rows live
     // ten minutes. `allow_shared_branch` records that the operator offered to join
     // as a shared branch (the install was empty when the sign-in started).
     MigrationOp::Schema(
@@ -1747,7 +1747,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         state_hash TEXT PRIMARY KEY NOT NULL,
         owner_origin TEXT NOT NULL,
         spki_pin TEXT,
-        owner_cluster_id TEXT NOT NULL,
+        parent_library_id TEXT NOT NULL,
         library_name TEXT NOT NULL,
         branch_name TEXT NOT NULL,
         redirect_uri TEXT NOT NULL,
@@ -1787,7 +1787,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // `signed_out` once the library ends the card.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS clerk_links (
-        library_cluster_id TEXT PRIMARY KEY NOT NULL,
+        library_id TEXT PRIMARY KEY NOT NULL,
         origin TEXT NOT NULL,
         spki_pin TEXT,
         library_name TEXT NOT NULL,
@@ -1801,7 +1801,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     // On a branch (each active link) or a clerk (each library card): the
     // books of each library, one row per edition (`control_plane::window_books`),
-    // keyed by the library's cluster id. Rows are dropped by code when the
+    // keyed by the library id. Rows are dropped by code when the
     // link or card goes, not by a foreign key, since either kind of link
     // can own them. `work_ref` is the library's
     // own grouping key, `local_work_id` the work of this library the
@@ -1809,7 +1809,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // last named the row, and a finished read drops rows it did not name.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS window_books (
-        owner_cluster_id TEXT NOT NULL,
+        parent_library_id TEXT NOT NULL,
         store TEXT NOT NULL,
         marketplace TEXT NOT NULL,
         product_id TEXT NOT NULL,
@@ -1817,11 +1817,11 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         local_work_id TEXT,
         parts_version TEXT NOT NULL,
         seen_at TEXT NOT NULL,
-        PRIMARY KEY (owner_cluster_id, store, marketplace, product_id)
+        PRIMARY KEY (parent_library_id, store, marketplace, product_id)
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_window_books_seen ON window_books(owner_cluster_id, seen_at)",
+        r"CREATE INDEX IF NOT EXISTS idx_window_books_seen ON window_books(parent_library_id, seen_at)",
     ),
     // Each window book's edition and identifiers as the library sent them
     // (JSON), cut into pieces no wider than the database's cell limit and
@@ -1830,18 +1830,18 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // and pieces no row names are dropped when a read finishes.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS window_book_parts (
-        owner_cluster_id TEXT NOT NULL,
+        parent_library_id TEXT NOT NULL,
         store TEXT NOT NULL,
         marketplace TEXT NOT NULL,
         product_id TEXT NOT NULL,
         version TEXT NOT NULL,
         seq INTEGER NOT NULL,
         body TEXT NOT NULL,
-        PRIMARY KEY (owner_cluster_id, store, marketplace, product_id, version, seq)
+        PRIMARY KEY (parent_library_id, store, marketplace, product_id, version, seq)
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_window_book_parts_version ON window_book_parts(owner_cluster_id, version)",
+        r"CREATE INDEX IF NOT EXISTS idx_window_book_parts_version ON window_book_parts(parent_library_id, version)",
     ),
     // On a branch: the branch owner's books acquired for a library it
     // joined and imported into this library as well
@@ -1852,13 +1852,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS link_imports (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        cluster_id TEXT NOT NULL,
+        library_id TEXT NOT NULL,
         plugin_key TEXT NOT NULL,
         account_id TEXT NOT NULL,
         marketplace TEXT NOT NULL,
         product_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        UNIQUE (cluster_id, plugin_key, account_id, marketplace, product_id),
+        UNIQUE (library_id, plugin_key, account_id, marketplace, product_id),
         FOREIGN KEY (plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
@@ -1871,13 +1871,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS link_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        cluster_id TEXT NOT NULL,
+        library_id TEXT NOT NULL,
         plugin_key TEXT NOT NULL,
         account_id TEXT NOT NULL,
         marketplace TEXT NOT NULL,
         product_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        UNIQUE (cluster_id, plugin_key, account_id, marketplace, product_id),
+        UNIQUE (library_id, plugin_key, account_id, marketplace, product_id),
         FOREIGN KEY (plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
@@ -1906,13 +1906,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Data(
         r"INSERT OR IGNORE INTO live_topic_revisions (topic, revision) VALUES
         ('library', 0), ('jobs', 0), ('deliveries', 0), ('nodes', 0), ('config', 0),
-        ('consents', 0), ('clusters', 0), ('users', 0), ('discover', 0)",
+        ('consents', 0), ('libraries', 0), ('users', 0), ('discover', 0)",
     ),
     // The newest sign-in of a single-keeper store account that crossed
     // each share (`control_plane::keeper`): on a library, the revision its
     // keeper branch (`peer = node:<id>`) last pushed and this library
     // applied; on the keeper branch, the revision it last pushed up the
-    // link (`peer = link:<cluster_id>`). A push applies only above it.
+    // link (`peer = link:<library_id>`). A push applies only above it.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS account_credential_revisions (
         plugin_key TEXT NOT NULL,

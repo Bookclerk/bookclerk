@@ -8,7 +8,7 @@
 //! secret into its own database, so the invariants are:
 //!
 //! - parsing never panics, and refuses bytes over the bundle size limit,
-//!   another bundle version, and a bundle for another cluster or node;
+//!   another bundle version, and a bundle for another library or node;
 //! - an accepted bundle carries at most the account and secret limits, each
 //!   text field is 1 to its limit in bytes with no control character and no
 //!   surrounding whitespace, each secret is 1 to its limit in bytes, and no
@@ -24,8 +24,8 @@ use bookclerk_node_proto::{
     MAX_CARRIED_PLUGIN_KEY_BYTES, MAX_CARRIED_SECRET_BYTES,
 };
 
-/// The cluster the oracle opens bundles for (seeds name it).
-pub const CLUSTER_ID: &str = "cluster-1";
+/// The library the oracle opens bundles for (seeds name it).
+pub const LIBRARY_ID: &str = "library-1";
 
 /// The node the oracle opens bundles for (seeds name it).
 pub const NODE_ID: &str = "node-1";
@@ -54,7 +54,7 @@ fn assert_field(what: &str, value: &str, max: usize) {
 
 /// Runs every invariant on one input; panics on a violation.
 pub fn check(data: &[u8]) {
-    let Ok(bundle) = parse_account_bundle(data, CLUSTER_ID, NODE_ID) else {
+    let Ok(bundle) = parse_account_bundle(data, LIBRARY_ID, NODE_ID) else {
         return;
     };
     assert!(
@@ -66,8 +66,8 @@ pub fn check(data: &[u8]) {
         "another bundle version parsed"
     );
     assert_eq!(
-        bundle.cluster_id, CLUSTER_ID,
-        "a bundle for another cluster parsed"
+        bundle.library_id, LIBRARY_ID,
+        "a bundle for another library parsed"
     );
     assert_eq!(bundle.node_id, NODE_ID, "a bundle for another node parsed");
     assert!(
@@ -123,7 +123,7 @@ pub fn check(data: &[u8]) {
         return;
     }
     // The error names only the rule; the bundle's secrets stay out of it.
-    let again = match parse_account_bundle(&text, CLUSTER_ID, NODE_ID) {
+    let again = match parse_account_bundle(&text, LIBRARY_ID, NODE_ID) {
         Ok(again) => again,
         Err(err) => panic!("an accepted bundle did not parse again: {err}"),
     };

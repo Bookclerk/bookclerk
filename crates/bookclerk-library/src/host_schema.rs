@@ -19,7 +19,7 @@ use sea_orm::{DbBackend, Statement};
 
 use crate::backup::{backup_library, BackupReason, BackupRequest, SchemaBackupOpts};
 use crate::control_plane::{
-    acquire_lease_on, load_lease_on, release_lease_on, renew_lease_on, ClusterLease,
+    acquire_lease_on, load_lease_on, release_lease_on, renew_lease_on, LibraryLease,
     MIGRATION_LEASE,
 };
 use crate::error::{LibraryError, Result};
@@ -28,7 +28,7 @@ use crate::migrations::MigrationOp;
 use crate::migrations::{
     frozen_marker_delete_sql, frozen_marker_sql, host_migration_plan, sql_string_literal,
     unreleased_checksum, unreleased_ops, unreleased_state_marker_sql, HostMigrationStep,
-    BOOKCLERK_SCHEMA_NAMESPACE, CLUSTER_LEASES_DDL, SCHEMA_MIGRATIONS_DDL, SCHEMA_VERSION,
+    BOOKCLERK_SCHEMA_NAMESPACE, LIBRARY_LEASES_DDL, SCHEMA_MIGRATIONS_DDL, SCHEMA_VERSION,
 };
 use crate::schema_state::{SchemaState, SCHEMA_STATE_FROZEN, SCHEMA_STATE_UNRELEASED};
 use crate::schema_walk::SchemaWalk;
@@ -183,7 +183,7 @@ pub async fn migrate_host_schema_to(
 /// Migrates toward `target` using `run_batch` (typed `executeAtomic`) per version.
 ///
 /// A walk that writes anything (backup or DDL) runs under the
-/// [`MIGRATION_LEASE`] cluster lease, like a start that migrates: it waits
+/// [`MIGRATION_LEASE`] library lease, like a start that migrates: it waits
 /// up to [`MIGRATION_LEASE_WAIT`] for another migrator, renews the lease
 /// while it works, and checks it before every DDL batch. A no-op walk only
 /// checks the database and takes no lease.
@@ -210,7 +210,7 @@ where
         verify_applied_checksums(db, &plan, *version).await?;
     }
     // Nothing to write (or a walk that cannot start): answer from this one
-    // read, without creating `cluster_leases` or taking the lease. Re-planning
+    // read, without creating `library_leases` or taking the lease. Re-planning
     // here could see another migrator's change and write outside the lease.
     let planned = crate::schema_walk::plan_schema_walk_from_state(&plan, &state, target)?;
     if planned.is_noop() {
@@ -283,7 +283,7 @@ fn migration_holder() -> String {
 /// Reconciles durable [`SchemaState`] with this binary's current canonical schema.
 ///
 /// A database that already matches is only checked. One that needs DDL is
-/// migrated under the [`MIGRATION_LEASE`] cluster lease, so concurrent
+/// migrated under the [`MIGRATION_LEASE`] library lease, so concurrent
 /// starters against one database produce exactly one migrator: the others
 /// poll until the schema matches (then check it like any start), take the
 /// lease over if the migrator's lease expires, and fail closed after
@@ -321,7 +321,7 @@ enum LeasedMigration<'a> {
     },
 }
 
-/// Creates `cluster_leases`, takes the [`MIGRATION_LEASE`] (waiting up to
+/// Creates `library_leases`, takes the [`MIGRATION_LEASE`] (waiting up to
 /// [`MIGRATION_LEASE_WAIT`] for another migrator), runs `what` under it, and
 /// releases it. Returns the walk for [`LeasedMigration::WalkTo`].
 ///
@@ -343,7 +343,7 @@ where
     // table: if it is there, the statement committed.
     let mut attempt = 0;
     loop {
-        match run_batch(vec![CLUSTER_LEASES_DDL.to_string()]).await {
+        match run_batch(vec![LIBRARY_LEASES_DDL.to_string()]).await {
             Ok(()) => break,
             Err(_) if load_lease_on(db, MIGRATION_LEASE).await.is_ok() => break,
             Err(err) if err.is_schema_apply_retryable() => {
@@ -402,7 +402,7 @@ where
 async fn migrate_under_lease<F, Fut>(
     db: &DatabaseConnection,
     run_batch: &mut F,
-    lease: &ClusterLease,
+    lease: &LibraryLease,
     what: LeasedMigration<'_>,
 ) -> Result<Option<SchemaWalk>>
 where
@@ -461,7 +461,7 @@ where
 async fn keep_migration_lease<R, RFut>(mut renew: R, ttl: Duration, lost: &AtomicBool)
 where
     R: FnMut() -> RFut,
-    RFut: Future<Output = Result<Option<ClusterLease>>>,
+    RFut: Future<Output = Result<Option<LibraryLease>>>,
 {
     let mut renewed_at = tokio::time::Instant::now();
     loop {
@@ -2162,7 +2162,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (a, b) = two_file_connections(dir.path()).await;
         ensure_schema_migrations(&a).await.unwrap();
-        run_atomic_ddl(&a, "lease-table", vec![CLUSTER_LEASES_DDL.to_string()])
+        run_atomic_ddl(&a, "lease-table", vec![LIBRARY_LEASES_DDL.to_string()])
             .await
             .unwrap();
         // A starter took the lease, then died before applying anything.
@@ -2187,7 +2187,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (a, b) = two_file_connections(dir.path()).await;
         ensure_schema_migrations(&a).await.unwrap();
-        run_atomic_ddl(&a, "lease-table", vec![CLUSTER_LEASES_DDL.to_string()])
+        run_atomic_ddl(&a, "lease-table", vec![LIBRARY_LEASES_DDL.to_string()])
             .await
             .unwrap();
         acquire_lease_on(&a, MIGRATION_LEASE, "busy", Duration::from_secs(60))
@@ -2216,7 +2216,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (a, b) = two_file_connections(dir.path()).await;
         ensure_schema_migrations(&a).await.unwrap();
-        run_atomic_ddl(&a, "lease-table", vec![CLUSTER_LEASES_DDL.to_string()])
+        run_atomic_ddl(&a, "lease-table", vec![LIBRARY_LEASES_DDL.to_string()])
             .await
             .unwrap();
         let stale = acquire_lease_on(&a, MIGRATION_LEASE, "stale", Duration::from_millis(50))
@@ -2271,7 +2271,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (a, b) = two_file_connections(dir.path()).await;
         ensure_schema_migrations(&a).await.unwrap();
-        run_atomic_ddl(&a, "lease-table", vec![CLUSTER_LEASES_DDL.to_string()])
+        run_atomic_ddl(&a, "lease-table", vec![LIBRARY_LEASES_DDL.to_string()])
             .await
             .unwrap();
         let busy = acquire_lease_on(&a, MIGRATION_LEASE, "busy", Duration::from_secs(60))
@@ -2286,9 +2286,9 @@ mod tests {
                 let counter = counter.clone();
                 let exec = exec.clone();
                 async move {
-                    // `CREATE TABLE IF NOT EXISTS cluster_leases` runs before
+                    // `CREATE TABLE IF NOT EXISTS library_leases` runs before
                     // the lease; count only the walk's own batches.
-                    if stmts != [CLUSTER_LEASES_DDL] {
+                    if stmts != [LIBRARY_LEASES_DDL] {
                         counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
                     run_atomic_ddl(&exec, "schema-migrate", stmts).await
@@ -2329,7 +2329,7 @@ mod tests {
     #[tokio::test]
     async fn the_lease_renewer_retries_errors_and_stops_only_once_the_lease_is_lost() {
         let ttl = Duration::from_millis(300);
-        let lease = ClusterLease {
+        let lease = LibraryLease {
             name: MIGRATION_LEASE.into(),
             holder: "h".into(),
             token: 1,

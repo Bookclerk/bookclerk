@@ -370,7 +370,7 @@ export default function App() {
   if (join === "callback") {
     return (
       <PageSuspense>
-        <JoinCallbackPage onOpenLibrary={() => openSettings("clusters")} />
+        <JoinCallbackPage onOpenLibrary={() => openSettings("libraries")} />
       </PageSuspense>
     );
   }
@@ -378,7 +378,7 @@ export default function App() {
   if (join === "clerk-callback") {
     return (
       <PageSuspense>
-        <ClerkCallbackPage onOpenLibrary={() => openSettings("clusters")} />
+        <ClerkCallbackPage onOpenLibrary={() => openSettings("libraries")} />
       </PageSuspense>
     );
   }
@@ -392,7 +392,7 @@ export default function App() {
             dismissWelcome();
             openSettings("users");
           }}
-          onJoined={() => openSettings("clusters")}
+          onJoined={() => openSettings("libraries")}
         />
       </PageSuspense>
     );

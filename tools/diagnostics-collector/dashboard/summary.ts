@@ -225,6 +225,11 @@ export function renderSummary(entry: unknown, dashboard: string | null): Rendere
     lines.push("**Diagnostics summary** · no report is linked to this issue at present");
   } else {
     let head = `**Diagnostics summary** · ${plural(reports, "report")}`;
+    const installs = count(get(entry, "installs")) || 0;
+    if (installs > 0) {
+      const some = (count(get(entry, "unattributed")) || 0) > 0;
+      head += ` · ${some ? "at least " : ""}${plural(installs, "install")}`;
+    }
     if (first) head += ` · first seen ${first}`;
     if (last) head += ` · last seen ${last}`;
     lines.push(head);

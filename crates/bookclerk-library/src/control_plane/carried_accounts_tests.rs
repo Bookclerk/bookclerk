@@ -270,7 +270,7 @@ async fn a_branch_imports_carried_accounts_for_its_person_once() {
         )
         .await;
 
-        let report = import_carried_accounts(store, me.id, "cluster-x", &library)
+        let report = import_carried_accounts(store, me.id, "library-x", &library)
             .await
             .unwrap();
         assert_eq!(
@@ -313,7 +313,7 @@ async fn a_branch_imports_carried_accounts_for_its_person_once() {
             .await
             .unwrap();
         assert_eq!(shares.len(), 1, "{name}");
-        assert_eq!(shares[0].peer, link_peer("cluster-x"), "{name}");
+        assert_eq!(shares[0].peer, link_peer("library-x"), "{name}");
         assert_eq!(shares[0].direction, SHARE_RECEIVED, "{name}");
 
         // The other person's account and secret are untouched, with no
@@ -343,7 +343,7 @@ async fn a_branch_imports_carried_accounts_for_its_person_once() {
             .is_empty());
 
         // A second join leaves the account as the person has it here.
-        let again = import_carried_accounts(store, me.id, "cluster-y", &library[..1])
+        let again = import_carried_accounts(store, me.id, "library-y", &library[..1])
             .await
             .unwrap();
         assert_eq!(
@@ -358,7 +358,7 @@ async fn a_branch_imports_carried_accounts_for_its_person_once() {
             account_share_peers(store, SHAREABLE, "ana@example.com")
                 .await
                 .unwrap(),
-            vec![link_peer("cluster-x"), link_peer("cluster-y")],
+            vec![link_peer("library-x"), link_peer("library-y")],
             "{name}"
         );
         assert_eq!(kit.refused_begins(), 0, "{name}");
@@ -389,7 +389,7 @@ async fn an_operator_who_refuses_the_member_stores_nothing() {
             .await
             .unwrap();
         allow_linking(store, me.id, false).await.unwrap();
-        let report = import_carried_accounts(store, me.id, "cluster-x", &library)
+        let report = import_carried_accounts(store, me.id, "library-x", &library)
             .await
             .unwrap();
         assert!(report.refused_by_rule, "{name}");
@@ -475,7 +475,7 @@ async fn an_account_brought_without_a_secret_is_not_connected() {
             label: None,
             secrets: Vec::new(),
         };
-        let report = import_carried_accounts(store, me.id, "cluster-x", &[bare])
+        let report = import_carried_accounts(store, me.id, "library-x", &[bare])
             .await
             .unwrap();
         assert_eq!(
@@ -681,7 +681,7 @@ async fn an_import_batch_stores_nothing_once_the_rule_is_turned_off() {
         // The import read the rule as allowed; the operator turns it off
         // before this account's batch runs.
         allow_linking(store, me.id, false).await.unwrap();
-        let peer = link_peer("cluster-x");
+        let peer = link_peer("library-x");
         let kept = carried_accounts::import_one(store, me.id, identity.id, &peer, &library[0])
             .await
             .unwrap();
@@ -893,14 +893,14 @@ async fn an_offer_from_a_branch_is_recorded_against_that_node() {
             "{name}"
         );
         // A branch that offers on to a library records the link it went to.
-        record_accounts_sent_to(store, &link_peer("cluster-up"), &offered)
+        record_accounts_sent_to(store, &link_peer("library-up"), &offered)
             .await
             .unwrap();
         assert_eq!(
             account_share_peers(store, SHAREABLE, "ana@example.com")
                 .await
                 .unwrap(),
-            vec![link_peer("cluster-up"), node_peer("branch-node")],
+            vec![link_peer("library-up"), node_peer("branch-node")],
             "{name}"
         );
     }

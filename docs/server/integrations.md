@@ -242,7 +242,7 @@ book's ISBN. A provider that fails, or gives no answer within 30 seconds, is
 logged and skipped, and the next one is asked.
 
 The acquire overlay asks the providers deployed on the node that runs the
-download, so in a cluster deploy them wherever acquires run.
+download, so in a library deploy them wherever acquires run.
 
 These plugins are optional, so they aren't installed by default. Install
 the plugin first, as [Installing plugins](plugins.md#installing-plugins)
@@ -437,7 +437,7 @@ node-7f3a9c (this node) live target=- labels=-
   cache 700M of 1.0G, swept 12 min ago
 ```
 
-The budget and the age are cluster settings in the `core.cache` document
+The budget and the age are library settings in the `core.cache` document
 (see [Configuration](configuration.md#image-cache)), and a node can
 override the budget:
 
@@ -445,7 +445,7 @@ override the budget:
 bookclerk config set cache.budget_bytes 2147483648   # 2 GiB on every node
 bookclerk config set cache.unviewed_days 30
 bookclerk nodes set --cache-budget 268435456         # 256 MiB on this node
-bookclerk nodes set --cluster-cache-budget           # back to the cluster's
+bookclerk nodes set --library-cache-budget           # back to the library's
 ```
 
 ## Metadata files

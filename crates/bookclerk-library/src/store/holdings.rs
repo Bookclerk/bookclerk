@@ -1015,7 +1015,7 @@ mod tests {
             store
                 .db
                 .execute_unprepared(
-                    "INSERT INTO nodes (node_id, cluster_id, created_at, incarnation, \
+                    "INSERT INTO nodes (node_id, library_id, created_at, incarnation, \
                      heartbeat_at, software_version, schema_state, compatible) VALUES \
                      ('n1', 'c1', '2026-01-01T00:00:00Z', 'i', '2026-01-01T00:00:00Z', \
                      'v', 's', 1)",

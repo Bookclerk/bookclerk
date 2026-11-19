@@ -187,7 +187,7 @@ session token in the person's session list, not a node.
    60 seconds.
 4. The clerk redeems the code with its verifier at
    `POST /api/clerk/v1/token` and gets
-   `{ token, cluster_id, user, idle_secs }`. The token is shown once; the
+   `{ token, library_id, user, idle_secs }`. The token is shown once; the
    library keeps only its hash. Any failed redeem spends the code.
 
 The clerk then sends `Authorization: Bookclerk-Clerk <token>`:
@@ -262,7 +262,7 @@ Answers come in the order the frames were asked.
 A clerk asks for a copy when one of its own acquires wants that edition,
 and takes it when the library downloaded it from the same store, or when
 it is better than the clerk's own download from another store (see
-[When a branch takes the copy](cluster-hosts.md#when-a-branch-takes-the-copy),
+[When a branch takes the copy](branches.md#when-a-branch-takes-the-copy),
 which a clerk follows too). The clerk keeps the token only while the
 acquire runs and keeps it out of its own logs.
 
@@ -271,7 +271,7 @@ download that the card is still signed in and its user is not disabled,
 that the person may still see the edition and that the files are the ones
 it listed. Once the card is signed out, every new download request is
 refused; a file already being sent is not cut off. See
-[Taking a copy from the library](cluster-hosts.md#taking-a-copy-from-the-library)
+[Taking a copy from the library](branches.md#taking-a-copy-from-the-library)
 for the download route's answers.
 
 > [!NOTE]
@@ -325,7 +325,7 @@ Then the daemon keeps the library's clerk socket open with the card:
   `signed_out` so the person can sign in again.
 
 `GET /api/config/clerk` lists the cards. `POST /api/config/clerk/sign-out`
-`{ cluster_id }` ends the card at the library (`POST /api/auth/logout`
+`{ library_id }` ends the card at the library (`POST /api/auth/logout`
 with the card) when it can be reached, then drops the card, its books
 and the library from the list. The answer's `library_signed_out` says
 whether the library ended its session too; when it is `false`, the
@@ -585,13 +585,13 @@ join, and the fingerprint a joining operator checks.
   **Sign in to your library** with a library card instead. An install
   that holds a library card is no longer fresh.
 
-See [Libraries and branches](cluster-hosts.md).
+See [Libraries and branches](branches.md).
 
 ## Live updates
 
 The web app keeps one WebSocket open: `GET /api/live`, subprotocol
 `bookclerk-live.v1`. It names topics whose data changed: `library`,
-`jobs`, `deliveries`, `nodes`, `config`, `consents`, `clusters`,
+`jobs`, `deliveries`, `nodes`, `config`, `consents`, `libraries`,
 `users` and `discover`. Status, Library, Discover, Settings → Nodes,
 User Management and Settings → Library re-read their data when told.
 

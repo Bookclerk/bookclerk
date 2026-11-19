@@ -332,7 +332,7 @@ fn every_control_sets_and_reads_back() {
 #[test]
 fn a_stored_default_of_another_schema_or_bad_json_is_refused() {
     let stored = |schema_version: i64, document_json: &str| StoredDocument {
-        key: DocumentKey::cluster(MEMBER_CONTROLS_NAMESPACE),
+        key: DocumentKey::library(MEMBER_CONTROLS_NAMESPACE),
         schema_version,
         revision: 1,
         document_json: document_json.into(),

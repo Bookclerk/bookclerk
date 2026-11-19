@@ -13,7 +13,7 @@
 //!
 //! External guests share the same [`SourceScope`] boundary.
 //!
-//! On a branch node running an owner cluster's job, the store credentials are
+//! On a branch node running a library's job, the store credentials are
 //! the ones the owner handed with the job
 //! ([`ExternalSource::with_handed_credentials`]): the guest gets only those,
 //! the host's own library is never read for credentials, and a scan
@@ -91,7 +91,7 @@ pub struct ExternalSource {
     source_config: Value,
     /// Deployment instance id. Unset for transitional, non-deployed spawns.
     plugin_instance_id: Option<String>,
-    /// Store credentials an owner cluster handed with a job, by account
+    /// Store credentials a library handed with a job, by account
     /// id. When set they are the only credentials this source uses.
     handed: Option<Arc<HandedCredentials>>,
     /// Where credentials the guest refreshed go for handed credentials (the
@@ -103,7 +103,7 @@ pub struct ExternalSource {
 }
 
 /// Receives the credentials a guest refreshed while it used credentials an
-/// owner cluster handed with a job (`ScanPage.refreshedCredentials`,
+/// library handed with a job (`ScanPage.refreshedCredentials`,
 /// `PlainFetch.refreshedCredentials`), already checked against the ABI
 /// bounds. The daemon writes them back to the owner under the job's fence.
 ///
@@ -359,7 +359,7 @@ impl ExternalSource {
         self.refresh_sink.as_ref()?.latest(account_id)
     }
 
-    /// Uses only `credentials` (an owner cluster handed them with a job)
+    /// Uses only `credentials` (a library handed them with a job)
     /// for every guest call: no library is read for credentials, and
     /// [`ContentSource::scan`] is refused in favour of
     /// [`Self::scan_handed`].
@@ -556,7 +556,7 @@ impl ExternalSource {
     }
 
     /// Credential blob for one account as the guest receives it: the handed
-    /// copy when an owner cluster handed credentials with the job, otherwise
+    /// copy when a library handed credentials with the job, otherwise
     /// the sealed row in `scope`.
     ///
     /// # Returns

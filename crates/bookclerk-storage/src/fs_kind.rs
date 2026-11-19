@@ -2,7 +2,7 @@
 //! leans on hard links, inode numbers and atomic renames where the file
 //! system keeps their promises.
 //!
-//! Network file systems (NFS, SMB/CIFS, AFP, WebDAV, 9p, cluster file
+//! Network file systems (NFS, SMB/CIFS, AFP, WebDAV, 9p, library file
 //! systems) and FUSE mounts break several of them:
 //!
 //! - A retried NFS `LINK` or `RENAME` can answer "already exists" or "not
@@ -24,7 +24,7 @@ pub enum FsKind {
     /// A disk the operating system manages directly (ext4, XFS, Btrfs, ZFS,
     /// APFS, NTFS, FAT and the like).
     Local,
-    /// A network or cluster file system, or a Windows network drive.
+    /// A network or library file system, or a Windows network drive.
     Remote,
     /// A FUSE (or macFUSE) mount: its guarantees depend on the program
     /// behind it, so it is treated like a remote file system.
@@ -95,7 +95,7 @@ mod imp {
     use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
-    /// `f_type` values of network and cluster file systems.
+    /// `f_type` values of network and library file systems.
     const REMOTE: &[i64] = &[
         0x6969,      // NFS
         0x517B,      // SMB (smbfs)

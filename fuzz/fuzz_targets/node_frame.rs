@@ -1,6 +1,6 @@
 //! Coverage-guided parsing of node-to-node frames
 //! (`bookclerk-node-proto::Frame`). A frame arrives from another node of the
-//! cluster, and its `acquire.targets` library ids name storage keys on a
+//! library, and its `acquire.targets` call numbers name storage keys on a
 //! host. The oracle in `fuzz/oracles/node_frame.rs` is shared with the
 //! replay test.
 

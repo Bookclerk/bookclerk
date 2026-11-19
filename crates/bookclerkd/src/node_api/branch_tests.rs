@@ -183,14 +183,14 @@ async fn info_describes_the_library_under_the_transport_policy() {
     let as_member = routes(&state, UserCaller::User { user_id: member }, LOOPBACK);
     let (status, _, info) = call(&as_member, "GET", "/api/node/v1/info", None).await;
     assert_eq!(status, StatusCode::OK, "{info}");
-    let cluster = bookclerk_library::control_plane::load_cluster_row(&store)
+    let library = bookclerk_library::control_plane::load_library_row(&store)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(info["cluster_id"], cluster.cluster_id);
+    assert_eq!(info["library_id"], library.library_id);
     assert_eq!(
         info["ancestry"],
-        json!([cluster.cluster_id]),
+        json!([library.library_id]),
         "a library that is nobody's branch is its own whole ancestry"
     );
     assert_eq!(info["transport"], "loopback");
@@ -291,7 +291,7 @@ async fn a_consented_code_enrolls_one_node_and_retries_replay() {
 
 #[tokio::test]
 async fn a_revoked_branch_gets_no_connections_on_a_retry() {
-    use crate::cluster_link::join::tests::{connect_account, stage_storefront};
+    use crate::library_link::join::tests::{connect_account, stage_storefront};
     use bookclerk_library::control_plane::{revoke_node_credential, EnrollmentActor};
     let _dek = crate::auth::tests::process_dek_lock().await;
     let files = tempfile::tempdir().unwrap();
@@ -803,9 +803,9 @@ fn offered(plugin_key: &str, account_id: &str) -> bookclerk_node_proto::CarriedA
 
 #[tokio::test]
 async fn a_branch_adds_and_withdraws_its_persons_connections() {
-    use crate::cluster_link::join::tests::{connect_account, stage_storefront};
+    use crate::library_link::join::tests::{connect_account, stage_storefront};
     use bookclerk_library::control_plane::{
-        load_cluster_row, set_member_control_overrides, ControlOverrides,
+        load_library_row, set_member_control_overrides, ControlOverrides,
     };
     let allow_linking = |allowed: bool| ControlOverrides {
         link_accounts: Some(allowed),
@@ -829,7 +829,7 @@ async fn a_branch_adds_and_withdraws_its_persons_connections() {
     .await;
     assert_eq!(status, StatusCode::OK, "{enrolled}");
     let node_id = enrolled["node_id"].as_str().unwrap().to_string();
-    let cluster_id = load_cluster_row(&store).await.unwrap().unwrap().cluster_id;
+    let library_id = load_library_row(&store).await.unwrap().unwrap().library_id;
     let host = branch_context(&state, &node_id).await;
     let owner_key = bookclerk_node_proto::box_public_key(&[3; 32]);
     let offer = |node: &str, accounts| {
@@ -838,7 +838,7 @@ async fn a_branch_adds_and_withdraws_its_persons_connections() {
             &[7; 32],
             &AccountBundle {
                 v: ACCOUNT_BUNDLE_VERSION,
-                cluster_id: cluster_id.clone(),
+                library_id: library_id.clone(),
                 node_id: node.into(),
                 accounts,
             },
@@ -1035,8 +1035,8 @@ fn offered_with(
 /// job's write-back of a branch-kept sign-in is refused.
 #[tokio::test]
 async fn a_keeping_branch_pushes_newer_sign_ins_to_the_library() {
-    use crate::cluster_link::join::tests::{connect_account, stage_storefront};
-    use bookclerk_library::control_plane::{keeping_branch, load_cluster_row};
+    use crate::library_link::join::tests::{connect_account, stage_storefront};
+    use bookclerk_library::control_plane::{keeping_branch, load_library_row};
     use bookclerk_library::secrets::{get_secret, secret_account_type, secret_kind, unseal_secret};
     use bookclerk_node_proto::{
         seal_account_offer, seal_secret_update, AccountBundle, Body, Frame, KeeperOutcome,
@@ -1063,7 +1063,7 @@ async fn a_keeping_branch_pushes_newer_sign_ins_to_the_library() {
     .await;
     assert_eq!(status, StatusCode::OK, "{enrolled}");
     let node_id = enrolled["node_id"].as_str().unwrap().to_string();
-    let cluster_id = load_cluster_row(&store).await.unwrap().unwrap().cluster_id;
+    let library_id = load_library_row(&store).await.unwrap().unwrap().library_id;
     let host = branch_context(&state, &node_id).await;
     let owner_key = bookclerk_node_proto::box_public_key(&[3; 32]);
     let seal = |accounts| {
@@ -1072,7 +1072,7 @@ async fn a_keeping_branch_pushes_newer_sign_ins_to_the_library() {
             &[8; 32],
             &AccountBundle {
                 v: ACCOUNT_BUNDLE_VERSION,
-                cluster_id: cluster_id.clone(),
+                library_id: library_id.clone(),
                 node_id: node_id.clone(),
                 accounts,
             },

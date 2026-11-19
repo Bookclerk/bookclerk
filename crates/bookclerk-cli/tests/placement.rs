@@ -144,7 +144,7 @@ fn deploy_places_an_instance_and_manual_hands_it_back() {
     assert!(!tiny.status.success(), "cache budgets are 16 MiB to 1 TiB");
     let cleared = json(&run_bookclerk(
         files,
-        &["--format", "json", "nodes", "set", "--cluster-cache-budget"],
+        &["--format", "json", "nodes", "set", "--library-cache-budget"],
         &[],
     ));
     assert!(cleared["runtime"].get("cache_budget_bytes").is_none());

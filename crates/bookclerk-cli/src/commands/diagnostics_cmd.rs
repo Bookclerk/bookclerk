@@ -1,4 +1,4 @@
-//! `bookclerk diagnostics` — show ring buffer / request upload.
+//! `bookclerk diagnostics` — show ring buffer / request upload / list sent reports.
 
 use bookclerk_config::Config;
 use clap::Subcommand;
@@ -26,6 +26,16 @@ pub enum DiagnosticsCommand {
     /// The next check-in then counts as a new install. Restart the daemon so
     /// its reports carry the new ID.
     ResetId,
+    /// List the diagnostics reports this install sent, newest first.
+    ///
+    /// Each report ID is what the collector stored and what the GitHub
+    /// issue for it mentions: search the issues for it, or give it to a
+    /// maintainer.
+    Reports {
+        /// Max reports to print (0 = all that are kept).
+        #[arg(short = 'n', long, default_value = "20")]
+        limit: usize,
+    },
 }
 
 /// Dispatches a diagnostics subcommand against the process-global ring buffer.
@@ -35,6 +45,24 @@ pub fn run(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     match command {
+        DiagnosticsCommand::Reports { limit } => {
+            let reports = newest_reports(&config.paths().files_dir, limit);
+            let payload = json!({ "reports": reports });
+            emit(format, &payload, || {
+                if reports.is_empty() {
+                    println!("no diagnostics reports sent from this install");
+                }
+                for r in &reports {
+                    println!(
+                        "{}  {}  {}  {}",
+                        r.report_id.as_str(),
+                        r.sent_at_unix_ms,
+                        r.trigger,
+                        r.version
+                    );
+                }
+            })
+        }
         DiagnosticsCommand::ResetId => {
             bookclerk_config::InstallId::reset(&config.paths().files_dir)?;
             let payload = json!({ "reset": true, "share_usage": config.diagnostics.share_usage });
@@ -92,5 +120,54 @@ pub fn run(
                 );
             })
         }
+    }
+}
+
+/// The install's sent reports, newest first.
+///
+/// # Arguments
+///
+/// * `files_dir` - The Bookclerk files directory.
+/// * `limit` - How many to return; `0` returns every kept report.
+fn newest_reports(
+    files_dir: &std::path::Path,
+    limit: usize,
+) -> Vec<bookclerk_config::ReportRecord> {
+    let mut reports = bookclerk_config::load_report_history(files_dir);
+    reports.reverse();
+    if limit > 0 {
+        reports.truncate(limit);
+    }
+    reports
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_list_newest_first_and_honor_the_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for n in 0..3_u64 {
+            bookclerk_config::record_report(
+                dir.path(),
+                bookclerk_config::ReportRecord {
+                    report_id: bookclerk_config::ReportId::parse(&format!(
+                        "0e9ced79-df3c-4dae-872b-2e5772b0000{n}"
+                    ))
+                    .expect("id"),
+                    trigger: "crash".into(),
+                    version: "1".into(),
+                    sent_at_unix_ms: n,
+                },
+            )
+            .expect("record");
+        }
+        let all = newest_reports(dir.path(), 0);
+        assert_eq!(
+            all.iter().map(|r| r.sent_at_unix_ms).collect::<Vec<_>>(),
+            vec![2, 1, 0]
+        );
+        assert_eq!(newest_reports(dir.path(), 2).len(), 2);
     }
 }

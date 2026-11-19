@@ -28,7 +28,7 @@ pub struct DiscoveredPlugin {
     pub command: PathBuf,
     /// Host-evaluated provenance-qualified identity.
     pub identity: PluginInstallIdentity,
-    /// Consent grant recorded on the cluster release this tree was
+    /// Consent grant recorded on the library release this tree was
     /// materialized from; `None` for host-local trees, whose grant lives in
     /// `plugin-grants.json`.
     pub version_grant: Option<crate::PluginGrant>,
@@ -56,11 +56,11 @@ pub enum StateScope {
 
 /// The directory leaf that holds one joined library's plugin state:
 /// `link-` and 32 lowercase hex digits (128 bits of the SHA-256 of the
-/// library's cluster id, as `PluginKey::fs_id` keeps). An owner picks its
-/// own cluster id, so the digest must be long enough that no library can
+/// library's id, as `PluginKey::fs_id` keeps). An owner picks its
+/// own library id, so the digest must be long enough that no library can
 /// search for an id that lands in another library's directory.
 ///
-/// Derived from the cluster id rather than copying it, so the leaf is
+/// Derived from the library id rather than copying it, so the leaf is
 /// always filesystem-safe and fixed-length whatever the owner sent.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LinkStateDir(String);
@@ -68,15 +68,15 @@ pub struct LinkStateDir(String);
 /// Prefix of every [`LinkStateDir`] leaf; never a `PluginKey` fs-id (`pk-`).
 pub const LINK_STATE_DIR_PREFIX: &str = "link-";
 
-/// Hex digits of the cluster-id digest a [`LinkStateDir`] keeps.
+/// Hex digits of the library-id digest a [`LinkStateDir`] keeps.
 const LINK_STATE_DIR_HEX_CHARS: usize = 32;
 
 impl LinkStateDir {
-    /// The state directory leaf of the library with `cluster_id`.
+    /// The state directory leaf of the library with `library_id`.
     #[must_use]
-    pub fn for_cluster(cluster_id: &str) -> Self {
+    pub fn for_library(library_id: &str) -> Self {
         use sha2::Digest as _;
-        let digest = hex::encode(sha2::Sha256::digest(cluster_id.as_bytes()));
+        let digest = hex::encode(sha2::Sha256::digest(library_id.as_bytes()));
         Self(format!(
             "{LINK_STATE_DIR_PREFIX}{}",
             &digest[..LINK_STATE_DIR_HEX_CHARS]
@@ -154,7 +154,7 @@ impl DiscoveredPlugin {
         }
     }
 
-    /// Builds a plugin from a tree materialized from a cluster release.
+    /// Builds a plugin from a tree materialized from a library release.
     ///
     /// The caller has already verified the tree's payload-root digest
     /// against the release row; identity, version, and the consent grant

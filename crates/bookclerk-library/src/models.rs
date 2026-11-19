@@ -195,7 +195,7 @@ pub struct UserSsoPicture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum UserRole {
-    /// Cluster super-user: may elevate to Operator after password re-auth.
+    /// Library super-user: may elevate to Operator after password re-auth.
     Owner,
     /// Library / user administration without Operator elevation.
     Administrator,
@@ -1596,7 +1596,7 @@ pub enum JobKind {
     /// [`JobPayload::node_id`] claims it.
     SearchIndexRebuild,
     /// Rebuild the library's page index (`library_work_rows`) from the
-    /// library model (`library_index_rebuild`); one for the whole cluster,
+    /// library model (`library_index_rebuild`); one for the whole library,
     /// any node claims it.
     LibraryIndexRebuild,
     /// An interlibrary request (`branch_request`): send this library a
@@ -1756,7 +1756,7 @@ impl JobKind {
                 "search_index_rebuild:node={}",
                 payload.node_id.as_deref().unwrap_or("-")
             ),
-            // One queued or running rebuild for the whole cluster.
+            // One queued or running rebuild for the whole library.
             Self::LibraryIndexRebuild => "library_index_rebuild".into(),
             // One queued or running request per branch and work: asking
             // again while one waits folds into it.
@@ -2619,7 +2619,7 @@ pub struct EventSubscriberNodeRecord {
     pub heartbeat_at: DateTime<Utc>,
 }
 
-/// Cluster-authoritative catalog row after collapsing live nodes by `plugin_id`.
+/// Library-authoritative catalog row after collapsing live nodes by `plugin_id`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EventSubscriberCatalogRecord {
     /// Canonical PluginKey of the subscriber (not the display alias).

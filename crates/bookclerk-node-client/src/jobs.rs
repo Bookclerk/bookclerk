@@ -16,7 +16,7 @@ use crate::client::Shared;
 /// A job the owner handed this host, under its fence.
 #[derive(Debug, Clone)]
 pub struct HostJob {
-    /// This host's node id in the owner cluster (the lease owner is
+    /// This host's node id in the library (the lease owner is
     /// `host:<node_id>`).
     pub node_id: String,
     /// The job as the owner stores it.
@@ -177,14 +177,14 @@ pub struct GrantedCopy {
     pub files: Vec<bookclerk_node_proto::CopyFile>,
     /// The bearer token, opened with this node's box key.
     token: SecretValue,
-    /// Cluster id of the library that granted the copy: the only one its
+    /// Library id of the library that granted the copy: the only one its
     /// token is sent to.
     library: String,
 }
 
 impl GrantedCopy {
     /// Wraps a grant opened on the link to the library `library` (its
-    /// cluster id).
+    /// library id).
     pub(crate) fn new(
         library: String,
         copy_id: String,
@@ -203,11 +203,11 @@ impl GrantedCopy {
         }
     }
 
-    /// True when the library with cluster id `cluster_id` granted this
+    /// True when the library with library id `library_id` granted this
     /// copy. A branch may be linked to several libraries, and a copy's
     /// token goes to none but its own.
-    pub(crate) fn granted_by(&self, cluster_id: &str) -> bool {
-        self.library == cluster_id
+    pub(crate) fn granted_by(&self, library_id: &str) -> bool {
+        self.library == library_id
     }
 
     /// The `Authorization` header value of this copy's downloads.

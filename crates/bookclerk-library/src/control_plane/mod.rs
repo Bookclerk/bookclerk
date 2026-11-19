@@ -16,8 +16,8 @@ mod cache;
 mod carried_accounts;
 mod catalog_lookup;
 mod clerk_links;
-mod cluster_links;
-pub(crate) use cluster_links::from_object;
+mod library_links;
+pub(crate) use library_links::from_object;
 mod connections_request;
 mod copies;
 mod cron_fires;
@@ -109,16 +109,6 @@ pub use clerk_links::{
     forget_clerk_link, list_clerk_links, load_clerk_card, load_clerk_link, record_clerk_link,
     sign_out_clerk_link, ClerkLink, ClerkLinkState, LibraryCard, NewClerkLink, CLERK_CARD_NAME,
 };
-pub use cluster_links::{
-    decode_spki_pin, join_cycle, join_overflows_ancestry, leave_cluster_link, library_ancestry,
-    list_cluster_links, load_cluster_link, load_cluster_link_keys, mark_cluster_link_revoked,
-    parse_job_cap_request, parse_sharing_request, record_cluster_link, set_cluster_link_ancestry,
-    set_cluster_link_job_cap, set_cluster_link_keep_copies, set_cluster_link_listing,
-    set_cluster_link_person, set_cluster_link_settings, set_cluster_link_sharing,
-    set_cluster_link_state, set_cluster_link_work, CapacityBody, ClusterLink, ClusterLinkKeys,
-    ClusterLinkSettings, JobCapRequest, LinkJobCap, NewClusterLink, SharingBody, SharingRequest,
-    CLUSTER_LINK_ACTIVE, CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
-};
 pub use connections_request::{
     parse_add_connections_request, parse_disconnect_request, AccountRef, AddConnectionsBody,
     AddConnectionsRequest, DisconnectBody, DisconnectRequest, MAX_ADD_CONNECTIONS,
@@ -146,8 +136,8 @@ pub use destination_filters::{
 };
 pub use documents::{
     audit_count, change_count, ConfigActor, DocumentKey, ReplaceOutcome, StoredDocument,
-    VerifiedClusterOwner, VerifiedNodeOwner, VerifiedPatronAdministrator, CLUSTER_SCOPE_ID,
-    CLUSTER_SCOPE_TYPE, MAX_CONFIGURATION_DOCUMENT_BYTES, NODE_SCOPE_TYPE,
+    VerifiedLibraryOwner, VerifiedNodeOwner, VerifiedPatronAdministrator, LIBRARY_SCOPE_ID,
+    LIBRARY_SCOPE_TYPE, MAX_CONFIGURATION_DOCUMENT_BYTES, NODE_SCOPE_TYPE,
     PLUGIN_INSTANCE_CONFIG_NAMESPACE, PLUGIN_INSTANCE_SCOPE_TYPE,
 };
 pub use enrollment::{
@@ -156,7 +146,7 @@ pub use enrollment::{
     mint_enrollment_link, parse_enrollment_token, record_authorized_enrollment_link,
     record_node_connected, record_node_left, redeem_enrollment_link, redeem_enrollment_link_as,
     revoke_enrollment_link, revoke_node_credential, set_host_enrollment_enabled,
-    verify_cluster_owner, EnrolledNode, EnrollmentActor, EnrollmentLink, EnrollmentSecret,
+    verify_library_owner, EnrolledNode, EnrollmentActor, EnrollmentLink, EnrollmentSecret,
     EnrollmentToken, HostEnrollmentSettings, HostEnrollmentSettingsV1, MintedLink, NodeCredential,
     RedeemRequest, AUTHORIZED_LINK_CREATED_BY, DEFAULT_LINK_TTL, ENROLLMENT_TOKEN_PREFIX,
     HOST_ENROLLMENT_NAMESPACE, HOST_ENROLLMENT_SCHEMA_VERSION, MAX_LINK_LABEL_BYTES, MAX_LINK_TTL,
@@ -195,9 +185,19 @@ pub use keeper::{
 };
 pub use leases::{
     acquire_lease, acquire_lease_on, list_leases, load_lease, load_lease_on, release_lease,
-    release_lease_on, renew_lease, renew_lease_on, ClusterLease, LeaseFence, SingletonDuty,
+    release_lease_on, renew_lease, renew_lease_on, LeaseFence, LibraryLease, SingletonDuty,
     EVENT_RETENTION_LEASE, JOB_RETENTION_LEASE, KV_EXPIRY_LEASE, MIGRATION_LEASE,
     RECORD_RETENTION_LEASE, SESSION_EXPIRY_LEASE,
+};
+pub use library_links::{
+    decode_spki_pin, join_cycle, join_overflows_ancestry, leave_library_link, library_ancestry,
+    list_library_links, load_library_link, load_library_link_keys, mark_library_link_revoked,
+    parse_job_cap_request, parse_sharing_request, record_library_link, set_library_link_ancestry,
+    set_library_link_job_cap, set_library_link_keep_copies, set_library_link_listing,
+    set_library_link_person, set_library_link_settings, set_library_link_sharing,
+    set_library_link_state, set_library_link_work, CapacityBody, JobCapRequest, LibraryLink,
+    LibraryLinkKeys, LibraryLinkSettings, LinkJobCap, NewLibraryLink, SharingBody, SharingRequest,
+    LIBRARY_LINK_ACTIVE, LIBRARY_LINK_KEYS_NAME, LIBRARY_LINK_LEFT, LIBRARY_LINK_REVOKED,
 };
 pub use link_imports::{
     books_imported_from_link, import_link_title, record_copy_taken_from_link, HeldBookKey,
@@ -286,7 +286,7 @@ pub use schemas::{
     require_plugin_schema, schema_fingerprint, stale_against_pin, PinnedPluginSchema, SchemaPin,
     SchemaPinChange, SchemaPinOutcome,
 };
-pub use secret::{align_cluster_root, load_cluster_row, ClusterSecret};
+pub use secret::{align_library_root, load_library_row, LibrarySecret};
 pub use semaphore::{
     acquire_permit, acquire_permits, live_permits, permits_held_by, release_permits,
     renew_fenced_lease, renew_permits, semaphore_slot_lease_name, PermitAcquire, SemaphorePermit,
@@ -353,7 +353,7 @@ pub struct EventsSettingsV1 {
     /// Days to keep dead-lettered deliveries.
     #[schema(example = 90)]
     pub dead_letter_retention_days: u64,
-    /// Local delivery workers and the cluster in-flight cap.
+    /// Local delivery workers and the library in-flight cap.
     #[schema(example = 4)]
     pub concurrency: u32,
 }
@@ -404,7 +404,7 @@ impl EventsSettingsV1 {
 
 /// Typed node-scoped runtime document, schema version 1.
 ///
-/// Desired state for one node, editable from any node in the cluster: an
+/// Desired state for one node, editable from any node in the library: an
 /// operator label, and the budget the scheduler may commit on this node.
 /// Budgets are shares of the capacity the node detects at heartbeat
 /// (CPU cores and memory, the tighter of the machine and its cgroup).
@@ -428,8 +428,8 @@ pub struct NodeRuntimeSettingsV1 {
     #[schema(example = true)]
     pub schedulable: bool,
     /// Disk space, in bytes, this node's image caches may use together,
-    /// overriding the cluster's `core.cache` budget (16 MiB to 1 TiB).
-    /// Absent means the cluster budget applies.
+    /// overriding the library's `core.cache` budget (16 MiB to 1 TiB).
+    /// Absent means the library budget applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(
         minimum = 16_777_216_u64,
@@ -524,7 +524,7 @@ pub struct ConfigurationDocument<T> {
     pub updated_at: String,
     /// Audit identity of the last writer.
     pub updated_by: String,
-    /// Scope type (`cluster` or `node`).
+    /// Scope type (`library` or `node`).
     pub scope_type: String,
     /// Scope id (`singleton` or a node id).
     pub scope_id: String,
@@ -537,8 +537,8 @@ pub struct ConfigurationDocument<T> {
 pub struct ControlPlaneSession {
     /// Registered node.
     pub node: NodeRecord,
-    /// Cluster id from the secret root.
-    pub cluster_id: String,
+    /// Library id from the secret root.
+    pub library_id: String,
     /// Authoritative `[events]` document.
     pub events: ConfigurationDocument<EventsSettingsV1>,
     /// Authoritative shared `[output]` document.
@@ -563,7 +563,7 @@ pub struct ControlPlaneSession {
 ///
 /// # Errors
 ///
-/// Returns an error when the secret root, cluster binding, schema, or a core
+/// Returns an error when the secret root, library binding, schema, or a core
 /// document cannot be established.
 pub async fn bootstrap_control_plane(
     store: &LibraryStore,
@@ -573,12 +573,12 @@ pub async fn bootstrap_control_plane(
     seed: &bookclerk_config::Config,
 ) -> Result<ControlPlaneSession> {
     let _identity = identity::load_or_create_node_identity(files_dir)?;
-    let secret = align_cluster_root(store, files_dir, password).await?;
-    let identity = identity::bind_cluster_id(files_dir, &secret.cluster_id)?;
+    let secret = align_library_root(store, files_dir, password).await?;
+    let identity = identity::bind_library_id(files_dir, &secret.library_id)?;
     let node = heartbeat_process(
         store,
         &identity.node_id,
-        &secret.cluster_id,
+        &secret.library_id,
         files_dir,
         scratch_dir,
     )
@@ -619,49 +619,49 @@ pub async fn bootstrap_control_plane(
     .await?;
     Ok(ControlPlaneSession {
         node,
-        cluster_id: secret.cluster_id,
+        library_id: secret.library_id,
         events,
         output,
         node_runtime,
     })
 }
 
-/// Copies every authoritative cluster document in `session` onto `config`.
+/// Copies every authoritative library document in `session` onto `config`.
 pub fn overlay_core_documents(
     config: &mut bookclerk_config::Config,
     session: &ControlPlaneSession,
 ) {
-    overlay_events(config, &session.events, &session.cluster_id);
-    overlay_output(config, &session.output, &session.cluster_id);
+    overlay_events(config, &session.events, &session.library_id);
+    overlay_output(config, &session.output, &session.library_id);
 }
 
-/// Copies the authoritative events document onto `config` for `cluster_id`.
+/// Copies the authoritative events document onto `config` for `library_id`.
 ///
-/// Revisions are only comparable within one cluster. Callers that switch
-/// databases pass the new cluster id explicitly.
+/// Revisions are only comparable within one library. Callers that switch
+/// databases pass the new library id explicitly.
 pub fn overlay_events(
     config: &mut bookclerk_config::Config,
     events: &ConfigurationDocument<EventsSettingsV1>,
-    cluster_id: &str,
+    library_id: &str,
 ) {
     events.body.apply_to(&mut config.events);
     config.events_revision = Some(events.revision);
-    config.events_authority = Some(cluster_id.to_string());
+    config.events_authority = Some(library_id.to_string());
 }
 
-/// Loads the cluster events document.
+/// Loads the library events document.
 ///
 /// # Errors
 ///
 /// Returns an error when the document is missing, unsupported, or invalid.
 pub async fn load_events(store: &LibraryStore) -> Result<ConfigurationDocument<EventsSettingsV1>> {
-    let stored = load_document(store, &DocumentKey::cluster(EVENTS_NAMESPACE))
+    let stored = load_document(store, &DocumentKey::library(EVENTS_NAMESPACE))
         .await?
         .ok_or_else(|| LibraryError::not_found(EntityKind::Configuration, "core.events"))?;
     parse_events(stored)
 }
 
-/// Inserts `[events]` when the cluster document is absent.
+/// Inserts `[events]` when the library document is absent.
 ///
 /// An existing document is parsed and returned without reading the seed, so an
 /// obsolete or out-of-range TOML/environment value cannot fail startup.
@@ -676,7 +676,7 @@ pub async fn import_events_if_absent(
     seed: &bookclerk_config::EventsConfig,
     operation_id: &str,
 ) -> Result<ConfigurationDocument<EventsSettingsV1>> {
-    let key = DocumentKey::cluster(EVENTS_NAMESPACE);
+    let key = DocumentKey::library(EVENTS_NAMESPACE);
     if let Some(existing) = load_document(store, &key).await? {
         return parse_events(existing);
     }
@@ -705,7 +705,7 @@ pub async fn import_events_if_absent(
     parse_events(stored)
 }
 
-/// Replaces the cluster events document.
+/// Replaces the library events document.
 ///
 /// # Errors
 ///
@@ -723,7 +723,7 @@ pub async fn replace_events(
     match replace_document(
         store,
         actor,
-        &DocumentKey::cluster(EVENTS_NAMESPACE),
+        &DocumentKey::library(EVENTS_NAMESPACE),
         EVENTS_SCHEMA_VERSION,
         expected_revision,
         &json,

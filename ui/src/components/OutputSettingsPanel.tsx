@@ -100,7 +100,7 @@ function outputValues(settings: SettingsResponse): Record<string, string> {
 }
 
 /**
- * Shared output packaging (`core.output`): one cluster document in the
+ * Shared output packaging (`core.output`): one library document in the
  * library database, saved on its own because it is a separate authority from
  * the file-backed server settings.
  *

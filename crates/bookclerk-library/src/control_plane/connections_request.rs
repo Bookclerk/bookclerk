@@ -9,7 +9,7 @@
 
 use serde::Deserialize;
 
-use super::cluster_links::from_object;
+use super::library_links::from_object;
 use crate::error::{LibraryError, Result};
 
 /// Most accounts one "Add my connections" request names: as many as one
@@ -60,9 +60,9 @@ impl<'de> Deserialize<'de> for AccountRef {
 // enforces it.
 #[serde(deny_unknown_fields)]
 pub struct AddConnectionsBody {
-    /// The library (owner cluster id) to add the connections to.
+    /// The library (parent library id) to add the connections to.
     #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
-    cluster_id: String,
+    library_id: String,
     /// The person's accounts to add; 1 to 64.
     accounts: Vec<AccountRef>,
 }
@@ -73,7 +73,7 @@ pub struct AddConnectionsBody {
 #[serde(deny_unknown_fields)]
 struct AddConnectionsFields {
     /// See [`AddConnectionsBody`].
-    cluster_id: String,
+    library_id: String,
     /// See [`AddConnectionsBody`].
     accounts: Vec<AccountRef>,
 }
@@ -84,9 +84,9 @@ impl<'de> Deserialize<'de> for AddConnectionsBody {
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
         let fields: AddConnectionsFields =
-            from_object(deserializer, "a JSON object with cluster_id and accounts")?;
+            from_object(deserializer, "a JSON object with library_id and accounts")?;
         Ok(Self {
-            cluster_id: fields.cluster_id,
+            library_id: fields.library_id,
             accounts: fields.accounts,
         })
     }
@@ -96,8 +96,8 @@ impl<'de> Deserialize<'de> for AddConnectionsBody {
 /// accounts picked, between 1 and [`MAX_ADD_CONNECTIONS`] of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddConnectionsRequest {
-    /// The library (owner cluster id), surrounding whitespace removed.
-    pub cluster_id: String,
+    /// The library (parent library id), surrounding whitespace removed.
+    pub library_id: String,
     /// The accounts picked, in the order sent.
     pub accounts: Vec<AccountRef>,
 }
@@ -116,7 +116,7 @@ impl AddConnectionsBody {
             )));
         }
         Ok(AddConnectionsRequest {
-            cluster_id: self.cluster_id.trim().to_string(),
+            library_id: self.library_id.trim().to_string(),
             accounts: self.accounts,
         })
     }
@@ -235,12 +235,12 @@ mod tests {
     #[test]
     fn an_add_body_trims_the_library_and_keeps_the_picks() {
         let request = parse_add_connections_request(
-            br#"{"cluster_id":" c1 ","accounts":[{"plugin_key":"p","account_id":"a"}]}"#,
+            br#"{"library_id":" c1 ","accounts":[{"plugin_key":"p","account_id":"a"}]}"#,
         );
         assert_eq!(
             request.ok(),
             Some(AddConnectionsRequest {
-                cluster_id: "c1".into(),
+                library_id: "c1".into(),
                 accounts: vec![AccountRef {
                     plugin_key: "p".into(),
                     account_id: "a".into(),
@@ -256,7 +256,7 @@ mod tests {
                 .map(|i| format!(r#"{{"plugin_key":"p","account_id":"a{i}"}}"#))
                 .collect::<Vec<_>>()
                 .join(",");
-            format!(r#"{{"cluster_id":"c1","accounts":[{accounts}]}}"#)
+            format!(r#"{{"library_id":"c1","accounts":[{accounts}]}}"#)
         };
         assert!(matches!(
             parse_add_connections_request(body(0).as_bytes()),
@@ -273,9 +273,9 @@ mod tests {
     fn positional_and_repeated_shapes_are_refused() {
         for body in [
             &br#"["c1",[{"plugin_key":"p","account_id":"a"}]]"#[..],
-            br#"{"cluster_id":"c1","accounts":[["p","a"]]}"#,
-            br#"{"cluster_id":"c1","cluster_id":"c2","accounts":[{"plugin_key":"p","account_id":"a"}]}"#,
-            br#"{"cluster_id":"c1","accounts":[{"plugin_key":"p","account_id":"a","x":1}]}"#,
+            br#"{"library_id":"c1","accounts":[["p","a"]]}"#,
+            br#"{"library_id":"c1","library_id":"c2","accounts":[{"plugin_key":"p","account_id":"a"}]}"#,
+            br#"{"library_id":"c1","accounts":[{"plugin_key":"p","account_id":"a","x":1}]}"#,
         ] {
             assert!(
                 matches!(

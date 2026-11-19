@@ -13,7 +13,7 @@ artifact layout (see [Plugin registry](../plugins/registry.md)).
 | --- | --- | --- |
 | **Host** (`bookclerk`, `bookclerkd`) | Not on crates.io today | No: an OS installer or GitHub Release |
 | **Platform plugins** (`sqlite`, `local`) | May publish metadata crates later | **Bundled** in the platform install (`cargo package-platform`) |
-| **Storefront plugins** (Audible, Libro, …) | A discovery index, when published | **Opt-in**, through `bookclerk plugins install` (which records a cluster install) |
+| **Storefront plugins** (Audible, Libro, …) | A discovery index, when published | **Opt-in**, through `bookclerk plugins install` (which records a library install) |
 
 crates.io is a **catalog**, not a runtime dependency resolver. Nothing is
 compiled from crates.io on the operator's machine.

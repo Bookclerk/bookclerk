@@ -2,7 +2,7 @@
 //! see (see `docs/adr/patron-scopes.md`).
 //!
 //! Six switches, each on out of the box ([`MemberControl`]). The library's
-//! default (the `core.member_controls` cluster document) sets every switch
+//! default (the `core.member_controls` library document) sets every switch
 //! for Members; single switches can be overridden for one patron (a
 //! `patron_controls` row), and a Member's other switches keep following
 //! the default. An Administrator follows no default: only overrides an
@@ -29,7 +29,7 @@ use crate::models::{UserRecord, UserRole, UserStatus};
 use crate::store::LibraryStore;
 use crate::EntityKind;
 
-/// Namespace of the cluster document that holds the library's default
+/// Namespace of the library document that holds the library's default
 /// member controls.
 pub const MEMBER_CONTROLS_NAMESPACE: &str = "core.member_controls";
 
@@ -297,7 +297,7 @@ pub struct AssignedControls {
 pub async fn load_default_member_controls(
     store: &LibraryStore,
 ) -> Result<Option<ConfigurationDocument<MemberControls>>> {
-    load_document(store, &DocumentKey::cluster(MEMBER_CONTROLS_NAMESPACE))
+    load_document(store, &DocumentKey::library(MEMBER_CONTROLS_NAMESPACE))
         .await?
         .map(parse_default)
         .transpose()
@@ -335,7 +335,7 @@ pub async fn set_default_member_controls(
     actor: &ConfigActor,
     controls: MemberControls,
 ) -> Result<ConfigurationDocument<MemberControls>> {
-    let key = DocumentKey::cluster(MEMBER_CONTROLS_NAMESPACE);
+    let key = DocumentKey::library(MEMBER_CONTROLS_NAMESPACE);
     for attempt in 0..4 {
         let current = match load_default_member_controls(store).await? {
             Some(document) => document,
@@ -640,8 +640,8 @@ impl ControlGuard {
             text(&self.role),
             int(self.user_id),
             text(&self.overrides_json),
-            text(documents::CLUSTER_SCOPE_TYPE),
-            text(documents::CLUSTER_SCOPE_ID),
+            text(documents::LIBRARY_SCOPE_TYPE),
+            text(documents::LIBRARY_SCOPE_ID),
             text(MEMBER_CONTROLS_NAMESPACE),
             int(self.default_revision),
         ]

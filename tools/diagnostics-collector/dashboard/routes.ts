@@ -76,6 +76,7 @@ import {
 } from "./triage-forms.ts";
 import { applyMute, getMute, setTriageState, signatureInstalls } from "./triage-state.ts";
 import { usageStats } from "../checkin.ts";
+import { demoStats } from "../demo-runs.ts";
 import { dashboardOrigin, renderSummary } from "./summary.ts";
 import { announceChange, closeAllLive, connectLive } from "./live.ts";
 import { fmtDay, html, htmlResponse, redirect } from "./html.ts";
@@ -83,6 +84,8 @@ import {
   dailySeries,
   issuePage,
   issuesPage,
+  demoPage,
+  DEMO_RANGES,
   messagePage,
   overviewPage,
   privacyUrl,
@@ -112,6 +115,7 @@ const PATHS = new Set([
   "/reports",
   "/issues",
   "/issues/link",
+  "/demo",
   "/admin/reindex",
   "/admin/sync",
   "/admin/sign-out-all",
@@ -771,6 +775,13 @@ export async function dashboardFetch(
         now,
       }),
     );
+  }
+
+  if (path === "/demo") {
+    const asked = Number(q.get("days"));
+    const days = (DEMO_RANGES as readonly number[]).includes(asked) ? asked : DEMO_RANGES[0];
+    const stats = await demoStats(db, Math.floor(now / 1000), days);
+    return htmlResponse(demoPage({ member, now, days, stats }));
   }
 
   if (path === "/issues") {

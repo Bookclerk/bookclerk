@@ -5,7 +5,7 @@
 //! workers use, as a [`Claimant::Remote`]:
 //!
 //! - [`claim_remote_job`]: the routed claim (trust-filtered, under the
-//!   cluster semaphores), then [`handoff_routed_job`] re-checks trust just
+//!   library semaphores), then [`handoff_routed_job`] re-checks trust just
 //!   before the job's secrets are unsealed for the node.
 //! - [`renew_remote_job`]: the fenced job heartbeat plus the renewal of the
 //!   job's semaphore permits and of the tokens of the job's open uploads.
@@ -126,7 +126,7 @@ impl std::fmt::Debug for JobSecret {
 pub struct RemoteClaimSettings {
     /// Lease length; permits are taken for the same time.
     pub lease_secs: u64,
-    /// Cluster semaphore limits.
+    /// Library semaphore limits.
     pub limits: JobClaimLimits,
 }
 

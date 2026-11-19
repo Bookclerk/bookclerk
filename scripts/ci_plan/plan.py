@@ -1454,7 +1454,7 @@ def _expand_prereqs(
             plan,
             "windows_cluster",
             "build",
-            "cluster_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd",
+            "library_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd",
             packages=[
                 "bookclerk-plugin-database-sqlite",
                 "bookclerk-jail",
@@ -1465,7 +1465,7 @@ def _expand_prereqs(
             plan,
             "windows_cluster",
             "ensure_workerd",
-            "cluster_secret_startup spawns through pinned workerd",
+            "library_secret_startup spawns through pinned workerd",
         )
 
 

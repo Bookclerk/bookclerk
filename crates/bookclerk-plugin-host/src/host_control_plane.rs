@@ -51,7 +51,7 @@ pub struct HostControlPlane {
     pub database_registry: DatabaseRegistry,
     /// Open library.
     pub store: LibraryStore,
-    /// Node identity, cluster id, and core documents.
+    /// Node identity, library id, and core documents.
     pub session: ControlPlaneSession,
     /// Plugins enrolled on this pass.
     pub enrolled: Vec<EnrolledPlugin>,
@@ -109,7 +109,7 @@ pub async fn open_host_control_plane_with_store(
 pub struct NodeEnrollment {
     /// Bootstrap config with the database-backed domains overlaid.
     pub config: Config,
-    /// Node identity, cluster id, and core documents.
+    /// Node identity, library id, and core documents.
     pub session: ControlPlaneSession,
     /// Plugins enrolled on this pass.
     pub enrolled: Vec<EnrolledPlugin>,

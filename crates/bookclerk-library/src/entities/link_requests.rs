@@ -13,7 +13,7 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,
     /// The library that asked for the book.
-    pub cluster_id: String,
+    pub library_id: String,
     /// Provenance-qualified plugin key of the store.
     pub plugin_key: String,
     /// Store account here that holds the book and fulfils the request.

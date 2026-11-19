@@ -4,11 +4,11 @@
 //! not a node of that library. Signing in redeems an OAuth code for a
 //! library card (`ClerkTokenAnswer`). [`record_clerk_link`] seals the card
 //! with this install's DEK into one `encrypted_secrets` row (`kind =
-//! clerk_card`, `provider` and `account_id` = the library's cluster id) and
+//! clerk_card`, `provider` and `account_id` = the library id) and
 //! writes the `clerk_links` row. The clerk reader loads the card with
 //! [`load_clerk_card`] to dial the library's clerk socket, and stores the
 //! books it reads with the window books functions
-//! (`control_plane::window_books`), keyed by the library's cluster id, so
+//! (`control_plane::window_books`), keyed by the library id, so
 //! "Books in other libraries" merges them with those of the libraries this
 //! install is a branch of.
 //!
@@ -21,7 +21,7 @@ use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrde
 use serde::Serialize;
 use zeroize::Zeroizing;
 
-use crate::control_plane::{clear_window_books, load_cluster_link, sea_probe, Bump, LiveTopic};
+use crate::control_plane::{clear_window_books, load_library_link, sea_probe, Bump, LiveTopic};
 use crate::entities::clerk_links;
 use crate::error::{LibraryError, Result};
 use crate::secrets::{
@@ -72,8 +72,8 @@ impl ClerkLinkState {
 /// One library this install holds (or held) a library card for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ClerkLink {
-    /// The library's cluster id.
-    pub library_cluster_id: String,
+    /// The library id.
+    pub library_id: String,
     /// The library's origin as [`bookclerk_node_proto::canonical_origin`]
     /// spells it.
     pub origin: String,
@@ -107,7 +107,7 @@ impl ClerkLink {
 impl From<clerk_links::Model> for ClerkLink {
     fn from(row: clerk_links::Model) -> Self {
         Self {
-            library_cluster_id: row.library_cluster_id,
+            library_id: row.library_id,
             origin: row.origin,
             spki_pin: row.spki_pin,
             library_name: row.library_name,
@@ -156,9 +156,9 @@ impl LibraryCard {
 /// What a sign-in returned, to record with [`record_clerk_link`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewClerkLink {
-    /// The library's cluster id, as both its info and its token answer
+    /// The library id, as both its info and its token answer
     /// named it.
-    pub library_cluster_id: String,
+    pub library_id: String,
     /// The origin the sign-in went to.
     pub origin: String,
     /// SPKI pin the person confirmed, for a self-signed library.
@@ -182,7 +182,7 @@ pub struct NewClerkLink {
 ///
 /// # Errors
 ///
-/// Returns [`LibraryError::Invalid`] for a malformed cluster id, origin,
+/// Returns [`LibraryError::Invalid`] for a malformed library id, origin,
 /// pin, name or user id, [`LibraryError::Conflict`] when this install is
 /// already an active branch of that library (it reads that
 /// library's books through the link instead), an error when no master key
@@ -192,8 +192,8 @@ pub async fn record_clerk_link(
     link: &NewClerkLink,
     card: &LibraryCard,
 ) -> Result<ClerkLink> {
-    if !bookclerk_node_proto::is_cluster_id(&link.library_cluster_id) {
-        return Err(LibraryError::Invalid("not a library cluster id".into()));
+    if !bookclerk_node_proto::is_library_id(&link.library_id) {
+        return Err(LibraryError::Invalid("not a library id".into()));
     }
     let origin = bookclerk_node_proto::canonical_origin(&link.origin)
         .ok_or_else(|| LibraryError::Invalid("library origin must be an http(s) origin".into()))?;
@@ -224,9 +224,9 @@ pub async fn record_clerk_link(
             "display name is not displayable".into(),
         ));
     }
-    if load_cluster_link(store, &link.library_cluster_id)
+    if load_library_link(store, &link.library_id)
         .await?
-        .is_some_and(|cluster| cluster.is_active())
+        .is_some_and(|library| library.is_active())
     {
         return Err(LibraryError::Conflict(
             "this install already joined that library; its books are read through that link".into(),
@@ -235,15 +235,15 @@ pub async fn record_clerk_link(
     let record = build_sealed_record(
         card.expose().as_bytes(),
         secret_kind::CLERK_CARD,
-        &link.library_cluster_id,
+        &link.library_id,
         secret_account_type::OPERATOR,
-        &link.library_cluster_id,
+        &link.library_id,
         CLERK_CARD_NAME,
     )?;
     upsert_secret(store.db(), &record).await?;
     let now = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
     let row = clerk_links::ActiveModel {
-        library_cluster_id: Set(link.library_cluster_id.clone()),
+        library_id: Set(link.library_id.clone()),
         origin: Set(origin),
         spki_pin: Set(link.spki_pin.clone()),
         library_name: Set(library_name.to_string()),
@@ -255,7 +255,7 @@ pub async fn record_clerk_link(
         updated_at: Set(now),
     };
     let insert = clerk_links::Entity::insert(row).on_conflict(
-        OnConflict::column(clerk_links::Column::LibraryClusterId)
+        OnConflict::column(clerk_links::Column::LibraryId)
             .update_columns([
                 clerk_links::Column::Origin,
                 clerk_links::Column::SpkiPin,
@@ -269,18 +269,18 @@ pub async fn record_clerk_link(
             ])
             .to_owned(),
     );
-    let previous = load_clerk_link(store, &link.library_cluster_id).await?;
+    let previous = load_clerk_link(store, &link.library_id).await?;
     store
-        .exec_bumped(insert, LiveTopic::Clusters, Bump::Always)
+        .exec_bumped(insert, LiveTopic::Libraries, Bump::Always)
         .await?;
     // A sign-in as another person must not show the previous person's
     // books, even for the moment before the reader replaces them.
     if previous.is_some_and(|prev| prev.remote_user_id != link.remote_user_id) {
-        clear_window_books(store, &link.library_cluster_id).await?;
+        clear_window_books(store, &link.library_id).await?;
     }
-    load_clerk_link(store, &link.library_cluster_id)
+    load_clerk_link(store, &link.library_id)
         .await?
-        .ok_or_else(|| LibraryError::not_found(EntityKind::ClerkLink, &link.library_cluster_id))
+        .ok_or_else(|| LibraryError::not_found(EntityKind::ClerkLink, &link.library_id))
 }
 
 /// Every clerk link, oldest sign-in first.
@@ -306,17 +306,12 @@ pub async fn list_clerk_links(store: &LibraryStore) -> Result<Vec<ClerkLink>> {
 /// # Errors
 ///
 /// Returns the read error.
-pub async fn load_clerk_link(
-    store: &LibraryStore,
-    library_cluster_id: &str,
-) -> Result<Option<ClerkLink>> {
-    Ok(
-        clerk_links::Entity::find_by_id(library_cluster_id.to_string())
-            .one(store.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .map(ClerkLink::from),
-    )
+pub async fn load_clerk_link(store: &LibraryStore, library_id: &str) -> Result<Option<ClerkLink>> {
+    Ok(clerk_links::Entity::find_by_id(library_id.to_string())
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+        .map(ClerkLink::from))
 }
 
 /// Unseals the card of an active `link`.
@@ -332,19 +327,19 @@ pub async fn load_clerk_card(store: &LibraryStore, link: &ClerkLink) -> Result<L
     if !link.is_active() {
         return Err(LibraryError::Forbidden(format!(
             "the library card for {} was signed out",
-            link.library_cluster_id
+            link.library_id
         )));
     }
     let record = get_secret(
         store.db(),
         secret_kind::CLERK_CARD,
-        Some(&link.library_cluster_id),
+        Some(&link.library_id),
         secret_account_type::OPERATOR,
-        Some(&link.library_cluster_id),
+        Some(&link.library_id),
         CLERK_CARD_NAME,
     )
     .await?
-    .ok_or_else(|| LibraryError::not_found(EntityKind::ClerkCard, &link.library_cluster_id))?;
+    .ok_or_else(|| LibraryError::not_found(EntityKind::ClerkCard, &link.library_id))?;
     let plaintext = Zeroizing::new(unseal_secret(&record)?);
     let token = std::str::from_utf8(&plaintext)
         .map_err(|_| LibraryError::Invalid("stored library card is not text".into()))?
@@ -364,9 +359,9 @@ pub async fn load_clerk_card(store: &LibraryStore, link: &ClerkLink) -> Result<L
 /// Returns the read or write error.
 pub async fn sign_out_clerk_link(
     store: &LibraryStore,
-    library_cluster_id: &str,
+    library_id: &str,
 ) -> Result<Option<ClerkLink>> {
-    let Some(mut link) = load_clerk_link(store, library_cluster_id).await? else {
+    let Some(mut link) = load_clerk_link(store, library_id).await? else {
         return Ok(None);
     };
     let signed_out = ClerkLinkState::SignedOut.as_str();
@@ -374,31 +369,35 @@ pub async fn sign_out_clerk_link(
     let update = clerk_links::Entity::update_many()
         .col_expr(clerk_links::Column::State, Expr::value(signed_out))
         .col_expr(clerk_links::Column::UpdatedAt, Expr::value(now.clone()))
-        .filter(clerk_links::Column::LibraryClusterId.eq(library_cluster_id));
+        .filter(clerk_links::Column::LibraryId.eq(library_id));
     let probe = clerk_links::Entity::find()
-        .filter(clerk_links::Column::LibraryClusterId.eq(library_cluster_id))
+        .filter(clerk_links::Column::LibraryId.eq(library_id))
         .filter(clerk_links::Column::State.ne(signed_out));
     // State first: a signed-out link is never dialed, even if a delete
     // below fails.
     store
-        .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
+        .exec_bumped(
+            update,
+            LiveTopic::Libraries,
+            Bump::IfAny(sea_probe(&probe)?),
+        )
         .await?;
     delete_secret(
         store.db(),
         secret_kind::CLERK_CARD,
-        Some(library_cluster_id),
+        Some(library_id),
         secret_account_type::OPERATOR,
-        Some(library_cluster_id),
+        Some(library_id),
         CLERK_CARD_NAME,
     )
     .await?;
     // A branch link to the same library keeps its own rows; only a clerk
-    // link with no active cluster link owns them.
-    if !load_cluster_link(store, library_cluster_id)
+    // link with no active library link owns them.
+    if !load_library_link(store, library_id)
         .await?
-        .is_some_and(|cluster| cluster.is_active())
+        .is_some_and(|library| library.is_active())
     {
-        clear_window_books(store, library_cluster_id).await?;
+        clear_window_books(store, library_id).await?;
     }
     if link.is_active() {
         link.state = ClerkLinkState::SignedOut;
@@ -414,8 +413,8 @@ pub async fn sign_out_clerk_link(
 ///
 /// Returns [`LibraryError::Conflict`] while the link is active (sign out
 /// first), and the write error.
-pub async fn forget_clerk_link(store: &LibraryStore, library_cluster_id: &str) -> Result<bool> {
-    let Some(link) = load_clerk_link(store, library_cluster_id).await? else {
+pub async fn forget_clerk_link(store: &LibraryStore, library_id: &str) -> Result<bool> {
+    let Some(link) = load_clerk_link(store, library_id).await? else {
         return Ok(false);
     };
     if link.is_active() {
@@ -424,10 +423,10 @@ pub async fn forget_clerk_link(store: &LibraryStore, library_cluster_id: &str) -
         ));
     }
     let delete = clerk_links::Entity::delete_many()
-        .filter(clerk_links::Column::LibraryClusterId.eq(library_cluster_id))
+        .filter(clerk_links::Column::LibraryId.eq(library_id))
         .filter(clerk_links::Column::State.eq(ClerkLinkState::SignedOut.as_str()));
     let removed = store
-        .exec_bumped(delete, LiveTopic::Clusters, Bump::Always)
+        .exec_bumped(delete, LiveTopic::Libraries, Bump::Always)
         .await?;
     Ok(removed == 1)
 }

@@ -1,8 +1,8 @@
-//! Singleton maintenance: periodic cluster-wide cleanup, one node per duty.
+//! Singleton maintenance: periodic library-wide cleanup, one node per duty.
 //!
 //! Every daemon ticks each duty every [`MAINTENANCE_TICK`], starting
 //! [`MAINTENANCE_STARTUP_DELAY`] after it starts. A duty runs
-//! under its own cluster lease ([`Duty::lease`]); only the holder runs it,
+//! under its own library lease ([`Duty::lease`]); only the holder runs it,
 //! at once when it takes the lease and then every [`MAINTENANCE_INTERVAL`].
 //! The holder renews on every tick, so a daemon that stops ticking loses the
 //! lease after [`MAINTENANCE_LEASE_TTL`] and the next daemon to tick takes
@@ -47,7 +47,7 @@ pub const MAINTENANCE_LEASE_TTL: Duration = Duration::from_secs(180);
 /// How often the holder runs each duty.
 pub const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(3600);
 
-/// One cluster-wide maintenance duty.
+/// One library-wide maintenance duty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Duty {
     /// Terminal jobs past `jobs.retention_days`.
@@ -76,7 +76,7 @@ impl Duty {
         Duty::RecordRetention,
     ];
 
-    /// The cluster lease this duty runs under.
+    /// The library lease this duty runs under.
     #[must_use]
     pub fn lease(self) -> &'static str {
         match self {

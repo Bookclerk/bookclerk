@@ -24,8 +24,8 @@ fn operator() -> ConfigActor {
     }
 }
 
-/// Registers another node in the cluster.
-pub(super) async fn register(store: &LibraryStore, node_id: &str, cluster_id: &str) {
+/// Registers another node in the library.
+pub(super) async fn register(store: &LibraryStore, node_id: &str, library_id: &str) {
     let empty = NodeObservation {
         logical_cpus: None,
         cpu_max_quota_us: None,
@@ -36,7 +36,7 @@ pub(super) async fn register(store: &LibraryStore, node_id: &str, cluster_id: &s
         files_dir_free_bytes: None,
         scratch_bytes: None,
     };
-    register_and_heartbeat(store, node_id, cluster_id, "test", &empty)
+    register_and_heartbeat(store, node_id, library_id, "test", &empty)
         .await
         .expect("register node");
 }
@@ -132,8 +132,8 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
     let store_b = file_store(&db).await;
     let node_a = session.node.node_id.clone();
     assert_eq!(session.node.target, node_target());
-    register(&store_b, "node-b", &session.cluster_id).await;
-    register(&store_b, "node-c", &session.cluster_id).await;
+    register(&store_b, "node-b", &session.library_id).await;
+    register(&store_b, "node-c", &session.library_id).await;
     for node in [node_a.as_str(), "node-b", "node-c"] {
         heartbeat_consumer(&store_a, node, Duration::ZERO).await;
     }
@@ -363,7 +363,7 @@ async fn a_version_without_an_artifact_for_a_node_target_skips_that_node() {
     )
     .await
     .unwrap();
-    register(&store, "node-arm", &session.cluster_id).await;
+    register(&store, "node-arm", &session.library_id).await;
     // A row from an arm node: rewrite its target as that node would report.
     crate::entities::nodes::Entity::update_many()
         .col_expr(
@@ -485,8 +485,8 @@ async fn placement_follows_heartbeat_headroom_availability_and_drains() {
     )
     .await
     .unwrap();
-    register(&store, "vps", &session.cluster_id).await;
-    register(&store, "desk", &session.cluster_id).await;
+    register(&store, "vps", &session.library_id).await;
+    register(&store, "desk", &session.library_id).await;
     let gib: i64 = 1 << 30;
     // A small always-on VPS and a big desktop that is often off.
     let vps = |s: &mut NodeStatus| {
@@ -645,7 +645,7 @@ async fn deliveries_route_to_the_live_node_with_the_most_room() {
     .await
     .unwrap();
     for node in ["vps", "desk", "cold"] {
-        register(&store, node, &session.cluster_id).await;
+        register(&store, node, &session.library_id).await;
     }
     heartbeat_with(&store, "vps", Duration::ZERO, |s| {
         s.cpu_budget_millicores = 800;
@@ -720,7 +720,7 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
     .await
     .unwrap();
     let mine = session.node.node_id.clone();
-    register(&store, "node-other", &session.cluster_id).await;
+    register(&store, "node-other", &session.library_id).await;
     let host = store
         .create_user(crate::UserRole::Host, Some("Hosting"), None)
         .await
@@ -843,7 +843,7 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
     assert!(verify_node_owner(&store, host.id, &mine).await.is_err());
 }
 
-/// A two-node cluster with live heartbeats, for the hand-back tests.
+/// A two-node library with live heartbeats, for the hand-back tests.
 async fn two_live_nodes(store: &LibraryStore, dir: &std::path::Path) -> String {
     let session = bootstrap_control_plane(
         store,
@@ -854,7 +854,7 @@ async fn two_live_nodes(store: &LibraryStore, dir: &std::path::Path) -> String {
     )
     .await
     .unwrap();
-    register(store, "node-b", &session.cluster_id).await;
+    register(store, "node-b", &session.library_id).await;
     for node in [session.node.node_id.as_str(), "node-b"] {
         heartbeat_consumer(store, node, Duration::ZERO).await;
     }

@@ -443,7 +443,7 @@ mod tests {
         };
         assert_eq!(answer.problem(), None);
         let text = serde_json::to_string(&answer).unwrap();
-        for forbidden in ["account", "user", "token", "node", "cluster", "owner"] {
+        for forbidden in ["account", "user", "token", "node", "library", "owner"] {
             assert!(!text.contains(forbidden), "{forbidden} in {text}");
         }
         let mut value = serde_json::to_value(&answer).unwrap();

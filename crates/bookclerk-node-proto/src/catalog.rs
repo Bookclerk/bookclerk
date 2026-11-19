@@ -43,7 +43,7 @@ pub const MAX_CATALOG_TITLE_BYTES: usize = 64 * 1024;
 /// Most titles one answer may say are wanted.
 pub const MAX_CATALOG_WANTED: usize = 200;
 
-/// Most cluster ids an ancestry may list.
+/// Most library ids an ancestry may list.
 pub const MAX_ANCESTRY: usize = 64;
 
 /// Longest cursor.
@@ -184,9 +184,9 @@ pub fn is_marketplace(marketplace: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
-/// True for a plain cluster id in an ancestry.
+/// True for a plain library id in an ancestry.
 #[must_use]
-pub fn is_cluster_id(id: &str) -> bool {
+pub fn is_library_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && id
@@ -295,11 +295,11 @@ impl CatalogTitle {
     }
 }
 
-/// True when every id in `ancestry` is a plain cluster id and there are at
+/// True when every id in `ancestry` is a plain library id and there are at
 /// most [`MAX_ANCESTRY`].
 #[must_use]
 pub fn is_ancestry(ancestry: &[String]) -> bool {
-    ancestry.len() <= MAX_ANCESTRY && ancestry.iter().all(|id| is_cluster_id(id))
+    ancestry.len() <= MAX_ANCESTRY && ancestry.iter().all(|id| is_library_id(id))
 }
 
 #[cfg(test)]
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn a_title_carries_no_account_or_user_field() {
         let text = serde_json::to_string(&title()).unwrap();
-        for forbidden in ["account", "user", "token", "node", "cluster", "owner"] {
+        for forbidden in ["account", "user", "token", "node", "library", "owner"] {
             assert!(!text.contains(forbidden), "{forbidden} in {text}");
         }
         // A frame that tries to add one does not parse.

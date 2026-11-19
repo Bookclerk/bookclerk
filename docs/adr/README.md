@@ -20,7 +20,7 @@ a later change supersedes one, its **Status** says so.
 - [Schema versioning](schema-versioning.md): frozen schema numbers,
   checksums and backups.
 - [Control plane](control-plane.md): the bootstrap boundary, host
-  identity and cluster coordination.
+  identity and library coordination.
 - [Untrusted-input fuzzing](untrusted-input-fuzzing.md): every untrusted
   boundary ships a fuzz target.
 - [Security advisory automation](security-advisory-automation.md): draft

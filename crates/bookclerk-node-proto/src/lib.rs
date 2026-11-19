@@ -1,4 +1,4 @@
-//! Wire protocol between a Bookclerk branch node and its owner cluster.
+//! Wire protocol between a Bookclerk branch node and its library.
 //!
 //! A host connects to `GET /api/node/v1/connect` with the WebSocket
 //! subprotocol [`SUBPROTOCOL`] and proves itself with the Ed25519 key it
@@ -6,7 +6,7 @@
 //!
 //! 1. host → owner: [`Body::Hello`] `{node_id, incarnation,
 //!    software_version, resume}`
-//! 2. owner → host: [`Body::Challenge`] `{nonce, cluster_id}`
+//! 2. owner → host: [`Body::Challenge`] `{nonce, library_id}`
 //! 3. host → owner: [`Body::Auth`] `{sig}`, an Ed25519 signature over
 //!    [`auth_transcript`]
 //! 4. owner → host: [`Body::Welcome`], or a close with
@@ -111,7 +111,7 @@ pub use accounts::{
     MAX_CARRIED_FIELD_BYTES, MAX_CARRIED_PLUGIN_KEY_BYTES, MAX_CARRIED_SECRET_BYTES,
 };
 pub use catalog::{
-    is_ancestry, is_cluster_id, is_marketplace, is_product_id, is_store_id, CatalogFile,
+    is_ancestry, is_library_id, is_marketplace, is_product_id, is_store_id, CatalogFile,
     CatalogMetadata, CatalogRef, CatalogTitle, CATALOG_ITEM, MAX_ANCESTRY,
     MAX_CATALOG_BATCH_TITLES, MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_TITLE_BYTES,
     MAX_CATALOG_WANTED, MAX_MARKETPLACE_BYTES,
@@ -139,13 +139,13 @@ pub use copies::{
 pub use ed25519_dalek::SigningKey;
 pub use frames::{
     is_destination_id, is_storage_key, scan_pass_end_problem, scan_removed_problem, AcquireTarget,
-    Body, ClaimFilter, ClaimScope, FileCopy, Frame, FrameError, HeldFence, JobStatusEntry,
-    KeeperOutcome, LibraryId, PlanDestination, RemoteArtifact, RemoteDeployment, RemoteVersion,
-    ScanImport, ScanToken, TargetTitle, UploadAnswer, UploadCommitRequest, UploadFile, UploadProbe,
-    WorkJob, ITEM_JOB, MAX_DESTINATION_ID_BYTES, MAX_LIBRARY_ID_BYTES, MAX_PROBE_BITRATE_KBPS,
-    MAX_SCAN_BATCH_ROWS, MAX_SCAN_PRODUCT_ID_BYTES, MAX_SCAN_REMOVED_IDS, MAX_SCAN_ROW_BYTES,
-    MAX_SCAN_SYNC_TOKEN_BYTES, MAX_SCAN_TOKENS, MAX_STATUS_JOBS, MAX_UPLOAD_COPIES,
-    MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_KEY_BYTES,
+    Body, CallNumber, ClaimFilter, ClaimScope, FileCopy, Frame, FrameError, HeldFence,
+    JobStatusEntry, KeeperOutcome, PlanDestination, RemoteArtifact, RemoteDeployment,
+    RemoteVersion, ScanImport, ScanToken, TargetTitle, UploadAnswer, UploadCommitRequest,
+    UploadFile, UploadProbe, WorkJob, ITEM_JOB, MAX_CALL_NUMBER_BYTES, MAX_DESTINATION_ID_BYTES,
+    MAX_PROBE_BITRATE_KBPS, MAX_SCAN_BATCH_ROWS, MAX_SCAN_PRODUCT_ID_BYTES, MAX_SCAN_REMOVED_IDS,
+    MAX_SCAN_ROW_BYTES, MAX_SCAN_SYNC_TOKEN_BYTES, MAX_SCAN_TOKENS, MAX_STATUS_JOBS,
+    MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_KEY_BYTES,
 };
 pub use join::{
     is_branch_name, is_branch_redirect_uri, is_library_name, pkce_challenge, OAuthEnrollAnswer,

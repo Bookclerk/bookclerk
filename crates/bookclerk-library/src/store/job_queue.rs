@@ -1643,7 +1643,7 @@ where
         for model in candidates {
             if job_has_requirements(&model) {
                 // Routed jobs are claimed only through the routed claim, which
-                // checks the node and takes the job's cluster semaphores.
+                // checks the node and takes the job's library semaphores.
                 continue;
             }
             if let Some(job) =

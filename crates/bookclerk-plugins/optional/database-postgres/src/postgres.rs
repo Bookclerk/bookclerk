@@ -168,7 +168,7 @@ fn duplicate_database_text(text: &str) -> bool {
         || text.contains("pg_database_datname_index")
 }
 
-/// True when `database` already exists in this cluster.
+/// True when `database` already exists in this library.
 async fn binding_database_exists(
     admin: &DatabaseConnection,
     database: &str,
@@ -219,7 +219,7 @@ pub async fn open_binding(
             ))
             .await
         {
-            // 42P04 is the documented race; some clusters surface 23505 on
+            // 42P04 is the documented race; some libraries surface 23505 on
             // `pg_database_datname_index` instead. If the name exists now,
             // the other opener won — connect.
             if !is_duplicate_database(&err) && !binding_database_exists(&admin, database).await? {

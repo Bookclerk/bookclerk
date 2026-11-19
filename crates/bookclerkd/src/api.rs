@@ -62,8 +62,8 @@ pub struct AppState {
     /// Wakes the durable job worker when a new row is admitted.
     pub job_notify: Arc<Notify>,
     /// How this node splits its machine between its own work and each
-    /// library it is a branch of ([`crate::cluster_link::capacity`]).
-    pub capacity: Arc<crate::cluster_link::capacity::CapacityShares>,
+    /// library it is a branch of ([`crate::library_link::capacity`]).
+    pub capacity: Arc<crate::library_link::capacity::CapacityShares>,
     /// Shared barrier covering admission, claim, and handler execution.
     ///
     /// Workers and admit hold a read permit. A database plugin swap takes the
@@ -108,7 +108,7 @@ pub struct AppState {
     /// turns auth off is checked against it as well as the new config.
     pub node_api_tls_bound: OnceLock<std::net::SocketAddr>,
     /// Counts database swaps: bumped after [`Self::library`] is replaced so
-    /// the cluster-link supervisor restarts its host clients on the new
+    /// the library-link supervisor restarts its host clients on the new
     /// store.
     pub library_swaps: tokio::sync::watch::Sender<u64>,
     /// Signs cover URLs into same-origin paths and serves the processed
@@ -1152,7 +1152,7 @@ fn operator_or_admin_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(sync_listening))
 }
 
-/// Routes for the operator alone (configuration, plugins, cluster consents, joining a library).
+/// Routes for the operator alone (configuration, plugins, library consents, joining a library).
 ///
 /// Kept out of line so the optimizer works on one group at a time: inlined
 /// together, the whole route table is a single function that the
@@ -1205,23 +1205,24 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(crate::plugin_installs::put_active_version))
         .routes(routes!(crate::plugin_installs::approve_plugin_version))
-        .routes(routes!(crate::cluster_link::api::get_cluster_consents))
-        .routes(routes!(crate::cluster_link::api::post_cluster_scan))
-        .routes(routes!(crate::cluster_link::api::post_cluster_jobs))
+        .routes(routes!(crate::library_link::api::get_library_consents))
+        .routes(routes!(crate::library_link::api::post_library_scan))
+        .routes(routes!(crate::library_link::api::post_library_jobs))
         .routes(routes!(
-            crate::cluster_link::api::post_cluster_consent_approve
+            crate::library_link::api::post_library_consent_approve
         ))
         .routes(routes!(
-            crate::cluster_link::api::post_cluster_consent_revoke
+            crate::library_link::api::post_library_consent_revoke
         ))
         // Join a library / Leave library (the welcome screen and wizard).
-        .routes(routes!(crate::cluster_link::join::get_join_status))
-        .routes(routes!(crate::cluster_link::join::post_join_inspect))
-        .routes(routes!(crate::cluster_link::join::post_join_start))
-        .routes(routes!(crate::cluster_link::join::post_join_callback))
-        .routes(routes!(crate::cluster_link::join::post_join_invite))
-        .routes(routes!(crate::cluster_link::join::post_join_leave))
+        .routes(routes!(crate::library_link::join::get_join_status))
+        .routes(routes!(crate::library_link::join::post_join_inspect))
+        .routes(routes!(crate::library_link::join::post_join_start))
+        .routes(routes!(crate::library_link::join::post_join_callback))
+        .routes(routes!(crate::library_link::join::post_join_invite))
+        .routes(routes!(crate::library_link::join::post_join_leave))
         .routes(routes!(get_settings, patch_settings))
+        .routes(routes!(get_diagnostics_reports))
         .routes(routes!(get_plugin_consent, post_plugin_consent))
         .routes(routes!(get_plugin_logo))
         .routes(routes!(migrate_database))
@@ -1249,7 +1250,7 @@ fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
         // Settings → Shared branches: every shared node for the operator or an Owner.
         .routes(routes!(crate::config_authority::get_shared_branches))
         .routes(routes!(crate::config_authority::put_node_runtime))
-        .routes(routes!(crate::config_authority::get_cluster_status))
+        .routes(routes!(crate::config_authority::get_library_status))
 }
 
 /// Routes any signed-in user calls for themselves (enrollment links, branch and client consents, branch settings).
@@ -1310,12 +1311,12 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         // Settings → Library's two sharing settings on a branch (operator
         // or Owner; the handler checks).
         .routes(routes!(
-            crate::cluster_link::join::get_join_sharing,
-            crate::cluster_link::join::post_join_sharing
+            crate::library_link::join::get_join_sharing,
+            crate::library_link::join::post_join_sharing
         ))
         // The window view on a branch (operator or Owner; the handler
         // checks).
-        .routes(routes!(crate::cluster_link::join::get_join_window))
+        .routes(routes!(crate::library_link::join::get_join_window))
         // Library cards: signing in to a library as a clerk (operator or
         // Owner; the handlers check).
         .routes(routes!(crate::clerk_link::api::get_clerk_cards))
@@ -1326,14 +1327,14 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         // Store connections across linked libraries: the branch's person
         // only (the handler checks).
         .routes(routes!(
-            crate::cluster_link::connections::post_join_connections
+            crate::library_link::connections::post_join_connections
         ))
         .routes(routes!(
-            crate::cluster_link::connections::post_join_connections_disconnect
+            crate::library_link::connections::post_join_connections_disconnect
         ))
         // Settings → Library's job cap on a branch (operator or Owner; the
         // handler checks).
-        .routes(routes!(crate::cluster_link::join::post_join_capacity))
+        .routes(routes!(crate::library_link::join::post_join_capacity))
         // The library lets the operator or an Owner revoke any host and
         // anyone else only the hosts they own.
         .routes(routes!(crate::node_api::delete_node_credential))
@@ -1605,7 +1606,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 "/wishlist",
                 "/accounts",
                 // The Status page. `/status` stays the legacy JSON route.
-                "/cluster",
+                "/library-status",
                 "/settings",
                 // Join a library: the owner's consent page and the
                 // joining install's callback.
@@ -1887,12 +1888,12 @@ fn api_timeout_for_path(path: &str) -> Duration {
         // Parallel store searches (~7s each) + optional page enrich (~3.5s).
         "/api/discover/search" => Duration::from_secs(16),
         // Leave library waits for the library to hear `node.leaving`
-        // (`cluster_link::LEAVE_NOTICE_TIMEOUT`, through a fresh connection
+        // (`library_link::LEAVE_NOTICE_TIMEOUT`, through a fresh connection
         // when no client runs) before it records the leave.
         "/api/config/join/leave" => Duration::from_secs(30),
         // A join redeems with the library (at most
-        // `cluster_link::join::REDEEM_TIMEOUT`), then waits for the new
-        // link's client (`cluster_link::start_link_now`).
+        // `library_link::join::REDEEM_TIMEOUT`), then waits for the new
+        // link's client (`library_link::start_link_now`).
         // Their own bounded waits add up to 29 s; the rest is margin for the
         // database round trips around them.
         "/api/config/join/callback" | "/api/config/join/invite" => Duration::from_secs(45),
@@ -1908,7 +1909,7 @@ fn api_timeout_for_path(path: &str) -> Duration {
         "/api/config/join/inspect" | "/api/config/join/start" => Duration::from_secs(45),
         // Adding or disconnecting store connections calls each library
         // once, concurrently, bounded by
-        // `cluster_link::connections::LIBRARY_CALL_TIMEOUT` (12 s), and may
+        // `library_link::connections::LIBRARY_CALL_TIMEOUT` (12 s), and may
         // first wait for one other such request (as long again); the rest
         // is margin for the database round trips around them.
         "/api/config/join/connections" | "/api/config/join/connections/disconnect" => {
@@ -2226,12 +2227,21 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
 
     if db_plugin_changed {
         // Host clients hold the previous store's links and keys; the
-        // cluster-link supervisor stops them and dials the new store's
+        // library-link supervisor stops them and dials the new store's
         // active links.
         state.library_swaps.send_modify(|swaps| *swaps += 1);
     }
 
     bookclerk_plugin_host::reconcile_host_overlay_authority(&new_cfg);
+
+    // Report and usage sharing follow Settings without a restart; a demo copy
+    // never checks in, so its usage flag stays as it started.
+    if let Some(diagnostics) = bookclerk_config::diagnostics_global() {
+        diagnostics.set_sharing(
+            new_cfg.diagnostics.share_reports,
+            new_cfg.diagnostics.share_usage && !new_cfg.diagnostics.demo,
+        );
+    }
 
     // Bring the enrolled deployment set up now rather than on the next tick.
     if let Err(err) = crate::config_authority::reconcile_deployments(state).await {
@@ -2439,11 +2449,11 @@ pub async fn revert_listen_after_bind_failure(state: &AppState) -> bool {
 enum SettingsAuthority {
     /// `config.toml` (bootstrap and still-transitional tables).
     File,
-    /// The `core.events` cluster document.
+    /// The `core.events` library document.
     Events,
-    /// The `core.output` cluster document.
+    /// The `core.output` library document.
     Output,
-    /// The `core.cache` cluster document.
+    /// The `core.cache` library document.
     Cache,
 }
 
@@ -2469,6 +2479,8 @@ fn allowed_setting_key(key: &str) -> bool {
             | "daemon.auth.require_second_factor"
             | "library.auto_acquire"
             | "library.scan_interval_minutes"
+            | "diagnostics.share_reports"
+            | "diagnostics.share_usage"
             | "jobs.max_pending"
             | "jobs.lease_seconds"
             | "jobs.max_attempts"
@@ -2563,6 +2575,13 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
         "library.auto_acquire" | "daemon.auth.enabled" | "daemon.auth.require_second_factor" => {
             match value.trim().to_ascii_lowercase().as_str() {
                 "1" | "true" | "yes" | "on" | "0" | "false" | "no" | "off" => Ok(value.to_string()),
+                _ => Err(format!("{key} must be a boolean value")),
+            }
+        }
+        "diagnostics.share_reports" | "diagnostics.share_usage" => {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => Ok("true".into()),
+                "0" | "false" | "no" | "off" => Ok("false".into()),
                 _ => Err(format!("{key} must be a boolean value")),
             }
         }
@@ -2666,6 +2685,14 @@ fn current_settings_snapshot(config: &Config) -> std::collections::BTreeMap<Stri
     settings.insert(
         "library.scan_interval_minutes".into(),
         config.library.scan_interval_minutes.to_string(),
+    );
+    settings.insert(
+        "diagnostics.share_reports".into(),
+        config.diagnostics.share_reports.to_string(),
+    );
+    settings.insert(
+        "diagnostics.share_usage".into(),
+        config.diagnostics.share_usage.to_string(),
     );
     settings.insert(
         "jobs.max_pending".into(),
@@ -3818,6 +3845,74 @@ async fn post_plugin_consent(
         limits,
         host_user_agent: bookclerk_plugin_manifest::host_user_agent(),
     }))
+}
+
+/// One diagnostics report this install sent.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct DiagnosticsReportView {
+    /// The collector's ID for the report (a UUID). The GitHub issue filed
+    /// for it mentions this ID; search the issues for it or give it to a
+    /// maintainer.
+    #[schema(example = "0e9ced79-df3c-4dae-872b-2e5772b06e69")]
+    report_id: String,
+    /// Why it was sent: `crash`, `error_burst`, `slow_burst`, `job_failed`,
+    /// `cli_error`, `cli_manual`, ….
+    #[schema(example = "error_burst")]
+    trigger: String,
+    /// The Bookclerk version that sent it.
+    #[schema(example = "0.4.0")]
+    version: String,
+    /// When the collector accepted it, Unix milliseconds.
+    #[schema(example = 1_763_520_000_000_u64)]
+    sent_at_unix_ms: u64,
+}
+
+/// Body of `GET /api/diagnostics/reports`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct DiagnosticsReportsResponse {
+    /// Sent reports, newest first (the last 200 are kept).
+    reports: Vec<DiagnosticsReportView>,
+}
+
+/// Lists the diagnostics reports this install sent, newest first, with
+/// the IDs the collector gave them.
+#[utoipa::path(
+    get,
+    path = "/api/diagnostics/reports",
+    responses(
+        (status = 200, description = "The install's sent reports, newest first.", body = DiagnosticsReportsResponse),
+    ),
+)]
+async fn get_diagnostics_reports(
+    State(state): State<Arc<AppState>>,
+) -> Json<DiagnosticsReportsResponse> {
+    let files_dir = state
+        .config
+        .read()
+        .await
+        .paths
+        .as_ref()
+        .map(|p| p.files_dir.clone());
+    let reports = match files_dir {
+        Some(dir) => {
+            tokio::task::spawn_blocking(move || bookclerk_config::load_report_history(&dir))
+                .await
+                .unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+    Json(DiagnosticsReportsResponse {
+        reports: reports
+            .into_iter()
+            .rev()
+            .map(|r| DiagnosticsReportView {
+                report_id: r.report_id.as_str().to_string(),
+                trigger: r.trigger,
+                version: r.version,
+                sent_at_unix_ms: r.sent_at_unix_ms,
+            })
+            .collect(),
+    })
 }
 
 /// Returns file-backed and runtime-effective Settings plus per-plugin groups.
@@ -7061,9 +7156,9 @@ mod tests {
         allowed_setting_key, apply_database_enable_updates, build_approved_grant,
         build_database_settings_group, current_settings_snapshot,
         database_backends_requiring_grant, normalize_disabled_shelves, normalize_setting_value,
-        stamp_settings_occupancy, validate_daemon_listen, validate_daemon_listen_against_auth,
-        InviteLinkError, PluginGrantOverride, RequestOutcome, NOTED_MS, SLOW_ROUTED_MS,
-        SLOW_UNROUTED_MS,
+        settings_authority, stamp_settings_occupancy, validate_daemon_listen,
+        validate_daemon_listen_against_auth, InviteLinkError, PluginGrantOverride, RequestOutcome,
+        SettingsAuthority, NOTED_MS, SLOW_ROUTED_MS, SLOW_UNROUTED_MS,
     };
     use bookclerk_config::{Config, ListenAddrs};
 
@@ -7828,7 +7923,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
-            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
+            capacity: Arc::new(crate::library_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8257,7 +8352,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
-            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
+            capacity: Arc::new(crate::library_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8360,7 +8455,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
-            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
+            capacity: Arc::new(crate::library_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8521,7 +8616,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
-            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
+            capacity: Arc::new(crate::library_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8651,7 +8746,7 @@ tcp = {tcp}
         let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
             .await
             .unwrap();
-        overlay_events(&mut cfg, &session.events, &session.cluster_id);
+        overlay_events(&mut cfg, &session.events, &session.library_id);
         let original_retention = session.events.body.retention_days;
         let requested = if original_retention == 14 { 15 } else { 14 };
         let audits = audit_count(&store, EVENTS_NAMESPACE).await.unwrap();
@@ -8735,7 +8830,7 @@ tcp = {tcp}
         let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
             .await
             .unwrap();
-        overlay_events(&mut cfg, &session.events, &session.cluster_id);
+        overlay_events(&mut cfg, &session.events, &session.library_id);
         let requested = if session.events.body.retention_days == 14 {
             15
         } else {
@@ -8769,6 +8864,76 @@ tcp = {tcp}
         let live = state.config.read().await;
         assert_eq!(live.events.retention_days, requested);
         assert_eq!(live.events_revision, Some(loaded.revision));
+    }
+
+    #[test]
+    fn diagnostics_sharing_is_a_settings_toggle() {
+        for key in ["diagnostics.share_reports", "diagnostics.share_usage"] {
+            assert!(allowed_setting_key(key));
+            assert!(matches!(settings_authority(key), SettingsAuthority::File));
+            assert_eq!(normalize_setting_value(key, " On ").as_deref(), Ok("true"));
+            assert_eq!(normalize_setting_value(key, "0").as_deref(), Ok("false"));
+            assert!(normalize_setting_value(key, "sometimes").is_err());
+        }
+        let mut cfg = Config::default();
+        cfg.diagnostics.share_usage = true;
+        let snapshot = current_settings_snapshot(&cfg);
+        assert_eq!(
+            snapshot
+                .get("diagnostics.share_reports")
+                .map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            snapshot.get("diagnostics.share_usage").map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_reports_list_newest_first() {
+        use axum::extract::State;
+        use bookclerk_library::LibraryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = bookclerk_config::Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        let store = LibraryStore::from_connection(db);
+        let state = std::sync::Arc::new(crate::config_authority::control_plane_test_state(
+            store, cfg,
+        ));
+        let empty = super::get_diagnostics_reports(State(state.clone())).await;
+        assert!(empty.0.reports.is_empty());
+        for n in 1..=2_u64 {
+            bookclerk_config::record_report(
+                dir.path(),
+                bookclerk_config::ReportRecord {
+                    report_id: bookclerk_config::ReportId::parse(&format!(
+                        "0e9ced79-df3c-4dae-872b-2e5772b0000{n}"
+                    ))
+                    .unwrap(),
+                    trigger: "crash".into(),
+                    version: "1".into(),
+                    sent_at_unix_ms: n,
+                },
+            )
+            .unwrap();
+        }
+        let listed = super::get_diagnostics_reports(State(state)).await;
+        assert_eq!(
+            listed
+                .0
+                .reports
+                .iter()
+                .map(|r| r.report_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "0e9ced79-df3c-4dae-872b-2e5772b00002",
+                "0e9ced79-df3c-4dae-872b-2e5772b00001"
+            ]
+        );
     }
 
     #[tokio::test]
@@ -9138,7 +9303,7 @@ tcp = {tcp}
         let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
             .await
             .unwrap();
-        overlay_events(&mut cfg, &session.events, &session.cluster_id);
+        overlay_events(&mut cfg, &session.events, &session.library_id);
         let revision = session.events.revision;
         let retention = session.events.body.retention_days;
         let stopped = Arc::new(AtomicBool::new(false));
@@ -9170,7 +9335,7 @@ tcp = {tcp}
         assert_eq!(live.events.retention_days, retention);
         assert_eq!(
             live.events_authority.as_deref(),
-            Some(session.cluster_id.as_str())
+            Some(session.library_id.as_str())
         );
         let loaded = load_events(&store).await.unwrap();
         assert_eq!(loaded.revision, revision);

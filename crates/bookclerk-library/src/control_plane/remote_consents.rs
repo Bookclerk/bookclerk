@@ -1,8 +1,8 @@
 //! On a branch node: this install's operator consent for owner plugins (H-4
 //! design, section 5; step 8).
 //!
-//! An owner cluster that deploys a plugin to this host says which version
-//! it runs and the grant the cluster's operator approved for it. The host
+//! A library that deploys a plugin to this host says which version
+//! it runs and the grant the library's operator approved for it. The host
 //! records that request ([`record_remote_plugin_request`]) but runs nothing
 //! until its own operator approves ([`approve_remote_plugin`]). An approval
 //! stores two grants:
@@ -128,11 +128,11 @@ pub fn remote_request_digest(
     hex::encode(hasher.finalize())
 }
 
-/// One owner plugin of one owner cluster, as this install sees it.
+/// One owner plugin of one library, as this install sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RemotePluginConsent {
-    /// Owner cluster id.
-    pub owner_cluster_id: String,
+    /// Library id.
+    pub parent_library_id: String,
     /// Canonical plugin key.
     pub plugin_key: String,
     /// Version the owner deploys here now.
@@ -227,7 +227,7 @@ impl RemotePluginConsent {
 impl From<remote_plugin_consents::Model> for RemotePluginConsent {
     fn from(row: remote_plugin_consents::Model) -> Self {
         Self {
-            owner_cluster_id: row.owner_cluster_id,
+            parent_library_id: row.parent_library_id,
             plugin_key: row.plugin_key,
             requested_version: row.requested_version,
             requested_grant_json: row.requested_grant_json,
@@ -274,19 +274,19 @@ fn grant_document(what: &str, json: &str) -> Result<()> {
     }
 }
 
-/// The consent row for `plugin_key` of `cluster_id`.
+/// The consent row for `plugin_key` of `library_id`.
 ///
 /// # Errors
 ///
 /// Returns an error when the read fails.
 pub async fn load_remote_plugin_consent(
     store: &LibraryStore,
-    cluster_id: &str,
+    library_id: &str,
     plugin_key: &str,
 ) -> Result<Option<RemotePluginConsent>> {
     Ok(
         remote_plugin_consents::Entity::find_by_id((
-            cluster_id.to_string(),
+            library_id.to_string(),
             plugin_key.to_string(),
         ))
         .one(store.db())
@@ -296,22 +296,22 @@ pub async fn load_remote_plugin_consent(
     )
 }
 
-/// Every consent row, of one cluster when `cluster_id` is given, by
-/// cluster then plugin key.
+/// Every consent row, of one library when `library_id` is given, by
+/// library then plugin key.
 ///
 /// # Errors
 ///
 /// Returns an error when the read fails.
 pub async fn list_remote_plugin_consents(
     store: &LibraryStore,
-    cluster_id: Option<&str>,
+    library_id: Option<&str>,
 ) -> Result<Vec<RemotePluginConsent>> {
     let mut query = remote_plugin_consents::Entity::find();
-    if let Some(cluster_id) = cluster_id {
-        query = query.filter(remote_plugin_consents::Column::OwnerClusterId.eq(cluster_id));
+    if let Some(library_id) = library_id {
+        query = query.filter(remote_plugin_consents::Column::ParentLibraryId.eq(library_id));
     }
     Ok(query
-        .order_by_asc(remote_plugin_consents::Column::OwnerClusterId)
+        .order_by_asc(remote_plugin_consents::Column::ParentLibraryId)
         .order_by_asc(remote_plugin_consents::Column::PluginKey)
         .all(store.db())
         .await
@@ -351,13 +351,13 @@ pub async fn approved_remote_payload_digests(
 /// grant that is not a JSON object, and the write error.
 pub async fn record_remote_plugin_request(
     store: &LibraryStore,
-    cluster_id: &str,
+    library_id: &str,
     plugin_key: &str,
     version: &str,
     requested_grant_json: &str,
     artifact: RemoteArtifactRef<'_>,
 ) -> Result<RemotePluginConsent> {
-    bounded("cluster id", cluster_id, MAX_TEXT_BYTES)?;
+    bounded("library id", library_id, MAX_TEXT_BYTES)?;
     bounded("plugin key", plugin_key, MAX_TEXT_BYTES)?;
     bounded("version", version, MAX_TEXT_BYTES)?;
     grant_document("requested grant", requested_grant_json)?;
@@ -368,7 +368,7 @@ pub async fn record_remote_plugin_request(
         artifact.payload_root_sha256,
         MAX_TEXT_BYTES,
     )?;
-    if let Some(existing) = load_remote_plugin_consent(store, cluster_id, plugin_key).await? {
+    if let Some(existing) = load_remote_plugin_consent(store, library_id, plugin_key).await? {
         if existing.requested_version == version
             && existing.requested_grant_json == requested_grant_json
             && existing.requested_artifact() == artifact
@@ -377,7 +377,7 @@ pub async fn record_remote_plugin_request(
         }
     }
     let row = remote_plugin_consents::ActiveModel {
-        owner_cluster_id: Set(cluster_id.to_string()),
+        parent_library_id: Set(library_id.to_string()),
         plugin_key: Set(plugin_key.to_string()),
         requested_version: Set(version.to_string()),
         requested_grant_json: Set(requested_grant_json.to_string()),
@@ -397,7 +397,7 @@ pub async fn record_remote_plugin_request(
     };
     let insert = remote_plugin_consents::Entity::insert(row).on_conflict(
         OnConflict::columns([
-            remote_plugin_consents::Column::OwnerClusterId,
+            remote_plugin_consents::Column::ParentLibraryId,
             remote_plugin_consents::Column::PluginKey,
         ])
         .update_columns([
@@ -413,7 +413,7 @@ pub async fn record_remote_plugin_request(
     store
         .exec_bumped(insert, LiveTopic::Consents, Bump::Always)
         .await?;
-    load_remote_plugin_consent(store, cluster_id, plugin_key)
+    load_remote_plugin_consent(store, library_id, plugin_key)
         .await?
         .ok_or_else(|| LibraryError::not_found(EntityKind::RemoteConsent, plugin_key))
 }
@@ -443,8 +443,8 @@ impl RemoteApprover<'_> {
 /// What an operator approves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteApproval<'a> {
-    /// Owner cluster id.
-    pub cluster_id: &'a str,
+    /// Library id.
+    pub library_id: &'a str,
     /// Canonical plugin key.
     pub plugin_key: &'a str,
     /// The requested version the operator reviewed.
@@ -488,13 +488,13 @@ pub async fn approve_remote_plugin(
     }
     grant_document("consented grant", approval.grant_json)?;
     let Some(existing) =
-        load_remote_plugin_consent(store, approval.cluster_id, approval.plugin_key).await?
+        load_remote_plugin_consent(store, approval.library_id, approval.plugin_key).await?
     else {
         return Err(LibraryError::not_found(
             EntityKind::RemoteConsent,
             format!(
                 "{} from library {}",
-                approval.plugin_key, approval.cluster_id
+                approval.plugin_key, approval.library_id
             ),
         ));
     };
@@ -562,7 +562,7 @@ pub async fn approve_remote_plugin(
             remote_plugin_consents::Column::UpdatedAt,
             sea_orm::sea_query::Expr::value(stamp.clone()),
         )
-        .filter(remote_plugin_consents::Column::OwnerClusterId.eq(approval.cluster_id))
+        .filter(remote_plugin_consents::Column::ParentLibraryId.eq(approval.library_id))
         .filter(remote_plugin_consents::Column::PluginKey.eq(approval.plugin_key))
         .filter(remote_plugin_consents::Column::RequestedVersion.eq(approval.version))
         .filter(
@@ -599,12 +599,12 @@ pub async fn approve_remote_plugin(
             approval.plugin_key
         )));
     }
-    load_remote_plugin_consent(store, approval.cluster_id, approval.plugin_key)
+    load_remote_plugin_consent(store, approval.library_id, approval.plugin_key)
         .await?
         .ok_or_else(|| LibraryError::not_found(EntityKind::RemoteConsent, approval.plugin_key))
 }
 
-/// Clears the approval of `plugin_key` of `cluster_id`, keeping its
+/// Clears the approval of `plugin_key` of `library_id`, keeping its
 /// request, and records the revoke so no automatic approval brings it
 /// back. Answers the row, or `None` when nothing is recorded.
 ///
@@ -613,7 +613,7 @@ pub async fn approve_remote_plugin(
 /// Returns an error when a read or the write fails.
 pub async fn revoke_remote_plugin(
     store: &LibraryStore,
-    cluster_id: &str,
+    library_id: &str,
     plugin_key: &str,
 ) -> Result<Option<RemotePluginConsent>> {
     let stamp = now();
@@ -658,12 +658,12 @@ pub async fn revoke_remote_plugin(
             remote_plugin_consents::Column::UpdatedAt,
             sea_orm::sea_query::Expr::value(stamp.clone()),
         )
-        .filter(remote_plugin_consents::Column::OwnerClusterId.eq(cluster_id))
+        .filter(remote_plugin_consents::Column::ParentLibraryId.eq(library_id))
         .filter(remote_plugin_consents::Column::PluginKey.eq(plugin_key));
     store
         .exec_bumped(update, LiveTopic::Consents, Bump::Stamped(stamp))
         .await?;
-    load_remote_plugin_consent(store, cluster_id, plugin_key).await
+    load_remote_plugin_consent(store, library_id, plugin_key).await
 }
 
 #[cfg(test)]
@@ -686,7 +686,7 @@ mod tests {
 
     fn approval<'a>(version: &'a str, reviewed: &'a str, grant: &'a str) -> RemoteApproval<'a> {
         RemoteApproval {
-            cluster_id: "cluster-a",
+            library_id: "library-a",
             plugin_key: "store",
             version,
             reviewed_request_json: reviewed,
@@ -702,7 +702,7 @@ mod tests {
         let requested = r#"{"domains":["a.example"]}"#;
         let first = record_remote_plugin_request(
             &store,
-            "cluster-a",
+            "library-a",
             "store",
             "1.0.0",
             requested,
@@ -714,7 +714,7 @@ mod tests {
         // An unchanged request writes nothing.
         let again = record_remote_plugin_request(
             &store,
-            "cluster-a",
+            "library-a",
             "store",
             "1.0.0",
             requested,
@@ -751,14 +751,14 @@ mod tests {
         // A new request keeps the approval for the grant algebra to judge.
         let wider = r#"{"domains":["a.example","b.example"]}"#;
         let moved =
-            record_remote_plugin_request(&store, "cluster-a", "store", "1.1.0", wider, ARTIFACT)
+            record_remote_plugin_request(&store, "library-a", "store", "1.1.0", wider, ARTIFACT)
                 .await
                 .unwrap();
         assert!(moved.is_approved());
         assert_eq!(moved.requested_version, "1.1.0");
         assert_eq!(moved.approved_request_json.as_deref(), Some(requested));
 
-        let revoked = revoke_remote_plugin(&store, "cluster-a", "store")
+        let revoked = revoke_remote_plugin(&store, "library-a", "store")
             .await
             .unwrap()
             .unwrap();
@@ -780,13 +780,13 @@ mod tests {
             Err(LibraryError::NotFound(_))
         ));
         assert_eq!(
-            list_remote_plugin_consents(&store, Some("cluster-a"))
+            list_remote_plugin_consents(&store, Some("library-a"))
                 .await
                 .unwrap()
                 .len(),
             1
         );
-        assert!(list_remote_plugin_consents(&store, Some("cluster-b"))
+        assert!(list_remote_plugin_consents(&store, Some("library-b"))
             .await
             .unwrap()
             .is_empty());
@@ -849,7 +849,7 @@ mod tests {
         let requested = r#"{"domains":["a.example"]}"#;
         let first = record_remote_plugin_request(
             &store,
-            "cluster-a",
+            "library-a",
             "store",
             "1.0.0",
             requested,
@@ -873,7 +873,7 @@ mod tests {
             ..ARTIFACT
         };
         let now =
-            record_remote_plugin_request(&store, "cluster-a", "store", "1.0.0", requested, moved)
+            record_remote_plugin_request(&store, "library-a", "store", "1.0.0", requested, moved)
                 .await
                 .unwrap();
         assert_eq!(now.requested_artifact(), moved);
@@ -889,7 +889,7 @@ mod tests {
         assert!(matches!(
             record_remote_plugin_request(
                 &store,
-                "cluster-a",
+                "library-a",
                 "store",
                 "1.0.0",
                 requested,
@@ -903,7 +903,7 @@ mod tests {
         ));
 
         // A revoke clears the approved archive too.
-        let revoked = revoke_remote_plugin(&store, "cluster-a", "store")
+        let revoked = revoke_remote_plugin(&store, "library-a", "store")
             .await
             .unwrap()
             .unwrap();
@@ -917,7 +917,7 @@ mod tests {
         let requested = r#"{"domains":["a.example"]}"#;
         let first = record_remote_plugin_request(
             &store,
-            "cluster-a",
+            "library-a",
             "store",
             "1.0.0",
             requested,
@@ -942,7 +942,7 @@ mod tests {
             ..ARTIFACT
         };
         let now =
-            record_remote_plugin_request(&store, "cluster-a", "store", "1.0.0", requested, swapped)
+            record_remote_plugin_request(&store, "library-a", "store", "1.0.0", requested, swapped)
                 .await
                 .unwrap();
         assert_eq!(now.requested_artifact(), swapped);
@@ -962,7 +962,7 @@ mod tests {
         assert!(again.approved_artifact_matches(swapped));
         assert!(!again.approved_artifact_matches(ARTIFACT));
         // A revoke clears it.
-        let revoked = revoke_remote_plugin(&store, "cluster-a", "store")
+        let revoked = revoke_remote_plugin(&store, "library-a", "store")
             .await
             .unwrap()
             .unwrap();
@@ -973,7 +973,7 @@ mod tests {
     async fn an_operator_revoke_holds_against_automatic_approval() {
         let store = store().await;
         let requested = r"{}";
-        record_remote_plugin_request(&store, "cluster-a", "store", "1.0.0", requested, ARTIFACT)
+        record_remote_plugin_request(&store, "library-a", "store", "1.0.0", requested, ARTIFACT)
             .await
             .unwrap();
         let platform = RemoteApproval {
@@ -987,7 +987,7 @@ mod tests {
         );
         assert!(!approved.is_revoked());
 
-        let revoked = revoke_remote_plugin(&store, "cluster-a", "store")
+        let revoked = revoke_remote_plugin(&store, "library-a", "store")
             .await
             .unwrap()
             .unwrap();
@@ -999,7 +999,7 @@ mod tests {
         // The revoke survives a new request from the owner.
         let moved = record_remote_plugin_request(
             &store,
-            "cluster-a",
+            "library-a",
             "store",
             "1.1.0",
             requested,
@@ -1045,7 +1045,7 @@ mod tests {
     async fn an_operator_approval_holds_against_automatic_approval() {
         let store = store().await;
         let requested = r"{}";
-        record_remote_plugin_request(&store, "cluster-a", "store", "1.0.0", requested, ARTIFACT)
+        record_remote_plugin_request(&store, "library-a", "store", "1.0.0", requested, ARTIFACT)
             .await
             .unwrap();
         approve_remote_plugin(&store, &approval("1.0.0", requested, "{}"))
@@ -1059,14 +1059,14 @@ mod tests {
             approve_remote_plugin(&store, &platform("1.0.0")).await,
             Err(LibraryError::Conflict(_))
         ));
-        record_remote_plugin_request(&store, "cluster-a", "store", "1.1.0", requested, ARTIFACT)
+        record_remote_plugin_request(&store, "library-a", "store", "1.1.0", requested, ARTIFACT)
             .await
             .unwrap();
         assert!(matches!(
             approve_remote_plugin(&store, &platform("1.1.0")).await,
             Err(LibraryError::Conflict(_))
         ));
-        let row = load_remote_plugin_consent(&store, "cluster-a", "store")
+        let row = load_remote_plugin_consent(&store, "library-a", "store")
             .await
             .unwrap()
             .unwrap();

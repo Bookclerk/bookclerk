@@ -249,7 +249,7 @@ async fn a_keeper_tracks_what_it_pushed_to_each_library() {
             vec![KeptShare {
                 plugin_key: KEEPER.into(),
                 account_id: "ana".into(),
-                cluster_id: "c1".into(),
+                library_id: "c1".into(),
                 pushed: 0,
                 observed: 0,
             }],
@@ -293,13 +293,13 @@ async fn a_keeper_tracks_what_it_pushed_to_each_library() {
         record_accounts_sent_to(store, &node_peer("b7"), &[pushed("ana", b"")])
             .await
             .unwrap();
-        let clusters: Vec<String> = kept_shares(store)
+        let libraries: Vec<String> = kept_shares(store)
             .await
             .unwrap()
             .into_iter()
-            .map(|share| share.cluster_id)
+            .map(|share| share.library_id)
             .collect();
-        assert_eq!(clusters, ["c1", "c2"], "{name}");
+        assert_eq!(libraries, ["c1", "c2"], "{name}");
         let before = sign_in_revision(store, KEEPER, "ana").await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let second = build_sealed_record(

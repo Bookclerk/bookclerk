@@ -34,7 +34,7 @@ others go deeper.
 - [Web app and sign-in reference](server/sign-in.md): roles, sign-in methods, routes and screens
 - [Integrations and sign-in](server/integrations.md): Audiobookshelf, invites and identity providers
 - [Managing plugins](server/plugins.md): install, approve, configure and place plugins; isolation modes
-- [Libraries and branches](server/cluster-hosts.md): join a library, shared branches and consent
+- [Libraries and branches](server/branches.md): join a library, shared branches and consent
 - [Media worker](server/media.md): the confined process that handles audio files
 - [Backups, updates, import and export](server/backups.md): native backups, schema backups, updating, Libation and PostgreSQL export
 - [Diagnostics](server/diagnostics.md): opt-in error reports
@@ -94,7 +94,7 @@ Build and agent conventions for this repository live in
 - [Plugin-provided OIDC clients](adr/plugin-oidc-clients.md): players declare identity-provider clients
 - [SQL database contract](adr/sql-database-contract.md): host-resolved canonical SQL, adapter-owned lowering
 - [Schema versioning](adr/schema-versioning.md): frozen schema numbers, checksums and backups
-- [Control plane](adr/control-plane.md): the bootstrap boundary, host identity and cluster coordination
+- [Control plane](adr/control-plane.md): the bootstrap boundary, host identity and library coordination
 - [Untrusted-input fuzzing](adr/untrusted-input-fuzzing.md): every untrusted boundary ships a fuzz target
 - [Security advisory automation](adr/security-advisory-automation.md): draft advisories for shipped code
 - [Logging and tracing](adr/observability.md): trace everything, keep TRACE for diagnostics, show each output its own level

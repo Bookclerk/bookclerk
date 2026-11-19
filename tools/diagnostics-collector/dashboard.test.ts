@@ -36,6 +36,7 @@ import { SESSION_COOKIE, createSession } from "./dashboard/session.ts";
 import { normalizeMessage, summarizeReport } from "./dashboard/signature.ts";
 import { indexSubmitted, storeIssue, syncIssueNow, syncIssues } from "./dashboard/sync.ts";
 import { applyMute, endMutesReachedBy } from "./dashboard/triage-state.ts";
+import { DemoRuns, demoStats, liveDemoRuns, recordDemoRun, sweepDemoRuns } from "./demo-runs.ts";
 import { makeB2 } from "./test-support/b2.ts";
 import { createD1 } from "./test-support/d1.ts";
 import type { DashboardEnv, Env } from "./env.ts";
@@ -2895,6 +2896,9 @@ describe("issue summaries for the ingest Action", () => {
 
   it("hands out the figures of issues whose summary is out of date, newest activity first", async () => {
     const env = await setup();
+    // Two installs sent ID1 and ID2; ID3 came from one that shares no usage.
+    await run(env.DASHBOARD_DB, "UPDATE reports SET install_key = 'k1' WHERE report_id = ?", ID1);
+    await run(env.DASHBOARD_DB, "UPDATE reports SET install_key = 'k2' WHERE report_id = ?", ID2);
     const res = await call(env, "/issues/summaries");
     assert.equal(res.status, 200);
     const { issues } = await res.json<Summaries>();
@@ -2906,6 +2910,8 @@ describe("issue summaries for the ingest Action", () => {
     const s = issues[0]!;
     assert.match(s.fingerprint, /^[0-9a-f]{64}$/);
     assert.equal(s.reports, 3);
+    assert.equal(s.installs, 2);
+    assert.equal(s.unattributed, 1);
     assert.equal(s.first_seen, NOW - 3 * 86_400_000);
     assert.equal(s.last_seen, NOW - 3_600_000);
     assert.deepEqual(s.sources, { filed: 1, signature: 1, triage: 0, manual: 1 });
@@ -4544,5 +4550,131 @@ describe("triage state, mutes and owner close", () => {
       await call(env, new Request(`${ORIGIN}/issues/412`, { headers: { cookie: owner } }))
     ).text();
     assert.match(page, /Closed on GitHub as fixed in 0\.9\.1\./);
+  });
+});
+
+describe("hosted demo runs", () => {
+  const S = Math.floor(NOW / 1000);
+  const RUN_A = "0e9ced79-df3c-4dae-872b-2e5772b06e69";
+  const RUN_B = "1e9ced79-df3c-4dae-872b-2e5772b06e69";
+  const RUN_C = "2e9ced79-df3c-4dae-872b-2e5772b06e69";
+  const base = (run_id: string, started_at: number) => ({
+    run_id,
+    started_at,
+    ends_at: started_at + 1800,
+    version: "abc1234",
+  });
+
+  it("matches a run's start, ready and stop, keeps live runs open and closes missed ones", async () => {
+    const env = makeEnv();
+    const db = env.DASHBOARD_DB;
+    await recordDemoRun(db, { kind: "start", ...base(RUN_A, S - 600) });
+    await recordDemoRun(db, { kind: "ready", ...base(RUN_A, S - 600), startup_seconds: 40 });
+    await recordDemoRun(db, { kind: "ready", ...base(RUN_A, S - 600), startup_seconds: 99 });
+    await recordDemoRun(db, {
+      kind: "stop",
+      ...base(RUN_A, S - 600),
+      ended_at: S - 300,
+      reason: "visitor",
+    });
+    // B is live; C never sent a stop and is past its hard stop.
+    await recordDemoRun(db, { kind: "start", ...base(RUN_B, S - 60) });
+    await recordDemoRun(db, { kind: "start", ...base(RUN_C, S - 3 * 3600) });
+    assert.equal(await sweepDemoRuns(db, S), 1);
+    assert.equal(await sweepDemoRuns(db, S), 0);
+    const rows = await all(
+      db,
+      "SELECT run_id, startup_seconds, ended_at, end_reason FROM demo_runs ORDER BY run_id",
+    );
+    assert.deepEqual(rows, [
+      { run_id: RUN_A, startup_seconds: 40, ended_at: S - 300, end_reason: "visitor" },
+      { run_id: RUN_B, startup_seconds: null, ended_at: null, end_reason: null },
+      { run_id: RUN_C, startup_seconds: null, ended_at: S - 3 * 3600 + 1800, end_reason: "missed" },
+    ]);
+    // A late stop replaces "missed"; a second stop changes nothing.
+    await recordDemoRun(db, {
+      kind: "stop",
+      ...base(RUN_C, S - 3 * 3600),
+      ended_at: S - 3 * 3600 + 900,
+      reason: "idle",
+    });
+    await recordDemoRun(db, {
+      kind: "stop",
+      ...base(RUN_C, S - 3 * 3600),
+      ended_at: S,
+      reason: "sweep",
+    });
+    const c = await first(db, "SELECT ended_at, end_reason FROM demo_runs WHERE run_id = ?", RUN_C);
+    assert.deepEqual(c, { ended_at: S - 3 * 3600 + 900, end_reason: "idle" });
+    assert.equal(await liveDemoRuns(db, S), 1);
+
+    const stats = await demoStats(db, S, 30);
+    assert.equal(stats.live.length, 1);
+    const today = stats.days.find((d) => d.day === Math.floor(S / 86_400));
+    assert.ok(today);
+    assert.equal(today.runs, 3);
+    assert.equal(today.timed, 2);
+    assert.equal(today.seconds, 300 + 900);
+    assert.equal(today.startups, 1);
+    assert.deepEqual(today.byReason, { visitor: 1, live: 1, idle: 1 });
+  });
+
+  it("stores events from the private entrypoint and drops refused ones", async () => {
+    const env = makeEnv();
+    const runs = new DemoRuns(
+      { waitUntil: () => {}, passThroughOnException: () => {} } as unknown as ExecutionContext,
+      env,
+    );
+    assert.equal(await runs.record({ kind: "start", ...base(RUN_A, S) }), true);
+    assert.equal(await runs.record({ kind: "start", ...base(RUN_A, S), ip: "203.0.113.9" }), false);
+    assert.equal(await runs.record("start"), false);
+    assert.equal(await liveDemoRuns(env.DASHBOARD_DB, S), 1);
+  });
+
+  it("tells open dashboard pages when a run event is stored", async () => {
+    const pushes: string[] = [];
+    // Only the calls live.ts makes, handed over as the runtime binding.
+    const fake = {
+      idFromName: (n: string) => n,
+      get: () => ({
+        fetch: async (url: string) => (
+          pushes.push(String(url)),
+          new Response(null, { status: 204 })
+        ),
+      }),
+    };
+    const env = makeEnv({ LIVE: fake as unknown as DurableObjectNamespace });
+    const runs = new DemoRuns(
+      { waitUntil: () => {}, passThroughOnException: () => {} } as unknown as ExecutionContext,
+      env,
+    );
+    assert.equal(await runs.record({ kind: "start", ...base(RUN_A, S) }), true);
+    assert.deepEqual(pushes, ["https://live/changed"]);
+    assert.equal(await runs.record("start"), false);
+    assert.equal(pushes.length, 1);
+  });
+
+  it("draws the Demo page for members only", async () => {
+    const env = makeEnv();
+    await recordDemoRun(env.DASHBOARD_DB, { kind: "start", ...base(RUN_B, S - 60) });
+    await recordDemoRun(env.DASHBOARD_DB, {
+      kind: "stop",
+      ...base(RUN_A, S - 7200),
+      ended_at: S - 6000,
+      reason: "time",
+    });
+    const anon = await call(env, new Request(`${ORIGIN}/demo`));
+    assert.equal(anon.status, 303);
+    const cookie = await signedIn(env);
+    const res = await call(env, new Request(`${ORIGIN}/demo?days=90`, { headers: { cookie } }));
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /<h2>Live now<\/h2><div class="v">1<\/div>/);
+    assert.match(body, /<div class="grid" data-live="demo">/, "the page refreshes on a push");
+    assert.match(body, /Runs, 90 days<\/h2><div class="v">2</);
+    assert.match(body, /20 min 0 s/, "the stopped run's length");
+    assert.match(body, /aria-current="page">Demo</);
+    const odd = await call(env, new Request(`${ORIGIN}/demo?days=7`, { headers: { cookie } }));
+    assert.match(await odd.text(), /Runs, 30 days/);
   });
 });

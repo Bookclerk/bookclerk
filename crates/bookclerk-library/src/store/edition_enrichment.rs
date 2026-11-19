@@ -7,7 +7,7 @@
 //! filled it (`enrich_source`, `enrich_confidence`, `enrich_updated_at`), so
 //! the next run skips it. While the flat `books` table exists, the same
 //! fields are also written to the edition's `books` rows, which the
-//! cluster readers still read.
+//! library readers still read.
 
 use std::collections::{HashMap, HashSet};
 

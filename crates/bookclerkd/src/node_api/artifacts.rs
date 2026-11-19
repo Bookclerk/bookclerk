@@ -4,7 +4,7 @@
 //! Like the node socket, the route sits outside the cookie and operator
 //! auth layers: the node's enrolled Ed25519 key is the credential, carried
 //! as `Authorization: Bookclerk-Node <node_id> <issued_at> <sig>` over
-//! [`bookclerk_node_proto::artifact_transcript`] (cluster, node, owner
+//! [`bookclerk_node_proto::artifact_transcript`] (library, node, owner
 //! origin, archive digest, issue time; [`ARTIFACT_REQUEST_MAX_SKEW_SECS`]
 //! either way). The transport policy runs first. A node gets only `blob:`
 //! archives of versions installed for deployments it is trusted with
@@ -20,7 +20,7 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::control_plane::{
-    artifact_served_to_node, load_artifact_blob, load_cluster_row, load_node_credential,
+    artifact_served_to_node, load_artifact_blob, load_library_row, load_node_credential,
 };
 use bookclerk_node_proto::{
     canonical_origin, parse_artifact_authorization, verify_artifact_request, ArtifactRequest,
@@ -84,7 +84,7 @@ pub async fn get_artifact(
     let Some(origin) = origin else {
         return not_found();
     };
-    let Ok(Some(cluster)) = load_cluster_row(&library).await else {
+    let Ok(Some(identity)) = load_library_row(&library).await else {
         return not_found();
     };
     let credential = match load_node_credential(&library, node_id).await {
@@ -92,7 +92,7 @@ pub async fn get_artifact(
         _ => return not_found(),
     };
     let artifact_request = ArtifactRequest {
-        cluster_id: &cluster.cluster_id,
+        library_id: &identity.library_id,
         node_id,
         owner_origin: &origin,
         archive_sha256: &sha256,

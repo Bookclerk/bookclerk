@@ -239,12 +239,12 @@ describe("watchLive", () => {
     expect(refresh).toHaveBeenCalledTimes(3);
   });
 
-  it("refreshes the clusters panel on cluster link changes", () => {
+  it("refreshes the libraries panel on library link changes", () => {
     const { client, last } = harness();
     const refresh = vi.fn();
-    watchLive(client, ["consents", "clusters"], refresh, { pollMs: 15_000 });
-    last().hello(["consents", "clusters"]);
-    last().changed(["clusters"]);
+    watchLive(client, ["consents", "libraries"], refresh, { pollMs: 15_000 });
+    last().hello(["consents", "libraries"]);
+    last().changed(["libraries"]);
     expect(refresh).toHaveBeenCalledTimes(2);
   });
 });

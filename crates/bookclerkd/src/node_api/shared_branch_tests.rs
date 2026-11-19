@@ -228,7 +228,7 @@ async fn an_owner_with_a_fresh_second_factor_lets_a_shared_branch_join_with_a_se
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
     assert_eq!(enrolled["connection"], "shared_branch");
     let node_id = enrolled["node_id"].as_str().unwrap().to_string();
-    let cluster_id = enrolled["cluster_id"].as_str().unwrap().to_string();
+    let library_id = enrolled["library_id"].as_str().unwrap().to_string();
     let sealed = enrolled["bootstrap"].as_str().unwrap().to_string();
     assert!(!sealed.contains("pg-secret"));
     assert!(!enrolled.to_string().contains("pg-secret"));
@@ -244,7 +244,7 @@ async fn an_owner_with_a_fresh_second_factor_lets_a_shared_branch_join_with_a_se
 
     // Only the node's box key opens the bootstrap: the database and the DEK.
     let opened =
-        open_shared_branch_bootstrap(&NODE_BOX_SECRET, &cluster_id, &node_id, &sealed).unwrap();
+        open_shared_branch_bootstrap(&NODE_BOX_SECRET, &library_id, &node_id, &sealed).unwrap();
     match &opened.database {
         SharedBranchDatabase::Postgres { url } => {
             assert_eq!(url.expose(), b"postgres://lib:pg-secret@db.example/library");
@@ -253,7 +253,7 @@ async fn an_owner_with_a_fresh_second_factor_lets_a_shared_branch_join_with_a_se
     }
     let dek = bookclerk_library::require_master_key(Some(files.path())).unwrap();
     assert_eq!(opened.dek.expose(), dek.as_bytes());
-    assert!(open_shared_branch_bootstrap(&[12u8; 32], &cluster_id, &node_id, &sealed).is_err());
+    assert!(open_shared_branch_bootstrap(&[12u8; 32], &library_id, &node_id, &sealed).is_err());
 
     // A lost answer: the retry replays the same node with a fresh box.
     let (status, _, again) = call(

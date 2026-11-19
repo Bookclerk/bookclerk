@@ -472,7 +472,7 @@ async fn catalog_listing_view(
 
 /// The number of libraries this install is currently a branch of.
 async fn active_libraries(library: &bookclerk_library::LibraryStore) -> Result<u32, StatusCode> {
-    let links = bookclerk_library::control_plane::list_cluster_links(library)
+    let links = bookclerk_library::control_plane::list_library_links(library)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(u32::try_from(links.iter().filter(|l| l.state == "active").count()).unwrap_or(u32::MAX))

@@ -463,13 +463,13 @@ When exercising real store credentials in this cloud environment:
   edits the instance document (`--secret` reads the value from stdin and
   seals it); `bookclerk plugins deploy|undeploy <plugin> [--node <id>]` sets
   the deployment (`present` = runs on that node). `bookclerk plugins deploy
-  <plugin> --replicas N|all --on <label>` hands an instance to the cluster
+  <plugin> --replicas N|all --on <label>` hands an instance to the library
   scheduler instead, which writes `placed`/`unplaced` rows on the live nodes
   with the most budget headroom (each daemon heartbeats capacity, budget,
   reservations, and use into `node_status` every 15 s; budgets and drain
   via `bookclerk nodes set`, labels via `bookclerk nodes label`);
   per-node deploy/undeploy then refuse it until `plugins deploy --manual`.
-  `bookclerk plugins install` records a cluster-wide installed version (nodes
+  `bookclerk plugins install` records a library-wide installed version (nodes
   materialize it under `plugins/.versions/<digest>`); it no longer writes
   `plugins/<fs-id>`. There are no `[sources.*]`,
   `[output.local]`, `[output.s3]`, or `[integrations.<id>]` tables and no
