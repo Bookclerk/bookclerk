@@ -555,6 +555,22 @@ mod tests {
     ///
     /// A regression here aborts the test process rather than failing an
     /// assertion, which is exactly the signal we want.
+    /// Frame count stated by the Info/Xing header in the first MP3 frame of
+    /// `bytes`, which starts with that frame (LAME writes no ID3 tag).
+    fn info_frame_count(bytes: &[u8]) -> Option<u32> {
+        let first_frame = bytes.get(..bytes.len().min(256))?;
+        let at = first_frame
+            .windows(4)
+            .position(|window| window == b"Info" || window == b"Xing")?;
+        let flags = u32::from_be_bytes(bytes.get(at + 4..at + 8)?.try_into().ok()?);
+        if flags & 1 == 0 {
+            return None;
+        }
+        Some(u32::from_be_bytes(
+            bytes.get(at + 8..at + 12)?.try_into().ok()?,
+        ))
+    }
+
     #[test]
     fn encodes_a_full_file_without_overrunning_the_output_buffer() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -592,8 +608,12 @@ mod tests {
             size > 1_000,
             "encoded MP3 is implausibly small: {size} bytes"
         );
-        let record =
-            bookclerk_tags::read_all(&std::fs::read(&encoded).expect("read mp3")).expect("tags");
+        let bytes = std::fs::read(&encoded).expect("read mp3");
+        assert!(
+            info_frame_count(&bytes).is_some_and(|frames| frames > 0),
+            "the first frame carries a filled Info/Xing frame count"
+        );
+        let record = bookclerk_tags::read_all(&bytes).expect("tags");
         let duration = record.duration.expect("running time");
         assert_eq!(
             duration.precision,

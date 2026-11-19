@@ -474,15 +474,6 @@ fn write_mp3_chapters(tag: &mut Id3Tag, req: &FixupRequest) -> Result<()> {
         );
         return Ok(());
     }
-    let mut spans = spans;
-    if spans.len() > MP3_MAX_CHAPTERS {
-        tracing::warn!(
-            chapters = spans.len(),
-            kept = MP3_MAX_CHAPTERS,
-            "more chapters than two levels of ID3 tables of contents can list; extra chapters dropped"
-        );
-        spans.truncate(MP3_MAX_CHAPTERS);
-    }
     tag.remove_all_chapters();
     tag.remove_all_tables_of_contents();
     let mut elements = Vec::with_capacity(spans.len());
@@ -566,7 +557,8 @@ struct Mp3ChapterSpan {
 /// Turns chapter starts into `CHAP` windows over a file `duration` long.
 ///
 /// Chapters are ordered by start, and two chapters starting at the same
-/// time keep the first. Every start that does not fit the frame's 32-bit
+/// time keep the first. At most [`MP3_MAX_CHAPTERS`] are kept, the earliest.
+/// Every start that does not fit the frame's 32-bit
 /// millisecond field is dropped. When the running time is exact, starts at
 /// or past it are dropped too, since a player could never reach them. An
 /// estimated running time (a variable bit rate MP3 without a frame count)
@@ -592,6 +584,16 @@ fn mp3_chapter_spans(
         .collect();
     starts.sort_by_key(|(start, _)| *start);
     starts.dedup_by_key(|(start, _)| *start);
+    // Cap before closing the windows, so the last kept chapter still ends
+    // at the running time and not at the first dropped start.
+    if starts.len() > MP3_MAX_CHAPTERS {
+        tracing::warn!(
+            chapters = starts.len(),
+            kept = MP3_MAX_CHAPTERS,
+            "more chapters than two levels of ID3 tables of contents can list; extra chapters dropped"
+        );
+        starts.truncate(MP3_MAX_CHAPTERS);
+    }
     let end_of_file = u32::try_from(duration.ms).unwrap_or(u32::MAX);
     let next_starts = starts
         .iter()
@@ -693,6 +695,18 @@ mod tests {
         let windows: Vec<(u32, u32)> = spans.iter().map(|s| (s.start_ms, s.end_ms)).collect();
         assert_eq!(windows, vec![(0, 10_000), (10_000, 10_000)]);
         assert_eq!(mp3_chapter_spans(&chapters, exact(4_937)).len(), 1);
+    }
+
+    #[test]
+    fn chapter_spans_past_the_cap_still_end_at_the_running_time() {
+        let chapters: Vec<(String, u64)> = (0..=MP3_MAX_CHAPTERS as u64)
+            .map(|index| (format!("Chapter {index}"), index * 1_000))
+            .collect();
+        let spans = mp3_chapter_spans(&chapters, exact(100_000_000));
+        assert_eq!(spans.len(), MP3_MAX_CHAPTERS);
+        let last = spans.last().expect("last chapter");
+        assert_eq!(last.start_ms, 65_024_000);
+        assert_eq!(last.end_ms, 100_000_000);
     }
 
     /// A fix-up of the MP3 at `path` in place, carrying `chapters`.
