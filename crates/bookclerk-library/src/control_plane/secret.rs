@@ -1,6 +1,6 @@
-//! Cluster secret-root join rules.
+//! Library secret-root join rules.
 //!
-//! The fingerprint stored in `cluster_identity` is the SHA-256 of the unwrapped
+//! The fingerprint stored in `library_identity` is the SHA-256 of the unwrapped
 //! DEK. A host that finds an existing fingerprint must present that DEK. It
 //! must not mint a second root. There is no KMS adapter in this slice: joining
 //! means possessing `master.key` (raw or password-wrapped) for that DEK.
@@ -9,8 +9,8 @@ use chrono::Utc;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use super::batch::{self, exec, int, request, text};
-use super::identity::preferred_cluster_id;
-use crate::entities::cluster_identity;
+use super::identity::preferred_library_id;
+use crate::entities::library_identity;
 use crate::error::{LibraryError, Result};
 use crate::host_schema::current_schema_state;
 use crate::master_key::{
@@ -21,22 +21,22 @@ use crate::secrets::FORMAT_SEALED_V1;
 use crate::store::LibraryStore;
 use std::path::Path;
 
-/// Singleton primary key for [`cluster_identity`].
-const CLUSTER_ROW_ID: i64 = 1;
+/// Singleton primary key for [`library_identity`].
+const LIBRARY_ROW_ID: i64 = 1;
 
-/// Cluster id and fingerprint of the secret root aligned for this process.
+/// Library id and fingerprint of the secret root aligned for this process.
 ///
 /// The unwrapped DEK stays in the process cache (`configure_master_key_with`).
 /// Callers that need the key use [`crate::require_master_key`].
 #[derive(Clone, Debug)]
-pub struct ClusterSecret {
-    /// Cluster id stored beside the fingerprint.
-    pub cluster_id: String,
+pub struct LibrarySecret {
+    /// Library id stored beside the fingerprint.
+    pub library_id: String,
     /// SHA-256 hex of the DEK.
     pub secret_fingerprint: String,
 }
 
-/// Ensures this process's DEK is the cluster secret root.
+/// Ensures this process's DEK is the library secret root.
 ///
 /// * Existing fingerprint: the local key must match. A missing file is not minted.
 /// * No fingerprint and sealed secrets present: the local key must unseal one
@@ -47,21 +47,21 @@ pub struct ClusterSecret {
 ///   minted a different key deletes that new file and fails.
 ///
 /// On success the accepted DEK is installed in the process cache. The returned
-/// value is only the cluster id and fingerprint.
+/// value is only the library id and fingerprint.
 ///
 /// # Errors
 ///
 /// Returns an error when bootstrap material is missing or does not match the
 /// database. Existing rows are not updated on failure.
-pub async fn align_cluster_root(
+pub async fn align_library_root(
     store: &LibraryStore,
     files_dir: &Path,
     password: Option<&str>,
-) -> Result<ClusterSecret> {
-    let existing = load_cluster_row(store).await?;
+) -> Result<LibrarySecret> {
+    let existing = load_library_row(store).await?;
     if existing.is_some() && !crate::master_key::master_key_path(files_dir).is_file() {
         return Err(LibraryError::Other(anyhow::anyhow!(
-            "secret root missing: database already has a cluster secret fingerprint and {dir}/master.key is absent",
+            "secret root missing: database already has a library secret fingerprint and {dir}/master.key is absent",
             dir = files_dir.display()
         )));
     }
@@ -78,19 +78,19 @@ pub async fn align_cluster_root(
 
 /// Accepts a local DEK that matches the stored fingerprint.
 fn verify_existing(
-    row: &cluster_identity::Model,
+    row: &library_identity::Model,
     fingerprint: &str,
     files_dir: &Path,
     resolved: &crate::master_key::MasterKeyResolution,
-) -> Result<ClusterSecret> {
+) -> Result<LibrarySecret> {
     if row.secret_fingerprint != fingerprint {
         forget_rejected_key(files_dir, resolved);
         return Err(LibraryError::Other(anyhow::anyhow!(
-            "secret root mismatch: local master key does not match the cluster secret fingerprint"
+            "secret root mismatch: local master key does not match the library secret fingerprint"
         )));
     }
-    Ok(ClusterSecret {
-        cluster_id: row.cluster_id.clone(),
+    Ok(LibrarySecret {
+        library_id: row.library_id.clone(),
         secret_fingerprint: row.secret_fingerprint.clone(),
     })
 }
@@ -101,7 +101,7 @@ async fn initialize_root(
     files_dir: &Path,
     resolved: &crate::master_key::MasterKeyResolution,
     fingerprint: &str,
-) -> Result<ClusterSecret> {
+) -> Result<LibrarySecret> {
     match probe_sealed_secrets(store, &resolved.key).await? {
         SecretProbe::Reject => {
             forget_rejected_key(files_dir, resolved);
@@ -112,12 +112,12 @@ async fn initialize_root(
         SecretProbe::None | SecretProbe::Matches => {}
     }
 
-    let preferred = preferred_cluster_id(files_dir)?;
-    let cluster_id = preferred.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let preferred = preferred_library_id(files_dir)?;
+    let library_id = preferred.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let state = current_schema_state(store.db()).await?;
     let now = Utc::now().to_rfc3339();
     let operation_id = format!(
-        "cluster-secret-{}",
+        "library-secret-{}",
         &fingerprint[..12.min(fingerprint.len())]
     );
     batch::execute_host_batch(
@@ -125,12 +125,12 @@ async fn initialize_root(
         request(
             &operation_id,
             vec![exec(
-                "INSERT OR IGNORE INTO cluster_identity (
-                    id, cluster_id, secret_fingerprint, schema_state, created_at
+                "INSERT OR IGNORE INTO library_identity (
+                    id, library_id, secret_fingerprint, schema_state, created_at
                 ) VALUES (?, ?, ?, ?, ?)",
                 vec![
-                    int(CLUSTER_ROW_ID),
-                    text(&cluster_id),
+                    int(LIBRARY_ROW_ID),
+                    text(&library_id),
                     text(fingerprint),
                     text(&state.display()),
                     text(&now),
@@ -140,30 +140,30 @@ async fn initialize_root(
     )
     .await?;
 
-    let row = load_cluster_row(store).await?.ok_or_else(|| {
+    let row = load_library_row(store).await?.ok_or_else(|| {
         LibraryError::Other(anyhow::anyhow!(
-            "secret root missing: cluster identity insert did not persist"
+            "secret root missing: library identity insert did not persist"
         ))
     })?;
     if row.secret_fingerprint != fingerprint {
         forget_rejected_key(files_dir, resolved);
         return Err(LibraryError::Other(anyhow::anyhow!(
-            "secret root mismatch: another initializer committed a different cluster secret"
+            "secret root mismatch: another initializer committed a different library secret"
         )));
     }
-    Ok(ClusterSecret {
-        cluster_id: row.cluster_id,
+    Ok(LibrarySecret {
+        library_id: row.library_id,
         secret_fingerprint: row.secret_fingerprint,
     })
 }
 
-/// Reads the singleton cluster row when present.
+/// Reads the singleton library row when present.
 ///
 /// # Errors
 ///
 /// Returns an error when the read fails.
-pub async fn load_cluster_row(store: &LibraryStore) -> Result<Option<cluster_identity::Model>> {
-    cluster_identity::Entity::find_by_id(CLUSTER_ROW_ID)
+pub async fn load_library_row(store: &LibraryStore) -> Result<Option<library_identity::Model>> {
+    library_identity::Entity::find_by_id(LIBRARY_ROW_ID)
         .one(store.db())
         .await
         .map_err(LibraryError::Orm)

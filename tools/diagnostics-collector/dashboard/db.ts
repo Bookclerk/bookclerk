@@ -192,6 +192,13 @@ export type IssueSummary = {
   fingerprint: string;
   /** Reports the issue tracks. */
   reports: number;
+  /**
+   * Distinct installs among those reports, by install key. Keys are salted
+   * per month, so an install that reported in two months counts twice.
+   */
+  installs: number;
+  /** Tracked reports that carry no install key (usage sharing off). */
+  unattributed: number;
   /** First receipt, Unix ms, or null without reports. */
   first_seen: number | null;
   /** Last receipt, Unix ms, or null without reports. */
@@ -1352,7 +1359,7 @@ const SUMMARY_NEWEST = 10;
  * The summary the ingest Action keeps as one comment on each GitHub issue,
  * for every issue whose current summary differs from the one last written
  * (`issues.summary_sent`): how many reports the issue tracks and from how
- * many installations, how they were linked, first and last receipt, the
+ * many installs (by install key), how they were linked, first and last receipt, the
  * versions and platforms seen, and the newest reports. The counts come from
  * the ledger (`report_issue`, each report counted under the issue that
  * tracks it), so a member's attach or detach on the dashboard changes the
@@ -1382,6 +1389,8 @@ export async function issueSummaries(
       `${tracked}
        SELECT i.number AS issue, i.summary_sent AS sent,
          COUNT(r.report_id) AS reports,
+         COUNT(DISTINCT NULLIF(r.install_key, '')) AS installs,
+         COALESCE(SUM(r.install_key = ''), 0) AS unattributed,
          MIN(r.received_at) AS first_seen, MAX(r.received_at) AS last_seen,
          COALESCE(SUM(ri.source = 'filed'), 0) AS filed, COALESCE(SUM(ri.source = 'signature'), 0) AS by_signature,
          COALESCE(SUM(ri.source = 'triage'), 0) AS by_triage, COALESCE(SUM(ri.source = 'manual'), 0) AS by_manual
@@ -1456,6 +1465,8 @@ export async function issueSummaries(
     const summary = {
       issue,
       reports: Number(t.reports),
+      installs: Number(t.installs),
+      unattributed: Number(t.unattributed),
       first_seen: t.first_seen === null ? null : Number(t.first_seen),
       last_seen: t.last_seen === null ? null : Number(t.last_seen),
       sources: {

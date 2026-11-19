@@ -5082,7 +5082,7 @@ async fn catalog_dispatch_creates_rows_claim_filters_loaded_plugins() {
     let event = store.get_domain_event(&id).await.unwrap().unwrap();
     assert_eq!(
         store
-            .dispatch_catalog_matches(&event, "cluster-a")
+            .dispatch_catalog_matches(&event, "library-a")
             .await
             .unwrap(),
         2

@@ -10,7 +10,7 @@ settings and your naming templates, so you do not start from scratch.
   file naming templates.
 - The list of your accounts.
 
-Bookclerk adds its library id (`[<library id>]`) to the end of your
+Bookclerk adds its call number (`[<call number>]`) to the end of your
 folder template when your templates don't include it, so two editions of
 a book never share a folder. Books Libation already saved keep their
 names and are matched where they are.

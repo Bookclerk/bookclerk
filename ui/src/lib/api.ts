@@ -2017,7 +2017,7 @@ export interface PluginDeploymentView {
   node_id: string;
   /**
    * `present` / `absent` when an operator manages the instance (the Enabled
-   * switch), `placed` / `unplaced` when the cluster scheduler does. The
+   * switch), `placed` / `unplaced` when the library scheduler does. The
    * host runs it for `present` and `placed`.
    */
   desired: "present" | "absent" | "placed" | "unplaced" | string;
@@ -2503,7 +2503,7 @@ export async function putPluginDeployment(
 }
 
 /**
- * Hands an instance's deployments to the cluster scheduler, or changes its
+ * Hands an instance's deployments to the library scheduler, or changes its
  * placement (compare-and-swap on `expected_revision`; 0 creates).
  *
  * @param instanceId - Plugin instance id.
@@ -2581,7 +2581,7 @@ export interface NodeStatusView {
   availability_ppm: number;
 }
 
-/** One cluster node as `GET /api/config/nodes` returns it. */
+/** One library node as `GET /api/config/nodes` returns it. */
 export interface ConfigNodeView {
   node_id: string;
   target: string;
@@ -2630,8 +2630,8 @@ export async function listConfigNodes(): Promise<NodesResponse> {
   return parseJson(res);
 }
 
-/** Cluster-wide health from `GET /api/cluster/status`. */
-export interface ClusterSummary {
+/** Library-wide health from `GET /api/library-status`. */
+export interface LibrarySummary {
   nodes: number;
   live: number;
   drained: number;
@@ -2650,19 +2650,19 @@ export interface ClusterSummary {
   };
 }
 
-/** `GET /api/cluster/status`: cluster health plus the nodes the caller may see. */
-export interface ClusterStatusResponse extends NodesResponse {
-  cluster: ClusterSummary;
+/** `GET /api/library-status`: library health plus the nodes the caller may see. */
+export interface LibraryStatusResponse extends NodesResponse {
+  library: LibrarySummary;
 }
 
 /**
- * Cluster health every node administrator may see, with detail for the
+ * Library health every node administrator may see, with detail for the
  * caller's visible nodes.
  *
- * @returns Cluster summary, visible nodes, and the caller's capabilities.
+ * @returns Library summary, visible nodes, and the caller's capabilities.
  */
-export async function fetchClusterStatus(): Promise<ClusterStatusResponse> {
-  const res = await fetch("/api/cluster/status", { credentials: "include" });
+export async function fetchLibraryStatus(): Promise<LibraryStatusResponse> {
+  const res = await fetch("/api/library-status", { credentials: "include" });
   return parseJson(res);
 }
 
@@ -2724,10 +2724,10 @@ export async function putNodeLabels(nodeId: string, labels: string[]): Promise<u
   return parseJson(res);
 }
 
-/** An owner cluster this install is enrolled in as a host (no key material). */
-export interface ClusterLinkView {
-  /** Id of the owner cluster; one link per cluster. */
-  cluster_id: string;
+/** A library this install is enrolled in as a host (no key material). */
+export interface LibraryLinkView {
+  /** Id of the library; one link per library. */
+  library_id: string;
   /** Canonical origin (`https://host[:port]`) this host dials the owner at. */
   owner_origin: string;
   /** Node id the owner minted for this install. */
@@ -2811,8 +2811,8 @@ export type RemoteConsentState =
 
 /** One owner plugin's request to run on this host, and this host's answer. */
 export interface RemoteConsentView {
-  /** Owner cluster that asks; matches a {@link ClusterLinkView.cluster_id}. */
-  cluster_id: string;
+  /** Library that asks; matches a {@link LibraryLinkView.library_id}. */
+  library_id: string;
   /** Canonical plugin key the request is for. */
   plugin_key: string;
   /** Version the owner now asks to run. */
@@ -2851,10 +2851,10 @@ export interface RemoteConsentView {
   pending?: string[];
 }
 
-/** `GET /api/config/cluster-consents`. */
-export interface ClusterConsentsResponse {
-  /** Every owner cluster link this install holds, in any state. */
-  clusters: ClusterLinkView[];
+/** `GET /api/config/library-consents`. */
+export interface LibraryConsentsResponse {
+  /** Every library link this install holds, in any state. */
+  libraries: LibraryLinkView[];
   /** Every recorded owner plugin request, approved or not. */
   consents: RemoteConsentView[];
 }
@@ -2864,8 +2864,8 @@ export interface ClusterConsentsResponse {
  * An approval can only narrow the request, never widen it.
  */
 export interface RemoteApprovalBody {
-  /** Owner cluster of the request. */
-  cluster_id: string;
+  /** Library of the request. */
+  library_id: string;
   /** Plugin key of the request. */
   plugin_key: string;
   /** The `request_digest` reviewed; refused when the recorded request is another one. */
@@ -2902,13 +2902,13 @@ async function parseConsentJson<T>(res: Response): Promise<T> {
 }
 
 /**
- * Lists the owner clusters this host is enrolled in and what each asks to
+ * Lists the libraries this host is enrolled in and what each asks to
  * run here. Operator only.
  *
  * @returns Links and consent rows.
  */
-export async function listClusterConsents(): Promise<ClusterConsentsResponse> {
-  const res = await fetch("/api/config/cluster-consents", { credentials: "include" });
+export async function listLibraryConsents(): Promise<LibraryConsentsResponse> {
+  const res = await fetch("/api/config/library-consents", { credentials: "include" });
   return parseConsentJson(res);
 }
 
@@ -2919,10 +2919,10 @@ export async function listClusterConsents(): Promise<ClusterConsentsResponse> {
  * @param body - The request reviewed and what to leave out.
  * @returns The consent row after approval.
  */
-export async function approveClusterConsent(
+export async function approveLibraryConsent(
   body: RemoteApprovalBody,
 ): Promise<{ consent: RemoteConsentView }> {
-  const res = await fetch("/api/config/cluster-consents/approve", {
+  const res = await fetch("/api/config/library-consents/approve", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -2935,19 +2935,19 @@ export async function approveClusterConsent(
  * Withdraws an approval: held jobs of the plugin are cancelled and given
  * back, and nothing of it is claimed until approved again.
  *
- * @param clusterId - Owner cluster.
+ * @param libraryId - Library.
  * @param pluginKey - Canonical plugin key.
  * @returns The consent row after revoking.
  */
-export async function revokeClusterConsent(
-  clusterId: string,
+export async function revokeLibraryConsent(
+  libraryId: string,
   pluginKey: string,
 ): Promise<{ consent: RemoteConsentView }> {
-  const res = await fetch("/api/config/cluster-consents/revoke", {
+  const res = await fetch("/api/config/library-consents/revoke", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cluster_id: clusterId, plugin_key: pluginKey }),
+    body: JSON.stringify({ library_id: libraryId, plugin_key: pluginKey }),
   });
   return parseConsentJson(res);
 }
@@ -2972,6 +2972,49 @@ export async function patchSettings(body: {
     body: JSON.stringify(body),
   });
   return parseJson<SettingsResponse>(res);
+}
+
+/** One diagnostics report this install sent (`GET /api/diagnostics/reports`). */
+export interface DiagnosticsReport {
+  /** The collector's ID for the report; the GitHub issue filed for it mentions this ID. */
+  report_id: string;
+  /** Why it was sent: `crash`, `error_burst`, `slow_burst`, `job_failed`, `cli_error`, …. */
+  trigger: string;
+  /** The Bookclerk version that sent it. */
+  version: string;
+  /** When the collector accepted it, Unix milliseconds. */
+  sent_at_unix_ms: number;
+}
+
+/**
+ * Lists the diagnostics reports this install sent (operator only).
+ *
+ * @returns Reports, newest first (the install keeps the last 200).
+ */
+export async function fetchDiagnosticsReports(): Promise<DiagnosticsReport[]> {
+  const res = await fetch("/api/diagnostics/reports", { credentials: "include" });
+  const body = await parseJson<{ reports: DiagnosticsReport[] }>(res);
+  return body.reports;
+}
+
+/**
+ * Saves the install's diagnostics sharing choices (`diagnostics.share_reports`
+ * and `diagnostics.share_usage`). The daemon applies them without a restart.
+ *
+ * @param shareReports - Upload redacted reports after crashes and error bursts.
+ * @param shareUsage - Send the weekly anonymous check-in and tag reports with the install ID.
+ * @returns The settings view after the write.
+ */
+export async function saveDiagnosticsSharing(
+  shareReports: boolean,
+  shareUsage: boolean,
+): Promise<SettingsResponse> {
+  return patchSettings({
+    settings: [
+      { key: "diagnostics.share_reports", value: String(shareReports) },
+      { key: "diagnostics.share_usage", value: String(shareUsage) },
+    ],
+  });
 }
 
 /**

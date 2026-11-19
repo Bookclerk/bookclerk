@@ -188,14 +188,14 @@ async fn handshake_exchange(
         .unwrap();
     let challenge = next_or_close(client).await?;
     assert_eq!(challenge.id, "1", "the challenge answers the hello");
-    let Body::Challenge { nonce, cluster_id } = challenge.body else {
+    let Body::Challenge { nonce, library_id } = challenge.body else {
         panic!("expected a challenge: {challenge:?}");
     };
     let nonce = decode_nonce(&nonce).unwrap();
     let sig = sign_auth(
         key,
         &AuthContext {
-            cluster_id: &cluster_id,
+            library_id: &library_id,
             node_id,
             incarnation: "inc-1",
             nonce: &nonce,
@@ -1069,7 +1069,7 @@ async fn a_failed_check_on_resume_is_not_a_lost_fence() {
     // The permit table is briefly unreadable.
     store
         .db()
-        .execute_unprepared("ALTER TABLE cluster_leases RENAME TO cluster_leases_away")
+        .execute_unprepared("ALTER TABLE library_leases RENAME TO library_leases_away")
         .await
         .unwrap();
     let resumed = super::work::resume(&store, &host, vec![held.clone()]).await;
@@ -1084,7 +1084,7 @@ async fn a_failed_check_on_resume_is_not_a_lost_fence() {
     );
     store
         .db()
-        .execute_unprepared("ALTER TABLE cluster_leases_away RENAME TO cluster_leases")
+        .execute_unprepared("ALTER TABLE library_leases_away RENAME TO library_leases")
         .await
         .unwrap();
     let resumed = super::work::resume(&store, &host, vec![held.clone()]).await;

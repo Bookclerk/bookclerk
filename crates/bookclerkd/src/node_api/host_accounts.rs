@@ -11,7 +11,7 @@
 //! The branch is this connection's authenticated node, and the person is
 //! the user its node row names as owner; nothing in a frame names another
 //! node or user. An offer is an account bundle sealed to this connection's
-//! owner box key and bound to the cluster and the node, so it opens only
+//! owner box key and bound to the library and the node, so it opens only
 //! here and only for this branch. An account of a storefront every installed
 //! copy declares `credentials = "shareable"` is kept; so is a single-keeper
 //! one unless another branch already keeps it here (one keeper per
@@ -33,7 +33,7 @@
 //! superseded.
 
 use bookclerk_library::control_plane::{
-    apply_keeper_update, import_offered_accounts, keeping_branch, load_cluster_row, load_node,
+    apply_keeper_update, import_offered_accounts, keeping_branch, load_library_row, load_node,
     withdraw_person_account, KeeperUpdate,
 };
 use bookclerk_library::{LibraryStore, UserStatus};
@@ -88,12 +88,12 @@ pub(super) async fn add(
     let Some(user_id) = branch_owner(library, host).await? else {
         return Ok(error(id, "refused", "no_owner"));
     };
-    let Some(cluster) = load_cluster_row(library).await? else {
-        return Ok(error(id, "refused", "no_cluster"));
+    let Some(identity) = load_library_row(library).await? else {
+        return Ok(error(id, "refused", "no_library"));
     };
     let Ok(bundle) = open_account_offer(
         &host.owner_box_secret,
-        &cluster.cluster_id,
+        &identity.library_id,
         &host.node_id,
         sealed,
     ) else {
@@ -233,12 +233,12 @@ pub(super) async fn update(
     let Some(user_id) = branch_owner(library, host).await? else {
         return Ok(error(id, "refused", "no_owner"));
     };
-    let Some(cluster) = load_cluster_row(library).await? else {
-        return Ok(error(id, "refused", "no_cluster"));
+    let Some(identity) = load_library_row(library).await? else {
+        return Ok(error(id, "refused", "no_library"));
     };
     let Ok(bundle) = open_account_offer(
         &host.owner_box_secret,
-        &cluster.cluster_id,
+        &identity.library_id,
         &host.node_id,
         sealed,
     ) else {

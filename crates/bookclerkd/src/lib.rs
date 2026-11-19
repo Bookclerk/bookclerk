@@ -22,7 +22,6 @@ mod cache_policy;
 mod catalog_lookup;
 mod clerk_link;
 mod clerk_token;
-mod cluster_link;
 mod config_authority;
 mod covers;
 mod cron_worker;
@@ -37,6 +36,7 @@ mod job_handler;
 mod job_worker;
 mod jobs;
 mod library_index;
+mod library_link;
 mod library_overrides;
 mod library_works;
 mod live;
@@ -218,9 +218,19 @@ fn init_logging(config: &Config, syslog_identifier: &str, role: ProcessRole) {
 /// How often the check-in thread looks whether a weekly check-in is due.
 const CHECKIN_POLL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
-/// With `diagnostics.share_usage` on (and not a demo copy), loads the
-/// install's random ID, attaches it to diagnostics uploads and starts a
-/// thread that sends the weekly check-in (see `docs/server/diagnostics.md`).
+/// How often the check-in thread reads the live usage-sharing switch, so a
+/// check-in follows soon after the switch is turned on in Settings.
+const SHARING_POLL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Points the diagnostics handle at the files directory (so accepted
+/// reports join the install's report history) and, unless this is a demo
+/// copy, starts the thread that sends the weekly check-in while
+/// `diagnostics.share_usage` is on (see `docs/server/diagnostics.md`).
+///
+/// The thread reads the live setting on every pass, so turning usage
+/// sharing on or off in Settings takes effect without a restart. The
+/// install's random ID is loaded (or created) the first time the setting is
+/// on, never before.
 ///
 /// # Arguments
 ///
@@ -232,49 +242,89 @@ fn start_usage_checkins(
     diagnostics: &bookclerk_config::DiagnosticsHandle,
     role: ProcessRole,
 ) {
-    if !config.diagnostics.share_usage || config.diagnostics.demo {
+    let files_dir = config.paths().files_dir.clone();
+    diagnostics.set_files_dir(&files_dir);
+    if config.diagnostics.demo {
         return;
     }
-    let files_dir = config.paths().files_dir.clone();
-    let id = match bookclerk_config::InstallId::load_or_create(&files_dir) {
-        Ok(id) => id,
-        Err(err) => {
-            tracing::warn!(error = %err, "usage check-ins off: the install ID could not be read or written");
-            return;
-        }
-    };
-    diagnostics.set_install_id(&id);
+    if config.diagnostics.share_usage {
+        tracing::info!(
+            "diagnostics.share_usage=true — a weekly anonymous check-in goes to the collector"
+        );
+    }
     let settings = config.diagnostics.clone();
-    let checkin = bookclerk_config::CheckIn {
-        install_id: id.as_str().to_string(),
-        version: env!("CARGO_PKG_VERSION").into(),
-        os: std::env::consts::OS.into(),
-        arch: std::env::consts::ARCH.into(),
-        kind: role.as_str().into(),
-    };
-    tracing::info!(
-        "diagnostics.share_usage=true — a weekly anonymous check-in goes to the collector"
-    );
+    let handle = diagnostics.clone();
     let spawned = std::thread::Builder::new()
         .name("bookclerk-checkin".into())
-        .spawn(move || loop {
-            let now = unix_now_ms();
-            if bookclerk_config::checkin_due(&files_dir, now) {
-                match bookclerk_config::send_checkin(&settings, &checkin) {
-                    Ok(()) => {
-                        if let Err(err) = bookclerk_config::record_checkin(&files_dir, now) {
-                            tracing::warn!(error = %err, "usage check-in sent but not recorded");
-                        }
-                    }
-                    Err(err) => {
-                        tracing::debug!(error = %err, "usage check-in not sent; retrying later")
-                    }
+        .spawn(move || {
+            let mut checkin: Option<bookclerk_config::CheckIn> = None;
+            let mut was_on = false;
+            let mut last_pass: Option<std::time::Instant> = None;
+            loop {
+                let on = handle.share_usage();
+                let due = last_pass.is_none_or(|at| at.elapsed() >= CHECKIN_POLL);
+                // A pass right away when the switch turns on, then every poll.
+                if on && (!was_on || due) {
+                    checkin_pass(&files_dir, &settings, &handle, role, &mut checkin);
+                    last_pass = Some(std::time::Instant::now());
                 }
+                was_on = on;
+                std::thread::sleep(SHARING_POLL);
             }
-            std::thread::sleep(CHECKIN_POLL);
         });
     if let Err(err) = spawned {
         tracing::warn!(error = %err, "usage check-ins off: the thread could not start");
+    }
+}
+
+/// One pass of the check-in thread while usage sharing is on: loads the
+/// install ID on first use, then sends the check-in when one is due.
+///
+/// # Arguments
+///
+/// * `files_dir` - The Bookclerk files directory.
+/// * `settings` - Diagnostics settings (collector URL).
+/// * `diagnostics` - The process's diagnostics handle, which gets the ID.
+/// * `role` - Reported as the check-in's kind.
+/// * `checkin` - The check-in body, built on the first pass that has an ID.
+fn checkin_pass(
+    files_dir: &std::path::Path,
+    settings: &bookclerk_config::DiagnosticsConfig,
+    diagnostics: &bookclerk_config::DiagnosticsHandle,
+    role: ProcessRole,
+    checkin: &mut Option<bookclerk_config::CheckIn>,
+) {
+    if checkin.is_none() {
+        let id = match bookclerk_config::InstallId::load_or_create(files_dir) {
+            Ok(id) => id,
+            Err(err) => {
+                tracing::warn!(error = %err, "usage check-in skipped: the install ID could not be read or written");
+                return;
+            }
+        };
+        diagnostics.set_install_id(&id);
+        *checkin = Some(bookclerk_config::CheckIn {
+            install_id: id.as_str().to_string(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            os: std::env::consts::OS.into(),
+            arch: std::env::consts::ARCH.into(),
+            kind: role.as_str().into(),
+        });
+    }
+    let Some(body) = checkin.as_ref() else {
+        return;
+    };
+    let now = unix_now_ms();
+    if !bookclerk_config::checkin_due(files_dir, now) {
+        return;
+    }
+    match bookclerk_config::send_checkin(settings, body) {
+        Ok(()) => {
+            if let Err(err) = bookclerk_config::record_checkin(files_dir, now) {
+                tracing::warn!(error = %err, "usage check-in sent but not recorded");
+            }
+        }
+        Err(err) => tracing::debug!(error = %err, "usage check-in not sent; retrying later"),
     }
 }
 
@@ -329,7 +379,7 @@ struct HostParts {
 }
 
 /// Opens the control plane and starts every background runtime (deployment
-/// reconcile, jobs, events, heartbeat, cluster links, scheduler), then builds
+/// reconcile, jobs, events, heartbeat, library links, scheduler), then builds
 /// the router. Binds nothing: the caller decides how requests reach it.
 ///
 /// # Arguments
@@ -423,7 +473,7 @@ async fn start_host(config: Config, mode: HostMode) -> anyhow::Result<HostParts>
 }
 
 /// Starts every background runtime (deployment reconcile, jobs, events,
-/// heartbeat, cluster links, scheduler) on an opened control plane, then
+/// heartbeat, library links, scheduler) on an opened control plane, then
 /// builds the router. Binds nothing.
 ///
 /// # Arguments
@@ -452,7 +502,7 @@ async fn assemble_host(
     let paths = config.paths().clone();
     tracing::info!(
         node_id = %control_plane.node.node_id,
-        cluster_id = %control_plane.cluster_id,
+        library_id = %control_plane.library_id,
         events_revision = control_plane.events.revision,
         output_revision = control_plane.output.revision,
         enrolled = enrolled.len(),
@@ -483,7 +533,7 @@ async fn assemble_host(
         library: library.clone(),
         database_registry: database_registry.clone(),
         job_notify: Arc::new(Notify::new()),
-        capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
+        capacity: Arc::new(crate::library_link::capacity::CapacityShares::new()),
         job_runtime: Arc::new(RwLock::new(())),
         work_lock: Mutex::new(()),
         discover_gate: Arc::new(Semaphore::new(1)),
@@ -515,8 +565,8 @@ async fn assemble_host(
     config_authority::spawn_config_reconciler(state.clone());
     config_authority::spawn_deployment_reconciler(state.clone());
     heartbeat::spawn_heartbeat(state.clone());
-    // This install as a branch node of the owner clusters it enrolled into.
-    cluster_link::spawn_cluster_links(state.clone());
+    // This install as a branch node of the libraries it enrolled into.
+    library_link::spawn_library_links(state.clone());
     // The libraries this install holds a library card for (as a clerk).
     clerk_link::spawn_clerk_links(state.clone());
     placement::spawn_placement_scheduler(state.clone());
@@ -760,5 +810,130 @@ mod logging_tests {
         assert!(first.is_some(), "the handle must outlive init_logging");
         init_logging(&config, "bookclerkd-test", super::ProcessRole::Daemon);
         assert_eq!(kept(), first, "a second setup keeps the first handle");
+    }
+}
+
+#[cfg(test)]
+mod checkin_tests {
+    use super::{checkin_pass, ProcessRole};
+    use bookclerk_config::{DiagnosticsConfig, DiagnosticsHandle};
+    use std::io::{Read, Write};
+
+    /// A collector that accepts one request and answers 200 with no body.
+    fn accept_once() -> (String, std::thread::JoinHandle<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut raw = Vec::new();
+            let mut buf = [0_u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&raw);
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let len = text[..end]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if raw.len() >= end + 4 + len {
+                        break;
+                    }
+                }
+            }
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+            String::from_utf8_lossy(&raw).into_owned()
+        });
+        (url, server)
+    }
+
+    fn handle(collector_url: &str) -> (DiagnosticsConfig, DiagnosticsHandle) {
+        let settings = DiagnosticsConfig {
+            collector_url: collector_url.into(),
+            share_usage: true,
+            ..DiagnosticsConfig::default()
+        };
+        let handle = DiagnosticsHandle::new(settings.clone(), "0.0.0-test", ProcessRole::Daemon);
+        handle.set_sharing(false, true);
+        (settings, handle)
+    }
+
+    #[test]
+    fn the_first_pass_creates_the_id_and_sends_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (url, server) = accept_once();
+        let (settings, diag) = handle(&url);
+        let mut checkin = None;
+        checkin_pass(
+            dir.path(),
+            &settings,
+            &diag,
+            ProcessRole::Daemon,
+            &mut checkin,
+        );
+        let request = server.join().unwrap();
+        let body = checkin.as_ref().expect("the check-in body is built");
+        assert!(request.starts_with("POST /checkin "), "{request}");
+        assert!(request.contains(&body.install_id), "{request}");
+        assert_eq!(body.kind, ProcessRole::Daemon.as_str());
+        assert!(dir.path().join("install-id").is_file());
+        assert!(
+            !bookclerk_config::checkin_due(dir.path(), super::unix_now_ms()),
+            "an accepted check-in is recorded"
+        );
+        // Not due again: the second pass sends nothing (no collector listens).
+        checkin_pass(
+            dir.path(),
+            &settings,
+            &diag,
+            ProcessRole::Daemon,
+            &mut checkin,
+        );
+    }
+
+    #[test]
+    fn an_unwritable_files_dir_skips_the_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_dir = dir.path().join("file");
+        std::fs::write(&not_a_dir, b"x").unwrap();
+        let (settings, diag) = handle("http://127.0.0.1:9");
+        let mut checkin = None;
+        checkin_pass(
+            &not_a_dir,
+            &settings,
+            &diag,
+            ProcessRole::Daemon,
+            &mut checkin,
+        );
+        assert!(checkin.is_none());
+    }
+
+    #[test]
+    fn a_refused_send_is_not_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", closed.local_addr().unwrap());
+        drop(closed);
+        let (settings, diag) = handle(&url);
+        let mut checkin = None;
+        checkin_pass(
+            dir.path(),
+            &settings,
+            &diag,
+            ProcessRole::Daemon,
+            &mut checkin,
+        );
+        assert!(checkin.is_some());
+        assert!(bookclerk_config::checkin_due(
+            dir.path(),
+            super::unix_now_ms()
+        ));
     }
 }

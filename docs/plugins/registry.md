@@ -15,7 +15,7 @@ binary, without the operator needing a Rust toolchain.
 
 ## What a published plugin is
 
-Third-party plugins are installed once for the cluster, and materialized
+Third-party plugins are installed once for the library, and materialized
 on each node under
 `$BOOKCLERK_FILES_DIR/plugins/.versions/<payload digest>/` (see
 [Installing plugins](../server/plugins.md#installing-plugins) and
@@ -336,7 +336,7 @@ present deployment needs it. No `cargo` or `rustc` on PATH is needed. See
 [Installing plugins](../server/plugins.md#installing-plugins) for update,
 rollback, approval and the daemon routes.
 
-Alias uniqueness is cluster-wide for installed versions:
+Alias uniqueness is library-wide for installed versions:
 
 | Case | Result |
 | --- | --- |

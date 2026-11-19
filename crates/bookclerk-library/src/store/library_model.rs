@@ -272,7 +272,7 @@ const EDITION_ID_NAMESPACE: Uuid = Uuid::from_u128(0x6b1f_4e0a_93c2_5d7e_8a41_0c
 /// version 5 UUID over its plugin key, marketplace and product id. Two
 /// nodes (or one library rebuilt from a fresh scan) that resolve the same
 /// listing first give its edition the same id, and so the same
-/// `<library id>` in file names.
+/// `<call number>` in file names.
 #[must_use]
 pub fn edition_id_for_listing(key: &resolve::listing::ListingKey) -> String {
     let name = format!(
@@ -282,15 +282,15 @@ pub fn edition_id_for_listing(key: &resolve::listing::ListingKey) -> String {
     Uuid::new_v5(&EDITION_ID_NAMESPACE, name.as_bytes()).to_string()
 }
 
-/// Lower-case Crockford base32 digits, for [`library_id`].
+/// Lower-case Crockford base32 digits, for [`call_number`].
 const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
 
-/// The `<library id>` of edition `edition_id`: its first 40 bits as 8
+/// The `<call number>` of edition `edition_id`: its first 40 bits as 8
 /// lower-case Crockford base32 characters (no `i`, `l`, `o` or `u`). An id
 /// that is not a UUID falls back to its first 8 ASCII letters and digits.
 /// Returns `None` when that leaves nothing.
 #[must_use]
-pub fn library_id(edition_id: &str) -> Option<String> {
+pub fn call_number(edition_id: &str) -> Option<String> {
     let short = match Uuid::parse_str(edition_id) {
         Ok(uuid) => {
             let bytes = uuid.as_bytes();
@@ -2608,26 +2608,26 @@ mod tests {
     }
 
     #[test]
-    fn a_library_id_is_eight_crockford_digits_of_the_edition_id() {
+    fn a_call_number_is_eight_crockford_digits_of_the_edition_id() {
         assert_eq!(
-            library_id("00000000-0000-4000-8000-000000000000").as_deref(),
+            call_number("00000000-0000-4000-8000-000000000000").as_deref(),
             Some("00000000")
         );
         // 0xffffffffff is all ones: the last digit of the alphabet.
         assert_eq!(
-            library_id("ffffffff-ff00-4000-8000-000000000000").as_deref(),
+            call_number("ffffffff-ff00-4000-8000-000000000000").as_deref(),
             Some("zzzzzzzz")
         );
         // 0x0123456789 in five-bit groups.
         assert_eq!(
-            library_id("01234567-8900-4000-8000-000000000000").as_deref(),
+            call_number("01234567-8900-4000-8000-000000000000").as_deref(),
             Some("04hmasw9")
         );
-        let id = library_id(&Uuid::new_v4().to_string()).unwrap();
+        let id = call_number(&Uuid::new_v4().to_string()).unwrap();
         assert_eq!(id.len(), 8);
         assert!(id.bytes().all(|b| CROCKFORD.contains(&b)), "{id}");
-        assert_eq!(library_id("edition-12").as_deref(), Some("edition1"));
-        assert_eq!(library_id("--"), None);
+        assert_eq!(call_number("edition-12").as_deref(), Some("edition1"));
+        assert_eq!(call_number("--"), None);
     }
 
     #[test]

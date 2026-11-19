@@ -13,7 +13,7 @@
 //! their budget and when they were last swept.
 //!
 //! The recorded row also sets how many job slots this machine has for the
-//! libraries it is a branch of ([`crate::cluster_link::capacity`]).
+//! libraries it is a branch of ([`crate::library_link::capacity`]).
 
 use std::sync::Arc;
 
@@ -104,7 +104,7 @@ async fn beat(
     (sampler, status)
 }
 
-/// The image caches' retention limits on `node_id`: the cluster's
+/// The image caches' retention limits on `node_id`: the library's
 /// `core.cache` document and the node's budget override, each falling back
 /// to its defaults when never written.
 ///
@@ -115,7 +115,7 @@ pub(crate) async fn cache_limits(
     library: &LibraryStore,
     node_id: &str,
 ) -> Result<crate::covers::Limits, LibraryError> {
-    let cluster = load_cache_settings(library)
+    let settings = load_cache_settings(library)
         .await?
         .map(|doc| doc.body)
         .unwrap_or_default();
@@ -124,7 +124,7 @@ pub(crate) async fn cache_limits(
         Err(LibraryError::NotFound(_)) => NodeRuntimeSettingsV1::new(),
         Err(err) => return Err(err),
     };
-    Ok(crate::covers::Limits::from_settings(&cluster, &node))
+    Ok(crate::covers::Limits::from_settings(&settings, &node))
 }
 
 #[cfg(test)]
@@ -136,7 +136,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn cache_limits_follow_the_cluster_document_and_the_node_override() {
+    async fn cache_limits_follow_the_library_document_and_the_node_override() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
             .await
@@ -156,11 +156,11 @@ mod tests {
             body.set("cache.budget_bytes", "67108864")
         })
         .await
-        .expect("cluster");
-        let cluster = cache_limits(&store, "node-a").await.expect("cluster");
-        assert_eq!(cluster.budget, 64 << 20);
+        .expect("library");
+        let library = cache_limits(&store, "node-a").await.expect("library");
+        assert_eq!(library.budget, 64 << 20);
         assert_eq!(
-            cluster.unviewed,
+            library.unviewed,
             std::time::Duration::from_secs(7 * 24 * 3600)
         );
 
@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(
             cache_limits(&store, "node-b").await.expect("other").budget,
             64 << 20,
-            "another node keeps the cluster budget"
+            "another node keeps the library budget"
         );
     }
 }

@@ -12,7 +12,7 @@
 //! host's credential: the operator or an Owner for any host, anyone else
 //! for the hosts they own.
 //!
-//! `/api/config/host-enrollment` reads and toggles the cluster's
+//! `/api/config/host-enrollment` reads and toggles the library's
 //! host-enrollment switch (`core.host_enrollment`). Any signed-in user may
 //! read it; only the operator or an active Owner may change it.
 //!
@@ -66,7 +66,7 @@ use axum::{Extension, Json};
 use bookclerk_library::control_plane::{
     list_enrollment_links, load_host_enrollment, mint_enrollment_link, redeem_enrollment_link,
     revoke_enrollment_link, revoke_node_credential, set_host_enrollment_enabled,
-    verify_cluster_owner, ConfigActor, EnrollmentActor, EnrollmentLink, EnrollmentSecret,
+    verify_library_owner, ConfigActor, EnrollmentActor, EnrollmentLink, EnrollmentSecret,
     NodeCredential, RedeemRequest,
 };
 use bookclerk_library::LibraryError;
@@ -198,7 +198,7 @@ pub struct NodeCredentialRevoked {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 /// The host-enrollment switch.
 pub struct HostEnrollment {
-    /// Whether branch nodes may enroll into this cluster.
+    /// Whether branch nodes may enroll into this library.
     #[schema(example = true)]
     pub enabled: bool,
     /// Stored revision; `null` while the default (enabled) applies.
@@ -209,9 +209,9 @@ pub struct HostEnrollment {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 /// JSON body after an enrollment link or branch sign-in was redeemed.
 pub struct EnrolledNodeView {
-    /// The cluster the node joined.
+    /// The library the node joined.
     #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
-    pub cluster_id: String,
+    pub library_id: String,
     /// The node id minted for it.
     #[schema(example = "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c")]
     pub node_id: String,
@@ -269,7 +269,7 @@ pub(crate) struct PostNodeInvite {
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The user may not mint a link for that user, host enrollment is off, the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
             ("other_user" = (summary = "A member asked for another user's link.", value = json!({"error": "only the operator or an Owner may mint an enrollment link for another user"}))),
-            ("enrollment_disabled" = (summary = "Host enrollment is switched off.", value = json!({"error": "host enrollment is disabled for this cluster"}))),
+            ("enrollment_disabled" = (summary = "Host enrollment is switched off.", value = json!({"error": "host enrollment is disabled for this library"}))),
             ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
@@ -596,7 +596,7 @@ pub async fn delete_node_credential(
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PutHostEnrollment {
-    /// Whether branch nodes may enroll into this cluster.
+    /// Whether branch nodes may enroll into this library.
     #[schema(example = true)]
     enabled: bool,
 }
@@ -678,7 +678,7 @@ pub async fn put_host_enrollment(
         UserCaller::Operator => ConfigActor::Operator {
             id: "operator".into(),
         },
-        UserCaller::User { user_id } => verify_cluster_owner(&library, user_id)
+        UserCaller::User { user_id } => verify_library_owner(&library, user_id)
             .await
             .map_err(events_error)?,
     };
@@ -730,7 +730,7 @@ fn decode_key(raw: &str) -> Option<Vec<u8>> {
 }
 
 /// `POST /api/node/v1/enroll`: redeem an enrollment link. Answers
-/// `{cluster_id, node_id}`; 403 `transport_insecure` when the connection
+/// `{library_id, node_id}`; 403 `transport_insecure` when the connection
 /// fails the transport policy, 403 `enrollment_refused` for any link that
 /// does not redeem.
 #[utoipa::path(
@@ -784,7 +784,7 @@ pub async fn post_enroll(State(state): State<Arc<AppState>>, request: Request) -
     redeem_answer(redeem_enrollment_link(&library, &request).await)
 }
 
-/// The answer to a redeem, for links and branch sign-ins alike: `{cluster_id,
+/// The answer to a redeem, for links and branch sign-ins alike: `{library_id,
 /// node_id}`, one generic 403 `enrollment_refused` for anything that does
 /// not redeem, 400 for malformed keys.
 fn redeem_answer(
@@ -792,7 +792,7 @@ fn redeem_answer(
 ) -> Response {
     match result {
         Ok(enrolled) => Json(EnrolledNodeView {
-            cluster_id: enrolled.cluster_id,
+            library_id: enrolled.library_id,
             node_id: enrolled.node_id,
         })
         .into_response(),
@@ -985,7 +985,7 @@ pub(crate) mod tests {
             .with_state(Arc::clone(state))
     }
 
-    /// A bootstrapped single-node cluster and its daemon state.
+    /// A bootstrapped single-node library and its daemon state.
     pub(crate) async fn test_state(
         files: &tempfile::TempDir,
     ) -> (Arc<crate::api::AppState>, bookclerk_library::LibraryStore) {

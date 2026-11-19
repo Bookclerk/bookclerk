@@ -325,7 +325,7 @@ middleware.
 
 A Bookclerk install can join another library as a branch node, and run its
 scans and acquires. The web app calls this a **branch**. The full guide
-is [Libraries and branches](cluster-hosts.md).
+is [Libraries and branches](branches.md).
 
 In the web app, join from **Settings → Library → Join a library** (or the
 first-start welcome screen), with a sign-in on the library. The
@@ -335,12 +335,12 @@ On the command line:
 
 | Task | Command |
 | --- | --- |
-| Join, signing in through a browser | `bookclerk clusters join --url https://owner.example` |
-| Join with a branch invite | `bookclerk clusters join` (paste the invite, or pipe it on stdin) |
-| See what the library asks to run here | `bookclerk clusters consents` |
-| Approve a request | `bookclerk clusters approve <plugin_key> --request <digest> [--deny-domain …] [--deny-binding …] [--deny-own-user-agent …]` |
-| Revoke an approval | `bookclerk clusters revoke <plugin_key>` |
-| Leave | `bookclerk clusters leave` (tells the library, which revokes the node, then deletes the node keys) |
+| Join, signing in through a browser | `bookclerk libraries join --url https://owner.example` |
+| Join with a branch invite | `bookclerk libraries join` (paste the invite, or pipe it on stdin) |
+| See what the library asks to run here | `bookclerk libraries consents` |
+| Approve a request | `bookclerk libraries approve <plugin_key> --request <digest> [--deny-domain …] [--deny-binding …] [--deny-own-user-agent …]` |
+| Revoke an approval | `bookclerk libraries revoke <plugin_key>` |
+| Leave | `bookclerk libraries leave` (tells the library, which revokes the node, then deletes the node keys) |
 
 What a host needs:
 

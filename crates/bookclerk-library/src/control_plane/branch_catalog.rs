@@ -26,7 +26,7 @@
 //! edition's, and its commit records the delivered manifest in one batch
 //! gated on that fence. A title whose edition already has audio here from
 //! another writer (an acquire, another branch) is not asked for: the
-//! cluster delivers each edition once.
+//! library delivers each edition once.
 //!
 //! When a full pass ends, B's holdings it did not name are removed; when B
 //! stops sharing or leaves, all of them are, each with `holding_removed`.

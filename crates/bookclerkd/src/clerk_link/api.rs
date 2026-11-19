@@ -18,7 +18,7 @@
 //!   came back. The daemon matches `state` to its pending sign-in, redeems
 //!   the code with the verifier only it holds, seals the card, and starts
 //!   reading the person's books at once.
-//! - `POST /api/config/clerk/sign-out` `{cluster_id}`: ends the card at the
+//! - `POST /api/config/clerk/sign-out` `{library_id}`: ends the card at the
 //!   library (`POST /api/auth/logout` with the card) when it can be
 //!   reached, then drops the card and the books read with it, and removes
 //!   the library from the list, whatever the library answered.
@@ -36,7 +36,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::control_plane::{
-    forget_clerk_link, list_clerk_links, load_clerk_card, load_clerk_link, load_cluster_link,
+    forget_clerk_link, list_clerk_links, load_clerk_card, load_clerk_link, load_library_link,
     sign_out_clerk_link, ClerkLink, ClerkLinkState,
 };
 use bookclerk_library::hash_token;
@@ -50,7 +50,7 @@ use zeroize::Zeroizing;
 
 use crate::api::AppState;
 use crate::auth::UserCaller;
-use crate::cluster_link::join::{
+use crate::library_link::join::{
     callback_origin, default_branch_name, join_error, join_failed, library_json,
     InspectedLibraryResponse, InspectedLibraryView,
 };
@@ -73,8 +73,8 @@ struct PendingClerk {
     origin: String,
     /// The pin confirmed for a self-signed library.
     spki_pin: Option<String>,
-    /// The cluster id the library's info reported.
-    cluster_id: String,
+    /// The library id the library's info reported.
+    library_id: String,
     /// The library's name.
     library_name: String,
     /// The PKCE verifier.
@@ -123,9 +123,9 @@ fn keep_pending(state_hash: String, sign_in: PendingClerk) {
 /// card.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ClerkLinkView {
-    /// The library's cluster id.
+    /// The library id.
     #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
-    pub cluster_id: String,
+    pub library_id: String,
     /// The library's canonical origin.
     #[schema(example = "https://books.example.com")]
     pub origin: String,
@@ -153,7 +153,7 @@ pub struct ClerkLinkView {
 /// JSON for one clerk link.
 pub(crate) fn clerk_link_json(link: &ClerkLink) -> ClerkLinkView {
     ClerkLinkView {
-        cluster_id: link.library_cluster_id.clone(),
+        library_id: link.library_id.clone(),
         origin: link.origin.clone(),
         library_name: link.library_name.clone(),
         pinned: link.spki_pin.is_some(),
@@ -226,7 +226,7 @@ pub struct ClerkInspectBody {
         (status = 400, description = "The address is not a library (`invalid_address`), or is plain HTTP off this machine (`transport_insecure`).", body = crate::http_error::ErrorDetail, example = json!({"error": "invalid_address", "detail": "not an enrollment link: no host"})),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The user is not an active Owner, or the session has no user account.", body = crate::http_error::ErrorAnswer, example = json!({"error": "forbidden"})),
-        (status = 409, description = "The library's address is not the one given (`origin_mismatch`, with the address to use in `origin`).", body = crate::cluster_link::join::JoinConflict, example = json!({"error": "origin_mismatch", "detail": "this library's address is https://books.example.com; join with that address", "origin": "https://books.example.com"})),
+        (status = 409, description = "The library's address is not the one given (`origin_mismatch`, with the address to use in `origin`).", body = crate::library_link::join::JoinConflict, example = json!({"error": "origin_mismatch", "detail": "this library's address is https://books.example.com; join with that address", "origin": "https://books.example.com"})),
         (status = 502, description = "The library could not be reached (`unreachable`), or answered with an error (`library_error`).", body = crate::http_error::ErrorDetail, example = json!({"error": "unreachable", "detail": "owner unreachable: Connection refused (os error 111)"})),
     ),
 )]
@@ -292,7 +292,7 @@ pub struct ClerkStarted {
         (status = 400, description = "The address is not a library, is plain HTTP off this machine, or the name or this install's address cannot sign in (`invalid_address`, `transport_insecure`).", body = crate::http_error::ErrorDetail, example = json!({"error": "invalid_address", "detail": "this computer's name must be 1 to 64 characters"})),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The user is not an active Owner, or the session has no user account.", body = crate::http_error::ErrorAnswer, example = json!({"error": "forbidden"})),
-        (status = 409, description = "The library's fingerprint is not confirmed (`fingerprint_unconfirmed`), this install already joined that library as a branch (`already_joined`), or the library's address is not the one given (`origin_mismatch`).", body = crate::cluster_link::join::JoinConflict, examples(
+        (status = 409, description = "The library's fingerprint is not confirmed (`fingerprint_unconfirmed`), this install already joined that library as a branch (`already_joined`), or the library's address is not the one given (`origin_mismatch`).", body = crate::library_link::join::JoinConflict, examples(
             ("fingerprint_unconfirmed" = (summary = "A self-signed library's fingerprint was not confirmed.", value = json!({"error": "fingerprint_unconfirmed", "detail": "confirm the library's fingerprint first; it must match the one on its Settings → Branches page"}))),
             ("already_joined" = (summary = "This install is already a branch of that library.", value = json!({"error": "already_joined", "detail": "this install already joined that library; its books are read through that link"}))),
         )),
@@ -340,7 +340,7 @@ pub async fn post_clerk_start(
         PendingClerk {
             origin: library.origin.clone(),
             spki_pin: library.spki_pin.clone(),
-            cluster_id: library.info.cluster_id.clone(),
+            library_id: library.info.library_id.clone(),
             library_name: library.info.library_name.clone(),
             verifier: authorization.verifier,
             redirect_uri: authorization.redirect_uri,
@@ -350,7 +350,7 @@ pub async fn post_clerk_start(
     );
     tracing::info!(
         origin = %library.origin,
-        cluster_id = %library.info.cluster_id,
+        library_id = %library.info.library_id,
         "library card sign-in started"
     );
     no_store(
@@ -380,7 +380,7 @@ async fn refuse_start(
         }
     }
     let store = state.library_snapshot().await;
-    match load_cluster_link(&store, &library.info.cluster_id).await {
+    match load_library_link(&store, &library.info.library_id).await {
         Ok(Some(link)) if link.is_active() => Some(already_joined()),
         Ok(_) => None,
         Err(err) => Some(crate::config_authority::events_error(err)),
@@ -469,7 +469,7 @@ pub async fn post_clerk_callback(
         return join_error(StatusCode::BAD_REQUEST, "invalid_request", "no code");
     }
     let store = state.library_snapshot().await;
-    match load_cluster_link(&store, &sign_in.cluster_id).await {
+    match load_library_link(&store, &sign_in.library_id).await {
         Ok(Some(link)) if link.is_active() => return already_joined(),
         Ok(_) => {}
         Err(err) => return crate::config_authority::events_error(err),
@@ -479,7 +479,7 @@ pub async fn post_clerk_callback(
         &ClerkRedeem {
             origin: &sign_in.origin,
             spki_pin: sign_in.spki_pin.as_deref(),
-            cluster_id: &sign_in.cluster_id,
+            library_id: &sign_in.library_id,
             library_name: &sign_in.library_name,
             code: code.trim(),
             verifier: &sign_in.verifier,
@@ -491,7 +491,7 @@ pub async fn post_clerk_callback(
     match redeemed {
         Ok(link) => {
             super::notify_clerk_links_changed();
-            crate::live::poke(bookclerk_library::control_plane::LiveTopic::Clusters);
+            crate::live::poke(bookclerk_library::control_plane::LiveTopic::Libraries);
             Json(ClerkSignedIn {
                 card: clerk_link_json(&link),
             })
@@ -510,17 +510,17 @@ pub async fn post_clerk_callback(
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClerkSignOutBody {
-    /// The library's cluster id.
+    /// The library id.
     #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
-    cluster_id: String,
+    library_id: String,
 }
 
 /// JSON body for `POST /api/config/clerk/sign-out`.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ClerkSignedOut {
-    /// The library's cluster id.
+    /// The library id.
     #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
-    pub cluster_id: String,
+    pub library_id: String,
     /// Whether the library ended the card's session too. False when it
     /// could not be reached (or the card had already ended): the session
     /// then stays in the person's session list there until it idles out
@@ -541,7 +541,7 @@ async fn end_card_at_library(store: &bookclerk_library::LibraryStore, link: &Cle
     let card = match load_clerk_card(store, link).await {
         Ok(card) => card,
         Err(err) => {
-            tracing::warn!(cluster_id = %link.library_cluster_id, error = %err, "could not read the library card to end it at the library");
+            tracing::warn!(library_id = %link.library_id, error = %err, "could not read the library card to end it at the library");
             return false;
         }
     };
@@ -549,7 +549,7 @@ async fn end_card_at_library(store: &bookclerk_library::LibraryStore, link: &Cle
     let endpoint = match OwnerEndpoint::new(&link.origin, link.spki_pin.as_deref()) {
         Ok(endpoint) => endpoint,
         Err(err) => {
-            tracing::warn!(cluster_id = %link.library_cluster_id, error = %err, "could not reach the library to end the library card");
+            tracing::warn!(library_id = %link.library_id, error = %err, "could not reach the library to end the library card");
             return false;
         }
     };
@@ -562,15 +562,15 @@ async fn end_card_at_library(store: &bookclerk_library::LibraryStore, link: &Cle
     match ended {
         Ok(Ok((status, _))) if (200..300).contains(&status) => true,
         Ok(Ok((status, _))) => {
-            tracing::warn!(cluster_id = %link.library_cluster_id, status, "the library did not end the library card");
+            tracing::warn!(library_id = %link.library_id, status, "the library did not end the library card");
             false
         }
         Ok(Err(err)) => {
-            tracing::warn!(cluster_id = %link.library_cluster_id, error = %err, "could not reach the library to end the library card");
+            tracing::warn!(library_id = %link.library_id, error = %err, "could not reach the library to end the library card");
             false
         }
         Err(_) => {
-            tracing::warn!(cluster_id = %link.library_cluster_id, "the library did not answer in time to end the library card");
+            tracing::warn!(library_id = %link.library_id, "the library did not answer in time to end the library card");
             false
         }
     }
@@ -600,7 +600,7 @@ pub async fn post_clerk_sign_out(
         return refused;
     }
     let store = state.library_snapshot().await;
-    let link = match load_clerk_link(&store, &body.cluster_id).await {
+    let link = match load_clerk_link(&store, &body.library_id).await {
         Ok(Some(link)) => link,
         Ok(None) => {
             return join_error(StatusCode::NOT_FOUND, "not_found", "no such library card");
@@ -608,17 +608,17 @@ pub async fn post_clerk_sign_out(
         Err(err) => return crate::config_authority::events_error(err),
     };
     let library_signed_out = end_card_at_library(&store, &link).await;
-    let signed_out = match sign_out_clerk_link(&store, &body.cluster_id).await {
-        Ok(_) => forget_clerk_link(&store, &body.cluster_id).await,
+    let signed_out = match sign_out_clerk_link(&store, &body.library_id).await {
+        Ok(_) => forget_clerk_link(&store, &body.library_id).await,
         Err(err) => Err(err),
     };
     super::notify_clerk_links_changed();
-    crate::live::poke(bookclerk_library::control_plane::LiveTopic::Clusters);
+    crate::live::poke(bookclerk_library::control_plane::LiveTopic::Libraries);
     match signed_out {
         Ok(_) => {
-            tracing::info!(cluster_id = %body.cluster_id, library_signed_out, "signed out of the library card");
+            tracing::info!(library_id = %body.library_id, library_signed_out, "signed out of the library card");
             Json(ClerkSignedOut {
-                cluster_id: body.cluster_id,
+                library_id: body.library_id,
                 library_signed_out,
             })
             .into_response()

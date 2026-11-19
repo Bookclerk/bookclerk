@@ -136,11 +136,11 @@ async fn a_consented_code_redeems_once_for_a_labelled_clerk_session() {
     assert_eq!(answer["user"]["id"], member);
     assert_eq!(answer["user"]["display_name"], "Riley");
     assert_eq!(answer["idle_secs"], 90 * 24 * 3600);
-    let cluster = bookclerk_library::control_plane::load_cluster_row(&store)
+    let library = bookclerk_library::control_plane::load_library_row(&store)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(answer["cluster_id"], cluster.cluster_id);
+    assert_eq!(answer["library_id"], library.library_id);
 
     // The session is a clerk session, labelled with the consented name,
     // and resolves only as one.

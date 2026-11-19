@@ -295,7 +295,7 @@ pub enum DbAtomicParams {
         /// JSON array of plugin ids this worker can execute (`[]` claims nothing).
         #[serde(default)]
         plugin_ids_json: String,
-        /// Cluster-wide max `running` deliveries per `(plugin_id, resource_class)`.
+        /// Library-wide max `running` deliveries per `(plugin_id, resource_class)`.
         #[serde(default = "default_claim_max_in_flight")]
         max_in_flight: i64,
     },

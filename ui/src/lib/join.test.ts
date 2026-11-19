@@ -331,23 +331,23 @@ describe("setBranchSharing", () => {
   it("sends only the work settings it is given", async () => {
     const fetchMock = vi.fn(
       async (_url: string, _init: RequestInit) =>
-        new Response(JSON.stringify({ cluster: {} }), { status: 200 }),
+        new Response(JSON.stringify({ library: {} }), { status: 200 }),
     );
     vi.stubGlobal("fetch", fetchMock);
     await setBranchSharing("c1", true, false);
     await setBranchSharing("c1", true, false, { workForMembers: true, keepMemberCopies: false });
     await setBranchSharing("c1", true, false, { keepMemberCopies: true });
     const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1].body)));
-    expect(bodies[0]).toEqual({ cluster_id: "c1", share_books: true, include_branches: false });
+    expect(bodies[0]).toEqual({ library_id: "c1", share_books: true, include_branches: false });
     expect(bodies[1]).toEqual({
-      cluster_id: "c1",
+      library_id: "c1",
       share_books: true,
       include_branches: false,
       work_for_members: true,
       keep_member_copies: false,
     });
     expect(bodies[2]).toEqual({
-      cluster_id: "c1",
+      library_id: "c1",
       share_books: true,
       include_branches: false,
       keep_member_copies: true,
@@ -360,7 +360,7 @@ describe("isSharedBranchJoined", () => {
     expect(
       isSharedBranchJoined({
         connection: "shared_branch",
-        cluster_id: "c",
+        library_id: "c",
         node_id: "n",
         library_name: "Home",
         database: "postgres",
@@ -370,8 +370,8 @@ describe("isSharedBranchJoined", () => {
     ).toBe(true);
     expect(
       isSharedBranchJoined({
-        cluster: {
-          cluster_id: "c",
+        library: {
+          library_id: "c",
           owner_origin: "https://library.example",
           node_id: "n",
           pinned: false,
@@ -451,7 +451,7 @@ describe("broughtConnectionsSummary", () => {
 
 describe("window view helpers", () => {
   const edition = (origin: string, store: string, formats: string[]) => ({
-    cluster_id: origin,
+    library_id: origin,
     owner_origin: origin,
     store,
     marketplace: "us",
@@ -565,24 +565,24 @@ describe("setMembersListing", () => {
   it("sends the members setting with the link's current sharing settings", async () => {
     const fetchMock = vi.fn(
       async (_url: string, _init: RequestInit) =>
-        new Response(JSON.stringify({ cluster: { cluster_id: "c1" } }), { status: 200 }),
+        new Response(JSON.stringify({ library: { library_id: "c1" } }), { status: 200 }),
     );
     vi.stubGlobal("fetch", fetchMock);
     await setMembersListing(
-      { cluster_id: "c1", share_books: false, include_branches: true },
+      { library_id: "c1", share_books: false, include_branches: true },
       false,
     );
-    await setMembersListing({ cluster_id: "c2" }, true);
+    await setMembersListing({ library_id: "c2" }, true);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/config/join/sharing");
     const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1].body)));
     expect(bodies[0]).toEqual({
-      cluster_id: "c1",
+      library_id: "c1",
       share_books: false,
       include_branches: true,
       list_members_books: false,
     });
     expect(bodies[1]).toEqual({
-      cluster_id: "c2",
+      library_id: "c2",
       share_books: true,
       include_branches: true,
       list_members_books: true,
@@ -596,16 +596,16 @@ describe("setLinkKeepCopies", () => {
   it("sends the keep copies setting with the link's current sharing settings", async () => {
     const fetchMock = vi.fn(
       async (_url: string, _init: RequestInit) =>
-        new Response(JSON.stringify({ cluster: { cluster_id: "c1" } }), { status: 200 }),
+        new Response(JSON.stringify({ library: { library_id: "c1" } }), { status: 200 }),
     );
     vi.stubGlobal("fetch", fetchMock);
     await setLinkKeepCopies(
-      { cluster_id: "c1", share_books: false, include_branches: true },
+      { library_id: "c1", share_books: false, include_branches: true },
       false,
     );
     const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
     expect(body).toEqual({
-      cluster_id: "c1",
+      library_id: "c1",
       share_books: false,
       include_branches: true,
       keep_copies: false,

@@ -19,7 +19,7 @@
 //!   it is fresh, upstream's validators and when it was last served. One
 //!   request per URL does the work while the others wait for it, and a URL
 //!   that failed is not retried for [`FAILURE_TTL`].
-//! - **Retention.** The [`Limits`] come from the cluster's `core.cache`
+//! - **Retention.** The [`Limits`] come from the library's `core.cache`
 //!   document and this node's override, re-read at every heartbeat. The
 //!   heartbeat asks [`CoverService::maintain`] whether a sweep is due and
 //!   queues a `cache_sweep` job pinned to this node when it is (see
@@ -104,19 +104,19 @@ pub(crate) struct Limits {
 
 impl Limits {
     /// The limits a node applies: its own budget override, else the
-    /// cluster's budget, and the cluster's unviewed age.
+    /// library's budget, and the library's unviewed age.
     ///
     /// # Arguments
     ///
-    /// * `cluster` - The cluster's `core.cache` document, or its defaults.
+    /// * `library` - The library's `core.cache` document, or its defaults.
     /// * `node` - This node's runtime document, or its defaults.
     pub(crate) fn from_settings(
-        cluster: &bookclerk_library::control_plane::CacheSettingsV1,
+        library: &bookclerk_library::control_plane::CacheSettingsV1,
         node: &bookclerk_library::control_plane::NodeRuntimeSettingsV1,
     ) -> Self {
         Self {
-            budget: cluster.budget_for(node),
-            unviewed: Duration::from_secs(u64::from(cluster.unviewed_days) * 24 * 60 * 60),
+            budget: library.budget_for(node),
+            unviewed: Duration::from_secs(u64::from(library.unviewed_days) * 24 * 60 * 60),
         }
     }
 }
@@ -2824,17 +2824,17 @@ mod tests {
     }
 
     #[test]
-    fn limits_come_from_the_cluster_and_the_node_override() {
-        let cluster = bookclerk_library::control_plane::CacheSettingsV1 {
+    fn limits_come_from_the_library_and_the_node_override() {
+        let library = bookclerk_library::control_plane::CacheSettingsV1 {
             budget_bytes: 64 << 20,
             unviewed_days: 2,
         };
         let mut node = bookclerk_library::control_plane::NodeRuntimeSettingsV1::new();
-        let limits = Limits::from_settings(&cluster, &node);
+        let limits = Limits::from_settings(&library, &node);
         assert_eq!(limits.budget, 64 << 20);
         assert_eq!(limits.unviewed, Duration::from_secs(2 * 24 * 3600));
         node.cache_budget_bytes = Some(32 << 20);
-        assert_eq!(Limits::from_settings(&cluster, &node).budget, 32 << 20);
+        assert_eq!(Limits::from_settings(&library, &node).budget, 32 << 20);
         assert_eq!(Limits::default().budget, 1 << 30);
     }
 

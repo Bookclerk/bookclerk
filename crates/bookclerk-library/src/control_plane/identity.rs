@@ -37,16 +37,16 @@ fn process_incarnation() -> &'static str {
         .as_str()
 }
 
-/// On-disk bootstrap identity. `cluster_id` is filled after enrollment.
+/// On-disk bootstrap identity. `library_id` is filled after enrollment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct IdentityFile {
     /// File schema version.
     v: u32,
     /// Stable node id (UUID).
     node_id: String,
-    /// Cluster this file has enrolled into, when known.
+    /// Library this file has enrolled into, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    cluster_id: Option<String>,
+    library_id: Option<String>,
 }
 
 /// Bootstrap identity loaded from [`NODE_IDENTITY_FILE`].
@@ -54,8 +54,8 @@ struct IdentityFile {
 pub struct NodeIdentity {
     /// Stable node id.
     pub node_id: String,
-    /// Cluster binding, once enrollment has succeeded.
-    pub cluster_id: Option<String>,
+    /// Library binding, once enrollment has succeeded.
+    pub library_id: Option<String>,
 }
 
 /// Durable node row plus the latest observation columns.
@@ -63,8 +63,8 @@ pub struct NodeIdentity {
 pub struct NodeRecord {
     /// Stable node id.
     pub node_id: String,
-    /// Cluster id stored with the node.
-    pub cluster_id: String,
+    /// Library id stored with the node.
+    pub library_id: String,
     /// RFC 3339 creation time. Heartbeats do not change it.
     pub created_at: String,
     /// Process incarnation from the latest heartbeat.
@@ -98,7 +98,7 @@ pub struct NodeRecord {
     pub target: String,
     /// Operator-assigned placement labels, sorted.
     pub labels: Vec<String>,
-    /// How the node joined the cluster.
+    /// How the node joined the library.
     pub kind: NodeKind,
     /// User who owns this node and may administer it, when one is assigned.
     pub owner_user_id: Option<i64>,
@@ -112,7 +112,7 @@ pub struct NodeRecord {
     pub acquire_members_books: bool,
 }
 
-/// How a node joined the cluster.
+/// How a node joined the library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 #[schema(example = "shared")]
@@ -212,7 +212,7 @@ pub fn load_or_create_node_identity(files_dir: &Path) -> Result<NodeIdentity> {
     let fresh = IdentityFile {
         v: IDENTITY_FILE_VERSION,
         node_id: Uuid::new_v4().to_string(),
-        cluster_id: None,
+        library_id: None,
     };
     match write_identity_create_new(&path, &fresh) {
         Ok(()) => Ok(public_identity(fresh)),
@@ -223,45 +223,45 @@ pub fn load_or_create_node_identity(files_dir: &Path) -> Result<NodeIdentity> {
     }
 }
 
-/// Records `cluster_id` on the identity file.
+/// Records `library_id` on the identity file.
 ///
-/// A file that already names a different cluster is left unchanged and the
+/// A file that already names a different library is left unchanged and the
 /// call fails. That is the copied-runtime / wrong-database case.
 ///
 /// # Errors
 ///
-/// Returns an error on a cluster mismatch or when the file cannot be replaced.
-pub fn bind_cluster_id(files_dir: &Path, cluster_id: &str) -> Result<NodeIdentity> {
+/// Returns an error on a library mismatch or when the file cannot be replaced.
+pub fn bind_library_id(files_dir: &Path, library_id: &str) -> Result<NodeIdentity> {
     let path = node_identity_path(files_dir);
     let mut identity = read_identity(&path)?;
-    match identity.cluster_id.as_deref() {
-        Some(existing) if existing == cluster_id => Ok(public_identity(identity)),
+    match identity.library_id.as_deref() {
+        Some(existing) if existing == library_id => Ok(public_identity(identity)),
         Some(existing) => Err(LibraryError::Conflict(format!(
-            "cluster mismatch: node identity is bound to {existing}, database cluster is {cluster_id}"
+            "library mismatch: node identity is bound to {existing}, database library is {library_id}"
         ))),
         None => {
-            identity.cluster_id = Some(cluster_id.to_string());
+            identity.library_id = Some(library_id.to_string());
             write_identity_atomic(&path, &identity)?;
             Ok(public_identity(identity))
         }
     }
 }
 
-/// Writes the identity file for a node id the cluster already recorded,
-/// bound to `cluster_id`, replacing any file there atomically. A shared branch
+/// Writes the identity file for a node id the library already recorded,
+/// bound to `library_id`, replacing any file there atomically. A shared branch
 /// joining a library takes the node id the library minted for it at
 /// redeem, so its first heartbeat lands on that `nodes` row.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::Invalid`] for a node id that is not a UUID or an
-/// empty cluster id, and the write error.
+/// empty library id, and the write error.
 pub fn install_node_identity(
     files_dir: &Path,
     node_id: &str,
-    cluster_id: &str,
+    library_id: &str,
 ) -> Result<NodeIdentity> {
-    let identity = shared_branch_identity_file(node_id, cluster_id)?;
+    let identity = shared_branch_identity_file(node_id, library_id)?;
     std::fs::create_dir_all(files_dir)?;
     write_identity_atomic(&node_identity_path(files_dir), &identity)?;
     Ok(public_identity(identity))
@@ -274,45 +274,45 @@ pub fn install_node_identity(
 /// # Errors
 ///
 /// Returns [`LibraryError::Invalid`] for a node id that is not a UUID or an
-/// empty cluster id, and the encode error.
-pub fn encode_node_identity_file(node_id: &str, cluster_id: &str) -> Result<Vec<u8>> {
-    let identity = shared_branch_identity_file(node_id, cluster_id)?;
+/// empty library id, and the encode error.
+pub fn encode_node_identity_file(node_id: &str, library_id: &str) -> Result<Vec<u8>> {
+    let identity = shared_branch_identity_file(node_id, library_id)?;
     serde_json::to_vec_pretty(&identity)
         .map_err(|err| LibraryError::Other(anyhow::anyhow!("node identity encode: {err}")))
 }
 
-/// The identity file for a node id the cluster recorded, bound to
-/// `cluster_id`.
-fn shared_branch_identity_file(node_id: &str, cluster_id: &str) -> Result<IdentityFile> {
-    if Uuid::parse_str(node_id).is_err() || cluster_id.trim().is_empty() {
+/// The identity file for a node id the library recorded, bound to
+/// `library_id`.
+fn shared_branch_identity_file(node_id: &str, library_id: &str) -> Result<IdentityFile> {
+    if Uuid::parse_str(node_id).is_err() || library_id.trim().is_empty() {
         return Err(LibraryError::Invalid(
-            "a node identity needs a UUID node id and a cluster id".into(),
+            "a node identity needs a UUID node id and a library id".into(),
         ));
     }
     Ok(IdentityFile {
         v: IDENTITY_FILE_VERSION,
         node_id: node_id.to_string(),
-        cluster_id: Some(cluster_id.to_string()),
+        library_id: Some(library_id.to_string()),
     })
 }
 
-/// Preferred cluster id from the identity file, when the file already has one.
+/// Preferred library id from the identity file, when the file already has one.
 ///
 /// # Errors
 ///
 /// Returns an error when the identity file cannot be read.
-pub fn preferred_cluster_id(files_dir: &Path) -> Result<Option<String>> {
+pub fn preferred_library_id(files_dir: &Path) -> Result<Option<String>> {
     let path = node_identity_path(files_dir);
     if !path.is_file() {
         return Ok(None);
     }
-    Ok(read_identity(&path)?.cluster_id)
+    Ok(read_identity(&path)?.library_id)
 }
 
 /// Inserts the node when absent and refreshes observation columns.
 ///
-/// `created_at` and `cluster_id` stay at their first values. A heartbeat for a
-/// node id already enrolled in another cluster fails and does not rewrite that
+/// `created_at` and `library_id` stay at their first values. A heartbeat for a
+/// node id already enrolled in another library fails and does not rewrite that
 /// row.
 ///
 /// # Errors
@@ -321,7 +321,7 @@ pub fn preferred_cluster_id(files_dir: &Path) -> Result<Option<String>> {
 pub async fn register_and_heartbeat(
     store: &LibraryStore,
     node_id: &str,
-    cluster_id: &str,
+    library_id: &str,
     incarnation: &str,
     observation: &NodeObservation,
 ) -> Result<NodeRecord> {
@@ -351,7 +351,7 @@ pub async fn register_and_heartbeat(
             vec![
                 exec(
                     "INSERT OR IGNORE INTO nodes (
-                        node_id, cluster_id, created_at, incarnation, heartbeat_at,
+                        node_id, library_id, created_at, incarnation, heartbeat_at,
                         software_version, schema_state, compatible,
                         logical_cpus, cpu_max_quota_us, cpu_max_period_us,
                         memory_max_bytes, memory_current_bytes, memory_anon_bytes,
@@ -359,7 +359,7 @@ pub async fn register_and_heartbeat(
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     vec![
                         text(node_id),
-                        text(cluster_id),
+                        text(library_id),
                         text(&now),
                         text(incarnation),
                         text(&now),
@@ -384,7 +384,7 @@ pub async fn register_and_heartbeat(
                         logical_cpus = ?, cpu_max_quota_us = ?, cpu_max_period_us = ?,
                         memory_max_bytes = ?, memory_current_bytes = ?, memory_anon_bytes = ?,
                         files_dir_free_bytes = ?, scratch_bytes = ?, target = ?
-                     WHERE node_id = ? AND cluster_id = ?",
+                     WHERE node_id = ? AND library_id = ?",
                     vec![
                         text(incarnation),
                         text(&now),
@@ -401,7 +401,7 @@ pub async fn register_and_heartbeat(
                         int_opt(observation.scratch_bytes),
                         text(node_target()),
                         text(node_id),
-                        text(cluster_id),
+                        text(library_id),
                     ],
                 ),
             ],
@@ -415,10 +415,10 @@ pub async fn register_and_heartbeat(
             .map_err(LibraryError::Orm)?;
         let bound = existing
             .as_ref()
-            .map(|row| row.cluster_id.as_str())
+            .map(|row| row.library_id.as_str())
             .unwrap_or("missing");
         return Err(LibraryError::Conflict(format!(
-            "cluster mismatch: node {node_id} is registered in cluster {bound}, not {cluster_id}"
+            "library mismatch: node {node_id} is registered in library {bound}, not {library_id}"
         )));
     }
     load_node(store, node_id).await
@@ -432,7 +432,7 @@ pub async fn register_and_heartbeat(
 pub async fn heartbeat_process(
     store: &LibraryStore,
     node_id: &str,
-    cluster_id: &str,
+    library_id: &str,
     files_dir: &Path,
     scratch_dir: &Path,
 ) -> Result<NodeRecord> {
@@ -447,7 +447,7 @@ pub async fn heartbeat_process(
     register_and_heartbeat(
         store,
         node_id,
-        cluster_id,
+        library_id,
         process_incarnation(),
         &observation,
     )
@@ -581,7 +581,7 @@ pub fn current_process_incarnation() -> &'static str {
 fn public_identity(identity: IdentityFile) -> NodeIdentity {
     NodeIdentity {
         node_id: identity.node_id,
-        cluster_id: identity.cluster_id,
+        library_id: identity.library_id,
     }
 }
 
@@ -589,7 +589,7 @@ fn public_identity(identity: IdentityFile) -> NodeIdentity {
 fn record_from_model(row: nodes::Model) -> NodeRecord {
     NodeRecord {
         node_id: row.node_id,
-        cluster_id: row.cluster_id,
+        library_id: row.library_id,
         created_at: row.created_at,
         incarnation: row.incarnation,
         heartbeat_at: row.heartbeat_at,

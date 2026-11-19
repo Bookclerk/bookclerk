@@ -87,7 +87,7 @@ export function AccountsPage({
       if (role === "owner") {
         try {
           const links = await fetchBranchSharing();
-          setLibraries(links.clusters.filter((link) => link.state === "active"));
+          setLibraries(links.libraries.filter((link) => link.state === "active"));
         } catch {
           setLibraries([]);
         }
@@ -183,7 +183,7 @@ export function AccountsPage({
     setError(null);
     setNotice(null);
     try {
-      const report = await addConnectionsToLibrary(link.cluster_id, [
+      const report = await addConnectionsToLibrary(link.library_id, [
         {
           plugin_key: connection.plugin_key || connection.source,
           account_id: connection.account_id,
@@ -216,7 +216,7 @@ export function AccountsPage({
       );
       if (result.unreached.length > 0) {
         const names = libraries
-          .filter((link) => result.unreached.includes(link.cluster_id))
+          .filter((link) => result.unreached.includes(link.library_id))
           .map(libraryName);
         setNotice(
           `Revoked here. Couldn't reach ${names.join(", ") || "some libraries"}; revoke it there too.`,
@@ -410,7 +410,7 @@ export function AccountsPage({
                     <div className="flex flex-wrap items-center gap-1">
                       {libraries.map((link) => (
                         <Button
-                          key={link.cluster_id}
+                          key={link.library_id}
                           variant="secondary"
                           disabled={busy}
                           onClick={() => void onAddTo(link, c)}

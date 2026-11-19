@@ -38,8 +38,8 @@ pub enum Body {
     Challenge {
         /// 32 random bytes, base64url without padding.
         nonce: String,
-        /// Owner cluster id (also signed).
-        cluster_id: String,
+        /// Library id (also signed).
+        library_id: String,
     },
     /// Host → owner: proof of key possession.
     Auth {
@@ -51,8 +51,8 @@ pub enum Body {
     Welcome {
         /// Authenticated node id.
         node_id: String,
-        /// Owner cluster id.
-        cluster_id: String,
+        /// Library id.
+        library_id: String,
         /// The owner's X25519 box key for this connection, base64url
         /// without padding. The host seals token write-backs to it
         /// (`crate::seal_secret_update`), so no secret travels as frame
@@ -436,10 +436,10 @@ pub enum Body {
         /// accepted file).
         expires_in_secs: u64,
     },
-    /// Host → owner: queue a library scan on the owner cluster for the
+    /// Host → owner: queue a library scan on the library for the
     /// node's owner (H-5). The owner's scan planner runs as that user: an
     /// Owner or Administrator scanning every account gets one job per
-    /// scan-enabled account, routed across the cluster's nodes and hosts;
+    /// scan-enabled account, routed across the library's nodes and hosts;
     /// anyone else scans only the accounts they own. Answered with
     /// [`Body::ScanPlanned`] or `error {code: "forbidden" | "invalid" |
     /// "unavailable"}`.
@@ -484,7 +484,7 @@ pub enum Body {
     },
     /// Host → owner: the wake with this frame id was handled.
     Ack {},
-    /// Host → owner: this host is leaving the cluster (its operator chose
+    /// Host → owner: this host is leaving the library (its operator chose
     /// Leave library). The owner revokes the node's credential and stops
     /// counting it as live at once, instead of waiting for missed
     /// heartbeats, answers [`Body::Accepted`], and closes the connection.
@@ -509,7 +509,7 @@ pub enum Body {
         /// Resume after this cursor (empty: from the start).
         #[serde(default)]
         cursor: String,
-        /// The library's ancestry: its own cluster id, then each library
+        /// The library's ancestry: its own library id, then each library
         /// above it, up to the root.
         #[serde(default)]
         ancestry: Vec<String>,
@@ -583,7 +583,7 @@ pub enum Body {
     /// Branch → library: add the branch person's store connections to this
     /// library ("Add my connections to *library*"). `sealed` is an
     /// [`crate::AccountBundle`] sealed to the connection's owner box key
-    /// ([`Body::Welcome`]) and bound to the cluster and node ids
+    /// ([`Body::Welcome`]) and bound to the library and node ids
     /// ([`crate::seal_account_offer`]). The library keeps them for the
     /// user its node row names as the branch's owner, under that user's
     /// account rule. Answered with [`Body::AccountsAdded`] or `error`.
@@ -864,7 +864,7 @@ pub struct RemoteVersion {
     pub settings: serde_json::Value,
     /// Per-target artifacts.
     pub artifacts: Vec<RemoteArtifact>,
-    /// The grant the cluster's operator approved (JSON); empty while the
+    /// The grant the library's operator approved (JSON); empty while the
     /// version is unapproved, in which case nothing runs.
     #[serde(default)]
     pub grant_json: String,
@@ -1047,16 +1047,16 @@ pub struct AcquireTarget {
     /// folder names them from it, as an acquire on the owner would.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<TargetTitle>,
-    /// The title's library id on the owner (the short id of its edition
-    /// there), which the `<library id>` naming tag writes. A host acquires
+    /// The title's call number on the owner (the short id of its edition
+    /// there), which the `<call number>` naming tag writes. A host acquires
     /// into a scratch library whose edition ids differ, so it names with
     /// this one to plan the same keys the owner grants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub library_id: Option<LibraryId>,
-    /// The podcast parent's library id on the owner, for a destination that
+    pub call_number: Option<CallNumber>,
+    /// The podcast parent's call number on the owner, for a destination that
     /// saves episodes to the parent's folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_library_id: Option<LibraryId>,
+    pub parent_call_number: Option<CallNumber>,
 }
 
 /// A title an [`AcquireTarget`] names, as the owner's library holds it:
@@ -1120,18 +1120,18 @@ pub struct TargetTitle {
     pub published_at: Option<String>,
 }
 
-/// Longest library id (see [`LibraryId`]).
-pub const MAX_LIBRARY_ID_BYTES: usize = 16;
+/// Longest call number (see [`CallNumber`]).
+pub const MAX_CALL_NUMBER_BYTES: usize = 16;
 
-/// A title's short library id as the owner names it: 1 to
-/// [`MAX_LIBRARY_ID_BYTES`] ASCII letters and digits, so it is safe in any
+/// A title's short call number as the owner names it: 1 to
+/// [`MAX_CALL_NUMBER_BYTES`] ASCII letters and digits, so it is safe in any
 /// storage key segment. Deserializing anything else fails, which refuses
 /// the whole frame.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct LibraryId(String);
+pub struct CallNumber(String);
 
-impl LibraryId {
+impl CallNumber {
     /// The id as text.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -1139,10 +1139,10 @@ impl LibraryId {
     }
 }
 
-impl TryFrom<String> for LibraryId {
+impl TryFrom<String> for CallNumber {
     type Error = &'static str;
 
-    /// Accepts `value` when it is 1 to [`MAX_LIBRARY_ID_BYTES`] ASCII
+    /// Accepts `value` when it is 1 to [`MAX_CALL_NUMBER_BYTES`] ASCII
     /// letters and digits.
     ///
     /// # Errors
@@ -1150,18 +1150,18 @@ impl TryFrom<String> for LibraryId {
     /// Returns an error naming the rule when `value` breaks it.
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.is_empty()
-            || value.len() > MAX_LIBRARY_ID_BYTES
+            || value.len() > MAX_CALL_NUMBER_BYTES
             || !value.bytes().all(|b| b.is_ascii_alphanumeric())
         {
-            return Err("a library id is 1 to 16 ASCII letters and digits");
+            return Err("a call number is 1 to 16 ASCII letters and digits");
         }
         Ok(Self(value))
     }
 }
 
-impl From<LibraryId> for String {
+impl From<CallNumber> for String {
     /// The id as text.
-    fn from(id: LibraryId) -> Self {
+    fn from(id: CallNumber) -> Self {
         id.0
     }
 }
@@ -1451,23 +1451,23 @@ mod tests {
     }
 
     #[test]
-    fn a_library_id_is_short_ascii_alphanumeric_or_the_frame_is_refused() {
+    fn a_call_number_is_short_ascii_alphanumeric_or_the_frame_is_refused() {
         let target = |id: &str| {
             serde_json::json!({
                 "holding_id": "b",
                 "plugin_key": "store",
                 "account_id": "a",
                 "title": {"product_id": "p", "source": "store", "marketplace": "us", "title": "T", "content_kind": "book"},
-                "library_id": id,
+                "call_number": id,
             })
         };
         let ok: AcquireTarget = serde_json::from_value(target("Ab12cd34")).unwrap();
         assert_eq!(
-            ok.library_id.as_ref().map(LibraryId::as_str),
+            ok.call_number.as_ref().map(CallNumber::as_str),
             Some("Ab12cd34")
         );
         assert_eq!(
-            serde_json::to_value(&ok).unwrap()["library_id"],
+            serde_json::to_value(&ok).unwrap()["call_number"],
             serde_json::json!("Ab12cd34")
         );
         for bad in [
@@ -1489,10 +1489,10 @@ mod tests {
             "title": {"product_id": "p", "source": "store", "marketplace": "us", "title": "T", "content_kind": "book"},
         }))
         .unwrap();
-        assert_eq!(absent.library_id, None);
+        assert_eq!(absent.call_number, None);
         assert!(!serde_json::to_string(&absent)
             .unwrap()
-            .contains("library_id"));
+            .contains("call_number"));
     }
 
     #[test]
@@ -1906,8 +1906,8 @@ mod tests {
                             published_at: Some("1965-08-01T00:00:00+00:00".into()),
                         },
                         parent: None,
-                        library_id: Some(LibraryId::try_from("abc12345".to_string()).unwrap()),
-                        parent_library_id: None,
+                        call_number: Some(CallNumber::try_from("abc12345".to_string()).unwrap()),
+                        parent_call_number: None,
                     }],
                     destinations: vec![PlanDestination {
                         id: "local".into(),

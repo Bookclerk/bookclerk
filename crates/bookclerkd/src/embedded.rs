@@ -1,7 +1,7 @@
 //! The host embedded in a desktop window, with no listener.
 //!
 //! [`EmbeddedHost::start`] runs the same host `bookclerkd` runs (control
-//! plane, plugin deployments, jobs, events, scheduler, cluster links) but
+//! plane, plugin deployments, jobs, events, scheduler, library links) but
 //! binds no socket: not `daemon.listen`, not the node API's TLS listener.
 //! The window's webview loads the SPA over its own custom scheme, and the
 //! shell passes each request to [`EmbeddedHost::handle`], which calls the

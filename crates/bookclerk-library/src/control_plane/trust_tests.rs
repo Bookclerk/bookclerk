@@ -92,7 +92,7 @@ async fn add_node(store: &LibraryStore, node_id: &str, kind: &str, owner: Option
     let now = chrono::Utc::now().to_rfc3339();
     nodes::ActiveModel {
         node_id: Set(node_id.into()),
-        cluster_id: Set("cluster".into()),
+        library_id: Set("library".into()),
         created_at: Set(now.clone()),
         incarnation: Set("test".into()),
         heartbeat_at: Set(now.clone()),

@@ -1,4 +1,4 @@
-//! Library work a branch node asks the owner cluster for (H-5).
+//! Library work a branch node asks the library for (H-5).
 //!
 //! | Frame | Answer |
 //! |---|---|

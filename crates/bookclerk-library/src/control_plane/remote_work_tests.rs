@@ -13,7 +13,7 @@ use sea_orm::{
 
 use super::*;
 use crate::entities::{
-    account_links, accounts, cluster_leases, jobs, node_credentials, node_upload_sessions, nodes,
+    account_links, accounts, jobs, library_leases, node_credentials, node_upload_sessions, nodes,
 };
 use crate::master_key::master_key_test_lock_async;
 use crate::models::UserRole;
@@ -86,7 +86,7 @@ async fn add_branch_node(store: &LibraryStore, node_id: &str, owner: i64) {
     let now = chrono::Utc::now().to_rfc3339();
     nodes::ActiveModel {
         node_id: Set(node_id.into()),
-        cluster_id: Set("cluster".into()),
+        library_id: Set("library".into()),
         created_at: Set(now.clone()),
         incarnation: Set("test".into()),
         heartbeat_at: Set(now.clone()),
@@ -257,8 +257,8 @@ async fn expire_lease(store: &LibraryStore, job_id: &str) {
         .unwrap();
     assert_eq!(store.reclaim_expired_leases().await.unwrap(), 1);
     // The vanished holder's permits expire with its lease.
-    cluster_leases::Entity::update_many()
-        .col_expr(cluster_leases::Column::ExpiresAtMs, Expr::value(0i64))
+    library_leases::Entity::update_many()
+        .col_expr(library_leases::Column::ExpiresAtMs, Expr::value(0i64))
         .exec(store.db())
         .await
         .unwrap();
@@ -2603,11 +2603,11 @@ async fn a_node_local_instance_runs_only_on_its_node() {
     )
     .await
     .is_err());
-    let cluster = create_plugin_instance(&w.store, &actor, PLUGIN, "Shared")
+    let library = create_plugin_instance(&w.store, &actor, PLUGIN, "Shared")
         .await
         .unwrap();
-    assert_eq!(cluster.owner_node_id, None);
-    ensure_plugin_deployment(&w.store, &actor, &cluster.id, HOST, DesiredState::Present)
+    assert_eq!(library.owner_node_id, None);
+    ensure_plugin_deployment(&w.store, &actor, &library.id, HOST, DesiredState::Present)
         .await
         .unwrap();
     let bound: std::collections::BTreeSet<String> = [PLUGIN.to_string()].into();
@@ -2617,8 +2617,8 @@ async fn a_node_local_instance_runs_only_on_its_node() {
             .unwrap();
     assert_eq!(
         requires,
-        vec![cluster.id.to_string()],
-        "only the cluster instance binds an acquire"
+        vec![library.id.to_string()],
+        "only the library instance binds an acquire"
     );
 }
 
@@ -3352,8 +3352,8 @@ async fn a_renewal_that_is_lost_does_not_extend_the_lease() {
         .exec(w.store.db())
         .await
         .unwrap();
-    cluster_leases::Entity::update_many()
-        .col_expr(cluster_leases::Column::Holder, Expr::value("someone-else"))
+    library_leases::Entity::update_many()
+        .col_expr(library_leases::Column::Holder, Expr::value("someone-else"))
         .exec(w.store.db())
         .await
         .unwrap();
@@ -3680,7 +3680,7 @@ async fn permits_above_a_lowered_limit_are_still_held() {
     let semaphore = class_semaphore(JobResourceClass::Network);
     let far = chrono::Utc::now().timestamp_millis() + 3_600_000;
     for slot in 0..3 {
-        cluster_leases::ActiveModel {
+        library_leases::ActiveModel {
             name: Set(semaphore_slot_lease_name(&semaphore, slot)),
             holder: Set("someone-else".into()),
             token: Set(1),
@@ -3729,7 +3729,7 @@ async fn permits_above_a_lowered_limit_are_still_held() {
 }
 
 /// The current row of the semaphore slot lease `name`.
-async fn slot_lease(store: &LibraryStore, name: &str) -> ClusterLease {
+async fn slot_lease(store: &LibraryStore, name: &str) -> LibraryLease {
     load_lease(store, name).await.unwrap().expect("slot row")
 }
 
@@ -3750,7 +3750,7 @@ async fn a_leftover_permit_of_an_earlier_generation_is_not_the_claims() {
         job_permit_holder_prefix(&remote_lease_owner(HOST), &job_id, 0)
     );
     for (slot, holder) in [(0, leftover_holder.as_str()), (1, "someone-else")] {
-        cluster_leases::ActiveModel {
+        library_leases::ActiveModel {
             name: Set(semaphore_slot_lease_name(&semaphore, slot)),
             holder: Set(holder.into()),
             token: Set(1),
@@ -3776,9 +3776,9 @@ async fn a_leftover_permit_of_an_earlier_generation_is_not_the_claims() {
     );
     // Bring the current permit close to expiry so a renewal is visible.
     let soon = chrono::Utc::now().timestamp_millis() + 1_000;
-    cluster_leases::Entity::update_many()
-        .col_expr(cluster_leases::Column::ExpiresAtMs, Expr::value(soon))
-        .filter(cluster_leases::Column::Name.eq(current.as_str()))
+    library_leases::Entity::update_many()
+        .col_expr(library_leases::Column::ExpiresAtMs, Expr::value(soon))
+        .filter(library_leases::Column::Name.eq(current.as_str()))
         .exec(w.store.db())
         .await
         .unwrap();

@@ -34,14 +34,14 @@ pub struct JobExecCtx {
     /// Resume ordinal from the durable payload; distinct from [`Self::attempt_count`].
     pub invocation_sequence: u32,
     /// Set when this daemon runs the job as a branch node for an owner
-    /// cluster: the secrets the owner handed with it (opened with this
+    /// library: the secrets the owner handed with it (opened with this
     /// node's box key, never written to disk) and token write-back under
     /// the owner's fence. `None` for the daemon's own jobs.
     pub host: Option<Arc<bookclerk_node_client::HostJobCtx>>,
     /// Set with [`Self::host`]: what the owner plugin's guest is opened
     /// with on this host (`CONFIG`, `SECRETS` under the consented grant,
     /// and the job's store credentials).
-    pub host_bindings: Option<Arc<crate::cluster_link::remote_bindings::HostJobBindings>>,
+    pub host_bindings: Option<Arc<crate::library_link::remote_bindings::HostJobBindings>>,
 }
 
 impl JobExecCtx {
@@ -78,7 +78,7 @@ impl JobCommand {
     }
 
     /// Builds a command from a kind and payload (a job handed by an owner
-    /// cluster), rejecting unknown/invalid kinds.
+    /// library), rejecting unknown/invalid kinds.
     ///
     /// # Errors
     ///
@@ -130,10 +130,10 @@ impl JobTransport for InProcessJobTransport {
         if ctx.is_cancelled() {
             anyhow::bail!("cancelled");
         }
-        // A job an owner cluster handed this host would run here against
+        // A job a library handed this host would run here against
         // this install's own library and plugins; refuse it.
         if ctx.host.is_some() || ctx.host_bindings.is_some() {
-            anyhow::bail!("a job handed by an owner cluster does not run in process");
+            anyhow::bail!("a job handed by a library does not run in process");
         }
         tracing::trace!(
             version = cmd.version,

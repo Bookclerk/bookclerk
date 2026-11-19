@@ -22,7 +22,7 @@ integrations into a **per-node** catalog keyed by
 without an instance (`plugin_id` stores the canonical PluginKey, not the
 display alias) and does **not** delete other nodes’ rows. The catalog key is
 the node id from `node-identity.json`, the same id the node registers with
-the cluster and claims its `node.<node_id>` queue under. Dispatch uses
+the library and claims its `node.<node_id>` queue under. Dispatch uses
 the live union (any enabled node whose heartbeat is within 60s). Optional
 payload-object filters and `resource_class` (currently `network` only) are
 matched host-side. Each dispatcher tick dispatches at most 32 undispatched
@@ -47,7 +47,7 @@ version, filter). `[events]` retention and concurrency are stored in the databas
 first import (`core.events`; see [configuration](../server/configuration.md) and
 [ADR: Control plane](../adr/control-plane.md)). `[events.concurrency]` is both the
 local worker count **and** the
-cluster-wide max `running` deliveries per `(plugin_id, resource_class)`
+library-wide max `running` deliveries per `(plugin_id, resource_class)`
 (serialized with a portable `bookclerk_slots` row).
 `EventResult::suspended` may set `wakeOnEventType` / `wakeOnFilterJson`; the
 host derives wake grants from declared subscriptions (schema versions plus the
@@ -77,7 +77,7 @@ backlog (see
 Retention is independent of jobs
 (`[events].retention_days` for acked/rejected/expired + empty parent events after that
 cutoff, `dead_letter_retention_days` for dead letters). Prune is a
-cluster singleton, not a dispatcher tick: see *Cluster maintenance* below.
+library singleton, not a dispatcher tick: see *Library maintenance* below.
 Operator APIs: `GET /api/events`,
 `GET /api/events/deliveries?state=dead_letter`,
 `POST /api/events/deliveries/{id}/retry`,
@@ -242,7 +242,7 @@ identifiers. No claim loop runs it: ordinary claims, local or remote,
 never hand it out, and only that branch takes it with `requests.claim`.
 Its answer completes the job (accepted), fails it without a retry
 (`not_listed`), or fails it with the normal retry (`branch_failed`). See
-[Requesting a book from a branch](../server/cluster-hosts.md#requesting-a-book-from-a-branch).
+[Requesting a book from a branch](../server/branches.md#requesting-a-book-from-a-branch).
 
 `discover_request_queue` carries no subject: one ranking of the shared
 request queue serves everyone. Discover's event consumer queues it on
@@ -291,7 +291,7 @@ and store identifiers). It is kept current two ways:
   `edition_linked`, `edition_updated`, `holding_added` and
   `holding_removed`, all host event types no plugin may produce. The id
   names the node, so every node gets every event (Discover's
-  `host:discover` is one consumer for the cluster). An edition event
+  `host:discover` is one consumer for the library). An edition event
   refreshes the document of the edition's work, and a holding event the
   document of its listing's work. A refresh deletes the work's document
   and adds it back while the work is held, so a work nobody holds any
@@ -342,13 +342,13 @@ match.
 `library_work_rows` table instead of joining works, expressions, editions,
 listings and holdings on every request. A podcast is one row, its show,
 counting its episodes' editions and holdings. The table lives in the
-library database, so the whole cluster shares one index:
+library database, so the whole library shares one index:
 
 - **From events.** Every daemon registers the same consumer,
   `host:library-index`, for `edition_linked`, `edition_updated`,
   `edition_acquire_changed`, `holding_added`, `holding_removed` and
   `book_acquired`. The catalog folds the registrations into one
-  subscriber, so each event is handled once in the cluster. An edition
+  subscriber, so each event is handled once in the library. An edition
   event refreshes its edition's work, a holding event the work of its
   listing, and `book_acquired` the work of its edition (or of its title,
   when the payload names no edition). A refresh reads the work as it is
@@ -496,7 +496,7 @@ They plan as operator authority (the CLI holds the database), record each
 job's routing requirements, insert the rows, and then wait for them,
 printing state changes to stderr; the first Ctrl-C asks unfinished jobs to
 cancel, a second stops waiting. Waiting needs a live `bookclerkd` node of
-the cluster (the CLI fails before queueing otherwise); `--no-wait` only
+the library (the CLI fails before queueing otherwise); `--no-wait` only
 queues and prints the job ids. `library scan --account <id>` is still
 exactly one job for that account (bypassing `scan_enabled`), and
 `library acquire --asin <ASIN>` exactly one job for that title.
@@ -506,8 +506,8 @@ from events (see [Search index](#search-index)). `library acquire
 --dry-run` plans keys locally without queueing. `library acquire` has no `--license` or `-o key=value` flags
 (both were removed, never implemented); a queued acquire runs with the
 settings of the node that claims it.
-A branch node's operator asks its owner cluster for a scan with `bookclerk
-clusters scan` ([Clusters and branch nodes](../server/cluster-hosts.md)).
+A branch node's operator asks its library for a scan with `bookclerk
+libraries scan` ([Libraries and branch nodes](../server/branches.md)).
 
 ## Leases and crash recovery
 
@@ -669,7 +669,7 @@ run out, so jobs this node cannot run never hide runnable ones behind them),
 and skips one unless every required instance has a deployment on this node whose desired
 state runs it (`present` or `placed`) and whose observation from this node
 says the guest is up (`running` or `healthy`) — the same placement and
-observation rows delivery routing reads. Then it takes the job's cluster
+observation rows delivery routing reads. Then it takes the job's library
 permits (below) and claims that row with `claim_job_by_id`, one CAS on
 `state = 'pending'` and the lease generation it read, so concurrent
 claimers on any number of connections admit one. A lost CAS gives the
@@ -684,7 +684,7 @@ Deployments keep moving after a job is queued: a `local` output is deployed
 or retired, or the scheduler moves a replica. Each daemon runs a sweep loop
 (`bookclerkd` `requirements_sweep`, rules in
 `control_plane::sweep_job_requirements`), but only the holder of the
-`jobs:requirements-sweep` cluster lease (90 s, renewed every pass) sweeps.
+`jobs:requirements-sweep` library lease (90 s, renewed every pass) sweeps.
 A pass runs every 30 s, on a deployment or install wakeup on this node, and
 after a scheduler pass that moved replicas. A wakeup waits until wakeups have
 been quiet for 0.5 s (at most 3 s), so a burst of deployment changes, such
@@ -720,7 +720,7 @@ reconciled like any other job's.
 
 The grace period is a wall-clock stamp rather than a count of unsettled
 sweeps, because sweeps also run on wakeups and a count would expire faster
-on a busy cluster. Every write is a compare-and-swap on `state = 'pending'`
+on a busy library. Every write is a compare-and-swap on `state = 'pending'`
 and the lease generation, which it bumps: a job claimed meanwhile is left
 alone, and a claimer that read the row before the sweep wrote it loses its
 own CAS (a routed claim matches the generation of the record whose
@@ -746,11 +746,11 @@ with requirements; it remains for tests and tools that run one process. It
 pages past routed rows the same way (the atomic plan filters them out before
 its `LIMIT 1`).
 
-## Cluster semaphores
+## Library semaphores
 
 Process-local limits add up across nodes, so the limits that protect shared
-things are counted cluster-wide. A semaphore `name` with limit `N` is the
-`cluster_leases` rows `sem:<name>#0` … `sem:<name>#<N-1>`; a permit is one
+things are counted library-wide. A semaphore `name` with limit `N` is the
+`library_leases` rows `sem:<name>#0` … `sem:<name>#<N-1>`; a permit is one
 of those slot leases (holder, fencing token, expiry), taken with the same
 fenced compare-and-swap as the scheduler lease
 (`control_plane::semaphore`). Only slots below the limit are taken, so no
@@ -759,7 +759,7 @@ one permit of:
 
 | Semaphore | Limit | Counts |
 | --- | --- | --- |
-| `jobs:<class>` | `[jobs.concurrency].network` | Running jobs of the class, cluster-wide |
+| `jobs:<class>` | `[jobs.concurrency].network` | Running jobs of the class, library-wide |
 | `plugin-instance:<id>` | `[jobs.concurrency].plugin_instance` (default 1) | Running jobs that require that instance |
 | `account:<plugin_key>:<account_id>` | 1 | Scans and acquires touching that store account: the payload's account, else every account (of the pinned plugin, when pinned) |
 
@@ -784,7 +784,7 @@ agree on them.
 ## Resource-class concurrency
 
 `[jobs.concurrency].network` is the number of leased network workers on each
-node (default **1**) and also the cluster-wide `jobs:network` permit count
+node (default **1**) and also the library-wide `jobs:network` permit count
 above, so adding nodes does not multiply concurrent store traffic. The
 historical `work_lock` still wraps `run_*` so the shared `StorageIndex` stays
 single-writer within one process. Codec work stays in the `[media].workers`
@@ -805,10 +805,10 @@ pool.
 See [configuration.md](../server/configuration.md) (`[jobs]` / `BOOKCLERK_JOBS_*` and
 `[events]` / `BOOKCLERK_EVENTS_*`).
 
-## Cluster maintenance
+## Library maintenance
 
-Cluster-wide cleanup runs on one daemon at a time. Each duty holds its own
-`cluster_leases` row; every daemon polls them every 60 s, starting 5 minutes
+Library-wide cleanup runs on one daemon at a time. Each duty holds its own
+`library_leases` row; every daemon polls them every 60 s, starting 5 minutes
 after it starts so the first pass doesn't compete with startup. The holder renews
 its leases on each poll and runs a duty when it takes the lease and then
 hourly. A daemon that stops polling loses its leases after 180 s and the
@@ -843,5 +843,5 @@ visible:
 The prunes are idempotent, so the fence bounds wasted work rather than
 guarding correctness: the window between a fence check and its delete is
 one statement. Node-local cleanup (scratch directories, expired job and
-delivery leases) still runs on every node. `GET /api/cluster/status`
+delivery leases) still runs on every node. `GET /api/library-status`
 lists every lease with its holder, token, and whether it is held.

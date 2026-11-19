@@ -561,7 +561,7 @@ impl NamedBinding {
 /// The `binding` key names the property on `env` (default `KV`). The
 /// `namespace` defaults to the binding name lowercased, so two rows are
 /// distinct stores unless they name the same namespace on purpose. Values
-/// live in the cluster: an instance moved to another host reads its own keys.
+/// live in the library: an instance moved to another host reads its own keys.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct KvNamespaceManifest {
@@ -961,7 +961,7 @@ pub struct QueueConsumer {
     /// Seconds a retried message waits before redelivery (default `0`).
     #[serde(default)]
     pub retry_delay: u32,
-    /// Most concurrent `queue(batch)` invocations across the cluster; `None`
+    /// Most concurrent `queue(batch)` invocations across the library; `None`
     /// lets the host choose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrency: Option<u32>,

@@ -50,7 +50,7 @@ async fn seeds_a_member_with_books_wishlist_and_an_offline_branch() {
     let keys = plugin_keys();
     let now = chrono::Utc::now();
 
-    let Seeded::Wrote(report) = seed(&store, "cluster", &keys, &StoreRecords::new(), now)
+    let Seeded::Wrote(report) = seed(&store, "library", &keys, &StoreRecords::new(), now)
         .await
         .unwrap()
     else {
@@ -115,7 +115,7 @@ async fn seeds_a_member_with_books_wishlist_and_an_offline_branch() {
     assert_eq!(store.count_owners().await.unwrap(), 0);
 
     assert_eq!(
-        seed(&store, "cluster", &keys, &StoreRecords::new(), now)
+        seed(&store, "library", &keys, &StoreRecords::new(), now)
             .await
             .unwrap(),
         Seeded::AlreadySeeded
@@ -140,7 +140,7 @@ async fn leaves_out_the_titles_of_a_storefront_that_is_not_enrolled() {
 
     let Seeded::Wrote(report) = seed(
         &store,
-        "cluster",
+        "library",
         &keys,
         &StoreRecords::new(),
         chrono::Utc::now(),
@@ -316,7 +316,7 @@ async fn writes_the_store_record_when_there_is_one() {
             ..hit("9781549140396", "Circe", "Madeline Miller")
         },
     );
-    let Seeded::Wrote(report) = seed(&store, "cluster", &keys, &records, chrono::Utc::now())
+    let Seeded::Wrote(report) = seed(&store, "library", &keys, &records, chrono::Utc::now())
         .await
         .unwrap()
     else {
