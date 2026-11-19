@@ -507,6 +507,58 @@ async fn discover_answers_drop_prices_for_a_patron_who_may_not_see_them() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The wishlist routes drop them too: create, list and remove a wish.
+    let (status, wish) = send(&app, "POST", "/api/wishlist", &member_cookie, Some(query)).await;
+    assert_eq!(status, StatusCode::OK, "{wish}");
+    let (status, body) = send(&app, "GET", "/api/wishlist", &member_cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.as_array().map(Vec::len), Some(1), "{body}");
+    let uuid = wish["uuid"].as_str().expect("wish uuid");
+    let (status, body) = send(
+        &app,
+        "DELETE",
+        &format!("/api/wishlist/{uuid}"),
+        &member_cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[test]
+fn a_wishlist_row_keeps_its_stores_and_loses_prices_and_links() {
+    let mut row: bookclerk_library::TitleRequestRecord =
+        serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "uuid": "0b7e4c1d-2a3f-4e5d-9c8b-7a6f5e4d3c2b",
+            "title": "The Left Hand of Darkness",
+            "status": "open",
+            "work_key": "isbn:9780441478125",
+            "work_id": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b",
+            "sources": [],
+            "purchase_hints": [{
+                "source": "libro",
+                "product_id": "9780441478125",
+                "url": "https://libro.fm/audiobooks/9780441478125",
+                "price_cents": 1499,
+                "currency": "USD",
+                "price_label": "$14.99",
+                "list_price_cents": 2999,
+                "list_price_label": "$29.99",
+                "member_price_cents": 1499,
+                "member_price_label": "$14.99"
+            }],
+            "created_at": "2026-10-29T10:12:00Z",
+            "updated_at": "2026-10-29T10:12:00Z"
+        }))
+        .expect("wishlist row");
+    row.hide_prices_and_links();
+    let hint = serde_json::to_value(&row.purchase_hints[0]).expect("hint");
+    assert_eq!(
+        hint,
+        serde_json::json!({"source": "libro", "product_id": "9780441478125"})
+    );
 }
 
 #[tokio::test]

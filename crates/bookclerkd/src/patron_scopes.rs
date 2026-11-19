@@ -17,10 +17,10 @@ use bookclerk_library::control_plane::{
     role_follows_default_controls, role_has_controls, role_is_scoped, set_default_member_controls,
     set_default_patron_scope, set_member_control_overrides, set_patron_scope,
     verify_patron_administrator, AssignedControls, AssignedScope, ConfigActor, ControlOverrides,
-    MemberControl, MemberControls, PatronScope, PutUserScope,
+    MemberControl, MemberControls, PatronScope, PutUserControls, PutUserScope,
 };
 use bookclerk_library::LibraryError;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::api::AppState;
 use crate::auth::{authorize_provisioner, Provisioner};
@@ -321,16 +321,6 @@ pub(crate) struct UserControlsJson {
     /// limit (and only an Owner or the operator sets those).
     #[schema(example = true)]
     follows_default: bool,
-}
-
-/// `PUT /api/users/{id}/controls` body.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PutUserControls {
-    /// The controls set for this patron alone; an absent or `null`
-    /// control follows the library's default, so `{}` returns the patron
-    /// to the default for all of them.
-    overrides: ControlOverrides,
 }
 
 /// The library's default member controls as the control routes report

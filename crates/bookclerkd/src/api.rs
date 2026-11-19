@@ -5777,8 +5777,8 @@ async fn discover_recommendations(
 }
 
 /// Whether the caller may see prices and store links (the "See prices
-/// and store links" member control). Discover answers drop both for a
-/// patron it is off for.
+/// and store links" member control). Discover answers and wishlist rows
+/// drop both for a patron it is off for.
 async fn caller_sees_prices(state: &AppState, headers: &HeaderMap) -> bool {
     crate::patron_scopes::caller_may(
         state,
@@ -6284,10 +6284,14 @@ async fn list_wishlist(
         .list_wishlist(identity_id)
         .await
         .map_err(internal_err)?;
+    let sees_prices = caller_sees_prices(&state, &headers).await;
     for row in &mut rows {
         state
             .covers
             .decorate(row.cover_url.as_deref(), &mut row.cover_path);
+        if !sees_prices {
+            row.hide_prices_and_links();
+        }
     }
     Ok(Json(rows))
 }
@@ -6313,6 +6317,9 @@ async fn create_wishlist(
     state
         .covers
         .decorate(row.cover_url.as_deref(), &mut row.cover_path);
+    if !caller_sees_prices(&state, &headers).await {
+        row.hide_prices_and_links();
+    }
     Ok(Json(row))
 }
 
@@ -6381,6 +6388,9 @@ async fn delete_wishlist(
     state
         .covers
         .decorate(row.cover_url.as_deref(), &mut row.cover_path);
+    if !caller_sees_prices(&state, &headers).await {
+        row.hide_prices_and_links();
+    }
     Ok(Json(row))
 }
 

@@ -109,7 +109,9 @@ fn allowed() -> bool {
 
 /// A value for each control: the library's default, or what applies to
 /// one user.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+// Read by a strict hand-written reader (module `strict`); the serde
+// attributes here shape the schema and match what that reader takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MemberControls {
     /// May connect store accounts ([`MemberControl::LinkAccounts`]).
@@ -187,7 +189,8 @@ impl MemberControls {
 
 /// One patron's overrides: a value for some controls, and the library's
 /// default for the rest (an absent or `null` field).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+// Read by a strict hand-written reader (module `strict`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ControlOverrides {
     /// Overrides [`MemberControls::link_accounts`].
@@ -629,6 +632,178 @@ fn to_json(controls: &MemberControls) -> Result<String> {
 /// Error for a document or row that does not parse.
 fn invalid(detail: &str) -> LibraryError {
     LibraryError::Invalid(format!("invalid member controls: {detail}"))
+}
+
+/// `PUT /api/users/{id}/controls` body.
+// Read by a strict hand-written reader (module `strict`); the serde
+// attribute here shapes the schema and matches what that reader takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PutUserControls {
+    /// The controls set for this patron alone; an absent or `null`
+    /// control follows the library's default, so `{}` returns the patron
+    /// to the default for all of them.
+    pub overrides: ControlOverrides,
+}
+
+/// Parses the body of `PUT /api/users/default-controls` from its raw
+/// bytes, sans IO, the way the route reads it.
+///
+/// # Returns
+///
+/// The new default, with an absent control allowed.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for bytes that are not one JSON
+/// object of known controls with boolean values and no repeated key.
+pub fn parse_member_controls(body: &[u8]) -> Result<MemberControls> {
+    serde_json::from_slice(body).map_err(|err| invalid(&format!("controls body: {err}")))
+}
+
+/// Parses the body of `PUT /api/users/{id}/controls` from its raw bytes,
+/// sans IO, the way the route reads it.
+///
+/// # Returns
+///
+/// The patron's overrides, with an absent or `null` control following
+/// the default.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for bytes that are not one JSON
+/// object with exactly the key `overrides`, itself an object of known
+/// controls with boolean or `null` values, with no repeated key.
+pub fn parse_user_controls_request(body: &[u8]) -> Result<ControlOverrides> {
+    serde_json::from_slice::<PutUserControls>(body)
+        .map(|body| body.overrides)
+        .map_err(|err| invalid(&format!("user controls body: {err}")))
+}
+
+/// Strict JSON readers for the controls types.
+///
+/// A derived reader would also take a struct written as an array
+/// (`[true, false, true, true, true, true]`). Controls come from
+/// Administrators over the web API and decide what patrons may do, so the
+/// readers here take only objects, with no unknown or repeated keys. The
+/// `member_controls_request` fuzz target checks them against an
+/// independent reading.
+mod strict {
+    use std::fmt;
+    use std::marker::PhantomData;
+
+    use serde::de::{value::MapAccessDeserializer, Deserializer, MapAccess, Visitor};
+    use serde::Deserialize;
+
+    use super::{allowed, ControlOverrides, MemberControls, PutUserControls};
+
+    /// Reads a JSON object, and only an object, as `T`.
+    struct Object<T>(PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> Visitor<'de> for Object<T> {
+        type Value = T;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a JSON object")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+            T::deserialize(MapAccessDeserializer::new(map))
+        }
+    }
+
+    /// [`MemberControls`] as the derived reader takes it from an object.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RawControls {
+        /// See [`MemberControls::link_accounts`].
+        #[serde(default = "allowed")]
+        link_accounts: bool,
+        /// See [`MemberControls::download`].
+        #[serde(default = "allowed")]
+        download: bool,
+        /// See [`MemberControls::edit_metadata`].
+        #[serde(default = "allowed")]
+        edit_metadata: bool,
+        /// See [`MemberControls::upload`].
+        #[serde(default = "allowed")]
+        upload: bool,
+        /// See [`MemberControls::request_books`].
+        #[serde(default = "allowed")]
+        request_books: bool,
+        /// See [`MemberControls::see_prices`].
+        #[serde(default = "allowed")]
+        see_prices: bool,
+    }
+
+    impl<'de> Deserialize<'de> for MemberControls {
+        fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            let raw: RawControls = de.deserialize_map(Object(PhantomData))?;
+            Ok(Self {
+                link_accounts: raw.link_accounts,
+                download: raw.download,
+                edit_metadata: raw.edit_metadata,
+                upload: raw.upload,
+                request_books: raw.request_books,
+                see_prices: raw.see_prices,
+            })
+        }
+    }
+
+    /// [`ControlOverrides`] as the derived reader takes it from an object.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RawOverrides {
+        /// See [`ControlOverrides::link_accounts`].
+        #[serde(default)]
+        link_accounts: Option<bool>,
+        /// See [`ControlOverrides::download`].
+        #[serde(default)]
+        download: Option<bool>,
+        /// See [`ControlOverrides::edit_metadata`].
+        #[serde(default)]
+        edit_metadata: Option<bool>,
+        /// See [`ControlOverrides::upload`].
+        #[serde(default)]
+        upload: Option<bool>,
+        /// See [`ControlOverrides::request_books`].
+        #[serde(default)]
+        request_books: Option<bool>,
+        /// See [`ControlOverrides::see_prices`].
+        #[serde(default)]
+        see_prices: Option<bool>,
+    }
+
+    impl<'de> Deserialize<'de> for ControlOverrides {
+        fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            let raw: RawOverrides = de.deserialize_map(Object(PhantomData))?;
+            Ok(Self {
+                link_accounts: raw.link_accounts,
+                download: raw.download,
+                edit_metadata: raw.edit_metadata,
+                upload: raw.upload,
+                request_books: raw.request_books,
+                see_prices: raw.see_prices,
+            })
+        }
+    }
+
+    /// [`PutUserControls`] as the derived reader takes it from an object.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RawPutUserControls {
+        /// See [`PutUserControls::overrides`].
+        overrides: ControlOverrides,
+    }
+
+    impl<'de> Deserialize<'de> for PutUserControls {
+        fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            let raw: RawPutUserControls = de.deserialize_map(Object(PhantomData))?;
+            Ok(Self {
+                overrides: raw.overrides,
+            })
+        }
+    }
 }
 
 #[cfg(test)]
