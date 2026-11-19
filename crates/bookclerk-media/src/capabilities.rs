@@ -3,9 +3,8 @@
 //! Hosts ask here before handing the worker audio, instead of keeping their
 //! own list of formats: the acquire pipeline takes a library's copy from
 //! another store only when an output that re-encodes or repackages audio
-//! can read it. The answers follow the decode front ([`crate::decode`]):
-//! the Symphonia features this crate enables, and FDK for every AAC
-//! profile.
+//! can read it. The answers follow the crate's decode front: the
+//! Symphonia features this crate enables, and FDK for every AAC profile.
 
 use bookclerk_tags::AudioCodec;
 
