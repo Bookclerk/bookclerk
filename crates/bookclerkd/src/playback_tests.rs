@@ -520,7 +520,7 @@ async fn the_routes_refuse_what_the_caller_may_not_play() {
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
 
     // Paths that name no track.
-    for path in [
+    for (case, path) in [
         format!("/api/playback/sessions/{session_id}/tracks/1"),
         format!("/api/playback/sessions/{session_id}/tracks/01"),
         format!("/api/playback/sessions/{session_id}/tracks/512"),
@@ -529,9 +529,12 @@ async fn the_routes_refuse_what_the_caller_may_not_play() {
             session_id.to_uppercase()
         ),
         "/api/playback/sessions/0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b/tracks/0".to_string(),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let answer = get(&world, &path, Some(riley)).await;
-        assert_eq!(answer.status, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(answer.status, StatusCode::NOT_FOUND, "path {case}");
     }
 
     // Reports the parser refuses.
@@ -824,11 +827,10 @@ async fn a_member_keeps_progress_and_bookmarks_of_their_own() {
         ),
     ] {
         let answer = send_text(&world, method, &uri, riley, padded(limit, body)).await;
-        assert_eq!(answer.status, StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
+        assert_eq!(answer.status, StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(
             answer.json()["error"],
-            format!("the body is at most {limit} bytes"),
-            "{uri}"
+            format!("the body is at most {limit} bytes")
         );
     }
     // The limit itself is inside: padding to exactly the limit is read.

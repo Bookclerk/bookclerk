@@ -511,12 +511,12 @@ fn check_track_path(path: &[u8]) -> bool {
     let got = parse_track_path(session_id, index);
     match expected_track_path(session_id, index) {
         None => {
-            assert_eq!(got, None, "{session_id:?} {index:?}");
+            assert!(got.is_none(), "a path the oracle refuses was read");
             false
         }
         Some(expected_index) => {
             let Some(track) = got else {
-                panic!("{session_id:?} {index:?} refused");
+                panic!("a path the oracle accepts was refused");
             };
             assert_eq!(track.session_id, session_id);
             assert_eq!(track.index, expected_index);
