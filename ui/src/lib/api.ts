@@ -1471,7 +1471,15 @@ export interface ScopeRule {
 export interface PatronScope {
   /** Visibility rules; empty means every book is visible. */
   rules: ScopeRule[];
+  /**
+   * Whether books a store or metadata file marks explicit are visible;
+   * left out means `allow`.
+   */
+  explicit?: ExplicitContent;
 }
+
+/** Whether a patron sees books marked as explicit content. */
+export type ExplicitContent = "allow" | "hide";
 
 /** A patron's scope as `GET`/`PUT /api/users/{id}/scope` report it. */
 export interface UserScope {

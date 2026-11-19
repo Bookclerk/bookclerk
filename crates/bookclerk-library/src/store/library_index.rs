@@ -130,11 +130,15 @@ pub enum WorkFacet {
     Tag,
     /// Collections (`core.collections`) one of the work's files is in.
     Collection,
+    /// Whether a store marks one of the work's listings explicit (adult)
+    /// content: the single value `explicit`, which a patron scope that
+    /// hides explicit books excludes. Not offered as a Library filter.
+    Explicit,
 }
 
 impl WorkFacet {
     /// Every facet, in the order a work's values are written.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Author,
         Self::Narrator,
         Self::Series,
@@ -143,6 +147,7 @@ impl WorkFacet {
         Self::Source,
         Self::Tag,
         Self::Collection,
+        Self::Explicit,
     ];
 
     /// The stored `facet` value.
@@ -157,6 +162,7 @@ impl WorkFacet {
             Self::Source => "source",
             Self::Tag => "tag",
             Self::Collection => "collection",
+            Self::Explicit => "explicit",
         }
     }
 }
@@ -745,6 +751,12 @@ pub(crate) fn build_work_facets(
         );
         if held_listings.contains(listing.id.as_str()) {
             values.push((WorkFacet::Source, listing.plugin_key.as_str()));
+        }
+        if listing.is_explicit == Some(1) {
+            values.push((
+                WorkFacet::Explicit,
+                crate::control_plane::EXPLICIT_FACET_KEY,
+            ));
         }
     }
     values.extend(inputs.tags.iter().map(|t| (WorkFacet::Tag, t.as_str())));

@@ -2085,6 +2085,7 @@ Options:
 - `--default`: Set the library's default scope instead of one patron's
 - `--include <FIELD=VALUE>`: Show only books with this value (`genre=Kids`); fields are genre, series, author, narrator, tag (a library tag) and collection. Repeatable: a book needs one
 - `--exclude <FIELD=VALUE>`: Hide books with this value, whatever `--include` says. Repeatable
+- `--hide-explicit`: Hide books a store or metadata file marks as explicit content
 - `--follow-default`: Drop the patron's own scope so they follow the library's default
 
 ### `bookclerk users controls`

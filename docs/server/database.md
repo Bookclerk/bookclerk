@@ -924,7 +924,9 @@ library holds as works, expressions and editions:
 
 The library's collections are not a table: they live in the
 `core.collections` configuration document (names and storage key
-prefixes). The page index stores each work's collections as facet
+prefixes). A work with a store listing marked explicit
+(`store_listings.is_explicit`) carries facet `explicit`, which a patron
+scope that hides explicit books excludes. The page index stores each work's collections as facet
 `collection`, read from its editions' files (`edition_files`), so a
 change to the document drops the finished index build and the next
 rebuild recomputes every work.
