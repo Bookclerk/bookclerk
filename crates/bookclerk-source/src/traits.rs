@@ -12,8 +12,8 @@ use bookclerk_library::{secret_kind, LibraryStore, SourceScope};
 use crate::SourceBrand;
 use crate::{
     CatalogHit, CatalogSearchOpts, ExpandSeed, FetchOptions, ImportCredentialsOptions,
-    LoginOptions, OAuthProgress, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount,
-    SourceConfigOption, SourceFetch, SourcePurchaseHint,
+    LoginOptions, OAuthProgress, PricedAnswer, PurchaseHintOpts, ScanOptions, ScanSummary,
+    SourceAccount, SourceConfigOption, SourceFetch, SourcePurchaseHint,
 };
 use crate::{Result, SourceError};
 
@@ -253,6 +253,43 @@ pub trait ContentSource: Send + Sync {
             out.push(self.purchase_hint(query).await?);
         }
         Ok(out)
+    }
+
+    /// Whether [`Self::purchase_hint_answers`] prices a query with
+    /// `lookup = PriceLookup::Isbn` by that exact ISBN (the guest's
+    /// declared `CatalogCapabilities.priceByIsbn`).
+    ///
+    /// Default: `false`, so the host never sends ISBN lookups.
+    fn answers_price_by_isbn(&self) -> bool {
+        false
+    }
+
+    /// Whether [`Self::purchase_hint_answers`] prices a query with
+    /// `lookup = PriceLookup::Asin` by that exact ASIN (the guest's
+    /// declared `CatalogCapabilities.priceByAsin`).
+    ///
+    /// Default: `false`, so the host never sends ASIN lookups.
+    fn answers_price_by_asin(&self) -> bool {
+        false
+    }
+
+    /// [`Self::purchase_hints`] with each query's title-search records
+    /// ([`PricedAnswer::records`]), one answer per query in order.
+    ///
+    /// Default: [`Self::purchase_hints`] with no records, so a caller falls
+    /// back to the store's own pick. External guests override this to pass
+    /// the records a `PriceLookup::Title` query returned.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::purchase_hints`].
+    async fn purchase_hint_answers(&self, opts: &[PurchaseHintOpts]) -> Result<Vec<PricedAnswer>> {
+        Ok(self
+            .purchase_hints(opts)
+            .await?
+            .into_iter()
+            .map(PricedAnswer::from)
+            .collect())
     }
 
     /// Current deals / promos for discovery shelves.

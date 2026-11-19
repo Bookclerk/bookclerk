@@ -1973,11 +1973,15 @@ _plugin_capabilities_codec = _Codec(1, 9, _write_plugin_capabilities, _read_plug
 
 def _write_catalog_capabilities(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_bool(0, v["detailByIsbn"])
+    s.set_bool(1, v["priceByIsbn"])
+    s.set_bool(2, v["priceByAsin"])
 
 
 def _read_catalog_capabilities(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "detailByIsbn": s.get_bool(0),
+        "priceByIsbn": s.get_bool(1),
+        "priceByAsin": s.get_bool(2),
     }
 
 
@@ -3086,12 +3090,14 @@ def _write_purchase_hint_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
         s.set_text(4, v["isbn"])
     s.set_text(5, v["region"])
     s.set_bool(0, v["withPrice"])
+    s.set_u16(1, _ord(A.PRICE_LOOKUPS, v["lookup"], "PriceLookup"))
 
 
 def _read_purchase_hint_params(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
         "region": s.get_text(5),
         "withPrice": s.get_bool(0),
+        "lookup": _from_ord(A.PRICE_LOOKUPS, s.get_u16(1), "PriceLookup"),
     }
     product_id = s.get_text(0)
     if not (product_id == ""):
@@ -3439,24 +3445,46 @@ def _write_purchase_hint_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
     s.set_bool(0, v["found"])
     if v.get("hint") is not None:
         _purchase_hint_codec.write(s.init_struct(0, 3, 7), v["hint"], caps)
+    items = s.init_struct_list(1, len(v["records"]), 0, 2)
+    for item, elem in zip(items, v["records"], strict=True):
+        _priced_record_codec.write(item, elem, caps)
 
 
 def _read_purchase_hint_result(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "found": s.get_bool(0),
         "hint": _purchase_hint_codec.read(s.get_struct(0, 3, 7), caps),
+        "records": [_priced_record_codec.read(item, caps) for item in s.get_struct_list(1, 0, 2)],
     }
 
 
-_purchase_hint_result_codec = _Codec(1, 1, _write_purchase_hint_result, _read_purchase_hint_result)
-"""Wire codec for ``PurchaseHintResult`` (1 data words, 1 pointers)."""
+_purchase_hint_result_codec = _Codec(1, 2, _write_purchase_hint_result, _read_purchase_hint_result)
+"""Wire codec for ``PurchaseHintResult`` (1 data words, 2 pointers)."""
+
+
+def _write_priced_record(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("record") is not None:
+        _catalog_hit_codec.write(s.init_struct(0, 6, 17), v["record"], caps)
+    if v.get("hint") is not None:
+        _purchase_hint_codec.write(s.init_struct(1, 3, 7), v["hint"], caps)
+
+
+def _read_priced_record(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "record": _catalog_hit_codec.read(s.get_struct(0, 6, 17), caps),
+        "hint": _purchase_hint_codec.read(s.get_struct(1, 3, 7), caps),
+    }
+
+
+_priced_record_codec = _Codec(0, 2, _write_priced_record, _read_priced_record)
+"""Wire codec for ``PricedRecord`` (0 data words, 2 pointers)."""
 
 
 def _write_purchase_hint_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _purchase_hint_result_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
+        _purchase_hint_result_codec.write(s.init_struct(0, 1, 2), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -3467,7 +3495,7 @@ def _write_purchase_hint_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None
 def _read_purchase_hint_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _purchase_hint_result_codec.read(s.get_struct(0, 1, 1), caps)}
+        return {"kind": "ok", "value": _purchase_hint_result_codec.read(s.get_struct(0, 1, 2), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown PurchaseHintReply union member: {disc}")
@@ -3494,14 +3522,14 @@ _purchase_hints_params_codec = _Codec(0, 1, _write_purchase_hints_params, _read_
 
 
 def _write_purchase_hints_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    items = s.init_struct_list(0, len(v["results"]), 1, 1)
+    items = s.init_struct_list(0, len(v["results"]), 1, 2)
     for item, elem in zip(items, v["results"], strict=True):
         _purchase_hint_result_codec.write(item, elem, caps)
 
 
 def _read_purchase_hints_result(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "results": [_purchase_hint_result_codec.read(item, caps) for item in s.get_struct_list(0, 1, 1)],
+        "results": [_purchase_hint_result_codec.read(item, caps) for item in s.get_struct_list(0, 1, 2)],
     }
 
 

@@ -44,6 +44,7 @@ pub use text::{
 pub use types::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, CatalogSortDir,
     ConfigOptionValue, ExpandSeed, ImportCredentialsOptions, LoginOptions, OAuthProgress,
-    PlainAudioPart, PlainFetch, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount,
-    SourceConfigOption, SourceFetch, SourcePurchaseHint, DEFAULT_CATALOG_SEARCH_LIMIT,
+    PlainAudioPart, PlainFetch, PriceLookup, PricedAnswer, PricedListing, PurchaseHintOpts,
+    ScanOptions, ScanSummary, SourceAccount, SourceConfigOption, SourceFetch, SourcePurchaseHint,
+    DEFAULT_CATALOG_SEARCH_LIMIT,
 };

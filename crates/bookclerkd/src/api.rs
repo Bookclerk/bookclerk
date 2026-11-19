@@ -5667,7 +5667,7 @@ async fn discover_purchase_hints(
     body.preferred_sources = preferred_sources_for_caller(&state, &headers).await;
     let library = state.library_snapshot().await;
     let sources = state.sources.read().await;
-    let mut response = bookclerk_discover::resolve_purchase_hints(&sources, &body)
+    let mut response = bookclerk_discover::resolve_purchase_hints(&sources, Some(&library), &body)
         .await
         .map_err(internal_err)?;
     let deadline = tokio::time::Instant::now() + bookclerk_discover::BATCH_DEADLINE;
@@ -5763,7 +5763,9 @@ async fn discover_purchase_hints_batch(
     let deadline = tokio::time::Instant::now() + bookclerk_discover::BATCH_DEADLINE;
     let library = state.library_snapshot().await;
     let sources = state.sources.read().await;
-    let resolved = bookclerk_discover::resolve_purchase_hints_batch(&sources, &queries, 4).await;
+    let resolved =
+        bookclerk_discover::resolve_purchase_hints_batch(&sources, Some(&library), &queries, 4)
+            .await;
     let mut results = Vec::with_capacity(resolved.len().min(MAX_PURCHASE_HINT_QUERIES));
     for (item, query) in resolved.into_iter().zip(&queries) {
         let mut response = item.map_err(internal_err)?;
@@ -6345,7 +6347,8 @@ async fn create_request_inner(
     let deadline = tokio::time::Instant::now() + WISH_ENRICH_BUDGET;
     let pooled = {
         let registry = state.sources.read().await;
-        let resolve = bookclerk_discover::resolve_purchase_hints(&registry, &hint_query);
+        let resolve =
+            bookclerk_discover::resolve_purchase_hints(&registry, Some(&library), &hint_query);
         let hints = match tokio::time::timeout_at(deadline, resolve).await {
             Ok(Ok(mut resolved)) => {
                 // Keep only prices for the recording the wish names, when the
