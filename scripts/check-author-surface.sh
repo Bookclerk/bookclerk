@@ -47,7 +47,7 @@ fail=0
 for case_file in "$NEGATIVE"/cases/*.rs; do
   name="$(basename "$case_file")"
   cp "$case_file" "$CASE_RS"
-  if output="$(cargo check --quiet --manifest-path "$NEGATIVE/Cargo.toml" 2>&1)"; then
+  if output="$(cargo check --quiet --color never --manifest-path "$NEGATIVE/Cargo.toml" 2>&1)"; then
     echo "FAIL: negative case compiled (host-private symbol leaked): $name" >&2
     fail=1
   elif diagnostics="$(grep -E '^error(\[E[0-9]+\])?:' <<<"$output" | grep -Ev "$SUMMARY")" &&
