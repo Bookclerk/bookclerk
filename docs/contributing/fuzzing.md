@@ -53,6 +53,7 @@ boundary extends it.
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
+| `destination_filter` | A storage destination's filter: the body of `PUT /api/config/plugin-instances/{id}/filter` and the stored `core.destination` document | `bookclerk-config::parse_destination_filter` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
@@ -165,6 +166,17 @@ only that. The others check:
   byte, and that URL is the hash's picture on `www.gravatar.com` with
   nothing else in it. The shared oracle is `fuzz/oracles/cover_token.rs`,
   replayed from `bookclerk-cover`.
+- **`destination_filter`**: the input is the request body. It is accepted
+  exactly when an independent reading, built on `serde_json::Value` and a
+  separate scan for repeated keys, accepts it: an object with at most a
+  `rules` array, each rule an object of exactly `field`, `value` and
+  `effect`, no key repeated at any level, at most 64 rules, each value
+  trimmed, non-empty, at most 128 bytes and free of NUL, a `patron` value a
+  positive user id, a `media_kind` value `book` or `podcast`, and no rule
+  given twice. An accepted filter holds the oracle's rules in order,
+  survives a JSON round trip, and takes or refuses sample books exactly as
+  the oracle's reading does. The shared oracle is
+  `fuzz/oracles/destination_filter.rs`, replayed from `bookclerk-config`.
 - **`destination_id`**: the input is the id as received, read as UTF-8
   lossily. It is accepted exactly when it is 1 to 64 bytes, each a
   lowercase ASCII letter, a digit, `_` or `-`, checked byte by byte, so no

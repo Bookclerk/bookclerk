@@ -11,7 +11,8 @@ use bookclerk_plugin_source_graphicaudio::{
     GraphicAudioSource, DEFAULT_STORE_URL, LOGIN_PATH, PRODUCTS_PATH, REMOVE_PATH,
 };
 use bookclerk_storefront::{
-    CatalogSearchOpts, LoginOptions, PurchaseHintOpts, SourceError, DEFAULT_CATALOG_SEARCH_LIMIT,
+    CatalogSearchOpts, LoginOptions, PriceLookup, PurchaseHintOpts, SourceError,
+    DEFAULT_CATALOG_SEARCH_LIMIT,
 };
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -557,4 +558,86 @@ async fn catalog_detail_reads_the_product_page() {
     assert!(source.catalog_detail("").await.unwrap().is_none());
     let asked = server.received_requests().await.unwrap();
     assert_eq!(asked.len(), 3, "only numeric ids reach the store");
+}
+
+/// A title lookup reads each matching search result's product page once and
+/// answers it as a priced record with its ISBN and cast, so the host can
+/// place it; a result whose title does not match is not fetched.
+#[tokio::test]
+async fn a_title_lookup_returns_matching_listings_as_priced_records() {
+    let server = MockServer::start().await;
+    let item = |id: u32, title: &str| {
+        format!(
+            r#"<li class="item product product-item" data-sku="SKU{id}">
+              <a href="{base}/catalog/product/view/id/{id}" class="product">
+                <h2 class="product name product-item-name">{title}</h2>
+              </a>
+              <div class="price" data-product-id="{id}"></div>
+            </li>"#,
+            base = server.uri()
+        )
+    };
+    let html = format!(
+        r#"<ol class="products list items product-items">{}{}</ol>"#,
+        item(1716, "Mistborn 1: The Final Empire 1 of 3"),
+        item(9999, "Warbreaker 1 of 3")
+    );
+    Mock::given(method("GET"))
+        .and(path("/catalogsearch/result/"))
+        .and(query_param(
+            "q",
+            "Mistborn 1: The Final Empire 1 of 3 Brandon Sanderson",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(html))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/catalog/product/view/id/1716"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(include_str!("fixtures/product-1716.html")),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/catalog/product/view/id/9999"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let answer = GraphicAudioSource::new()
+        .with_store_url(server.uri())
+        .purchase_answer(&PurchaseHintOpts {
+            title: Some("Mistborn 1: The Final Empire 1 of 3".into()),
+            authors: Some("Brandon Sanderson".into()),
+            region: "us".into(),
+            with_price: true,
+            lookup: PriceLookup::Title,
+            ..PurchaseHintOpts::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(answer.records.len(), 1);
+    let listing = &answer.records[0];
+    assert_eq!(listing.record.product_id, "1716");
+    assert_eq!(listing.record.isbn().as_deref(), Some("9781648812989"));
+    assert!(listing.record.narrators().is_some());
+    assert_eq!(listing.hint.price_cents, Some(990));
+    assert_eq!(listing.hint.price_label.as_deref(), Some("$9.90"));
+    let pick = answer.hint.unwrap();
+    assert_eq!(pick.product_id, "1716");
+    assert_eq!(pick.price_cents, Some(990));
+
+    // A product lookup keeps the bare answer, with no records.
+    let product = GraphicAudioSource::new()
+        .with_store_url(server.uri())
+        .purchase_answer(&PurchaseHintOpts {
+            product_id: Some("1716".into()),
+            lookup: PriceLookup::Product,
+            ..PurchaseHintOpts::default()
+        })
+        .await
+        .unwrap();
+    assert!(product.records.is_empty());
+    assert_eq!(product.hint.unwrap().product_id, "1716");
 }

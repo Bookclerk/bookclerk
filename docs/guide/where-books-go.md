@@ -24,7 +24,10 @@ same way, such as MinIO.
 3. The operator fills in the bucket name and keys.
 
 You can use a folder and cloud storage at the same time. Each new book goes
-to every destination that is turned on.
+to every destination that is turned on, unless the operator gives a
+destination a filter: for example, podcasts only in one place, or one
+person's books in their own folder (see
+[Choosing which books a destination takes](../server/output.md#choosing-which-books-a-destination-takes)).
 
 ## How files are named
 

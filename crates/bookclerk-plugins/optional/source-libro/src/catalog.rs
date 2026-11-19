@@ -18,8 +18,10 @@
 use bookclerk_plugin_sdk::http::{Client as HttpClient, RequestBuilder};
 use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_storefront::{
-    CatalogHit, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts, SourcePurchaseHint,
+    CatalogHit, CatalogSearchOpts, ExpandSeed, PriceLookup, PricedAnswer, PricedListing,
+    PurchaseHintOpts, SourcePurchaseHint,
 };
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -205,10 +207,8 @@ pub async fn expand_candidates(
 /// Resolve a Libro.fm product link for a title, by ISBN first and then by
 /// title and author.
 ///
-/// With `opts.with_price`, the list price comes from
-/// `explore/audiobook_details` (`purchase_info.price`, USD). An edition that
-/// details report as not for sale is never offered, priced or not: the title
-/// match then moves on to the next search row.
+/// The bare-hint form of [`purchase_answer`]: its pick, without the
+/// title-search records.
 ///
 /// # Arguments
 ///
@@ -217,14 +217,50 @@ pub async fn expand_candidates(
 ///
 /// # Errors
 ///
-/// Currently never: a failed ISBN lookup or title search is logged and
-/// treated as no match, so `Ok(None)` can also mean the lookup failed. The
-/// `Result` matches the guest `purchaseHint` entrypoint, which can fail for
-/// other storefronts.
+/// As [`purchase_answer`].
 pub async fn purchase_hint(
     base_url: &str,
     opts: &PurchaseHintOpts,
 ) -> bookclerk_storefront::Result<Option<SourcePurchaseHint>> {
+    purchase_answer(base_url, opts)
+        .await
+        .map(|answer| answer.hint)
+}
+
+/// Resolve a Libro.fm product link for a title, with every for-sale
+/// listing a title search found.
+///
+/// 1. An ISBN (the query's `isbn`, else an ISBN-shaped `product_id`) is
+///    looked up exactly. An ISBN lookup ([`PriceLookup::Isbn`], which this
+///    store declares) stops there: the host asked whether Libro.fm sells
+///    that edition, so a miss answers nothing rather than another edition.
+/// 2. Otherwise the title and author are searched. Each of the first
+///    `TITLE_HINT_ROWS` (5) rows is read in full (`explore/audiobook_details`,
+///    which also says whether it is for sale and its list price), and every
+///    for-sale row is returned as a priced record for the host to place.
+///    The first one is also the store's pick, so a host that reads only
+///    the hint still gets the best match.
+///
+/// With `opts.with_price`, the list price comes from
+/// `explore/audiobook_details` (`purchase_info.price`, USD). An edition that
+/// details report as not for sale is never offered, priced or not.
+///
+/// # Arguments
+///
+/// * `base_url` - Libro.fm API origin.
+/// * `opts` - ISBN, product id, title and authors to match, and how the
+///   host asks (`lookup`).
+///
+/// # Errors
+///
+/// Returns [`SourceError::RateLimited`](bookclerk_storefront::SourceError::RateLimited)
+/// when Libro.fm asks to slow down. Any other failed ISBN lookup or title
+/// search is logged and treated as no match, so an empty answer can also
+/// mean the lookup failed.
+pub async fn purchase_answer(
+    base_url: &str,
+    opts: &PurchaseHintOpts,
+) -> bookclerk_storefront::Result<PricedAnswer> {
     let title = opts
         .title
         .as_deref()
@@ -254,23 +290,27 @@ pub async fn purchase_hint(
         if let Some(details) = libro_details_logged(&http, base_url, &isbn).await? {
             match (details.audiobook, details.for_sale) {
                 (Some(hit), true) => {
-                    return Ok(Some(hint_from_hit(hit, title, opts.with_price)));
+                    return Ok(Some(hint_from_hit(hit, title, opts.with_price)).into());
                 }
                 (_, false) => not_for_sale = Some(comparable_isbn(&isbn)),
                 (None, true) => {}
             }
         } else {
             match libro_isbn_hit(&http, base_url, &isbn).await {
-                Ok(Some(hit)) => return Ok(Some(hint_from_hit(hit, title, false))),
+                Ok(Some(hit)) => return Ok(Some(hint_from_hit(hit, title, false)).into()),
                 Ok(None) => {}
                 Err(err) => tracing::debug!(%isbn, error = %err, "libro ISBN search failed"),
             }
+        }
+        if opts.lookup == PriceLookup::Isbn {
+            tracing::debug!(%isbn, "libro does not sell this ISBN");
+            return Ok(PricedAnswer::default());
         }
         tracing::debug!(%isbn, "libro ISBN not for sale; trying title search");
     }
 
     let Some(t) = title else {
-        return Ok(None);
+        return Ok(PricedAnswer::default());
     };
     let q = match author {
         Some(a) => format!("{t} {a}"),
@@ -280,36 +320,73 @@ pub async fn purchase_hint(
         Ok(hits) => hits,
         Err(err) => {
             tracing::debug!(error = %err, "libro title search failed");
-            return Ok(None);
+            return Ok(PricedAnswer::default());
         }
     };
-    // Each candidate's own details decide whether it is for sale, whether
-    // or not the caller wants a price; an unavailable edition yields to the
-    // next row. A candidate whose details miss is offered as it is.
-    for hit in hits {
-        let Some(isbn) = hit.isbn() else {
-            return Ok(Some(hint_from_hit(hit, None, opts.with_price)));
-        };
-        if not_for_sale.as_deref() == Some(comparable_isbn(&isbn).as_str()) {
-            continue;
-        }
-        match libro_details_logged(&http, base_url, &isbn).await? {
-            Some(details) if !details.for_sale => {
-                tracing::debug!(%isbn, "libro title match not for sale; trying the next");
-            }
-            Some(LibroDetails {
-                audiobook: Some(full),
-                ..
-            }) => return Ok(Some(hint_from_hit(full, None, opts.with_price))),
-            Some(_) | None => return Ok(Some(hint_from_hit(hit, None, opts.with_price))),
+    let http = &http;
+    let not_for_sale = not_for_sale.as_deref();
+    let full_rows: Vec<bookclerk_storefront::Result<Option<CatalogHit>>> =
+        futures::stream::iter(hits)
+            .map(|hit| for_sale_row(http, base_url, hit, not_for_sale))
+            .buffered(DETAIL_CONCURRENCY)
+            .collect()
+            .await;
+    let mut records = Vec::new();
+    for row in full_rows {
+        if let Some(full) = row? {
+            records.push(PricedListing {
+                hint: hint_from_hit(full.clone(), None, opts.with_price),
+                record: full,
+            });
         }
     }
-    Ok(None)
+    Ok(PricedAnswer {
+        hint: records.first().map(|priced| priced.hint.clone()),
+        records,
+    })
 }
 
-/// Search rows the title fallback of [`purchase_hint`] reads, so an edition
-/// that is not for sale can yield to the next match.
+/// One title-search row as a listing Libro.fm sells, read in full.
+///
+/// A row whose details say it is not for sale, or that is the ISBN the
+/// exact lookup already found unsold, is `None`. A row with no ISBN, or
+/// whose details miss, is offered as the search showed it.
+///
+/// # Errors
+///
+/// Only Libro.fm's "slow down"; other detail failures keep the lean row.
+async fn for_sale_row(
+    http: &HttpClient,
+    base_url: &str,
+    hit: CatalogHit,
+    not_for_sale: Option<&str>,
+) -> bookclerk_storefront::Result<Option<CatalogHit>> {
+    let Some(isbn) = hit.isbn() else {
+        return Ok(Some(hit));
+    };
+    if not_for_sale == Some(comparable_isbn(&isbn).as_str()) {
+        return Ok(None);
+    }
+    Ok(match libro_details_logged(http, base_url, &isbn).await? {
+        Some(details) if !details.for_sale => {
+            tracing::debug!(%isbn, "libro title match not for sale");
+            None
+        }
+        Some(LibroDetails {
+            audiobook: Some(full),
+            ..
+        }) => Some(full),
+        Some(_) | None => Some(hit),
+    })
+}
+
+/// Search rows the title search of [`purchase_answer`] reads in full and
+/// returns as records.
 const TITLE_HINT_ROWS: usize = 5;
+
+/// How many of those rows' details are fetched at once: quicker than one
+/// after another, and still a polite handful of requests.
+const DETAIL_CONCURRENCY: usize = 3;
 
 /// Builds a purchase hint pointing at the hit's storefront page, with its
 /// price when `with_price` is set and the hit carries one.

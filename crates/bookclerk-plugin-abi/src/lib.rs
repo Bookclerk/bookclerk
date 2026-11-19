@@ -276,12 +276,13 @@ pub use metadata_files::{
     MetadataFileError,
 };
 pub use roles::{
-    AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
-    CoverFetcher, Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
-    JobController, JobRunner, KvNamespace, MetadataFiles, MetadataProvider, NamedKvBinding,
-    NamedQueueBinding, NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer,
-    QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler, SocketHandler, Sockets, Source,
-    PURCHASE_HINTS_BUDGET, PURCHASE_HINTS_CONCURRENCY,
+    hint_result, purchase_hint_results_one_by_one, AdapterDatabaseSession, BindingValues, Bindings,
+    ByteRange, Cancellation, ContentSource, CoverFetcher, Database, Destination, Entrypoints,
+    EventConsumer, EventPublisher, GuestDatabase, JobController, JobRunner, KvNamespace,
+    MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding, NeverCancel, Oidc,
+    PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary,
+    ScheduledHandler, SocketHandler, Sockets, Source, PURCHASE_HINTS_BUDGET,
+    PURCHASE_HINTS_CONCURRENCY,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;

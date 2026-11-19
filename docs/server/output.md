@@ -11,7 +11,8 @@ files.
 
 - Each destination is a plugin instance, deployed per host.
 - Several can be on at once. An acquire writes to every destination
-  deployed on the host that runs it.
+  deployed on the host that runs it whose filter takes the book (see
+  [Choosing which books a destination takes](#choosing-which-books-a-destination-takes)).
 - A destination's settings are its plugin settings. Change them with
   `bookclerk plugins config …` or in **Settings → Plugins**; see
   [Managing plugins](plugins.md#enabling-and-settings-database).
@@ -271,6 +272,52 @@ gone, the account whose acquire recorded it marks the book not acquired.
 `bookclerk library convert` also converts each edition once, through that
 account.
 
+## Choosing which books a destination takes
+
+Every destination takes every book until you give it a filter. A filter
+is a list of rules, each a field, one value and include or exclude:
+
+| Field | Value |
+| --- | --- |
+| `patron` | A user id: books held by a store account linked to that user |
+| `storefront` | A storefront plugin's alias, such as `audible` or `libro` (case does not matter) |
+| `account` | A store account's id at its store |
+| `media_kind` | `book` or `podcast` (a podcast episode is a podcast) |
+
+With no include rule, the destination takes every book the exclude rules
+allow. With any include rule, it takes only books that match at least one.
+An exclude rule always wins.
+
+1. Find the destination's instance id with
+   `bookclerk plugins instances list`.
+2. Set its filter, for example to keep podcasts out of a bucket:
+
+   ```sh
+   bookclerk plugins instances filter set <instance> --exclude media_kind=podcast
+   ```
+
+3. Check it with `bookclerk plugins instances filter get <instance>`, or
+   remove it with `bookclerk plugins instances filter clear <instance>`.
+
+The web API reads and writes the same filter at
+`/api/config/plugin-instances/{id}/filter`.
+
+Before an acquire of a book starts, Bookclerk works out which destinations
+take it. The book is written to those destinations only. When none takes
+it, the acquire of that book fails at once with "no destination accepts
+this book", before anything is downloaded.
+
+> [!NOTE]
+> A changed filter applies to acquires that start afterwards. Files that
+> are already stored stay where they are. An edition that is already
+> stored on one destination is not acquired again for another destination
+> that takes it; that changes when each destination's copy is tracked.
+
+> [!NOTE]
+> For now filters apply to acquires that run on the library itself. A
+> branch that acquires for the library still writes to every destination
+> the library names; that changes in a later release.
+
 ## Several destinations
 
 When some destinations already have a title and others don't,
@@ -278,7 +325,7 @@ When some destinations already have a title and others don't,
 
 | Policy | What happens |
 | --- | --- |
-| `sync_missing` (default) | Copies from a destination that has the title to those that don't, without downloading again |
+| `sync_missing` (default) | Copies from a destination that has the title to those that don't, without downloading again. This happens while the title is acquired; a title that is already stored is not copied to a destination whose filter now takes it |
 | `refetch_missing` | Downloads and encodes again, and writes only to the destinations missing the title |
 | `refetch_all` | Downloads and encodes again, and writes to every destination |
 
@@ -389,6 +436,13 @@ If a sidecar file fails, Bookclerk logs it and still keeps the audio.
 
 With `fixup_metadata` on, an M4B also records which Bookclerk version
 tagged it, in the freeform item `----:app.bookclerk:TOOL`.
+
+`fixup_metadata` also embeds the chapters: as a chapter track in an M4B,
+and as ID3 `CHAP` frames listed by one `CTOC` frame in a single MP3, which
+Audiobookshelf and most players read. Each chapter ends where the next one
+starts and the last ends with the audio. A file that already carries
+chapters keeps them, unless Bookclerk overlays Audible's chapter list on a
+book from another store.
 
 Audible's own options (Widevine, xHE-AAC, brand trim) are on the
 [Stores](stores.md#audible) page.

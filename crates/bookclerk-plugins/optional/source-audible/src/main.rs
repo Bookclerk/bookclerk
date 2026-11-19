@@ -9,8 +9,8 @@ use bookclerk_plugin_sdk::{
     Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch, PluginDescribe,
     PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams,
-    PurchaseHintsParams, RevokeAccountParams, ScalarLimits, ScanPage, ScanParams,
-    SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    PurchaseHintResult, PurchaseHintsParams, RevokeAccountParams, ScalarLimits, ScanPage,
+    ScanParams, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_source_audible::catalog;
 use bookclerk_storefront::abi::{credentials_from_bytes, expand_seed_from_params};
@@ -44,11 +44,12 @@ impl PluginWorker for AudibleRoot {
                 ),
             }),
             // Audible's catalog details take an ASIN, not an ISBN; its search
-            // hits carry `rank_hint` instead.
+            // hits carry `rank_hint` instead. A price lookup by ASIN prices
+            // exactly that product, with no search.
             catalog: CatalogCapabilities {
                 detail_by_isbn: false,
                 price_by_isbn: false,
-                price_by_asin: false,
+                price_by_asin: true,
             },
             ..PluginDescribe::default()
         })
@@ -191,6 +192,35 @@ impl ContentSourceRole for AudibleContentSource {
         catalog::purchase_hints(&opts)
             .await
             .map(|hints| hints.into_iter().map(|h| h.map(Into::into)).collect())
+            .map_err(PluginError::from)
+    }
+
+    /// An exact ASIN lookup prices that product; a title search answers
+    /// every listing it found as a priced record.
+    async fn purchase_hint_result(
+        &self,
+        params: PurchaseHintParams,
+    ) -> Result<PurchaseHintResult, PluginError> {
+        catalog::purchase_answer(&PurchaseHintOpts::from(params))
+            .await
+            .map(PurchaseHintResult::from)
+            .map_err(PluginError::from)
+    }
+
+    /// One catalog request prices up to fifty products, so a page of cards
+    /// and their title-search records is one or two calls.
+    async fn purchase_hints_results(
+        &self,
+        params: PurchaseHintsParams,
+    ) -> Result<Vec<PurchaseHintResult>, PluginError> {
+        let opts: Vec<PurchaseHintOpts> = params
+            .queries
+            .into_iter()
+            .map(PurchaseHintOpts::from)
+            .collect();
+        catalog::purchase_answers(&opts)
+            .await
+            .map(|answers| answers.into_iter().map(PurchaseHintResult::from).collect())
             .map_err(PluginError::from)
     }
 
