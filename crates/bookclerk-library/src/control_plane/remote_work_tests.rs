@@ -2051,7 +2051,7 @@ async fn a_committed_uploads_probe_is_kept_on_the_file_row() {
 /// A title's commit and its pace ledger row land in one batch under every
 /// database profile: a batch the database refuses leaves neither the
 /// commit nor the row, and the retry records exactly one. A batch cut off
-/// after any of its statements (the ledger row is the last) leaves nothing
+/// after any of its statements (the ledger row among them) leaves nothing
 /// of the commit either.
 #[tokio::test]
 async fn a_refused_commit_records_no_download_and_its_retry_records_one() {
@@ -2110,8 +2110,8 @@ async fn a_refused_commit_records_no_download_and_its_retry_records_one() {
         );
         nothing_landed(format!("{name}: refused")).await;
         // Cut the commit's batch off after each statement in turn, until
-        // the cut lands past the last one (the ledger row): every cut short
-        // of that rolls the whole commit back.
+        // the cut lands past the last one: every cut short, including one
+        // right after the ledger row, rolls the whole commit back.
         for skip in 0..64u32 {
             crate::inject_atomic_interrupt_after(
                 crate::AtomicInterruptPhase::BetweenStatements,
