@@ -178,7 +178,8 @@ export async function installKey(db: D1Database, installId: string, now: number)
 }
 
 /**
- * Stores a check-in once per install and week, under today's cap.
+ * Stores a check-in once per install and week, under today's cap. The cap
+ * is part of the insert itself, so concurrent check-ins cannot all pass it.
  *
  * @param db - Dashboard database.
  * @param c - The parsed check-in.
@@ -193,17 +194,24 @@ export async function recordCheckin(
   dailyRows: number,
 ): Promise<"stored" | "repeat" | "capped"> {
   const day = dayOf(now);
-  const today = await first(db, "SELECT COUNT(*) AS n FROM checkins WHERE day = ?", day);
-  if (Number(today?.n ?? 0) >= dailyRows) return "capped";
+  const week = weekOf(now);
   const key = await installKey(db, c.install_id, now);
   const res = await db
     .prepare(
       `INSERT OR IGNORE INTO checkins (week, install_key, month, day, received_at, version, os, arch, kind)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE (SELECT COUNT(*) FROM checkins WHERE day = ?) < ?`,
     )
-    .bind(weekOf(now), key, monthOf(now), day, now, c.version, c.os, c.arch, c.kind)
+    .bind(week, key, monthOf(now), day, now, c.version, c.os, c.arch, c.kind, day, dailyRows)
     .run();
-  return Number(res.meta?.changes ?? 0) > 0 ? "stored" : "repeat";
+  if (Number(res.meta?.changes ?? 0) > 0) return "stored";
+  const seen = await first(
+    db,
+    "SELECT 1 AS hit FROM checkins WHERE week = ? AND install_key = ?",
+    week,
+    key,
+  );
+  return seen ? "repeat" : "capped";
 }
 
 /**

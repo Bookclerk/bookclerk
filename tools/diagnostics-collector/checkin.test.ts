@@ -103,6 +103,18 @@ describe("check-in rows", () => {
     assert.ok(!JSON.stringify(rows).includes(ID), "the install ID is never stored");
   });
 
+  it("holds the daily cap under concurrent check-ins", async () => {
+    const db = createD1();
+    const ids = [ID, OTHER, "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e"];
+    const outcomes = await Promise.all(
+      ids.map((install_id) => recordCheckin(db, checkin({ install_id }), NOW, 1)),
+    );
+    assert.deepEqual(outcomes.filter((o) => o === "stored").length, 1);
+    assert.deepEqual(outcomes.filter((o) => o === "capped").length, 2);
+    const n = await first(db, "SELECT COUNT(*) AS n FROM checkins");
+    assert.equal(Number(n?.n), 1);
+  });
+
   it("counts installs by week, month, kind and version", async () => {
     const db = createD1();
     await recordCheckin(db, checkin(), NOW, 100);

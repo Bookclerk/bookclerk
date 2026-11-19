@@ -35,6 +35,7 @@ import { dashboardFetch, dashboardFiledReportIds } from "./dashboard/routes.ts";
 import { SESSION_COOKIE, createSession } from "./dashboard/session.ts";
 import { normalizeMessage, summarizeReport } from "./dashboard/signature.ts";
 import { indexSubmitted, storeIssue, syncIssueNow, syncIssues } from "./dashboard/sync.ts";
+import { applyMute, endMutesReachedBy } from "./dashboard/triage-state.ts";
 import { makeB2 } from "./test-support/b2.ts";
 import { createD1 } from "./test-support/d1.ts";
 import type { DashboardEnv, Env } from "./env.ts";
@@ -4433,6 +4434,29 @@ describe("triage state, mutes and owner close", () => {
       ).status,
       400,
     );
+  });
+
+  it("ends version-bound mutes that a batch of recovered reports reaches", async () => {
+    const db = createD1();
+    const mute = (signature: string, untilVersion: string | null, days: number | null) =>
+      applyMute(db, { action: "mute", signature, reason: "r", days, untilVersion }, "octo", NOW);
+    await mute("aaaaaaaaaaaaaaaa", "0.9.0", null);
+    await mute("bbbbbbbbbbbbbbbb", "0.9.0", null);
+    await mute("cccccccccccccccc", null, 30);
+    const ended = await endMutesReachedBy(db, [
+      { signature: "aaaaaaaaaaaaaaaa", version: "0.8.9" },
+      { signature: "aaaaaaaaaaaaaaaa", version: "0.9.1" },
+      { signature: "bbbbbbbbbbbbbbbb", version: "0.9.0-rc.1" },
+      { signature: "cccccccccccccccc", version: "9.9.9" },
+      { signature: null, version: "0.9.0" },
+    ]);
+    assert.equal(ended, 1);
+    const left = await all(db, "SELECT signature FROM signature_mutes ORDER BY signature");
+    assert.deepEqual(
+      left.map((r) => r.signature),
+      ["bbbbbbbbbbbbbbbb", "cccccccccccccccc"],
+    );
+    assert.equal(await endMutesReachedBy(db, []), 0);
   });
 
   it("lets owners close an issue as not planned or fixed in a version", async () => {

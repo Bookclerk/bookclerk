@@ -11,7 +11,7 @@
  */
 
 import { compareSemver } from "../version-filter.ts";
-import { first, run } from "./db.ts";
+import { all, first, run } from "./db.ts";
 import type { MuteAction, TriageAction } from "./triage-forms.ts";
 
 /** One day in milliseconds. */
@@ -160,6 +160,48 @@ export async function endMuteReachedBy(
     mute.until_version,
   );
   return true;
+}
+
+/**
+ * {@link endMuteReachedBy} for a batch of reports indexed together (the
+ * owner's reindex): one read for the batch's muted signatures, then one
+ * batch of deletes for the mutes their versions reached.
+ *
+ * @param db - Dashboard database.
+ * @param reports - Each indexed report's signature (or null) and version.
+ * @returns How many mutes were ended.
+ */
+export async function endMutesReachedBy(
+  db: D1Database,
+  reports: Array<{ signature: string | null; version: string }>,
+): Promise<number> {
+  const newest = new Map<string, string[]>();
+  for (const r of reports) {
+    if (r.signature === null) continue;
+    newest.set(r.signature, [...(newest.get(r.signature) ?? []), r.version]);
+  }
+  const signatures = [...newest.keys()].slice(0, CHUNK);
+  if (signatures.length === 0) return 0;
+  const mutes = await all(
+    db,
+    `SELECT signature, until_version FROM signature_mutes
+     WHERE until_version IS NOT NULL AND signature IN (${signatures.map(() => "?").join(", ")})`,
+    ...signatures,
+  );
+  const ended = mutes.filter((m) => {
+    const until = typeof m.until_version === "string" ? m.until_version : "";
+    const versions = newest.get(String(m.signature)) ?? [];
+    return until !== "" && versions.some((v) => (compareSemver(v, until) ?? -1) >= 0);
+  });
+  if (ended.length === 0) return 0;
+  await db.batch(
+    ended.map((m) =>
+      db
+        .prepare("DELETE FROM signature_mutes WHERE signature = ? AND until_version = ?")
+        .bind(m.signature, m.until_version),
+    ),
+  );
+  return ended.length;
 }
 
 /**
