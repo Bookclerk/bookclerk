@@ -898,10 +898,10 @@ These run outside `CI Gate`:
   smoke-tests the release image (see below).
 - **Desktop packages** (`.github/workflows/desktop-packages.yml`) builds
   the desktop app's unsigned packages on Linux, Windows and macOS with
-  `cargo package-desktop` and uploads them as workflow artifacts (see
-  [Packages](ui/README.md#packages)). It selects itself by path (the
-  desktop crate, the packaging command and how the app finds its runtime),
-  skips drafts, and also runs weekly and on demand.
+  `cargo package-desktop`. The images workflow calls it nightly when `main`
+  has moved, by hand and for a release (see
+  [Desktop packages](packaging.md#desktop-packages)). A pull request runs it
+  only when it changes the packaging, and skips drafts.
 - **Dev Container image** (`.github/workflows/devcontainer-image.yml`)
   builds and checks the contributor image (see below).
 - **ABS Integration** (`.github/workflows/abs-integration.yml`) tests the
