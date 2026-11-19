@@ -13,16 +13,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use fdk_aac::enc::{AudioObjectType, BitRate, ChannelMode, Encoder, EncoderParams, Transport};
-use symphonia::core::audio::GenericAudioBufferRef;
-use symphonia::core::codecs::audio::AudioDecoderOptions;
-use symphonia::core::codecs::CodecParameters;
-use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::probe::Hint;
-use symphonia::core::formats::{FormatOptions, TrackType};
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
 use tempfile::NamedTempFile;
 
+use crate::decode::{open_audio_file, OutChannels};
 use crate::error::{MediaError, Result};
 use bookclerk_mp4::{extract_mp4a_config, parse_mp4, SampleEntryKind, SampleReader};
 
@@ -597,88 +590,11 @@ fn decode_audio_file_streaming<F>(input: &Path, mut on_pcm: F) -> Result<()>
 where
     F: FnMut(u32, u16, &[i16]) -> Result<()>,
 {
-    let file = File::open(input)?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    if let Some(ext) = input.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-
-    let mut format = symphonia::default::get_probe()
-        .probe(
-            &hint,
-            mss,
-            FormatOptions::default(),
-            MetadataOptions::default(),
-        )
-        .map_err(|err| MediaError::Native(format!("probe failed: {err}")))?;
-
-    let track = format
-        .default_track(TrackType::Audio)
-        .ok_or_else(|| MediaError::Native("no decodable audio track".into()))?
-        .clone();
-    let track_id = track.id;
-    let audio_params = match track.codec_params.as_ref() {
-        Some(CodecParameters::Audio(params)) => params.clone(),
-        _ => {
-            return Err(MediaError::Native(
-                "selected track is missing audio codec parameters".into(),
-            ));
-        }
-    };
-    let sample_rate = audio_params
-        .sample_rate
-        .ok_or_else(|| MediaError::Native("missing sample rate".into()))?;
-    let channels = audio_params
-        .channels
-        .as_ref()
-        .map(symphonia::core::audio::Channels::count)
-        .unwrap_or(2)
-        .clamp(1, 2) as u16;
-
-    let mut decoder = symphonia::default::get_codecs()
-        .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
-        .map_err(|err| MediaError::Native(format!("decoder init failed: {err}")))?;
-
-    let mut pcm_scratch = Vec::new();
-    // Reused across packets so decode does not allocate per AU.
-    let mut interleaved_scratch = Vec::new();
-    let mut decoded_any = false;
-    loop {
-        let packet = match format.next_packet() {
-            Ok(Some(packet)) => packet,
-            Ok(None) => break,
-            Err(SymphoniaError::ResetRequired) => {
-                decoder.reset();
-                continue;
-            }
-            Err(err) => {
-                return Err(MediaError::Native(format!("demux error: {err}")));
-            }
-        };
-        if packet.track_id != track_id {
-            continue;
-        }
-        let decoded = match decoder.decode(&packet) {
-            Ok(buf) => buf,
-            Err(SymphoniaError::DecodeError(_)) => continue,
-            Err(err) => {
-                return Err(MediaError::Native(format!("decode error: {err}")));
-            }
-        };
-        pcm_scratch.clear();
-        append_pcm_i16(
-            &decoded,
-            channels,
-            &mut interleaved_scratch,
-            &mut pcm_scratch,
-        );
-        if !pcm_scratch.is_empty() {
-            decoded_any = true;
-            on_pcm(sample_rate, channels, &pcm_scratch)?;
-        }
-    }
-
+    let mut opened = open_audio_file(input, false)?;
+    let format = opened.pcm_format(OutChannels::SourceUpToStereo);
+    let decoded_any = opened.decode_each(OutChannels::SourceUpToStereo, |pcm| {
+        on_pcm(format.sample_rate, format.channels, pcm)
+    })?;
     if !decoded_any {
         return Err(MediaError::Native(format!(
             "decoded no PCM from {}",
@@ -686,58 +602,6 @@ where
         )));
     }
     Ok(())
-}
-
-/// Appends decoded frames as interleaved i16 in the requested output channel count.
-fn append_pcm_i16(
-    buf: &GenericAudioBufferRef<'_>,
-    out_channels: u16,
-    interleaved: &mut Vec<i16>,
-    dst: &mut Vec<i16>,
-) {
-    let frames = buf.frames();
-    if frames == 0 {
-        return;
-    }
-    let in_channels = buf.spec().channels().count().max(1);
-    let out_ch = usize::from(out_channels.max(1));
-
-    // Common path: layout already matches — copy straight into `dst` (no scratch).
-    if (out_ch == 1 && in_channels == 1) || (out_ch == 2 && in_channels == 2) {
-        let start = dst.len();
-        let need = frames.saturating_mul(in_channels);
-        dst.resize(start + need, 0);
-        buf.copy_to_slice_interleaved(&mut dst[start..]);
-        return;
-    }
-
-    let need = frames.saturating_mul(in_channels);
-    interleaved.resize(need, 0);
-    buf.copy_to_slice_interleaved(&mut interleaved[..need]);
-
-    let mix_channels = in_channels.min(2);
-    let out_samples = if out_ch == 1 {
-        frames
-    } else {
-        frames.saturating_mul(2)
-    };
-    dst.reserve(out_samples);
-    if out_ch == 1 {
-        for frame in interleaved[..need].chunks_exact(in_channels) {
-            let mut acc = 0i32;
-            for sample in frame.iter().take(mix_channels) {
-                acc += i32::from(*sample);
-            }
-            dst.push((acc / mix_channels as i32) as i16);
-        }
-    } else {
-        for frame in interleaved[..need].chunks_exact(in_channels) {
-            let l = frame[0];
-            let r = if mix_channels > 1 { frame[1] } else { l };
-            dst.push(l);
-            dst.push(r);
-        }
-    }
 }
 
 #[cfg(test)]

@@ -5,19 +5,15 @@
 //! beds), snap to the spoken-title onset, then walk backward through quiet
 //! frames up to `max_lead_in_ms` without crossing a prior vocal waveform.
 
-use std::fs::File;
 use std::path::Path;
 
 use symphonia::core::audio::GenericAudioBufferRef;
-use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
-use symphonia::core::codecs::CodecParameters;
+use symphonia::core::codecs::audio::AudioDecoder;
 use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::probe::Hint;
-use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
+use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
 use symphonia::core::units::Time;
 
+use crate::decode::{open_audio_file, OpenedAudio};
 use crate::error::{MediaError, Result};
 
 /// Tunables for silence / speech-onset chapter snapping.
@@ -160,51 +156,16 @@ struct AlignReader {
 impl AlignReader {
     /// Probes `path` and builds a seek index; failure keeps original chapter starts.
     fn open(path: &Path) -> Result<Self> {
-        let file = File::open(path)?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-        let mut hint = Hint::new();
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            hint.with_extension(ext);
-        }
-
         // One seek index for all chapter windows.
-        let format = symphonia::default::get_probe()
-            .probe(
-                &hint,
-                mss,
-                FormatOptions::default().prebuild_seek_index(true),
-                MetadataOptions::default(),
-            )
-            .map_err(|err| MediaError::Native(format!("chapter align probe failed: {err}")))?;
-
-        let track = format
-            .default_track(TrackType::Audio)
-            .ok_or_else(|| MediaError::Native("chapter align: no decodable audio track".into()))?
-            .clone();
-        let track_id = track.id;
-        let audio_params = match track.codec_params.as_ref() {
-            Some(CodecParameters::Audio(params)) => params.clone(),
-            _ => {
-                return Err(MediaError::Native(
-                    "chapter align: selected track is missing audio codec parameters".into(),
-                ));
-            }
-        };
-        let sample_rate = audio_params
-            .sample_rate
-            .ok_or_else(|| MediaError::Native("chapter align: missing sample rate".into()))?;
-        let channels = audio_params
-            .channels
-            .as_ref()
-            .map(symphonia::core::audio::Channels::count)
-            .unwrap_or(1)
-            .max(1);
-
-        let decoder = symphonia::default::get_codecs()
-            .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
-            .map_err(|err| {
-                MediaError::Native(format!("chapter align decoder init failed: {err}"))
-            })?;
+        let opened = open_audio_file(path, true)
+            .map_err(|err| MediaError::Native(format!("chapter align: {err}")))?;
+        let OpenedAudio {
+            format,
+            decoder,
+            track_id,
+            sample_rate,
+            channels,
+        } = opened;
 
         Ok(Self {
             format,

@@ -31,6 +31,18 @@ Moving the work out gives three properties:
   run at once, instead of however many threads tokio's blocking pool
   grows under load.
 
+### What audio it reads
+
+The worker recognises a file's container and codec from its bytes, never
+from its name, so a file named `.mp3` that holds an MP4 is read as an MP4.
+Today it decodes AAC-LC and MP3, in MP4 or MPEG files, and writes tags,
+covers and chapters into MP4 and MP3 files.
+
+Tagging any other container, such as FLAC, fails with a message naming it,
+and the acquire stores the file without the new tags. Files kept as
+delivered (`output.format = "none"`) are not decoded at all, so any format
+can be stored that way.
+
 ### Cover images
 
 Cover art is downloaded from any public website, so Bookclerk never shows

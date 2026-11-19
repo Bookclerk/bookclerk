@@ -35,6 +35,8 @@
 mod chapter_align;
 mod chapters_mp4;
 mod cover_worker;
+mod decode;
+pub use decode::{decode_pcm_bytes, OutChannels, PcmFormat, MAX_SAMPLE_RATE_HZ};
 /// Media-worker error types (`MediaError`) for remux, encode, and pool failures.
 mod error;
 mod job;
