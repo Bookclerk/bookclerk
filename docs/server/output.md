@@ -309,7 +309,9 @@ this book", before anything is downloaded.
 
 > [!NOTE]
 > A changed filter applies to acquires that start afterwards. Files that
-> are already stored stay where they are.
+> are already stored stay where they are. An edition that is already
+> stored on one destination is not acquired again for another destination
+> that takes it; that changes when each destination's copy is tracked.
 
 > [!NOTE]
 > For now filters apply to acquires that run on the library itself. A
