@@ -215,7 +215,13 @@ opens as the same library, at the same configuration revisions:
 - queued jobs and events, and the receipts that make retried operations
   safe.
 
-Nothing is seeded again from `config.toml`. The copy leaves behind only
+Nothing is seeded again from `config.toml`. If a host already opened the
+new backend (a reload after editing `[database].plugin` does), the
+identity, node row and configuration documents it wrote there are
+replaced by the source's. Any other row in the destination makes the copy
+refuse unless you pass `--force`.
+
+The copy leaves behind only
 what Bookclerk rebuilds or rewrites on its own: Discover shelves and
 caches, the library page index, in-progress storage scans, maintenance
 leases, node heartbeats, live subscriber registrations and observed

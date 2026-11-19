@@ -145,10 +145,15 @@ pub struct BackendMigrateSummary {
 }
 
 impl BackendMigrateSummary {
-    /// Sums row counts across all tables in the summary.
+    /// Sums row counts across all tables in the summary, leaving out
+    /// `plugin_artifacts`, which counts archives rather than rows.
     #[must_use]
     pub fn total_rows(&self) -> usize {
-        self.tables.values().sum()
+        self.tables
+            .iter()
+            .filter(|(table, _)| table.as_str() != "plugin_artifacts")
+            .map(|(_, n)| *n)
+            .sum()
     }
 }
 
@@ -318,27 +323,19 @@ pub async fn migrate_library_backend(
     );
 
     let source_db = source.db();
-    // The destination is a native engine connection this tool opened, not
-    // the store's adapter session, so an interactive transaction is available.
+    // An operator tool, run once, that needs every row in one transaction:
+    // the first-party sqlite and Postgres adapters accept the host-private
+    // interactive transaction (D1's does not; see
+    // docs/plugins/database-limits.md).
     #[allow(clippy::disallowed_methods)]
     let txn = dest.db().begin().await.map_err(LibraryError::Orm)?;
+
+    clear_replaced_rows(&txn).await?;
 
     macro_rules! copy {
         (works) => {{
             let n = copy_works(source_db, &txn).await?;
             summary.tables.insert(works::Entity.table_name().into(), n);
-        }};
-        (event_outbox_stats) => {{
-            // The schema seeds the singleton row; the source's counters
-            // replace it.
-            event_outbox_stats::Entity::delete_many()
-                .exec(&txn)
-                .await
-                .map_err(LibraryError::Orm)?;
-            let n = copy_entity::<event_outbox_stats::Entity>(source_db, &txn).await?;
-            summary
-                .tables
-                .insert(event_outbox_stats::Entity.table_name().into(), n);
         }};
         ($entity:ident) => {{
             let n = copy_entity::<$entity::Entity>(source_db, &txn).await?;
@@ -463,22 +460,57 @@ async fn copy_raw(
     Ok(count)
 }
 
+/// Deletes the rows a destination gets before any library data: the
+/// schema's `event_outbox_stats` singleton, and the identity, node row and
+/// seeded configuration documents a host writes when it first opens the
+/// database. The source's rows replace them.
+///
+/// Deleted children first, in the reverse of their copy order.
+async fn clear_replaced_rows(dest: &impl ConnectionTrait) -> Result<()> {
+    macro_rules! clear {
+        ($entity:ident) => {{
+            $entity::Entity::delete_many()
+                .exec(dest)
+                .await
+                .map_err(LibraryError::Orm)?;
+        }};
+    }
+    clear!(event_outbox_stats);
+    clear!(nodes);
+    clear!(configuration_audit);
+    clear!(configuration_changes);
+    clear!(configuration_documents);
+    clear!(library_identity);
+    Ok(())
+}
+
+/// Tables whose destination rows [`clear_replaced_rows`] replaces, so they
+/// do not make a destination count as non-empty.
+const REPLACED_TABLES: [&str; 6] = [
+    "event_outbox_stats",
+    "nodes",
+    "configuration_audit",
+    "configuration_changes",
+    "configuration_documents",
+    "library_identity",
+];
+
 /// Sums the copied tables' row counts on the destination (used to refuse a
 /// non-empty target).
 ///
 /// Plugin archives are not counted: they are content-addressed and the
 /// writer skips an archive that is already stored, so a run that stopped
-/// after writing them can be repeated. Nor is `event_outbox_stats`, whose
-/// singleton row the schema seeds.
+/// after writing them can be repeated. Nor are [`REPLACED_TABLES`]: a host
+/// that opened the destination before the copy seeded them, and the copy
+/// replaces them.
 async fn dest_row_count(db: &DatabaseConnection) -> Result<usize> {
     let counts = dry_run_counts(db).await?;
-    let ignored = [
-        plugin_artifacts::Entity.table_name(),
-        event_outbox_stats::Entity.table_name(),
-    ];
     Ok(counts
         .iter()
-        .filter(|(table, _)| !ignored.contains(&table.as_str()))
+        .filter(|(table, _)| {
+            table.as_str() != plugin_artifacts::Entity.table_name()
+                && !REPLACED_TABLES.contains(&table.as_str())
+        })
         .map(|(_, n)| *n)
         .sum())
 }
@@ -712,6 +744,12 @@ mod tests {
         let url = put_artifact_blob(&source, &archive).await.unwrap();
         let sha = url.strip_prefix("blob:sha256:").unwrap().to_string();
 
+        // A host already opened the destination (a reload onto the new
+        // backend does): its identity, node row and seeded documents are
+        // replaced, not a reason to refuse.
+        bootstrap_control_plane(&dest, files.path(), &scratch, None, &Config::default())
+            .await
+            .unwrap();
         let summary = migrate_library_backend(&source, &dest, &apply())
             .await
             .unwrap();
