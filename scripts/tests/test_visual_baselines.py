@@ -650,6 +650,96 @@ class BotTests(unittest.TestCase):
         )
         self.assertNotIn("refused", out)
 
+    def test_propose_ignores_a_lock_that_was_never_approved(self) -> None:
+        sha = "d" * 40
+        self.event(
+            {
+                "workflow_run": {
+                    "event": "pull_request",
+                    "head_sha": sha,
+                    "head_branch": "b",
+                    "head_repository": {"id": 5, "owner": {"login": "Bookclerk"}},
+                }
+            }
+        )
+        art = self.root / "artifact"
+        (art / "baselines" / "desktop").mkdir(parents=True)
+        (art / "baselines" / "desktop" / "x--light.png").write_bytes(
+            (CORPUS / "png__valid").read_bytes()
+        )
+        (art / "record-complete").write_text("")
+        self.env["ARTIFACT_DIR"] = str(art)
+        repo = "repos/Bookclerk/bookclerk"
+        lock = base64.b64encode(b"f" * 40 + b"\n").decode()
+        send = FakeGitHub(
+            {
+                ("GET", f"{repo}/commits/{sha}/pulls?per_page=100"): (
+                    200,
+                    [
+                        {
+                            "number": 990,
+                            "state": "open",
+                            "head": {"sha": sha, "repo": {"id": 5}},
+                        }
+                    ],
+                ),
+                ("GET", f"{repo}/pulls?state=open&head=Bookclerk:b&per_page=100"): (
+                    200,
+                    [],
+                ),
+                ("GET", f"{repo}/contents/ui/visual/baselines.lock?ref={sha}"): (
+                    200,
+                    {"content": lock},
+                ),
+                ("GET", f"{repo}/issues/990/comments?per_page=100&page=1"): (200, []),
+                (
+                    "GET",
+                    "repos/Bookclerk/bookclerk-visual-baselines/git/ref/tags/approved/"
+                    + "f" * 40,
+                ): (404, {}),
+            }
+        )
+        write = FakeGitHub(
+            {
+                ("POST", f"{repo}/issues/990/comments"): (201, {}),
+                ("POST", f"{repo}/pulls/990/requested_reviewers"): (201, {}),
+            }
+        )
+        pushed = []
+        with (
+            unittest.mock.patch.object(
+                self.bot,
+                "push_set",
+                lambda r, f, ref, m, t: pushed.append((r, sorted(f), ref)) or "e" * 40,
+            ),
+            unittest.mock.patch.object(
+                self.bot, "fetch_set", side_effect=AssertionError("fetched")
+            ),
+        ):
+            out = self.bot.propose(self.env, send, write)
+        self.assertIn("proposed", out)
+        self.assertEqual(
+            pushed,
+            [
+                (
+                    "Bookclerk/bookclerk-visual-baselines",
+                    ["desktop/x--light.png"],
+                    "refs/heads/pending/pr-990",
+                )
+            ],
+        )
+        self.assertIn("set=" + "e" * 40, write.sent[0][2]["body"])
+        self.assertEqual(
+            write.sent[1],
+            (
+                "POST",
+                f"{repo}/pulls/990/requested_reviewers",
+                {"team_reviewers": ["visual-reviewers"]},
+            ),
+        )
+        self.assertNotIn("refused", out)
+        self.assertIn("| new |", write.sent[0][2]["body"])
+
     def test_propose_skips_an_incomplete_set(self) -> None:
         self.env["ARTIFACT_DIR"] = str(self.root)
         self.assertEqual(

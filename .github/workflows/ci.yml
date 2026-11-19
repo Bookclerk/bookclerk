@@ -1651,6 +1651,21 @@ jobs:
         id: lock
         run: python3 scripts/visual_baselines.py lock ui/visual/baselines.lock >> "$GITHUB_OUTPUT"
 
+      # Only a set the approval workflow tagged counts: a pull request could
+      # otherwise copy a pending set's commit into the lock and skip the
+      # approval. Only the App can create `approved/*` tags (ruleset).
+      - name: Check the locked set is approved
+        if: steps.lock.outputs.sha != ''
+        env:
+          BASELINES: https://github.com/${{ github.repository_owner }}/bookclerk-visual-baselines
+          SHA: ${{ steps.lock.outputs.sha }}
+        run: |
+          tagged="$(git ls-remote "$BASELINES" "refs/tags/approved/$SHA" | cut -f1)"
+          if [ "$tagged" != "$SHA" ]; then
+            echo "::error file=ui/visual/baselines.lock::$SHA is not an approved baselines set (no approved/$SHA tag)."
+            exit 1
+          fi
+
       # Public, so no token: a fork's pull request fetches it the same way.
       - name: Check out the baselines
         if: steps.lock.outputs.sha != ''

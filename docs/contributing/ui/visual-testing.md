@@ -127,10 +127,17 @@ built docs live in `Bookclerk/bookclerk-docs`.
 ### How CI compares
 
 The `ui-visual` job reads the lock with `scripts/visual_baselines.py lock`
-and checks the baselines repository out at that commit. The repository is
+and first checks that the commit carries an `approved/<commit>` tag. Only
+the approval workflow creates those tags, so a lock that names a pending
+set, copied by hand, fails the job instead of skipping the approval. It
+then checks the baselines repository out at that commit. The repository is
 public, so this needs no token and works the same on a pull request from a
-fork. It then sets `CI_VISUAL_BASELINES` to that checkout, and the check
+fork. It sets `CI_VISUAL_BASELINES` to that checkout, and the check
 compares after recording.
+
+The `Visual baselines` workflow applies the same rule when it proposes: it
+compares a pull request's screenshots with an untagged lock's set as if
+there were none, so every image needs approval.
 
 ### How a pull request changes them
 

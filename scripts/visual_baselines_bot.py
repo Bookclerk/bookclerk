@@ -191,6 +191,26 @@ def push_set(
         return commit
 
 
+def is_approved(send: Transport, baselines: str, commit: str) -> bool:
+    """Whether ``commit`` carries the ``approved/<commit>`` tag in ``baselines``.
+
+    Only the approval workflow creates these tags (a ruleset keeps everyone
+    else out), so a lock naming any other commit was never approved.
+
+    # Errors
+    ``BotError`` when GitHub answers neither the tag nor 404.
+    """
+    status, data = send(
+        "GET", f"repos/{baselines}/git/ref/tags/approved/{commit}", None
+    )
+    if status == 404:
+        return False
+    if status != 200:
+        raise BotError(f"approved tag: HTTP {status}")
+    target = vb._json_object(data, "tag ref").get("object")
+    return isinstance(target, dict) and target.get("sha") == commit
+
+
 def head_lock(send: Transport, repository: str, sha: str) -> str | None:
     """Reads the lock at commit ``sha`` of this repository.
 
@@ -299,6 +319,11 @@ def propose(env: dict[str, str], send: Transport, write: Transport) -> str:
     vb.validate_set(files)
     proposed = dict(files)
     lock = head_lock(send, repository, head.sha)
+    if lock and not is_approved(send, baselines, lock):
+        # A lock the approval workflow did not write (say, a pending set's
+        # commit copied by hand): compare with nothing, so every image needs
+        # approval.
+        lock = None
     approved = fetch_set(baselines, lock, env["BASELINES_TOKEN"]) if lock else {}
     changes = vb.diff_sets(approved, proposed)
     done = []
