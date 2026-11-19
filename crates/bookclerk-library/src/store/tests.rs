@@ -2556,22 +2556,44 @@ async fn defer_job_parks_without_an_attempt_or_checkpoint() {
     assert_eq!(woken.id, id);
 }
 
+/// Waking reads the pending jobs in pages of the database's result cap,
+/// so under every profile, even with a one-row cap, each paced acquire on
+/// the account is woken and no other.
 #[tokio::test]
 async fn waking_paced_acquires_skips_other_accounts_and_unpaced_jobs() {
-    let store = kit_store().await;
+    for profile in crate::test_support::Profile::ALL {
+        for capped in [false, true] {
+            let store = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let store = if capped {
+                store.with_plan_limits(64, 1, 65_536)
+            } else {
+                store
+            };
+            waking_paced_acquires_on(store).await;
+        }
+    }
+}
+
+/// The body of [`waking_paced_acquires_skips_other_accounts_and_unpaced_jobs`]
+/// on one store.
+async fn waking_paced_acquires_on(store: LibraryStore) {
     store
         .upsert_account("audible", "a1", "us", None, true, "audible")
         .await
         .unwrap();
     let later = chrono::Utc::now() + chrono::Duration::hours(6);
     let mut ids = Vec::new();
-    for (account, paced) in [("a1", true), ("a2", true), ("a1", false)] {
+    for (account, paced) in [("a1", true), ("a2", true), ("a1", false), ("a1", true)] {
         let created = store
             .enqueue_job(EnqueueJobSpec {
                 kind: JobKind::Acquire,
                 payload: JobPayload {
                     paced,
                     account: Some(account.into()),
+                    // Two paced acquires on a1 differ by title.
+                    title: (ids.len() == 3).then(|| "second".into()),
                     trigger: JobTrigger::Scheduler,
                     ..Default::default()
                 },
@@ -2597,6 +2619,10 @@ async fn waking_paced_acquires_skips_other_accounts_and_unpaced_jobs() {
     assert!(run_after(0).await <= now, "a1's paced acquire is woken");
     assert!(run_after(1).await > now, "a2's stays parked");
     assert!(run_after(2).await > now, "an unpaced job is left alone");
+    assert!(
+        run_after(3).await <= now,
+        "every paced acquire on a1 is woken"
+    );
 }
 
 #[tokio::test]

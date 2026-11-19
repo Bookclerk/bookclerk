@@ -284,8 +284,15 @@ impl LibraryStore {
         let now = Utc::now();
         let mut woken = 0u32;
         let mut after: Option<String> = None;
+        // Pages of 64, or of the database's result cap when it is smaller.
+        let page_rows = match self.db_capabilities().max_result_rows {
+            0 => 64,
+            rows => u64::from(rows).clamp(1, 64),
+        };
         loop {
-            let (page, next) = self.list_pending_jobs_page(after.as_deref(), 64).await?;
+            let (page, next) = self
+                .list_pending_jobs_page(after.as_deref(), page_rows)
+                .await?;
             for job in page {
                 let names_account = job
                     .payload
