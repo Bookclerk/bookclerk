@@ -566,7 +566,7 @@ fn describe_user(user: &UserRecord) -> String {
 ///
 /// Returns an error when no user matches, the match is ambiguous, or the
 /// lookup fails.
-async fn resolve_user(
+pub(crate) async fn resolve_user(
     store: &bookclerk_library::LibraryStore,
     user: &str,
 ) -> anyhow::Result<UserRecord> {
