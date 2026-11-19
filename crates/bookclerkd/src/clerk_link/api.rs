@@ -60,7 +60,7 @@ use crate::api::AppState;
 use crate::auth::UserCaller;
 use crate::library_link::join::{
     callback_origin, default_branch_name, join_error, join_failed, library_json,
-    InspectedLibraryResponse, InspectedLibraryView,
+    refuse_other_library, InspectedLibraryResponse, InspectedLibraryView, Replacing,
 };
 use crate::node_api::branch::{no_store, require_branch_admin};
 
@@ -349,7 +349,12 @@ pub async fn post_clerk_start(
         Err(err) => return join_failed(&err),
     };
     let refused = match &branch {
-        Some(link) => refuse_replacing(link, &library),
+        Some(link) => refuse_other_library(
+            &library,
+            &link.parent_library_id,
+            link.spki_pin.as_deref(),
+            Replacing::Branch,
+        ),
         None => refuse_start(&state, &library, body.fingerprint.as_deref()).await,
     };
     if let Some(refused) = refused {
@@ -453,30 +458,6 @@ async fn branch_to_replace(
         )),
         Err(err) => Err(crate::config_authority::events_error(err)),
     }
-}
-
-/// Why a card may not replace `branch` at `library`, or `None`: the
-/// address must still be the library the branch joined, with the
-/// certificate it pinned then.
-fn refuse_replacing(
-    branch: &bookclerk_library::control_plane::LibraryLink,
-    library: &InspectedLibrary,
-) -> Option<Response> {
-    if library.info.library_id != branch.parent_library_id {
-        return Some(join_error(
-            StatusCode::CONFLICT,
-            "origin_mismatch",
-            "the library at this branch's address is not the library it joined",
-        ));
-    }
-    if library.spki_pin != branch.spki_pin {
-        return Some(join_error(
-            StatusCode::CONFLICT,
-            "fingerprint_unconfirmed",
-            "the library's certificate changed since this install joined it; sign in with a library card from its address and confirm the new fingerprint",
-        ));
-    }
-    None
 }
 
 /// The answer for a library this install already joined as a branch.

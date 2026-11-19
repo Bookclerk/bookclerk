@@ -47,7 +47,7 @@
 //!
 //! An install may instead sign in to a library as a clerk, holding a
 //! library card for its person rather than node keys ([`authorize_clerk`],
-//! [`redeem_clerk_code`]); the daemon reads the person's books over the
+//! [`exchange_clerk_code`]); the daemon reads the person's books over the
 //! library's clerk socket ([`OwnerEndpoint::connect_clerk_socket`]).
 //!
 //! The consent decisions themselves (which plugins, which grant) and how a
@@ -68,8 +68,7 @@ pub use branch::{
     BranchRedeem, BroughtConnections, InspectedLibrary, RedeemedBranch,
 };
 pub use clerk::{
-    authorize_clerk, exchange_clerk_code, redeem_clerk_code, ClerkAuthorization, ClerkRedeem,
-    ExchangedCard,
+    authorize_clerk, exchange_clerk_code, ClerkAuthorization, ClerkRedeem, ExchangedCard,
 };
 pub use client::{
     CatalogBatchAccepted, CatalogSession, ClientExit, ClientTiming, HeartbeatSource, HostClient,

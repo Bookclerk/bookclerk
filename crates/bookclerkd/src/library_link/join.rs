@@ -437,6 +437,59 @@ impl utoipa::ToSchema for JoinConflict {
     }
 }
 
+/// What a sign-in is about to replace, which picks the refusal's wording in
+/// [`refuse_other_library`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Replacing {
+    /// A library card becoming a branch of the card's library.
+    Card,
+    /// A branch becoming a library card for the branch's library.
+    Branch,
+}
+
+/// Why a sign-in may not replace a card or branch held for `library_id`
+/// with `library` (the library read again at the held address), or `None`:
+/// the address must still be that library, presenting the certificate
+/// pinned when the card or branch was made.
+///
+/// # Returns
+///
+/// A 409 `origin_mismatch` when the address now answers for another
+/// library, a 409 `fingerprint_unconfirmed` when its certificate pin
+/// changed, or `None` when it may go ahead.
+pub(crate) fn refuse_other_library(
+    library: &InspectedLibrary,
+    library_id: &str,
+    spki_pin: Option<&str>,
+    replacing: Replacing,
+) -> Option<Response> {
+    let (other_library, changed_pin) = match replacing {
+        Replacing::Card => (
+            "the library at this card's address is not the library it signed in to",
+            "the library's certificate changed since this install signed in to it; join from its address and confirm the new fingerprint",
+        ),
+        Replacing::Branch => (
+            "the library at this branch's address is not the library it joined",
+            "the library's certificate changed since this install joined it; sign in with a library card from its address and confirm the new fingerprint",
+        ),
+    };
+    if library.info.library_id != library_id {
+        return Some(join_error(
+            StatusCode::CONFLICT,
+            "origin_mismatch",
+            other_library,
+        ));
+    }
+    if library.spki_pin.as_deref() != spki_pin {
+        return Some(join_error(
+            StatusCode::CONFLICT,
+            "fingerprint_unconfirmed",
+            changed_pin,
+        ));
+    }
+    None
+}
+
 /// The answer for a failed join step. Never echoes a link or code.
 pub(crate) fn join_failed(err: &JoinError) -> Response {
     match err {
@@ -719,19 +772,13 @@ pub async fn post_join_start(
         );
     }
     if let Some(card) = &card {
-        if library.info.library_id != card.library_id {
-            return join_error(
-                StatusCode::CONFLICT,
-                "origin_mismatch",
-                "the library at this card's address is not the library it signed in to",
-            );
-        }
-        if library.spki_pin != card.spki_pin {
-            return join_error(
-                StatusCode::CONFLICT,
-                "fingerprint_unconfirmed",
-                "the library's certificate changed since this install signed in to it; join from its address and confirm the new fingerprint",
-            );
+        if let Some(refusal) = refuse_other_library(
+            &library,
+            &card.library_id,
+            card.spki_pin.as_deref(),
+            Replacing::Card,
+        ) {
+            return refusal;
         }
     } else if let Some(pin) = library.spki_pin.as_deref() {
         let confirmed = body.fingerprint.as_deref().map(str::trim);
