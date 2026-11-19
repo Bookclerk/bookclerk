@@ -21,10 +21,10 @@
 
 use bookclerk_plugin_abi::{DbType, DbValue, TypedDbStatement};
 use chrono::{DateTime, Utc};
-use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder};
 
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
-use crate::control_plane::{batch, bump, LiveTopic};
+use crate::control_plane::{batch, bump, read_paged, LiveTopic};
 use crate::entities::{bookmarks, editions, expressions, playback_progress, playback_sessions};
 use crate::error::{LibraryError, Result};
 
@@ -544,13 +544,16 @@ impl LibraryStore {
                     ),
             );
         }
-        let mut rows = select
-            .order_by_desc(P::UpdatedAt)
-            .order_by_asc(P::EditionId)
-            .limit(limit.saturating_add(1))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        // Read in pages of the database plugin's own result size, so a
+        // page of the list is never one reply larger than it allows.
+        let mut rows = read_paged(
+            self,
+            select
+                .order_by_desc(P::UpdatedAt)
+                .order_by_asc(P::EditionId),
+            Some(limit.saturating_add(1)),
+        )
+        .await?;
         let more = u64::try_from(rows.len()).unwrap_or(u64::MAX) > limit;
         if more {
             rows.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
@@ -955,15 +958,14 @@ impl LibraryStore {
     /// Returns the read error.
     pub async fn list_bookmarks(&self, user_id: i64, edition_id: &str) -> Result<Vec<Bookmark>> {
         use bookmarks::Column as B;
-        Ok(bookmarks::Entity::find()
+        let select = bookmarks::Entity::find()
             .filter(B::UserId.eq(user_id))
             .filter(B::EditionId.eq(edition_id))
-            .order_by_asc(B::PositionMs)
-            .order_by_asc(B::Id)
-            .limit(MAX_BOOKMARKS_PER_EDITION)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
+            .order_by_asc(B::PositionMs);
+        // Paged like the progress list: the primary key, the bookmark's
+        // id, is the tie-break `read_paged` appends.
+        Ok(read_paged(self, select, Some(MAX_BOOKMARKS_PER_EDITION))
+            .await?
             .into_iter()
             .map(map_bookmark)
             .collect())

@@ -17,6 +17,7 @@ mod carried_accounts;
 mod catalog_lookup;
 mod clerk_links;
 mod library_links;
+pub(crate) use catalog_lookup::read_paged;
 pub(crate) use library_links::from_object;
 mod connections_request;
 mod copies;

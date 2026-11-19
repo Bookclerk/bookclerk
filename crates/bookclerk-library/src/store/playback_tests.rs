@@ -587,3 +587,74 @@ async fn a_deleted_person_leaves_no_listening_state() {
     assert!(store.playback_session(&session.id).await.unwrap().is_none());
     assert!(store.bookmark(&bookmark.id).await.unwrap().is_none());
 }
+
+/// Under a database plugin whose reply holds one row of these tables and
+/// not two, the progress list and an edition's bookmarks are still read
+/// whole and in order: each is read in pages that shrink to what the
+/// plugin allows.
+#[tokio::test]
+async fn lists_read_whole_when_a_reply_holds_one_row() {
+    let _lock = crate::master_key::master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, caps) = crate::control_plane::capped_store(dir.path()).await;
+    let (user, first, _) = listener(&store, "B0PLAY0020").await;
+    let asins: Vec<String> = (1..4).map(|n| format!("B0PLAY002{n}")).collect();
+    hold(&store, user, "riley-acct", &asins).await;
+    let mut editions = vec![first];
+    for asin in &asins {
+        let record = store.get_book(asin, "riley-acct").await.unwrap().unwrap();
+        editions.push(store.edition_of_book(&record.uuid).await.unwrap().unwrap());
+    }
+    for edition in &editions {
+        store
+            .set_playback_progress(
+                user,
+                edition,
+                None,
+                &PlaybackProgressEdit {
+                    position: Some(ms(1000)),
+                    duration: None,
+                    finished: Some(false),
+                },
+            )
+            .await
+            .unwrap();
+        // Distinct stamps, so the order is the write order.
+        tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+    }
+    for position in [30_000, 10_000, 20_000] {
+        store
+            .add_bookmark(user, &editions[0], ms(position), "")
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    // One row of either table carries about 100 bytes of text (ids and
+    // stamps); 150 admits one row and refuses two.
+    caps.reply.store(150, std::sync::atomic::Ordering::SeqCst);
+
+    let newest_first: Vec<&str> = editions.iter().rev().map(String::as_str).collect();
+    let (page, next) = store
+        .list_playback_progress(user, false, None, 3)
+        .await
+        .unwrap();
+    let ids: Vec<&str> = page.iter().map(|p| p.edition_id.as_str()).collect();
+    assert_eq!(ids, newest_first[..3]);
+    let next = next.expect("a fourth edition remains");
+    let (page, next) = store
+        .list_playback_progress(user, false, Some(&next), 3)
+        .await
+        .unwrap();
+    let ids: Vec<&str> = page.iter().map(|p| p.edition_id.as_str()).collect();
+    assert_eq!(ids, newest_first[3..]);
+    assert!(next.is_none());
+
+    let places: Vec<u64> = store
+        .list_bookmarks(user, &editions[0])
+        .await
+        .unwrap()
+        .iter()
+        .map(|b| b.position.get())
+        .collect();
+    assert_eq!(places, [10_000, 20_000, 30_000]);
+}
