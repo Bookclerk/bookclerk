@@ -49,6 +49,32 @@ fn expected_genres(row: &Value) -> Option<String> {
     (!names.is_empty()).then(|| names.join("; "))
 }
 
+/// The top-level genre of each of a row's ladders, restated: the first
+/// rung's trimmed, non-empty name, each once (case-insensitive), in ladder
+/// order. A ladder whose first rung has no such name adds none.
+fn expected_roots(row: &Value) -> Vec<String> {
+    let mut roots: Vec<String> = Vec::new();
+    let ladders = row.get("category_ladders").and_then(Value::as_array);
+    for ladder in ladders.into_iter().flatten() {
+        let first = match ladder {
+            Value::Object(obj) => obj
+                .get("ladder")
+                .and_then(Value::as_array)
+                .and_then(|r| r.first()),
+            Value::Array(rungs) => rungs.first(),
+            _ => None,
+        };
+        let Some(name) = first.and_then(|r| r.get("name")).and_then(Value::as_str) else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.is_empty() && !roots.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            roots.push(name.to_string());
+        }
+    }
+    roots
+}
+
 /// Whether a row is a podcast show or episode, restated from the catalog's
 /// `content_type` and `content_delivery_type` values (case-insensitive; a
 /// missing or non-string value is no kind).
@@ -118,9 +144,11 @@ pub fn check(data: &[u8]) {
         .and_then(Value::as_array)
         .map(|rows| rows.iter().collect())
         .unwrap_or_default();
-    let expected: Vec<(&str, Option<String>)> = rows
+    let expected: Vec<(&str, Option<String>, Vec<String>)> = rows
         .into_iter()
-        .filter_map(|row| expected_asin(row).map(|asin| (asin, expected_genres(row))))
+        .filter_map(|row| {
+            expected_asin(row).map(|asin| (asin, expected_genres(row), expected_roots(row)))
+        })
         .collect();
     assert_eq!(
         titles.len(),
@@ -129,8 +157,8 @@ pub fn check(data: &[u8]) {
         titles.len(),
         expected.len()
     );
-    for (title, (asin, genres)) in titles.iter().zip(&expected) {
-        check_title(title, asin, genres.as_deref());
+    for (title, (asin, genres, roots)) in titles.iter().zip(&expected) {
+        check_title(title, asin, genres.as_deref(), roots);
     }
     // Compared through `Debug`: a rating of NaN (`"NaN"` parses as one) is
     // not equal to itself under `PartialEq`, but prints the same both times.
@@ -143,11 +171,15 @@ pub fn check(data: &[u8]) {
 }
 
 /// Checks one title against the row it came from.
-fn check_title(title: &CatalogProduct, asin: &str, genres: Option<&str>) {
+fn check_title(title: &CatalogProduct, asin: &str, genres: Option<&str>, roots: &[String]) {
     assert_eq!(title.asin, asin, "ASIN differs from the row");
     assert_eq!(
         title.categories.as_deref(),
         genres,
         "genres are not the row's ladder names"
+    );
+    assert_eq!(
+        title.genre_roots, roots,
+        "top-level genres are not the row's first rungs"
     );
 }
