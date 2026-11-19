@@ -3,15 +3,15 @@
 //! Uses [`bookclerk_audible_catalog`] public catalog HTTP — no account required.
 
 use bookclerk_audible_catalog::{
-    is_valid_asin, normalize_region, public_http_client, region_tld, search_catalog_asins,
-    search_catalog_by_genre_name, search_catalog_by_narrator, search_catalog_by_series_asin,
-    search_catalog_keywords, search_catalog_products, search_catalog_products_paged,
-    search_catalog_storefront, search_similar_products, CatalogProduct,
+    is_valid_asin, normalize_region, public_http_client, region_tld, search_catalog_by_genre_name,
+    search_catalog_by_narrator, search_catalog_by_series_asin, search_catalog_products,
+    search_catalog_products_paged, search_catalog_storefront, search_similar_products,
+    CatalogProduct,
 };
 use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_storefront::{
-    CatalogHit, CatalogSearchField, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts, SourceError,
-    SourcePurchaseHint,
+    CatalogHit, CatalogSearchField, CatalogSearchOpts, ExpandSeed, PricedAnswer, PricedListing,
+    PurchaseHintOpts, SourceError, SourcePurchaseHint,
 };
 use serde_json::Value;
 
@@ -352,107 +352,191 @@ pub async fn expand_candidates(
 
 /// Resolve a purchase / catalog URL (optionally with live price).
 ///
+/// The bare-hint form of [`purchase_answer`]: its pick, without the
+/// title-search records.
+///
 /// # Errors
 ///
-/// Returns an error when the operation fails.
+/// As [`purchase_answer`].
 pub async fn purchase_hint(
     opts: &PurchaseHintOpts,
 ) -> bookclerk_storefront::Result<Option<SourcePurchaseHint>> {
+    purchase_answer(opts).await.map(|answer| answer.hint)
+}
+
+/// Resolve a title's Audible product and price, with every listing a title
+/// search found.
+///
+/// - A known ASIN (the query's `asin`, else an ASIN-shaped `product_id`) is
+///   priced as it is, with no search. This is the exact ASIN lookup the
+///   store declares ([`bookclerk_storefront::PriceLookup::Asin`]).
+/// - Otherwise the title and author are searched (the ISBN as keywords
+///   when that misses or there is no title), and up to [`TITLE_RECORDS`]
+///   listings are returned as priced records, each with its own ASIN,
+///   credits and series, for the host to place. The first is also the
+///   store's pick, so a host that reads only the hint still gets one.
+///
+/// # Errors
+///
+/// Returns [`SourceError::RateLimited`] when Audible asks to slow down
+/// while pricing; a failed search answers nothing.
+pub async fn purchase_answer(
+    opts: &PurchaseHintOpts,
+) -> bookclerk_storefront::Result<PricedAnswer> {
+    let found = find_listings(opts).await;
+    Ok(price_found(vec![found], std::slice::from_ref(opts))
+        .await?
+        .into_iter()
+        .next()
+        .unwrap_or_default())
+}
+
+/// Most listings one title search answers as records. A page of cards
+/// stays within a couple of [`PRICE_BATCH_ASINS`] price requests.
+pub const TITLE_RECORDS: usize = 10;
+
+/// What one query found, before pricing.
+#[derive(Debug, Default)]
+struct Found {
+    /// The store's pick for the query.
+    hint: Option<SourcePurchaseHint>,
+    /// Every listing a title search found, best first; empty when the
+    /// query named its ASIN.
+    records: Vec<CatalogHit>,
+}
+
+/// A hint for `asin`, linking its product page in `region`.
+fn asin_hint(asin: &str, title: Option<&str>, region: &str) -> SourcePurchaseHint {
+    SourcePurchaseHint {
+        product_id: asin.to_string(),
+        title: title.map(str::to_string),
+        url: Some(format!(
+            "https://www.audible{}/pd/{}",
+            region_host_suffix(region),
+            asin
+        )),
+        ..Default::default()
+    }
+}
+
+/// Finds the query's product, unpriced: its known ASIN, else the listings
+/// a title (then ISBN keyword) search returns.
+///
+/// Searches fail soft: a failed search finds nothing.
+async fn find_listings(opts: &PurchaseHintOpts) -> Found {
     let region = normalize_region(&opts.region);
     let title = opts
         .title
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    if let Some(asin) = known_asin(opts) {
+        return Found {
+            hint: Some(asin_hint(&asin, title, &region)),
+            records: Vec::new(),
+        };
+    }
     let author = opts
         .authors
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-
-    let mut asin = opts
-        .asin
+    let isbn = opts
+        .isbn
         .as_deref()
         .map(str::trim)
-        .filter(|s| is_valid_asin(s))
-        .map(|s| s.to_ascii_uppercase())
-        .or_else(|| {
-            opts.product_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| is_valid_asin(s))
-                .map(|s| s.to_ascii_uppercase())
-        });
-
-    if asin.is_none() {
-        let http = match public_http_client() {
-            Ok(c) => c,
-            Err(_) => return Ok(None),
-        };
-        if let Some(t) = title {
-            match search_catalog_asins(&http, &region, t, author).await {
-                Ok(asins) => asin = asins.into_iter().next().map(|a| a.to_ascii_uppercase()),
-                Err(err) => {
-                    tracing::debug!(error = %err, "audible catalog asin search failed");
-                }
+        .filter(|s| !s.is_empty());
+    let Ok(http) = public_http_client() else {
+        return Found::default();
+    };
+    let mut products = Vec::new();
+    if let Some(t) = title {
+        match search_catalog_products(&http, &region, t, author, None).await {
+            Ok(found) => products = found,
+            Err(err) => tracing::debug!(error = %err, "audible catalog title search failed"),
+        }
+    }
+    if products.is_empty() {
+        if let Some(isbn) = isbn {
+            match search_catalog_products(&http, &region, "", None, Some(isbn)).await {
+                Ok(found) => products = found,
+                Err(err) => tracing::debug!(error = %err, "audible isbn keyword search failed"),
             }
-            if asin.is_none() {
-                if let Some(isbn) = opts
-                    .isbn
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                {
-                    match search_catalog_keywords(&http, &region, isbn).await {
-                        Ok(asins) => {
-                            asin = asins.into_iter().next().map(|a| a.to_ascii_uppercase())
-                        }
-                        Err(err) => {
-                            tracing::debug!(error = %err, "audible isbn keyword search failed");
-                        }
+        }
+    }
+    let records = listing_records(products);
+    Found {
+        hint: records
+            .first()
+            .map(|first| asin_hint(&first.product_id, title, &region)),
+        records,
+    }
+}
+
+/// The search's products as records, best first: at most
+/// [`TITLE_RECORDS`], one per valid ASIN.
+fn listing_records(products: Vec<CatalogProduct>) -> Vec<CatalogHit> {
+    let mut records: Vec<CatalogHit> = Vec::new();
+    for mut product in products {
+        if records.len() >= TITLE_RECORDS {
+            break;
+        }
+        let asin = product.asin.trim().to_ascii_uppercase();
+        if !is_valid_asin(&asin) || records.iter().any(|r| r.product_id == asin) {
+            continue;
+        }
+        product.asin = asin;
+        records.push(product_to_hit(product, String::from("purchase search")));
+    }
+    records
+}
+
+/// Prices what each query found, per marketplace, and pairs every record
+/// with its own priced hint.
+///
+/// # Errors
+///
+/// [`SourceError::RateLimited`] when Audible asks to slow down.
+async fn price_found(
+    found: Vec<Found>,
+    opts: &[PurchaseHintOpts],
+) -> bookclerk_storefront::Result<Vec<PricedAnswer>> {
+    let by_region = asins_by_region(&found, opts);
+    let mut prices: std::collections::HashMap<(String, String), DualPriced> =
+        std::collections::HashMap::new();
+    for (region, asins) in by_region {
+        for chunk in asins.chunks(PRICE_BATCH_ASINS) {
+            for (asin, priced) in fetch_audible_prices(chunk, &region).await? {
+                prices.insert((region.clone(), asin), priced);
+            }
+        }
+    }
+    Ok(found
+        .into_iter()
+        .zip(opts)
+        .map(|(found, query)| {
+            let region = normalize_region(&query.region);
+            let priced = |mut hint: SourcePurchaseHint| {
+                if query.with_price {
+                    if let Some(p) = prices.get(&(region.clone(), hint.product_id.clone())) {
+                        apply_dual_price(&mut hint, p);
                     }
                 }
+                hint
+            };
+            PricedAnswer {
+                hint: found.hint.map(&priced),
+                records: found
+                    .records
+                    .into_iter()
+                    .map(|record| PricedListing {
+                        hint: priced(asin_hint(&record.product_id, Some(&record.title), &region)),
+                        record,
+                    })
+                    .collect(),
             }
-        } else if let Some(isbn) = opts
-            .isbn
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            match search_catalog_keywords(&http, &region, isbn).await {
-                Ok(asins) => asin = asins.into_iter().next().map(|a| a.to_ascii_uppercase()),
-                Err(err) => {
-                    tracing::debug!(error = %err, "audible isbn keyword search failed");
-                }
-            }
-        }
-    }
-
-    let Some(asin) = asin else {
-        return Ok(None);
-    };
-
-    let mut hint = SourcePurchaseHint {
-        product_id: asin.clone(),
-        title: title.map(str::to_string),
-        url: Some(format!(
-            "https://www.audible{}/pd/{}",
-            region_host_suffix(&region),
-            asin
-        )),
-        ..Default::default()
-    };
-
-    if opts.with_price {
-        if let Some(priced) = fetch_audible_prices(std::slice::from_ref(&asin), &region)
-            .await?
-            .remove(&asin)
-        {
-            apply_dual_price(&mut hint, &priced);
-        }
-    }
-
-    Ok(Some(hint))
+        })
+        .collect())
 }
 
 /// Most ASINs the public catalog prices in one `products` request.
@@ -474,99 +558,107 @@ fn known_asin(opts: &PurchaseHintOpts) -> Option<String> {
         .map(str::to_ascii_uppercase)
 }
 
-/// The resolved ASINs to price, grouped by each query's marketplace and
-/// listed once per marketplace, for the queries that asked for a price.
+/// The ASINs to price (each query's pick and records), grouped by each
+/// query's marketplace and listed once per marketplace, for the queries
+/// that asked for a price.
 fn asins_by_region(
-    hints: &[Option<SourcePurchaseHint>],
+    found: &[Found],
     opts: &[PurchaseHintOpts],
 ) -> std::collections::BTreeMap<String, Vec<String>> {
     let mut by_region: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
-    for (hint, query) in hints.iter().zip(opts) {
-        if let (true, Some(h)) = (query.with_price, hint.as_ref()) {
-            let asins = by_region
-                .entry(normalize_region(&query.region))
-                .or_default();
-            if !asins.contains(&h.product_id) {
-                asins.push(h.product_id.clone());
+    for (found, query) in found.iter().zip(opts) {
+        if !query.with_price {
+            continue;
+        }
+        let asins = by_region
+            .entry(normalize_region(&query.region))
+            .or_default();
+        let named = found
+            .hint
+            .iter()
+            .map(|h| &h.product_id)
+            .chain(found.records.iter().map(|r| &r.product_id));
+        for asin in named {
+            if !asins.contains(asin) {
+                asins.push(asin.clone());
             }
         }
     }
+    by_region.retain(|_, asins| !asins.is_empty());
     by_region
 }
 
 /// Resolves purchase hints for several titles, pricing them together.
 ///
+/// The bare-hint form of [`purchase_answers`].
+///
+/// # Errors
+///
+/// As [`purchase_answers`].
+pub async fn purchase_hints(
+    opts: &[PurchaseHintOpts],
+) -> bookclerk_storefront::Result<Vec<Option<SourcePurchaseHint>>> {
+    Ok(purchase_answers(opts)
+        .await?
+        .into_iter()
+        .map(|answer| answer.hint)
+        .collect())
+}
+
+/// Resolves several titles, pricing them together, with each title
+/// search's records.
+///
 /// Titles whose ASIN is known resolve first, without a search. The rest
-/// are searched one by one (as [`purchase_hint`] does) until
-/// [`RESOLVE_BUDGET`] runs out; a title not searched by then answers `None`,
-/// which the host does not take as an answer. Then the resolved ASINs are
-/// priced per marketplace, each query in its own region, one catalog
-/// request per [`PRICE_BATCH_ASINS`], so a page of cards costs one price
-/// request per region instead of one per card.
+/// are searched one by one (as [`purchase_answer`] does) until
+/// [`RESOLVE_BUDGET`] runs out; a title not searched by then answers
+/// nothing, which the host does not take as an answer. Then every ASIN
+/// found (picks and records) is priced per marketplace, each query in its
+/// own region, one catalog request per [`PRICE_BATCH_ASINS`], so a page of
+/// cards costs one or two price requests per region instead of one per
+/// card.
 ///
 /// # Errors
 ///
 /// Returns [`SourceError::RateLimited`] when Audible asks to slow down;
-/// a resolution that fails otherwise answers `None` for that title.
-pub async fn purchase_hints(
+/// a search that fails otherwise answers nothing for that title.
+pub async fn purchase_answers(
     opts: &[PurchaseHintOpts],
-) -> bookclerk_storefront::Result<Vec<Option<SourcePurchaseHint>>> {
-    purchase_hints_within(opts, RESOLVE_BUDGET).await
+) -> bookclerk_storefront::Result<Vec<PricedAnswer>> {
+    purchase_answers_within(opts, RESOLVE_BUDGET).await
 }
 
-/// [`purchase_hints`] with a chosen search budget.
+/// [`purchase_answers`] with a chosen search budget.
 ///
 /// # Errors
 ///
-/// As [`purchase_hints`].
-async fn purchase_hints_within(
+/// As [`purchase_answers`].
+async fn purchase_answers_within(
     opts: &[PurchaseHintOpts],
     budget: std::time::Duration,
-) -> bookclerk_storefront::Result<Vec<Option<SourcePurchaseHint>>> {
+) -> bookclerk_storefront::Result<Vec<PricedAnswer>> {
     let deadline = tokio::time::Instant::now() + budget;
-    let mut hints: Vec<Option<SourcePurchaseHint>> = vec![None; opts.len()];
+    let mut found: Vec<Found> = std::iter::repeat_with(Found::default)
+        .take(opts.len())
+        .collect();
     // Known ASINs first, so a slow search never costs them their price.
     let mut order: Vec<usize> = (0..opts.len()).collect();
     order.sort_by_key(|&i| known_asin(&opts[i]).is_none());
     for i in order {
-        let unpriced = PurchaseHintOpts {
-            with_price: false,
-            ..opts[i].clone()
-        };
         if known_asin(&opts[i]).is_some() {
-            hints[i] = purchase_hint(&unpriced).await?;
+            found[i] = find_listings(&opts[i]).await;
             continue;
         }
         if tokio::time::Instant::now() >= deadline {
             break;
         }
-        match tokio::time::timeout_at(deadline, purchase_hint(&unpriced)).await {
-            Ok(resolved) => hints[i] = resolved?,
+        match tokio::time::timeout_at(deadline, find_listings(&opts[i])).await {
+            Ok(listings) => found[i] = listings,
             // Out of search time: the rest stay untried.
             Err(_) => break,
         }
     }
-
-    let by_region = asins_by_region(&hints, opts);
-    let mut prices: std::collections::HashMap<(String, String), DualPriced> =
-        std::collections::HashMap::new();
-    for (region, asins) in by_region {
-        for chunk in asins.chunks(PRICE_BATCH_ASINS) {
-            for (asin, priced) in fetch_audible_prices(chunk, &region).await? {
-                prices.insert((region.clone(), asin), priced);
-            }
-        }
-    }
-    for (hint, query) in hints.iter_mut().zip(opts) {
-        if let (true, Some(h)) = (query.with_price, hint.as_mut()) {
-            let key = (normalize_region(&query.region), h.product_id.clone());
-            if let Some(priced) = prices.get(&key) {
-                apply_dual_price(h, priced);
-            }
-        }
-    }
-    Ok(hints)
+    price_found(found, opts).await
 }
 
 /// Maps an Audible catalog product to a [`CatalogHit`] (the ASIN is both `product_id` and an identifier).
@@ -919,7 +1011,10 @@ fn format_money_label(cents: i64, currency: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{seed_audible_asin, similar_origin, CatalogProduct, ExpandSeed, OrderedHits};
+    use super::{
+        listing_records, seed_audible_asin, similar_origin, CatalogProduct, ExpandSeed,
+        OrderedHits, TITLE_RECORDS,
+    };
 
     /// A catalog product with only an ASIN and a title.
     fn titled(asin: &str, title: &str) -> CatalogProduct {
@@ -945,6 +1040,31 @@ mod tests {
             rating_overall: None,
             rating_count: None,
         }
+    }
+
+    /// A title search's products become records in search order: one per
+    /// ASIN (upper-cased), none without a valid ASIN, at most
+    /// [`TITLE_RECORDS`], each carrying its ASIN as an identifier and its
+    /// narrators, so the host can tell recordings apart.
+    #[test]
+    fn title_search_products_become_distinct_records() {
+        let mut narrated = titled("b0d1kv49fl", "The Sunlit Man");
+        narrated.authors = Some("Brandon Sanderson".into());
+        narrated.narrators = Some("Joe Jameson".into());
+        let mut products = vec![
+            narrated,
+            titled("B0D1KV49FL", "The Sunlit Man"),
+            titled("not-an-asin", "Broken"),
+            titled("B0CAST0001", "The Sunlit Man (Dramatized)"),
+        ];
+        products.extend((0..TITLE_RECORDS).map(|i| titled(&format!("B0FILL{i:04}"), "Filler")));
+        let records = listing_records(products);
+        assert_eq!(records.len(), TITLE_RECORDS);
+        assert_eq!(records[0].product_id, "B0D1KV49FL");
+        assert_eq!(records[1].product_id, "B0CAST0001");
+        assert_eq!(records[0].asin().as_deref(), Some("B0D1KV49FL"));
+        assert_eq!(records[0].narrators().as_deref(), Some("Joe Jameson"));
+        assert_eq!(records[0].origin, "purchase search");
     }
 
     #[test]
@@ -1148,39 +1268,67 @@ mod tests {
             with_price: false,
             ..PurchaseHintOpts::default()
         };
-        let hints = purchase_hints_within(&[searched, known], std::time::Duration::ZERO)
+        let answers = purchase_answers_within(&[searched, known], std::time::Duration::ZERO)
             .await
             .unwrap();
-        assert!(hints[0].is_none());
-        assert_eq!(hints[1].as_ref().unwrap().product_id, "B000000001");
+        assert!(answers[0].hint.is_none());
+        assert!(answers[0].records.is_empty());
+        assert_eq!(answers[1].hint.as_ref().unwrap().product_id, "B000000001");
+        assert!(
+            answers[1].records.is_empty(),
+            "a known ASIN is not searched"
+        );
     }
 
     /// Each query is priced in its own marketplace; an ASIN two queries in
     /// one region share is asked for once, and unpriced queries not at all.
+    /// A title search's records are priced with its pick.
     #[test]
     fn prices_are_asked_per_region() {
-        let hint = |asin: &str| {
-            Some(SourcePurchaseHint {
+        let hint = |asin: &str| Found {
+            hint: Some(SourcePurchaseHint {
                 product_id: asin.into(),
                 ..SourcePurchaseHint::default()
-            })
+            }),
+            records: Vec::new(),
+        };
+        let searched = Found {
+            hint: Some(SourcePurchaseHint {
+                product_id: "B4".into(),
+                ..SourcePurchaseHint::default()
+            }),
+            records: ["B4", "B5", "B1"]
+                .into_iter()
+                .map(|asin| CatalogHit {
+                    product_id: asin.into(),
+                    ..CatalogHit::default()
+                })
+                .collect(),
         };
         let query = |region: &str, with_price: bool| PurchaseHintOpts {
             region: region.into(),
             with_price,
             ..PurchaseHintOpts::default()
         };
-        let hints = [hint("B1"), hint("B2"), hint("B1"), hint("B3"), None];
+        let found = [
+            hint("B1"),
+            hint("B2"),
+            hint("B1"),
+            hint("B3"),
+            Found::default(),
+            searched,
+        ];
         let opts = [
             query("us", true),
             query("uk", true),
             query("us", true),
             query("us", false),
             query("us", true),
+            query("us", true),
         ];
-        let by_region = asins_by_region(&hints, &opts);
+        let by_region = asins_by_region(&found, &opts);
         assert_eq!(by_region.len(), 2);
-        assert_eq!(by_region[&normalize_region("us")], ["B1"]);
+        assert_eq!(by_region[&normalize_region("us")], ["B1", "B4", "B5"]);
         assert_eq!(by_region[&normalize_region("uk")], ["B2"]);
     }
 

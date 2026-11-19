@@ -775,6 +775,11 @@ Each store is asked about a card the strongest way it supports
 3. By the card's exact ASIN, when the store declares `catalog.priceByAsin`.
 4. Otherwise by title and authors (`lookup = title`).
 
+Of the first-party storefronts, Audible declares ASIN lookups and Libro.fm
+ISBN lookups. Chirp and GraphicAudio, whose catalogs know neither, are
+asked by title, as are Audible and Libro.fm for a card without the
+identifier they take.
+
 A title search can match another recording of the book (a full-cast
 dramatisation for a narration), so a store answers it with **records**:
 every priced listing the search found, each with its full catalog record
