@@ -15,8 +15,7 @@ to Bookclerk's Rust HTTP API; TypeScript never hosts the API.
 | **Operator** | The operator token, until an Owner exists; then a sign-in link or Owner elevation | Everything on the server, except connect stores |
 | **Owner** | Invite link, password, passkey, SSO or integration login | Administrator powers, plus elevation to operator and **Settings → Nodes** for the nodes they own |
 | **Administrator** | Invite link, password, passkey, SSO or integration login | Member powers, plus acquire and scan for every store account, jobs, adding users and **Settings → Nodes** for the nodes they own |
-| **Host** | Invite link, password, passkey, SSO or integration return visit | Member powers, plus **Status** and **Settings → Nodes** for the nodes they own |
-| **Member** | Invite link, password, passkey, SSO or integration return visit | Discover, Wishlist, browsing the shared library, **Accounts**, scan and acquire for the store accounts linked to them (through the API), and their own **Settings → Account** |
+| **Member** | Invite link, password, passkey, SSO or integration return visit | Discover, Wishlist, browsing the shared library, **Accounts**, scan and acquire for the store accounts linked to them (through the API), and their own **Settings → Account**; a Member who owns a node (a branch they linked) also gets **Status** and **Settings → Nodes** for the nodes they own |
 
 ### The operator
 
@@ -520,7 +519,7 @@ reset passwords.
 Who can grant which role:
 
 - An Administrator adds Members only.
-- An Owner adds Members, Hosts and Administrators.
+- An Owner adds Members and Administrators.
 - The operator, or an elevated Owner, can grant any role.
 
 Each row shows presence:

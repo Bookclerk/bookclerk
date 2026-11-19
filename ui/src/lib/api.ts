@@ -675,6 +675,7 @@ function toAuthSession(body: {
     default_view: normalizeView(body.default_view),
     can_acquire: Boolean(body.can_acquire),
     elevated: Boolean(body.elevated),
+    administers_nodes: body.administers_nodes,
     impersonating: body.impersonating,
     portal: body.portal,
     user: body.user,
@@ -757,6 +758,7 @@ export async function authMe(): Promise<AuthSession> {
     default_view?: string;
     can_acquire?: boolean;
     elevated?: boolean;
+    administers_nodes?: boolean;
     impersonating?: AuthMeImpersonating;
     portal?: PortalInfo;
     user?: AuthMeUser;
