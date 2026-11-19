@@ -2185,7 +2185,7 @@ mod results_and_uploads {
         assert_eq!(
             key,
             format!("Author/Title t1/Title t1 [{id}].m4b"),
-            "named as a local acquire would: {key}"
+            "named as a local acquire would"
         );
         assert_eq!(
             std::fs::read(owner_out.path().join(&key)).unwrap(),
