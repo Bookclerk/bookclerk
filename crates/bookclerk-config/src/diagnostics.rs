@@ -52,6 +52,10 @@ pub const SLOW_TARGET: &str = "bookclerk::slow";
 /// well and merged back into the report in order.
 const NOTABLE_CAPACITY: usize = 64;
 
+/// Most events one upload may carry: the collector refuses a report with
+/// more (`validateClientPayload` in `tools/diagnostics-collector/worker.ts`).
+pub const MAX_UPLOAD_EVENTS: usize = 500;
+
 /// Most span fields copied onto one event, innermost span first.
 const MAX_SPAN_FIELDS: usize = 8;
 
@@ -182,7 +186,8 @@ impl RingState {
 
     /// Oldest-first copy for crash or burst upload: the ring, plus the WARN
     /// and ERROR events the ring has already dropped, in the order they
-    /// happened.
+    /// happened. At most [`MAX_UPLOAD_EVENTS`]: the dropped WARN and ERROR
+    /// events are kept and the ring's oldest events give way.
     fn snapshot(&self) -> Vec<BufferedEvent> {
         let oldest_in_ring = self.events.front().map_or(u64::MAX, |(seq, _)| *seq);
         let mut out: Vec<(u64, BufferedEvent)> = self
@@ -191,7 +196,9 @@ impl RingState {
             .filter(|(seq, _)| *seq < oldest_in_ring)
             .cloned()
             .collect();
-        out.extend(self.events.iter().cloned());
+        let room = MAX_UPLOAD_EVENTS.saturating_sub(out.len());
+        let skip = self.events.len().saturating_sub(room);
+        out.extend(self.events.iter().skip(skip).cloned());
         out.into_iter().map(|(_, event)| event).collect()
     }
 }
@@ -1031,6 +1038,30 @@ mod tests {
             snap[NOTABLE_CAPACITY - 1].message,
             format!("w-{}", NOTABLE_CAPACITY + 9)
         );
+    }
+
+    #[test]
+    fn an_upload_snapshot_stays_within_the_collector_limit() {
+        let handle = DiagnosticsHandle::new(
+            DiagnosticsConfig {
+                ring_buffer_capacity: 600,
+                ..DiagnosticsConfig::default()
+            },
+            "0.0.0-test",
+            ProcessRole::Daemon,
+        );
+        push_test_event(&handle, "WARN", "early warning");
+        for i in 0..700 {
+            push_test_event(&handle, "INFO", &format!("noise-{i}"));
+        }
+        let snap = handle.snapshot_events();
+        assert_eq!(snap.len(), MAX_UPLOAD_EVENTS);
+        assert_eq!(
+            snap[0].message, "early warning",
+            "dropped warnings are kept"
+        );
+        assert_eq!(snap[1].message, "noise-201");
+        assert_eq!(snap[MAX_UPLOAD_EVENTS - 1].message, "noise-699");
     }
 
     #[test]
