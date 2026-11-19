@@ -800,3 +800,128 @@ mod logging_tests {
         assert_eq!(kept(), first, "a second setup keeps the first handle");
     }
 }
+
+#[cfg(test)]
+mod checkin_tests {
+    use super::{checkin_pass, ProcessRole};
+    use bookclerk_config::{DiagnosticsConfig, DiagnosticsHandle};
+    use std::io::{Read, Write};
+
+    /// A collector that accepts one request and answers 200 with no body.
+    fn accept_once() -> (String, std::thread::JoinHandle<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut raw = Vec::new();
+            let mut buf = [0_u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&raw);
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let len = text[..end]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if raw.len() >= end + 4 + len {
+                        break;
+                    }
+                }
+            }
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+            String::from_utf8_lossy(&raw).into_owned()
+        });
+        (url, server)
+    }
+
+    fn handle(collector_url: &str) -> (DiagnosticsConfig, DiagnosticsHandle) {
+        let settings = DiagnosticsConfig {
+            collector_url: collector_url.into(),
+            share_usage: true,
+            ..DiagnosticsConfig::default()
+        };
+        let handle = DiagnosticsHandle::new(settings.clone(), "0.0.0-test", ProcessRole::Daemon);
+        handle.set_sharing(false, true);
+        (settings, handle)
+    }
+
+    #[test]
+    fn the_first_pass_creates_the_id_and_sends_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (url, server) = accept_once();
+        let (settings, diag) = handle(&url);
+        let mut checkin = None;
+        checkin_pass(
+            dir.path(),
+            &settings,
+            &diag,
+            ProcessRole::Daemon,
+            &mut checkin,
+        );
+        let request = server.join().unwrap();
+        let body = checkin.as_ref().expect("the check-in body is built");
+        assert!(request.starts_with("POST /checkin "), "{request}");
+        assert!(request.contains(&body.install_id), "{request}");
+        assert_eq!(body.kind, ProcessRole::Daemon.as_str());
+        assert!(dir.path().join("install-id").is_file());
+        assert!(
+            !bookclerk_config::checkin_due(dir.path(), super::unix_now_ms()),
+            "an accepted check-in is recorded"
+        );
+        // Not due again: the second pass sends nothing (no collector listens).
+        checkin_pass(
+            dir.path(),
+            &settings,
+            &diag,
+            ProcessRole::Daemon,
+            &mut checkin,
+        );
+    }
+
+    #[test]
+    fn an_unwritable_files_dir_skips_the_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_dir = dir.path().join("file");
+        std::fs::write(&not_a_dir, b"x").unwrap();
+        let (settings, diag) = handle("http://127.0.0.1:9");
+        let mut checkin = None;
+        checkin_pass(
+            &not_a_dir,
+            &settings,
+            &diag,
+            ProcessRole::Daemon,
+            &mut checkin,
+        );
+        assert!(checkin.is_none());
+    }
+
+    #[test]
+    fn a_refused_send_is_not_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", closed.local_addr().unwrap());
+        drop(closed);
+        let (settings, diag) = handle(&url);
+        let mut checkin = None;
+        checkin_pass(
+            dir.path(),
+            &settings,
+            &diag,
+            ProcessRole::Daemon,
+            &mut checkin,
+        );
+        assert!(checkin.is_some());
+        assert!(bookclerk_config::checkin_due(
+            dir.path(),
+            super::unix_now_ms()
+        ));
+    }
+}

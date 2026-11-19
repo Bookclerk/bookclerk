@@ -243,12 +243,9 @@ struct DiagnosticsInner {
 }
 
 impl DiagnosticsHandle {
-    /// Installs a handle with ring capacity from config (at least 1).
-    pub(crate) fn new(
-        config: DiagnosticsConfig,
-        version: impl Into<String>,
-        role: ProcessRole,
-    ) -> Self {
+    /// A new handle with ring capacity from config (at least 1). The
+    /// process installs one with [`install_global`]; tests build their own.
+    pub fn new(config: DiagnosticsConfig, version: impl Into<String>, role: ProcessRole) -> Self {
         let capacity = config.ring_buffer_capacity.max(1) as usize;
         let share_reports = AtomicBool::new(config.share_reports);
         let share_usage = AtomicBool::new(config.share_usage);
