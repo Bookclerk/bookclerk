@@ -2895,6 +2895,9 @@ describe("issue summaries for the ingest Action", () => {
 
   it("hands out the figures of issues whose summary is out of date, newest activity first", async () => {
     const env = await setup();
+    // Two installs sent ID1 and ID2; ID3 came from one that shares no usage.
+    await run(env.DASHBOARD_DB, "UPDATE reports SET install_key = 'k1' WHERE report_id = ?", ID1);
+    await run(env.DASHBOARD_DB, "UPDATE reports SET install_key = 'k2' WHERE report_id = ?", ID2);
     const res = await call(env, "/issues/summaries");
     assert.equal(res.status, 200);
     const { issues } = await res.json<Summaries>();
@@ -2906,6 +2909,8 @@ describe("issue summaries for the ingest Action", () => {
     const s = issues[0]!;
     assert.match(s.fingerprint, /^[0-9a-f]{64}$/);
     assert.equal(s.reports, 3);
+    assert.equal(s.installs, 2);
+    assert.equal(s.unattributed, 1);
     assert.equal(s.first_seen, NOW - 3 * 86_400_000);
     assert.equal(s.last_seen, NOW - 3_600_000);
     assert.deepEqual(s.sources, { filed: 1, signature: 1, triage: 0, manual: 1 });
