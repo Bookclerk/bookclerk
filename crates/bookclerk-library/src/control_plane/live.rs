@@ -35,12 +35,12 @@ pub enum LiveTopic {
     Deliveries,
     /// Node heartbeats (`node_status`).
     Nodes,
-    /// Cluster configuration documents (`configuration_changes`).
+    /// Library configuration documents (`configuration_changes`).
     Config,
     /// Owner-plugin consent on this host (`remote_plugin_consents`).
     Consents,
-    /// Owner clusters this host joined, and their state (`cluster_links`).
-    Clusters,
+    /// Owner libraries this host joined, and their state (`library_links`).
+    Libraries,
     /// Users (`users`).
     Users,
     /// Stored Discover shelves (`discover_feeds`): a ranking job wrote or
@@ -61,7 +61,7 @@ impl LiveTopic {
         Self::Nodes,
         Self::Config,
         Self::Consents,
-        Self::Clusters,
+        Self::Libraries,
         Self::Users,
         Self::Discover,
         Self::Playback,
@@ -77,7 +77,7 @@ impl LiveTopic {
             Self::Nodes => "nodes",
             Self::Config => "config",
             Self::Consents => "consents",
-            Self::Clusters => "clusters",
+            Self::Libraries => "libraries",
             Self::Users => "users",
             Self::Discover => "discover",
             Self::Playback => "playback",
@@ -93,7 +93,7 @@ impl LiveTopic {
     /// The table behind the topic and its change-stamp column, which every
     /// write to the table sets to the time of the write.
     ///
-    /// `None` for `cluster_links`, which has no change stamp, for
+    /// `None` for `library_links`, which has no change stamp, for
     /// `configuration_changes`, an append-only log whose stamp is not
     /// indexed, and for `playback`, which has two tables and moves only
     /// on some of their writes; their writes bump on a probe or outright
@@ -107,7 +107,7 @@ impl LiveTopic {
             Self::Nodes => Some(("node_status", "heartbeat_at")),
             Self::Config => None,
             Self::Consents => Some(("remote_plugin_consents", "updated_at")),
-            Self::Clusters => None,
+            Self::Libraries => None,
             Self::Users => Some(("users", "updated_at")),
             Self::Discover => Some(("discover_feeds", "computed_at")),
             Self::Playback => None,
@@ -209,7 +209,7 @@ where
 /// # Errors
 ///
 /// Returns [`LibraryError::Other`] for a topic without a change stamp
-/// (`clusters`, `config`).
+/// (`libraries`, `config`).
 pub(crate) fn bump_if_stamped(topic: LiveTopic, stamp: &str) -> Result<TypedDbStatement> {
     let (table, column) = topic.stamp_column().ok_or_else(|| {
         LibraryError::Other(anyhow::anyhow!(
@@ -671,14 +671,14 @@ mod tests {
         assert_eq!(LiveTopic::Discover.as_str(), "discover");
     }
 
-    /// Joining a cluster, a state change (revoked by the owner) and leaving
-    /// each change only the clusters topic, although `cluster_links` has no
+    /// Joining a library, a state change (revoked by the owner) and leaving
+    /// each change only the libraries topic, although `library_links` has no
     /// change stamp and a state change keeps the row count.
     #[tokio::test]
-    async fn joining_revoking_and_leaving_change_the_clusters_topic() {
+    async fn joining_revoking_and_leaving_change_the_libraries_topic() {
         use crate::control_plane::{
-            leave_cluster_link, record_cluster_link, set_cluster_link_state, ClusterLinkKeys,
-            NewClusterLink, CLUSTER_LINK_REVOKED,
+            leave_library_link, record_library_link, set_library_link_state, LibraryLinkKeys,
+            NewLibraryLink, LIBRARY_LINK_REVOKED,
         };
         let _lock = crate::master_key::master_key_test_lock_async().await;
         let dir = tempfile::tempdir().unwrap();
@@ -688,41 +688,44 @@ mod tests {
         crate::apply_host_schema(&db).await.unwrap();
         crate::configure_master_key(dir.path()).unwrap();
         let store = LibraryStore::from_connection(db);
-        let link = NewClusterLink {
-            owner_cluster_id: "cluster-1".into(),
+        let link = NewLibraryLink {
+            parent_library_id: "library-1".into(),
             owner_origin: "https://owner.example".into(),
             remote_node_id: "node-1".into(),
             spki_pin: None,
         };
-        let keys = ClusterLinkKeys::from_bytes(&[1; 32], &[2; 32]);
+        let keys = LibraryLinkKeys::from_bytes(&[1; 32], &[2; 32]);
 
         let before = live_revisions(&store).await.unwrap();
-        record_cluster_link(&store, &link, &keys).await.unwrap();
+        record_library_link(&store, &link, &keys).await.unwrap();
         let joined = live_revisions(&store).await.unwrap();
-        assert_eq!(changed_topics(&before, &joined), vec![LiveTopic::Clusters]);
+        assert_eq!(changed_topics(&before, &joined), vec![LiveTopic::Libraries]);
 
         assert!(
-            set_cluster_link_state(&store, "cluster-1", CLUSTER_LINK_REVOKED, None)
+            set_library_link_state(&store, "library-1", LIBRARY_LINK_REVOKED, None)
                 .await
                 .unwrap()
         );
         let revoked = live_revisions(&store).await.unwrap();
-        assert_eq!(changed_topics(&joined, &revoked), vec![LiveTopic::Clusters]);
+        assert_eq!(
+            changed_topics(&joined, &revoked),
+            vec![LiveTopic::Libraries]
+        );
 
         // Re-enrolling makes it active again.
-        record_cluster_link(&store, &link, &keys).await.unwrap();
+        record_library_link(&store, &link, &keys).await.unwrap();
         let rejoined = live_revisions(&store).await.unwrap();
         assert_eq!(
             changed_topics(&revoked, &rejoined),
-            vec![LiveTopic::Clusters]
+            vec![LiveTopic::Libraries]
         );
 
-        leave_cluster_link(&store, "cluster-1", None)
+        leave_library_link(&store, "library-1", None)
             .await
             .unwrap()
             .expect("the link");
         let left = live_revisions(&store).await.unwrap();
-        assert_eq!(changed_topics(&rejoined, &left), vec![LiveTopic::Clusters]);
+        assert_eq!(changed_topics(&rejoined, &left), vec![LiveTopic::Libraries]);
         let again = live_revisions(&store).await.unwrap();
         assert!(changed_topics(&left, &again).is_empty());
     }

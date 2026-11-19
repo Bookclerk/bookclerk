@@ -4,7 +4,7 @@
 // The list is default-deny and covers every operation in
 // crates/bookclerkd/openapi.json; test/routes.test.ts fails when the API
 // gains an operation this table does not name, so a new route cannot reach
-// the demo unreviewed. Acquire, downloads, node and cluster links, plugin
+// the demo unreviewed. Acquire, downloads, node and library links, plugin
 // installs, sign-in methods, users and settings writes are refused here
 // (lock 1). The image itself has no media worker and no output plugin, so the
 // host refuses acquire work too (lock 2).
@@ -89,8 +89,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/auth/tray-handoff", "deny"],
   ["POST", "/api/auth/tray-handoff/prepare", "deny"],
 
-  // Clusters, branches, shared branches and nodes: read-only views, no links.
-  ["GET", "/api/cluster/status", "allow"],
+  // Libraries, branches, shared branches and nodes: read-only views, no links.
+  ["GET", "/api/library-status", "allow"],
   ["GET", "/api/config/branches", "allow"],
   ["PUT", "/api/config/branches", "deny"],
   ["POST", "/api/config/branches/titles/remove", "deny"],
@@ -107,11 +107,11 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/config/clerk/inspect", "deny"],
   ["POST", "/api/config/clerk/sign-out", "deny"],
   ["POST", "/api/config/clerk/start", "deny"],
-  ["GET", "/api/config/cluster-consents", "allow"],
-  ["POST", "/api/config/cluster-consents/approve", "deny"],
-  ["POST", "/api/config/cluster-consents/revoke", "deny"],
-  ["POST", "/api/config/clusters/{cluster_id}/jobs", "deny"],
-  ["POST", "/api/config/clusters/{cluster_id}/scan", "deny"],
+  ["GET", "/api/config/library-consents", "allow"],
+  ["POST", "/api/config/library-consents/approve", "deny"],
+  ["POST", "/api/config/library-consents/revoke", "deny"],
+  ["POST", "/api/config/libraries/{library_id}/jobs", "deny"],
+  ["POST", "/api/config/libraries/{library_id}/scan", "deny"],
   ["GET", "/api/config/host-enrollment", "allow"],
   ["PUT", "/api/config/host-enrollment", "deny"],
   ["GET", "/api/config/join", "allow"],
@@ -153,6 +153,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/database/migrate", "deny"],
   ["GET", "/api/settings", "allow"],
   ["PATCH", "/api/settings", "deny"],
+  // The visitor's own copy's sent diagnostics reports: read-only.
+  ["GET", "/api/diagnostics/reports", "allow"],
 
   // Plugins: the image's own storefronts only; no installs or changes.
   ["GET", "/api/config/plugin-instances", "allow"],
@@ -161,6 +163,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/config/plugin-instances/{id}/config", "allow"],
   ["PUT", "/api/config/plugin-instances/{id}/config", "deny"],
   ["PUT", "/api/config/plugin-instances/{id}/deployments/{node_id}", "deny"],
+  ["GET", "/api/config/plugin-instances/{id}/filter", "allow"],
+  ["PUT", "/api/config/plugin-instances/{id}/filter", "deny"],
   ["PUT", "/api/config/plugin-instances/{id}/placement", "deny"],
   ["DELETE", "/api/config/plugin-instances/{id}/placement", "deny"],
   ["GET", "/api/config/plugins", "allow"],

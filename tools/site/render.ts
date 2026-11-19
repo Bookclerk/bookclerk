@@ -141,7 +141,7 @@ export const NAV: NavSpec[] = [
       "server/sign-in",
       "server/integrations",
       "server/plugins",
-      "server/cluster-hosts",
+      "server/branches",
       "server/media",
       "server/playback",
       "server/backups",

@@ -252,6 +252,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.destination_filter]
+crate = "bookclerk-config"
+boundary = "A storage destination's filter as an operator sends it: the body of PUT /api/config/plugin-instances/{id}/filter and the stored core.destination document"
+input_from = "operator"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.destination_id]
 crate = "bookclerk-config"
 boundary = "A destination id another node sends: an acquire plan's PlanDestination.id and upload records naming the owner's storage plugin instances"
@@ -263,6 +270,13 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-config"
 boundary = "cache.* values from the settings API and CLI"
 input_from = "operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.diagnostics_submit_reply]
+crate = "bookclerk-config"
+boundary = "the diagnostics collector's reply to an uploaded report, whose report_id joins the install's report history"
+input_from = "diagnostics collector"
 side = "host"
 artifacts = ["bookclerk"]
 
@@ -410,7 +424,7 @@ artifacts = ["bookclerk"]
 
 [targets.node_frame]
 crate = "bookclerk-node-proto"
-boundary = "Node-to-node frames on the cluster socket"
+boundary = "Node-to-node frames on the library socket"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]

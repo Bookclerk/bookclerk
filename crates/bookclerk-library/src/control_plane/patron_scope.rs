@@ -7,7 +7,7 @@
 //! match at least one. An exclude rule always wins over an include.
 //!
 //! Owners and Administrators are never scoped. A Member or Host follows the
-//! library's default scope (the `core.patron_scope` cluster document) until
+//! library's default scope (the `core.patron_scope` library document) until
 //! an Administrator gives them their own (a `patron_scopes` row). Out of the
 //! box the default has no rules, so it restricts nothing.
 //!
@@ -32,7 +32,7 @@ use crate::models::{UserRecord, UserRole, UserStatus};
 use crate::store::LibraryStore;
 use crate::{EntityKind, WorkFacet, WorkScope};
 
-/// Namespace of the cluster document that holds the library's default
+/// Namespace of the library document that holds the library's default
 /// scope.
 pub const PATRON_SCOPE_NAMESPACE: &str = "core.patron_scope";
 
@@ -491,7 +491,7 @@ pub async fn verify_patron_administrator(
 pub async fn load_default_patron_scope(
     store: &LibraryStore,
 ) -> Result<Option<ConfigurationDocument<PatronScope>>> {
-    load_document(store, &DocumentKey::cluster(PATRON_SCOPE_NAMESPACE))
+    load_document(store, &DocumentKey::library(PATRON_SCOPE_NAMESPACE))
         .await?
         .map(parse_default)
         .transpose()
@@ -530,7 +530,7 @@ pub async fn set_default_patron_scope(
 ) -> Result<ConfigurationDocument<PatronScope>> {
     let scope = scope.normalized();
     scope.validate()?;
-    let key = DocumentKey::cluster(PATRON_SCOPE_NAMESPACE);
+    let key = DocumentKey::library(PATRON_SCOPE_NAMESPACE);
     for attempt in 0..4 {
         let current = match load_default_patron_scope(store).await? {
             Some(document) => document,

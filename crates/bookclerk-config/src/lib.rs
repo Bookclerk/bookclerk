@@ -41,9 +41,11 @@ mod overrides;
 mod path_limits;
 mod paths;
 mod pipeline_opts;
+mod placement;
 mod platform;
 mod plugins;
 mod redact;
+mod report_history;
 mod settings;
 
 pub use atomic_replace::replace_file;
@@ -108,6 +110,10 @@ pub use paths::{
     resolve_config_path, resolve_files_dir, Paths, BOOKCLERK_CONFIG_ENV, BOOKCLERK_FILES_DIR_ENV,
 };
 pub use pipeline_opts::{ChapterJsonMode, OutputFormat};
+pub use placement::{
+    parse_destination_filter, DestinationFilter, FilterEffect, FilterError, FilterField,
+    FilterRule, PlacementFacts, PlacementMediaKind, MAX_FILTER_RULES, MAX_FILTER_VALUE_BYTES,
+};
 pub use platform::detect_distro;
 pub use plugins::{
     host_cpu_rate_max, node_logical_cpus, IntegrationsConfig, PluginRegistryEntry, PluginsConfig,
@@ -118,6 +124,10 @@ pub use redact::{
     redact_field_value, redact_str, register_secret, register_secret_bytes, register_secrets,
     register_secrets_from_env, sanitize_for_remote_upload, secrets_registry_test_lock,
     truncate_upload_message, unregister_secret, REDACTED,
+};
+pub use report_history::{
+    load_report_history, parse_submit_reply, record_report, ReportId, ReportRecord,
+    SubmitReplyError, MAX_REPORT_HISTORY, MAX_SUBMIT_REPLY_BYTES, REPORT_HISTORY_FILE,
 };
 pub use settings::{
     read_node_api_spki_pin, AudioQuality, AuthConfig, Config, DaemonAuthConfig, DaemonConfig,

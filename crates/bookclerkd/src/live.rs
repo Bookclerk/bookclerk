@@ -26,7 +26,7 @@
 //! `discover` and `playback` (the routes behind them are scoped to the
 //! caller; `discover` and `playback` say only that someone's stored
 //! shelves or listening progress changed, and each page re-reads its
-//! own). `config`, `consents` and `clusters` are operator only.
+//! own). `config`, `consents` and `libraries` are operator only.
 //!
 //! **Frames** (server to client, JSON text):
 //!

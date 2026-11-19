@@ -153,7 +153,7 @@ database). Each alias maps to zero or one installed `PluginKey`.
 - Separate Bookclerk hosts with their own files directories may install
   the same alias and PluginKey independently, even when they share a
   library database. Aliases are **not** globally unique across an HA
-  cluster.
+  library.
 
 ### The grammar
 

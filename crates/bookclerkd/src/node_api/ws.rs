@@ -64,7 +64,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::Engine as _;
 use bookclerk_library::control_plane::{
-    load_cluster_row, load_node_credential, record_node_connected, record_node_left,
+    load_library_row, load_node_credential, record_node_connected, record_node_left,
     JobClaimLimits, RemoteClaimSettings,
 };
 use bookclerk_library::LibraryStore;
@@ -648,16 +648,16 @@ async fn handshake(
     if !is_plain_id(&incarnation) {
         return Err(Refusal::auth("malformed_hello", Some(&node_id)));
     }
-    let cluster_id = match load_cluster_row(library).await {
-        Ok(Some(row)) => row.cluster_id,
-        Ok(None) | Err(_) => return Err(Refusal::auth("cluster_unavailable", Some(&node_id))),
+    let library_id = match load_library_row(library).await {
+        Ok(Some(row)) => row.library_id,
+        Ok(None) | Err(_) => return Err(Refusal::auth("library_unavailable", Some(&node_id))),
     };
     let nonce: [u8; NONCE_LEN] = rand::rngs::OsRng.gen();
     let challenge = Frame::new(
         hello.id,
         Body::Challenge {
             nonce: encode_nonce(&nonce),
-            cluster_id: cluster_id.clone(),
+            library_id: library_id.clone(),
         },
     );
     if !send_frame(socket, &challenge).await {
@@ -679,7 +679,7 @@ async fn handshake(
         Err(_) => return Err(Refusal::auth("credential_unavailable", Some(&node_id))),
     };
     let ctx = AuthContext {
-        cluster_id: &cluster_id,
+        library_id: &library_id,
         node_id: &node_id,
         incarnation: &incarnation,
         nonce: &nonce,
@@ -713,7 +713,7 @@ async fn handshake(
         auth_id,
         Body::Welcome {
             node_id: node_id.clone(),
-            cluster_id,
+            library_id,
             box_key,
         },
     );

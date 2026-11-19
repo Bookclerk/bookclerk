@@ -1,0 +1,1 @@
+{"rules":[{"field":"patron","value":"3","effect":"include"},{"field":"media_kind","value":" Podcast ","effect":"exclude"},{"field":"account","value":"acct","effect":"include"}]}

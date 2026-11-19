@@ -124,7 +124,7 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
     try {
       const joined = await joinWithInvite(invite);
       setInvite("");
-      onJoined?.(joined.cluster.owner_origin, joined.cluster);
+      onJoined?.(joined.library.owner_origin, joined.library);
     } catch (err) {
       setError(joinErrorMessage(err, "Could not join with that invite."));
     } finally {

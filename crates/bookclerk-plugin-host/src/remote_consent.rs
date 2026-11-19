@@ -1,8 +1,8 @@
 //! Grant algebra for owner plugins on a branch node (H-4 design, section 5;
 //! step 8).
 //!
-//! An owner cluster deploys a plugin to a host with the grant the
-//! cluster's operator approved (the *request*). The host's own operator
+//! A library deploys a plugin to a host with the grant the
+//! library's operator approved (the *request*). The host's own operator
 //! approves it before anything runs and may narrow it; the stored approval
 //! is the request as reviewed plus the *consent* (`library
 //! control_plane::remote_consents`). This module decides:
@@ -559,7 +559,7 @@ pub fn remote_consent_view(
             .unwrap_or(serde_json::Value::Null)
     };
     serde_json::json!({
-        "cluster_id": row.owner_cluster_id,
+        "library_id": row.parent_library_id,
         "plugin_key": row.plugin_key,
         "requested_version": row.requested_version,
         "requested_grant": parse(Some(&row.requested_grant_json)),
@@ -607,7 +607,7 @@ pub fn remote_platform_auto_approval(
 /// later".
 #[derive(Debug, thiserror::Error)]
 pub enum RemoteApprovalError {
-    /// No request is recorded for that cluster and plugin.
+    /// No request is recorded for that library and plugin.
     #[error("{0}")]
     NotRequested(String),
     /// The recorded request is not the reviewed one (its digest differs),
@@ -637,7 +637,7 @@ impl From<bookclerk_library::LibraryError> for RemoteApprovalError {
     }
 }
 
-/// Approves the request recorded from `cluster_id` for `plugin_key`,
+/// Approves the request recorded from `library_id` for `plugin_key`,
 /// exactly as it was reviewed: `reviewed_digest` must be the recorded
 /// request's digest
 /// ([`bookclerk_library::control_plane::RemotePluginConsent::request_digest`],
@@ -649,7 +649,7 @@ impl From<bookclerk_library::LibraryError> for RemoteApprovalError {
 /// # Arguments
 ///
 /// * `store` - This host's library.
-/// * `cluster_id` - Owner cluster id.
+/// * `library_id` - Library id.
 /// * `plugin_key` - Canonical plugin key.
 /// * `reviewed_digest` - Digest of the request as the approver reviewed it.
 /// * `narrowing` - What the approver takes out of the request.
@@ -667,7 +667,7 @@ impl From<bookclerk_library::LibraryError> for RemoteApprovalError {
 /// [`RemoteApprovalError::Store`] when a read or write fails.
 pub async fn approve_remote_request(
     store: &bookclerk_library::LibraryStore,
-    cluster_id: &str,
+    library_id: &str,
     plugin_key: &str,
     reviewed_digest: &str,
     narrowing: &RemoteNarrowing,
@@ -677,12 +677,12 @@ pub async fn approve_remote_request(
     use bookclerk_library::control_plane::{
         approve_remote_plugin, load_remote_plugin_consent, RemoteApproval,
     };
-    let row = load_remote_plugin_consent(store, cluster_id, plugin_key)
+    let row = load_remote_plugin_consent(store, library_id, plugin_key)
         .await
         .map_err(|err| RemoteApprovalError::Store(err.to_string()))?
         .ok_or_else(|| {
             RemoteApprovalError::NotRequested(format!(
-                "cluster {cluster_id} has not asked to run {plugin_key} here"
+                "library {library_id} has not asked to run {plugin_key} here"
             ))
         })?;
     let current = row.request_digest();
@@ -706,7 +706,7 @@ pub async fn approve_remote_request(
     Ok(approve_remote_plugin(
         store,
         &RemoteApproval {
-            cluster_id,
+            library_id,
             plugin_key,
             version: &row.requested_version,
             reviewed_request_json: &row.requested_grant_json,
@@ -1200,12 +1200,12 @@ mod tests {
         let grant = json(&requested());
         let key = requested().plugin_key;
         let recorded =
-            record_remote_plugin_request(&store, "cluster-a", &key, "1.0.0", &grant, ARTIFACT)
+            record_remote_plugin_request(&store, "library-a", &key, "1.0.0", &grant, ARTIFACT)
                 .await
                 .unwrap();
         let approved = approve_remote_request(
             &store,
-            "cluster-a",
+            "library-a",
             &key,
             &recorded.request_digest(),
             &RemoteNarrowing::default(),
@@ -1237,7 +1237,7 @@ mod tests {
             },
         ] {
             let now =
-                record_remote_plugin_request(&store, "cluster-a", &key, "1.0.0", &grant, moved)
+                record_remote_plugin_request(&store, "library-a", &key, "1.0.0", &grant, moved)
                     .await
                     .unwrap();
             assert_eq!(
@@ -1248,7 +1248,7 @@ mod tests {
         }
         // Pointing it back restores what was approved.
         let back =
-            record_remote_plugin_request(&store, "cluster-a", &key, "1.0.0", &grant, ARTIFACT)
+            record_remote_plugin_request(&store, "library-a", &key, "1.0.0", &grant, ARTIFACT)
                 .await
                 .unwrap();
         assert!(matches!(
@@ -1268,7 +1268,7 @@ mod tests {
         let key = reviewed.plugin_key.clone();
         let seen = record_remote_plugin_request(
             &store,
-            "cluster-a",
+            "library-a",
             &key,
             "1.0.0",
             &json(&reviewed),
@@ -1284,7 +1284,7 @@ mod tests {
         changed.domains.insert("tracker.example".into());
         let now = record_remote_plugin_request(
             &store,
-            "cluster-a",
+            "library-a",
             &key,
             "1.0.0",
             &json(&changed),
@@ -1296,7 +1296,7 @@ mod tests {
         let operator = RemoteApprover::Operator("operator");
         let refused = approve_remote_request(
             &store,
-            "cluster-a",
+            "library-a",
             &key,
             &seen,
             &RemoteNarrowing::default(),
@@ -1314,7 +1314,7 @@ mod tests {
         assert!(matches!(
             approve_remote_request(
                 &store,
-                "cluster-b",
+                "library-b",
                 &key,
                 &seen,
                 &RemoteNarrowing::default(),
@@ -1326,7 +1326,7 @@ mod tests {
         assert!(matches!(
             approve_remote_request(
                 &store,
-                "cluster-a",
+                "library-a",
                 &key,
                 &now.request_digest(),
                 &RemoteNarrowing {
@@ -1338,7 +1338,7 @@ mod tests {
             .await,
             Err(RemoteApprovalError::Invalid(_))
         ));
-        assert!(!load_remote_plugin_consent(&store, "cluster-a", &key)
+        assert!(!load_remote_plugin_consent(&store, "library-a", &key)
             .await
             .unwrap()
             .unwrap()
@@ -1346,7 +1346,7 @@ mod tests {
         for blank in ["", "  "] {
             assert!(approve_remote_request(
                 &store,
-                "cluster-a",
+                "library-a",
                 &key,
                 blank,
                 &RemoteNarrowing::default(),
@@ -1359,7 +1359,7 @@ mod tests {
         // Approving what is recorded now stores exactly that request.
         let approved = approve_remote_request(
             &store,
-            "cluster-a",
+            "library-a",
             &key,
             &now.request_digest().to_ascii_uppercase(),
             &RemoteNarrowing::default(),
@@ -1373,13 +1373,13 @@ mod tests {
         );
 
         // After a revoke only the operator approves again.
-        revoke_remote_plugin(&store, "cluster-a", &key)
+        revoke_remote_plugin(&store, "library-a", &key)
             .await
             .unwrap()
             .unwrap();
         assert!(approve_remote_request(
             &store,
-            "cluster-a",
+            "library-a",
             &key,
             &approved.request_digest(),
             &RemoteNarrowing::default(),

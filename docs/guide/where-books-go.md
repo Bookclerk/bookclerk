@@ -24,7 +24,10 @@ same way, such as MinIO.
 3. The operator fills in the bucket name and keys.
 
 You can use a folder and cloud storage at the same time. Each new book goes
-to every destination that is turned on.
+to every destination that is turned on, unless the operator gives a
+destination a filter: for example, podcasts only in one place, or one
+person's books in their own folder (see
+[Choosing which books a destination takes](../server/output.md#choosing-which-books-a-destination-takes)).
 
 ## How files are named
 
@@ -42,7 +45,7 @@ The same page also sets:
 - whether to save the cover image, a companion PDF and chapter information
   beside each book.
 
-Every book's path carries a short library id, such as `[1a2b3c4d]`. With
+Every book's path carries a short call number, such as `[1a2b3c4d]`. With
 the audiobookshelf profile it ends the file name, for example
 `Author/Series/1 - Title/Title [1a2b3c4d].m4b`. With the classic profile it
 ends the folder name instead, for example

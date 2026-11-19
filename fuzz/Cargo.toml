@@ -389,6 +389,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "destination_filter"
+path = "fuzz_targets/destination_filter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "destination_id"
 path = "fuzz_targets/destination_id.rs"
 test = false
@@ -405,6 +412,13 @@ bench = false
 [[bin]]
 name = "cache_settings"
 path = "fuzz_targets/cache_settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diagnostics_submit_reply"
+path = "fuzz_targets/diagnostics_submit_reply.rs"
 test = false
 doc = false
 bench = false

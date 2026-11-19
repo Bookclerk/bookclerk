@@ -12,7 +12,7 @@
 //!
 //! Which side keeps follows from `account_shares`, so no lease row is
 //! needed: a library holds a share with the branch node (`node:<id>`), the
-//! branch holds one with the library (`link:<cluster>`). An account with no
+//! branch holds one with the library (`link:<library>`). An account with no
 //! share stays its own keeper. Which storefronts are single-keeper is the
 //! daemon's to decide from the plugins' manifests; these functions take the
 //! account as given.
@@ -187,7 +187,7 @@ pub async fn confirmed_keeping_branch(
 }
 
 /// True when this install keeps the account for the library it joined as
-/// `cluster_id` (it holds a share with that library).
+/// `library_id` (it holds a share with that library).
 ///
 /// # Errors
 ///
@@ -196,9 +196,9 @@ pub async fn keeps_for_link(
     store: &LibraryStore,
     plugin_key: &str,
     account_id: &str,
-    cluster_id: &str,
+    library_id: &str,
 ) -> Result<bool> {
-    let peer = format!("{LINK_PEER}{cluster_id}");
+    let peer = format!("{LINK_PEER}{library_id}");
     Ok(account_shares::Entity::find()
         .filter(account_shares::Column::PluginKey.eq(plugin_key))
         .filter(account_shares::Column::AccountId.eq(account_id))
@@ -217,8 +217,8 @@ pub struct KeptShare {
     pub plugin_key: String,
     /// Store account id.
     pub account_id: String,
-    /// The library's cluster id.
-    pub cluster_id: String,
+    /// The library id.
+    pub library_id: String,
     /// The revision last sent to that library; 0 before the first push.
     pub pushed: i64,
     /// The [`SignIn::fingerprint`] of the sign-in last sent; 0 before the
@@ -273,7 +273,7 @@ pub async fn kept_shares(store: &LibraryStore) -> Result<Vec<KeptShare>> {
     }
     let mut kept = Vec::with_capacity(keys.len());
     for (plugin_key, account_id, peer) in keys {
-        let Some(cluster_id) = peer.strip_prefix(LINK_PEER) else {
+        let Some(library_id) = peer.strip_prefix(LINK_PEER) else {
             continue;
         };
         // One row by its primary key.
@@ -287,7 +287,7 @@ pub async fn kept_shares(store: &LibraryStore) -> Result<Vec<KeptShare>> {
         .map_err(LibraryError::Orm)?
         .map_or((0, 0), |row| (row.revision, row.observed));
         kept.push(KeptShare {
-            cluster_id: cluster_id.to_owned(),
+            library_id: library_id.to_owned(),
             plugin_key,
             account_id,
             pushed,
@@ -298,7 +298,7 @@ pub async fn kept_shares(store: &LibraryStore) -> Result<Vec<KeptShare>> {
 }
 
 /// Records that the keeper sent `revision` of the account to the library
-/// `cluster_id` (whether it applied it or already had it), for the sign-in
+/// `library_id` (whether it applied it or already had it), for the sign-in
 /// whose fingerprint is `observed` ([`SignIn::fingerprint`]). Never lowers
 /// the recorded revision.
 ///
@@ -309,11 +309,11 @@ pub async fn record_pushed_revision(
     store: &LibraryStore,
     plugin_key: &str,
     account_id: &str,
-    cluster_id: &str,
+    library_id: &str,
     revision: i64,
     observed: i64,
 ) -> Result<()> {
-    let peer = format!("{LINK_PEER}{cluster_id}");
+    let peer = format!("{LINK_PEER}{library_id}");
     let now = Utc::now().to_rfc3339();
     let statements = revision_statements(
         plugin_key,

@@ -34,7 +34,7 @@ one Workers primitive:
 | `[[events.consumers]]` | Events fanned out to one queue per subscriber, drained by that Worker's `queue()` handler | Every subscribed instance gets its own copy |
 | `[[queues.consumers]]` | A Queues consumer | Each message goes to the queue's one consumer |
 | `job(job)` | A Workflow step, or a command sent to one Worker | One command, one handler |
-| `[triggers] crons` | Cron Triggers | One fire per instance, cluster-wide |
+| `[triggers] crons` | Cron Triggers | One fire per instance, library-wide |
 | Storefront, storage, metadata and database entrypoints | Service binding RPC to a `WorkerEntrypoint` | The caller awaits a reply |
 
 Everything is asynchronous. No host thread blocks on a plugin; RPC
@@ -225,7 +225,7 @@ updates to this record:
 - A consumer that is running but falls behind by more than its retention
   period also loses the oldest never-leased deliveries. Consumers that
   expect long backlogs declare a longer `message_retention_period`.
-- Events are scoped to one library, the cluster that shares its database.
+- Events are scoped to one library, the library that shares its database.
   Every subscriber and every delivery belongs to that library, and an
   event never crosses to another one. Data from another library arrives
   through a typed import that publishes ordinary local events on the

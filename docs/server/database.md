@@ -19,16 +19,16 @@ Bookclerk stores library state (accounts, books, portal, discovery) in a
 | Backend | When to use it |
 | --- | --- |
 | SQLite (`sqlite`, the default) | One server. A local file, `$BOOKCLERK_FILES_DIR/library.db` |
-| PostgreSQL (`postgres`) | A shared database, for example for [shared branches](cluster-hosts.md#shared-branches) |
+| PostgreSQL (`postgres`) | A shared database, for example for [shared branches](branches.md#shared-branches) |
 | Cloudflare D1 (`d1`) | Remote SQLite through the Cloudflare HTTP API |
 
 Which backend to open is **bootstrap** configuration: `[database]` and the
-database environment variables. Once the connection is up, cluster
+database environment variables. Once the connection is up, library
 identity, host registration and the `[events]` configuration domain live
 in this database. See [ADR: Control plane](../adr/control-plane.md).
 
 > [!NOTE]
-> SQLite is the single-host database, not a shared-disk cluster.
+> SQLite is the single-host database, not a shared-disk library.
 
 ## Configure the database
 
@@ -562,15 +562,15 @@ Unreleased state records its frozen base (`unreleased@base0+…` today).
 Only one starter migrates a shared database.
 
 - A start that finds the schema already matching just checks it.
-- One with DDL to apply creates `cluster_leases` and takes the
+- One with DDL to apply creates `library_leases` and takes the
   `schema.migrate` lease. The lease lasts 120 s, is renewed while it
   works, and is checked before every DDL batch.
 - Other starters wait for the schema to match, take the lease over if the
   migrator dies, and fail closed after 300 s.
 
 The lease row keeps the last migrator's holder and token.
-`GET /api/cluster/status` shows it with the schema state
-(`cluster.schema`).
+`GET /api/library-status` shows it with the schema state
+(`library.schema`).
 
 `bookclerk db version|backup|restore|migrate` inspects the state and walks
 frozen revisions without applying on connect. A `migrate` walk that writes
@@ -690,7 +690,7 @@ the whole value set, so the Library filter joins them with a fixed
 number of parameters however many rules a scope has; the rows are
 written the first time a scope is used and never change. `account_shares` records each
 account a person's join sent to a branch (`sent`, peer `node:<id>`) or
-received from a library (`received`, peer `link:<cluster id>`); it is
+received from a library (`received`, peer `link:<library id>`); it is
 removed with the account. `account_credential_revisions` holds, per account
 and peer, the newest sign-in revision of a single-keeper account: on a
 library the last one applied from its keeper branch, on that branch the
@@ -850,7 +850,7 @@ Event wake-ups work like this:
   (100 on D1), minus the fenced UPDATE's fixed binds.
 - Claim uses this node's catalog (type, schema and filter) in **host**
   code. The atomic mutation is a compare-and-set on a concrete delivery
-  id. Cluster dispatch still unions live nodes.
+  id. Library dispatch still unions live nodes.
 
 ### The encrypted_secrets table
 
@@ -937,5 +937,5 @@ let plain = unseal_secret(&record)?;
   files.
 - [ADR: SQL database contract](../adr/sql-database-contract.md) and the
   [SQL-v1 contract](../plugins/sql-contract/v1.md): the SQL every adapter accepts.
-- [Libraries and branches](cluster-hosts.md): sharing one database between
+- [Libraries and branches](branches.md): sharing one database between
   a library and its branches.

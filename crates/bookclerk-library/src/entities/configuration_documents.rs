@@ -6,7 +6,7 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "configuration_documents")]
 pub struct Model {
-    /// Scope kind (`cluster` or `host`).
+    /// Scope kind (`library` or `host`).
     #[sea_orm(primary_key, auto_increment = false)]
     pub scope_type: String,
     /// Scope instance (`singleton` or a host id).

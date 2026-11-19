@@ -54,9 +54,9 @@ pub const MAX_LIBRARY_NAME_BYTES: usize = 253;
 /// `GET /api/node/v1/info` answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct OwnerInfo {
-    /// The library's cluster id.
+    /// The library id.
     #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
-    pub cluster_id: String,
+    pub library_id: String,
     /// A name to show for the library.
     #[schema(example = "books.example.com")]
     pub library_name: String,
@@ -81,9 +81,9 @@ pub struct OwnerInfo {
     #[serde(default)]
     #[schema(example = "0.4.0")]
     pub software_version: String,
-    /// The library's ancestry: its own cluster id first, then the cluster
+    /// The library's ancestry: its own library id first, then the library
     /// id of every library above it up to the root. A joining library
-    /// refuses a parent whose ancestry names its own cluster id, so a
+    /// refuses a parent whose ancestry names its own library id, so a
     /// tree of libraries never becomes a cycle.
     #[serde(default)]
     #[schema(example = json!(["c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"]))]
@@ -137,9 +137,9 @@ impl std::fmt::Debug for OAuthEnrollRequest {
 /// `POST /api/node/v1/enroll/oauth` answer.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct OAuthEnrollAnswer {
-    /// The library's cluster id.
+    /// The library id.
     #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
-    pub cluster_id: String,
+    pub library_id: String,
     /// The node id recorded for the joining install.
     #[schema(example = "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c")]
     pub node_id: String,
@@ -169,7 +169,7 @@ pub struct OAuthEnrollAnswer {
 impl std::fmt::Debug for OAuthEnrollAnswer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OAuthEnrollAnswer")
-            .field("cluster_id", &self.cluster_id)
+            .field("library_id", &self.library_id)
             .field("node_id", &self.node_id)
             .field("connection", &self.connection)
             .field("bootstrap", &self.bootstrap.as_ref().map(|_| "<sealed>"))

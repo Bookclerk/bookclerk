@@ -283,7 +283,7 @@ async fn the_operator_hears_job_and_consent_changes() {
         "type, v and topics only"
     );
 
-    crate::cluster_link::consent::notify_consent_changed();
+    crate::library_link::consent::notify_consent_changed();
     let poked = next_frame(&mut socket, Duration::from_secs(1))
         .await
         .unwrap();

@@ -14,8 +14,8 @@ pub const NONCE_LEN: usize = 32;
 /// What a handshake signature covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuthContext<'a> {
-    /// Owner cluster id from the challenge.
-    pub cluster_id: &'a str,
+    /// Library id from the challenge.
+    pub library_id: &'a str,
     /// Node id from the hello.
     pub node_id: &'a str,
     /// Incarnation from the hello.
@@ -47,7 +47,7 @@ pub enum AuthError {
 #[must_use]
 pub fn auth_transcript(ctx: &AuthContext<'_>) -> Vec<u8> {
     let fields: [&[u8]; 5] = [
-        ctx.cluster_id.as_bytes(),
+        ctx.library_id.as_bytes(),
         ctx.node_id.as_bytes(),
         ctx.incarnation.as_bytes(),
         ctx.nonce,
@@ -103,8 +103,8 @@ pub const ARTIFACT_REQUEST_MAX_SKEW_SECS: i64 = 300;
 /// What a signed artifact request covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArtifactRequest<'a> {
-    /// Owner cluster id.
-    pub cluster_id: &'a str,
+    /// Library id.
+    pub library_id: &'a str,
     /// Requesting node id.
     pub node_id: &'a str,
     /// Owner origin as [`canonical_origin`] spells it.
@@ -121,7 +121,7 @@ pub struct ArtifactRequest<'a> {
 pub fn artifact_transcript(request: &ArtifactRequest<'_>) -> Vec<u8> {
     let issued_at = request.issued_at.to_be_bytes();
     let fields: [&[u8]; 5] = [
-        request.cluster_id.as_bytes(),
+        request.library_id.as_bytes(),
         request.node_id.as_bytes(),
         request.owner_origin.as_bytes(),
         request.archive_sha256.as_bytes(),
@@ -229,7 +229,7 @@ mod tests {
 
     fn ctx<'a>(nonce: &'a [u8; NONCE_LEN], origin: &'a str) -> AuthContext<'a> {
         AuthContext {
-            cluster_id: "cluster",
+            library_id: "library",
             node_id: "node",
             incarnation: "inc",
             nonce,
@@ -292,7 +292,7 @@ mod tests {
         let key = SigningKey::from_bytes(&[3u8; 32]);
         let public = key.verifying_key().to_bytes();
         let request = ArtifactRequest {
-            cluster_id: "cluster",
+            library_id: "library",
             node_id: "node-1",
             owner_origin: "https://owner.example",
             archive_sha256: "ab",

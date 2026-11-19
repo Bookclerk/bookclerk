@@ -7,7 +7,7 @@
 //!
 //! - [`remote_deployments_for_node`]: the deployments, each with its
 //!   instance's plugin and that plugin's active version (manifest, settings
-//!   schema, artifacts, and the cluster operator's approved grant);
+//!   schema, artifacts, and the library operator's approved grant);
 //! - [`remote_instance_for_node`]: one deployed instance, for its
 //!   `CONFIG` and `SECRETS`;
 //! - [`artifact_served_to_node`]: whether an archive stored in the library
@@ -85,7 +85,7 @@ pub struct RemoteInstance {
     /// The plugin's active version.
     pub version: Option<PluginVersion>,
     /// What the node is trusted with now. Instance secrets belong to the
-    /// cluster's operator (instances carry no owner yet), so only
+    /// library's operator (instances carry no owner yet), so only
     /// [`NodeTrust::All`] receives them.
     pub trust: NodeTrust,
 }

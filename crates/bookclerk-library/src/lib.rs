@@ -106,7 +106,7 @@ pub use migrations::{
     plugin_history_session_matches, plugin_journal_has_entry, plugin_journal_select_request,
     prove_plugin_migration_sequence, require_history_prefix, sql_string_literal,
     PluginMigrationHistory, PluginMigrationSequence, ProvenPluginMigration,
-    BOOKCLERK_SCHEMA_NAMESPACE, CLUSTER_LEASES_DDL, MAX_PLUGIN_MIGRATION_APPLY_ATTEMPTS,
+    BOOKCLERK_SCHEMA_NAMESPACE, LIBRARY_LEASES_DDL, MAX_PLUGIN_MIGRATION_APPLY_ATTEMPTS,
     SCHEMA_MIGRATIONS_DDL, SCHEMA_VERSION,
 };
 pub use models::{
@@ -182,7 +182,7 @@ pub use store::{
     event_outbox::{deliver_after_for, prepare_publish_domain_event, EventPruneStep},
     fallback_work_key, inject_dispatch_page_failures,
     library_model::{
-        edition_id_for_listing, holding_from_book, library_id, listing_from_book, TitleQuery,
+        call_number, edition_id_for_listing, holding_from_book, listing_from_book, TitleQuery,
         WorkEnrichment,
     },
     listening::{ListeningIdentifiers, ListeningMatch, ListeningProgressWrite},

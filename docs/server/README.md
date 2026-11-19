@@ -24,7 +24,7 @@ Bookclerk on your own computer first, see
   identity providers.
 - [Managing plugins](plugins.md): install, approve, configure and place
   plugins; isolation modes.
-- [Libraries and branches](cluster-hosts.md): join a library, branches on
+- [Libraries and branches](branches.md): join a library, branches on
   its database and consent.
 - [Media worker](media.md): the confined process that handles audio
   files.

@@ -58,6 +58,7 @@ describe("route list", () => {
       ["PUT", "/api/config/domains/core.output"],
       ["POST", "/api/config/plugin-instances"],
       ["PUT", "/api/config/plugin-instances/1/config"],
+      ["PUT", "/api/config/plugin-instances/1/filter"],
       ["POST", "/api/node/v1/enroll"],
       ["GET", "/api/node/v1/connect"],
       ["POST", "/api/config/join/start"],

@@ -152,7 +152,7 @@ A native guest gets three paths and nothing else:
 On a branch, a guest that runs for a library the branch joined gets that
 library's own subtree instead, `…/plugin-state/link-<32 hex>/<PluginKey fs-id>/`,
 so two libraries' copies of one plugin never share a `HOME` (see
-[Libraries and branches](../server/cluster-hosts.md#plugin-state-on-a-branch)).
+[Libraries and branches](../server/branches.md#plugin-state-on-a-branch)).
 
 A Python isolate also gets its start-up snapshot paths, both under the
 host-owned `…/plugin-state/<PluginKey fs-id>/snapshot/` directory:

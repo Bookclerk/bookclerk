@@ -18,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use axum::Json;
 use bookclerk_library::control_plane::{
-    load_cluster_row, load_events, load_output, overlay_events, overlay_output, replace_events,
+    load_events, load_library_row, load_output, overlay_events, overlay_output, replace_events,
     replace_output, ConfigActor, ConfigurationDocument, EventsReplace, EventsSettingsV1,
     OutputReplace, OutputSettingsV1, EVENTS_NAMESPACE,
 };
@@ -58,17 +58,17 @@ pub fn spawn_config_reconciler(state: Arc<AppState>) {
 /// How a loaded document may replace in-memory `[events]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EventsPublish {
-    /// Apply only a strictly newer revision of the same cluster.
+    /// Apply only a strictly newer revision of the same library.
     Monotonic,
     /// Install this database's document, even when its revision is lower.
     DatabaseSwap,
 }
 
-/// One `core.events` read tied to the cluster that stored it.
+/// One `core.events` read tied to the library that stored it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LoadedEvents {
-    /// `cluster_identity.cluster_id` read with the document.
-    pub cluster_id: String,
+    /// `library_identity.library_id` read with the document.
+    pub library_id: String,
     /// Typed document and revision.
     pub document: bookclerk_library::control_plane::ConfigurationDocument<EventsSettingsV1>,
 }
@@ -79,7 +79,7 @@ tokio::task_local! {
     pub(crate) static FAIL_EVENTS_PUBLICATION_READ: ();
 }
 
-/// Reads `core.events` and the cluster id that owns it.
+/// Reads `core.events` and the library id that owns it.
 ///
 /// Callers keep this value and publish it later. A newer publication can land
 /// in between; [`publish_loaded`] then refuses to move the effective revision
@@ -87,7 +87,7 @@ tokio::task_local! {
 ///
 /// # Errors
 ///
-/// Returns an error when the cluster row or the document cannot be read. The
+/// Returns an error when the library row or the document cannot be read. The
 /// in-memory config is left unchanged.
 pub(crate) async fn load_events_publication(
     library: &LibraryStore,
@@ -96,12 +96,12 @@ pub(crate) async fn load_events_publication(
     if FAIL_EVENTS_PUBLICATION_READ.try_with(|_| ()).is_ok() {
         anyhow::bail!("injected events publication read failure");
     }
-    let row = load_cluster_row(library)
+    let row = load_library_row(library)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("cluster identity is not initialized"))?;
+        .ok_or_else(|| anyhow::anyhow!("library identity is not initialized"))?;
     let document = load_events(library).await?;
     Ok(LoadedEvents {
-        cluster_id: row.cluster_id,
+        library_id: row.library_id,
         document,
     })
 }
@@ -109,7 +109,7 @@ pub(crate) async fn load_events_publication(
 /// Applies `loaded` onto `config` when `mode` allows it.
 ///
 /// Returns whether the effective body changed. Equal revisions of the same
-/// cluster are left alone. A different cluster is applied only for
+/// library are left alone. A different library is applied only for
 /// [`EventsPublish::DatabaseSwap`].
 pub(crate) fn install_events(
     config: &mut bookclerk_config::Config,
@@ -118,12 +118,12 @@ pub(crate) fn install_events(
 ) -> bool {
     match mode {
         EventsPublish::DatabaseSwap => {
-            overlay_events(config, &loaded.document, &loaded.cluster_id);
+            overlay_events(config, &loaded.document, &loaded.library_id);
             true
         }
         EventsPublish::Monotonic => {
             if let Some(current) = config.events_authority.as_deref() {
-                if current != loaded.cluster_id {
+                if current != loaded.library_id {
                     return false;
                 }
                 if config
@@ -133,7 +133,7 @@ pub(crate) fn install_events(
                     return false;
                 }
             }
-            overlay_events(config, &loaded.document, &loaded.cluster_id);
+            overlay_events(config, &loaded.document, &loaded.library_id);
             true
         }
     }
@@ -141,7 +141,7 @@ pub(crate) fn install_events(
 
 /// Merges a freshly read document into `candidate` without regressing `live`.
 ///
-/// `database_swap` is the explicit reconnect signal. A cluster id that differs
+/// `database_swap` is the explicit reconnect signal. A library id that differs
 /// from `live` is also a swap, so a stale revision number from the previous
 /// database cannot win by being larger.
 pub(crate) fn finish_reload_events(
@@ -157,7 +157,7 @@ pub(crate) fn finish_reload_events(
         || live
             .events_authority
             .as_deref()
-            .is_some_and(|id| id != fresh.cluster_id)
+            .is_some_and(|id| id != fresh.library_id)
     {
         EventsPublish::DatabaseSwap
     } else {
@@ -179,14 +179,14 @@ pub(crate) async fn publish_loaded(
     if applied {
         tracing::info!(
             revision = loaded.document.revision,
-            cluster_id = %loaded.cluster_id,
+            library_id = %loaded.library_id,
             "applied core.events from the database"
         );
     }
     applied
 }
 
-/// Applies a newer cluster events document onto the live config.
+/// Applies a newer library events document onto the live config.
 ///
 /// The read and the publication are separate so a newer revision can commit
 /// before a stale read is released. The stale publication then leaves the
@@ -270,8 +270,8 @@ pub async fn put_events_domain(
     .map_err(events_error)?;
     match outcome {
         EventsReplace::Applied(doc) => {
-            let cluster_id = cluster_id_of(&library).await?;
-            publish_events(state.as_ref(), &doc, &cluster_id).await;
+            let library_id = library_id_of(&library).await?;
+            publish_events(state.as_ref(), &doc, &library_id).await;
             Ok(Json(EventsDomainChange::Applied(
                 EventsDomainResponse::from_document(&doc),
             )))
@@ -318,8 +318,8 @@ pub async fn commit_events_settings(
     .map_err(events_error)?;
     match outcome {
         EventsReplace::Applied(doc) => {
-            let cluster_id = cluster_id_of(&library).await?;
-            publish_events(state, &doc, &cluster_id).await;
+            let library_id = library_id_of(&library).await?;
+            publish_events(state, &doc, &library_id).await;
             Ok(())
         }
         EventsReplace::Replayed { .. } => Ok(()),
@@ -327,7 +327,7 @@ pub async fn commit_events_settings(
     }
 }
 
-/// Applies `cache.*` settings keys to the cluster's `core.cache` document
+/// Applies `cache.*` settings keys to the library's `core.cache` document
 /// under compare-and-swap, creating it from the defaults when absent. Each
 /// node applies the change at its next heartbeat.
 ///
@@ -361,21 +361,21 @@ pub async fn commit_cache_settings(
 async fn publish_events(
     state: &AppState,
     doc: &bookclerk_library::control_plane::ConfigurationDocument<EventsSettingsV1>,
-    cluster_id: &str,
+    library_id: &str,
 ) {
     let loaded = LoadedEvents {
-        cluster_id: cluster_id.to_string(),
+        library_id: library_id.to_string(),
         document: doc.clone(),
     };
     publish_loaded(state, &loaded, EventsPublish::Monotonic).await;
 }
 
-/// Cluster id stored beside the secret fingerprint.
-async fn cluster_id_of(library: &LibraryStore) -> Result<String, Response> {
-    let row = load_cluster_row(library).await.map_err(events_error)?;
-    row.map(|row| row.cluster_id).ok_or_else(|| {
+/// Library id stored beside the secret fingerprint.
+async fn library_id_of(library: &LibraryStore) -> Result<String, Response> {
+    let row = load_library_row(library).await.map_err(events_error)?;
+    row.map(|row| row.library_id).ok_or_else(|| {
         events_error(bookclerk_library::LibraryError::missing(
-            EntityKind::ClusterIdentity,
+            EntityKind::LibraryIdentity,
         ))
     })
 }
@@ -410,10 +410,10 @@ pub struct DomainRevision {
     /// Domain namespace (`core.events` or `core.output`).
     #[schema(example = "core.events")]
     pub namespace: String,
-    /// Scope type: `cluster` for a shared document, `node` for one node's.
-    #[schema(example = "cluster")]
+    /// Scope type: `library` for a shared document, `node` for one node's.
+    #[schema(example = "library")]
     pub scope_type: String,
-    /// Scope id: `singleton` for the cluster, else the node id.
+    /// Scope id: `singleton` for the library, else the node id.
     #[schema(example = "singleton")]
     pub scope_id: String,
     /// Version of the document's schema, starting at 1.
@@ -518,36 +518,36 @@ pub struct RevisionConflict {
     pub current_revision: i64,
 }
 
-/// One `core.output` read tied to the cluster that stored it.
+/// One `core.output` read tied to the library that stored it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LoadedOutput {
-    /// `cluster_identity.cluster_id` read with the document.
-    pub cluster_id: String,
+    /// `library_identity.library_id` read with the document.
+    pub library_id: String,
     /// Typed document and revision.
     pub document: ConfigurationDocument<OutputSettingsV1>,
 }
 
-/// Reads `core.output` and the cluster id that owns it.
+/// Reads `core.output` and the library id that owns it.
 ///
 /// # Errors
 ///
-/// Returns an error when the cluster row or the document cannot be read. The
+/// Returns an error when the library row or the document cannot be read. The
 /// in-memory config is left unchanged.
 pub(crate) async fn load_output_publication(
     library: &LibraryStore,
 ) -> anyhow::Result<LoadedOutput> {
-    let row = load_cluster_row(library)
+    let row = load_library_row(library)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("cluster identity is not initialized"))?;
+        .ok_or_else(|| anyhow::anyhow!("library identity is not initialized"))?;
     let document = load_output(library).await?;
     Ok(LoadedOutput {
-        cluster_id: row.cluster_id,
+        library_id: row.library_id,
         document,
     })
 }
 
 /// Applies `loaded` onto `config` when `mode` allows it, under the same
-/// monotonic, per-cluster rule as [`install_events`].
+/// monotonic, per-library rule as [`install_events`].
 pub(crate) fn install_output(
     config: &mut bookclerk_config::Config,
     loaded: &LoadedOutput,
@@ -555,7 +555,7 @@ pub(crate) fn install_output(
 ) -> bool {
     if mode == EventsPublish::Monotonic {
         if let Some(current) = config.output_authority.as_deref() {
-            if current != loaded.cluster_id {
+            if current != loaded.library_id {
                 return false;
             }
             if config
@@ -566,7 +566,7 @@ pub(crate) fn install_output(
             }
         }
     }
-    overlay_output(config, &loaded.document, &loaded.cluster_id);
+    overlay_output(config, &loaded.document, &loaded.library_id);
     true
 }
 
@@ -590,7 +590,7 @@ pub(crate) fn finish_reload_output(
         || live
             .output_authority
             .as_deref()
-            .is_some_and(|id| id != fresh.cluster_id)
+            .is_some_and(|id| id != fresh.library_id)
     {
         EventsPublish::DatabaseSwap
     } else {
@@ -610,14 +610,14 @@ pub(crate) async fn publish_loaded_output(
     if applied {
         tracing::info!(
             revision = loaded.document.revision,
-            cluster_id = %loaded.cluster_id,
+            library_id = %loaded.library_id,
             "applied core.output from the database"
         );
     }
     applied
 }
 
-/// Applies a newer cluster output document onto the live config.
+/// Applies a newer library output document onto the live config.
 ///
 /// # Errors
 ///
@@ -685,8 +685,8 @@ pub async fn put_output_domain(
     .map_err(events_error)?;
     match outcome {
         OutputReplace::Applied(doc) => {
-            let cluster_id = cluster_id_of(&library).await?;
-            publish_output(state.as_ref(), &doc, &cluster_id).await;
+            let library_id = library_id_of(&library).await?;
+            publish_output(state.as_ref(), &doc, &library_id).await;
             Ok(Json(OutputDomainChange::Applied(Box::new(
                 OutputDomainResponse::from_document(&doc),
             ))))
@@ -749,8 +749,8 @@ pub async fn commit_output_settings(
     .map_err(events_error)?;
     match outcome {
         OutputReplace::Applied(doc) => {
-            let cluster_id = cluster_id_of(&library).await?;
-            publish_output(state, &doc, &cluster_id).await;
+            let library_id = library_id_of(&library).await?;
+            publish_output(state, &doc, &library_id).await;
             Ok(())
         }
         OutputReplace::Replayed { .. } => Ok(()),
@@ -762,10 +762,10 @@ pub async fn commit_output_settings(
 async fn publish_output(
     state: &AppState,
     doc: &ConfigurationDocument<OutputSettingsV1>,
-    cluster_id: &str,
+    library_id: &str,
 ) {
     let loaded = LoadedOutput {
-        cluster_id: cluster_id.to_string(),
+        library_id: library_id.to_string(),
         document: doc.clone(),
     };
     publish_loaded_output(state, &loaded, EventsPublish::Monotonic).await;
@@ -1073,7 +1073,7 @@ pub(crate) struct PluginInstancesResponse {
     /// observations.
     #[schema(example = "node-7f3a9c")]
     node_id: String,
-    /// Every plugin instance in the cluster.
+    /// Every plugin instance in the library.
     instances: Vec<PluginInstanceView>,
 }
 
@@ -1127,7 +1127,7 @@ pub(crate) struct PluginInstanceCreated {
     /// Operator-facing name, trimmed.
     #[schema(example = "Archive bucket")]
     display_name: String,
-    /// Node the instance is local to; `null` for a cluster-wide instance.
+    /// Node the instance is local to; `null` for a library-wide instance.
     #[schema(example = "node-7f3a9c")]
     owner_node_id: Option<String>,
 }
@@ -1464,6 +1464,126 @@ pub async fn put_plugin_instance_config(
     }))
 }
 
+/// `GET` and `PUT /api/config/plugin-instances/{id}/filter` body: which
+/// books a storage destination takes.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct DestinationFilterResponse {
+    /// The destination's plugin instance id.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    plugin_instance_id: String,
+    /// Revision of the destination's `core.destination` document; `0` when
+    /// none was written, so the destination takes every book.
+    #[schema(example = 2)]
+    revision: i64,
+    /// The filter; no rules take every book.
+    #[schema(example = json!({"rules": [{"field": "storefront", "value": "libro", "effect": "include"}]}))]
+    filter: bookclerk_config::DestinationFilter,
+}
+
+/// Loads `id` as an existing plugin instance.
+///
+/// # Errors
+///
+/// Returns the `400` response for an id that is not an instance id, `404`
+/// for an unknown instance, and `500` for a failed read.
+async fn existing_instance(
+    library: &bookclerk_library::LibraryStore,
+    id: &str,
+) -> Result<bookclerk_library::control_plane::PluginInstanceId, Response> {
+    use bookclerk_library::control_plane::{load_plugin_instance, PluginInstanceId};
+    let instance_id = PluginInstanceId::parse(id).map_err(events_error)?;
+    if load_plugin_instance(library, &instance_id)
+        .await
+        .map_err(events_error)?
+        .is_none()
+    {
+        return Err(events_error(bookclerk_library::LibraryError::not_found(
+            EntityKind::PluginInstance,
+            &instance_id,
+        )));
+    }
+    Ok(instance_id)
+}
+
+/// `GET /api/config/plugin-instances/{id}/filter`: which books the storage
+/// destination takes.
+#[utoipa::path(
+    get,
+    path = "/api/config/plugin-instances/{id}/filter",
+    params(("id" = String, Path, description = "Plugin instance id of the destination.")),
+    responses(
+        (status = 200, description = "The destination's filter.", body = DestinationFilterResponse),
+        (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage, example = json!({"error": "invalid plugin instance id: expected a UUID"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
+        (status = 500, description = "The filter could not be read.", body = ErrorMessage, example = json!({"error": "invalid core.destination: destination filter: unknown field `genre`"})),
+    ),
+)]
+pub async fn get_destination_filter(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<DestinationFilterResponse>, Response> {
+    let library = state.library_snapshot().await;
+    let instance_id = existing_instance(&library, &id).await?;
+    let stored = bookclerk_library::control_plane::load_destination_placement(
+        &library,
+        instance_id.as_str(),
+    )
+    .await
+    .map_err(events_error)?;
+    Ok(Json(match stored {
+        Some(document) => DestinationFilterResponse {
+            plugin_instance_id: instance_id.to_string(),
+            revision: document.revision,
+            filter: document.body.filter,
+        },
+        None => DestinationFilterResponse {
+            plugin_instance_id: instance_id.to_string(),
+            revision: 0,
+            filter: bookclerk_config::DestinationFilter::default(),
+        },
+    }))
+}
+
+/// `PUT /api/config/plugin-instances/{id}/filter`: replaces which books the
+/// storage destination takes. Acquires that start afterwards use it; files
+/// already stored stay where they are.
+///
+/// Operator principal only. The route is mounted on the operator router.
+#[utoipa::path(
+    put,
+    path = "/api/config/plugin-instances/{id}/filter",
+    params(("id" = String, Path, description = "Plugin instance id of the destination.")),
+    request_body = bookclerk_config::DestinationFilter,
+    responses(
+        (status = 200, description = "The filter after the change.", body = DestinationFilterResponse),
+        (status = 400, description = "The filter is invalid.", body = ErrorMessage, example = json!({"error": "invalid: a patron rule takes a user id, not `me`"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
+        (status = 409, description = "The filter kept changing underneath the write.", body = ErrorMessage, example = json!({"error": "the filter of destination 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b kept changing; retry"})),
+        (status = 500, description = "The filter could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
+    ),
+)]
+pub async fn put_destination_filter(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(filter): Json<bookclerk_config::DestinationFilter>,
+) -> Result<Json<DestinationFilterResponse>, Response> {
+    let library = state.library_snapshot().await;
+    let instance_id = existing_instance(&library, &id).await?;
+    let stored = bookclerk_library::control_plane::set_destination_filter(
+        &library,
+        &operator_actor(),
+        instance_id.as_str(),
+        filter,
+    )
+    .await
+    .map_err(events_error)?;
+    Ok(Json(DestinationFilterResponse {
+        plugin_instance_id: instance_id.to_string(),
+        revision: stored.revision,
+        filter: stored.body.filter,
+    }))
+}
+
 /// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}` body.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutPluginDeployment {
@@ -1718,9 +1838,9 @@ pub(crate) struct NodeView {
     /// Node id.
     #[schema(example = "node-7f3a9c")]
     node_id: String,
-    /// Cluster the node belongs to.
+    /// Library the node belongs to.
     #[schema(example = "c0ffee12-3456-4789-8abc-def012345678")]
-    cluster_id: String,
+    library_id: String,
     /// RFC 3339 time the node first enrolled.
     #[schema(example = "2026-10-01T08:00:00Z")]
     created_at: String,
@@ -1814,7 +1934,7 @@ async fn node_view(
     let now_ms = chrono::Utc::now().timestamp_millis();
     Ok(NodeView {
         node_id: node.node_id.clone(),
-        cluster_id: node.cluster_id.clone(),
+        library_id: node.library_id.clone(),
         created_at: node.created_at.clone(),
         heartbeat_at: node.heartbeat_at.clone(),
         software_version: node.software_version.clone(),
@@ -1924,7 +2044,7 @@ pub async fn get_nodes(
     }))
 }
 
-/// Event delivery backlog across the cluster.
+/// Event delivery backlog across the library.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct DeliveryBacklog {
     /// Deliveries waiting for a consumer.
@@ -1942,7 +2062,7 @@ pub(crate) struct DeliveryBacklog {
     oldest_pending_age_secs: Option<i64>,
 }
 
-/// A cluster lease as the status page shows it.
+/// A library lease as the status page shows it.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct LeaseView {
     /// Lease name.
@@ -1982,9 +2102,9 @@ pub(crate) struct SchemaStateView {
     error: Option<String>,
 }
 
-/// Cluster-wide counters every node administrator may see.
+/// Library-wide counters every node administrator may see.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-pub(crate) struct ClusterSummary {
+pub(crate) struct LibrarySummary {
     /// Nodes in the library's node list.
     #[schema(example = 3)]
     nodes: usize,
@@ -2017,17 +2137,17 @@ pub(crate) struct ClusterSummary {
     active_jobs: i64,
     /// Event delivery backlog.
     deliveries: DeliveryBacklog,
-    /// Every cluster lease, held or expired.
+    /// Every library lease, held or expired.
     leases: Vec<LeaseView>,
     /// The database schema against this binary.
     schema: SchemaStateView,
 }
 
-/// `GET /api/cluster/status` body.
+/// `GET /api/library-status` body.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-pub(crate) struct ClusterStatusResponse {
-    /// Cluster-wide counters.
-    cluster: ClusterSummary,
+pub(crate) struct LibraryStatusResponse {
+    /// Library-wide counters.
+    library: LibrarySummary,
     /// Id of the node that answered.
     #[schema(example = "node-7f3a9c")]
     node_id: String,
@@ -2037,23 +2157,23 @@ pub(crate) struct ClusterStatusResponse {
     capabilities: NodeCapabilities,
 }
 
-/// `GET /api/cluster/status`: cluster-wide health every node administrator
+/// `GET /api/library-status`: library-wide health every node administrator
 /// may see (node counts, committed capacity, active jobs, delivery backlog),
 /// plus detail for the nodes the caller may see.
 #[utoipa::path(
     get,
-    path = "/api/cluster/status",
+    path = "/api/library-status",
     responses(
-        (status = 200, description = "Cluster-wide node health.", body = ClusterStatusResponse),
+        (status = 200, description = "Library-wide node health.", body = LibraryStatusResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 500, description = "The configuration could not be read.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
-pub async fn get_cluster_status(
+pub async fn get_library_status(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<NodeAdminCaller>,
-) -> Result<Json<ClusterStatusResponse>, Response> {
+) -> Result<Json<LibraryStatusResponse>, Response> {
     let cfg = state.config.read().await.clone();
     let this_node = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
@@ -2123,8 +2243,8 @@ pub async fn get_cluster_status(
             error: Some(err.to_string()),
         },
     };
-    Ok(Json(ClusterStatusResponse {
-        cluster: ClusterSummary {
+    Ok(Json(LibraryStatusResponse {
+        library: LibrarySummary {
             nodes: all.len(),
             live,
             drained,
@@ -2323,7 +2443,7 @@ pub(crate) struct PutNodeRuntime {
     #[schema(example = true)]
     schedulable: Option<bool>,
     /// This node's image cache budget in bytes (16 MiB to 1 TiB),
-    /// overriding the cluster's `cache.budget_bytes`. `null` removes the
+    /// overriding the library's `cache.budget_bytes`. `null` removes the
     /// override; leaving the field out keeps it as it is.
     #[serde(default, deserialize_with = "present")]
     #[schema(value_type = Option<u64>, nullable, example = 536_870_912_u64)]
@@ -2699,7 +2819,7 @@ pub(crate) fn control_plane_test_state(
             bookclerk_plugin_host::DatabaseRegistry::default(),
         )),
         job_notify: Arc::new(Notify::new()),
-        capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
+        capacity: Arc::new(crate::library_link::capacity::CapacityShares::new()),
         job_runtime: Arc::new(RwLock::new(())),
         work_lock: Mutex::new(()),
         discover_gate: Arc::new(Semaphore::new(1)),
@@ -2805,7 +2925,7 @@ mod tests {
         let session = bootstrap_control_plane(&store, files.path(), &scratch, None, &config)
             .await
             .expect("bootstrap");
-        overlay_events(&mut config, &session.events, &session.cluster_id);
+        overlay_events(&mut config, &session.events, &session.library_id);
         (store, session, config, files)
     }
 
@@ -2865,6 +2985,76 @@ mod tests {
         .unwrap();
         let state = std::sync::Arc::new(control_plane_test_state(store.clone(), config));
         (state, store, session.node.node_id, files)
+    }
+
+    #[tokio::test]
+    async fn destination_filter_routes_read_and_replace_the_filter() {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        use serde_json::{json, Value};
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let (state, store, _node, _files) = daemon_state().await;
+        let instance = bookclerk_library::control_plane::create_plugin_instance(
+            &store,
+            &super::operator_actor(),
+            "s3",
+            "Backup",
+        )
+        .await
+        .unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/api/config/plugin-instances/{id}/filter",
+                get(super::get_destination_filter).put(super::put_destination_filter),
+            )
+            .with_state(std::sync::Arc::clone(&state));
+        let uri = format!("/api/config/plugin-instances/{}/filter", instance.id);
+
+        let (status, empty) = send(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{empty}");
+        assert_eq!(empty["revision"], 0);
+        assert_eq!(empty["filter"]["rules"], json!([]));
+
+        let rules = json!({"rules": [
+            {"field": "storefront", "value": " libro ", "effect": "include"},
+            {"field": "media_kind", "value": "podcast", "effect": "exclude"}
+        ]});
+        let (status, put) = send(&app, "PUT", &uri, rules).await;
+        assert_eq!(status, StatusCode::OK, "{put}");
+        assert_eq!(put["filter"]["rules"][0]["value"], "libro");
+        assert!(put["revision"].as_i64().unwrap() >= 1);
+        let (status, read) = send(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(read, put);
+
+        // An invalid rule and an unknown shape are refused and change nothing.
+        let (status, bad) = send(
+            &app,
+            "PUT",
+            &uri,
+            json!({"rules": [{"field": "patron", "value": "me", "effect": "include"}]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        let (status, _) = send(&app, "PUT", &uri, json!({"rules": [], "extra": 1})).await;
+        assert!(status.is_client_error());
+        let (_, after) = send(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(after, put);
+
+        // An unknown instance and a malformed id.
+        let missing = "/api/config/plugin-instances/3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b/filter";
+        let (status, _) = send(&app, "GET", missing, Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = send(&app, "PUT", missing, json!({})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = send(
+            &app,
+            "GET",
+            "/api/config/plugin-instances/nope/filter",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -2936,7 +3126,7 @@ mod tests {
                 "/api/config/nodes/{node_id}",
                 axum::routing::delete(super::delete_shared_node),
             )
-            .route("/api/cluster/status", get(super::get_cluster_status))
+            .route("/api/library-status", get(super::get_library_status))
             .layer(axum::Extension(crate::auth::NodeAdminCaller::Operator))
             .with_state(std::sync::Arc::clone(&state));
 
@@ -3037,7 +3227,7 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{invalid}");
         assert!(invalid["error"].as_str().unwrap().contains("root"));
 
-        // A deployment to a node the cluster does not know names the node.
+        // A deployment to a node the library does not know names the node.
         let (status, no_node) = send(
             &app,
             "PUT",
@@ -3117,16 +3307,16 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
-        // Cluster status: counters, the schema state and the node list.
-        let (status, cluster) = send(&app, "GET", "/api/cluster/status", Value::Null).await;
-        assert_eq!(status, StatusCode::OK, "{cluster}");
-        assert_eq!(cluster["cluster"]["nodes"], 1);
-        assert_eq!(cluster["cluster"]["schema"]["compatible"], true);
-        assert!(cluster["cluster"]["schema"]["state"].is_string());
-        assert!(cluster["cluster"]["schema"].get("error").is_none());
-        assert!(cluster["cluster"]["deliveries"]["pending"].is_i64());
-        assert_eq!(cluster["capabilities"]["scope"], "all");
-        assert_eq!(cluster["nodes"][0]["node_id"], json!(node));
+        // Library status: counters, the schema state and the node list.
+        let (status, library) = send(&app, "GET", "/api/library-status", Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{library}");
+        assert_eq!(library["library"]["nodes"], 1);
+        assert_eq!(library["library"]["schema"]["compatible"], true);
+        assert!(library["library"]["schema"]["state"].is_string());
+        assert!(library["library"]["schema"].get("error").is_none());
+        assert!(library["library"]["deliveries"]["pending"].is_i64());
+        assert_eq!(library["capabilities"]["scope"], "all");
+        assert_eq!(library["nodes"][0]["node_id"], json!(node));
     }
 
     #[tokio::test]
@@ -3149,7 +3339,7 @@ mod tests {
         let Json(current) = get_events_domain(State(state.clone())).await.unwrap();
         let current = serde_json::to_value(&current).unwrap();
         assert_eq!(current["namespace"], "core.events");
-        assert_eq!(current["scope_type"], "cluster");
+        assert_eq!(current["scope_type"], "library");
         assert_eq!(current["revision"], 1);
         assert!(current["retention_days"].is_u64());
         assert!(current["dead_letter_retention_days"].is_u64());
@@ -3277,7 +3467,7 @@ mod tests {
             publish_loaded(
                 &state,
                 &LoadedEvents {
-                    cluster_id: session.cluster_id.clone(),
+                    library_id: session.library_id.clone(),
                     document: doc.clone(),
                 },
                 EventsPublish::Monotonic,
@@ -3295,7 +3485,7 @@ mod tests {
             assert_eq!(live.events_revision, Some(doc.revision));
             assert_eq!(
                 live.events_authority.as_deref(),
-                Some(session.cluster_id.as_str())
+                Some(session.library_id.as_str())
             );
         }
 
@@ -3312,14 +3502,14 @@ mod tests {
             panic!("third write should apply: {newer:?}");
         };
         let held = LoadedEvents {
-            cluster_id: session.cluster_id.clone(),
+            library_id: session.library_id.clone(),
             document: doc.clone(),
         };
         assert!(
             publish_loaded(
                 &state,
                 &LoadedEvents {
-                    cluster_id: session.cluster_id.clone(),
+                    library_id: session.library_id.clone(),
                     document: doc3.clone(),
                 },
                 EventsPublish::Monotonic,
@@ -3343,25 +3533,25 @@ mod tests {
         swapped_doc.body = events(3);
         swapped_doc.revision = 1;
         let swapped = LoadedEvents {
-            cluster_id: "other-cluster".into(),
+            library_id: "other-library".into(),
             document: swapped_doc,
         };
         assert!(
             !publish_loaded(&state, &swapped, EventsPublish::Monotonic).await,
-            "a different cluster is not a newer revision"
+            "a different library is not a newer revision"
         );
         {
             let live = state.config.read().await;
             assert_eq!(
                 live.events_authority.as_deref(),
-                Some(session.cluster_id.as_str())
+                Some(session.library_id.as_str())
             );
             assert_eq!(live.events.retention_days, 7);
         }
         assert!(publish_loaded(&state, &swapped, EventsPublish::DatabaseSwap).await);
         assert!(!publish_loaded(&state, &original, EventsPublish::Monotonic).await);
         let live = state.config.read().await;
-        assert_eq!(live.events_authority.as_deref(), Some("other-cluster"));
+        assert_eq!(live.events_authority.as_deref(), Some("other-library"));
         assert_eq!(live.events.retention_days, 3);
         assert_eq!(live.events_revision, Some(1));
     }
@@ -3381,7 +3571,7 @@ mod tests {
         publish_loaded(
             &state,
             &LoadedEvents {
-                cluster_id: session.cluster_id.clone(),
+                library_id: session.library_id.clone(),
                 document: doc,
             },
             EventsPublish::Monotonic,
@@ -3399,7 +3589,7 @@ mod tests {
         other.body = events(4);
         other.revision = 1;
         let fresh = LoadedEvents {
-            cluster_id: "swapped-cluster".into(),
+            library_id: "swapped-library".into(),
             document: other,
         };
         let swapped_from = candidate.clone();
@@ -3408,7 +3598,7 @@ mod tests {
         assert_eq!(candidate.events_revision, Some(1));
         assert_eq!(
             candidate.events_authority.as_deref(),
-            Some("swapped-cluster")
+            Some("swapped-library")
         );
     }
 
@@ -3464,10 +3654,10 @@ mod tests {
             Some(std::path::Path::new("/reloaded/scratch"))
         );
 
-        // A database swap installs the other cluster's document even at a
+        // A database swap installs the other library's document even at a
         // lower revision.
         let swapped = LoadedOutput {
-            cluster_id: "swapped-cluster".into(),
+            library_id: "swapped-library".into(),
             document: stale.document.clone(),
         };
         let from = candidate.clone();
@@ -3479,7 +3669,7 @@ mod tests {
         assert_eq!(candidate.output_revision, Some(1));
         assert_eq!(
             candidate.output_authority.as_deref(),
-            Some("swapped-cluster")
+            Some("swapped-library")
         );
     }
 
@@ -3802,7 +3992,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(desired.desired, DesiredState::Present);
-        // The operator package became the active cluster release; the node
+        // The operator package became the active library release; the node
         // runs it from the digest cache and wrote no receipt or ledger row.
         let release =
             bookclerk_library::control_plane::load_active_version(&store, &instance.plugin_key)

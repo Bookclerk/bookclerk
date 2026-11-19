@@ -1,6 +1,6 @@
 //! `core.cache`: retention limits for the daemon's on-disk image caches.
 //!
-//! One cluster document holds the default disk budget for each node's cover
+//! One library document holds the default disk budget for each node's cover
 //! and image caches and how long an entry may go unviewed before it is
 //! evicted. A node may override the budget in its `node.runtime` document
 //! ([`NodeRuntimeSettingsV1::cache_budget_bytes`]).
@@ -19,7 +19,7 @@ use super::{document, ConfigActor, ConfigurationDocument, NodeRuntimeSettingsV1}
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
-/// Namespace of the cluster cache document.
+/// Namespace of the library cache document.
 pub const CACHE_NAMESPACE: &str = "core.cache";
 
 /// Schema version of [`CacheSettingsV1`].
@@ -147,7 +147,7 @@ impl CacheSettingsV1 {
     }
 
     /// The budget that applies on a node: its own override, else the
-    /// cluster budget.
+    /// library budget.
     ///
     /// # Arguments
     ///
@@ -180,7 +180,7 @@ pub(super) fn validate_budget(name: &str, bytes: u64) -> Result<()> {
     }
 }
 
-/// Loads the cluster cache document.
+/// Loads the library cache document.
 ///
 /// # Returns
 ///
@@ -194,13 +194,13 @@ pub(super) fn validate_budget(name: &str, bytes: u64) -> Result<()> {
 pub async fn load_cache_settings(
     store: &LibraryStore,
 ) -> Result<Option<ConfigurationDocument<CacheSettingsV1>>> {
-    load_document(store, &DocumentKey::cluster(CACHE_NAMESPACE))
+    load_document(store, &DocumentKey::library(CACHE_NAMESPACE))
         .await?
         .map(parse_cache)
         .transpose()
 }
 
-/// Applies `edit` to the cluster cache document under compare-and-swap,
+/// Applies `edit` to the library cache document under compare-and-swap,
 /// creating it with the defaults when absent and retrying a few times on a
 /// concurrent edit. Nodes pick the change up at their next heartbeat.
 ///
@@ -220,7 +220,7 @@ pub async fn update_cache_settings(
     actor: &ConfigActor,
     edit: impl Fn(&mut CacheSettingsV1) -> Result<()>,
 ) -> Result<ConfigurationDocument<CacheSettingsV1>> {
-    let key = DocumentKey::cluster(CACHE_NAMESPACE);
+    let key = DocumentKey::library(CACHE_NAMESPACE);
     for attempt in 0..4 {
         let current = match load_cache_settings(store).await? {
             Some(document) => document,
@@ -344,12 +344,12 @@ mod tests {
     }
 
     #[test]
-    fn a_node_override_wins_over_the_cluster_budget() {
-        let cluster = CacheSettingsV1::default();
+    fn a_node_override_wins_over_the_library_budget() {
+        let library = CacheSettingsV1::default();
         let mut node = NodeRuntimeSettingsV1::new();
-        assert_eq!(cluster.budget_for(&node), DEFAULT_CACHE_BUDGET_BYTES);
+        assert_eq!(library.budget_for(&node), DEFAULT_CACHE_BUDGET_BYTES);
         node.cache_budget_bytes = Some(MIN_CACHE_BUDGET_BYTES);
-        assert_eq!(cluster.budget_for(&node), MIN_CACHE_BUDGET_BYTES);
+        assert_eq!(library.budget_for(&node), MIN_CACHE_BUDGET_BYTES);
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@
 //! Stored shelves go stale when someone's taste changes: a wish is added or
 //! dropped (`wishlist_changed`), a listening sync shows someone started or
 //! finished a book (`listening_synced`), or the household acquires a book
-//! (`book_acquired`). The daemon registers one cluster-wide consumer,
+//! (`book_acquired`). The daemon registers one library-wide consumer,
 //! [`DISCOVER_CONSUMER_ID`], on the durable outbox for those types, and each
 //! delivery queues the Discover jobs the change affects, each claimable only
 //! after [`EVENT_DEBOUNCE`] so a burst of changes folds into one refresh per
@@ -30,7 +30,7 @@ use crate::request_queue_job::{enqueue_request_queue_rank, request_queue_ranked_
 /// key provenance (`cargo:`, `platform:`, `path:` …) nor a node consumer
 /// (`node:`), so it never collides with a plugin's deliveries. Every node
 /// registers the same id; the catalog collapses them into one subscriber,
-/// so each event is handled once in the cluster.
+/// so each event is handled once in the library.
 pub const DISCOVER_CONSUMER_ID: &str = "host:discover";
 
 /// How long a queued refresh waits before it may run, so the changes of
@@ -581,7 +581,7 @@ mod tests {
             .await
             .expect("catalog");
         let subscribers = catalog_subscribers_for_event(&catalog, &event);
-        assert_eq!(subscribers.len(), 1, "one consumer across the cluster");
+        assert_eq!(subscribers.len(), 1, "one consumer across the library");
         library
             .dispatch_event_deliveries(&event.id, &subscribers, &uuid::Uuid::new_v4().to_string())
             .await

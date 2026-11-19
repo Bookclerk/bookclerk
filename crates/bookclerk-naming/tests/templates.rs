@@ -23,7 +23,7 @@ fn dt(y: i32, m: u32, d: u32) -> NaiveDateTime {
 fn book() -> BookContext {
     BookContext {
         isbn: "asin".into(),
-        library_id: "lib0001".into(),
+        call_number: "lib0001".into(),
         title: Some("A Study in Scarlet: A Sherlock Holmes Novel".into()),
         subtitle: Some("An Audible Original Drama".into()),
         title_with_subtitle: Some("A Study in Scarlet: An Audible Original Drama".into()),
@@ -584,47 +584,49 @@ fn chapters() {
 }
 
 #[test]
-fn library_id_names_the_edition() {
+fn call_number_names_the_edition() {
     let book = BookContext {
         isbn: "B00ONE".into(),
-        library_id: "1a2b3c4d".into(),
+        call_number: "1a2b3c4d".into(),
         title: Some("Twin".into()),
         ..BookContext::default()
     };
     let name =
-        bookclerk_naming::expand_filename("<title> [<library id>]", &book, None, &[]).unwrap();
+        bookclerk_naming::expand_filename("<title> [<call number>]", &book, None, &[]).unwrap();
     assert_eq!(name, "Twin [1a2b3c4d]");
 }
 
 #[test]
-fn templates_must_always_write_the_library_id() {
-    use bookclerk_naming::{require_library_id, NamingError};
+fn templates_must_always_write_the_call_number() {
+    use bookclerk_naming::{require_call_number, NamingError};
     // In the folder, every file under it is the edition's.
-    assert!(require_library_id("<author>/<title> [<library id>]", "<title>", "<ch#>").is_ok());
+    assert!(require_call_number("<author>/<title> [<call number>]", "<title>", "<ch#>").is_ok());
     // In the file names, only when the chapter files carry it too.
-    assert!(require_library_id("<author>", "<title> <library id>", "<ch#> <library id>").is_ok());
+    assert!(
+        require_call_number("<author>", "<title> <call number>", "<ch#> <call number>").is_ok()
+    );
     assert!(matches!(
-        require_library_id("<author>", "<title> <library id>", "<ch#>"),
-        Err(NamingError::MissingLibraryId)
+        require_call_number("<author>", "<title> <call number>", "<ch#>"),
+        Err(NamingError::MissingCallNumber)
     ));
     // A tag behind a condition on another field is not always written.
     assert!(matches!(
-        require_library_id("<has series-><library id><-has>", "<title>", "<ch#>"),
-        Err(NamingError::MissingLibraryId)
+        require_call_number("<has series-><call number><-has>", "<title>", "<ch#>"),
+        Err(NamingError::MissingCallNumber)
     ));
     // Nor behind a negated one, though a title without a series writes it.
     assert!(matches!(
-        require_library_id(
-            "<title><!has series-> [<library id>]<-has>",
+        require_call_number(
+            "<title><!has series-> [<call number>]<-has>",
             "<title>",
             "<ch#>"
         ),
-        Err(NamingError::MissingLibraryId)
+        Err(NamingError::MissingCallNumber)
     ));
     // `<id>` is the store product, not the edition.
     assert!(matches!(
-        require_library_id("<title> [<id>]", "<title> [<asin>]", "<ch#>"),
-        Err(NamingError::MissingLibraryId)
+        require_call_number("<title> [<id>]", "<title> [<asin>]", "<ch#>"),
+        Err(NamingError::MissingCallNumber)
     ));
     for profile in [
         bookclerk_config::NamingProfile::Audiobookshelf,
@@ -632,7 +634,7 @@ fn templates_must_always_write_the_library_id() {
     ] {
         let t = profile.templates();
         assert!(
-            require_library_id(t.folder, t.file, t.chapter_file).is_ok(),
+            require_call_number(t.folder, t.file, t.chapter_file).is_ok(),
             "{profile:?}"
         );
     }

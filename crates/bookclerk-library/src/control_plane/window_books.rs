@@ -49,7 +49,7 @@ use super::catalog_lookup::{
     run_batches, stamp, title_edition, work_for_question, works_of_editions, PAGED_FIXED_BINDS,
 };
 use super::clerk_links::list_clerk_links;
-use super::cluster_links::list_cluster_links;
+use super::library_links::list_library_links;
 use crate::entities::{
     account_links, edition_acquisitions, edition_files, holdings, nodes, portal_identities,
     window_book_parts, window_books,
@@ -551,7 +551,7 @@ pub fn window_read_stamp() -> String {
     stamp(Utc::now())
 }
 
-/// Stores one `window.page` from library `owner_cluster_id`, read under
+/// Stores one `window.page` from library `parent_library_id`, read under
 /// `seen_at` ([`window_read_stamp`]).
 ///
 /// Each edition becomes (or refreshes) one `window_books` row. Each work is
@@ -573,11 +573,11 @@ pub fn window_read_stamp() -> String {
 /// Returns a read or write error.
 pub async fn record_window_page(
     store: &LibraryStore,
-    owner_cluster_id: &str,
+    parent_library_id: &str,
     seen_at: &str,
     works: &[WindowWork],
 ) -> Result<usize> {
-    let earlier = earlier_in_read(store, owner_cluster_id, seen_at, works).await?;
+    let earlier = earlier_in_read(store, parent_library_id, seen_at, works).await?;
     let width = super::artifacts::chunk_bytes(store.db_capabilities());
     let mut groups = Vec::new();
     let mut stored = 0;
@@ -646,10 +646,10 @@ pub async fn record_window_page(
             let version = uuid::Uuid::new_v4().simple().to_string();
             for (seq, body) in (0_i64..).zip(cut(&json, width)) {
                 groups.push(vec![exec(
-                    "INSERT INTO window_book_parts (owner_cluster_id, store, marketplace, \
+                    "INSERT INTO window_book_parts (parent_library_id, store, marketplace, \
                      product_id, version, seq, body) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     vec![
-                        text(owner_cluster_id),
+                        text(parent_library_id),
                         text(&edition.store),
                         text(&edition.marketplace),
                         text(&edition.product_id),
@@ -662,25 +662,25 @@ pub async fn record_window_page(
             groups.push(vec![
                 exec(
                     "UPDATE window_books SET work_ref = ?, local_work_id = ?, \
-                     parts_version = ?, seen_at = ? WHERE owner_cluster_id = ? AND store = ? \
+                     parts_version = ?, seen_at = ? WHERE parent_library_id = ? AND store = ? \
                      AND marketplace = ? AND product_id = ?",
                     vec![
                         text(grouping_key(&work.work)),
                         text_opt(local.as_deref()),
                         text(&version),
                         text(seen_at),
-                        text(owner_cluster_id),
+                        text(parent_library_id),
                         text(&edition.store),
                         text(&edition.marketplace),
                         text(&edition.product_id),
                     ],
                 ),
                 exec(
-                    "INSERT OR IGNORE INTO window_books (owner_cluster_id, store, \
+                    "INSERT OR IGNORE INTO window_books (parent_library_id, store, \
                      marketplace, product_id, work_ref, local_work_id, parts_version, \
                      seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     vec![
-                        text(owner_cluster_id),
+                        text(parent_library_id),
                         text(&edition.store),
                         text(&edition.marketplace),
                         text(&edition.product_id),
@@ -752,20 +752,20 @@ async fn read_parts(
     read_paged_by(store, select, None, result_page(store).min(by_bytes)).await
 }
 
-/// Drops library `owner_cluster_id`'s pieces no row names (left by a
+/// Drops library `parent_library_id`'s pieces no row names (left by a
 /// newer write, a dropped row, or a write cut short).
 ///
 /// # Errors
 ///
 /// Returns the write error.
-async fn drop_unnamed_parts(store: &LibraryStore, owner_cluster_id: &str) -> Result<()> {
+async fn drop_unnamed_parts(store: &LibraryStore, parent_library_id: &str) -> Result<()> {
     run_batches(
         store,
         "window book",
         vec![exec(
-            "DELETE FROM window_book_parts WHERE owner_cluster_id = ? AND version NOT IN \
-             (SELECT parts_version FROM window_books WHERE owner_cluster_id = ?)",
-            vec![text(owner_cluster_id), text(owner_cluster_id)],
+            "DELETE FROM window_book_parts WHERE parent_library_id = ? AND version NOT IN \
+             (SELECT parts_version FROM window_books WHERE parent_library_id = ?)",
+            vec![text(parent_library_id), text(parent_library_id)],
         )],
     )
     .await?;
@@ -793,7 +793,7 @@ struct Earlier {
 /// an account no longer the person's, still goes.
 async fn earlier_in_read(
     store: &LibraryStore,
-    owner_cluster_id: &str,
+    parent_library_id: &str,
     seen_at: &str,
     works: &[WindowWork],
 ) -> Result<HashMap<(String, String, String), Earlier>> {
@@ -809,11 +809,11 @@ async fn earlier_in_read(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let owner = owner_cluster_id.to_string();
+    let owner = parent_library_id.to_string();
     let stamp_now = seen_at.to_string();
     let rows = read_chunked_all(store, &products, move |part| {
         window_books::Entity::find()
-            .filter(window_books::Column::OwnerClusterId.eq(owner.clone()))
+            .filter(window_books::Column::ParentLibraryId.eq(owner.clone()))
             .filter(window_books::Column::SeenAt.eq(stamp_now.clone()))
             .filter(window_books::Column::ProductId.is_in(part))
     })
@@ -840,7 +840,7 @@ async fn earlier_in_read(
             read_parts(
                 store,
                 window_book_parts::Entity::find()
-                    .filter(window_book_parts::Column::OwnerClusterId.eq(owner_cluster_id))
+                    .filter(window_book_parts::Column::ParentLibraryId.eq(parent_library_id))
                     .filter(window_book_parts::Column::Version.is_in(chunk.to_vec())),
             )
             .await?,
@@ -862,7 +862,7 @@ async fn earlier_in_read(
         .collect())
 }
 
-/// Ends a complete read of library `owner_cluster_id`'s window books: drops
+/// Ends a complete read of library `parent_library_id`'s window books: drops
 /// its rows that read (stamped `seen_at`) did not name. Rows are compared
 /// by stamp equality, not order, so a clock moved back between reads still
 /// drops what the new read left out.
@@ -876,19 +876,19 @@ async fn earlier_in_read(
 /// Returns the write error.
 pub async fn finish_window_read(
     store: &LibraryStore,
-    owner_cluster_id: &str,
+    parent_library_id: &str,
     seen_at: &str,
 ) -> Result<u64> {
     let dropped = run_batches(
         store,
         "window book",
         vec![exec(
-            "DELETE FROM window_books WHERE owner_cluster_id = ? AND seen_at <> ?",
-            vec![text(owner_cluster_id), text(seen_at)],
+            "DELETE FROM window_books WHERE parent_library_id = ? AND seen_at <> ?",
+            vec![text(parent_library_id), text(seen_at)],
         )],
     )
     .await?;
-    drop_unnamed_parts(store, owner_cluster_id).await?;
+    drop_unnamed_parts(store, parent_library_id).await?;
     Ok(dropped)
 }
 
@@ -905,23 +905,23 @@ pub async fn finish_window_read(
 /// Returns the write error.
 pub async fn discard_window_read(
     store: &LibraryStore,
-    owner_cluster_id: &str,
+    parent_library_id: &str,
     seen_at: &str,
 ) -> Result<u64> {
     let dropped = run_batches(
         store,
         "window book",
         vec![exec(
-            "DELETE FROM window_books WHERE owner_cluster_id = ? AND seen_at = ?",
-            vec![text(owner_cluster_id), text(seen_at)],
+            "DELETE FROM window_books WHERE parent_library_id = ? AND seen_at = ?",
+            vec![text(parent_library_id), text(seen_at)],
         )],
     )
     .await?;
-    drop_unnamed_parts(store, owner_cluster_id).await?;
+    drop_unnamed_parts(store, parent_library_id).await?;
     Ok(dropped)
 }
 
-/// Drops every window book of library `owner_cluster_id` (its link
+/// Drops every window book of library `parent_library_id` (its link
 /// downloads again, or was left).
 ///
 /// # Returns
@@ -931,15 +931,15 @@ pub async fn discard_window_read(
 /// # Errors
 ///
 /// Returns the write error.
-pub async fn clear_window_books(store: &LibraryStore, owner_cluster_id: &str) -> Result<u64> {
+pub async fn clear_window_books(store: &LibraryStore, parent_library_id: &str) -> Result<u64> {
     // Most calls find nothing: read first so they write nothing.
     let any = window_books::Entity::find()
-        .filter(window_books::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(window_books::Column::ParentLibraryId.eq(parent_library_id))
         .one(store.db())
         .await
         .map_err(LibraryError::Orm)?;
     let any_part = window_book_parts::Entity::find()
-        .filter(window_book_parts::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(window_book_parts::Column::ParentLibraryId.eq(parent_library_id))
         .one(store.db())
         .await
         .map_err(LibraryError::Orm)?;
@@ -950,8 +950,8 @@ pub async fn clear_window_books(store: &LibraryStore, owner_cluster_id: &str) ->
         store,
         "window book",
         vec![exec(
-            "DELETE FROM window_books WHERE owner_cluster_id = ?",
-            vec![text(owner_cluster_id)],
+            "DELETE FROM window_books WHERE parent_library_id = ?",
+            vec![text(parent_library_id)],
         )],
     )
     .await?;
@@ -959,8 +959,8 @@ pub async fn clear_window_books(store: &LibraryStore, owner_cluster_id: &str) ->
         store,
         "window book",
         vec![exec(
-            "DELETE FROM window_book_parts WHERE owner_cluster_id = ?",
-            vec![text(owner_cluster_id)],
+            "DELETE FROM window_book_parts WHERE parent_library_id = ?",
+            vec![text(parent_library_id)],
         )],
     )
     .await?;
@@ -1050,8 +1050,8 @@ fn join_parts(mut parts: Vec<window_book_parts::Model>) -> HashMap<PartsKey, Sto
 /// One edition of a [`WindowEntry`], and the library that holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowEntryEdition {
-    /// The library (owner cluster id) that holds it for the person.
-    pub owner_cluster_id: String,
+    /// The library (parent library id) that holds it for the person.
+    pub parent_library_id: String,
     /// The library's origin, for display.
     pub owner_origin: String,
     /// The edition as that library sent it.
@@ -1137,7 +1137,7 @@ impl Groups {
 fn merge_keys(row: &window_books::Model, identifiers: &[LookupIdentifier]) -> Vec<String> {
     let mut keys = vec![format!(
         "ref\u{1f}{}\u{1f}{}",
-        row.owner_cluster_id, row.work_ref
+        row.parent_library_id, row.work_ref
     )];
     if let Some(work) = &row.local_work_id {
         keys.push(format!("work\u{1f}{work}"));
@@ -1171,33 +1171,31 @@ fn merge_keys(row: &window_books::Model, identifiers: &[LookupIdentifier]) -> Ve
 ///
 /// Returns the read error.
 pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
-    let mut windows: BTreeMap<String, String> = list_cluster_links(store)
+    let mut windows: BTreeMap<String, String> = list_library_links(store)
         .await?
         .into_iter()
         .filter(|link| link.is_active())
-        .map(|link| (link.owner_cluster_id, link.owner_origin))
+        .map(|link| (link.parent_library_id, link.owner_origin))
         .collect();
     // Libraries this install holds a library card for (as a clerk) read
-    // into the same rows. A clerk link is refused while a cluster link to
+    // into the same rows. A clerk link is refused while a library link to
     // that library is active, so the two never share a library; should
     // both be found, the branch link's origin is kept.
     for link in list_clerk_links(store).await? {
         if link.is_active() {
-            windows
-                .entry(link.library_cluster_id)
-                .or_insert(link.origin);
+            windows.entry(link.library_id).or_insert(link.origin);
         }
     }
     if windows.is_empty() {
         return Ok(Vec::new());
     }
-    let clusters: Vec<String> = windows.keys().cloned().collect();
+    let libraries: Vec<String> = windows.keys().cloned().collect();
     let mut parsed: Vec<(window_books::Model, StoredBook)> = Vec::new();
-    for cluster in &clusters {
+    for library in &libraries {
         let rows = read_paged(
             store,
             window_books::Entity::find()
-                .filter(window_books::Column::OwnerClusterId.eq(cluster.as_str())),
+                .filter(window_books::Column::ParentLibraryId.eq(library.as_str())),
             None,
         )
         .await?;
@@ -1205,7 +1203,7 @@ pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
             read_parts(
                 store,
                 window_book_parts::Entity::find()
-                    .filter(window_book_parts::Column::OwnerClusterId.eq(cluster.as_str())),
+                    .filter(window_book_parts::Column::ParentLibraryId.eq(library.as_str())),
             )
             .await?,
         );
@@ -1261,13 +1259,13 @@ pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
             indices.sort_by(|&a, &b| {
                 let (ra, rb) = (&parsed[a].0, &parsed[b].0);
                 (
-                    &ra.owner_cluster_id,
+                    &ra.parent_library_id,
                     &ra.store,
                     &ra.marketplace,
                     &ra.product_id,
                 )
                     .cmp(&(
-                        &rb.owner_cluster_id,
+                        &rb.parent_library_id,
                         &rb.store,
                         &rb.marketplace,
                         &rb.product_id,
@@ -1281,7 +1279,7 @@ pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
                 || {
                     format!(
                         "edition:{}:{}:{}:{}",
-                        first.owner_cluster_id, first.store, first.marketplace, first.product_id
+                        first.parent_library_id, first.store, first.marketplace, first.product_id
                     )
                 },
                 |work| format!("work:{work}"),
@@ -1291,9 +1289,9 @@ pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
                 .map(|&i| {
                     let (row, book) = &parsed[i];
                     WindowEntryEdition {
-                        owner_cluster_id: row.owner_cluster_id.clone(),
+                        parent_library_id: row.parent_library_id.clone(),
                         owner_origin: windows
-                            .get(&row.owner_cluster_id)
+                            .get(&row.parent_library_id)
                             .cloned()
                             .unwrap_or_default(),
                         edition: book.edition.clone(),
