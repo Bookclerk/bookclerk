@@ -925,7 +925,7 @@ fn parse_v1_select_list(index: usize, scan: &mut Scan<'_>) -> Result<()> {
             if scan.take_kw("AS") {
                 parse_v1_ident(index, scan)?;
             } else {
-                let _ = parse_v1_optional_alias(scan);
+                let _ = parse_v1_optional_expr_alias(scan);
             }
         }
         if !scan.take_byte(b',') {
@@ -946,6 +946,32 @@ fn take_v1_qualified_star(index: usize, scan: &mut Scan<'_>) -> bool {
     false
 }
 
+/// Takes an implicit alias (no `AS`) after a select-list expression; leaves
+/// the scanner where it was when the next word is not one.
+///
+/// `MATCH`, `GLOB` and `REGEXP` name a column after `AS` or a table in `FROM`
+/// (SQLite falls back to an identifier there), but straight after an
+/// expression SQLite reads them as the binary operator and wants a right
+/// operand, so `SELECT 1 = 1 GLOB` does not compile. They are left unread here
+/// so the statement fails as trailing tokens.
+///
+/// # Returns
+///
+/// True when an alias was taken.
+fn parse_v1_optional_expr_alias(scan: &mut Scan<'_>) -> bool {
+    if scan.peek_kw("MATCH") || scan.peek_kw("GLOB") || scan.peek_kw("REGEXP") {
+        return false;
+    }
+    parse_v1_optional_alias(scan)
+}
+
+/// Takes an implicit alias (no `AS`) after a `FROM` item or select-list
+/// expression; leaves the scanner where it was when the next word is a
+/// clause keyword, a reserved word or a quoted name.
+///
+/// # Returns
+///
+/// True when an alias was taken.
 fn parse_v1_optional_alias(scan: &mut Scan<'_>) -> bool {
     if scan.peek_kw("FROM")
         || scan.peek_kw("WHERE")
@@ -4253,6 +4279,12 @@ mod tests {
             "SELECT id FROM books OFFSET 1",
             "SELECT 4+.11151.111%1-0",
             "SELECT id + ESCAPE FROM books",
+            // Straight after an expression these are the binary operator,
+            // never an implicit alias, so a missing right operand is refused.
+            "SELECT 1>=1\x0cGLOB\x0c",
+            "SELECT id = 1 match FROM books",
+            "SELECT note IS NULL regexp FROM books",
+            "SELECT id BETWEEN 1 AND 2 GLOB FROM books",
             // Blob literals carry two hex digits per byte.
             "SELECT x'111' FROM books",
             "SELECT id FROM books WHERE note = X'a'",
