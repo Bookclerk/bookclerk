@@ -1065,12 +1065,31 @@ pub async fn search_similar_products_at(
         .collect())
 }
 
+/// The public catalog's origin for a marketplace, without a trailing slash
+/// (`https://api.audible.co.uk` for `uk`).
+///
+/// # Arguments
+///
+/// * `region` - Marketplace / region code (`us`, `uk`, …); an unknown code
+///   gets the US origin.
+///
+/// # Returns
+///
+/// The origin to pass to [`fetch_products_by_asins`].
+pub fn catalog_origin(region: &str) -> String {
+    format!(
+        "https://api.audible{}",
+        region_tld(&normalize_region(region))
+    )
+}
+
 /// Looks titles up by ASIN in the public catalog, with their genre ladders.
 ///
 /// # Arguments
 ///
 /// * `http` - Client from [`public_http_client`].
-/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `origin` - Catalog origin without a trailing slash, from
+///   [`catalog_origin`] (or a test server).
 /// * `asins` - ASINs to look up; values that are not ASINs are skipped.
 ///
 /// # Returns
@@ -1081,33 +1100,6 @@ pub async fn search_similar_products_at(
 ///
 /// Returns an error when the request fails or the answer is not JSON.
 pub async fn fetch_products_by_asins(
-    http: &Client,
-    region: &str,
-    asins: &[&str],
-) -> Result<Vec<CatalogProduct>> {
-    let region = normalize_region(region);
-    let origin = format!("https://api.audible{}", region_tld(&region));
-    fetch_products_by_asins_at(http, &origin, asins).await
-}
-
-/// [`fetch_products_by_asins`] against a given catalog origin, such as a
-/// test server.
-///
-/// # Arguments
-///
-/// * `http` - Client from [`public_http_client`].
-/// * `origin` - Catalog origin without a trailing slash
-///   (`https://api.audible.com`).
-/// * `asins` - ASINs to look up; values that are not ASINs are skipped.
-///
-/// # Returns
-///
-/// The titles the catalog knows, in its order; none when no value is an ASIN.
-///
-/// # Errors
-///
-/// Returns an error when the request fails or the answer is not JSON.
-pub async fn fetch_products_by_asins_at(
     http: &Client,
     origin: &str,
     asins: &[&str],
@@ -1905,8 +1897,31 @@ mod tests {
         assert_eq!((cents, currency.as_deref()), (Some(0), Some("USD")));
     }
 
+    /// Each ladder adds its first rung once, whichever casing repeats it,
+    /// whether the ladder is an object or a bare list; a nameless first
+    /// rung adds nothing.
+    #[test]
+    fn genre_roots_keep_each_first_rung_once() {
+        let product = serde_json::json!({ "category_ladders": [
+            { "ladder": [{ "name": "Science Fiction & Fantasy" }, { "name": "Fantasy" }] },
+            [{ "name": " science fiction & fantasy " }, { "name": "Science Fiction" }],
+            { "ladder": [{ "name": "  " }] },
+            { "ladder": [{ "name": "Literature & Fiction" }] }
+        ]});
+        assert_eq!(
+            genre_roots_from_catalog_product(&product),
+            vec![
+                "Science Fiction & Fantasy".to_string(),
+                "Literature & Fiction".to_string()
+            ]
+        );
+        assert!(genre_roots_from_catalog_product(&serde_json::json!({})).is_empty());
+    }
+
     #[test]
     fn region_tld_map() {
+        assert_eq!(catalog_origin("uk"), "https://api.audible.co.uk");
+        assert_eq!(catalog_origin(" US "), "https://api.audible.com");
         assert_eq!(region_tld("us"), ".com");
         assert_eq!(region_tld("uk"), ".co.uk");
         assert_eq!(region_tld("jp"), ".co.jp");

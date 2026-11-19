@@ -1,9 +1,9 @@
-//! `fetch_products_by_asins_at` against a mock catalog: the request it
+//! `fetch_products_by_asins` against a mock catalog: the request it
 //! sends, and the top-level genres it reads from each title's ladders.
 // Test code: a failed assertion is the test failing, not a documented panic.
 #![allow(clippy::missing_panics_doc)]
 
-use bookclerk_audible_catalog::{fetch_products_by_asins_at, public_http_client};
+use bookclerk_audible_catalog::{fetch_products_by_asins, public_http_client};
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -34,7 +34,7 @@ async fn titles_carry_each_top_level_genre_once() {
         .await;
     let http = public_http_client().expect("client");
     let titles =
-        fetch_products_by_asins_at(&http, &server.uri(), &[" b086wmz9wr ", "B019P7DVPE", "x"])
+        fetch_products_by_asins(&http, &server.uri(), &[" b086wmz9wr ", "B019P7DVPE", "x"])
             .await
             .expect("titles");
     assert_eq!(titles.len(), 2);
@@ -50,7 +50,7 @@ async fn titles_carry_each_top_level_genre_once() {
 async fn no_asin_asks_nothing() {
     let server = MockServer::start().await;
     let http = public_http_client().expect("client");
-    let none = fetch_products_by_asins_at(&http, &server.uri(), &["not an asin"])
+    let none = fetch_products_by_asins(&http, &server.uri(), &["not an asin"])
         .await
         .expect("no request");
     assert!(none.is_empty());
