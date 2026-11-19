@@ -985,7 +985,6 @@ export interface OidcBrokerConfigUpdate {
   providers: OidcProviderConfigUpdate[];
   /** Omit to leave unchanged; empty string clears `integrations.public_origin`. */
   public_origin?: string | null;
-  current_password?: string;
 }
 
 /** Registered passkey row. */
@@ -1059,7 +1058,6 @@ export interface OidcAsClientWrite {
   issue_refresh_token: boolean;
   allowed_scopes: string[];
   enabled: boolean;
-  current_password?: string;
 }
 
 /**
@@ -1110,18 +1108,15 @@ export async function updateOidcClient(
 }
 
 /**
- * Deletes a registered OIDC client.
+ * Deletes a registered OIDC client (operator or elevated Owner only).
  *
  * @param clientId - Client to remove.
- * @param currentPassword - Owner re-auth when the session is older than 15 minutes.
  * @returns Resolves when the client is removed.
  */
-export async function deleteOidcClient(clientId: string, currentPassword?: string): Promise<void> {
+export async function deleteOidcClient(clientId: string): Promise<void> {
   const res = await fetch(`/api/auth/oidc/clients/${encodeURIComponent(clientId)}`, {
     method: "DELETE",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ current_password: currentPassword }),
   });
   if (!res.ok) {
     await parseJson(res);
@@ -1129,21 +1124,18 @@ export async function deleteOidcClient(clientId: string, currentPassword?: strin
 }
 
 /**
- * Rotates a confidential client's secret; plaintext is returned once.
+ * Rotates a confidential client's secret (operator or elevated Owner only);
+ * plaintext is returned once.
  *
  * @param clientId - Confidential client to rotate.
- * @param currentPassword - Owner re-auth when required.
  * @returns Client row including the new plaintext secret once.
  */
-export async function rotateOidcClientSecret(
-  clientId: string,
-  currentPassword?: string,
-): Promise<OidcAsClient> {
+export async function rotateOidcClientSecret(clientId: string): Promise<OidcAsClient> {
   const res = await fetch(`/api/auth/oidc/clients/${encodeURIComponent(clientId)}/rotate-secret`, {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ current_password: currentPassword }),
+    body: "{}",
   });
   return parseJson(res);
 }
@@ -1959,24 +1951,20 @@ export async function fetchMfaPolicy(): Promise<{ require_second_factor: boolean
 }
 
 /**
- * Persists whether password login requires TOTP or a passkey.
+ * Persists whether password login requires TOTP or a passkey (operator or
+ * elevated Owner only).
  *
  * @param requireSecondFactor - When true, password-only sign-in is not enough once enrolled.
- * @param currentPassword - Owner step-up; operators omit this.
  * @returns Saved `{ require_second_factor }` flag.
  */
 export async function putMfaPolicy(
   requireSecondFactor: boolean,
-  currentPassword?: string,
 ): Promise<{ require_second_factor: boolean }> {
   const res = await fetch("/api/auth/mfa-policy", {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      require_second_factor: requireSecondFactor,
-      current_password: currentPassword,
-    }),
+    body: JSON.stringify({ require_second_factor: requireSecondFactor }),
   });
   return parseJson(res);
 }

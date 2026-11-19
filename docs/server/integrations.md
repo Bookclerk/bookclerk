@@ -535,7 +535,9 @@ Discovery document: `GET /.well-known/openid-configuration`.
 ### Register an app
 
 Add each app as an OIDC client in **Settings → Sign-in → OIDC clients**,
-or with `GET`/`POST`/`PUT`/`DELETE /api/auth/oidc/clients`.
+or with `GET`/`POST`/`PUT`/`DELETE /api/auth/oidc/clients`. Changing
+clients needs the operator: an Owner elevates first, since a client can
+sign people in elsewhere. Without elevation an Owner sees them read-only.
 
 - Every client has an **Enabled** switch. A disabled client can't
   authorize.
@@ -691,16 +693,16 @@ Apple's ID token.
 | Endpoint | Notes |
 | --- | --- |
 | `GET /api/auth/oidc/providers` | Public list of sign-in buttons |
-| `GET`/`PUT /api/auth/oidc/config` | Owner or operator: list or replace providers (secrets redacted). `public_origin` pins the issuer; `detected_origin` is this request's origin, only when it is a bound loopback address |
-| `GET`/`POST /api/auth/oidc/clients` | Owner or operator: list or create clients of Bookclerk as provider (a confidential secret is returned once) |
-| `PUT`/`DELETE /api/auth/oidc/clients/{id}` | Update or delete a client |
-| `POST /api/auth/oidc/clients/{id}/rotate-secret` | Make a new confidential secret (returned once) |
+| `GET`/`PUT /api/auth/oidc/config` | Owner or operator lists, operator replaces providers (secrets redacted). `public_origin` pins the issuer; `detected_origin` is this request's origin, only when it is a bound loopback address |
+| `GET`/`POST /api/auth/oidc/clients` | Owner or operator lists, operator creates clients of Bookclerk as provider (a confidential secret is returned once) |
+| `PUT`/`DELETE /api/auth/oidc/clients/{id}` | Operator: update or delete a client |
+| `POST /api/auth/oidc/clients/{id}/rotate-secret` | Operator: make a new confidential secret (returned once) |
 | `GET /api/auth/oidc/login?provider=` | Start SSO (PKCE and nonce; Apple uses `response_mode=form_post`) |
 | `GET /api/auth/oidc/elevate?provider=` | Owner step-up (`prompt=login`) |
 | `GET`/`POST /api/auth/oidc/callback` | Token exchange, then create or link the user (Apple posts `form_post`) |
 | `GET /api/auth/oidc/identities` | The current user's linked providers |
 | `GET`/`POST`/`DELETE /api/auth/passkeys…` | Passkeys: register (optional `name`), sign in, elevate |
-| `GET`/`PUT /api/auth/mfa-policy` | Owner or operator: require TOTP or a passkey with a password |
+| `GET`/`PUT /api/auth/mfa-policy` | Owner or operator reads, operator changes: require TOTP or a passkey with a password |
 | `POST /api/auth/totp/enroll/*`, `GET`/`DELETE /api/auth/totp`, `POST /api/auth/totp/login` | Authenticator-app TOTP |
 
 See [ADR: first-party identity](../adr/first-party-identity.md) and

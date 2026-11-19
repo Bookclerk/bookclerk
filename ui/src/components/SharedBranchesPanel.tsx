@@ -12,15 +12,21 @@ import {
 export interface SharedBranchesPanelProps {
   /** Called on a 401 so the page can sign out. */
   onSessionExpired: () => void;
+  /**
+   * Whether the viewer may remove a shared branch: the operator, or an
+   * elevated Owner. An Owner's everyday session only lists them.
+   */
+  canRemove: boolean;
 }
 
 /**
  * Settings → Shared branches on the library (operator or Owner): the servers that
  * share this library's database and keys (shared nodes), including this one.
- * A shared branch that no longer runs can be removed here; a running one is stopped
- * on its own server first. Branches are listed under Branches, not here.
+ * A shared branch that no longer runs can be removed here by the operator (or an
+ * elevated Owner); a running one is stopped on its own server first. Branches are
+ * listed under Branches, not here.
  */
-export function SharedBranchesPanel({ onSessionExpired }: SharedBranchesPanelProps) {
+export function SharedBranchesPanel({ onSessionExpired, canRemove }: SharedBranchesPanelProps) {
   const [nodes, setNodes] = useState<ConfigNodeView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -70,6 +76,12 @@ export function SharedBranchesPanel({ onSessionExpired }: SharedBranchesPanelPro
           PostgreSQL or Cloudflare D1. To add one, choose <strong>Join a library</strong> on an
           empty server and pick <strong>shared branch</strong> when you approve it here.
         </p>
+        {canRemove ? null : (
+          <p className="text-sm text-ink/55">
+            Only the operator can remove a shared branch, because removing one deletes its records.
+            To remove one, choose <strong>Elevate to Operator</strong> under Account.
+          </p>
+        )}
       </div>
       {error ? (
         <p className="text-sm font-medium text-brick" role="alert">
@@ -93,7 +105,7 @@ export function SharedBranchesPanel({ onSessionExpired }: SharedBranchesPanelPro
                   {node.software_version ? ` · ${node.software_version}` : ""}
                 </p>
               </div>
-              {node.this_node || node.live ? null : (
+              {node.this_node || node.live || !canRemove ? null : (
                 <Button
                   type="button"
                   variant="secondary"

@@ -500,7 +500,9 @@ node, this server first, and who approved it (`GET /api/config/shared-branches`)
 Another user sees only the ones they own.
 
 A shared branch that isn't running can be removed there
-(`DELETE /api/config/nodes/{node_id}`). Stop Bookclerk on it first.
+(`DELETE /api/config/nodes/{node_id}`) by the operator, or by an Owner after
+elevating, since removing one deletes its records. Stop Bookclerk on it
+first.
 
 > [!WARNING]
 > Removing a shared branch doesn't take back the database credentials or key it

@@ -107,3 +107,4 @@ Build and agent conventions for this repository live in
 - [Metadata claims and file sync](adr/metadata-claims-and-file-sync.md): every value is a claim with its source, one resolver, evidence-based works, and two-way sync with tags and sidecar files
 - [Patron scopes and linked sign-in](adr/patron-scopes.md): which part of the library a Member sees, and how a linked server's permissions follow one authority
 - [Storage destinations](adr/storage-destinations.md): every storage plugin instance is a destination with its own template and filter, opportunistic change feeds and host-held webhooks
+- [What needs the operator](adr/owner-and-operator.md): the rule for which actions need elevation, and the switches an Owner sets on each Administrator

@@ -345,10 +345,12 @@ function CopyableValue({ label, value }: { label: string; value: string }) {
  */
 function ProviderCard({
   provider,
+  readOnly,
   onChange,
   onRemove,
 }: {
   provider: DraftProvider;
+  readOnly: boolean;
   onChange: (next: DraftProvider) => void;
   onRemove: () => void;
 }) {
@@ -363,7 +365,9 @@ function ProviderCard({
   const provisionOptions =
     isSocial && !providerUsesMappedRole(provider) ? SOCIAL_PROVISIONS : ENTERPRISE_PROVISIONS;
   const title = provider.name.trim() || provider.id.trim() || meta?.name || "New provider";
-  const [expanded, setExpanded] = useState(provider.startsOpen);
+  const [expandedState, setExpanded] = useState(provider.startsOpen);
+  // A read-only view disables the toggle, so it shows every card open.
+  const expanded = readOnly || expandedState;
   const [advancedOpen, setAdvancedOpen] = useState(() => isSocial && socialAdvancedOpen(provider));
   const status = providerStatus(provider, preset);
 
@@ -784,7 +788,7 @@ function emptyClient(): DraftClient {
   };
 }
 
-function clientWrite(draft: DraftClient, currentPassword?: string) {
+function clientWrite(draft: DraftClient) {
   const scopes = ["openid"];
   if (draft.scopeProfile) scopes.push("profile");
   if (draft.scopeEmail) scopes.push("email");
@@ -799,7 +803,6 @@ function clientWrite(draft: DraftClient, currentPassword?: string) {
     issue_refresh_token: draft.issue_refresh_token,
     allowed_scopes: scopes,
     enabled: draft.enabled,
-    current_password: currentPassword,
   };
 }
 
@@ -822,7 +825,7 @@ function clientStatus(client: DraftClient): string {
 
 function ClientCard({
   client,
-  currentPassword,
+  readOnly,
   onChange,
   onSaved,
   onRemoved,
@@ -830,14 +833,16 @@ function ClientCard({
   onNotice,
 }: {
   client: DraftClient;
-  currentPassword?: string;
+  readOnly: boolean;
   onChange: (next: DraftClient) => void;
   onSaved: (next: DraftClient) => void;
   onRemoved: () => void;
   onError: (message: string) => void;
   onNotice: (message: string) => void;
 }) {
-  const [open, setOpen] = useState(client.startsOpen);
+  const [openState, setOpen] = useState(client.startsOpen);
+  // A read-only view disables the toggle, so it shows every card open.
+  const open = readOnly || openState;
   const [busy, setBusy] = useState(false);
   const title = client.name.trim() || client.client_id.trim() || "New client";
   const pluginOwned = Boolean(client.plugin_id);
@@ -847,7 +852,7 @@ function ClientCard({
   }
 
   async function persist(next: DraftClient) {
-    const body = clientWrite(next, currentPassword);
+    const body = clientWrite(next);
     const saved = next.persisted
       ? await updateOidcClient(next.originalId || next.client_id, body)
       : await createOidcClient(body);
@@ -905,10 +910,7 @@ function ClientCard({
     if (!client.persisted) return;
     setBusy(true);
     try {
-      const saved = await rotateOidcClientSecret(
-        client.originalId || client.client_id,
-        currentPassword,
-      );
+      const saved = await rotateOidcClientSecret(client.originalId || client.client_id);
       const next = clientFromApi(saved);
       next.startsOpen = true;
       next.plaintextSecret = saved.client_secret ?? null;
@@ -934,7 +936,7 @@ function ClientCard({
     }
     setBusy(true);
     try {
-      await deleteOidcClient(client.originalId || client.client_id, currentPassword);
+      await deleteOidcClient(client.originalId || client.client_id);
       onRemoved();
       onNotice("OIDC client deleted.");
     } catch (err) {
@@ -1113,13 +1115,24 @@ function ClientCard({
   );
 }
 
+/** Props for {@link OidcSettingsPanel}. */
+export interface OidcSettingsPanelProps {
+  /**
+   * Whether the viewer may change these settings: the operator, or an
+   * elevated Owner. An Owner's everyday session sees them read-only.
+   */
+  canChange: boolean;
+}
+
 /**
  * Owner/operator Settings tab: SSO into Bookclerk, then Bookclerk as IdP.
  *
+ * Every change here needs the operator (or an elevated Owner), since each one
+ * decides who can sign in; an Owner without elevation reads them only.
  * Empty public origin uses a bound loopback origin (localhost in tray or cargo
  * dev). Production hosts must pin `https://…`.
  */
-export function OidcSettingsPanel() {
+export function OidcSettingsPanel({ canChange }: OidcSettingsPanelProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1130,7 +1143,6 @@ export function OidcSettingsPanel() {
   const [domains, setDomains] = useState("");
   const [providers, setProviders] = useState<DraftProvider[]>([]);
   const [clients, setClients] = useState<DraftClient[]>([]);
-  const [currentPassword, setCurrentPassword] = useState("");
   const [requireSecondFactor, setRequireSecondFactor] = useState(false);
   const [savingMfa, setSavingMfa] = useState(false);
 
@@ -1175,9 +1187,8 @@ export function OidcSettingsPanel() {
     setError(null);
     setNotice(null);
     try {
-      const saved = await putMfaPolicy(requireSecondFactor, currentPassword.trim() || undefined);
+      const saved = await putMfaPolicy(requireSecondFactor);
       setRequireSecondFactor(saved.require_second_factor);
-      setCurrentPassword("");
       setNotice("Password sign-in policy saved.");
     } catch (err) {
       setError(
@@ -1231,7 +1242,6 @@ export function OidcSettingsPanel() {
           }
           return update;
         }),
-        current_password: currentPassword.trim() || undefined,
       };
       const saved = await putOidcConfig(body);
       const draft = toDraft(saved);
@@ -1240,7 +1250,6 @@ export function OidcSettingsPanel() {
       setProviders(draft.providers);
       setPublicOrigin(saved.public_origin?.trim() || "");
       setDetectedOrigin(saved.detected_origin?.trim() || pageOrigin());
-      setCurrentPassword("");
       setNotice("Sign-in settings saved.");
     } catch (err) {
       setError(
@@ -1270,198 +1279,197 @@ export function OidcSettingsPanel() {
           {notice}
         </p>
       ) : null}
-
-      <section className="space-y-3">
-        <div className="space-y-1">
-          <h2 className="text-lg font-semibold text-ink">Password sign-in</h2>
-          <p className="text-sm text-ink/55">
-            Require a passkey or authenticator app instead of a password alone. Users without either
-            can still sign in once to enroll. Passkey and SSO sign-in are unchanged.
-          </p>
-        </div>
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
-          <input
-            type="checkbox"
-            checked={requireSecondFactor}
-            onChange={(e) => setRequireSecondFactor(e.target.checked)}
-          />
-          Require authenticator or passkey for password login
-        </label>
-        <Button
-          type="button"
-          variant="secondary"
-          className="self-start"
-          disabled={savingMfa}
-          onClick={() => void onSaveMfa()}
-        >
-          {savingMfa ? "Saving…" : "Save password policy"}
-        </Button>
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <div className="flex flex-col gap-1">
-          <h2 className="text-lg font-semibold text-ink">SSO into Bookclerk</h2>
-          <p className="text-sm text-ink/55">
-            Optional Google, GitHub, Apple, Discord, or company IdP buttons on the Bookclerk sign-in
-            page. Bookclerk is the client. The operator token is local break-glass and is never an
-            SSO account.
-          </p>
-        </div>
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
-          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-          Show SSO buttons on the Bookclerk sign-in page
-        </label>
-        <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
-          Global allowed email domains
-          <Input
-            value={domains}
-            onChange={(e) => setDomains(e.target.value)}
-            placeholder="family.example, corp.example"
-          />
-          <span className="text-xs font-normal text-ink/50">
-            Extra filter on every SSO provider below. Empty means only each provider’s own policy
-            applies.
-          </span>
-        </label>
-        <p className="text-xs text-ink/55">
-          Redirect URI to paste into Google, GitHub, or your IdP:{" "}
-          <code className="rounded bg-ink/5 px-1 py-0.5 text-ink">{rpCallback}</code>
+      {canChange ? null : (
+        <p className="rounded-md border border-ink/10 bg-ink/5 p-3 text-sm text-ink/70">
+          Only the operator can change sign-in settings, because each one decides who can sign in.
+          To change them, choose <strong>Elevate to Operator</strong> under Account.
         </p>
-      </section>
+      )}
 
-      <section className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h3 className="text-base font-semibold text-ink">SSO providers</h3>
-            <p className="mt-1 text-sm text-ink/55">
-              Apps that people use to sign into Bookclerk. Google, GitHub, Apple, and Discord only
-              need a client ID and secret. Custom OIDC still asks for an issuer URL.
+      <fieldset disabled={!canChange} className="m-0 flex min-w-0 flex-col gap-8 border-0 p-0">
+        <section className="space-y-3">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold text-ink">Password sign-in</h2>
+            <p className="text-sm text-ink/55">
+              Require a passkey or authenticator app instead of a password alone. Users without
+              either can still sign in once to enroll. Passkey and SSO sign-in are unchanged.
             </p>
           </div>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={requireSecondFactor}
+              onChange={(e) => setRequireSecondFactor(e.target.checked)}
+            />
+            Require authenticator or passkey for password login
+          </label>
           <Button
             type="button"
             variant="secondary"
-            onClick={() => setProviders((prev) => [...prev, emptyProvider()])}
+            className="self-start"
+            disabled={savingMfa}
+            onClick={() => void onSaveMfa()}
           >
-            <Plus className="h-4 w-4" />
-            Add provider
+            {savingMfa ? "Saving…" : "Save password policy"}
           </Button>
-        </div>
-        {providers.length === 0 ? (
-          <p className="text-sm text-ink/50">No providers configured yet.</p>
-        ) : (
-          <ul className="flex flex-col gap-4">
-            {providers.map((provider, index) => (
-              <ProviderCard
-                key={`${provider.id || "new"}-${index}`}
-                provider={provider}
-                onChange={(next) =>
-                  setProviders((prev) => prev.map((row, i) => (i === index ? next : row)))
-                }
-                onRemove={() => setProviders((prev) => prev.filter((_, i) => i !== index))}
-              />
-            ))}
-          </ul>
-        )}
-      </section>
+        </section>
 
-      <section className="flex flex-col gap-3">
-        <div className="flex flex-col gap-1">
-          <h2 className="text-lg font-semibold text-ink">Bookclerk as identity provider</h2>
-          <p className="text-sm text-ink/55">
-            Players and other relying parties sign into Bookclerk. Bookclerk is the OpenID issuer.
-            Register each app as a client below.
+        <section className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <h2 className="text-lg font-semibold text-ink">SSO into Bookclerk</h2>
+            <p className="text-sm text-ink/55">
+              Optional Google, GitHub, Apple, Discord, or company IdP buttons on the Bookclerk
+              sign-in page. Bookclerk is the client. The operator token is local break-glass and is
+              never an SSO account.
+            </p>
+          </div>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+            />
+            Show SSO buttons on the Bookclerk sign-in page
+          </label>
+          <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+            Global allowed email domains
+            <Input
+              value={domains}
+              onChange={(e) => setDomains(e.target.value)}
+              placeholder="family.example, corp.example"
+            />
+            <span className="text-xs font-normal text-ink/50">
+              Extra filter on every SSO provider below. Empty means only each provider’s own policy
+              applies.
+            </span>
+          </label>
+          <p className="text-xs text-ink/55">
+            Redirect URI to paste into Google, GitHub, or your IdP:{" "}
+            <code className="rounded bg-ink/5 px-1 py-0.5 text-ink">{rpCallback}</code>
           </p>
-        </div>
-        <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
-          Public origin
-          <Input
-            value={publicOrigin}
-            onChange={(e) => setPublicOrigin(e.target.value)}
-            placeholder={detectedOrigin || pageOrigin()}
-            autoComplete="url"
-          />
-          <span className="text-xs font-normal text-ink/50">
-            Leave empty to use a bound loopback origin (
-            <code className="rounded bg-ink/5 px-1">{detectedOrigin || pageOrigin()}</code>
-            ). Tray and <code className="rounded bg-ink/5 px-1">cargo dev</code> use localhost.
-            Production behind TLS must pin <code className="rounded bg-ink/5 px-1">https://…</code>.
-            Saving empty clears a pinned origin so loopback detection keeps working.
-          </span>
-        </label>
-        <div className="grid gap-3">
-          <CopyableValue label="Issuer" value={issuer} />
-          <CopyableValue label="Discovery" value={`${issuer}/.well-known/openid-configuration`} />
-          <CopyableValue label="Authorization" value={`${issuer}/oidc/authorize`} />
-          <CopyableValue label="Token" value={`${issuer}/oidc/token`} />
-          <CopyableValue label="Userinfo" value={`${issuer}/oidc/userinfo`} />
-        </div>
-      </section>
+        </section>
 
-      <section className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h3 className="text-base font-semibold text-ink">OIDC clients</h3>
-            <p className="mt-1 text-sm text-ink/55">
-              Apps that trust Bookclerk as their identity provider. Installed player plugins
-              contribute a client (disabled until you enable it). Custom clients can still be added.
-              Public PKCE clients omit a secret; confidential clients receive a generated secret
-              once.
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-base font-semibold text-ink">SSO providers</h3>
+              <p className="mt-1 text-sm text-ink/55">
+                Apps that people use to sign into Bookclerk. Google, GitHub, Apple, and Discord only
+                need a client ID and secret. Custom OIDC still asks for an issuer URL.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setProviders((prev) => [...prev, emptyProvider()])}
+            >
+              <Plus className="h-4 w-4" />
+              Add provider
+            </Button>
+          </div>
+          {providers.length === 0 ? (
+            <p className="text-sm text-ink/50">No providers configured yet.</p>
+          ) : (
+            <ul className="flex flex-col gap-4">
+              {providers.map((provider, index) => (
+                <ProviderCard
+                  key={`${provider.id || "new"}-${index}`}
+                  provider={provider}
+                  readOnly={!canChange}
+                  onChange={(next) =>
+                    setProviders((prev) => prev.map((row, i) => (i === index ? next : row)))
+                  }
+                  onRemove={() => setProviders((prev) => prev.filter((_, i) => i !== index))}
+                />
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <h2 className="text-lg font-semibold text-ink">Bookclerk as identity provider</h2>
+            <p className="text-sm text-ink/55">
+              Players and other relying parties sign into Bookclerk. Bookclerk is the OpenID issuer.
+              Register each app as a client below.
             </p>
           </div>
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() => setClients((prev) => [...prev, emptyClient()])}
-          >
-            <Plus className="h-4 w-4" />
-            Add client
+          <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+            Public origin
+            <Input
+              value={publicOrigin}
+              onChange={(e) => setPublicOrigin(e.target.value)}
+              placeholder={detectedOrigin || pageOrigin()}
+              autoComplete="url"
+            />
+            <span className="text-xs font-normal text-ink/50">
+              Leave empty to use a bound loopback origin (
+              <code className="rounded bg-ink/5 px-1">{detectedOrigin || pageOrigin()}</code>
+              ). Tray and <code className="rounded bg-ink/5 px-1">cargo dev</code> use localhost.
+              Production behind TLS must pin{" "}
+              <code className="rounded bg-ink/5 px-1">https://…</code>. Saving empty clears a pinned
+              origin so loopback detection keeps working.
+            </span>
+          </label>
+          <div className="grid gap-3">
+            <CopyableValue label="Issuer" value={issuer} />
+            <CopyableValue label="Discovery" value={`${issuer}/.well-known/openid-configuration`} />
+            <CopyableValue label="Authorization" value={`${issuer}/oidc/authorize`} />
+            <CopyableValue label="Token" value={`${issuer}/oidc/token`} />
+            <CopyableValue label="Userinfo" value={`${issuer}/oidc/userinfo`} />
+          </div>
+        </section>
+
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-base font-semibold text-ink">OIDC clients</h3>
+              <p className="mt-1 text-sm text-ink/55">
+                Apps that trust Bookclerk as their identity provider. Installed player plugins
+                contribute a client (disabled until you enable it). Custom clients can still be
+                added. Public PKCE clients omit a secret; confidential clients receive a generated
+                secret once.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setClients((prev) => [...prev, emptyClient()])}
+            >
+              <Plus className="h-4 w-4" />
+              Add client
+            </Button>
+          </div>
+          {clients.length === 0 ? (
+            <p className="text-sm text-ink/50">No OIDC clients registered yet.</p>
+          ) : (
+            <ul className="flex flex-col gap-4">
+              {clients.map((client, index) => (
+                <ClientCard
+                  key={`${client.originalId || "new"}-${index}`}
+                  client={client}
+                  readOnly={!canChange}
+                  onChange={(next) =>
+                    setClients((prev) => prev.map((row, i) => (i === index ? next : row)))
+                  }
+                  onSaved={(next) =>
+                    setClients((prev) => prev.map((row, i) => (i === index ? next : row)))
+                  }
+                  onRemoved={() => setClients((prev) => prev.filter((_, i) => i !== index))}
+                  onError={setError}
+                  onNotice={setNotice}
+                />
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <div>
+          <Button type="submit" disabled={saving}>
+            {saving ? "Saving…" : "Save sign-in settings"}
           </Button>
         </div>
-        {clients.length === 0 ? (
-          <p className="text-sm text-ink/50">No OIDC clients registered yet.</p>
-        ) : (
-          <ul className="flex flex-col gap-4">
-            {clients.map((client, index) => (
-              <ClientCard
-                key={`${client.originalId || "new"}-${index}`}
-                client={client}
-                currentPassword={currentPassword.trim() || undefined}
-                onChange={(next) =>
-                  setClients((prev) => prev.map((row, i) => (i === index ? next : row)))
-                }
-                onSaved={(next) =>
-                  setClients((prev) => prev.map((row, i) => (i === index ? next : row)))
-                }
-                onRemoved={() => setClients((prev) => prev.filter((_, i) => i !== index))}
-                onError={setError}
-                onNotice={setNotice}
-              />
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <label className="space-y-1 text-sm font-medium text-ink">
-        Current password
-        <Input
-          type="password"
-          autoComplete="current-password"
-          value={currentPassword}
-          onChange={(e) => setCurrentPassword(e.target.value)}
-          placeholder="Required if this Owner session is older than 15 minutes"
-        />
-        <span className="block text-xs font-normal text-ink/50">
-          Operator and elevated Owner sessions skip this. A freshly signed-in Owner session is
-          enough.
-        </span>
-      </label>
-
-      <div>
-        <Button type="submit" disabled={saving}>
-          {saving ? "Saving…" : "Save sign-in settings"}
-        </Button>
-      </div>
+      </fieldset>
     </form>
   );
 }
