@@ -7,8 +7,9 @@ that receives them, for the people who run it.
 
 ## Share reports
 
-Reporting is off until you turn it on. The first-install setup asks, and
-the operator can change it any time under **Settings → Server Settings →
+Reporting is off until you turn it on. The first-install setup asks,
+after you start a new library or join one as a branch (by invite or by
+signing in to the library), and the operator can change it any time under **Settings → Server Settings →
 Diagnostics** in the web app, or in `config.toml`:
 
 ```toml
