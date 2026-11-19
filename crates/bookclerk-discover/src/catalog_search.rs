@@ -713,14 +713,13 @@ impl DetailLookups {
 ///
 /// * `c` - The ranked search row.
 /// * `provider` - Plugin id of the enrichment store.
-/// * `lookups` - The detail lookups that store declared. A store that
-///   declared only `detailByIsbn` is still asked for its own listings, as
-///   its product ids reach the same lookup.
+/// * `lookups` - The detail lookups that store declared. Its own product
+///   ids are sent only when it declared `detailByProductId`.
 ///
 /// # Returns
 ///
 /// `None` when the store has no lookup for the row: no ISBN it can resolve
-/// and no edition of its own.
+/// and no edition of its own that it answers by product id.
 fn enrich_key_for(
     c: &StorefrontCandidate,
     provider: &str,
@@ -731,7 +730,7 @@ fn enrich_key_for(
             return Some(EnrichKey::Isbn(isbn.to_string()));
         }
     }
-    if !lookups.any() {
+    if !lookups.by_product_id {
         return None;
     }
     let own = std::iter::once((c.source.as_str(), c.product_id.as_str())).chain(
@@ -790,8 +789,8 @@ async fn enrich_lookup(provider: &Arc<dyn ContentSource>, key: &EnrichKey) -> Op
 /// `CatalogCapabilities.detailByIsbn` or `detailByProductId`.
 ///
 /// Each lean row asks those stores in registry order (`sort_key`) and takes
-/// the first full record: ISBN stores by the row's ISBN, and any of them by
-/// the product id it gave the row itself. Bounded by [`PAGE_ENRICH_TIMEOUT`] so a slow guest
+/// the first full record: ISBN stores by the row's ISBN, and product stores
+/// by the product id they gave the row themselves. Bounded by [`PAGE_ENRICH_TIMEOUT`] so a slow guest
 /// cannot exceed the daemon search budget. Rows with no ISBN and no edition
 /// at an enrichment store are skipped (title-meta / purchase-hints still fill
 /// those in the detail modal).
@@ -1814,7 +1813,7 @@ pub(crate) mod tests {
         let store = DetailStore {
             id,
             by_isbn: true,
-            by_product_id: false,
+            by_product_id: true,
             answer,
             fails,
             calls: calls.clone(),
@@ -2032,6 +2031,12 @@ pub(crate) mod tests {
         by_product_id: false,
     };
 
+    /// Lookups of a store that declared both, as Libro.fm does.
+    const BOTH: DetailLookups = DetailLookups {
+        by_isbn: true,
+        by_product_id: true,
+    };
+
     /// Lookups of a store that declared only `detailByProductId`.
     const PRODUCT_ONLY: DetailLookups = DetailLookups {
         by_isbn: false,
@@ -2050,15 +2055,20 @@ pub(crate) mod tests {
             .store_editions
             .push(StoreEdition::new("libro", "libro-42"));
         assert_eq!(
-            enrich_key_for(&listed_at_provider, "libro", ISBN_ONLY),
+            enrich_key_for(&listed_at_provider, "libro", BOTH),
             Some(EnrichKey::Product("libro-42".into()))
         );
         assert_eq!(
-            enrich_key_for(&lean_row("libro", "libro-7", None), "libro", ISBN_ONLY),
+            enrich_key_for(&lean_row("libro", "libro-7", None), "libro", BOTH),
             Some(EnrichKey::Product("libro-7".into()))
         );
+        // A store that declared only ISBN lookups is never sent its own ids.
         assert_eq!(
-            enrich_key_for(&lean_row("chirp", "c1", None), "libro", ISBN_ONLY),
+            enrich_key_for(&listed_at_provider, "libro", ISBN_ONLY),
+            None
+        );
+        assert_eq!(
+            enrich_key_for(&lean_row("chirp", "c1", None), "libro", BOTH),
             None
         );
     }

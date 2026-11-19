@@ -557,7 +557,14 @@ async fn mount_grid(server: &MockServer, q: &str, titles: &[&str], calls: u64) {
 
 /// The catalog's alphabetical listing, which the store sends for a query it
 /// cannot match.
-const CATALOG_LISTING: &[&str] = &["1632", "A Call to Arms", "Abaddon's Gate"];
+const CATALOG_LISTING: &[&str] = &[
+    "1632",
+    "A Call to Arms",
+    "Abaddon's Gate",
+    "Age of Aztec",
+    "Alloy of Law",
+    "Ancillary Justice",
+];
 
 /// A query with punctuation and an author's name goes out as plain words;
 /// when the store answers with its catalog listing, the search asks again
@@ -601,15 +608,22 @@ async fn search_drops_punctuation_and_a_trailing_author_for_the_catalog_listing(
 }
 
 /// When every shorter query still gets the catalog listing, the search
-/// stops after its attempts and answers nothing rather than the listing; an
-/// author search is not shortened.
+/// stops after its attempts and answers nothing rather than the listing. An
+/// author search is sent once and its answer kept, since grid titles carry
+/// no names.
 #[tokio::test]
 async fn search_answers_nothing_when_every_attempt_gets_the_catalog_listing() {
     let server = MockServer::start().await;
     mount_grid(&server, "Final Empire Sanderson Novel", CATALOG_LISTING, 1).await;
     mount_grid(&server, "Final Empire Sanderson", CATALOG_LISTING, 1).await;
     mount_grid(&server, "Final Empire", CATALOG_LISTING, 1).await;
-    mount_grid(&server, "Brandon Sanderson", CATALOG_LISTING, 1).await;
+    mount_grid(
+        &server,
+        "Brandon Sanderson",
+        &["Alloy of Law", "Mistborn 1: The Final Empire 1 of 3"],
+        1,
+    )
+    .await;
     let source = GraphicAudioSource::new().with_store_url(server.uri());
     let hits = source
         .search_catalog(&CatalogSearchOpts {
@@ -628,7 +642,44 @@ async fn search_answers_nothing_when_every_attempt_gets_the_catalog_listing() {
         })
         .await
         .unwrap();
-    assert!(by_author.is_empty(), "{by_author:?}");
+    assert_eq!(by_author.len(), 2, "{by_author:?}");
+}
+
+/// A later page runs the same steps as page 1, so it asks the shortened
+/// query page 1 settled on.
+#[tokio::test]
+async fn a_later_page_asks_the_query_page_one_settled_on() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalogsearch/result/"))
+        .and(query_param("q", "Mistborn Sanderson"))
+        .and(query_param("p", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(grid(&server, CATALOG_LISTING)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/catalogsearch/result/"))
+        .and(query_param("q", "Mistborn"))
+        .and(query_param("p", "2"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(grid(&server, &["Mistborn 3: The Hero of Ages 1 of 3"])),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let hits = GraphicAudioSource::new()
+        .with_store_url(server.uri())
+        .search_catalog(&CatalogSearchOpts {
+            query: "Mistborn Sanderson".into(),
+            page: 2,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let titles: Vec<&str> = hits.iter().map(|h| h.title.as_str()).collect();
+    assert_eq!(titles, vec!["Mistborn 3: The Hero of Ages 1 of 3"]);
 }
 
 /// A catalog detail lookup reads the product page into a full record; a

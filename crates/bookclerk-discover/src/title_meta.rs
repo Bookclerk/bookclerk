@@ -83,6 +83,14 @@ pub const TITLE_META_MAX_STORE_EDITIONS: usize = 16;
 /// query naming many editions cannot fan out across every guest.
 const STORE_FILL_MAX_LOOKUPS: usize = 3;
 
+/// Most of [`STORE_FILL_MAX_LOOKUPS`] the listing stores' product lookups
+/// may take, so the ISBN stores always keep a turn.
+const STORE_FILL_MAX_PRODUCT_LOOKUPS: usize = 2;
+
+/// Wall-clock budget for one title-meta fill's storefront lookups together,
+/// so a slow guest cannot stall a dialog or a batch.
+const STORE_FILL_TIMEOUT: Duration = Duration::from_millis(3500);
+
 /// Marketplace default (`us`) when a title-meta or reviews query omits `region`.
 fn default_region() -> String {
     String::from("us")
@@ -459,10 +467,11 @@ enum StoreLookup {
 
 /// The catalog-detail lookups that can fill `query`, in the order to try
 /// them: each listing store that declared `detailByProductId` by its own
-/// product id (in the query's edition order), then each store that declared
-/// `detailByIsbn` by the title's ISBN (in registry order). Capped at
-/// [`STORE_FILL_MAX_LOOKUPS`]. Reads only the declared capabilities, so no
-/// guest is woken to plan.
+/// product id (in the query's edition order, at most
+/// [`STORE_FILL_MAX_PRODUCT_LOOKUPS`]), then each store that declared
+/// `detailByIsbn` by the title's ISBN (in registry order), skipping a store
+/// already asked for that same id. Capped at [`STORE_FILL_MAX_LOOKUPS`].
+/// Reads only the declared capabilities, so no guest is woken to plan.
 fn store_fill_plan(
     query: &TitleMetaQuery,
     sources: &SourceRegistry,
@@ -483,6 +492,9 @@ fn store_fill_plan(
             continue;
         }
         plan.push((store, StoreLookup::Product(product_id.to_string())));
+        if plan.len() == STORE_FILL_MAX_PRODUCT_LOOKUPS {
+            break;
+        }
     }
     let isbn = query
         .isbn
@@ -502,7 +514,10 @@ fn store_fill_plan(
             .into_iter()
             .filter(|store| store.answers_catalog_detail_by_isbn())
         {
-            plan.push((store, StoreLookup::Isbn(isbn.to_string())));
+            // A store whose product ids are ISBNs was just asked this one.
+            if seen.insert((store.plugin_key().to_string(), isbn.to_string())) {
+                plan.push((store, StoreLookup::Isbn(isbn.to_string())));
+            }
         }
     }
     plan.truncate(STORE_FILL_MAX_LOOKUPS);
@@ -510,13 +525,26 @@ fn store_fill_plan(
 }
 
 /// Gap-fills a sparse result from the storefronts' catalog details, in the
-/// order [`store_fill_plan`] gives; the first record found wins, and a store
-/// that fails is skipped.
+/// order [`store_fill_plan`] gives; the first record found wins, a store
+/// that fails is skipped, and the lookups together stop after
+/// [`STORE_FILL_TIMEOUT`].
 async fn fill_from_source_catalog(
     query: &TitleMetaQuery,
     sources: Option<&SourceRegistry>,
 ) -> Option<TitleMeta> {
-    for (store, lookup) in store_fill_plan(query, sources?) {
+    let plan = store_fill_plan(query, sources?);
+    match tokio::time::timeout(STORE_FILL_TIMEOUT, fill_in_order(plan)).await {
+        Ok(found) => found,
+        Err(_) => {
+            tracing::debug!(title = %query.title, "title-meta store fill timed out");
+            None
+        }
+    }
+}
+
+/// Runs a fill plan in order and returns the first record found.
+async fn fill_in_order(plan: Vec<(Arc<dyn ContentSource>, StoreLookup)>) -> Option<TitleMeta> {
+    for (store, lookup) in plan {
         let (result, key) = match &lookup {
             StoreLookup::Product(product_id) => {
                 (store.catalog_detail(product_id).await, product_id.as_str())
@@ -956,13 +984,47 @@ mod tests {
             ("graphicaudio", "4"),
         ];
         let plan = store_fill_plan(&query(&editions, None), &registry);
-        let ids: Vec<String> = plan
-            .iter()
-            .map(|(_, lookup)| match lookup {
-                StoreLookup::Product(pid) => pid.clone(),
-                StoreLookup::Isbn(isbn) => format!("isbn:{isbn}"),
+        assert_eq!(plan_ids(&plan), vec!["1", "2"]);
+    }
+
+    /// The lookups a plan makes, as `<store>:<product>` or `<store>:isbn:<v>`.
+    fn plan_ids(plan: &[(Arc<dyn ContentSource>, StoreLookup)]) -> Vec<String> {
+        plan.iter()
+            .map(|(store, lookup)| match lookup {
+                StoreLookup::Product(pid) if store.id() == "graphicaudio" => pid.clone(),
+                StoreLookup::Product(pid) => format!("{}:{pid}", store.id()),
+                StoreLookup::Isbn(isbn) => format!("{}:isbn:{isbn}", store.id()),
             })
-            .collect();
-        assert_eq!(ids, vec!["1", "2", "3"]);
+            .collect()
+    }
+
+    /// Listing editions never take every slot from the ISBN stores, and a
+    /// store whose product id is the ISBN is not asked for it twice.
+    #[test]
+    fn the_isbn_stores_keep_a_turn_and_are_not_asked_twice() {
+        let (listing, _) = store("graphicaudio", false, true, "From GA.");
+        let (libro, _) = store("libro", true, true, "From Libro.");
+        let mut registry = SourceRegistry::new();
+        registry.register(listing);
+        registry.register(libro);
+
+        let many = query(
+            &[
+                ("graphicaudio", "1"),
+                ("graphicaudio", "2"),
+                ("graphicaudio", "3"),
+            ],
+            Some("9780000000001"),
+        );
+        assert_eq!(
+            plan_ids(&store_fill_plan(&many, &registry)),
+            vec!["1", "2", "libro:isbn:9780000000001"]
+        );
+
+        let same = query(&[("libro", "9780000000001")], Some("9780000000001"));
+        assert_eq!(
+            plan_ids(&store_fill_plan(&same, &registry)),
+            vec!["libro:9780000000001"]
+        );
     }
 }

@@ -1204,8 +1204,9 @@ and enrichment by declaring it:
   `catalogDetail` resolves any audiobook ISBN to a full record. After
   ranking a page, the host asks those stores, in `sortKey` order, to fill
   description, narrators, runtime and genres on lean rows from any store.
-  A row is looked up by its ISBN, or by the store's own product id when the
-  store listed the work itself. The first record found fills the gaps and
+  A row is looked up by its ISBN, or, when the store also declares
+  `detailByProductId` and listed the work itself, by its own product id.
+  The first record found fills the gaps and
   adds that store's edition. The lookups share a short time budget, so a
   slow store can't hold up a search.
 - **Product detail lookup.** Set `catalog.detailByProductId` in

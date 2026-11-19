@@ -95,9 +95,15 @@ fn answers_query(product: &MagentoCatalogProduct, telling: &[String]) -> bool {
     held * 2 >= telling.len()
 }
 
+/// Fewest products a search page must list to be taken for the catalog
+/// listing. The listing fills the store's grid, while a short answer is more
+/// likely a few real matches whose titles happen to be in order.
+const MIN_LISTING_PRODUCTS: usize = 6;
+
 /// True when a search answer looks like the store's alphabetical listing of
-/// the whole catalog rather than matches for the query: at least two
-/// products, none of whose title or series [answers](answers_query) the
+/// the whole catalog rather than matches for the query: at least
+/// [`MIN_LISTING_PRODUCTS`] products, none of whose title or series
+/// [answers](answers_query) the
 /// query, in alphabetical order by title. A query with no
 /// [telling words](telling_words) cannot be judged, so its answer is taken.
 ///
@@ -107,7 +113,7 @@ fn answers_query(product: &MagentoCatalogProduct, telling: &[String]) -> bool {
 /// * `query` - The query's words, as [`search_words`] gives them.
 fn looks_like_fallback_listing(products: &[MagentoCatalogProduct], query: &[String]) -> bool {
     let telling = telling_words(query);
-    if telling.is_empty() || products.len() < 2 {
+    if telling.is_empty() || products.len() < MIN_LISTING_PRODUCTS {
         return false;
     }
     if products.iter().any(|p| answers_query(p, &telling)) {
@@ -165,10 +171,14 @@ impl GraphicAudioSource {
     /// The store's search answers a query it cannot match (one with
     /// punctuation or an author's name, say) with an alphabetical listing of
     /// the whole catalog. So the query goes out as plain words, and an answer
-    /// that looks like that listing (two or more products, none matching the
-    /// query's words, in alphabetical order) is not taken: page 1 asks again with the last word dropped (an author's name
-    /// usually trails the title), up to three requests in all, and
-    /// answers nothing when every attempt gets the listing.
+    /// that looks like that listing (a full grid, none of it matching the
+    /// query's words, in alphabetical order) is not taken: the page is asked
+    /// again with the last word dropped (an author's name usually trails the
+    /// title), up to three requests in all, and answers nothing when every
+    /// attempt gets the listing. Every page runs the same steps, so a later
+    /// page asks what page 1 settled on. An author or narrator search is sent
+    /// once and taken as it comes: grid titles never carry a person's name,
+    /// so the listing check cannot judge it.
     ///
     /// # Errors
     ///
@@ -189,13 +199,10 @@ impl GraphicAudioSource {
             Err(_) => return Ok(Vec::new()),
         };
         let page = opts.page.max(1);
-        // A person's name loses its meaning with a word dropped, and a later
-        // page must ask what page 1 asked.
-        let retries = page == 1
-            && !matches!(
-                opts.field,
-                Some(CatalogSearchField::Author | CatalogSearchField::Narrator)
-            );
+        let names_a_person = matches!(
+            opts.field,
+            Some(CatalogSearchField::Author | CatalogSearchField::Narrator)
+        );
         let mut products = Vec::new();
         for attempt in 0..SEARCH_MAX_ATTEMPTS {
             let Some(kept) = words.len().checked_sub(attempt).filter(|n| *n > 0) else {
@@ -210,14 +217,11 @@ impl GraphicAudioSource {
                         return Ok(Vec::new());
                     }
                 };
-            if !looks_like_fallback_listing(&found, &words) {
+            if names_a_person || !looks_like_fallback_listing(&found, &words) {
                 products = found;
                 break;
             }
             tracing::debug!(query = %q, "graphicaudio search answered with the catalog listing");
-            if !retries {
-                break;
-            }
         }
         Ok(products
             .into_iter()
@@ -871,8 +875,13 @@ mod tests {
             product("1", "1632"),
             product("2", "A Call to Arms"),
             product("3", "Abaddon's Gate"),
+            product("4", "Age of Aztec"),
+            product("5", "Alloy of Law"),
+            product("6", "Ancillary Justice"),
         ];
         assert!(looks_like_fallback_listing(&listing, &query));
+        // Fewer products than a full grid are taken as real matches.
+        assert!(!looks_like_fallback_listing(&listing[..5], &query));
 
         let matches = [
             product("4", "Mistborn 1: The Final Empire 1 of 3"),
@@ -889,10 +898,10 @@ mod tests {
             &search_words("Mistborn")
         ));
 
-        // Unsorted, single or unjudgeable answers are kept.
-        let unsorted = [product("8", "Zeta"), product("9", "Alpha")];
+        // Unsorted or unjudgeable answers are kept.
+        let mut unsorted = listing.clone();
+        unsorted.reverse();
         assert!(!looks_like_fallback_listing(&unsorted, &query));
-        assert!(!looks_like_fallback_listing(&listing[..1], &query));
         assert!(!looks_like_fallback_listing(
             &listing,
             &search_words("The 1 of")

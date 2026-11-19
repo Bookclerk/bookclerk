@@ -560,8 +560,9 @@ title is **not** in the household library.
   description, publisher, genres, abridged): the request carries the title's
   `store_editions` (at most 16), and the host asks each listing store that
   declares `catalog.detailByProductId` (Libro.fm, GraphicAudio) for its own
-  product, then the stores that declare `catalog.detailByIsbn` (Libro.fm) for
-  the ISBN, three lookups at most. No plugin id is named. After multi-store
+  product (two at most), then the stores that declare `catalog.detailByIsbn`
+  (Libro.fm) for the ISBN, three lookups and 3.5 s at most. No plugin id is
+  named. After multi-store
   search ranks a page, Discover asks the same stores to fill lean rows, by
   ISBN or by their own product id (bounded timeout), so list cards get
   genres/runtime without N+1 product fetches inside each store’s
