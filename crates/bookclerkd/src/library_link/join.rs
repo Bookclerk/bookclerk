@@ -24,7 +24,8 @@
 //!   redeems the code with the verifier only it holds. As a branch it
 //!   records the link and starts its client at once; a library card this
 //!   install held for the library is signed out, as the branch replaces it
-//!   (`replaced_card`; an invite join does the same). As a shared branch (only for
+//!   (`replaced_card` says whether that worked; if it did not, the card
+//!   stays listed and the branch stands; an invite join does the same). As a shared branch (only for
 //!   a pending join that offered it, and only while the install is still
 //!   empty) it opens the sealed bootstrap with the node key, checks the
 //!   library's database guest is installed here, writes the bootstrap as

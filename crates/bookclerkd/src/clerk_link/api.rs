@@ -25,7 +25,8 @@
 //!   branch it leaves the branch first (`left_branch` in the answer).
 //!
 //! A branch join of a library this install holds a card for replaces the
-//! card ([`retire_card_for_branch`]): the card is signed out as below.
+//! card ([`retire_card_for_branch`]): the card is signed out as below, and
+//! when that fails it stays listed for the person to sign out.
 //! - `POST /api/config/clerk/sign-out` `{library_id}`: ends the card at the
 //!   library (`POST /api/auth/logout` with the card) when it can be
 //!   reached, then drops the card and the books read with it, and removes
