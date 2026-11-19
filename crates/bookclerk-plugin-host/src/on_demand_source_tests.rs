@@ -83,6 +83,10 @@ impl ContentSource for FakeSource {
         true
     }
 
+    fn answers_price_by_isbn(&self) -> bool {
+        true
+    }
+
     async fn login(
         &self,
         _scope: &SourceScope,
@@ -277,6 +281,8 @@ async fn a_sleeping_storefront_keeps_its_identity_and_lists_accounts_without_wak
     assert_eq!(proxy.portal_brand(), BRAND);
     assert_eq!(proxy.sort_key(), 7);
     assert!(proxy.answers_catalog_detail_by_isbn());
+    assert!(proxy.answers_price_by_isbn());
+    assert!(!proxy.answers_price_by_asin());
     assert!(proxy.config_options().is_empty());
     assert_eq!(ContentSource::guest_pid(proxy.as_ref()), None);
     assert!(proxy
@@ -357,12 +363,18 @@ async fn storefront_calls_wake_one_guest_and_reach_it() {
             .len(),
         2
     );
+    let answers = proxy
+        .purchase_hint_answers(&[PurchaseHintOpts::default()])
+        .await
+        .expect("answers");
+    assert_eq!(answers.len(), 1);
+    assert!(answers[0].hint.is_none() && answers[0].records.is_empty());
     assert!(proxy.list_deals(5).await.expect("deals").is_empty());
 
     assert_eq!(proxy.wakes(), 1);
     let guests = started.lock().expect("started").clone();
     assert_eq!(guests.len(), 1);
-    assert_eq!(guests[0].calls.load(Ordering::SeqCst), 13);
+    assert_eq!(guests[0].calls.load(Ordering::SeqCst), 14);
     assert_eq!(ContentSource::guest_pid(proxy.as_ref()), Some(5150));
     assert_eq!(proxy.idle_timeout(), Duration::from_millis(30));
 }

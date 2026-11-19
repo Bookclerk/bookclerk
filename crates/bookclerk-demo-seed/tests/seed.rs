@@ -107,7 +107,7 @@ async fn seeds_a_member_with_books_wishlist_and_an_offline_branch() {
         .unwrap()
         .unwrap();
     assert_eq!(node.owner_user_id, Some(sam.id));
-    assert_eq!(node.kind, "host");
+    assert_eq!(node.kind, "branch");
     let heartbeat = chrono::DateTime::parse_from_rfc3339(&node.heartbeat_at).unwrap();
     assert!(chrono::Utc::now() - heartbeat.to_utc() > chrono::Duration::days(2));
 

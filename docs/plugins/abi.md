@@ -575,7 +575,7 @@ frozen `ScheduledController` (`cron`, `scheduled_time`, `fire_id`,
   never fires, and `describe()` can't add schedules beyond `plugin.toml`.
 
 > [!NOTE]
-> Fires run only on library nodes. An owned host node (one that runs work
+> Fires run only on library nodes. An owned branch node (one that runs work
 > for a single member) doesn't claim `plugin_scheduled` jobs.
 
 ## Pushed sockets (`[sockets]`)
@@ -1003,8 +1003,37 @@ methods on [`ContentSource`](../../packages/plugin-sdk/src/plugin.ts) and
 | `searchCatalog` | `{ query, region, limit, page, sort, field }` → `CatalogHit[]` (see [Book records](#book-records)). A `limit` of `0` means the storefront's default page of 20 hits; an empty query returns `[]` |
 | `catalogDetail` | `{ productId, isbn? }` → `{ found, hit }`: the full record for one product (description, narrators, runtime, genres). A store that declares `detailByIsbn` also answers a bare ISBN, which the host sends in both fields |
 | `fetchTitle` | The host injects `credentials` from `encrypted_secrets`. The plugin writes media under the work folder and returns a `PlainFetch` of **plain** files (DRM guests decrypt before returning): `mediaKind`, the carrier it fetched, which must be in its declared [`fetches`](#declaring-media); `files`, each `{ path, role, contentType?, title?, durationMs? }` with `role` `part` (ordered pieces), `whole` (the edition in one file, such as an M4B) or `cover`; `chapters`; and an optional `pdfUrl`. A reply lists `part`s or one `whole` file, never both, and at most one `cover`. The host acquires audio editions only today |
-| `purchaseHint` | Purchase link and, when `withPrice` is set, the live price of one title. `null` when the store does not sell it |
+| `purchaseHint` | Purchase link and, when `withPrice` is set, the live price of one title. `null` when the store does not sell it. `lookup` says how the host names the title (see [Price lookups](#price-lookups)) |
 | `purchaseHints` | The same for several titles in one call (`{ queries }`, one answer per query in order). The default in every SDK asks `purchaseHint` for each query, four at a time, those with a product id first, and stops starting lookups after 4 s, answering `null` for the rest, so the host's batch gets what the store managed; a store whose catalog prices many products per request (Audible's `products?asins=` takes fifty, Chirp's GraphQL takes aliased ids) overrides it to make one request, so a page of Discover cards costs one call per store |
+
+#### Price lookups
+
+Each `purchaseHint` query carries `lookup`, which says how to find the
+title:
+
+| `lookup` | The store should |
+| --- | --- |
+| `product` | Answer for its own `productId` alone |
+| `isbn` | Answer for that exact `isbn`, or `null`. Never a title match. Sent only to a store that declares `catalog.priceByIsbn` |
+| `asin` | Answer for that exact `asin`, or `null`, as for `isbn`. Sent only to a store that declares `catalog.priceByAsin` |
+| `title` | Search by `title` and `authors` and return every priced listing the search matched |
+| `unspecified` | Use any field, strongest first (older hosts) |
+
+A title search answers with records rather than a single pick: return
+`{ hint, records }` (TypeScript `PurchaseHintAnswer`; a dict of the same
+shape in Python; `PurchaseHintResult.records` in Rust) where each record
+is `{ record, hint }`, the listing's full `CatalogHit` and its prices.
+`hint` stays the store's own pick for hosts that ignore records. The host
+places each record in its library model by identifiers, credits and kinds,
+and keeps only the recording the card is about, so a store never has to
+tell a narration from a dramatisation of the same title. A bare hint is
+still accepted and carries no records.
+
+The host asks each store the strongest way it declared: by the store's
+own product when the card names one, then by exact ISBN, then by exact
+ASIN, then by title (see
+[Discovery](../internals/discovery.md#store-links-and-pricing) for how
+it evaluates the answers).
 
 When the store answers **429**, return a `PluginError` with code
 `rate_limited` and, when the store sent `Retry-After`, `details.retryAfterMs`
@@ -1174,9 +1203,14 @@ and enrichment by declaring it:
   adds that store's edition. The lookups share a short time budget, so a
   slow store can't hold up a search.
 
-Both default to off. The first-party storefronts declare them as follows:
+- **Price lookup by identifier.** Set `catalog.priceByIsbn` and
+  `catalog.priceByAsin` in `describe()` when `purchaseHint` prices an exact
+  ISBN or ASIN (see [Price lookups](#price-lookups)). The host never sends
+  an identifier lookup a store has not declared.
+
+All default to off. The first-party storefronts declare them as follows:
 Audible ranks its hits, Libro.fm answers ISBN lookups, and Chirp and
-GraphicAudio declare neither.
+GraphicAudio declare neither. None declares price lookup by identifier yet.
 
 #### Declaring media
 

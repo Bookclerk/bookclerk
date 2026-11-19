@@ -230,14 +230,14 @@ or caches a key before the command runs. `bookclerk config master-key
 status` and `bookclerk config master-key wrap` don't open the database,
 and `wrap` fails when `master.key` is missing.
 
-## Host nodes
+## Branch nodes
 
-A **host node** is another Bookclerk install that joins this library
+A **branch node** is another Bookclerk install that joins this library
 with a single-use link and runs its scans and acquires. This section is
 the library side's configuration. Joining, consent, uploads and the
 protocol are in [Libraries and branches](cluster-hosts.md), and the
 design is in
-[ADR: Control plane](../adr/control-plane.md#host-node-enrollment-and-transport).
+[ADR: Control plane](../adr/control-plane.md#branch-node-enrollment-and-transport).
 
 ### Let hosts join
 

@@ -33,7 +33,7 @@ pub struct JobExecCtx {
     pub checkpoint: Option<JobCheckpoint>,
     /// Resume ordinal from the durable payload; distinct from [`Self::attempt_count`].
     pub invocation_sequence: u32,
-    /// Set when this daemon runs the job as a host node for an owner
+    /// Set when this daemon runs the job as a branch node for an owner
     /// cluster: the secrets the owner handed with it (opened with this
     /// node's box key, never written to disk) and token write-back under
     /// the owner's fence. `None` for the daemon's own jobs.

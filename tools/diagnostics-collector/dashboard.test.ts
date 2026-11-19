@@ -31,10 +31,11 @@ import {
 import { escapeHtml, fmtTime, html, isoTime } from "./dashboard/html.ts";
 import { buckets } from "./dashboard/pages.ts";
 import { parseIssueReportIds, reportIdOf } from "./dashboard/report-ids.ts";
-import { dashboardFetch } from "./dashboard/routes.ts";
+import { dashboardFetch, dashboardFiledReportIds } from "./dashboard/routes.ts";
 import { SESSION_COOKIE, createSession } from "./dashboard/session.ts";
 import { normalizeMessage, summarizeReport } from "./dashboard/signature.ts";
-import { storeIssue, syncIssueNow, syncIssues } from "./dashboard/sync.ts";
+import { indexSubmitted, storeIssue, syncIssueNow, syncIssues } from "./dashboard/sync.ts";
+import { applyMute, endMutesReachedBy } from "./dashboard/triage-state.ts";
 import { makeB2 } from "./test-support/b2.ts";
 import { createD1 } from "./test-support/d1.ts";
 import type { DashboardEnv, Env } from "./env.ts";
@@ -249,7 +250,6 @@ type StoredReport = {
   schema_version: number;
   report_id: string;
   received_at_unix_ms: number;
-  client_ip_hash: string;
   payload: Record<string, unknown>;
 };
 
@@ -265,7 +265,6 @@ function stored(id: string, overrides: Record<string, unknown> = {}): StoredRepo
     schema_version: 1,
     report_id: id,
     received_at_unix_ms: NOW - 3_600_000,
-    client_ip_hash: "5e0c00000000000000000000000019ab",
     payload: {
       trigger: "error_burst",
       version: "0.9.0-rc.2",
@@ -384,7 +383,6 @@ describe("signature", () => {
     assert.match(a.signature ?? "", /^[0-9a-f]{16}$/);
     assert.equal(a.errors, 1);
     assert.equal(a.events, 2);
-    assert.equal(a.installHash, "5e0c00000000000000000000000019ab");
   });
 
   it("never throws on hostile shapes", async () => {
@@ -533,14 +531,15 @@ describe("routing", () => {
   });
 
   it("links the sign-in page to the website's privacy page only when the site is known", async () => {
-    const privacy = /<a href="https:\/\/bookclerk\.app\/privacy">Privacy<\/a>/;
+    const privacy =
+      /<a href="https:\/\/bookclerk\.app\/privacy" target="_blank" rel="noopener noreferrer">Privacy</;
     const linked = await call(
       { ...makeEnv(), SITE_URL: "https://bookclerk.app" },
       new Request(`${ORIGIN}/`),
     );
     assert.match(await linked.text(), privacy);
     const unset = await call(makeEnv(), new Request(`${ORIGIN}/`));
-    assert.doesNotMatch(await unset.text(), /Privacy<\/a>/);
+    assert.doesNotMatch(await unset.text(), />Privacy</);
     const slash = await call(
       { ...makeEnv(), SITE_URL: "https://Bookclerk.app/" },
       new Request(`${ORIGIN}/`),
@@ -555,7 +554,7 @@ describe("routing", () => {
       "javascript:alert(1)",
     ]) {
       const res = await call({ ...makeEnv(), SITE_URL: site }, new Request(`${ORIGIN}/`));
-      assert.doesNotMatch(await res.text(), /Privacy<\/a>/, String(site));
+      assert.doesNotMatch(await res.text(), />Privacy</, String(site));
     }
   });
 
@@ -1065,6 +1064,12 @@ describe("pages", () => {
     ).text();
     assert.match(report, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
     assert.match(report, /\[REDACTED\]/);
+    assert.match(
+      report,
+      /<div class="copy-tools" hidden><button type="button" class="log-copy" data-copy="shown">Copy shown<\/button><button type="button" class="log-copy" data-copy="all">Copy all<\/button>/,
+      "the event log offers copy buttons, hidden until the script shows them",
+    );
+    assert.match(report, new RegExp(`<div class="log" id="log" [^>]*data-report="${ID1}"`));
     const issues = await (
       await call(env, new Request(`${ORIGIN}/issues`, { headers: { cookie } }), b2)
     ).text();
@@ -1099,9 +1104,13 @@ describe("pages", () => {
     ).text();
     assert.match(
       list,
-      /issues\/400">#400<\/a> <a class="quiet" href="\/reports\/[^"]+" title="Listed in 2 issues">\+1<\/a>/,
+      /issues\/400" target="_blank" rel="noopener noreferrer">#400<span class="vh"> \(opens in a new tab\)<\/span><\/a> <a class="quiet" href="\/reports\/[^"]+" title="Listed in 2 issues">\+1<\/a>/,
     );
-    assert.match(list, /issues\/403">#403<\/a><\/td>/, "the report only #403 lists shows no +1");
+    assert.match(
+      list,
+      /issues\/403" target="_blank" rel="noopener noreferrer">#403<span class="vh"> \(opens in a new tab\)<\/span><\/a><\/td>/,
+      "the report only #403 lists shows no +1",
+    );
     const page = await (
       await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
     ).text();
@@ -1114,6 +1123,16 @@ describe("pages", () => {
       /#403 \[diagnostics\] batch 403<\/a> <span class="fine">also lists it<\/span>/,
     );
     assert.match(page, /Conflict<\/span> 2 issues list this report; it counts under #400/);
+    for (const [name, doc] of [
+      ["reports list", list],
+      ["report page", page],
+    ] as const) {
+      const offsite = doc.match(/<a [^>]*href="https?:[^>]*>/g) ?? [];
+      if (name === "reports list") assert.ok(offsite.length > 0, "the list links to GitHub");
+      for (const tag of offsite) {
+        assert.match(tag, / target="_blank" rel="noopener noreferrer">$/, `${name}: ${tag}`);
+      }
+    }
     const issues = await listIssues(env.DASHBOARD_DB, "all", 0, 10);
     assert.deepEqual(
       issues.map((i) => [i.number, Number(i.reports)]).sort(),
@@ -2350,9 +2369,14 @@ describe("untrusted times and pages", () => {
     assert.equal((await first(db, "SELECT prs_synced_at FROM issues"))!.prs_synced_at, null);
   });
 
-  it("ignores an install hash that is not a string", async () => {
-    for (const client_ip_hash of [["abc"], { toString: null }, 12]) {
-      assert.equal((await summarizeReport({ ...stored(ID1), client_ip_hash })).installHash, "");
+  it("ignores the client_ip_hash that older stored reports carry", async () => {
+    for (const client_ip_hash of [
+      "5e0c00000000000000000000000019ab",
+      ["abc"],
+      { toString: null },
+    ]) {
+      const got = await summarizeReport({ ...stored(ID1), client_ip_hash });
+      assert.deepEqual(got, await summarizeReport(stored(ID1)));
     }
   });
 });
@@ -3560,8 +3584,12 @@ describe("issue page and ledger corrections", () => {
     ).text();
     assert.match(
       untracked,
-      /Attach to issue<\/label>\s*<select[^>]*name="issue"/,
+      /Attach to issue<\/label>\s*<input[^>]*name="issue"[^>]*list="[^"]+"[^>]*required/,
       "the picker chooses the issue itself",
+    );
+    assert.ok(
+      !/<input[^>]*name="issue"[^>]*value=/.test(untracked),
+      "the picker starts empty, so a member picks the issue on purpose",
     );
     assert.ok(
       !/name="issue" value=/.test(untracked.slice(untracked.indexOf("Attach to issue"))),
@@ -3942,9 +3970,7 @@ describe("issue page and ledger corrections", () => {
     );
     assert.equal(posted.headers.get("authorization"), "Bearer ghs_installation");
     assert.ok(
-      String(posted.body!.body).startsWith(
-        `${MARKER}\n**Diagnostics summary** · 2 reports from 1 installation`,
-      ),
+      String(posted.body!.body).startsWith(`${MARKER}\n**Diagnostics summary** · 2 reports ·`),
       String(posted.body!.body),
     );
     assert.match(
@@ -4236,5 +4262,287 @@ describe("issue page and ledger corrections", () => {
       0,
       "nothing posted",
     );
+  });
+});
+
+describe("triage state, mutes and owner close", () => {
+  const ID3 = "d2b80f13-0000-4000-8000-000000000003";
+
+  /**
+   * Posts a form as a signed-in member, from the dashboard's own origin.
+   *
+   * @param env - Bindings.
+   * @param cookie - Cookie header.
+   * @param path - Form action.
+   * @param fields - Form fields; repeated names as `[name, value]` pairs.
+   * @returns The dashboard's answer.
+   */
+  function postForm(
+    env: Env,
+    cookie: string,
+    path: string,
+    fields: [string, string][],
+  ): Promise<Response> {
+    return call(
+      env,
+      new Request(`${ORIGIN}${path}`, {
+        method: "POST",
+        headers: {
+          cookie,
+          origin: ORIGIN,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams(fields).toString(),
+      }),
+    );
+  }
+
+  it("keeps a queue of reports that need triage, and members mark them seen or noise", async () => {
+    const env = makeEnv();
+    await seed(env, ID1);
+    await seed(env, ID2);
+    await seed(env, ID3, NOW - 3_600_000, { deployment: "demo" });
+    const cookie = await signedIn(env);
+
+    let page = await (
+      await call(env, new Request(`${ORIGIN}/dash`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /Needs triage<\/a><\/h2><div class="v">2</, "the demo report is left out");
+    assert.match(page, /Active installs/);
+    page = await (
+      await call(env, new Request(`${ORIGIN}/dash?source=all`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /Needs triage<\/a><\/h2><div class="v">3</, "all sources count three");
+    assert.match(
+      page,
+      /href="\/reports\?range=[a-z0-9]+&amp;signature=[0-9a-f]{16}&amp;source=all"/,
+      "signature links keep the source",
+    );
+    assert.match(page, /Top error signatures <a href="\/reports\?range=[a-z0-9]+&amp;source=all">/);
+
+    let res = await postForm(env, cookie, "/reports/triage", [
+      ["state", "noise"],
+      ["report", ID1],
+      ["report", ID2],
+      ["back", "/reports?triage=needs"],
+    ]);
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("location"), "/reports?triage=needs");
+    const rows = await all(
+      env.DASHBOARD_DB,
+      "SELECT report_id, triage_state, triaged_by FROM reports ORDER BY report_id",
+    );
+    assert.deepEqual(
+      rows.map((r) => [r.report_id, r.triage_state, r.triaged_by]),
+      [
+        [ID1, "noise", "octo"],
+        [ID2, "noise", "octo"],
+        [ID3, "", null],
+      ],
+    );
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports?triage=needs`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /0 reports/, "the installs queue is empty");
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports?triage=noise`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /2 reports/);
+    assert.match(page, /title="Marked noise by octo">Noise</);
+    assert.match(page, /form="bulk-triage" name="report" value="/);
+
+    res = await postForm(env, cookie, "/reports/triage", [
+      ["state", "clear"],
+      ["report", ID1],
+    ]);
+    assert.equal(res.headers.get("location"), `/reports/${ID1}`);
+    assert.equal(
+      (await first(env.DASHBOARD_DB, "SELECT triage_state FROM reports WHERE report_id = ?", ID1))
+        ?.triage_state,
+      "",
+    );
+    const logged = await all(
+      env.DASHBOARD_DB,
+      "SELECT action FROM access_log WHERE action = 'triage'",
+    );
+    assert.equal(logged.length, 2);
+
+    res = await postForm(env, cookie, "/reports/triage", [["state", "seen"]]);
+    assert.equal(res.status, 400, "a mark names at least one report");
+    const crossSite = await call(
+      env,
+      new Request(`${ORIGIN}/reports/triage`, {
+        method: "POST",
+        headers: {
+          cookie,
+          origin: "https://elsewhere.test",
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: `state=seen&report=${ID1}`,
+      }),
+    );
+    assert.equal(crossSite.status, 403);
+  });
+
+  it("mutes a signature out of the queue and the ingest pull, until a version ends it", async () => {
+    // Report pages list the stored object over B2; nothing reaches the network.
+    gh = scriptGitHub([]);
+    const env = makeEnv();
+    const s = await seed(env, ID1);
+    const sig = String(
+      (await first(env.DASHBOARD_DB, "SELECT signature FROM reports WHERE report_id = ?", ID1))
+        ?.signature,
+    );
+    const cookie = await signedIn(env);
+    let page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /Mute this signature/);
+    assert.match(page, /It needs triage\./);
+
+    const res = await postForm(env, cookie, "/signatures/mute", [
+      ["action", "mute"],
+      ["signature", sig],
+      ["reason", "demo CPU starvation"],
+      ["until_version", "0.9.0"],
+      ["back", `/reports/${ID1}`],
+    ]);
+    assert.equal(res.status, 303);
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /by octo, .* UTC: demo CPU starvation\. Ends when a report from 0\.9\.0/);
+    assert.match(page, /value="unmute"/);
+    const filed = await dashboardFiledReportIds(env, NOW);
+    assert.ok(filed?.has(ID1), "the ingest pull passes over a muted report");
+    page = await (await call(env, new Request(`${ORIGIN}/dash`, { headers: { cookie } }))).text();
+    assert.match(page, /Needs triage<\/a><\/h2><div class="v">0</);
+
+    // A report from an older version keeps the mute; one from 0.9.0 ends it.
+    await indexSubmitted(
+      env.DASHBOARD_DB,
+      { ...stored(ID2), received_at_unix_ms: NOW },
+      `diagnostics/0.9.0-rc.2/${ID2}.json`,
+      100,
+    );
+    assert.ok(await first(env.DASHBOARD_DB, "SELECT 1 AS hit FROM signature_mutes"));
+    const fixed = { ...s, report_id: ID3, payload: { ...s.payload, version: "0.9.0" } };
+    await indexSubmitted(env.DASHBOARD_DB, fixed, `diagnostics/0.9.0/${ID3}.json`, 100);
+    assert.equal(await first(env.DASHBOARD_DB, "SELECT 1 AS hit FROM signature_mutes"), null);
+
+    assert.equal(
+      (
+        await postForm(env, cookie, "/signatures/mute", [
+          ["action", "mute"],
+          ["signature", sig],
+          ["reason", "no end"],
+        ])
+      ).status,
+      400,
+    );
+  });
+
+  it("ends version-bound mutes that a batch of recovered reports reaches", async () => {
+    const db = createD1();
+    const mute = (signature: string, untilVersion: string | null, days: number | null) =>
+      applyMute(db, { action: "mute", signature, reason: "r", days, untilVersion }, "octo", NOW);
+    await mute("aaaaaaaaaaaaaaaa", "0.9.0", null);
+    await mute("bbbbbbbbbbbbbbbb", "0.9.0", null);
+    await mute("cccccccccccccccc", null, 30);
+    const ended = await endMutesReachedBy(db, [
+      { signature: "aaaaaaaaaaaaaaaa", version: "0.8.9" },
+      { signature: "aaaaaaaaaaaaaaaa", version: "0.9.1" },
+      { signature: "bbbbbbbbbbbbbbbb", version: "0.9.0-rc.1" },
+      { signature: "cccccccccccccccc", version: "9.9.9" },
+      { signature: null, version: "0.9.0" },
+    ]);
+    assert.equal(ended, 1);
+    const left = await all(db, "SELECT signature FROM signature_mutes ORDER BY signature");
+    assert.deepEqual(
+      left.map((r) => r.signature),
+      ["bbbbbbbbbbbbbbbb", "cccccccccccccccc"],
+    );
+    assert.equal(await endMutesReachedBy(db, []), 0);
+  });
+
+  it("lets owners close an issue as not planned or fixed in a version", async () => {
+    const env = makeEnv();
+    await storeIssue(env.DASHBOARD_DB, {
+      number: 412,
+      title: "[diagnostics] bookclerkd::api: GET /api/library/works/{id} responds slowly",
+      state: "open",
+      body: "<!-- bookclerk-diagnostics: workers-ai triage -->\nx",
+      created_at: new Date(NOW - 86_400_000).toISOString(),
+      updated_at: new Date(NOW - 86_400_000).toISOString(),
+    });
+    const member = await signedIn(env, "member");
+    let page = await (
+      await call(env, new Request(`${ORIGIN}/issues/412`, { headers: { cookie: member } }))
+    ).text();
+    assert.ok(!page.includes("Close as not planned"), "members get no close buttons");
+    assert.match(
+      page,
+      /data-copy-text="git switch -c fix\/412-diagnostics-bookclerkd-api-get-api-libra origin\/main"/,
+    );
+    const refused = await postForm(env, member, "/admin/close-issue", [
+      ["issue", "412"],
+      ["how", "not_planned"],
+    ]);
+    assert.equal(refused.status, 403);
+
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/issues/412/labels",
+        () => Response.json([{ name: "fixed-in:0.9.0" }, { name: "diagnostics" }]),
+      ],
+      [
+        "DELETE https://api.github.com/repos/Bookclerk/bookclerk/issues/412/labels/",
+        () => Response.json([]),
+      ],
+      [
+        "POST https://api.github.com/repos/Bookclerk/bookclerk/issues/412/labels",
+        () => Response.json([]),
+      ],
+      [
+        "PATCH https://api.github.com/repos/Bookclerk/bookclerk/issues/412",
+        () => Response.json({}),
+      ],
+    ]);
+    const owner = await signedIn(env, "admin");
+    page = await (
+      await call(env, new Request(`${ORIGIN}/issues/412`, { headers: { cookie: owner } }))
+    ).text();
+    assert.match(page, /Close as not planned/);
+    const res = await postForm(env, owner, "/admin/close-issue", [
+      ["issue", "412"],
+      ["how", "fixed"],
+      ["version", "v0.9.1"],
+    ]);
+    assert.equal(res.status, 303);
+    const writes = gh.calls.filter((c) => c.method !== "GET" && c.url.includes("/issues/412"));
+    assert.deepEqual(
+      writes.map((c) => [c.method, c.body]),
+      [
+        ["DELETE", null],
+        ["POST", { labels: ["fixed-in:0.9.1"] }],
+        ["PATCH", { state: "closed", state_reason: "completed" }],
+      ],
+    );
+    assert.ok(
+      writes[0]?.url.endsWith("/issues/412/labels/fixed-in%3A0.9.0"),
+      "the earlier fixing version's label is removed",
+    );
+    const tokenAsk = gh.calls.find((c) => c.url.endsWith("/access_tokens"));
+    assert.deepEqual(tokenAsk?.body?.["permissions"], { issues: "write" });
+    const row = await first(
+      env.DASHBOARD_DB,
+      "SELECT state, fixed_in_label FROM issues WHERE number = 412",
+    );
+    assert.deepEqual({ ...row }, { state: "closed", fixed_in_label: "0.9.1" });
+    page = await (
+      await call(env, new Request(`${ORIGIN}/issues/412`, { headers: { cookie: owner } }))
+    ).text();
+    assert.match(page, /Closed on GitHub as fixed in 0\.9\.1\./);
   });
 });

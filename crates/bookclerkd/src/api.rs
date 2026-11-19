@@ -1240,13 +1240,13 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
 /// The group's routes, without auth layers (see [`route_groups`]).
 // Node administration: operators see and edit every node; a user who
 // owns nodes (Host, Administrator, Owner) sees and edits only those. An
-// Owner also sees and removes every owner node (the shared branches).
+// Owner also sees and removes every shared node (the shared branches).
 #[inline(never)]
 fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(crate::config_authority::get_nodes))
-        .routes(routes!(crate::config_authority::delete_owner_node))
-        // Settings → Shared branches: every owner node for the operator or an Owner.
+        .routes(routes!(crate::config_authority::delete_shared_node))
+        // Settings → Shared branches: every shared node for the operator or an Owner.
         .routes(routes!(crate::config_authority::get_shared_branches))
         .routes(routes!(crate::config_authority::put_node_runtime))
         .routes(routes!(crate::config_authority::get_cluster_status))
@@ -1531,7 +1531,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             .split_for_parts();
         app = app.merge(routes);
     }
-    // Host-node enrollment and socket: never behind the cookie/auth
+    // Branch-node enrollment and socket: never behind the cookie/auth
     // layers; the transport policy runs first.
     app = app.merge(crate::node_api::node_router(state.clone()));
     app = app.merge(
@@ -1631,41 +1631,151 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     // the branding so the body compared is the one a client receives.
     #[cfg(test)]
     let app = app.layer(middleware::from_fn(crate::openapi_contract::check));
-    app.layer(NormalizePathLayer::trim_trailing_slash()).layer(
-        TraceLayer::new_for_http()
-            .make_span_with(|request: &Request| {
-                tracing::span!(
-                    Level::INFO,
-                    "http.request",
-                    method = %request.method(),
-                    path = %request.uri().path(),
-                )
-            })
-            .on_response(
-                |response: &Response, latency: Duration, _span: &tracing::Span| {
-                    let status = response.status();
-                    let latency_ms = latency.as_millis() as u64;
-                    if status.is_server_error() || latency_ms >= 1_000 {
-                        tracing::warn!(
-                            status = status.as_u16(),
-                            latency_ms,
-                            "request completed with elevated latency or server error"
+    app.layer(NormalizePathLayer::trim_trailing_slash())
+        .layer(middleware::from_fn(log_request_outcome))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request| {
+                    tracing::span!(
+                        Level::INFO,
+                        "http.request",
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                        route = request_route(request),
+                    )
+                })
+                // `log_request_outcome` logs slow responses and server errors
+                // with the route; the trace layer adds nothing per response.
+                .on_response(())
+                .on_failure(
+                    |failure: ServerErrorsFailureClass,
+                     latency: Duration,
+                     _span: &tracing::Span| {
+                        tracing::error!(
+                            failure = ?failure,
+                            latency_ms = u64::try_from(latency.as_millis()).unwrap_or(u64::MAX),
+                            "request failed"
                         );
-                    } else if latency_ms >= 250 {
-                        tracing::info!(status = status.as_u16(), latency_ms, "request completed");
-                    }
-                },
-            )
-            .on_failure(
-                |failure: ServerErrorsFailureClass, latency: Duration, _span: &tracing::Span| {
-                    tracing::error!(
-                        failure = ?failure,
-                        latency_ms = latency.as_millis() as u64,
-                        "request failed"
-                    );
-                },
-            ),
-    )
+                    },
+                ),
+        )
+}
+
+/// Route label for a request no API route matched: a static file of the web
+/// app, or a path nothing serves.
+const UNROUTED: &str = "(static or unmatched)";
+
+/// Latency, in milliseconds, from which a request an API route answered is
+/// logged as slow.
+const SLOW_ROUTED_MS: u64 = 1_000;
+
+/// Latency, in milliseconds, from which a static file or unmatched request is
+/// logged as slow. Higher than [`SLOW_ROUTED_MS`]: a starved machine serves
+/// files slowly without anything being wrong.
+const SLOW_UNROUTED_MS: u64 = 3_000;
+
+/// Latency, in milliseconds, from which a request is logged at INFO.
+const NOTED_MS: u64 = 250;
+
+/// The route template a request matched (for example `/api/works/{id}`), or
+/// [`UNROUTED`]. The template carries no IDs, so it is what logs and
+/// diagnostics reports name instead of the raw path.
+///
+/// # Arguments
+///
+/// * `request` - The request, after routing.
+fn request_route(request: &Request) -> &str {
+    request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map_or(UNROUTED, axum::extract::MatchedPath::as_str)
+}
+
+/// How [`log_request_outcome`] reports one finished request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequestOutcome {
+    /// Log a WARN "server error response" (a 5xx status).
+    server_error: bool,
+    /// Log a WARN "slow response" on [`bookclerk_config::SLOW_TARGET`], which
+    /// counts toward the `slow_burst` diagnostics trigger, not `warn_burst`.
+    slow: bool,
+    /// Log an INFO "request completed" (noticeably slow, not slow enough to
+    /// warn).
+    noted: bool,
+}
+
+impl RequestOutcome {
+    /// Classifies a finished request.
+    ///
+    /// # Arguments
+    ///
+    /// * `status` - The response status.
+    /// * `latency_ms` - Time from routing to the response, in milliseconds.
+    /// * `routed` - Whether an API route matched (static files and unmatched
+    ///   paths get the higher [`SLOW_UNROUTED_MS`]).
+    fn classify(status: StatusCode, latency_ms: u64, routed: bool) -> Self {
+        let slow_after = if routed {
+            SLOW_ROUTED_MS
+        } else {
+            SLOW_UNROUTED_MS
+        };
+        let slow = latency_ms >= slow_after;
+        Self {
+            server_error: status.is_server_error(),
+            slow,
+            noted: !slow && latency_ms >= NOTED_MS,
+        }
+    }
+}
+
+/// Logs slow responses and server errors with their method, route template,
+/// status and latency, inside the request's `http.request` span.
+///
+/// # Arguments
+///
+/// * `request` - The request, after routing.
+/// * `next` - The rest of the stack.
+///
+/// # Returns
+///
+/// The response, unchanged.
+async fn log_request_outcome(request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let route = request_route(&request).to_owned();
+    let routed = route != UNROUTED;
+    let started = Instant::now();
+    let response = next.run(request).await;
+    let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let status = response.status();
+    let outcome = RequestOutcome::classify(status, latency_ms, routed);
+    if outcome.server_error {
+        tracing::warn!(
+            method = %method,
+            route = %route,
+            status = status.as_u16(),
+            latency_ms,
+            "server error response"
+        );
+    }
+    if outcome.slow {
+        tracing::warn!(
+            target: bookclerk_config::SLOW_TARGET,
+            method = %method,
+            route = %route,
+            status = status.as_u16(),
+            latency_ms,
+            "slow response"
+        );
+    } else if outcome.noted {
+        tracing::info!(
+            method = %method,
+            route = %route,
+            status = status.as_u16(),
+            latency_ms,
+            "request completed"
+        );
+    }
+    response
 }
 
 /// Content-Security-Policy of the web app's document.
@@ -5671,7 +5781,7 @@ async fn discover_purchase_hints(
     body.preferred_sources = preferred_sources_for_caller(&state, &headers).await;
     let library = state.library_snapshot().await;
     let sources = state.sources.read().await;
-    let mut response = bookclerk_discover::resolve_purchase_hints(&sources, &body)
+    let mut response = bookclerk_discover::resolve_purchase_hints(&sources, Some(&library), &body)
         .await
         .map_err(internal_err)?;
     let deadline = tokio::time::Instant::now() + bookclerk_discover::BATCH_DEADLINE;
@@ -5767,7 +5877,9 @@ async fn discover_purchase_hints_batch(
     let deadline = tokio::time::Instant::now() + bookclerk_discover::BATCH_DEADLINE;
     let library = state.library_snapshot().await;
     let sources = state.sources.read().await;
-    let resolved = bookclerk_discover::resolve_purchase_hints_batch(&sources, &queries, 4).await;
+    let resolved =
+        bookclerk_discover::resolve_purchase_hints_batch(&sources, Some(&library), &queries, 4)
+            .await;
     let mut results = Vec::with_capacity(resolved.len().min(MAX_PURCHASE_HINT_QUERIES));
     for (item, query) in resolved.into_iter().zip(&queries) {
         let mut response = item.map_err(internal_err)?;
@@ -6349,7 +6461,8 @@ async fn create_request_inner(
     let deadline = tokio::time::Instant::now() + WISH_ENRICH_BUDGET;
     let pooled = {
         let registry = state.sources.read().await;
-        let resolve = bookclerk_discover::resolve_purchase_hints(&registry, &hint_query);
+        let resolve =
+            bookclerk_discover::resolve_purchase_hints(&registry, Some(&library), &hint_query);
         let hints = match tokio::time::timeout_at(deadline, resolve).await {
             Ok(Ok(mut resolved)) => {
                 // Keep only prices for the recording the wish names, when the
@@ -6835,6 +6948,54 @@ fn internal_err(err: impl std::fmt::Display) -> (StatusCode, String) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn request_outcomes_split_slowness_from_faults() {
+        use axum::http::StatusCode;
+        let ok = StatusCode::OK;
+        let quiet = RequestOutcome {
+            server_error: false,
+            slow: false,
+            noted: false,
+        };
+        assert_eq!(RequestOutcome::classify(ok, 10, true), quiet);
+        assert_eq!(
+            RequestOutcome::classify(ok, NOTED_MS, true),
+            RequestOutcome {
+                noted: true,
+                ..quiet
+            }
+        );
+        assert_eq!(
+            RequestOutcome::classify(ok, SLOW_ROUTED_MS, true),
+            RequestOutcome {
+                slow: true,
+                ..quiet
+            }
+        );
+        assert_eq!(
+            RequestOutcome::classify(StatusCode::NOT_MODIFIED, 2_900, false),
+            RequestOutcome {
+                noted: true,
+                ..quiet
+            },
+            "a static file gets the higher threshold"
+        );
+        assert_eq!(
+            RequestOutcome::classify(ok, SLOW_UNROUTED_MS, false),
+            RequestOutcome {
+                slow: true,
+                ..quiet
+            }
+        );
+        assert_eq!(
+            RequestOutcome::classify(StatusCode::BAD_GATEWAY, 5, true),
+            RequestOutcome {
+                server_error: true,
+                ..quiet
+            }
+        );
+    }
+
     /// Asking the stores about a new wish leaves at least two seconds of the
     /// route's budget to save it.
     #[test]
@@ -6848,7 +7009,8 @@ mod tests {
         build_database_settings_group, current_settings_snapshot,
         database_backends_requiring_grant, normalize_disabled_shelves, normalize_setting_value,
         stamp_settings_occupancy, validate_daemon_listen, validate_daemon_listen_against_auth,
-        InviteLinkError, PluginGrantOverride,
+        InviteLinkError, PluginGrantOverride, RequestOutcome, NOTED_MS, SLOW_ROUTED_MS,
+        SLOW_UNROUTED_MS,
     };
     use bookclerk_config::{Config, ListenAddrs};
 

@@ -41,7 +41,7 @@ async fn add_node(store: &LibraryStore, node_id: &str, kind: &str, owner: Option
     .insert(store.db())
     .await
     .unwrap();
-    if kind == "host" {
+    if kind == "branch" {
         node_credentials::ActiveModel {
             node_id: Set(node_id.into()),
             sign_public_key: Set(vec![1; 32]),
@@ -102,7 +102,7 @@ async fn the_choice_reaches_the_branch_and_restarts_its_pass() {
             .create_user(UserRole::Member, Some("Riley"), None)
             .await
             .unwrap();
-        add_node(&store, BRANCH, "host", Some(member.id)).await;
+        add_node(&store, BRANCH, "branch", Some(member.id)).await;
 
         // Off by default.
         let first = open(&store).await;
@@ -169,16 +169,16 @@ async fn only_a_branch_takes_the_choice() {
     for profile in Profile::ALL {
         let name = profile.name();
         let store = store(profile).await;
-        add_node(&store, "owner-node", "owner", None).await;
+        add_node(&store, "shared-node", "shared", None).await;
 
         assert_eq!(
-            set_branch_members_books(&store, "owner-node", true)
+            set_branch_members_books(&store, "shared-node", true)
                 .await
                 .unwrap(),
             None
         );
         assert_eq!(
-            node(&store, "owner-node").await.acquire_members_books,
+            node(&store, "shared-node").await.acquire_members_books,
             0,
             "{name}"
         );

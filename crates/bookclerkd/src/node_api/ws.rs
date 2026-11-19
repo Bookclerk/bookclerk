@@ -1,4 +1,4 @@
-//! The host-node socket: `GET /api/node/v1/connect` (H-4 design, section 3).
+//! The branch-node socket: `GET /api/node/v1/connect` (H-4 design, section 3).
 //!
 //! The route sits outside the cookie and operator auth layers and is never
 //! disabled by `auth.enabled = false`: the node's enrolled Ed25519 key is
@@ -43,7 +43,7 @@
 //! superseded it, or the node was revoked) or that cannot be queued: the
 //! host never sees that job, so its claim is given back unspent at once.
 //!
-//! A newer connection for the same host shares the owner node's wake
+//! A newer connection for the same host shares the shared node's wake
 //! catalog row with the one it supersedes. Promoting a welcomed connection
 //! to live with enabling the row, and unregistering one with disabling it,
 //! run under one lock, and only the connection still live disables the row,
@@ -168,7 +168,7 @@ struct SessionSlot {
     close: watch::Sender<Option<u16>>,
 }
 
-/// Host connections on this owner node, by node id.
+/// Host connections on this shared node, by node id.
 #[derive(Default)]
 struct SessionTable {
     /// The live connection of each node: it has been welcomed.
@@ -179,7 +179,7 @@ struct SessionTable {
     pending: HashMap<String, Vec<SessionSlot>>,
 }
 
-/// Host connections on this owner node.
+/// Host connections on this shared node.
 static SESSIONS: LazyLock<Mutex<SessionTable>> =
     LazyLock::new(|| Mutex::new(SessionTable::default()));
 
@@ -234,7 +234,7 @@ pub(crate) fn unregister_for_test(node_id: &str, serial: u64) {
     unregister(node_id, serial);
 }
 
-/// True while this owner node holds a live connection of `node_id`.
+/// True while this shared node holds a live connection of `node_id`.
 #[cfg(test)]
 pub(crate) fn node_session_live(node_id: &str) -> bool {
     sessions().live.contains_key(node_id)
@@ -314,12 +314,12 @@ pub(super) struct Registered {
 
 /// Makes the welcomed pending connection `serial` of `node_id` (from
 /// [`register_pending`], whose `close` receiver it hands back) the node's
-/// live one with [`promote`] and enables this owner node's wake catalog row
+/// live one with [`promote`] and enables this shared node's wake catalog row
 /// for it, both under [`CATALOG_GATE`]. `None`, with nothing enabled, when
 /// [`promote`] refuses (the connection was revoked during the handshake).
 pub(super) async fn start_session(
     library: &LibraryStore,
-    owner_node_id: &str,
+    shared_node_id: &str,
     node_id: &str,
     serial: u64,
     close: watch::Receiver<Option<u16>>,
@@ -328,7 +328,7 @@ pub(super) async fn start_session(
     if !promote(node_id, serial) {
         return None;
     }
-    let wakes = WakeForwarder::new(owner_node_id, node_id, serial);
+    let wakes = WakeForwarder::new(shared_node_id, node_id, serial);
     if let Some(wakes) = wakes.as_ref() {
         wakes.heartbeat(library, true).await;
     }
@@ -366,14 +366,14 @@ fn offers_subprotocol(headers: &axum::http::HeaderMap) -> bool {
         .any(|proto| proto.trim() == SUBPROTOCOL)
 }
 
-/// `GET /api/node/v1/connect`: upgrade to the host-node socket after the
+/// `GET /api/node/v1/connect`: upgrade to the branch-node socket after the
 /// transport check. 403 `transport_insecure` for a refused connection,
 /// 400 `subprotocol_required` without [`SUBPROTOCOL`].
 #[utoipa::path(
     get,
     path = "/api/node/v1/connect",
     responses(
-        (status = 101, description = "Switching to the host-node WebSocket. The node's signature is checked in the first frames; a wrong one closes the socket."),
+        (status = 101, description = "Switching to the branch-node WebSocket. The node's signature is checked in the first frames; a wrong one closes the socket."),
         (status = 400, description = "The request does not offer the node subprotocol (`subprotocol_required`)."),
         (status = 403, description = "The transport is not allowed."),
         (status = 404, description = "The node API is not mounted."),
@@ -483,9 +483,9 @@ async fn run(
             cfg.paths().files_dir.clone(),
         )
     };
-    let owner_node_id = crate::node_queue::node_id(&files_dir).unwrap_or_default();
+    let shared_node_id = crate::node_queue::node_id(&files_dir).unwrap_or_default();
     let authed = match owner_origin {
-        Some(origin) => handshake(&library, &mut socket, &origin, &owner_node_id).await,
+        Some(origin) => handshake(&library, &mut socket, &origin, &shared_node_id).await,
         None => Err(Refusal::auth("owner_origin_unavailable", None)),
     };
     let authed = match authed {
@@ -501,7 +501,7 @@ async fn run(
         close,
         mut wakes,
     } = authed.registered;
-    tracing::info!(node_id = %authed.node_id, ?peer, "host node connected");
+    tracing::info!(node_id = %authed.node_id, ?peer, "branch node connected");
     // Uploads are received by this node; its own identity file names it
     // (the queue's process-wide id is the consumer's, not necessarily it).
     let receiving_node_id =
@@ -514,13 +514,13 @@ async fn run(
         box_public_key: authed.box_public_key,
         owner_box_secret: authed.owner_box_secret,
         settings,
-        owner_node_id: receiving_node_id,
+        shared_node_id: receiving_node_id,
         state: Arc::clone(&state),
         serial,
     };
     session(&library, socket, &host, authed.resume, &mut wakes, close).await;
     end_session(&library, &authed.node_id, serial, wakes).await;
-    tracing::info!(node_id = %authed.node_id, "host node disconnected");
+    tracing::info!(node_id = %authed.node_id, "branch node disconnected");
 }
 
 /// Closes a refused connection and records why.
@@ -539,7 +539,7 @@ async fn refuse(
         node_id = refusal.node_id.as_deref().unwrap_or(""),
         ?peer,
         reason = refusal.reason,
-        "host node handshake refused"
+        "branch node handshake refused"
     );
     let actor = refusal
         .node_id
@@ -628,7 +628,7 @@ async fn handshake(
     library: &LibraryStore,
     socket: &mut WebSocket,
     owner_origin: &str,
-    owner_node_id: &str,
+    shared_node_id: &str,
 ) -> Result<Authed, Refusal> {
     let Some(hello) = next_handshake_frame(socket).await else {
         return Err(Refusal::auth("malformed_hello", None));
@@ -721,7 +721,7 @@ async fn handshake(
         unregister(&node_id, serial);
         return Err(Refusal::auth("closed", Some(&node_id)));
     }
-    let Some(registered) = start_session(library, owner_node_id, &node_id, serial, close).await
+    let Some(registered) = start_session(library, shared_node_id, &node_id, serial, close).await
     else {
         return Err(revoked);
     };
@@ -839,7 +839,7 @@ async fn session(
     if let Some((code, reason)) =
         session_loop(library, stream, &outbox, host, resume, wakes, close).await
     {
-        tracing::info!(node_id = %host.node_id, code, reason, "closing host node connection");
+        tracing::info!(node_id = %host.node_id, code, reason, "closing branch node connection");
         let close = Message::Close(Some(CloseFrame {
             code,
             reason: reason.into(),
@@ -989,7 +989,7 @@ async fn session_loop(
                                 let answer = match record_node_left(library, node_id).await {
                                     Ok(_) => Body::Accepted {},
                                     Err(err) => {
-                                        tracing::warn!(node_id, error = %err, "could not record a leaving host node");
+                                        tracing::warn!(node_id, error = %err, "could not record a leaving branch node");
                                         Body::Error {
                                             code: "unavailable".into(),
                                             message: "the leave could not be recorded; retry".into(),
@@ -1009,7 +1009,7 @@ async fn session_loop(
                         }
                         let answer = work::answer(library, host, frame).await;
                         if !deliver(library, outbox, host, &close, answer).await {
-                            tracing::warn!(node_id, "host node stopped reading; dropping the connection");
+                            tracing::warn!(node_id, "branch node stopped reading; dropping the connection");
                             return None;
                         }
                     }

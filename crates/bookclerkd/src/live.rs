@@ -35,7 +35,7 @@
 //! | `{"v":1,"type":"changed","topics":[...]}` | a topic's revision moved |
 //!
 //! Changes are found by reading [`live_revisions`] every
-//! [`POLL_INTERVAL`] (the library database is shared by every owner node,
+//! [`POLL_INTERVAL`] (the library database is shared by every shared node,
 //! so this sees changes made on any of them) and by in-process pokes
 //! ([`poke`]) for immediate updates. The first read, the baseline, is
 //! taken before `hello` is sent, so a write made once the client has

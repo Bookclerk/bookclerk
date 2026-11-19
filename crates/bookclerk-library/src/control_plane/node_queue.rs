@@ -74,13 +74,13 @@ pub enum NodeMessage {
         /// Revision after the write.
         revision: i64,
     },
-    /// A host node's credential was revoked. The node holding that host's
+    /// A branch node's credential was revoked. The node holding that host's
     /// connection closes it; every claim, renew, and upload re-reads
     /// `node_credentials.revoked_at` as well, so a lost message does not
     /// keep the host connected to work.
     #[serde(rename = "node.revoked", rename_all = "camelCase")]
     NodeRevoked {
-        /// Revoked host node.
+        /// Revoked branch node.
         node_id: String,
     },
     /// Catalog questions wait for this branch

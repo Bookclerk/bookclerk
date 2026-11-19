@@ -31,6 +31,8 @@
 //   fixed-in lookup compares against release tags.
 // - fixedInLabel reads an issue's labels (people with triage rights can add
 //   them); its result overrides the version an issue was fixed in.
+// - labelNames reads the same label list for the owner's close button; its
+//   result decides which earlier `fixed-in:` labels are removed.
 // - decodeReleases and decodeCompare read GitHub's release list and compare
 //   answers; their results decide which release an issue's fix is recorded
 //   under, and so which reports count as regressions.
@@ -66,6 +68,7 @@ import {
   decodeIssue,
   decodeReleases,
   fixedInLabel,
+  labelNames,
   parseIssueNotify,
   parseSummaryDone,
   parseAttachRequest,
@@ -261,8 +264,24 @@ function checkIds(body: string, label: string) {
 }
 
 /**
+ * The value of a `[name, value]` field pair on an event, oracle-side: the
+ * first pair whose name matches.
+ *
+ * @param e - The event.
+ * @param name - Field name.
+ * @returns The value, or undefined.
+ */
+function pairValue(e: unknown, name: string): unknown {
+  const list = fields(e)?.["fields"];
+  if (!Array.isArray(list)) return undefined;
+  const hit = list.find((p) => Array.isArray(p) && p.length === 2 && p[0] === name);
+  return Array.isArray(hit) ? hit[1] : undefined;
+}
+
+/**
  * Oracle for summarizeReport: recounts levels, checks bounds and that the
- * signature exists exactly when an error or warning does.
+ * signature exists exactly when an error or warning does, recomputes the
+ * slowest `latency_ms`, and checks the install key, deployment and route.
  *
  * @param input - Stored report (any JSON value).
  * @param label - Input name for failure messages.
@@ -285,20 +304,70 @@ async function checkSummary(input: unknown, label: string) {
     assert.match(got.signature, /^[0-9a-f]{16}$/, label);
     const sigLabel = got.signatureLabel ?? "";
     assert.ok(sigLabel.length <= MAX_LABEL_CHARS, label);
-    assert.ok(
-      !/\d/.test(sigLabel.split(" · ").slice(1).join(" · ")),
-      `${label}: digits left in the message`,
-    );
+    // The route is kept as sent (templates have no IDs, but may have a
+    // version digit), so only a label that ends with the whole route can
+    // be told apart from its message.
+    const suffix = got.route ? ` · ${got.route}` : "";
+    if (!suffix || sigLabel.endsWith(suffix)) {
+      assert.ok(
+        !/\d/.test(
+          sigLabel
+            .slice(0, sigLabel.length - suffix.length)
+            .split(" · ")
+            .slice(1)
+            .join(" · "),
+        ),
+        `${label}: digits left in the message`,
+      );
+    }
+  } else {
+    assert.equal(got.route, "", `${label}: a route without a signature`);
   }
+  assert.ok(got.route.length <= 96, label);
+  assert.ok(!/[\u0000-\u001f\u007f]/.test(got.route), `${label}: control character in route`);
+  let peak: number | null = null;
+  for (const e of events) {
+    if (fields(e) === null) continue;
+    const raw = pairValue(e, "latency_ms");
+    const n =
+      typeof raw === "number"
+        ? raw
+        : typeof raw === "string" && /^[0-9]{1,15}$/.test(raw)
+          ? Number(raw)
+          : -1;
+    if (Number.isSafeInteger(n) && n >= 0 && (peak === null || n > peak)) peak = n;
+  }
+  assert.equal(got.peakLatencyMs, peak, `${label}: slowest latency`);
+  const key = fields(input)?.["install_key"];
+  assert.equal(
+    got.installKey,
+    typeof key === "string" && /^[0-9a-f]{64}$/.test(key) ? key : "",
+    `${label}: install key`,
+  );
+  assert.equal(
+    got.deployment,
+    payload["deployment"] === "demo" ? "demo" : "",
+    `${label}: deployment`,
+  );
   for (const k of ["version", "os", "arch", "distro", "trigger"] as const) {
     assert.equal(typeof got[k], "string", label);
     assert.ok(got[k].length <= MAX_FIELD_CHARS, label);
     assert.ok(!/[\u0000-\u001f\u007f]/.test(got[k]), `${label}: control character in ${k}`);
   }
-  assert.match(got.installHash, /^([0-9a-f]{1,64})?$/, label);
+  assert.ok(!("installHash" in got), `${label}: reports carry no install identity`);
   const again = await summarizeReport(input);
   assert.deepEqual(again, got, `${label}: not deterministic`);
   checkEventLog(payload["events"], label);
+}
+
+/**
+ * `payload.events` of a stored report, for tests that know its shape.
+ *
+ * @param storedReport - The stored report.
+ * @returns Its events, or undefined.
+ */
+function asPayloadEvents(storedReport: unknown): unknown {
+  return fields(fields(storedReport)?.["payload"])?.["events"];
 }
 
 /**
@@ -320,6 +389,11 @@ function checkEventLog(events: unknown, label: string) {
   );
   assert.deepEqual(Object.keys(log.counts), ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"], label);
   assert.ok(!/<script/i.test(out), `${label}: unescaped markup`);
+  const runs = (out.match(/<details class="run/g) ?? []).length;
+  assert.ok(runs * 5 <= expected, `${label}: a folded run shorter than five rows`);
+  assert.ok((out.match(/id="first-problem"/g) ?? []).length <= 1, `${label}: two first problems`);
+  assert.equal(log.problem, log.counts.ERROR + log.counts.WARN > 0, label);
+  assert.ok(log.crates.length <= 12, label);
 }
 
 const ID_FRAGMENTS = [
@@ -390,6 +464,16 @@ const JSON_FRAGMENTS = [
   '"ts_unix_ms":1e20',
   '"level":"__proto__"',
   "<script>",
+  '["route","/api/library/works/{id}"]',
+  '["http.request.route","/api/v1/x"]',
+  '["latency_ms","2896"]',
+  '["latency_ms",1e400]',
+  '["latency_ms","-5"]',
+  '"install_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"',
+  '"install_key":"ABC"',
+  '"deployment":"demo"',
+  '"deployment":"DEMO"',
+  '"level":"debug","target":"h2::codec"',
 ];
 
 describe("parseIssueReportIds", () => {
@@ -444,6 +528,25 @@ describe("summarizeReport", () => {
     const all = seeds("signature");
     assert.ok(all.length > 0);
     for (const [name, raw] of all) await checkSummary(JSON.parse(raw), name);
+    const slow: unknown = JSON.parse(seedNamed(all, "slow_route.json"));
+    const got = await summarizeReport(slow);
+    assert.equal(got.route, "/api/library/works/{id}");
+    assert.equal(got.peakLatencyMs, 3100);
+    assert.equal(got.deployment, "demo");
+    assert.equal(got.signatureLabel, "bookclerk::slow · slow response · /api/library/works/{id}");
+    const plain = await summarizeReport({
+      payload: { events: [{ level: "WARN", target: "bookclerk::slow", message: "slow response" }] },
+    });
+    assert.notEqual(plain.signature, got.signature, "the route splits signatures");
+    const log = eventLog(asPayloadEvents(slow));
+    assert.equal((String(log.rows).match(/<details class="run only-/g) ?? []).length, 0);
+    assert.equal((String(log.rows).match(/<details class="run/g) ?? []).length, 1);
+    assert.match(String(log.rows), /5 debug and trace lines from h2/);
+    assert.match(String(log.rows), /class="gap"[^>]*>\+2\.9 s/);
+    assert.deepEqual(log.crates, [
+      { crate: "h2", n: 5 },
+      { crate: "bookclerk", n: 2 },
+    ]);
   });
 
   it("holds the oracle under seeded mutation", async () => {
@@ -1553,6 +1656,17 @@ describe("GitHub REST decoding", () => {
           fixedInLabel(data),
           expectedFixedIn(data),
           `labels ${n}: ${text.slice(0, 300)}`,
+        );
+        // labelNames: the string `name` (at most 100 characters) of each
+        // object, in order.
+        assert.deepEqual(
+          labelNames(data),
+          Array.isArray(data)
+            ? data
+                .map((l: unknown) => (isObj(l) && typeof l.name === "string" ? l.name : null))
+                .filter((x): x is string => x !== null && x.length <= 100)
+            : [],
+          `label names ${n}: ${text.slice(0, 300)}`,
         );
       }
     }

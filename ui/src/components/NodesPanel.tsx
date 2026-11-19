@@ -228,8 +228,8 @@ function NodeRow({
         {drained ? (
           <Badge className="bg-brick/10 text-brick normal-case tracking-normal">Drained</Badge>
         ) : null}
-        {node.kind === "host" ? (
-          <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">Host node</Badge>
+        {node.kind === "branch" ? (
+          <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">Branch</Badge>
         ) : null}
         {node.target ? (
           <span className="font-mono text-[11px] text-ink/45">{node.target}</span>

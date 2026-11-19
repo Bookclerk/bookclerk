@@ -28,6 +28,7 @@ import type {
   FetchedFileRole,
   CatalogSort,
   CatalogField,
+  PriceLookup,
   Abridgement,
   MetadataField,
   DbType,
@@ -53,6 +54,7 @@ export type {
   FetchedFileRole,
   CatalogSort,
   CatalogField,
+  PriceLookup,
   Abridgement,
   MetadataField,
   DbType,
@@ -1824,6 +1826,18 @@ export interface CatalogCapabilities {
    * rows from any store that carry an ISBN.
    */
   detailByIsbn: boolean;
+  /**
+   * True when `purchaseHint` / `purchaseHints` price a query by its exact
+   * ISBN (`lookup = isbn`): the answer is the store's listing of that ISBN
+   * or not found, never a title match. The host then prices a card at this
+   * store by the ISBNs of the card's recording before searching by title.
+   */
+  priceByIsbn: boolean;
+  /**
+   * True when `purchaseHint` / `purchaseHints` price a query by its exact
+   * ASIN (`lookup = asin`), as `priceByIsbn` does for ISBNs.
+   */
+  priceByAsin: boolean;
 }
 
 /**
@@ -2604,6 +2618,11 @@ export interface PurchaseHintParams {
   region: string;
   /** When true, guests should include live price fields when available. */
   withPrice: boolean;
+  /**
+   * How the host asks the store to find the title. `unspecified` (an older
+   * host) leaves the guest free to use any field, as before.
+   */
+  lookup: PriceLookup;
 }
 
 /** Params of `ContentSource.listDeals`. */
@@ -2833,6 +2852,22 @@ export interface PurchaseHintResult {
   /** False when the guest could not resolve the title (`hint` is empty). */
   found: boolean;
   /** Purchase hint when `found`. */
+  hint: PurchaseHint;
+  /**
+   * Every priced listing a title search matched (`lookup = title`), each
+   * with its full catalog record, so the host can tell recordings apart by
+   * identifiers, credits and kinds rather than by title. Empty for other
+   * lookups and for guests that do not return records; `hint` then stays
+   * the answer.
+   */
+  records: PricedRecord[];
+}
+
+/** One priced listing returned by a title search. */
+export interface PricedRecord {
+  /** The listing's catalog record: identifiers, credits, kinds, language. */
+  record: CatalogHit;
+  /** Its purchase link and prices, as `PurchaseHint` carries them. */
   hint: PurchaseHint;
 }
 

@@ -3,7 +3,7 @@
 //! design).
 //!
 //! A branch is a library of its own, so joins make a tree (A ← B ← C).
-//! Trust stays one hop wide: A knows B only as a host node owned by one of
+//! Trust stays one hop wide: A knows B only as a branch node owned by one of
 //! A's users, and never learns of C. B shares the titles of its library
 //! (and, unless its operator turned that off, the titles C shared with B)
 //! over the node socket. Each title carries its store, product id,
@@ -17,7 +17,7 @@
 //!
 //! Every batch is checked on its own, like a host scan's results: the
 //! catalog fence is the node's current one ([`begin_catalog`] bumps it),
-//! the node is still a branch (kind `host`, live credential, active owner
+//! the node is still a branch (kind `branch`, live credential, active owner
 //! user), and the branch still shares. A title A already holds for that
 //! user in its own library is skipped, so nothing B got from A comes back
 //! as B's. Files reuse the upload endpoint: [`grant_catalog_upload`] opens
@@ -133,9 +133,9 @@ async fn branch_owner(store: &LibraryStore, node_id: &str) -> Result<Option<(nod
     else {
         return Ok(None);
     };
-    // A shared branch (owner node) shares this library's database: it is this
+    // A shared branch (shared node) shares this library's database: it is this
     // library, not a branch, and shares nothing over the socket.
-    if row.kind != "host" {
+    if row.kind != "branch" {
         return Ok(None);
     }
     let live = load_node_credential(store, node_id)

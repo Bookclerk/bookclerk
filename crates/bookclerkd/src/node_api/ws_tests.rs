@@ -1,4 +1,4 @@
-//! The host-node socket: handshake, revocation, transport checks, work
+//! The branch-node socket: handshake, revocation, transport checks, work
 //! frames, sealed secrets, resume, and wake forwarding.
 
 use std::net::SocketAddr;
@@ -778,7 +778,7 @@ async fn work_frames_seal_secrets_and_resume_refuses_lost_fences() {
 
     let logs = logs.text();
     assert!(
-        logs.contains("job handed to host node"),
+        logs.contains("job handed to branch node"),
         "the capture sees the session's logs"
     );
     assert!(
@@ -815,7 +815,7 @@ async fn the_hosts_node_queue_is_forwarded_and_acked_by_the_host() {
     handshake(&mut client, &node_id, &key, &origin)
         .await
         .unwrap();
-    // The session registers this owner node as the queue's consumer.
+    // The session registers this shared node as the queue's consumer.
     let queue = node_queue_name(&node_id);
     let consumer = format!("node:{node_id}");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -945,7 +945,7 @@ async fn host_context(
                 plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
             },
         },
-        owner_node_id: "owner-node".into(),
+        shared_node_id: "shared-node".into(),
         state: Arc::clone(state),
         serial: 0,
     }
@@ -1023,7 +1023,7 @@ async fn a_superseded_session_leaves_the_wake_catalog_enabled() {
 
     let start = |store: LibraryStore, node_id: String| async move {
         let (serial, close) = super::ws::register_pending(&node_id);
-        super::ws::start_session(&store, "owner-node", &node_id, serial, close)
+        super::ws::start_session(&store, "shared-node", &node_id, serial, close)
             .await
             .expect("a welcomed connection is promoted")
     };
@@ -1267,4 +1267,100 @@ async fn request_frames_refuse_what_the_branch_may_not_settle() {
         matches!(&refused.body, Body::Error { code, .. } if code == "refused"),
         "{refused:?}"
     );
+}
+
+/// A job whose secrets cannot be sealed to the branch node's box key is
+/// not handed out: the claim answers `no_work`, and the attempt fails as
+/// `secrets_unavailable` so the job retries where it can run.
+#[tokio::test]
+async fn a_job_whose_secrets_cannot_be_sealed_is_failed_not_handed_out() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store) = super::tests::test_state(&files).await;
+    let (node_id, member) = enroll_member(&store).await;
+    let job_id = member_scan(&store, member).await;
+    let mut host = host_context(&state, &node_id).await;
+    // Not a box public key: nothing can be sealed to it.
+    host.box_public_key = vec![1, 2, 3];
+
+    let answer = super::work::answer(&store, &host, claim_frame()).await;
+    assert!(matches!(answer.body, Body::NoWork { .. }), "{answer:?}");
+    let job = store.get_job(&job_id).await.unwrap().unwrap();
+    assert_eq!(
+        job.error_kind.as_deref(),
+        Some(bookclerk_library::control_plane::SECRETS_UNAVAILABLE)
+    );
+    assert_eq!(
+        job.error_message.as_deref(),
+        Some("the job's secrets could not be sealed for a branch node")
+    );
+}
+
+/// A `scan.request` from a node this library does not trust as a branch
+/// is refused before anything is planned.
+#[tokio::test]
+async fn an_untrusted_nodes_scan_request_is_refused() {
+    let files = tempfile::tempdir().unwrap();
+    let (state, store) = super::tests::test_state(&files).await;
+    let host = host_context(&state, "not-an-enrolled-node").await;
+    let answer = super::work::answer(
+        &store,
+        &host,
+        Frame::new(
+            "s",
+            Body::ScanRequest {
+                account: None,
+                plugin_instance_id: None,
+            },
+        ),
+    )
+    .await;
+    assert_eq!(answer.id, "s");
+    assert!(
+        matches!(&answer.body, Body::Error { code, .. } if code == "forbidden"),
+        "{answer:?}"
+    );
+}
+
+/// A leave the library cannot record is answered `unavailable` and the
+/// connection stays up, so the branch node retries; the retry is accepted
+/// and closes the connection as left.
+#[tokio::test]
+async fn a_leave_that_cannot_be_recorded_can_be_retried() {
+    use sea_orm::ConnectionTrait as _;
+
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store) = super::tests::test_state(&files).await;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    let node_id = enroll(&store).await;
+    let origin = owner_origin(&state).await;
+    let key = SigningKey::from_bytes(&SEED);
+    let mut client = dial(addr, Some(SUBPROTOCOL)).await.unwrap();
+    handshake(&mut client, &node_id, &key, &origin)
+        .await
+        .unwrap();
+
+    // The credential table is briefly unreadable.
+    store
+        .db()
+        .execute_unprepared("ALTER TABLE node_credentials RENAME TO node_credentials_away")
+        .await
+        .unwrap();
+    let refused = request(&mut client, Frame::new("l1", Body::NodeLeaving {})).await;
+    assert_eq!(refused.id, "l1");
+    assert!(
+        matches!(&refused.body, Body::Error { code, .. } if code == "unavailable"),
+        "{refused:?}"
+    );
+    store
+        .db()
+        .execute_unprepared("ALTER TABLE node_credentials_away RENAME TO node_credentials")
+        .await
+        .unwrap();
+
+    let accepted = request(&mut client, Frame::new("l2", Body::NodeLeaving {})).await;
+    assert_eq!(accepted.id, "l2");
+    assert_eq!(accepted.body, Body::Accepted {});
+    assert_eq!(next(&mut client).await.unwrap_err(), Some(CLOSE_REVOKED));
 }

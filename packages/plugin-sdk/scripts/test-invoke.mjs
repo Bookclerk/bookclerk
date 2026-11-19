@@ -189,6 +189,22 @@ class Storefront extends StorefrontEntrypoint {
     ];
   }
   async purchaseHint(params) {
+    if (params.lookup === "title") {
+      // A title search answers with every priced listing it matched.
+      return {
+        hint: { productId: "narrated", title: "Known" },
+        records: [
+          {
+            record: { productId: "narrated", title: "Known", expressionKind: "narration" },
+            hint: { productId: "narrated", priceLabel: "$10" },
+          },
+          {
+            record: { productId: "cast", title: "Known", expressionKind: "dramatisation" },
+            hint: { productId: "cast", priceLabel: "$20" },
+          },
+        ],
+      };
+    }
     return params.productId === "known" ? { productId: "known", title: "Known" } : null;
   }
   async catalogDetail(params) {
@@ -782,6 +798,42 @@ function decodeReply(reply, resultsCodec, caps) {
   );
   assert.equal(found.value.found, true);
   assert.equal(found.value.hint.productId, "known");
+  assert.deepEqual(found.value.records, [], "a bare hint carries no records");
+  const searched = decodeReply(
+    await invoke("ContentSource", "purchaseHint", W.ContentSourcePurchaseHintParamsCodec, {
+      params: { title: "Known", lookup: "title" },
+    }),
+    W.ContentSourcePurchaseHintResultsCodec,
+  );
+  assert.equal(searched.value.found, true);
+  assert.equal(searched.value.hint.productId, "narrated");
+  assert.deepEqual(
+    searched.value.records.map((priced) => [
+      priced.record.productId,
+      priced.record.expressionKind,
+      priced.hint.priceLabel,
+    ]),
+    [
+      ["narrated", "narration", "$10"],
+      ["cast", "dramatisation", "$20"],
+    ],
+  );
+  const batch = decodeReply(
+    await invoke("ContentSource", "purchaseHints", W.ContentSourcePurchaseHintsParamsCodec, {
+      params: {
+        queries: [{ productId: "known" }, { title: "Known", lookup: "title" }, { productId: "x" }],
+      },
+    }),
+    W.ContentSourcePurchaseHintsResultsCodec,
+  );
+  assert.deepEqual(
+    batch.value.results.map((result) => [result.found, result.records.length]),
+    [
+      [true, 0],
+      [true, 2],
+      [false, 0],
+    ],
+  );
   const detail = decodeReply(
     await invoke("ContentSource", "catalogDetail", W.ContentSourceCatalogDetailParamsCodec, {
       params: { productId: "known" },

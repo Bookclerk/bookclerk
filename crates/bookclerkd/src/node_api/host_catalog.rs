@@ -171,7 +171,7 @@ pub(super) async fn upload(
         library,
         &host.node_id,
         fence,
-        &host.owner_node_id,
+        &host.shared_node_id,
         &store_id,
         &product_id,
         &files,

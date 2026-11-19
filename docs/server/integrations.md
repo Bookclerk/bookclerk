@@ -432,7 +432,7 @@ it was last swept:
 
 ```text
 node-7f3a9c (this node) live target=- labels=-
-  owner node, owner -
+  shared node, owner -
   cpu 8.0 cores (budget 6.4, reserved 1.6, busy 0.4) | memory …
   cache 700M of 1.0G, swept 12 min ago
 ```

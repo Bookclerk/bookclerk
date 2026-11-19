@@ -28,13 +28,13 @@ the older names:
 | Web UI | Code, API and CLI |
 | --- | --- |
 | Library | Owner cluster (`clusters`) |
-| The library's own daemons, shared branches included | Owner nodes (`kind = owner`) |
-| Branch | Host node (`nodes`, `kind = host`) |
+| The library's own daemons, shared branches included | Shared nodes (`kind = shared`) |
+| Branch | Branch node (`nodes`, `kind = branch`) |
 | Branch invite | Enrollment link |
 | "Let new branches join" | `core.host_enrollment` |
 
 The design record is
-[ADR: Control plane](../adr/control-plane.md#host-node-enrollment-and-transport)
+[ADR: Control plane](../adr/control-plane.md#branch-node-enrollment-and-transport)
 (H-4).
 
 ## First start
@@ -60,7 +60,7 @@ same wizard.
    use (the same one people open the library at), and choose a
    `[daemon.node_api]` mode: `acme`, `proxy`, `self_signed` or `loopback`.
    The modes, their required settings and what each refuses are in
-   [Configuration → Host nodes](configuration.md#host-nodes).
+   [Configuration → Branch nodes](configuration.md#branch-nodes).
 2. **Let new branches join.** **Settings → Branches** (operator or Owner)
    has the switch, on by default, and shows the address to join. In
    `self_signed` mode it also shows the certificate fingerprint that a
@@ -84,7 +84,7 @@ keep working.
 ### What a branch is trusted with
 
 A branch's node appears among the nodes (`bookclerk nodes list`,
-`kind = host`), owned by the user who signed in, or the invite's user.
+`kind = branch`), owned by the user who signed in, or the invite's user.
 **Trust follows that user's role**:
 
 - A Member's or Host's branch receives only jobs whose store accounts
@@ -202,7 +202,7 @@ The exchange runs in five steps:
    consumes the code and checks its client, redirect URI, scope and
    verifier. It checks again that new branches may join and the user is
    active. Then it runs the **same canonical redeem batch** as an invite:
-   one `nodes` row (`kind = host`, owned by the signed-in user),
+   one `nodes` row (`kind = branch`, owned by the signed-in user),
    `node_credentials` and a receipt.
 5. **Done.** The daemon checks that the answer names the library it read.
    It seals both private keys into its `encrypted_secrets`, records the
@@ -396,9 +396,9 @@ drops, resuming any job it still holds.
 ## Shared branches
 
 A shared branch is a second (or third) server for the
-**same** library. It is an owner node that opens the library's database
+**same** library. It is a shared node that opens the library's database
 with the library's key, serves the web UI, plans jobs, and can take over
-maintenance leases when another owner node goes down. Any other branch
+maintenance leases when another shared node goes down. Any other branch
 keeps its own database; a shared branch has none of its own.
 
 ### Who can add one
@@ -506,7 +506,7 @@ Audit events:
 - On the library: `shared_branch_authorize`, `shared_branch_authorize_refused`,
   `shared_branch_enroll_refused` and `shared_branch_enrolled`.
 - On the joining server: `shared_branch_joined`.
-- When one is removed: `owner_node_removed`.
+- When one is removed: `shared_node_removed`.
 
 ## Consent: what the library may run here
 
@@ -620,7 +620,7 @@ A host never writes library SQL.
    a local acquire, a title whose edition another store account already
    acquired is left out: the library already has its files.
 2. The answer, `acquire.targets`, lists the titles still to fetch and every output
-   destination deployed on the owner node that answered, each with its own
+   destination deployed on the shared node that answered, each with its own
    naming options (templates, replacement characters, path limits). Each
    title carries its store account's holding id on the owner, which its
    upload names, and its library id on the owner, so the `<library id>`
@@ -702,7 +702,7 @@ install's running daemon and its link
 It runs as the user who owns this node:
 
 - An Owner or Administrator scanning every account gets one job per
-  scan-enabled account, spread over every owner node and host trusted with
+  scan-enabled account, spread over every shared node and host trusted with
   each.
 - Anyone else scans only their own accounts. A named account that isn't
   theirs is refused (403).
@@ -715,7 +715,7 @@ node would be trusted to claim.
 ## Uploads
 
 Files stream **through** the owner to its destinations. Nothing is staged
-on an owner node's disk.
+on a shared node's disk.
 
 1. **Grant.** The host sends `upload.grant` over the node socket, with
    the title's holding id from the plan and a manifest. The manifest lists each distinct file content once (`size`,
@@ -745,9 +745,9 @@ destination's stream with an error, so each discards what it wrote.
 | Refusal | Meaning |
 | --- | --- |
 | `401 unauthorized` | Unknown upload, or a wrong or expired token |
-| `421 misdirected` | Another owner node granted it |
+| `421 misdirected` | Another shared node granted it |
 | `409 lost` | The fence is gone |
-| `422 refused`, `422 destinations_changed` | The owner node's destinations aren't the ones the manifest was written for. The upload is aborted and the title fails on the host, to be retried |
+| `422 refused`, `422 destinations_changed` | The shared node's destinations aren't the ones the manifest was written for. The upload is aborted and the title fails on the host, to be retried |
 
 Limits: 512 files per title, 8 GiB per file, 16 copies per file and 1 KiB
 keys.
@@ -816,11 +816,25 @@ library it joined, in turn, for the copy of that listing.
 - **Split by chapter: MP4 audio only.** A branch whose output is split
   into chapter files takes the library's copy only when it is an M4B,
   M4A or MP4 file; otherwise it fetches from the store.
-- **Another store: the branch fetches its own.** When the library's copy
-  came from a different store, or the library doesn't know where it came
-  from, that library is passed over and the next one is asked. When no
-  library has a copy from the title's store, the branch downloads from
-  its own store as usual.
+- **Another store: the better copy is kept.** When no library has a copy
+  from the title's store but one has a copy of the same edition from a
+  different store, the branch downloads from its own store first,
+  probes that download and asks its libraries again (a store download
+  can outlast the hour a library's answer is good for). If the library's probe says its copy is better
+  (lossless beats lossy, then the higher bitrate wins), the branch
+  downloads the library's copy too, probes it itself, and stores it in
+  place of its own download only when its own probe agrees. Otherwise it
+  keeps its own, as it does when the two don't fit in the acquire's
+  scratch budget together. A lossless copy (FLAC or ALAC) is taken only
+  by a branch whose output keeps files as delivered: every other output
+  repackages the audio, and the media worker decodes AAC and MP3
+  audio only (so a copy in another encoding, such as Opus, is not taken
+  by such a branch either). The comparison runs once, in that acquire. The stored
+  file's row names the store the audio really came from, and the cover
+  and companion PDF of the branch's own download are kept (the library's
+  cover is used only when the store sent none).
+- **Unknown store: the branch fetches its own.** A copy whose store the
+  library doesn't know is never offered.
 - **Any problem: the store.** If the copy doesn't arrive whole, is larger
   than the acquire's scratch budget, or holds audio the media worker
   can't read, the branch removes what it downloaded and fetches from the
@@ -845,10 +859,15 @@ shares it back to the library it came from (see
 used. The job log line
 `acquired` carries `from_library=true` for such a title.
 
-A clerk asks the same way on its own socket, for the person its library
-card belongs to. Its token is not sealed (a clerk has no box key; the
-socket is the card's own connection, TLS except on loopback), and each download checks that the
-card is still signed in instead of a branch's trust. See
+A clerk takes copies the same way, for the person its library card
+belongs to. Its own acquire asks each library it holds an active card
+for, after any library it joined as a branch, by sending `copy.grant` on
+that card's clerk socket; a library whose socket isn't connected is
+skipped. The same-store rule and the fall-back to the store apply, and a
+taken book is recorded for that library too. The grant's token is not
+sealed (a clerk has no box key; the socket is the card's own connection,
+TLS except on loopback), and each download checks that the card is still
+signed in instead of a branch's trust. See
 [The clerk socket](sign-in.md#the-clerk-socket).
 
 | Refusal | Meaning |
@@ -863,11 +882,6 @@ card is still signed in instead of a branch's trust. See
 
 Limits: 1000 files per copy and 512-byte names. A grant is dropped once
 it expires.
-
-> [!NOTE]
-> A branch takes copies as
-> [When a branch takes the copy](#when-a-branch-takes-the-copy) describes.
-> The clerk app doesn't yet download them.
 
 ## Node-local instances
 
@@ -885,7 +899,7 @@ bookclerk plugins deploy <instance_id> --node <node_id>
 `{plugin_key, display_name, node_id}`. Deploying the instance to another
 node, or handing it to the scheduler (`--replicas`), is refused.
 
-Uploads reach every destination deployed on the owner node that granted
+Uploads reach every destination deployed on the shared node that granted
 them, node-local ones included.
 
 ## Branches of branches
@@ -898,8 +912,9 @@ C is B's.
   A has no record of C and never learns it exists. A's work runs on B
   itself and is never passed on to C. No store account, store token or
   user of B or C is ever sent to A.
-- **Books flow up.** B shares its owner's books with A: those acquired on
-  B on a store account connected there to B's Owner, and (when "Include
+- **Books flow up.** B shares its owner's books with A: those held on B
+  by a store account connected there to B's Owner whose edition B has
+  acquired (whichever of B's store accounts downloaded it), and (when "Include
   books from my own branches" is on) those C shared with B. B's other
   members' books stay on B, unless A requests one or A's operator turns on
   **Acquire all of this branch's members' books** (see below). Each title
@@ -1227,9 +1242,13 @@ shared stay in the library, marked as from a branch that left (see
   joined.
 - A branch takes a library's copy only for a title its own scan found on
   a store account connected to the branch, and only when the library's
-  copy came from the same store. It doesn't yet compare a copy from
-  another store with its own download, and it doesn't take a book the
-  library holds as several audio files.
+  copy came from the same store or is better than the branch's own
+  download. It doesn't take a book the library holds as several audio
+  files, and it doesn't compare again after the title is acquired, so a
+  better copy the library gets later isn't picked up. A clerk works the
+  same way.
+- A clerk always takes a library's copy when it can: there is no setting
+  per library card to turn it off.
 - The library's name is the host of its public origin. There is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the
@@ -1252,7 +1271,7 @@ shared stay in the library, marked as from a branch that left (see
 - [Node API and the live socket](../internals/node-api.md): the
   `/api/node/v1/` routes, the node socket's handshake and frames, and the
   web app's `/api/live` socket.
-- [Configuration → Host nodes](configuration.md#host-nodes): the
+- [Configuration → Branch nodes](configuration.md#branch-nodes): the
   transport modes.
 - [Managing plugins](plugins.md): deploy plugins to nodes.
 - [Branches](../guide/branches.md) on the Use Bookclerk shelf: joining a

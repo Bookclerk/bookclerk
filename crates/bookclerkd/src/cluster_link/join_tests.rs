@@ -744,9 +744,12 @@ async fn an_empty_install_joins_as_a_shared_branch_and_takes_the_librarys_bootst
     let node_id = joined["node_id"].as_str().unwrap().to_string();
     let cluster_id = joined["cluster_id"].as_str().unwrap().to_string();
 
-    // The library recorded an owner node; the joiner holds its bootstrap.
+    // The library recorded a shared node; the joiner holds its bootstrap.
     let node = load_node(&owner_store, &node_id).await.unwrap();
-    assert_eq!(node.kind, bookclerk_library::control_plane::NodeKind::Owner);
+    assert_eq!(
+        node.kind,
+        bookclerk_library::control_plane::NodeKind::Shared
+    );
     assert!(load_node_credential(&owner_store, &node_id)
         .await
         .unwrap()

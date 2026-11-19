@@ -46,7 +46,7 @@ pub(crate) async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) 
         compatible: Set(1),
         target: Set(String::new()),
         labels_json: Set("[]".into()),
-        kind: Set("host".into()),
+        kind: Set("branch".into()),
         owner_user_id: Set(Some(owner)),
         ..Default::default()
     }
@@ -1372,16 +1372,16 @@ async fn a_title_wider_than_one_reply_is_left_out_of_the_window() {
 }
 
 /// The caps of a [`capped_store`], set once its fixture is stored.
-struct Caps {
+pub(crate) struct Caps {
     /// Most bytes of text one reply may carry (0: no cap).
-    reply: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub(crate) reply: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Most bytes one text cell may carry (0: no cap).
-    cell: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub(crate) cell: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// A library over [`TextCapped`] with no caps yet, and the caps to set once
 /// the fixture is stored.
-async fn capped_store(dir: &std::path::Path) -> (LibraryStore, Caps) {
+pub(crate) async fn capped_store(dir: &std::path::Path) -> (LibraryStore, Caps) {
     let conn = rusqlite::Connection::open(dir.join("library.db")).unwrap();
     let caps = Caps {
         reply: std::sync::Arc::default(),

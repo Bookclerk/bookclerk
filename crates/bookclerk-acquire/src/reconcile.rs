@@ -1348,6 +1348,7 @@ mod reconcile_integration {
             publisher: None,
             categories: None,
             length_minutes: None,
+            language: None,
             is_abridged: false,
             content_kind: "book",
             purchased_at: None,

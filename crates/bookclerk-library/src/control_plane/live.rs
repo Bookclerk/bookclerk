@@ -1,6 +1,6 @@
 //! Change revisions for the SPA's live socket (H-4 step 10).
 //!
-//! Every owner node shares the library database, so a change made on any
+//! Every shared node shares the library database, so a change made on any
 //! of them (a job finishing elsewhere, a scan's rows, a heartbeat, a
 //! configuration write) shows up here. Each topic has one counter row in
 //! `live_topic_revisions`, and every write to the table behind a topic

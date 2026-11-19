@@ -959,6 +959,14 @@ The tests and corpora live in `tools/diagnostics-collector/`.
   - Test and corpus: `b2-error.fuzz.test.ts`, `corpus/b2_error/`.
   - Oracle: nothing, or exactly the body's own `code` when it is a 1–40
     character lowercase identifier.
+- **Usage check-in body** (`parseCheckin` in `checkin.ts`). It is the body
+  anyone can send to `POST /checkin`, and decides what a check-in row
+  stores and which install ID is hashed into the install key.
+  - Test and corpus: `checkin.fuzz.test.ts`, `corpus/checkin/`.
+  - Oracle: a check-in exactly when the body is at most 1,024 characters
+    of JSON naming an object with exactly the five fields, a lowercase
+    version-4 UUID checked by position, and version, platform and kind
+    tokens checked character by character.
 
 ### Member dashboard
 
@@ -976,7 +984,9 @@ In `dashboard/report-ids.ts`, `dashboard/signature.ts`,
 - **Stored-report summary** (`summarizeReport`) writes every report's index
   row. Corpus `corpus/signature/`. Oracle: level counts recounted, a
   signature exactly when an error or warning exists, bounded control-free
-  fields.
+  fields, the slowest `latency_ms` recomputed, an install key only when the
+  stored one is 64 lowercase hex characters, and a route only with a
+  signature.
 - **Event log** (`eventLog`) renders a report page's stored events. Corpus
   `corpus/signature/` (shared with the signature reader). Oracle: one row
   per event up to 500, level counts that add up to the rows, no event text
@@ -1060,6 +1070,8 @@ these oracles:
   lowercase hex oid;
 - a `fixed-in:<version>` label read only as a well-formed
   `MAJOR.MINOR.PATCH`, with optional prerelease and build;
+- label names for the close button read only from objects with a string
+  `name` of at most 100 characters;
 - releases decoded to the published non-draft entries with a plain tag
   name, oldest first;
 - a compare answer read as containing only for `identical` or `behind`,
@@ -1079,6 +1091,24 @@ In `dashboard/links.ts` and `dashboard/storage.ts`:
   viewing downloads, and where reindexing continues. Corpus
   `corpus/b2_list/`. Oracle: decoded to exactly the uploaded entries with a
   string name and id, without throwing.
+
+In `dashboard/triage-forms.ts`, tested in
+`tools/diagnostics-collector/triage-forms.fuzz.test.ts` against a form
+body split and percent-decoded by hand:
+
+- **Triage mark form** (`parseTriageMark`) decides which reports a member
+  marks seen or noise, or puts back in the queue. Corpus
+  `corpus/triage_form/`. Oracle: a known state and one to 40 distinct
+  lowercase UUIDs.
+- **Mute form** (`parseMuteAction`) decides which signature leaves the
+  triage queue and the ingest pull, why, and until when. Corpus
+  `corpus/mute_form/`. Oracle: a 16-hex signature, and for a mute a
+  trimmed, control-free reason of 1 to 200 characters and exactly one end
+  (1 to 365 days, or a release version).
+- **Owner close form** (`parseCloseAction`) decides which issue an owner
+  closes on GitHub and the fixed-in label it gets. Corpus
+  `corpus/close_form/`. Oracle: an issue number, and a release version
+  when closing as fixed.
 
 ### Website Worker
 

@@ -224,6 +224,7 @@ async fn cli_main() -> ExitCode {
         diagnostics: config.diagnostics.clone(),
         version: env!("CARGO_PKG_VERSION").into(),
         enable_journald: true,
+        role: bookclerk_config::ProcessRole::Cli,
     });
     // Keep the non-blocking stderr worker alive for the process lifetime.
     let _stderr_guard = &_logging;

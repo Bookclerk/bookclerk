@@ -202,7 +202,7 @@ pub use store::{
         parse_work_split_request, SplitOutcome, WorkSplitBody, WorkSplitRequest,
         MAX_SPLIT_EXPRESSIONS, MAX_SPLIT_EXPRESSION_ID_BYTES,
     },
-    AcquireTitle, AcquireTitlePage, AcquiredBookKey, BookPage, CandidateRef,
+    AcquireTitle, AcquireTitlePage, AcquiredTitleKey, AcquiredTitleKeyPage, BookPage, CandidateRef,
     CatalogEnrichmentFields, DiscoverSubject, EditionAcquisition, EditionAsin, EditionEnrichment,
     EditionFile, EnrichCandidate, EnrichCandidatePage, FileOwner, FileProbe, FileRole,
     HeldIdentifiers, HoldingSelection, LibraryStore, NewBook, NewListeningProgress,

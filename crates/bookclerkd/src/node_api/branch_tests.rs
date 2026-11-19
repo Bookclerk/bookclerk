@@ -236,7 +236,7 @@ async fn a_consented_code_enrolls_one_node_and_retries_replay() {
     assert_eq!(status, StatusCode::OK, "{enrolled}");
     let node_id = enrolled["node_id"].as_str().unwrap().to_string();
     let node = load_node(&store, &node_id).await.unwrap();
-    assert_eq!(node.kind, NodeKind::Host);
+    assert_eq!(node.kind, NodeKind::Branch);
     assert_eq!(node.owner_user_id, Some(member));
     {
         use bookclerk_library::entities::node_enrollment_links as links;
@@ -778,7 +778,7 @@ async fn branch_context(state: &Arc<AppState>, node_id: &str) -> super::super::w
                 plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
             },
         },
-        owner_node_id: "owner-node".into(),
+        shared_node_id: "shared-node".into(),
         state: Arc::clone(state),
         serial: super::super::ws::go_live_for_test(node_id),
     }

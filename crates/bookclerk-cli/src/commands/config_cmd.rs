@@ -296,6 +296,11 @@ pub async fn run(
                 "diagnostics.ring_buffer_capacity = {}",
                 config.diagnostics.ring_buffer_capacity
             );
+            println!(
+                "diagnostics.share_usage = {}",
+                config.diagnostics.share_usage
+            );
+            println!("diagnostics.demo = {}", config.diagnostics.demo);
             print_events_authority(config).await;
             Ok(())
         }
@@ -733,7 +738,7 @@ async fn set_events_setting(
 /// Config key of the cluster's host-enrollment switch (`core.host_enrollment`).
 const HOST_ENROLLMENT_ENABLED_KEY: &str = "host_enrollment.enabled";
 
-/// Prints whether host nodes may enroll into this cluster.
+/// Prints whether branch nodes may enroll into this cluster.
 async fn get_host_enrollment(config: &Config, format: OutputFormat) -> anyhow::Result<()> {
     let (store, _session) = open_control_plane(config).await?;
     let settings = load_host_enrollment(&store).await?;
@@ -1167,6 +1172,8 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
             config.diagnostics.warn_burst_window_secs.to_string()
         }
         "diagnostics.ring_buffer_capacity" => config.diagnostics.ring_buffer_capacity.to_string(),
+        "diagnostics.share_usage" => config.diagnostics.share_usage.to_string(),
+        "diagnostics.demo" => config.diagnostics.demo.to_string(),
         "paths.files_dir" => paths?.files_dir.display().to_string(),
         "paths.config_file" => paths?.config_file.display().to_string(),
         "paths.library_db" => paths?.library_db.display().to_string(),

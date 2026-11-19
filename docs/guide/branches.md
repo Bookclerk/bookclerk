@@ -139,9 +139,10 @@ the store. Your server runs the library's work and shows its books either
 way.
 
 > [!NOTE]
-> If the library got its copy from a different store than yours, or keeps
-> the book as several audio files, your server downloads the book from
-> your store.
+> If the library got its copy from a different store than yours, your
+> server downloads the book from your store and keeps whichever of the
+> two is the better recording. If the library keeps the book as several
+> audio files, your server downloads the book from your store.
 
 ## Sign in with a library card
 
@@ -172,8 +173,46 @@ card too. If the library can't be reached, end it later from your session
 list on the library. If the library ends the card first, the list says so
 and offers **Remove**; sign in again to get a new card.
 
+While the card is signed in and the library is connected, your server
+can also use the library's copies of your books. When it downloads one of
+your books, it first asks the library for its copy and uses it the way a
+branch does with **Keep copies on this computer** on: a copy from the
+same store is used instead of downloading from the store again, and a
+copy from another store is used only when it is better than your own
+download. If no library answers with a usable copy, your server
+downloads from the store as usual. A card has no setting to turn this off.
+
 A server that is already a branch of a library shows your books there
 through that link, so it can't also hold a card for it.
+
+## Core and local branches
+
+Every install is a library of its own, with its own database, people and
+operator. What sets installs apart is whether other computers can reach
+them:
+
+- A **core branch** has an address that other installs can connect to
+  (its `public_origin`, see [Configuration](../server/configuration.md)).
+  Other branches can join it.
+- A **local branch** has no such address, such as a laptop or a computer
+  at home. It connects out to the core branches it joins and never waits
+  for anyone to connect to it.
+
+When one install joins another, the relationship has a name too:
+
+| Relationship | What it is |
+| --- | --- |
+| Local branch | A local branch contributing to a core branch. |
+| Remote branch | A core branch contributing to another core branch. |
+| Shared branch | Two installs sharing one database, so one library runs on more than one machine. See [Shared branches](#shared-branches). |
+
+You can only join a core branch. A local branch and a remote branch work
+the same way and follow the same rules; the only difference is whether the
+branch that joins can be reached itself. A branch that gets an address
+later becomes a remote branch without joining again.
+
+A **clerk** is not a branch: it only shows a person their books (see
+[Sign in with a library card](#sign-in-with-a-library-card)).
 
 ## Leave a library
 
@@ -184,7 +223,7 @@ The library's operator or an Owner can also remove a branch from
 
 ## Shared branches
 
-A branch can also share the library's own database instead of keeping one
-of its own. It is then an extra copy of the library itself, so the library
-runs on more than one machine. Setting one up is an operator task; see
+A branch can also share another install's database instead of keeping one
+of its own. It is then an extra copy of that library, so the
+library runs on more than one machine. Setting one up is an operator task; see
 [Shared branches](../server/cluster-hosts.md#shared-branches).

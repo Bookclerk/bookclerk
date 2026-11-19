@@ -434,6 +434,58 @@ impl SourcePurchaseHint {
     }
 }
 
+/// One priced listing a title search matched, with its catalog record.
+///
+/// A store answering a `PriceLookup::Title` query returns every listing the
+/// search found, so the host can place each one in the library model (by
+/// identifiers, credits and kinds) and keep only the recording it asked for.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PricedListing {
+    /// The listing's catalog record: identifiers, credits, kinds, language.
+    pub record: CatalogHit,
+    /// Its purchase link and prices.
+    pub hint: SourcePurchaseHint,
+}
+
+/// A store's answer to one purchase-hint query, with any title-search
+/// records.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PricedAnswer {
+    /// The store's own pick; `None` when it found nothing.
+    pub hint: Option<SourcePurchaseHint>,
+    /// Every priced listing a title search matched, for the host to place.
+    /// Empty for identifier lookups and for stores that return no records.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub records: Vec<PricedListing>,
+}
+
+impl PricedAnswer {
+    /// Decode HTML entities in every hint and record (no-op when no `&`).
+    #[must_use]
+    pub fn decode_html_entities(self) -> Self {
+        Self {
+            hint: self.hint.map(SourcePurchaseHint::decode_html_entities),
+            records: self
+                .records
+                .into_iter()
+                .map(|priced| PricedListing {
+                    record: priced.record.decode_html_entities(),
+                    hint: priced.hint.decode_html_entities(),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<Option<SourcePurchaseHint>> for PricedAnswer {
+    fn from(hint: Option<SourcePurchaseHint>) -> Self {
+        Self {
+            hint,
+            records: Vec::new(),
+        }
+    }
+}
+
 /// Optional role / facet for the host's `ContentSource::search_catalog`.
 ///
 /// Free-text Discover typeahead leaves this unset. Meta links (author, narrator,
@@ -695,6 +747,8 @@ impl Default for CatalogSearchOpts {
     }
 }
 
+pub use bookclerk_plugin_abi::PriceLookup;
+
 /// Options for the host's `ContentSource::purchase_hint`.
 #[derive(Debug, Clone, Default)]
 pub struct PurchaseHintOpts {
@@ -712,6 +766,10 @@ pub struct PurchaseHintOpts {
     pub region: String,
     /// When true, resolve live price if the source can.
     pub with_price: bool,
+    /// How the host asks the store to find the title (product id, exact
+    /// ISBN or ASIN, or a title search that returns records);
+    /// `Unspecified` leaves the store free to use any field.
+    pub lookup: PriceLookup,
 }
 
 #[cfg(test)]

@@ -330,6 +330,16 @@ export const CATALOG_FIELDS = ["any", "author", "narrator", "series", "genre"] a
 export type CatalogField = (typeof CATALOG_FIELDS)[number];
 
 /**
+ * How a purchase-hint query names the title to price.
+ *
+ * Ordinal-ordered `PriceLookup` wire names (index = Cap'n Proto ordinal).
+ */
+export const PRICE_LOOKUPS = ["unspecified", "product", "isbn", "asin", "title"] as const;
+
+/** Union of `PRICE_LOOKUPS` wire names. */
+export type PriceLookup = (typeof PRICE_LOOKUPS)[number];
+
+/**
  * Whether an edition is abridged.
  *
  * Ordinal-ordered `Abridgement` wire names (index = Cap'n Proto ordinal).

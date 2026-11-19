@@ -392,7 +392,7 @@ pub enum Body {
     AcquireTargets {
         /// Titles still to acquire, each one of the job's accounts.
         targets: Vec<AcquireTarget>,
-        /// Every output destination deployed on the answering owner node,
+        /// Every output destination deployed on the answering shared node,
         /// the primary first, each with its own packaging and naming
         /// options, so the host names each destination's files as a local
         /// acquire would.
@@ -1166,11 +1166,11 @@ impl From<LibraryId> for String {
     }
 }
 
-/// One output destination of the owner node that answered an acquire plan
+/// One output destination of the shared node that answered an acquire plan
 /// ([`Body::AcquireTargets`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanDestination {
-    /// Destination id on that owner node: its storage plugin's id, such
+    /// Destination id on that shared node: its storage plugin's id, such
     /// as `local`, `s3` or `r2` (one destination per plugin).
     pub id: String,
     /// That destination's `DownloadOptions` (JSON): its naming templates,

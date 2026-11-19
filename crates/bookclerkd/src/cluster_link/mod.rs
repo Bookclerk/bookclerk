@@ -1,4 +1,4 @@
-//! This daemon as a host node of owner clusters (H-4 design, steps 7-8).
+//! This daemon as a branch node of owner clusters (H-4 design, steps 7-8).
 //!
 //! Every active `cluster_links` row in this install's database gets one
 //! [`HostClient`]: it connects to the owner's node socket under the

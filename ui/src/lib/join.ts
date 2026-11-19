@@ -18,7 +18,7 @@
  *   read-only per branch in Settings → Branches, with a bulk remove for
  *   titles from a branch that stopped sharing or left.
  * - An Owner of the library may instead let an **empty** install join as a
- *   **shared branch** (code name: an owner node): it shares the library's database
+ *   **shared branch** (code name: a shared node): it shares the library's database
  *   and keys and replaces whatever the install held. The choice is made on
  *   the consent page, needs a fresh second factor, and is bound to the
  *   code; the keys travel daemon to daemon, sealed to the joining node,
@@ -1051,28 +1051,28 @@ export function beginSharedBranchStepUp(): Promise<{
   return request("/api/auth/branch-consent/step-up", { method: "POST", body: {} });
 }
 
-/** `GET /api/config/shared-branches`: the owner nodes for Settings → Shared branches. */
+/** `GET /api/config/shared-branches`: the shared nodes for Settings → Shared branches. */
 export interface SharedBranchesResponse {
   /** This server's node id. */
   node_id: string;
-  /** The owner nodes the caller may see, shaped like `listConfigNodes`'s. */
+  /** The shared nodes the caller may see, shaped like `listConfigNodes`'s. */
   nodes: ConfigNodeView[];
 }
 
 /**
- * Lists the owner nodes (this server and its shared branches) for Settings → Shared branches:
+ * Lists the shared nodes (this server and its shared branches) for Settings → Shared branches:
  * every one for the operator or an Owner, who may remove any of them;
  * another user only the ones they own. Unlike `listConfigNodes`, an Owner
  * sees shared branches owned by nobody or by other Owners.
  *
- * @returns This server's node id and the owner nodes.
+ * @returns This server's node id and the shared nodes.
  */
 export function listSharedBranches(): Promise<SharedBranchesResponse> {
   return request("/api/config/shared-branches");
 }
 
 /**
- * Removes an owner node (a shared branch) that no longer runs; Settings → Shared branches
+ * Removes a shared node (a shared branch) that no longer runs; Settings → Shared branches
  * lists them from `listSharedBranches`.
  *
  * @param nodeId - The node to remove.
@@ -1361,14 +1361,14 @@ export function dismissWelcome(): void {
 }
 
 /**
- * Only the owner nodes (`kind = owner`): the shared branches of this library.
+ * Only the shared nodes (`kind = shared`): the shared branches of this library.
  *
  * @param nodes - Every node the caller sees.
  * @returns The ones that share this library's database, this server first.
  */
 export function sharedBranchNodes(nodes: ConfigNodeView[]): ConfigNodeView[] {
   return nodes
-    .filter((node) => node.kind === "owner")
+    .filter((node) => node.kind === "shared")
     .sort(
       (a, b) => Number(b.this_node) - Number(a.this_node) || a.node_id.localeCompare(b.node_id),
     );

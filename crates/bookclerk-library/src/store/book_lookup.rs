@@ -6,74 +6,13 @@
 //! adapters' streamed result cap once a library holds a few thousand
 //! enriched titles; these reads stay within it at any size.
 
-use chrono::{DateTime, Utc};
 use sea_orm::sea_query::{Expr, ExprTrait, Func};
-use sea_orm::{
-    ColumnTrait, Condition, EntityTrait, FromQueryResult, QueryFilter, QueryOrder, QuerySelect,
-};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder};
 
-use super::{map_book, parse_dt, LibraryStore};
+use super::{map_book, LibraryStore};
 use crate::entities::books;
 use crate::error::{LibraryError, Result};
-use crate::models::{AcquireStatus, BookRecord};
-
-/// Upper clamp for one [`LibraryStore::acquired_book_keys_page`] read.
-///
-/// A key row is eight short columns (well under 1 KiB on the wire), so this
-/// many stay far below the 256 KiB inline result cap of an adapter that
-/// does not stream.
-pub const ACQUIRED_KEYS_MAX_PAGE: u64 = 256;
-
-/// The identity of one acquired book with a stored file, without its
-/// metadata.
-///
-/// Read in keyset pages by [`LibraryStore::acquired_book_keys_page`]; the
-/// full row is loaded only when it is needed, by
-/// [`LibraryStore::get_book_by_uuid`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcquiredBookKey {
-    /// Surrogate row id; the keyset cursor of the page reader.
-    pub id: i64,
-    /// Public book id.
-    pub uuid: String,
-    /// Store alias the book came from (`audible`, `libro`, ...), as stored.
-    pub source: String,
-    /// Provenance-qualified plugin key of the store.
-    pub plugin_key: String,
-    /// Store account that holds the book.
-    pub account_id: String,
-    /// Store marketplace, as stored on the flat row.
-    pub marketplace: String,
-    /// Store product id.
-    pub product_id: String,
-    /// Last change of the row. An unparsable stored value reads as the
-    /// time of the read, the same fallback [`BookRecord`] uses.
-    pub updated_at: DateTime<Utc>,
-}
-
-/// One narrow `books` row as read; columns are matched by name.
-///
-/// Positional tuples are not used: the database proxy hands rows over as
-/// maps ordered by column name, so a tuple would bind columns out of order.
-#[derive(Debug, FromQueryResult)]
-struct KeyRow {
-    /// Surrogate row id.
-    id: i64,
-    /// Public book id.
-    uuid: String,
-    /// Store alias.
-    source: String,
-    /// Plugin key.
-    plugin_key: String,
-    /// Store account id.
-    account_id: String,
-    /// Marketplace.
-    marketplace: String,
-    /// Store product id.
-    product_id: String,
-    /// RFC 3339 last change, as stored.
-    updated_at: String,
-}
+use crate::models::BookRecord;
 
 /// The spellings of `value` an exact, indexed comparison tries: as given,
 /// ASCII-lowercased and ASCII-uppercased, without duplicates.
@@ -172,73 +111,13 @@ impl LibraryStore {
             .map(map_book)
             .collect()
     }
-
-    /// One keyset page of the acquired books that have a stored file,
-    /// identity columns only, by surrogate id.
-    ///
-    /// # Arguments
-    ///
-    /// * `after_id` - The last [`AcquiredBookKey::id`] of the previous page,
-    ///   or `None` for the first page.
-    /// * `limit` - Rows wanted, clamped to 1..=[`ACQUIRED_KEYS_MAX_PAGE`].
-    ///
-    /// # Returns
-    ///
-    /// Up to `limit` keys in ascending id order; fewer than `limit` means
-    /// the last page.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when the read fails.
-    pub async fn acquired_book_keys_page(
-        &self,
-        after_id: Option<i64>,
-        limit: u64,
-    ) -> Result<Vec<AcquiredBookKey>> {
-        let mut query = books::Entity::find()
-            .select_only()
-            .column(books::Column::Id)
-            .column(books::Column::Uuid)
-            .column(books::Column::Source)
-            .column(books::Column::PluginKey)
-            .column(books::Column::AccountId)
-            .column(books::Column::Marketplace)
-            .column(books::Column::ProductId)
-            .column(books::Column::UpdatedAt)
-            .filter(books::Column::AcquireStatus.eq(AcquireStatus::Acquired.as_str()))
-            .filter(books::Column::StorageKey.is_not_null())
-            .order_by_asc(books::Column::Id);
-        if let Some(after_id) = after_id {
-            query = query.filter(books::Column::Id.gt(after_id));
-        }
-        let rows = query
-            .limit(limit.clamp(1, ACQUIRED_KEYS_MAX_PAGE))
-            .into_model::<KeyRow>()
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(rows
-            .into_iter()
-            .map(|row| AcquiredBookKey {
-                id: row.id,
-                uuid: row.uuid,
-                source: row.source,
-                plugin_key: row.plugin_key,
-                account_id: row.account_id,
-                marketplace: row.marketplace,
-                product_id: row.product_id,
-                updated_at: parse_dt(&row.updated_at),
-            })
-            .collect())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::case_variants;
-    use crate::models::{AcquireStatus, BookRecord};
+    use crate::models::BookRecord;
     use crate::store::{LibraryStore, NewBook};
-    use crate::test_support::paging;
     use crate::test_support::Profile;
 
     /// An empty store that behaves like one on an external plugin
@@ -317,65 +196,6 @@ mod tests {
             assert_eq!(uuids(&found), vec![slug.uuid.clone()], "{name}: mixed case");
             let found = store.find_books_by_any_id(None, "missing").await.unwrap();
             assert!(found.is_empty(), "{name}");
-        }
-    }
-
-    /// The keyset walk yields exactly the acquired books with a stored
-    /// file, in id order, at every page size.
-    #[tokio::test]
-    async fn acquired_key_pages_match_the_filtered_full_listing() {
-        for profile in Profile::ALL {
-            let store = kit(profile).await;
-            for i in 0..7 {
-                let product = format!("P-{i}");
-                book(&store, "a1", &product, None, None, &format!("T{i}")).await;
-                let (status, key) = match i % 3 {
-                    0 => (AcquireStatus::Acquired, Some(format!("k/{product}.m4b"))),
-                    1 => (AcquireStatus::Acquired, None),
-                    _ => (AcquireStatus::NotAcquired, None),
-                };
-                store
-                    .set_acquire_status(&product, "a1", status, key.as_deref(), None)
-                    .await
-                    .unwrap();
-            }
-            let mut expected: Vec<BookRecord> = store
-                .list_books(None)
-                .await
-                .unwrap()
-                .into_iter()
-                .filter(|b| b.acquire_status == AcquireStatus::Acquired && b.storage_key.is_some())
-                .collect();
-            expected.sort_by_key(|b| b.id);
-            assert_eq!(expected.len(), 3, "{}", profile.name());
-            let full: Vec<(String, String, String)> = expected
-                .iter()
-                .map(|b| (b.uuid.clone(), b.source.clone(), b.product_id.clone()))
-                .collect();
-            for size in [1, 2, 100] {
-                paging::assert_pages_match_full(&full, size, |after: Option<i64>, size| {
-                    let store = &store;
-                    async move {
-                        let page = store.acquired_book_keys_page(after, size).await.unwrap();
-                        let next = (u64::try_from(page.len()).unwrap() >= size)
-                            .then(|| page.last().map(|k| k.id))
-                            .flatten();
-                        let rows = page
-                            .into_iter()
-                            .map(|k| (k.uuid, k.source, k.product_id))
-                            .collect();
-                        (rows, next)
-                    }
-                })
-                .await;
-            }
-            let first = store.acquired_book_keys_page(None, 1).await.unwrap();
-            assert_eq!(
-                first[0].updated_at,
-                expected[0].updated_at,
-                "{}",
-                profile.name()
-            );
         }
     }
 }

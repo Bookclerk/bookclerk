@@ -1,4 +1,4 @@
-//! Scan results a Host node returns over the node socket (H-4 decision 6).
+//! Scan results a Branch node returns over the node socket (H-4 decision 6).
 //!
 //! A Host never writes library SQL. A scan it runs sends its book rows in
 //! fenced batches; [`accept_scan_results`] validates each batch and writes

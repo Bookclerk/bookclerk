@@ -296,7 +296,7 @@ export function LibraryPage({
   // While the socket is down the list is not polled, as before; the
   // reconnect refreshes it. While it is up a slow reconciliation runs: a
   // change stamped earlier than the newest one the socket compared (a
-  // write that committed late, or an owner node whose clock runs behind)
+  // write that committed late, or a shared node whose clock runs behind)
   // does not move the revision.
   useLiveRefresh(["library"], reloadWorks, { pollMs: 0, openPollMs: 120_000 });
 

@@ -923,8 +923,9 @@ pub async fn run_acquire(
     let total = targets.len();
     // Deployed metadata providers fill the plain-audio overlay.
     let metadata = crate::covers::acquire_metadata(state).await;
-    // A library this install joined may already hold a title's copy.
-    let library_copies = crate::cluster_link::library_copies::acquire_copies(&library);
+    // A library this install joined, or holds a card for, may already
+    // hold a title's copy.
+    let library_copies = crate::clerk_link::copies::acquire_copies(&library);
     for (idx, book) in targets.into_iter().enumerate() {
         if let Some(ctx) = ctx {
             if ctx.is_cancelled()

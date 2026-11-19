@@ -13,8 +13,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Level, Subscriber};
+use tracing_log::NormalizeEvent;
 use tracing_subscriber::layer::{Context, Layer};
+use tracing_subscriber::registry::LookupSpan;
 
 use crate::redact::{redact_str, sanitize_for_remote_upload, RedactingVisitor};
 use crate::settings::DiagnosticsConfig;
@@ -34,11 +37,74 @@ pub struct BufferedEvent {
     pub fields: Vec<(String, String)>,
 }
 
+/// Target of the events that mark a slow response.
+///
+/// Events on this target count toward the `slow_burst` trigger instead of
+/// `warn_burst`, so slowness on a starved machine and real faults reach the
+/// collector as different kinds of report. The daemon's request log
+/// (`bookclerkd`) is the writer today.
+pub const SLOW_TARGET: &str = "bookclerk::slow";
+
+/// Most WARN and ERROR events kept beside the ring.
+///
+/// Dependencies' TRACE and DEBUG events can turn the main ring over in a
+/// fraction of a second, so the events that tripped a burst are kept here as
+/// well and merged back into the report in order.
+const NOTABLE_CAPACITY: usize = 64;
+
+/// Most events one upload may carry: the collector refuses a report with
+/// more (`validateClientPayload` in `tools/diagnostics-collector/worker.ts`).
+pub const MAX_UPLOAD_EVENTS: usize = 500;
+
+/// Most span fields copied onto one event, innermost span first.
+const MAX_SPAN_FIELDS: usize = 8;
+
+/// Span fields that stay in local logs but are not copied onto ring events:
+/// a raw request path can carry IDs, and the `route` template beside it
+/// names the same endpoint without them.
+const SPAN_FIELDS_KEPT_LOCAL: [&str; 1] = ["path"];
+
+/// Field names of `log`-crate records that describe the record itself
+/// (`log.target` becomes the event's target; the rest are dropped).
+const LOG_RECORD_FIELDS: [&str; 4] = ["log.target", "log.module_path", "log.file", "log.line"];
+
+/// Which kind of Bookclerk process installed the subscriber.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProcessRole {
+    /// The long-running daemon (`bookclerkd`).
+    #[default]
+    Daemon,
+    /// The desktop window, which runs the host in-process.
+    Desktop,
+    /// The command-line tool (`bookclerk`).
+    Cli,
+}
+
+impl ProcessRole {
+    /// Name reported in uploads and check-ins (`daemon`, `desktop`, `cli`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Daemon => "daemon",
+            Self::Desktop => "desktop",
+            Self::Cli => "cli",
+        }
+    }
+}
+
 /// JSON body POSTed to the diagnostics collector `/submit` endpoint.
 #[derive(Debug, Clone, Serialize)]
 pub struct UploadPayload {
-    /// Why this upload was produced (`crash`, `error_burst`, `cli_error`, …).
+    /// Why this upload was produced (`crash`, `error_burst`, `slow_burst`,
+    /// `cli_error`, …).
     pub trigger: String,
+    /// What sent it: `daemon`, `desktop`, `cli`, or `demo` for a copy of the
+    /// hosted demo.
+    pub deployment: String,
+    /// The install's random ID, sent only when `diagnostics.share_usage` is
+    /// on. The collector keeps only a monthly-salted hash of it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_id: Option<String>,
     /// Bookclerk version string recorded at subscriber install.
     pub version: String,
     /// Host OS (`linux`, `macos`, `windows`, …).
@@ -60,14 +126,23 @@ pub struct UploadPayload {
 
 /// In-memory ring of redacted events plus burst clocks for automatic upload.
 struct RingState {
-    /// Oldest-first ring of redacted log events (evicts from the front at capacity).
-    events: VecDeque<BufferedEvent>,
+    /// Oldest-first ring of redacted log events with their sequence numbers
+    /// (evicts from the front at capacity).
+    events: VecDeque<(u64, BufferedEvent)>,
+    /// Oldest-first WARN and ERROR events with their sequence numbers, kept
+    /// after the main ring has dropped them (at most [`NOTABLE_CAPACITY`]).
+    notable: VecDeque<(u64, BufferedEvent)>,
+    /// Sequence number the next event gets; orders the merge of both rings.
+    next_seq: u64,
     /// Maximum events retained (at least 1).
     capacity: usize,
     /// Monotonic instants of ERROR events inside the burst window.
     error_timestamps: VecDeque<Instant>,
     /// Monotonic instants of WARN events inside the burst window.
     warn_timestamps: VecDeque<Instant>,
+    /// Monotonic instants of slow-response events ([`SLOW_TARGET`]) inside
+    /// the warn-burst window.
+    slow_timestamps: VecDeque<Instant>,
     /// Instant of the last successful upload, used for the 300s burst cooldown.
     last_upload: Option<Instant>,
 }
@@ -77,24 +152,54 @@ impl RingState {
     fn new(capacity: usize) -> Self {
         Self {
             events: VecDeque::with_capacity(capacity.min(512)),
+            notable: VecDeque::with_capacity(NOTABLE_CAPACITY),
+            next_seq: 0,
             capacity: capacity.max(1),
             error_timestamps: VecDeque::new(),
             warn_timestamps: VecDeque::new(),
+            slow_timestamps: VecDeque::new(),
             last_upload: None,
         }
     }
 
-    /// Appends an event, dropping the oldest when the ring is full.
-    fn push(&mut self, event: BufferedEvent) {
+    /// Appends an event, dropping the oldest when the ring is full. A WARN
+    /// or ERROR event is also kept in the notable ring.
+    ///
+    /// # Arguments
+    ///
+    /// * `event` - The redacted event.
+    /// * `notable` - Whether it is a WARN or ERROR event.
+    fn push(&mut self, event: BufferedEvent, notable: bool) {
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        if notable {
+            if self.notable.len() >= NOTABLE_CAPACITY {
+                self.notable.pop_front();
+            }
+            self.notable.push_back((seq, event.clone()));
+        }
         if self.events.len() >= self.capacity {
             self.events.pop_front();
         }
-        self.events.push_back(event);
+        self.events.push_back((seq, event));
     }
 
-    /// Oldest-first clone of the ring for crash or burst upload.
+    /// Oldest-first copy for crash or burst upload: the ring, plus the WARN
+    /// and ERROR events the ring has already dropped, in the order they
+    /// happened. At most [`MAX_UPLOAD_EVENTS`]: the dropped WARN and ERROR
+    /// events are kept and the ring's oldest events give way.
     fn snapshot(&self) -> Vec<BufferedEvent> {
-        self.events.iter().cloned().collect()
+        let oldest_in_ring = self.events.front().map_or(u64::MAX, |(seq, _)| *seq);
+        let mut out: Vec<(u64, BufferedEvent)> = self
+            .notable
+            .iter()
+            .filter(|(seq, _)| *seq < oldest_in_ring)
+            .cloned()
+            .collect();
+        let room = MAX_UPLOAD_EVENTS.saturating_sub(out.len());
+        let skip = self.events.len().saturating_sub(room);
+        out.extend(self.events.iter().skip(skip).cloned());
+        out.into_iter().map(|(_, event)| event).collect()
     }
 }
 
@@ -121,11 +226,20 @@ struct DiagnosticsInner {
     upload_cooldown_secs: u64,
     /// Monotonic counter of successful/attempted uploads (tests / status).
     uploads_attempted: AtomicU64,
+    /// What kind of process this is, reported in uploads.
+    role: ProcessRole,
+    /// The install's random ID, set once the files directory is known and
+    /// only when `share_usage` is on.
+    install_id: OnceLock<String>,
 }
 
 impl DiagnosticsHandle {
     /// Installs a handle with ring capacity from config (at least 1).
-    pub(crate) fn new(config: DiagnosticsConfig, version: impl Into<String>) -> Self {
+    pub(crate) fn new(
+        config: DiagnosticsConfig,
+        version: impl Into<String>,
+        role: ProcessRole,
+    ) -> Self {
         let capacity = config.ring_buffer_capacity.max(1) as usize;
         Self {
             inner: Arc::new(DiagnosticsInner {
@@ -136,6 +250,8 @@ impl DiagnosticsHandle {
                 upload_gate: Mutex::new(()),
                 upload_cooldown_secs: 300,
                 uploads_attempted: AtomicU64::new(0),
+                role,
+                install_id: OnceLock::new(),
             }),
         }
     }
@@ -159,33 +275,87 @@ impl DiagnosticsHandle {
         &self.inner.version
     }
 
+    /// Attaches the install's random ID to later uploads. Does nothing unless
+    /// `diagnostics.share_usage` is on; the first ID set stays.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The install ID ([`crate::InstallId`]).
+    pub fn set_install_id(&self, id: &crate::InstallId) {
+        if self.inner.config.share_usage {
+            let _ = self.inner.install_id.set(id.as_str().to_string());
+        }
+    }
+
+    /// What uploads report as `deployment`: `demo` for a copy of the hosted
+    /// demo, otherwise the process role.
+    #[must_use]
+    pub fn deployment(&self) -> &'static str {
+        if self.inner.config.demo {
+            "demo"
+        } else {
+            self.inner.role.as_str()
+        }
+    }
+
     /// Number of upload attempts since init (successful or failed HTTP tries).
     #[must_use]
     pub fn uploads_attempted(&self) -> u64 {
         self.inner.uploads_attempted.load(Ordering::Relaxed)
     }
 
-    /// Record a redacted event into the ring buffer and maybe trigger an error-burst upload.
+    /// Record a redacted event into the ring buffer and maybe trigger a burst upload.
     pub fn record_event(&self, event: &Event<'_>) {
-        let meta = event.metadata();
+        self.record_event_with_spans(event, Vec::new());
+    }
+
+    /// Record a redacted event with fields copied from the spans it happened
+    /// in, and maybe trigger a burst upload.
+    ///
+    /// `log`-crate records take their own target (`log.target`) and lose the
+    /// fields that describe the record itself (module path, file, line).
+    ///
+    /// # Arguments
+    ///
+    /// * `event` - The tracing event.
+    /// * `span_fields` - Redacted `(span.field, value)` pairs, innermost span
+    ///   first (see `DiagnosticsLayer`).
+    pub fn record_event_with_spans(&self, event: &Event<'_>, span_fields: Vec<(String, String)>) {
+        let normalized = event.normalized_metadata();
+        let meta = normalized.as_ref().unwrap_or_else(|| event.metadata());
         let mut visitor = RedactingVisitor::default();
         event.record(&mut visitor);
+        let mut fields: Vec<(String, String)> = visitor
+            .fields
+            .into_iter()
+            .filter(|(k, _)| !LOG_RECORD_FIELDS.contains(&k.as_str()))
+            .collect();
+        fields.extend(span_fields);
 
         let buffered = BufferedEvent {
             ts_unix_ms: unix_now_ms(),
             level: meta.level().to_string(),
             target: meta.target().to_string(),
             message: visitor.message.unwrap_or_default(),
-            fields: visitor.fields,
+            fields,
         };
 
         let is_error = *meta.level() == Level::ERROR;
-        let is_warn = *meta.level() == Level::WARN;
+        let is_slow = !is_error && meta.target() == SLOW_TARGET;
+        let is_warn = !is_slow && *meta.level() == Level::WARN;
         let should_upload = {
             let mut guard = self.inner.ring.lock().unwrap_or_else(|e| e.into_inner());
-            guard.push(buffered);
+            guard.push(buffered, is_error || *meta.level() == Level::WARN);
             if !self.upload_enabled() {
                 false
+            } else if is_slow && self.inner.config.upload_on_warn_burst {
+                let last = guard.last_upload;
+                note_level_and_check_burst(
+                    &mut guard.slow_timestamps,
+                    last,
+                    self.inner.config.warn_burst_threshold,
+                    self.inner.config.warn_burst_window_secs,
+                )
             } else if is_error && self.inner.config.upload_on_error_burst {
                 let last = guard.last_upload;
                 note_level_and_check_burst(
@@ -210,6 +380,8 @@ impl DiagnosticsHandle {
         if should_upload {
             let trigger = if is_error {
                 "error_burst"
+            } else if is_slow {
+                "slow_burst"
             } else {
                 "warn_burst"
             };
@@ -322,6 +494,8 @@ impl DiagnosticsHandle {
 
         let payload = UploadPayload {
             trigger: trigger.to_string(),
+            deployment: self.deployment().to_string(),
+            install_id: self.inner.install_id.get().cloned(),
             version: self.inner.version.clone(),
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
@@ -458,12 +632,66 @@ impl DiagnosticsLayer {
     }
 }
 
+/// Redacted fields a span was created or later recorded with, kept in the
+/// span's extensions so events inside it can carry them.
+#[derive(Default)]
+struct SpanFields {
+    /// `(field, redacted value)` pairs in recording order.
+    fields: Vec<(String, String)>,
+}
+
 impl<S> Layer<S> for DiagnosticsLayer
 where
-    S: Subscriber,
+    S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        self.handle.record_event(event);
+    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        let Some(span) = ctx.span(id) else {
+            return;
+        };
+        let mut visitor = RedactingVisitor::default();
+        attrs.record(&mut visitor);
+        span.extensions_mut().insert(SpanFields {
+            fields: visitor.fields,
+        });
+    }
+
+    fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
+        let Some(span) = ctx.span(id) else {
+            return;
+        };
+        let mut visitor = RedactingVisitor::default();
+        values.record(&mut visitor);
+        let mut extensions = span.extensions_mut();
+        if let Some(stored) = extensions.get_mut::<SpanFields>() {
+            for (key, value) in visitor.fields {
+                match stored.fields.iter_mut().find(|(k, _)| *k == key) {
+                    Some(slot) => slot.1 = value,
+                    None => stored.fields.push((key, value)),
+                }
+            }
+        }
+    }
+
+    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+        let mut span_fields = Vec::new();
+        if let Some(scope) = ctx.event_scope(event) {
+            'spans: for span in scope {
+                let extensions = span.extensions();
+                let Some(stored) = extensions.get::<SpanFields>() else {
+                    continue;
+                };
+                for (key, value) in &stored.fields {
+                    if SPAN_FIELDS_KEPT_LOCAL.contains(&key.as_str()) {
+                        continue;
+                    }
+                    if span_fields.len() >= MAX_SPAN_FIELDS {
+                        break 'spans;
+                    }
+                    span_fields.push((format!("{}.{key}", span.name()), value.clone()));
+                }
+            }
+        }
+        self.handle.record_event_with_spans(event, span_fields);
     }
 }
 
@@ -501,13 +729,16 @@ fn install_panic_hook() {
             let msg = panic_message(info);
             let redacted = crate::redact::redact_str(&msg);
             if let Ok(mut guard) = handle.inner.ring.lock() {
-                guard.push(BufferedEvent {
-                    ts_unix_ms: unix_now_ms(),
-                    level: "ERROR".into(),
-                    target: "bookclerk::panic".into(),
-                    message: redacted,
-                    fields: vec![],
-                });
+                guard.push(
+                    BufferedEvent {
+                        ts_unix_ms: unix_now_ms(),
+                        level: "ERROR".into(),
+                        target: "bookclerk::panic".into(),
+                        message: redacted,
+                        fields: vec![],
+                    },
+                    true,
+                );
             }
             handle.upload_blocking("crash");
         }
@@ -530,13 +761,17 @@ fn panic_message(info: &PanicHookInfo<'_>) -> String {
 pub fn push_test_event(handle: &DiagnosticsHandle, level: &str, message: &str) {
     use crate::redact::redact_field_value;
     let mut guard = handle.inner.ring.lock().unwrap();
-    guard.push(BufferedEvent {
-        ts_unix_ms: unix_now_ms(),
-        level: level.into(),
-        target: "test".into(),
-        message: redact_field_value("message", message),
-        fields: vec![],
-    });
+    let notable = level == "ERROR" || level == "WARN";
+    guard.push(
+        BufferedEvent {
+            ts_unix_ms: unix_now_ms(),
+            level: level.into(),
+            target: "test".into(),
+            message: redact_field_value("message", message),
+            fields: vec![],
+        },
+        notable,
+    );
 }
 #[cfg(test)]
 mod tests {
@@ -550,6 +785,7 @@ mod tests {
                 ..DiagnosticsConfig::default()
             },
             "0.0.0-test",
+            ProcessRole::Daemon,
         );
         for i in 0..5 {
             push_test_event(&handle, "INFO", &format!("msg-{i}"));
@@ -562,7 +798,11 @@ mod tests {
 
     #[test]
     fn upload_skipped_when_disabled() {
-        let handle = DiagnosticsHandle::new(DiagnosticsConfig::default(), "0.0.0-test");
+        let handle = DiagnosticsHandle::new(
+            DiagnosticsConfig::default(),
+            "0.0.0-test",
+            ProcessRole::Daemon,
+        );
         push_test_event(&handle, "ERROR", "boom Atna|should-not-upload");
         handle.upload_blocking("test");
         assert_eq!(handle.uploads_attempted(), 0);
@@ -616,6 +856,7 @@ mod tests {
                 ..DiagnosticsConfig::default()
             },
             "0.0.0-test",
+            ProcessRole::Daemon,
         );
         push_test_event(
             &handle,
@@ -624,7 +865,7 @@ mod tests {
         );
         if let Ok(mut guard) = handle.inner.ring.lock() {
             if let Some(ev) = guard.events.back_mut() {
-                ev.fields
+                ev.1.fields
                     .push(("title".into(), "My Secret Audiobook Title".into()));
             }
         }
@@ -704,16 +945,20 @@ mod tests {
                 ..DiagnosticsConfig::default()
             },
             "0.0.0-test",
+            ProcessRole::Daemon,
         );
         // Bypass message-field pattern path: push raw then sanitize on upload.
         if let Ok(mut guard) = handle.inner.ring.lock() {
-            guard.push(BufferedEvent {
-                ts_unix_ms: 1,
-                level: "ERROR".into(),
-                target: "test".into(),
-                message: "auth used exact-config-passphrase-abc123".into(),
-                fields: vec![],
-            });
+            guard.push(
+                BufferedEvent {
+                    ts_unix_ms: 1,
+                    level: "ERROR".into(),
+                    target: "test".into(),
+                    message: "auth used exact-config-passphrase-abc123".into(),
+                    fields: vec![],
+                },
+                true,
+            );
         }
         handle.upload_blocking("test");
         server.join().unwrap();
@@ -726,5 +971,250 @@ mod tests {
 
     fn find_header_end(raw: &[u8]) -> Option<usize> {
         raw.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
+    }
+
+    /// A handle and a subscriber feeding it through [`DiagnosticsLayer`].
+    fn layered(
+        config: DiagnosticsConfig,
+    ) -> (DiagnosticsHandle, impl Subscriber + Send + Sync + 'static) {
+        use tracing_subscriber::layer::SubscriberExt;
+        let handle = DiagnosticsHandle::new(config, "0.0.0-test", ProcessRole::Daemon);
+        let subscriber = tracing_subscriber::registry()
+            .with(DiagnosticsLayer::new(handle.clone()).with_filter(crate::ring_filter()));
+        (handle, subscriber)
+    }
+
+    #[test]
+    fn warnings_the_ring_dropped_still_reach_the_report_in_order() {
+        let handle = DiagnosticsHandle::new(
+            DiagnosticsConfig {
+                ring_buffer_capacity: 3,
+                ..DiagnosticsConfig::default()
+            },
+            "0.0.0-test",
+            ProcessRole::Daemon,
+        );
+        push_test_event(&handle, "WARN", "first warning");
+        push_test_event(&handle, "INFO", "noise-1");
+        push_test_event(&handle, "ERROR", "the error");
+        for i in 2..6 {
+            push_test_event(&handle, "INFO", &format!("noise-{i}"));
+        }
+        let messages: Vec<String> = handle
+            .snapshot_events()
+            .into_iter()
+            .map(|e| e.message)
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                "first warning",
+                "the error",
+                "noise-3",
+                "noise-4",
+                "noise-5"
+            ],
+            "dropped WARN/ERROR events come back, oldest first, without duplicates"
+        );
+    }
+
+    #[test]
+    fn the_notable_ring_is_bounded() {
+        let handle = DiagnosticsHandle::new(
+            DiagnosticsConfig {
+                ring_buffer_capacity: 1,
+                ..DiagnosticsConfig::default()
+            },
+            "0.0.0-test",
+            ProcessRole::Daemon,
+        );
+        for i in 0..(NOTABLE_CAPACITY + 10) {
+            push_test_event(&handle, "WARN", &format!("w-{i}"));
+        }
+        let snap = handle.snapshot_events();
+        assert_eq!(snap.len(), NOTABLE_CAPACITY);
+        assert_eq!(snap[0].message, "w-10");
+        assert_eq!(
+            snap[NOTABLE_CAPACITY - 1].message,
+            format!("w-{}", NOTABLE_CAPACITY + 9)
+        );
+    }
+
+    #[test]
+    fn an_upload_snapshot_stays_within_the_collector_limit() {
+        let handle = DiagnosticsHandle::new(
+            DiagnosticsConfig {
+                ring_buffer_capacity: 600,
+                ..DiagnosticsConfig::default()
+            },
+            "0.0.0-test",
+            ProcessRole::Daemon,
+        );
+        push_test_event(&handle, "WARN", "early warning");
+        for i in 0..700 {
+            push_test_event(&handle, "INFO", &format!("noise-{i}"));
+        }
+        let snap = handle.snapshot_events();
+        assert_eq!(snap.len(), MAX_UPLOAD_EVENTS);
+        assert_eq!(
+            snap[0].message, "early warning",
+            "dropped warnings are kept"
+        );
+        assert_eq!(snap[1].message, "noise-201");
+        assert_eq!(snap[MAX_UPLOAD_EVENTS - 1].message, "noise-699");
+    }
+
+    #[test]
+    fn events_carry_the_fields_of_the_spans_they_happen_in() {
+        let (handle, subscriber) = layered(DiagnosticsConfig::default());
+        tracing::subscriber::with_default(subscriber, || {
+            let outer = tracing::info_span!(target: "bookclerk::test", "job", job_id = 7);
+            let _o = outer.enter();
+            let inner = tracing::info_span!(
+                target: "bookclerk::test",
+                "http.request",
+                method = "GET",
+                path = "/api/works/0e9ced79",
+                route = tracing::field::Empty
+            );
+            inner.record("route", "/api/works/{id}");
+            let _i = inner.enter();
+            tracing::warn!(target: "bookclerk::test", status = 500, "slow");
+        });
+        let event = handle.snapshot_events().pop().unwrap();
+        assert_eq!(
+            event.fields,
+            vec![
+                ("status".to_string(), "500".to_string()),
+                ("http.request.method".to_string(), "GET".to_string()),
+                (
+                    "http.request.route".to_string(),
+                    "/api/works/{id}".to_string()
+                ),
+                ("job.job_id".to_string(), "7".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn dependency_trace_stays_out_of_the_ring() {
+        let (handle, subscriber) = layered(DiagnosticsConfig::default());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::trace!(target: "h2::proto::streams", "frame");
+            tracing::debug!(target: "hyper_util::client", "pool");
+            tracing::info!(target: "hyper_util::client", "kept");
+            tracing::trace!(target: "bookclerkd::api", "own trace");
+            tracing::trace!(target: "bookclerk_library::jobs", "crate trace");
+        });
+        let messages: Vec<String> = handle
+            .snapshot_events()
+            .into_iter()
+            .map(|e| e.message)
+            .collect();
+        assert_eq!(messages, ["kept", "own trace", "crate trace"]);
+    }
+
+    #[test]
+    fn log_records_take_their_own_target_and_lose_the_record_fields() {
+        let (handle, subscriber) = layered(DiagnosticsConfig::default());
+        tracing::subscriber::with_default(subscriber, || {
+            let record = log::Record::builder()
+                .level(log::Level::Warn)
+                .target("reqwest::retry")
+                .module_path(Some("reqwest::retry"))
+                .file(Some("/usr/local/cargo/registry/src/reqwest/src/retry.rs"))
+                .line(Some(234))
+                .args(format_args!("giving up"))
+                .build();
+            tracing_log::format_trace(&record).unwrap();
+        });
+        let event = handle.snapshot_events().pop().unwrap();
+        assert_eq!(event.target, "reqwest::retry");
+        assert_eq!(event.message, "giving up");
+        assert!(
+            event.fields.iter().all(|(k, _)| !k.starts_with("log.")),
+            "{:?}",
+            event.fields
+        );
+    }
+
+    #[test]
+    fn slow_responses_count_toward_their_own_burst() {
+        let mut ring = RingState::new(10);
+        let config = DiagnosticsConfig::default();
+        for _ in 0..config.warn_burst_threshold - 1 {
+            assert!(!note_level_and_check_burst(
+                &mut ring.slow_timestamps,
+                None,
+                config.warn_burst_threshold,
+                config.warn_burst_window_secs,
+            ));
+        }
+        assert!(note_level_and_check_burst(
+            &mut ring.slow_timestamps,
+            None,
+            config.warn_burst_threshold,
+            config.warn_burst_window_secs,
+        ));
+        assert!(ring.warn_timestamps.is_empty());
+    }
+
+    #[test]
+    fn slow_events_skip_the_warn_clock() {
+        let (handle, subscriber) = layered(DiagnosticsConfig::default());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(target: SLOW_TARGET, latency_ms = 2_900_u64, "slow response");
+            tracing::warn!(target: "bookclerk::test", "plain warning");
+        });
+        let guard = handle.inner.ring.lock().unwrap();
+        assert_eq!(guard.warn_timestamps.len(), 0, "uploads are off");
+        drop(guard);
+        assert_eq!(handle.snapshot_events().len(), 2);
+    }
+
+    #[test]
+    fn deployment_names_the_demo_or_the_role() {
+        let demo = DiagnosticsHandle::new(
+            DiagnosticsConfig {
+                demo: true,
+                ..DiagnosticsConfig::default()
+            },
+            "0.0.0-test",
+            ProcessRole::Desktop,
+        );
+        assert_eq!(demo.deployment(), "demo");
+        let desktop = DiagnosticsHandle::new(
+            DiagnosticsConfig::default(),
+            "0.0.0-test",
+            ProcessRole::Desktop,
+        );
+        assert_eq!(desktop.deployment(), "desktop");
+        assert_eq!(ProcessRole::Cli.as_str(), "cli");
+        assert_eq!(ProcessRole::Daemon.as_str(), "daemon");
+    }
+
+    #[test]
+    fn the_install_id_rides_only_with_share_usage() {
+        let id = crate::InstallId::generate().unwrap();
+        let off = DiagnosticsHandle::new(
+            DiagnosticsConfig::default(),
+            "0.0.0-test",
+            ProcessRole::Daemon,
+        );
+        off.set_install_id(&id);
+        assert!(off.inner.install_id.get().is_none());
+        let on = DiagnosticsHandle::new(
+            DiagnosticsConfig {
+                share_usage: true,
+                ..DiagnosticsConfig::default()
+            },
+            "0.0.0-test",
+            ProcessRole::Daemon,
+        );
+        on.set_install_id(&id);
+        assert_eq!(
+            on.inner.install_id.get().map(String::as_str),
+            Some(id.as_str())
+        );
     }
 }

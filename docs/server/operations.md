@@ -226,7 +226,7 @@ editing TOML.
   matching `Origin` (or `Referer`) host. Sign-in, redeem and password
   paths are exempt.
 - The web app's live socket (`GET /api/live`) is a WebSocket, as is the
-  host-node socket (`GET /api/node/v1/connect`) in `proxy` mode. The proxy
+  branch-node socket (`GET /api/node/v1/connect`) in `proxy` mode. The proxy
   must forward the upgrade.
 - The live socket also needs `Origin` to equal `public_origin` exactly.
   Without a working socket, the web app falls back to polling.
@@ -314,9 +314,9 @@ middleware.
 | `[media]` | Swaps the media worker pool |
 | `[events]` | Compare-and-swap in the database. A reload overlays the committed revision and never copies TOML back over it. Each committed write wakes every node through its `node.<node_id>` queue, with a 60-second backstop for a missed wakeup |
 
-## Host nodes
+## Branch nodes
 
-A Bookclerk install can join another library as a host node, and run its
+A Bookclerk install can join another library as a branch node, and run its
 scans and acquires. The web app calls this a **branch**. The full guide
 is [Libraries and branches](cluster-hosts.md).
 
@@ -343,7 +343,7 @@ What a host needs:
 
 A host keeps its own database and `master.key`, and never sees the
 library's. On the library, `bookclerk nodes list` shows the host
-(`kind = host`) with its heartbeats, and `bookclerk nodes revoke
+(`kind = branch`) with its heartbeats, and `bookclerk nodes revoke
 <node_id>` disconnects it for good.
 
 ## systemd

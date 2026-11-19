@@ -16,6 +16,12 @@
 //!   so "Your books in other libraries" merges them with those of window
 //!   links. Once the last page is in, the books the read no longer named
 //!   are dropped; a read cut short drops nothing.
+//! - while the socket is welcomed, this install's acquires may ask the
+//!   reader for the library's copy of a title ([`copies`]): it sends
+//!   `copy.grant` and hands the acquire the `copy.granted` answer, or
+//!   nothing when the library answers `error`. The library answers frames
+//!   in the order they were asked, so each answer goes to the oldest
+//!   frame still waiting for one.
 //! - a library that ends the card (close [`CLOSE_UNAUTHORIZED`], or 401 on
 //!   the upgrade) signs the link out here: its card and books are dropped
 //!   and the link stays listed as signed out, to sign in again.
@@ -28,8 +34,9 @@
 //! the set on the new store after a database swap.
 
 pub mod api;
+pub(crate) mod copies;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -43,9 +50,10 @@ use bookclerk_node_proto::{
     parse_library_frame, ClerkFrame, ClerkTopic, LibraryFrame, WindowCursor, MAX_FRAME_BYTES,
 };
 use futures::{SinkExt as _, StreamExt as _};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
+use self::copies::GrantAsk;
 use crate::api::AppState;
 use crate::live::CLOSE_UNAUTHORIZED;
 
@@ -190,6 +198,14 @@ pub struct ClerkReader {
     pub cluster_id: String,
 }
 
+/// A frame sent to the library that waits for its answer.
+enum Asked {
+    /// A `books` frame of the read in progress.
+    Books,
+    /// A `copy.grant` an acquire waits on.
+    Grant(GrantAsk),
+}
+
 /// One read in progress over the socket.
 struct Read {
     /// The read's stamp ([`window_read_stamp`]).
@@ -278,16 +294,27 @@ impl ClerkReader {
             Err(DialError::Refused(401)) => return self.sign_out().await,
             Err(err) => return Err(err.into()),
         };
-        self.serve(socket, shutdown).await
+        self.serve(socket, &link.created_at, shutdown).await
     }
 
     /// Serves a welcomed socket: reads on connect, on `changed` naming the
-    /// library topic, and every [`READ_POLL`].
+    /// library topic, and every [`READ_POLL`]; sends the `copy.grant`
+    /// frames this install's acquires ask for meanwhile.
+    ///
+    /// `signed_in_at` is the sign-in time of the card the socket was dialed
+    /// with: a grant is asked only while that card is still the link's
+    /// active one, so a session left over from a card signed out (or
+    /// replaced by a new sign-in) never answers for the current card.
     async fn serve(
         &self,
         mut socket: OwnerSocket,
+        signed_in_at: &str,
         shutdown: &mut watch::Receiver<bool>,
     ) -> anyhow::Result<SessionEnd> {
+        let (asks_tx, mut asks) = mpsc::channel(copies::ASK_QUEUE);
+        let _registered = copies::register(&self.cluster_id, asks_tx);
+        // Frames sent and not yet answered, oldest first.
+        let mut waiting: VecDeque<Asked> = VecDeque::new();
         let mut read: Option<Read> = None;
         // Read at once on connecting.
         let mut want_read = true;
@@ -300,6 +327,7 @@ impl ClerkReader {
                     self.start_read(&mut socket, window_read_stamp(), WindowCursor::start())
                         .await?,
                 );
+                waiting.push_back(Asked::Books);
             }
             let deadline = read.as_ref().map_or(next_read, |read| read.deadline);
             let message = tokio::select! {
@@ -312,6 +340,25 @@ impl ClerkReader {
                         anyhow::bail!("the library did not answer a page of books in time");
                     }
                     want_read = true;
+                    continue;
+                }
+                Some(ask) = asks.recv() => {
+                    if !self.same_card(signed_in_at).await? {
+                        // Dropping the ask answers it with no copy; dial
+                        // again with the link's current card, if any.
+                        let _ = socket.close(None).await;
+                        return Ok(SessionEnd::Lost);
+                    }
+                    send(
+                        &mut socket,
+                        ClerkFrame::CopyGrant {
+                            store: ask.store.clone(),
+                            marketplace: ask.marketplace.clone(),
+                            product_id: ask.product_id.clone(),
+                        },
+                    )
+                    .await?;
+                    waiting.push_back(Asked::Grant(ask));
                     continue;
                 }
                 message = socket.next() => message,
@@ -350,7 +397,9 @@ impl ClerkReader {
                     }
                 }
                 LibraryFrame::BooksPage { after, works, next } => {
-                    let Some(mut current) = read.take() else {
+                    let (Some(Asked::Books), Some(mut current)) =
+                        (waiting.pop_front(), read.take())
+                    else {
                         anyhow::bail!("the library sent a page nobody asked for");
                     };
                     if after != current.after {
@@ -380,24 +429,50 @@ impl ClerkReader {
                             current.pages += 1;
                             current.deadline = tokio::time::Instant::now() + PAGE_TIMEOUT;
                             send(&mut socket, ClerkFrame::Books { after: next }).await?;
+                            waiting.push_back(Asked::Books);
                             read = Some(current);
                         }
                         None => self.finish(current).await?,
                     }
                 }
-                // This clerk asks for no copy yet, so none is an answer.
-                LibraryFrame::CopyGranted(_) => {
-                    anyhow::bail!("the library sent a copy nobody asked for");
+                LibraryFrame::CopyGranted(granted) => {
+                    let Some(Asked::Grant(ask)) = waiting.pop_front() else {
+                        anyhow::bail!("the library sent a copy nobody asked for");
+                    };
+                    if !ask.answered_by(&granted) {
+                        anyhow::bail!("the library granted a copy of another edition");
+                    }
+                    // Signed in again (or out) while the grant was on its
+                    // way: it was granted to the old card, so it is not
+                    // used. Dropping the ask answers it with no copy.
+                    if !self.same_card(signed_in_at).await? {
+                        let _ = socket.close(None).await;
+                        return Ok(SessionEnd::Lost);
+                    }
+                    // The acquire may have stopped waiting; then the copy
+                    // goes unused.
+                    let _ = ask.reply.send(Some(*granted));
                 }
-                LibraryFrame::Error { code } => {
-                    read = None;
-                    tracing::debug!(
-                        cluster_id = %self.cluster_id,
-                        ?code,
-                        "the library could not answer a page of books; reading again later"
-                    );
-                    next_read = tokio::time::Instant::now() + ERROR_RETRY;
-                }
+                LibraryFrame::Error { code } => match waiting.pop_front() {
+                    Some(Asked::Books) => {
+                        read = None;
+                        tracing::debug!(
+                            cluster_id = %self.cluster_id,
+                            ?code,
+                            "the library could not answer a page of books; reading again later"
+                        );
+                        next_read = tokio::time::Instant::now() + ERROR_RETRY;
+                    }
+                    Some(Asked::Grant(ask)) => {
+                        tracing::debug!(
+                            cluster_id = %self.cluster_id,
+                            ?code,
+                            "the library granted no copy"
+                        );
+                        let _ = ask.reply.send(None);
+                    }
+                    None => anyhow::bail!("the library answered a frame nobody sent"),
+                },
             }
         }
     }
@@ -458,6 +533,14 @@ impl ClerkReader {
                 "could not drop an unfinished read of the library's books"
             );
         }
+    }
+
+    /// True while the link is active here with the card signed in at
+    /// `signed_in_at`.
+    async fn same_card(&self, signed_in_at: &str) -> anyhow::Result<bool> {
+        Ok(load_clerk_link(&self.library, &self.cluster_id)
+            .await?
+            .is_some_and(|link| link.is_active() && link.created_at == signed_in_at))
     }
 
     /// True while the link is still active here.

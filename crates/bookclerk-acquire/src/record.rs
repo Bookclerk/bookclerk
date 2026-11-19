@@ -25,6 +25,7 @@ use tokio::io::AsyncRead;
 use bookclerk_config::DestinationId;
 
 use crate::destinations::{AcquireDestination, AcquireDestinations};
+use crate::library_copies::StoredFrom;
 
 /// One destination's backend whose writes are recorded for one edition.
 pub(crate) struct RecordingBackend {
@@ -39,6 +40,10 @@ pub(crate) struct RecordingBackend {
     /// Plain id of the storefront the acquire downloads from, when it is
     /// one a file row may name ([`source_store_of`]).
     source_store: Option<String>,
+    /// The storefront the stored audio came from instead, once a
+    /// library's copy from another store replaced the acquire's own
+    /// download.
+    stored_from: StoredFrom,
     /// The pool whose confined worker probes written audio.
     media: Arc<bookclerk_media::MediaPool>,
     /// The first audio key this run wrote here: its primary audio. Every
@@ -88,7 +93,11 @@ impl RecordingBackend {
                     .bitrate_kbps
                     .map(|kbps| kbps.min(FileProbe::MAX_BITRATE_KBPS)),
                 lossless: probe.lossless,
-                source_store: self.source_store.clone(),
+                source_store: self
+                    .stored_from
+                    .get()
+                    .and_then(|store| source_store_of(&store))
+                    .or_else(|| self.source_store.clone()),
             },
             Err(err) => {
                 tracing::debug!(key, error = %err, "written audio file was not probed");
@@ -153,12 +162,14 @@ pub(crate) fn recording_destinations(
     destinations: &AcquireDestinations,
     owner: Option<&FileOwner>,
     source: &str,
+    stored_from: &StoredFrom,
 ) -> AcquireDestinations {
     recording_destinations_probed_by(
         library,
         destinations,
         owner,
         source,
+        stored_from,
         bookclerk_media::pool(),
     )
 }
@@ -170,6 +181,7 @@ pub(crate) fn recording_destinations_probed_by(
     destinations: &AcquireDestinations,
     owner: Option<&FileOwner>,
     source: &str,
+    stored_from: &StoredFrom,
     media: Arc<bookclerk_media::MediaPool>,
 ) -> AcquireDestinations {
     let items = destinations
@@ -184,6 +196,7 @@ pub(crate) fn recording_destinations_probed_by(
                     destination: item.id.clone(),
                     owner: owner.clone(),
                     source_store: source_store_of(source),
+                    stored_from: stored_from.clone(),
                     media: Arc::clone(&media),
                     primary: Arc::default(),
                 }),
@@ -221,6 +234,7 @@ impl StorageBackend for RecordingBackend {
             destination: self.destination.clone(),
             owner: self.owner.clone(),
             source_store: self.source_store.clone(),
+            stored_from: self.stored_from.clone(),
             media: Arc::clone(&self.media),
             primary: Arc::clone(&self.primary),
         })

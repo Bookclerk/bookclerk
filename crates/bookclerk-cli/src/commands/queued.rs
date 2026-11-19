@@ -6,7 +6,7 @@
 //! `plan_acquire`, as operator authority, since the CLI holds the library
 //! database), record each job's routing requirements
 //! (`control_plane::resolve_job_requirements`), and write the rows with
-//! `enqueue_job`. Any live `bookclerkd` node of the cluster, or a host node
+//! `enqueue_job`. Any live `bookclerkd` node of the cluster, or a branch node
 //! trusted with the job, claims them through the routed claim. The CLI then
 //! waits for every job, printing progress as it changes; Ctrl-C asks each
 //! unfinished job to cancel.

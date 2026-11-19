@@ -115,7 +115,7 @@ topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
   session is re-checked every 30 s, and a signed-out user's socket closes
   with 4401.
 - Changes are found by reading revisions from the shared database every
-  2 s (so a change made on any owner node, or by `bookclerk clusters
+  2 s (so a change made on any shared node, or by `bookclerk clusters
   join|leave`, is seen) and by in-process notices for immediate updates.
   Each topic has one counter row in `live_topic_revisions`, and every
   write to a topic's tables adds one to it in the same atomic batch as

@@ -2,9 +2,8 @@
 """Renders the summary comment the ingest run keeps on each diagnostics issue.
 
 The collector's ``GET /issues/summaries`` answers, for every issue whose
-figures changed since the last run, how many reports the issue tracks and
-from how many installations, how they were linked, when the first and last
-arrived, the versions and platforms seen and the newest reports. This module
+figures changed since the last run, how many reports the issue tracks, how
+they were linked, when the first and last arrived, the versions and platforms seen and the newest reports. This module
 turns each into one Markdown comment, marked on its first line so the run
 finds and edits the same comment next time (editing notifies nobody), and
 hands back the fingerprint the collector gave, which the run echoes to
@@ -177,7 +176,6 @@ def render_summary(entry: object, dashboard: str | None) -> Rendered | None:
     reports = _count(entry.get("reports"))
     if not issue or reports is None or not isinstance(fingerprint, str) or not FINGERPRINT_RE.fullmatch(fingerprint):
         return None
-    installs = _count(entry.get("installs")) or 0
     first = _day(entry.get("first_seen"))
     last = _day(entry.get("last_seen"))
     sources = entry.get("sources") if isinstance(entry.get("sources"), dict) else {}
@@ -186,7 +184,7 @@ def render_summary(entry: object, dashboard: str | None) -> Rendered | None:
     if reports == 0:
         lines.append("**Diagnostics summary** · no report is linked to this issue at present")
     else:
-        head = f"**Diagnostics summary** · {_plural(reports, 'report')} from {_plural(installs, 'installation')}"
+        head = f"**Diagnostics summary** · {_plural(reports, 'report')}"
         if first:
             head += f" · first seen {first}"
         if last:

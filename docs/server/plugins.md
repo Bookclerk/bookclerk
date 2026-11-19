@@ -63,7 +63,7 @@ version answers to.
   nodes that see that path (shared storage) can materialize it; the others
   record an `error` observation.
 
-A host node of another cluster fetches an owner's `https:` artifact only
+A branch node of another cluster fetches an owner's `https:` artifact only
 when both are true:
 
 - its host operator approved that exact URL, archive digest and payload
@@ -581,12 +581,12 @@ node, typically a node's own `local` output.
 - It deploys only on that node. A deployment to any other node, and any
   placement, are refused.
 - It adds to the cluster's outputs on that node, rather than replacing
-  them. Acquires a host node uploads reach every destination deployed on
-  the owner node that received them, node-local ones included.
+  them. Acquires a branch node uploads reach every destination deployed on
+  the shared node that received them, node-local ones included.
 
-### Running on host nodes
+### Running on branch nodes
 
-A host node (a separate install that joined the cluster, see
+A branch node (a separate install that joined the cluster, see
 [Libraries and branches](cluster-hosts.md)) runs an owner's plugin only
 after **its own** operator approves it. The narrowing is the same as on
 any host (see

@@ -210,7 +210,6 @@ export function renderSummary(entry: unknown, dashboard: string | null): Rendere
     !FINGERPRINT_RE.test(fingerprint)
   )
     return null;
-  const installs = count(get(entry, "installs")) || 0;
   const first = day(get(entry, "first_seen"));
   const last = day(get(entry, "last_seen"));
   const sourcesField = get(entry, "sources");
@@ -225,7 +224,7 @@ export function renderSummary(entry: unknown, dashboard: string | null): Rendere
   if (reports === 0) {
     lines.push("**Diagnostics summary** · no report is linked to this issue at present");
   } else {
-    let head = `**Diagnostics summary** · ${plural(reports, "report")} from ${plural(installs, "installation")}`;
+    let head = `**Diagnostics summary** · ${plural(reports, "report")}`;
     if (first) head += ` · first seen ${first}`;
     if (last) head += ` · last seen ${last}`;
     lines.push(head);
