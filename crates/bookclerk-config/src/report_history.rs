@@ -182,6 +182,12 @@ pub fn load_report_history(files_dir: &Path) -> Vec<ReportRecord> {
 
 /// Adds a report to the history, keeping the newest [`MAX_REPORT_HISTORY`].
 ///
+/// The daemon and a CLI run can both upload from the same files directory,
+/// so the read, append and replace happen under an exclusive lock on
+/// `diagnostics/reports.json.lock`: a second writer waits for the first and
+/// then appends to what the first wrote, rather than both appending to the
+/// same old list and one replacement dropping the other's report.
+///
 /// # Arguments
 ///
 /// * `files_dir` - The Bookclerk files directory.
@@ -189,16 +195,24 @@ pub fn load_report_history(files_dir: &Path) -> Vec<ReportRecord> {
 ///
 /// # Errors
 ///
-/// Returns an error when the history cannot be written.
+/// Returns an error when the lock cannot be taken or the history cannot be
+/// written.
 pub fn record_report(files_dir: &Path, record: ReportRecord) -> std::io::Result<()> {
-    let mut rows = load_report_history(files_dir);
-    rows.push(record);
-    let excess = rows.len().saturating_sub(MAX_REPORT_HISTORY);
-    rows.drain(..excess);
     let path = history_path(files_dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("json.lock"))?;
+    // Released when `lock` drops at the end of this function.
+    lock.lock()?;
+    let mut rows = load_report_history(files_dir);
+    rows.push(record);
+    let excess = rows.len().saturating_sub(MAX_REPORT_HISTORY);
+    rows.drain(..excess);
     // A per-process staging name: the daemon and a CLI run may both write.
     let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     let text = serde_json::to_vec_pretty(&rows).map_err(std::io::Error::other)?;
@@ -212,6 +226,36 @@ mod tests {
 
     /// A valid report ID for the tests.
     const ID: &str = "0e9ced79-df3c-4dae-872b-2e5772b06e69";
+
+    #[test]
+    fn concurrent_writers_keep_every_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let ids: Vec<String> = (0..16)
+            .map(|i| format!("0e9ced79-df3c-4dae-872b-2e5772b06e{i:02x}"))
+            .collect();
+        std::thread::scope(|s| {
+            for (i, id) in ids.iter().enumerate() {
+                let dir = dir.path();
+                s.spawn(move || {
+                    let record = ReportRecord {
+                        report_id: ReportId::parse(id).unwrap(),
+                        trigger: "cli_manual".into(),
+                        version: "0.0.0-test".into(),
+                        sent_at_unix_ms: u64::try_from(i).unwrap() + 1,
+                    };
+                    // Threads share a pid and so a staging name; only the
+                    // lock keeps their writes apart, as it does processes.
+                    record_report(dir, record).unwrap();
+                });
+            }
+        });
+        let mut got: Vec<String> = load_report_history(dir.path())
+            .into_iter()
+            .map(|r| r.report_id.as_str().to_string())
+            .collect();
+        got.sort();
+        assert_eq!(got, ids);
+    }
 
     #[test]
     fn a_collector_reply_yields_its_report_id() {

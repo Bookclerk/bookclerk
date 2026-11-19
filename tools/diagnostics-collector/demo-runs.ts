@@ -23,6 +23,7 @@
 
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { all, first, run } from "./dashboard/db.ts";
+import { announceChange } from "./dashboard/live.ts";
 import type { Env } from "./env.ts";
 import { isObject } from "./json.ts";
 
@@ -160,9 +161,10 @@ export async function recordDemoRun(db: D1Database, e: DemoRunEvent): Promise<vo
  *
  * @param db - Dashboard database.
  * @param nowSeconds - Current Unix seconds.
+ * @returns How many open runs it closed as missed.
  */
-export async function sweepDemoRuns(db: D1Database, nowSeconds: number): Promise<void> {
-  await db.batch([
+export async function sweepDemoRuns(db: D1Database, nowSeconds: number): Promise<number> {
+  const [closed] = await db.batch([
     db
       .prepare(
         "UPDATE demo_runs SET ended_at = ends_at, end_reason = 'missed' WHERE ended_at IS NULL AND ends_at < ?",
@@ -172,6 +174,7 @@ export async function sweepDemoRuns(db: D1Database, nowSeconds: number): Promise
       .prepare("DELETE FROM demo_runs WHERE started_at < ?")
       .bind(nowSeconds - RETENTION_DAYS * 86_400),
   ]);
+  return closed?.meta.changes ?? 0;
 }
 
 /** One UTC day of demo runs. */
@@ -316,6 +319,8 @@ export class DemoRuns extends WorkerEntrypoint<Env> {
     }
     try {
       await recordDemoRun(db, parsed);
+      // Open /demo pages refresh their live count and run list.
+      await announceChange(this.env);
       return true;
     } catch (err) {
       console.error(`demo run not stored: ${err instanceof Error ? err.message : String(err)}`);

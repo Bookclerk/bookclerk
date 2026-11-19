@@ -1358,7 +1358,7 @@ export function demoPage(d: DemoData): SafeHtml {
     nav: "demo",
     body: html`<div class="wrap">
       <div class="toolbar"><h1>Hosted demo</h1>${picker}</div>
-      <div class="grid">
+      <div class="grid" data-live="demo">
         <section class="panel stat s2"><h2>Live now</h2><div class="v">${fmtInt(d.stats.live.length)}</div><div class="d">runs open at ${fmtTime(d.now)} UTC</div></section>
         <section class="panel stat s2"><h2>Runs today</h2><div class="v">${fmtInt(todayRow?.runs ?? 0)}</div><div class="d">${fmtLength(todayRow?.seconds ?? 0)} of use (UTC day)</div></section>
         <section class="panel stat s2"><h2>Runs, ${d.days} days</h2><div class="v">${fmtInt(runs)}</div>${sparkline(

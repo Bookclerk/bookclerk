@@ -57,6 +57,7 @@ import {
   parseSummaryDone,
 } from "./dashboard/github.ts";
 import { reportIdOf } from "./dashboard/report-ids.ts";
+import { announceChange } from "./dashboard/live.ts";
 import { CACHE_CONTROL } from "./cache-control.ts";
 import { withCrossOriginPolicy } from "./cross-origin.ts";
 import {
@@ -352,11 +353,15 @@ export default {
         }),
       );
       ctx.waitUntil(
-        sweepDemoRuns(db, Math.floor(now / 1000)).catch((err: unknown) => {
-          console.error(
-            `demo run sweep failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }),
+        sweepDemoRuns(db, Math.floor(now / 1000))
+          .then(async (closed) => {
+            if (closed > 0) await announceChange(env);
+          })
+          .catch((err: unknown) => {
+            console.error(
+              `demo run sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }),
       );
     }
   },

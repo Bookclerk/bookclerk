@@ -700,7 +700,8 @@ stop, so any one event can create the row. No address, cookie or session
 reaches the collector. A run whose stop never arrives is closed as
 **missed** 15 minutes after its hard stop; it counts as a run but not
 toward use or run length. A stop that arrives later replaces that. Runs
-still open are the live use the `/demo` page shows. The cron deletes runs
+still open are the live use the `/demo` page shows, and an open `/demo`
+page updates as each event arrives. The cron deletes runs
 after 400 days.
 
 Reporting never holds the demo up: without the binding nothing is sent,
@@ -917,8 +918,9 @@ Open pages update on their own, without polling.
    (binding `LIVE`, created by the deploy's `[[migrations]]` entry),
    through the hibernation API, so idle pages cost nothing.
 2. When `/submit` indexes a report, `/issues/notify` links an issue, or a
-   sync or reindex stores something, the Worker tells the hub. Syncs push
-   only when the stored issues, links or pull requests actually changed.
+   sync or reindex stores something, the demo reports a run event, or the
+   cron closes a missed run, the Worker tells the hub. Syncs push only when
+   the stored issues, links or pull requests actually changed.
 3. The hub sends each page the bare text `changed`. The push carries no
    data, and the hub never reads what pages send.
 4. The page fetches its own URL once with its session cookie, and swaps in

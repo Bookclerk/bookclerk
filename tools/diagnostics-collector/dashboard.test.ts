@@ -4580,7 +4580,8 @@ describe("hosted demo runs", () => {
     // B is live; C never sent a stop and is past its hard stop.
     await recordDemoRun(db, { kind: "start", ...base(RUN_B, S - 60) });
     await recordDemoRun(db, { kind: "start", ...base(RUN_C, S - 3 * 3600) });
-    await sweepDemoRuns(db, S);
+    assert.equal(await sweepDemoRuns(db, S), 1);
+    assert.equal(await sweepDemoRuns(db, S), 0);
     const rows = await all(
       db,
       "SELECT run_id, startup_seconds, ended_at, end_reason FROM demo_runs ORDER BY run_id",
@@ -4630,6 +4631,29 @@ describe("hosted demo runs", () => {
     assert.equal(await liveDemoRuns(env.DASHBOARD_DB, S), 1);
   });
 
+  it("tells open dashboard pages when a run event is stored", async () => {
+    const pushes: string[] = [];
+    // Only the calls live.ts makes, handed over as the runtime binding.
+    const fake = {
+      idFromName: (n: string) => n,
+      get: () => ({
+        fetch: async (url: string) => (
+          pushes.push(String(url)),
+          new Response(null, { status: 204 })
+        ),
+      }),
+    };
+    const env = makeEnv({ LIVE: fake as unknown as DurableObjectNamespace });
+    const runs = new DemoRuns(
+      { waitUntil: () => {}, passThroughOnException: () => {} } as unknown as ExecutionContext,
+      env,
+    );
+    assert.equal(await runs.record({ kind: "start", ...base(RUN_A, S) }), true);
+    assert.deepEqual(pushes, ["https://live/changed"]);
+    assert.equal(await runs.record("start"), false);
+    assert.equal(pushes.length, 1);
+  });
+
   it("draws the Demo page for members only", async () => {
     const env = makeEnv();
     await recordDemoRun(env.DASHBOARD_DB, { kind: "start", ...base(RUN_B, S - 60) });
@@ -4646,6 +4670,7 @@ describe("hosted demo runs", () => {
     assert.equal(res.status, 200);
     const body = await res.text();
     assert.match(body, /<h2>Live now<\/h2><div class="v">1<\/div>/);
+    assert.match(body, /<div class="grid" data-live="demo">/, "the page refreshes on a push");
     assert.match(body, /Runs, 90 days<\/h2><div class="v">2</);
     assert.match(body, /20 min 0 s/, "the stopped run's length");
     assert.match(body, /aria-current="page">Demo</);
