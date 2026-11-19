@@ -19,6 +19,7 @@ import {
   type PluginConsentGrantDraft,
 } from "@/components/PluginConsentDialog";
 import { CpuCoresSlider } from "@/components/CpuCoresSlider";
+import { DiagnosticsReportsList, DiagnosticsSharingFields } from "@/components/DiagnosticsSettings";
 import { SettingsTableEditor } from "@/components/SettingsTableEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -423,6 +424,8 @@ export function SettingsPage({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [daemonAuthEnabled, setDaemonAuthEnabled] = useState(true);
   const [autoAcquire, setAutoAcquire] = useState(false);
+  const [shareReports, setShareReports] = useState(false);
+  const [shareUsage, setShareUsage] = useState(false);
   const [pluginsIsolation, setPluginsIsolation] = useState("required");
   const [mediaIsolation, setMediaIsolation] = useState("required");
   const [jailMemoryMiB, setJailMemoryMiB] = useState("");
@@ -445,6 +448,8 @@ export function SettingsPage({
     daemonListen: string;
     daemonAuthEnabled: boolean;
     autoAcquire: boolean;
+    shareReports: boolean;
+    shareUsage: boolean;
     pluginsIsolation: string;
     mediaIsolation: string;
     jailMemoryMiB: string;
@@ -689,6 +694,12 @@ export function SettingsPage({
     if (autoAcquire !== operatorBaseline.autoAcquire) {
       return true;
     }
+    if (
+      shareReports !== operatorBaseline.shareReports ||
+      shareUsage !== operatorBaseline.shareUsage
+    ) {
+      return true;
+    }
     if (pluginsIsolation !== operatorBaseline.pluginsIsolation) {
       return true;
     }
@@ -721,6 +732,8 @@ export function SettingsPage({
     operatorBaseline,
     pluginValues,
     pluginsIsolation,
+    shareReports,
+    shareUsage,
   ]);
 
   const refresh = useCallback(async () => {
@@ -749,6 +762,8 @@ export function SettingsPage({
         setAdvancedOpen(exposure === "custom");
         setDaemonAuthEnabled(nextSettings.settings["daemon.auth.enabled"] === "true");
         setAutoAcquire(nextSettings.settings["library.auto_acquire"] === "true");
+        setShareReports(nextSettings.settings["diagnostics.share_reports"] === "true");
+        setShareUsage(nextSettings.settings["diagnostics.share_usage"] === "true");
         setPluginsIsolation(nextSettings.settings["plugins.isolation"] ?? "required");
         setMediaIsolation(nextSettings.settings["media.isolation"] ?? "required");
         setJailMemoryMiB(nextSettings.settings["plugins.jail.memory_mib"] ?? "");
@@ -765,6 +780,8 @@ export function SettingsPage({
               : listenListFromExposure(exposure, rows[0]?.port ?? DEFAULT_DAEMON_PORT),
           daemonAuthEnabled: nextSettings.settings["daemon.auth.enabled"] === "true",
           autoAcquire: nextSettings.settings["library.auto_acquire"] === "true",
+          shareReports: nextSettings.settings["diagnostics.share_reports"] === "true",
+          shareUsage: nextSettings.settings["diagnostics.share_usage"] === "true",
           pluginsIsolation: nextSettings.settings["plugins.isolation"] ?? "required",
           mediaIsolation: nextSettings.settings["media.isolation"] ?? "required",
           jailMemoryMiB: nextSettings.settings["plugins.jail.memory_mib"] ?? "",
@@ -893,6 +910,8 @@ export function SettingsPage({
           { key: "daemon.listen", value: nextListen },
           { key: "daemon.auth.enabled", value: String(daemonAuthEnabled) },
           { key: "library.auto_acquire", value: String(autoAcquire) },
+          { key: "diagnostics.share_reports", value: String(shareReports) },
+          { key: "diagnostics.share_usage", value: String(shareUsage) },
           { key: "plugins.isolation", value: pluginsIsolation },
           { key: "media.isolation", value: mediaIsolation },
           { key: "plugins.jail.memory_mib", value: jailMemoryMiB.trim() },
@@ -934,6 +953,8 @@ export function SettingsPage({
           : listenListFromExposure(exposure, rows[0]?.port ?? DEFAULT_DAEMON_PORT),
       daemonAuthEnabled: next.settings["daemon.auth.enabled"] === "true",
       autoAcquire: next.settings["library.auto_acquire"] === "true",
+      shareReports: next.settings["diagnostics.share_reports"] === "true",
+      shareUsage: next.settings["diagnostics.share_usage"] === "true",
       pluginsIsolation: next.settings["plugins.isolation"] ?? "required",
       mediaIsolation: next.settings["media.isolation"] ?? "required",
       jailMemoryMiB: next.settings["plugins.jail.memory_mib"] ?? "",
@@ -1786,6 +1807,33 @@ export function SettingsPage({
                           checked={autoAcquire}
                           onChange={setAutoAcquire}
                         />
+                      </div>
+                    </section>
+
+                    <section className="space-y-3">
+                      <div className="space-y-1">
+                        <h2 className="text-lg font-semibold text-ink">Diagnostics</h2>
+                        <p className="text-sm text-ink/55">
+                          What this install shares with the Bookclerk maintainers. Both are off
+                          until you turn them on.
+                        </p>
+                      </div>
+                      <div className="divide-y divide-ink/10 bg-card px-3">
+                        <DiagnosticsSharingFields
+                          idPrefix="settings"
+                          shareReports={shareReports}
+                          shareUsage={shareUsage}
+                          onChange={(reports, usage) => {
+                            setShareReports(reports);
+                            setShareUsage(usage);
+                          }}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <h3 className="text-sm font-semibold text-ink">Reports sent</h3>
+                      </div>
+                      <div className="bg-card px-3">
+                        <DiagnosticsReportsList />
                       </div>
                     </section>
 
