@@ -966,8 +966,8 @@ fn parse_v1_optional_expr_alias(scan: &mut Scan<'_>) -> bool {
 }
 
 /// Takes an implicit alias (no `AS`) after a `FROM` item or select-list
-/// expression; leaves the scanner where it was when the next word is a
-/// clause keyword, a reserved word or a quoted name.
+/// expression. When the next word is a clause keyword, a reserved word or a
+/// quoted name, nothing is taken (leading whitespace may be skipped).
 ///
 /// # Returns
 ///

@@ -7,7 +7,9 @@
 //! its `allowsInitial`, `allowsRedirect` and `allowsTcp` are called for every
 //! probe host the shared oracle in `fuzz/oracles/egress_bridge.rs` derives:
 //! the JavaScript gate must never allow what the Rust policy refuses, and
-//! must agree with it exactly on hostnames. The replay test in
+//! must agree with it exactly on hostnames. Hosts reach the gate as the
+//! oracle's model of workerd's URL parser and of `canonicalSocketHost`
+//! prints them (QuickJS has no `URL`); the Node replay checks those models. The replay test in
 //! `bookclerk-workerd/tests/fuzz_corpus.rs` and the SDK's
 //! `test:egress-bridge` script check the corpus the same way without the
 //! embedded engine.

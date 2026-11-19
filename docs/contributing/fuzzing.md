@@ -118,10 +118,14 @@ only that. The others check:
   matches, never through a `*` entry however it is spelled, and every
   other request gets the host's agent.
 - **`egress_bridge`**: for a policy the host can emit (every pattern
-  already normalized), each probe host (the grants' names and near misses,
-  `localhost` and the metadata name, and IP literals in every range and
-  spelling) goes to `allowsInitial` and `allowsRedirect` as the URL parser
-  prints it and to `allowsTcp` after `canonicalSocketHost`, in QuickJS.
+  already normalized, every CIDR in its `network/prefix` form), each probe
+  host (the grants' names and near misses, `localhost` and the metadata
+  name, and IP literals in every range and spelling) goes to
+  `allowsInitial` and `allowsRedirect` as the URL parser prints it and to
+  `allowsTcp` as `canonicalSocketHost` returns it, in QuickJS. QuickJS has
+  no URL parser, so the target models both with the `url` crate, and the
+  Node replay checks those models against Node's parser and the bridge's
+  own `canonicalSocketHost`.
   The bridge never allows what `EgressPolicy` refuses, and on a hostname
   the two agree exactly. The shared oracle is
   `fuzz/oracles/egress_bridge.rs`. Its replay in `bookclerk-workerd`

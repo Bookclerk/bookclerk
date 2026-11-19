@@ -7,12 +7,15 @@
 //!
 //! The input is the JSON wire form of an `EgressPolicy`, exactly what the host
 //! injects into workerd as `EGRESS_POLICY`. Only policies the host can emit are
-//! compared: every `domains` entry and `tcp` host already normalized. For each
+//! compared: every `domains` entry and `tcp` host already normalized, every
+//! `addressCidrs` entry in its `network/prefix` form. For each
 //! policy the oracle derives probe hosts (the grants' own names and their
 //! near misses, restricted names, and IP literals in every range and
 //! spelling) and hands the JavaScript gate each one as workerd would: a fetch
-//! host as the URL parser prints it, a `connect()` host after the bridge's
-//! own `canonicalSocketHost`. The invariant: the JavaScript gate never allows
+//! host as the URL parser prints it, a `connect()` host as the bridge's own
+//! `canonicalSocketHost` returns it. Both are modelled here with the `url`
+//! crate (QuickJS has no `URL`); the Node replay checks the models against
+//! Node's URL parser and the real `canonicalSocketHost`. The invariant: the JavaScript gate never allows
 //! what the Rust policy refuses, and for a hostname (not an IP literal) the
 //! two agree exactly.
 //!
@@ -22,7 +25,8 @@
 //! SDK's `test:egress-bridge` script checks `egress.js` against under Node.
 
 use bookclerk_plugin_manifest::{
-    normalize_domain_pattern, normalize_tcp_host, EgressPolicy, NetworkMode, ANY_PUBLIC_HOST,
+    normalize_domain_pattern, normalize_tcp_host, CidrGrant, EgressPolicy, NetworkMode,
+    ANY_PUBLIC_HOST,
 };
 
 /// Largest policy document worth decoding.
@@ -140,7 +144,11 @@ pub fn decode(data: &[u8]) -> Option<EgressPolicy> {
         .tcp
         .iter()
         .all(|g| normalize_tcp_host(&g.host).as_deref() == Some(g.host.as_str()));
-    (domains_canonical && tcp_canonical).then_some(policy)
+    // `try_from_network` stores each grant as `network/prefix`.
+    let cidrs_canonical = policy.address_cidrs.iter().all(|c| {
+        CidrGrant::parse(c).is_ok_and(|grant| format!("{}/{}", grant.network, grant.prefix) == *c)
+    });
+    (domains_canonical && tcp_canonical && cidrs_canonical).then_some(policy)
 }
 
 /// The policy as the bridge receives it: the `EGRESS_POLICY` JSON text.
