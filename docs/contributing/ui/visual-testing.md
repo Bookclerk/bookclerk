@@ -189,8 +189,16 @@ check.
 
 Before the first approval, an organization owner:
 
-1. Creates the public repository `Bookclerk/bookclerk-visual-baselines`,
-   with a ruleset that blocks deleting or force-pushing `approved/*` tags.
+1. Creates the public repository `Bookclerk/bookclerk-visual-baselines`
+   with two rulesets, each with the automation App as its only bypass
+   actor (bypass mode **Always**):
+   - **All branches**: restrict creations, updates and deletions, and
+     block force pushes. Only the App writes the `pending/pr-<number>`
+     branches.
+   - **All tags**: the same rules. Only the App creates `approved/*`
+     tags, and it never moves or deletes one.
+
+   The App never deletes a ref, so these rules cost the workflow nothing.
 2. Installs the automation App on it with Contents read and write.
 3. Grants the App the organization Members (read) permission.
 4. Creates the `visual-reviewers` team, adds the approvers, and gives the
