@@ -63,7 +63,7 @@ Commands:
 - [`bookclerk library set-status`](#bookclerk-library-set-status): Match storage files to library rows and update acquire status
 - [`bookclerk library get-license`](#bookclerk-library-get-license): Fetch a content license for an ASIN
 - [`bookclerk library search`](#bookclerk-library-search): Search the library's works by title, people, series or store id
-- [`bookclerk library export`](#bookclerk-library-export): Export library rows as CSV / JSON / XLSX (alias of `export library`)
+- [`bookclerk library export`](#bookclerk-library-export): Export library titles as CSV / JSON / XLSX (alias of `export library`): the whole library, or with `--user` that person's view
 - [`bookclerk library list`](#bookclerk-library-list): List books in the local library DB
 - [`bookclerk library convert`](#bookclerk-library-convert): Convert acquired m4b/m4a to mp3
 - [`bookclerk library filters`](#bookclerk-library-filters): Manage saved quick filters
@@ -232,7 +232,7 @@ Options:
 
 ### `bookclerk library export`
 
-Export library rows as CSV / JSON / XLSX (alias of `export library`)
+Export library titles as CSV / JSON / XLSX (alias of `export library`): the whole library, or with `--user` that person's view
 
 ```text
 bookclerk library export [OPTIONS] --path <PATH> [ASINS]...
@@ -249,6 +249,7 @@ Options:
 - `--json`: Write JSON
 - `--xlsx`: Write XLSX
 - `--account <ACCOUNT>`: Limit the export to this account id, stem, or nickname
+- `--user <USER>`: Fill `tags` and `is_finished` with this person's own state (login name or user id); without it they are empty
 
 ### `bookclerk library list`
 
@@ -1149,7 +1150,7 @@ Commands:
 
 - [`bookclerk export native`](#bookclerk-export-native): Write a portable Bookclerk `.tar.gz` backup of the files directory
 - [`bookclerk export libation`](#bookclerk-export-libation): Export Settings.json, AccountsSettings.json, and LibationContext.db
-- [`bookclerk export library`](#bookclerk-export-library): Export library rows as CSV / JSON / XLSX
+- [`bookclerk export library`](#bookclerk-export-library): Export library titles as CSV / JSON / XLSX: the whole library, or with `--user` that person's view with their tags and finished flags
 - [`bookclerk export postgres`](#bookclerk-export-postgres): Copy library.db to PostgreSQL
 
 ### `bookclerk export native`
@@ -1184,7 +1185,7 @@ Options:
 
 ### `bookclerk export library`
 
-Export library rows as CSV / JSON / XLSX
+Export library titles as CSV / JSON / XLSX: the whole library, or with `--user` that person's view with their tags and finished flags
 
 ```text
 bookclerk export library [OPTIONS] --path <PATH> [ASINS]...
@@ -1201,6 +1202,7 @@ Options:
 - `--json`: Force JSON even when the destination extension is not `.json`
 - `--xlsx`: Force XLSX even when the destination extension is not `.xlsx`
 - `--account <ACCOUNT>`: Limit exported library rows to this account id when set
+- `--user <USER>`: Fill `tags` and `is_finished` with this person's own state (login name or user id); without it they are empty
 
 ### `bookclerk export postgres`
 

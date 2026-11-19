@@ -424,7 +424,11 @@ async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Resu
             let config = &overlaid;
             let book = resolve_book_for_preview(&store, &asin, account.as_deref()).await?;
             let ctx = NamingContext {
-                asin: book.asin_or_isbn().to_string(),
+                asin: book
+                    .asin
+                    .clone()
+                    .or_else(|| book.isbn.clone())
+                    .unwrap_or_else(|| book.product_id.clone()),
                 title: book.title.clone(),
                 subtitle: book.subtitle.clone(),
                 authors: book.authors.clone(),
@@ -438,9 +442,9 @@ async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Resu
                 categories: book.categories.clone(),
                 length_minutes: book.length_minutes,
                 is_abridged: book.is_abridged,
-                content_kind: Some(book.content_kind.clone()),
+                content_kind: Some(book.content_kind.to_string()),
                 // The edition's id, as an acquire of this title names it.
-                library_id: bookclerk_acquire::library_id_of(&store, &book.uuid).await?,
+                library_id: bookclerk_library::library_id(&book.edition_id),
                 ..Default::default()
             };
             let naming_profile = profile
@@ -572,48 +576,34 @@ async fn run_database(
     }
 }
 
-/// Resolves a library row by ASIN/ISBN/UUID, requiring `--account` when several match.
+/// The account title `id` names (ASIN, ISBN, product id, holding id or
+/// book uuid), requiring `--account` when several accounts hold it.
+///
+/// # Errors
+///
+/// Returns an error when no title matches, several accounts' titles match
+/// and no account was given, or the read fails.
 async fn resolve_book_for_preview(
     store: &LibraryStore,
-    asin: &str,
+    id: &str,
     account: Option<&str>,
-) -> anyhow::Result<bookclerk_library::BookRecord> {
-    if let Some(account) = account {
-        return store
-            .get_book(asin, account)
-            .await
-            .map_err(|e| e.into())
-            .and_then(|opt| {
-                opt.ok_or_else(|| anyhow::anyhow!("ASIN {asin} not found for account {account}"))
-            });
-    }
-    let matches: Vec<_> = store
-        .list_books(None)
-        .await?
-        .into_iter()
-        .filter(|b| {
-            b.uuid.eq_ignore_ascii_case(asin)
-                || b.product_id.eq_ignore_ascii_case(asin)
-                || b.isbn
-                    .as_ref()
-                    .is_some_and(|i| i.eq_ignore_ascii_case(asin))
-                || b.asin
-                    .as_ref()
-                    .is_some_and(|a| a.eq_ignore_ascii_case(asin))
-        })
-        .collect();
-    match matches.as_slice() {
-        [] => anyhow::bail!("ASIN {asin} not in library — run `bookclerk library scan`"),
-        [one] => Ok(one.clone()),
-        many => anyhow::bail!(
-            "ASIN {asin} exists on {} accounts; pass --account ({})",
-            many.len(),
-            many.iter()
-                .map(|b| b.account_id.as_str())
+) -> anyhow::Result<bookclerk_library::AcquireTitle> {
+    let mut matches = store.acquire_titles_named(account, id).await?;
+    if matches.len() > 1 {
+        anyhow::bail!(
+            "ASIN {id} exists on {} accounts; pass --account ({})",
+            matches.len(),
+            matches
+                .iter()
+                .map(|title| title.account_id.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
-        ),
+        );
     }
+    matches.pop().ok_or_else(|| match account {
+        Some(account) => anyhow::anyhow!("ASIN {id} not found for account {account}"),
+        None => anyhow::anyhow!("ASIN {id} not in library — run `bookclerk library scan`"),
+    })
 }
 
 /// Formats one dotted config key as a string for `config get`.

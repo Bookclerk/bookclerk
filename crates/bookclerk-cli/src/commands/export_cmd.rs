@@ -10,7 +10,7 @@ use bookclerk_migrate::{
 use clap::Subcommand;
 
 use crate::commands::copydb::{self, CopyDbArgs, CopyDbFormat};
-use crate::commands::export::{export_csv, export_json, export_xlsx, filter_books, load_books};
+use crate::commands::export::{load_rows, write_export};
 use crate::format_out::{emit, line, OutputFormat};
 
 #[derive(Debug, Subcommand)]
@@ -46,7 +46,8 @@ pub enum ExportCommand {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Export library rows as CSV / JSON / XLSX.
+    /// Export library titles as CSV / JSON / XLSX: the whole library, or
+    /// with `--user` that person's view with their tags and finished flags.
     Library {
         /// Output file path.
         #[arg(short, long)]
@@ -65,6 +66,10 @@ pub enum ExportCommand {
         #[arg(long)]
         /// Limit exported library rows to this account id when set.
         account: Option<String>,
+        #[arg(long)]
+        /// Fill `tags` and `is_finished` with this person's own state (login
+        /// name or user id); without it they are empty.
+        user: Option<String>,
     },
     /// Copy library.db to PostgreSQL.
     Postgres {
@@ -128,32 +133,21 @@ pub async fn run(
             xlsx,
             asins,
             account,
+            user,
         } => {
             let store = crate::registry::open_library(config).await?;
-            let books = filter_books(
-                load_books(&store, account.as_deref()).await?,
-                if asins.is_empty() { None } else { Some(&asins) },
-            );
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if csv || (!json && !xlsx && ext == "csv") {
-                export_csv(&path, &books)?;
-            } else if json || ext == "json" {
-                export_json(&path, &books)?;
-            } else if xlsx || ext == "xlsx" {
-                export_xlsx(&path, &books)?;
-            } else {
-                export_csv(&path, &books)?;
-            }
+            let user = match user {
+                Some(user) => Some(crate::commands::nodes::resolve_user(&store, &user).await?),
+                None => None,
+            };
+            let rows = load_rows(&store, account.as_deref(), &asins, user.as_ref()).await?;
+            write_export(&path, &rows, csv, json, xlsx)?;
             let payload = serde_json::json!({
                 "path": path.display().to_string(),
-                "books": books.len(),
+                "books": rows.len(),
             });
             emit(format, &payload, || {
-                println!("exported {} book(s) to {}", books.len(), path.display());
+                println!("exported {} book(s) to {}", rows.len(), path.display());
             })
         }
         ExportCommand::Postgres { args } => copydb::run(args, config).await,

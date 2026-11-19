@@ -2215,8 +2215,18 @@ impl LibraryStore {
             .collect())
     }
 
-    /// Each edition's work, through its expression.
-    pub(super) async fn works_of_editions(
+    /// Each edition's work, through its expression, read in chunks that
+    /// fit the database's limits.
+    ///
+    /// # Returns
+    ///
+    /// Edition id to work id; an edition that no longer exists, or whose
+    /// expression row is missing, is left out.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn works_of_editions(
         &self,
         edition_ids: BTreeSet<String>,
     ) -> Result<std::collections::BTreeMap<String, String>> {

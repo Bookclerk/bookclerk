@@ -11,7 +11,7 @@ use bookclerk_source::{source_scope, DownloadOptions, FetchOptions};
 use bookclerk_storage::StorageBackend;
 use clap::Subcommand;
 
-use crate::commands::export::{export_csv, export_json, export_xlsx, filter_books, load_books};
+use crate::commands::export::{load_rows, write_export};
 use crate::commands::queued;
 use crate::format_out;
 use crate::progress::BatchProgress;
@@ -185,7 +185,8 @@ pub enum LibraryCommand {
         #[arg(long)]
         filter: Option<String>,
     },
-    /// Export library rows as CSV / JSON / XLSX (alias of `export library`).
+    /// Export library titles as CSV / JSON / XLSX (alias of `export library`):
+    /// the whole library, or with `--user` that person's view.
     Export {
         /// Output file path.
         #[arg(short, long)]
@@ -204,6 +205,10 @@ pub enum LibraryCommand {
         #[arg(long)]
         /// Limit the export to this account id, stem, or nickname.
         account: Option<String>,
+        #[arg(long)]
+        /// Fill `tags` and `is_finished` with this person's own state (login
+        /// name or user id); without it they are empty.
+        user: Option<String>,
     },
     /// List books in the local library DB.
     List {
@@ -621,26 +626,15 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             xlsx,
             asins,
             account,
+            user,
         } => {
-            let books = filter_books(
-                load_books(&store, account.as_deref()).await?,
-                if asins.is_empty() { None } else { Some(&asins) },
-            );
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if csv || (!json && !xlsx && ext == "csv") {
-                export_csv(&path, &books)?;
-            } else if json || ext == "json" {
-                export_json(&path, &books)?;
-            } else if xlsx || ext == "xlsx" {
-                export_xlsx(&path, &books)?;
-            } else {
-                export_csv(&path, &books)?;
-            }
-            println!("exported {} book(s) to {}", books.len(), path.display());
+            let user = match user {
+                Some(user) => Some(crate::commands::nodes::resolve_user(&store, &user).await?),
+                None => None,
+            };
+            let rows = load_rows(&store, account.as_deref(), &asins, user.as_ref()).await?;
+            write_export(&path, &rows, csv, json, xlsx)?;
+            println!("exported {} book(s) to {}", rows.len(), path.display());
             Ok(())
         }
         LibraryCommand::Convert {
