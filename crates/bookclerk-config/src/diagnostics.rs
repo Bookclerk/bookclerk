@@ -331,6 +331,28 @@ impl DiagnosticsHandle {
         }
     }
 
+    /// The install ID an upload carries: none unless usage sharing is on
+    /// (and never for a demo copy). Loaded, or made, from the files
+    /// directory the first time it is needed, so a report sent right after
+    /// usage sharing is turned on, or from a CLI run, carries it without
+    /// waiting for the daemon's check-in thread.
+    fn upload_install_id(&self) -> Option<String> {
+        if !self.share_usage() || self.inner.config.demo {
+            return None;
+        }
+        if let Some(id) = self.inner.install_id.get() {
+            return Some(id.clone());
+        }
+        let dir = self.inner.files_dir.get()?;
+        let id = crate::InstallId::load_or_create(dir).ok()?;
+        Some(
+            self.inner
+                .install_id
+                .get_or_init(|| id.as_str().to_string())
+                .clone(),
+        )
+    }
+
     /// What uploads report as `deployment`: `demo` for a copy of the hosted
     /// demo, otherwise the process role.
     #[must_use]
@@ -539,10 +561,7 @@ impl DiagnosticsHandle {
         let payload = UploadPayload {
             trigger: trigger.to_string(),
             deployment: self.deployment().to_string(),
-            install_id: self
-                .share_usage()
-                .then(|| self.inner.install_id.get().cloned())
-                .flatten(),
+            install_id: self.upload_install_id(),
             version: self.inner.version.clone(),
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
@@ -1064,6 +1083,44 @@ mod tests {
         server.join().unwrap();
         assert_eq!(handle.uploads_attempted(), 1);
         assert!(crate::load_report_history(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn an_upload_loads_the_install_id_once_usage_sharing_is_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle =
+            DiagnosticsHandle::new(DiagnosticsConfig::default(), "0.0.0-test", ProcessRole::Cli);
+        assert_eq!(handle.upload_install_id(), None, "no files directory yet");
+        handle.set_files_dir(dir.path());
+        assert_eq!(handle.upload_install_id(), None, "usage sharing is off");
+        assert!(!dir.path().join(crate::install_id::INSTALL_ID_FILE).exists());
+        handle.set_sharing(true, true);
+        let id = handle.upload_install_id().expect("loaded on first use");
+        assert_eq!(
+            crate::InstallId::load_or_create(dir.path())
+                .unwrap()
+                .as_str(),
+            id
+        );
+        assert_eq!(handle.upload_install_id(), Some(id));
+        handle.set_sharing(true, false);
+        assert_eq!(handle.upload_install_id(), None, "turned off again");
+
+        let demo = DiagnosticsHandle::new(
+            DiagnosticsConfig {
+                demo: true,
+                share_usage: true,
+                ..DiagnosticsConfig::default()
+            },
+            "0.0.0-test",
+            ProcessRole::Daemon,
+        );
+        demo.set_files_dir(dir.path());
+        assert_eq!(
+            demo.upload_install_id(),
+            None,
+            "a demo copy never carries one"
+        );
     }
 
     #[test]

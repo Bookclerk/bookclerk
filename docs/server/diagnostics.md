@@ -174,8 +174,11 @@ bookclerk config set diagnostics.share_usage true
 
 The first-install setup asks about it too, next to report sharing, and
 the operator can change it under **Settings → Server Settings →
-Diagnostics**. A change from Settings applies without a restart: the
-daemon loads (or makes) the install ID the first time the switch is on.
+Diagnostics**. A change from Settings applies without a restart: within
+a minute of the switch turning on, the daemon loads (or makes) the
+install ID and sends a check-in if one is due. A report sent before then
+loads the ID itself, so it is never sent without one while the switch is
+on.
 
 With it on, the daemon and the desktop app send one check-in a week to
 the collector's `/checkin` route. A check-in holds only:
@@ -193,7 +196,8 @@ ends. So the project can count installs per week and per month, but cannot
 follow one install from one month to the next. Check-in rows are deleted
 after 35 days. Like reports, check-ins keep no IP address.
 
-When usage sharing is on, reports carry the install ID too, and the
+When usage sharing is on, reports carry the install ID too (from the
+daemon, the desktop app and the `bookclerk` CLI alike), and the
 collector swaps it for the same install key before the report is stored.
 That lets the dashboard say how many installs a failure came from. With
 usage sharing off, reports carry no install identity at all.

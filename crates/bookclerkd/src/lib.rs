@@ -217,6 +217,10 @@ fn init_logging(config: &Config, syslog_identifier: &str, role: ProcessRole) {
 /// How often the check-in thread looks whether a weekly check-in is due.
 const CHECKIN_POLL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
+/// How often the check-in thread reads the live usage-sharing switch, so a
+/// check-in follows soon after the switch is turned on in Settings.
+const SHARING_POLL: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Points the diagnostics handle at the files directory (so accepted
 /// reports join the install's report history) and, unless this is a demo
 /// copy, starts the thread that sends the weekly check-in while
@@ -253,11 +257,18 @@ fn start_usage_checkins(
         .name("bookclerk-checkin".into())
         .spawn(move || {
             let mut checkin: Option<bookclerk_config::CheckIn> = None;
+            let mut was_on = false;
+            let mut last_pass: Option<std::time::Instant> = None;
             loop {
-                if handle.share_usage() {
+                let on = handle.share_usage();
+                let due = last_pass.is_none_or(|at| at.elapsed() >= CHECKIN_POLL);
+                // A pass right away when the switch turns on, then every poll.
+                if on && (!was_on || due) {
                     checkin_pass(&files_dir, &settings, &handle, role, &mut checkin);
+                    last_pass = Some(std::time::Instant::now());
                 }
-                std::thread::sleep(CHECKIN_POLL);
+                was_on = on;
+                std::thread::sleep(SHARING_POLL);
             }
         });
     if let Err(err) = spawned {
