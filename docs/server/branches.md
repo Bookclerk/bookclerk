@@ -724,10 +724,17 @@ node would be trusted to claim.
 Files stream **through** the owner to its destinations. Nothing is staged
 on a shared node's disk.
 
+Each title goes only to the destinations whose filter takes it (see
+[Choosing which books a destination takes](output.md#choosing-which-books-a-destination-takes)).
+The owner's `acquire.targets` answer lists, for each title, the ids of
+those destinations in `destinations`. An empty list means none takes the
+title, and the host fails it without fetching anything.
+
 1. **Grant.** The host sends `upload.grant` over the node socket, with
    the title's holding id from the plan and a manifest. The manifest lists each distinct file content once (`size`,
    `sha256`, `content_type`), with a list of **copies**, one
-   `{destination, key}` per owner destination. An audio file the host
+   `{destination, key}` per destination the title goes to, and no
+   other. An audio file the host
    could probe also carries `probe` (`bitrate_kbps`, `lossless`,
    `source_store`), which the owner keeps on the file's row once the
    upload commits (see [What a stored file's row
@@ -737,7 +744,11 @@ on a shared node's disk.
 2. **Send.** The host sends
    `PUT /api/node/v1/uploads/{upload_id}/files/{n}` per file, with
    `Authorization: Bookclerk-Upload <token>`. The owner tees the body,
-   chunk by chunk, into every destination under that destination's key.
+   chunk by chunk, into each of those destinations under that
+   destination's key. If the title's destinations change before the
+   commit (one is deployed or undeployed, or a filter is edited), the
+   upload is refused with `destinations_changed` and the title fails on
+   the host.
    It checks the size and SHA-256 as it streams, and re-checks the job's
    fence about once a second.
 3. **Commit.** The host sends `POST /api/node/v1/uploads/{upload_id}/commit`.
@@ -907,7 +918,7 @@ bookclerk plugins deploy <instance_id> --node <node_id>
 node, or handing it to the scheduler (`--replicas`), is refused.
 
 Uploads reach every destination deployed on the shared node that granted
-them, node-local ones included.
+them whose filter takes the title, node-local ones included.
 
 ## Branches of branches
 

@@ -80,7 +80,10 @@ operator, a household user, or a portal identity) has a **subject key**
    it and the starter genre.
    `storefront_max_remote_calls` is split across the stores, so all stores
    together never make more calls than it allows (deals count as one call,
-   and a store whose share is zero is not asked).
+   and a store whose share is zero is not asked). Only calls the store
+   actually answers count: an answer read from the 24-hour store-call cache
+   is free, so a new wish is asked about on top of the books whose answers
+   are cached instead of pushing their titles off the shelves.
    Stores run concurrently, each call has a 10 s timeout, a store stops
    starting new calls 20 s into a fetch and saves what it has, and each store's
    rows are saved as that store finishes, so one slow store never discards
@@ -296,7 +299,7 @@ Every one of the five events also queues one ranking of the shared
 Each job it queues may only run 30 seconds later, so the changes of one
 sync or one browsing session fold into a single job per person. The one
 exception is the fetch for the person who wished: they are looking at the
-page, so it may run after 5 seconds. The fetches
+page, so it may run after 2 seconds. The fetches
 are cheap when little changed, because unchanged store calls come from the
 24-hour cache. Apart from the person who wished, someone without stored
 shelves is left to their first read.
@@ -304,7 +307,10 @@ shelves is left to their first read.
 A job that has already started may have read the data before the change,
 so a change only folds into a job that is still pending. When the job the
 consumer needs is running or has just finished (or the queue is full), the
-delivery comes back 30 seconds later and queues again, up to 20 times.
+delivery comes back 30 seconds later and queues again, up to 20 times. A
+wish of the person looking at the page comes back after 5 seconds
+instead, so a wish clicked while their fetch runs gets the next one soon
+after.
 A retry skips each person who already has a job of that kind admitted
 after the event (waiting, running or finished), so with more people than
 the queue holds, finished refreshes are not queued again ahead of the
@@ -444,6 +450,11 @@ Candidates are **unowned** storefront hits (plus open wishlist items), scored by
    also enjoyed"), and keeps that order when it cuts the list to the
    requested size. It never keyword-searches the seed's title: that matched
    words, not books (*The Great Hunt* found *Turkey Hunting for Kids*).
+   A narrator's other titles are kept only when one shares a top-level
+   genre (the first rung of an Audible genre ladder) with the seed, looked
+   up by the seed's ASIN; a seed with no ASIN or no genres gets none.
+   Narrators also record children's books, so the narrator of *The Silent
+   Patient* brought *Panda Panic*.
 3. Overlap with liked authors
 4. **Genres** the person likes, read from the candidate's own genres
    (`genre_match` in `bookclerk-discover`). The genres of the seed the
@@ -461,7 +472,11 @@ languages are the normalized languages of the taste books (the subject's own,
 with the household's blended in while those are few), or the default
 preferred language (`en`) when no taste book has one. A candidate whose store
 gave no language, or one `normalize_language` does not recognize, stays, as
-in catalog search. Editions in two different languages are different
+in catalog search, so a store's related titles should carry their language.
+Libro.fm's search and related lists leave it out (they often hold a seed's
+translations), so its plugin reads each related title from
+`explore/audiobook_details`, which gives the language, the list price and
+whether the title is for sale, and leaves out one that is not. Editions in two different languages are different
 expressions, so they are never merged into one candidate, and dropping one
 language never drops the other edition with it.
 
