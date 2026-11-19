@@ -12,25 +12,14 @@ use axum::extract::{Path as AxumPath, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use bookclerk_library::control_plane::AdminControl;
-use bookclerk_library::{LibraryError, WorkTag};
-use serde::{Deserialize, Serialize};
+use bookclerk_library::{LibraryError, WorkTag, WorkTagsBody};
+use serde::Serialize;
 
 use crate::api::AppState;
 use crate::http_error::ErrorMessage;
 
 /// An error answer: its status and JSON body.
 type TagError = (StatusCode, Json<ErrorMessage>);
-
-/// Body of `PUT /api/library/works/{id}/tags`.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PutWorkTags {
-    /// The tags an Administrator sets, replacing theirs (sidecar tags
-    /// stay). Blanks and repeats, ignoring case, are dropped; at most 32
-    /// tags of at most 256 bytes each.
-    #[schema(example = json!(["Kids", "Bedtime"]), max_items = 32)]
-    tags: Vec<String>,
-}
 
 /// A work's library tags.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -123,7 +112,7 @@ pub(crate) async fn get_work_tags(
     put,
     path = "/api/library/works/{id}/tags",
     params(("id" = String, Path, description = "A top-level work id.")),
-    request_body = PutWorkTags,
+    request_body = WorkTagsBody,
     responses(
         (status = 200, description = "The work's tags afterwards.", body = WorkTagsJson),
         (status = 400, description = "Too many tags, or one too long.", body = ErrorMessage, example = json!({"error": "a work has at most 32 library tags"})),
@@ -137,12 +126,16 @@ pub(crate) async fn put_work_tags(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
-    Json(body): Json<PutWorkTags>,
+    Json(body): Json<WorkTagsBody>,
 ) -> Result<Json<WorkTagsJson>, TagError> {
     let user_id = administrator(&state, &headers, Some(AdminControl::SetPatronLimits)).await?;
+    // The same parse the fuzz target drives (`parse_work_tags_request`).
+    let request = body
+        .validate()
+        .map_err(|err| store_error("put_work_tags", err))?;
     let library = state.library_snapshot().await;
     let tags = library
-        .set_work_tags(&id, &body.tags)
+        .set_work_tags(&id, request.tags())
         .await
         .map_err(|err| store_error("put_work_tags", err))?;
     tracing::info!(work_id = %id, ?user_id, count = tags.len(), "library tags set");

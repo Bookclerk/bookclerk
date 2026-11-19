@@ -177,7 +177,8 @@ pub use store::work_detail::{
 };
 pub use store::work_search::WorkSearchDoc;
 pub use store::work_tags::{
-    normalize_work_tags, WorkTag, WorkTagSource, MAX_WORK_TAGS, MAX_WORK_TAG_BYTES,
+    normalize_work_tags, parse_work_tags_request, WorkTag, WorkTagSource, WorkTagsBody,
+    WorkTagsRequest, MAX_WORK_TAGS, MAX_WORK_TAG_BYTES,
 };
 pub use store::{
     apply_user_states,

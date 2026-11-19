@@ -8,7 +8,7 @@
 
 use chrono::Utc;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::library_index::facet_key;
 use super::LibraryStore;
@@ -95,6 +95,86 @@ pub fn normalize_work_tags(values: &[String]) -> Result<Vec<(String, String)>> {
         )));
     }
     Ok(out)
+}
+
+/// `PUT /api/library/works/{id}/tags` body: the tags an Administrator sets.
+#[derive(Debug, utoipa::ToSchema)]
+// Read by the schema only (no unknown fields); `WorkTagsFields` enforces it.
+#[serde(deny_unknown_fields)]
+pub struct WorkTagsBody {
+    /// The tags, replacing the ones set in Bookclerk (sidecar tags stay).
+    /// Blanks and repeats, ignoring case, are dropped; at most 32 tags of
+    /// at most 256 bytes each.
+    #[schema(example = json!(["Kids", "Bedtime"]), max_items = 32)]
+    tags: Vec<String>,
+}
+
+/// [`WorkTagsBody`]'s fields as JSON carries them; read only from a JSON
+/// object ([`WorkTagsBody`]'s `Deserialize`), never from an array.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkTagsFields {
+    /// See [`WorkTagsBody::tags`].
+    tags: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for WorkTagsBody {
+    /// Reads the body from a JSON object only.
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let fields: WorkTagsFields =
+            crate::control_plane::from_object(deserializer, "a JSON object with tags")?;
+        Ok(Self { tags: fields.tags })
+    }
+}
+
+/// A validated [`WorkTagsBody`]: at most [`MAX_WORK_TAGS`] distinct tags
+/// (by [`facet_key`]), trimmed, each 1 to [`MAX_WORK_TAG_BYTES`] bytes, in
+/// the order sent with the first spelling kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkTagsRequest {
+    /// The tags as written.
+    tags: Vec<String>,
+}
+
+impl WorkTagsRequest {
+    /// The tags as written, trimmed and distinct.
+    #[must_use]
+    pub fn tags(&self) -> &[String] {
+        &self.tags
+    }
+}
+
+impl WorkTagsBody {
+    /// Checks the body ([`normalize_work_tags`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] for too many or too long tags.
+    pub fn validate(self) -> Result<WorkTagsRequest> {
+        Ok(WorkTagsRequest {
+            tags: normalize_work_tags(&self.tags)?
+                .into_iter()
+                .map(|(_, value)| value)
+                .collect(),
+        })
+    }
+}
+
+/// Parses and validates a `PUT /api/library/works/{id}/tags` body from its
+/// raw bytes, sans IO, the way the route reads it: JSON into
+/// [`WorkTagsBody`], then [`WorkTagsBody::validate`].
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for bytes that are not the body's JSON
+/// shape (unknown or repeated fields, wrong types, a missing field, an
+/// array instead of an object) or tags outside the bounds.
+pub fn parse_work_tags_request(body: &[u8]) -> Result<WorkTagsRequest> {
+    serde_json::from_slice::<WorkTagsBody>(body)
+        .map_err(|err| LibraryError::Invalid(format!("tags body: {err}")))?
+        .validate()
 }
 
 impl LibraryStore {

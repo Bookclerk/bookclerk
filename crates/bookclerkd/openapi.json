@@ -15569,7 +15569,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PutWorkTags"
+                "$ref": "#/components/schemas/WorkTagsBody"
               }
             }
           },
@@ -51045,28 +51045,6 @@
         },
         "additionalProperties": false
       },
-      "PutWorkTags": {
-        "type": "object",
-        "description": "Body of `PUT /api/library/works/{id}/tags`.",
-        "required": [
-          "tags"
-        ],
-        "properties": {
-          "tags": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "The tags an Administrator sets, replacing theirs (sidecar tags\nstay). Blanks and repeats, ignoring case, are dropped; at most 32\ntags of at most 256 bytes each.",
-            "example": [
-              "Kids",
-              "Bedtime"
-            ],
-            "maxItems": 32
-          }
-        },
-        "additionalProperties": false
-      },
       "QueueDetail": {
         "allOf": [
           {
@@ -56288,6 +56266,28 @@
           "admin",
           "sidecar"
         ]
+      },
+      "WorkTagsBody": {
+        "type": "object",
+        "description": "`PUT /api/library/works/{id}/tags` body: the tags an Administrator sets.",
+        "required": [
+          "tags"
+        ],
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The tags, replacing the ones set in Bookclerk (sidecar tags stay).\nBlanks and repeats, ignoring case, are dropped; at most 32 tags of\nat most 256 bytes each.",
+            "example": [
+              "Kids",
+              "Bedtime"
+            ],
+            "maxItems": 32
+          }
+        },
+        "additionalProperties": false
       },
       "WorkTagsJson": {
         "type": "object",
