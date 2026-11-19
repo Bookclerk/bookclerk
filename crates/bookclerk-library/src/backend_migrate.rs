@@ -7,10 +7,10 @@
 use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, TransactionTrait};
 
 use crate::entities::{
-    account_credential_revisions, account_links, account_shares, accounts, books, claim_tickets,
-    contributors, credits, edition_acquisitions, edition_files, edition_identifiers, editions,
-    embeddings, encrypted_secrets, expressions, holdings, ignored_titles, job_temp_paths, jobs,
-    listening_progress, listing_offers, oidc_auth_codes, oidc_clients, oidc_refresh_tokens,
+    account_credential_revisions, account_links, account_shares, accounts, admin_controls, books,
+    claim_tickets, contributors, credits, edition_acquisitions, edition_files, edition_identifiers,
+    editions, embeddings, encrypted_secrets, expressions, holdings, ignored_titles, job_temp_paths,
+    jobs, listening_progress, listing_offers, oidc_auth_codes, oidc_clients, oidc_refresh_tokens,
     oidc_rp_states, operator_sessions, patron_controls, patron_scope_keys, patron_scopes,
     portal_identities, portal_sessions, resolution_conflicts, resolution_overrides, saved_filters,
     security_audit_events, series, series_entries, store_listings, title_request_sources,
@@ -141,6 +141,7 @@ pub async fn migrate_library_backend(
     copy!(embeddings, "embeddings");
     copy!(user_preferences, "user_preferences");
     copy!(patron_controls, "patron_controls");
+    copy!(admin_controls, "admin_controls");
     copy!(patron_scopes, "patron_scopes");
     copy!(patron_scope_keys, "patron_scope_keys");
     copy!(encrypted_secrets, "encrypted_secrets");
@@ -253,6 +254,7 @@ async fn dry_run_counts(
     count!(embeddings, "embeddings");
     count!(user_preferences, "user_preferences");
     count!(patron_controls, "patron_controls");
+    count!(admin_controls, "admin_controls");
     count!(patron_scopes, "patron_scopes");
     count!(patron_scope_keys, "patron_scope_keys");
     count!(encrypted_secrets, "encrypted_secrets");

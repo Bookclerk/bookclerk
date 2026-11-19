@@ -12,6 +12,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
+use bookclerk_library::control_plane::AdminControl;
 use bookclerk_library::control_plane::{
     assigned_member_controls, assigned_patron_scope, default_member_controls, default_patron_scope,
     role_follows_default_controls, role_has_controls, role_is_scoped, set_default_member_controls,
@@ -129,6 +130,29 @@ async fn managed_user(
     Ok(user)
 }
 
+/// Refuses an Administrator whose "Set patron limits" switch is off; the
+/// operator and Owners always pass.
+async fn may_set_limits(
+    library: &bookclerk_library::LibraryStore,
+    actor: Provisioner,
+) -> Result<(), ScopeError> {
+    crate::auth::require_admin_control(library, actor, AdminControl::SetPatronLimits)
+        .await
+        .map_err(|status| {
+            if status == StatusCode::FORBIDDEN {
+                refused(
+                    status,
+                    "an Owner has turned off setting patron limits for you",
+                )
+            } else {
+                refused(
+                    status,
+                    "the patron's scope or controls could not be read or written",
+                )
+            }
+        })
+}
+
 /// The wire form of an assigned scope.
 fn user_scope_json(user: &bookclerk_library::UserRecord, assigned: AssignedScope) -> UserScopeJson {
     UserScopeJson {
@@ -198,6 +222,7 @@ pub(crate) async fn put_user_scope(
     const ROUTE: &str = "PUT /api/users/{id}/scope";
     let actor = provisioner(&state, &headers).await?;
     let library = state.library_snapshot().await;
+    may_set_limits(&library, actor).await?;
     let user = managed_user(&library, actor, user_id, ROUTE).await?;
     if actor.user_id() == Some(user_id) {
         return Err(refused(
@@ -272,6 +297,7 @@ pub(crate) async fn put_default_scope(
     const ROUTE: &str = "PUT /api/users/default-scope";
     let actor = provisioner(&state, &headers).await?;
     let library = state.library_snapshot().await;
+    may_set_limits(&library, actor).await?;
     let config_actor = match actor.user_id() {
         None => ConfigActor::Operator {
             id: "operator".into(),
@@ -423,6 +449,7 @@ pub(crate) async fn put_user_controls(
     const ROUTE: &str = "PUT /api/users/{id}/controls";
     let actor = provisioner(&state, &headers).await?;
     let library = state.library_snapshot().await;
+    may_set_limits(&library, actor).await?;
     let user = managed_user(&library, actor, user_id, ROUTE).await?;
     if actor.user_id() == Some(user_id) {
         return Err(refused(
@@ -504,6 +531,7 @@ pub(crate) async fn put_default_controls(
     const ROUTE: &str = "PUT /api/users/default-controls";
     let actor = provisioner(&state, &headers).await?;
     let library = state.library_snapshot().await;
+    may_set_limits(&library, actor).await?;
     let config_actor = match actor.user_id() {
         None => ConfigActor::Operator {
             id: "operator".into(),

@@ -1663,6 +1663,97 @@ export async function putDefaultControls(
   return parseJson(res);
 }
 
+/** One thing an Owner may allow or refuse an Administrator. */
+export type AdminControl =
+  | "manage_members"
+  | "set_patron_limits"
+  | "library_scan"
+  | "run_jobs"
+  | "fix_catalog"
+  | "invite_branches"
+  | "approve_requests";
+
+/** A value for every Administrator switch (`true` = allowed). */
+export type AdminControls = Record<AdminControl, boolean>;
+
+/** One Administrator's overrides; a missing switch follows the library's default. */
+export type AdminControlOverrides = Partial<Record<AdminControl, boolean>>;
+
+/** An Administrator's switches as `GET /api/users/{id}/admin-controls` reports them. */
+export interface UserAdminControls {
+  /** The user. */
+  user_id: number;
+  /** The library's default for every Administrator. */
+  defaults: AdminControls;
+  /** The switches set for this Administrator alone. */
+  overrides: AdminControlOverrides;
+  /** What applies to the user now (all off for anyone who isn't an Administrator or Owner). */
+  effective: AdminControls;
+  /** True only for an Administrator; an Owner may always do everything. */
+  applies: boolean;
+}
+
+/**
+ * Reads what an Administrator may do.
+ *
+ * @param id - The user.
+ * @returns The default, the Administrator's overrides and what applies.
+ */
+export async function getUserAdminControls(id: number): Promise<UserAdminControls> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/admin-controls`, {
+    credentials: "include",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Sets the switches that differ for one Administrator (Owner or operator only).
+ *
+ * @param id - The user.
+ * @param overrides - The switches set for them alone (`{}` for none).
+ * @returns The switches after the change.
+ */
+export async function putUserAdminControls(
+  id: number,
+  overrides: AdminControlOverrides,
+): Promise<UserAdminControls> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/admin-controls`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ overrides }),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Reads the library's default Administrator switches.
+ *
+ * @returns The default.
+ */
+export async function getDefaultAdminControls(): Promise<{ controls: AdminControls }> {
+  const res = await fetch("/api/users/default-admin-controls", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Replaces the library's default Administrator switches (Owner or operator only).
+ *
+ * @param controls - The new default.
+ * @returns The default after the change.
+ */
+export async function putDefaultAdminControls(
+  controls: AdminControls,
+): Promise<{ controls: AdminControls }> {
+  const res = await fetch("/api/users/default-admin-controls", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(controls),
+  });
+  return parseJson(res);
+}
+
 /**
  * Updates a first-party user role, status, or profile fields.
  *

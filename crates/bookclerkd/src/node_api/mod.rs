@@ -316,6 +316,25 @@ pub async fn post_node_invite(
         (crate::origin::effective_origin_from_config(&cfg, None), pin)
     };
     let library = state.library_snapshot().await;
+    // An Owner can turn off inviting branches for one Administrator; their
+    // nodes keep running. The switch is read for the caller, who mints.
+    if let UserCaller::User { user_id } = caller {
+        match bookclerk_library::control_plane::administrator_switch_allows(
+            &library,
+            user_id,
+            bookclerk_library::control_plane::AdminControl::InviteBranches,
+        )
+        .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(events_error(bookclerk_library::LibraryError::Forbidden(
+                    "an Owner has turned off inviting branches for you".into(),
+                )))
+            }
+            Err(err) => return Err(events_error(err)),
+        }
+    }
     let minted = mint_enrollment_link(
         &library,
         &actor(caller),

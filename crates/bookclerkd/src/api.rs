@@ -16,7 +16,7 @@ use axum::Json;
 use axum::Router;
 use bookclerk_config::{Config, ListenAddrs};
 use bookclerk_integrations::{portal_spa_routes, IntegrationRegistry, PortalState};
-use bookclerk_library::control_plane::ScanRequester;
+use bookclerk_library::control_plane::{AdminControl, ScanRequester};
 use bookclerk_library::{
     hash_token, ClaimTicketRecord, JobRecord, JobTrigger, LibraryError, LibraryStore,
     NewTitleRequest, NewTitleRequestSource, QueueWisher, RequestStatus, TitleRequestRecord,
@@ -1459,6 +1459,14 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(
             crate::patron_scopes::get_user_controls,
             crate::patron_scopes::put_user_controls
+        ))
+        .routes(routes!(
+            crate::admin_controls::get_default_admin_controls,
+            crate::admin_controls::put_default_admin_controls
+        ))
+        .routes(routes!(
+            crate::admin_controls::get_user_admin_controls,
+            crate::admin_controls::put_user_admin_controls
         ))
         .routes(routes!(auth::create_user_claim_ticket))
         .routes(routes!(auth::reset_user_password))
@@ -5415,8 +5423,15 @@ async fn list_event_deliveries(
 )]
 async fn retry_event_delivery(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
+    crate::auth::require_requester_control(
+        &state,
+        requester.map(|axum::Extension(r)| r),
+        AdminControl::RunJobs,
+    )
+    .await?;
     let library = state.library_snapshot().await;
     match library.retry_dead_letter_delivery(&id).await {
         Ok(true) => {
@@ -5446,8 +5461,15 @@ async fn retry_event_delivery(
 )]
 async fn ack_event_delivery(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
+    crate::auth::require_requester_control(
+        &state,
+        requester.map(|axum::Extension(r)| r),
+        AdminControl::RunJobs,
+    )
+    .await?;
     let library = state.library_snapshot().await;
     match library.acknowledge_dead_letter_delivery(&id).await {
         Ok(true) => Ok(Json(ActionResponse {
@@ -5474,8 +5496,15 @@ async fn ack_event_delivery(
 )]
 async fn cancel_event_delivery(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
+    crate::auth::require_requester_control(
+        &state,
+        requester.map(|axum::Extension(r)| r),
+        AdminControl::RunJobs,
+    )
+    .await?;
     let library = state.library_snapshot().await;
     match library.request_event_delivery_cancel(&id).await {
         Ok(Some(row)) => {
@@ -5505,8 +5534,15 @@ async fn cancel_event_delivery(
 )]
 async fn resume_event_delivery(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
+    crate::auth::require_requester_control(
+        &state,
+        requester.map(|axum::Extension(r)| r),
+        AdminControl::RunJobs,
+    )
+    .await?;
     let library = state.library_snapshot().await;
     match library.resume_event_delivery(&id).await {
         Ok(true) => {
@@ -5536,8 +5572,15 @@ async fn resume_event_delivery(
 )]
 async fn cancel_job(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
+    crate::auth::require_requester_control(
+        &state,
+        requester.map(|axum::Extension(r)| r),
+        AdminControl::RunJobs,
+    )
+    .await?;
     let library = state.library_snapshot().await;
     match library.request_job_cancel(&id).await {
         Ok(Some(job)) => Ok(Json(ActionResponse {
@@ -5633,9 +5676,10 @@ async fn legacy_list_jobs(state: State<Arc<AppState>>) -> Result<Json<Vec<JobInf
 #[deprecated(note = "legacy root alias; call the `/api/...` route instead")]
 async fn legacy_cancel_job(
     state: State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     id: AxumPath<String>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
-    cancel_job(state, id).await
+    cancel_job(state, requester, id).await
 }
 
 /// Enqueues a remote integration library scan; 404 if missing, 400 if unsupported.
@@ -5656,9 +5700,19 @@ async fn legacy_cancel_job(
 )]
 async fn trigger_integration_scan(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     AxumPath(id): AxumPath<String>,
     body: Option<Json<IntegrationScanRequest>>,
 ) -> Response {
+    if let Err(status) = crate::auth::require_requester_control(
+        &state,
+        requester.map(|axum::Extension(r)| r),
+        AdminControl::LibraryScan,
+    )
+    .await
+    {
+        return status.into_response();
+    }
     let force = body.and_then(|Json(b)| b.force).unwrap_or(false);
     {
         let integrations = state.integrations.read().await;
@@ -6838,7 +6892,19 @@ fn source_from_purchase_hint(
         (status = 400, description = "No listening-capable integration is enabled.", body = String, content_type = "text/plain", example = json!("no listening-capable integrations are enabled")),
     ),
 )]
-async fn sync_listening(State(state): State<Arc<AppState>>) -> Response {
+async fn sync_listening(
+    State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
+) -> Response {
+    if let Err(status) = crate::auth::require_requester_control(
+        &state,
+        requester.map(|axum::Extension(r)| r),
+        AdminControl::RunJobs,
+    )
+    .await
+    {
+        return status.into_response();
+    }
     if state
         .integrations
         .read()

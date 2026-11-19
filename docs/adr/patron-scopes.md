@@ -117,6 +117,19 @@ store accounts here". Like that rule it is checked again inside each
 account's import batch, so turning it off stops a join that is still
 adding accounts.
 
+### Administrator switches
+
+An Owner or the operator also keeps control over what an Administrator
+may do, with seven switches: manage members, set patron limits,
+library-wide scan and acquire, run the job queue, fix the catalog,
+invite branches, and approve interlibrary requests. Each has a library
+default (the `core.admin_controls` configuration document) and a
+per-Administrator override in the same shape as the member controls. All
+are on by default, an Administrator can read but never change their own,
+and Owners are never limited. A route a switch guards answers `403` when
+it is off; with library-wide scan off, an Administrator scans and
+acquires like a Member, with only their own accounts.
+
 ### One authority per linked person
 
 A person linked between Bookclerk and another server has one

@@ -643,6 +643,29 @@ async fn scan_planner_splits_and_scopes(owner_db: LibraryStore, host_db: Library
         .unwrap();
     assert_eq!(accounts_of(plan), vec!["a2"]);
 
+    // An Owner can turn library-wide scans off for the Administrator, who
+    // then scans only the accounts linked to them, like a Member.
+    let mut overrides = crate::control_plane::AdminControlOverrides::default();
+    overrides.set(crate::control_plane::AdminControl::LibraryScan, Some(false));
+    crate::control_plane::set_admin_control_overrides(&owner_db, admin, overrides)
+        .await
+        .unwrap();
+    assert!(plan_scan(&host_db, ScanRequester::User(admin), None, None)
+        .await
+        .unwrap()
+        .is_empty());
+    let err = plan_scan(&host_db, ScanRequester::User(admin), Some("a2"), None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, LibraryError::Forbidden(_)), "{err}");
+    crate::control_plane::set_admin_control_overrides(
+        &owner_db,
+        admin,
+        crate::control_plane::AdminControlOverrides::default(),
+    )
+    .await
+    .unwrap();
+
     // Promotion widens the plan; disabling refuses it.
     owner_db
         .set_user_role(riley, UserRole::Owner)

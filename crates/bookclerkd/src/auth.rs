@@ -17,7 +17,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::Json;
 use bookclerk_config::{register_secret, session_cookie_flags};
 use bookclerk_integrations::{identity_from_session, session_for_identity};
-use bookclerk_library::control_plane::ScanRequester;
+use bookclerk_library::control_plane::{AdminControl, ScanRequester};
 use bookclerk_library::{
     classify_session_client, hash_password, hash_token, portal_prefs_key, user_prefs_key,
     verify_password, LibraryError, PortalIdentity, SessionClientInfo, UserRole, UserStatus,
@@ -3327,6 +3327,9 @@ pub async fn patch_user(
     if !actor.can_manage_target(user.role, is_self) {
         return Err(StatusCode::FORBIDDEN);
     }
+    if !is_self {
+        require_admin_control(&library, actor, AdminControl::ManageMembers).await?;
+    }
     if let Some(role_raw) = body.role.as_deref() {
         let Some(role) = UserRole::parse(role_raw.trim()) else {
             return Err(StatusCode::BAD_REQUEST);
@@ -3441,6 +3444,7 @@ pub async fn create_user_claim_ticket(
     if !actor.can_provision_target(user.role, user_id) {
         return Err(StatusCode::FORBIDDEN);
     }
+    require_admin_control(&library, actor, AdminControl::ManageMembers).await?;
     if matches!(user.status, UserStatus::Disabled) {
         return Err(StatusCode::FORBIDDEN);
     }
@@ -3494,6 +3498,7 @@ pub async fn reset_user_password(
     if !actor.can_provision_target(user.role, user_id) {
         return Err(StatusCode::FORBIDDEN);
     }
+    require_admin_control(&library, actor, AdminControl::ManageMembers).await?;
     if matches!(user.status, UserStatus::Disabled) {
         return Err(StatusCode::FORBIDDEN);
     }
@@ -3564,6 +3569,9 @@ pub async fn delete_user(
         Ok(actor) => {
             if !actor.can_manage_target(target.role, is_self) {
                 return Err(StatusCode::FORBIDDEN);
+            }
+            if !is_self {
+                require_admin_control(&library, actor, AdminControl::ManageMembers).await?;
             }
             actor.audit_actor()
         }
@@ -3791,6 +3799,7 @@ pub async fn create_user(
     if !actor.can_assign_role(role) {
         return Err(StatusCode::FORBIDDEN);
     }
+    require_admin_control(&library, actor, AdminControl::ManageMembers).await?;
     let actor_s = actor.audit_actor();
     let password_hash = match body
         .password
@@ -4003,6 +4012,7 @@ pub async fn set_password(
             if !actor.can_provision_target(target.role, uid) {
                 return Err(StatusCode::FORBIDDEN);
             }
+            require_admin_control(&library, actor, AdminControl::ManageMembers).await?;
             (uid, actor.audit_actor(), false)
         }
     } else if let Some(uid) = portal_uid {
@@ -4178,12 +4188,73 @@ pub(crate) async fn authorize_provisioner(
     }
 }
 
+/// Refuses an Administrator whose switch `control` is off.
+///
+/// The operator, an elevated Owner and an Owner always pass; only an
+/// Administrator's switches are read (see `docs/adr/owner-and-operator.md`).
+///
+/// # Errors
+///
+/// 403 when the switch is off for the Administrator, 500 when it cannot be
+/// read (the route fails closed).
+pub(crate) async fn require_admin_control(
+    library: &bookclerk_library::LibraryStore,
+    actor: Provisioner,
+    control: bookclerk_library::control_plane::AdminControl,
+) -> Result<(), StatusCode> {
+    let Provisioner::Administrator { user_id } = actor else {
+        return Ok(());
+    };
+    match bookclerk_library::control_plane::admin_may(library, user_id, control).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(StatusCode::FORBIDDEN),
+        Err(err) => {
+            tracing::error!(error = %err, control = control.as_str(), "administrator switch check failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// Refuses a caller of the operator-or-Administrator routes whose switch
+/// `control` is off.
+///
+/// `requester` is what [`require_operator_or_administrator_auth`] put on the
+/// request: the operator passes, a user is checked by their stored role and
+/// switches (an Owner always passes), and a request without one (a session
+/// linked to no user) is refused.
+///
+/// # Errors
+///
+/// 403 when the switch is off or there is no requester, 500 when the
+/// switch cannot be read (the route fails closed).
+pub(crate) async fn require_requester_control(
+    state: &AppState,
+    requester: Option<ScanRequester>,
+    control: AdminControl,
+) -> Result<(), StatusCode> {
+    let user_id = match requester {
+        Some(ScanRequester::Operator) => return Ok(()),
+        Some(ScanRequester::User(user_id)) => user_id,
+        None => return Err(StatusCode::FORBIDDEN),
+    };
+    let library = state.library_snapshot().await;
+    match bookclerk_library::control_plane::admin_may(&library, user_id, control).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(StatusCode::FORBIDDEN),
+        Err(err) => {
+            tracing::error!(error = %err, control = control.as_str(), "administrator switch check failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 /// The library Administrator behind `headers`, for the routes that change
 /// how the library resolves listings (pins and conflicts).
 ///
 /// The operator, an elevated Owner, an Owner or an Administrator is
 /// admitted, and an impersonating operator acts with the impersonated
-/// user's role, as for user provisioning.
+/// user's role, as for user provisioning. With `control`, an
+/// Administrator whose switch is off is refused.
 ///
 /// # Returns
 ///
@@ -4192,16 +4263,20 @@ pub(crate) async fn authorize_provisioner(
 /// # Errors
 ///
 /// 401 when no one is signed in, 403 for a Member or a session
-/// without a user.
+/// without a user, or an Administrator whose `control` is off; 500 when
+/// the switch cannot be read.
 pub(crate) async fn library_administrator(
     state: &AppState,
     headers: &HeaderMap,
+    control: Option<AdminControl>,
 ) -> Result<Option<i64>, StatusCode> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
-    Ok(authorize_provisioner(state, &auth, headers, &library)
-        .await?
-        .user_id())
+    let actor = authorize_provisioner(state, &auth, headers, &library).await?;
+    if let Some(control) = control {
+        require_admin_control(&library, actor, control).await?;
+    }
+    Ok(actor.user_id())
 }
 
 /// Maps an impersonated first-party user onto that user's provisioner role.

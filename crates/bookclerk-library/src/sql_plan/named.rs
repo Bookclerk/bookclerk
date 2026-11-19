@@ -1536,6 +1536,7 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
         "oidc_rp_states",
         "user_title_state",
         "patron_controls",
+        "admin_controls",
         "patron_scopes",
         "copy_grants",
         "playback_progress",

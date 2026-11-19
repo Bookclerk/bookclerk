@@ -772,8 +772,14 @@ pub async fn plan_scan(
     let owner = match requester {
         ScanRequester::Operator => None,
         ScanRequester::User(user_id) => match active_role(store, user_id).await? {
-            Some(role) if role.is_privileged() => None,
-            Some(_) => Some(user_id),
+            Some(UserRole::Owner) => None,
+            // An Owner can turn library-wide scans off for one
+            // Administrator, who then scans only their own accounts.
+            Some(UserRole::Administrator) => {
+                (!super::admin_may(store, user_id, super::AdminControl::LibraryScan).await?)
+                    .then_some(user_id)
+            }
+            Some(UserRole::Member) => Some(user_id),
             None => {
                 return Err(LibraryError::Forbidden(
                     "this user may not scan the library".into(),
@@ -1147,18 +1153,24 @@ pub async fn acquire_titles_of_editions(
 }
 
 /// `None` when `requester` may act on every account (operator authority,
-/// an Owner or an Administrator), otherwise the user whose accounts bound
-/// the request.
+/// an Owner, or an Administrator whose "Library-wide scan and acquire"
+/// switch is on), otherwise the user whose accounts bound the request.
 ///
 /// # Errors
 ///
-/// Returns [`LibraryError::Forbidden`] for an unknown or disabled user.
+/// Returns [`LibraryError::Forbidden`] for an unknown or disabled user, or
+/// the read error of the Administrator's switch.
 async fn requester_scope(store: &LibraryStore, requester: ScanRequester) -> Result<Option<i64>> {
     match requester {
         ScanRequester::Operator => Ok(None),
         ScanRequester::User(user_id) => match active_role(store, user_id).await? {
-            Some(role) if role.is_privileged() => Ok(None),
-            Some(_) => Ok(Some(user_id)),
+            Some(UserRole::Owner) => Ok(None),
+            Some(UserRole::Administrator) => {
+                let library_wide =
+                    super::admin_may(store, user_id, super::AdminControl::LibraryScan).await?;
+                Ok((!library_wide).then_some(user_id))
+            }
+            Some(UserRole::Member) => Ok(Some(user_id)),
             None => Err(LibraryError::Forbidden(
                 "this user may not queue library work".into(),
             )),

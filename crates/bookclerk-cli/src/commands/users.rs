@@ -1,12 +1,19 @@
 //! `bookclerk users`: the library's people. Today it reads and sets patron
-//! scopes, which part of the library a Member sees, and member controls,
-//! what a Member may do.
+//! scopes, which part of the library a Member sees, member controls,
+//! what a Member may do, and Administrator switches, what an
+//! Administrator may do.
 //!
 //! Reads and writes the library database directly, like `nodes`. The web
 //! app's Settings → Users, `GET`/`PUT /api/users/{id}/scope` and
-//! `GET`/`PUT /api/users/{id}/controls` change the same records.
+//! `GET`/`PUT /api/users/{id}/controls` and
+//! `GET`/`PUT /api/users/{id}/admin-controls` change the same records.
 
 use bookclerk_config::Config;
+use bookclerk_library::control_plane::{
+    admin_control_overrides, assigned_admin_controls, default_admin_controls,
+    set_admin_control_overrides, set_default_admin_controls, AdminControl, AdminControls,
+    AssignedAdminControls,
+};
 use bookclerk_library::control_plane::{
     assigned_member_controls, assigned_patron_scope, default_member_controls, default_patron_scope,
     member_control_overrides, role_follows_default_controls, role_has_controls, role_is_scoped,
@@ -14,7 +21,7 @@ use bookclerk_library::control_plane::{
     set_patron_scope, AssignedControls, ConfigActor, MemberControl, MemberControls, PatronScope,
     RuleEffect, ScopeField, ScopeRule,
 };
-use bookclerk_library::UserRecord;
+use bookclerk_library::{UserRecord, UserRole};
 use clap::Subcommand;
 use serde_json::json;
 
@@ -35,6 +42,51 @@ pub enum UsersCommand {
         #[command(subcommand)]
         /// Controls verb.
         command: ControlsCommand,
+    },
+    /// Read or set what an Administrator may do: manage members, set
+    /// patron limits, library-wide scan and acquire, run the job queue, fix
+    /// the catalog, invite branches, approve requests.
+    AdminControls {
+        #[command(subcommand)]
+        /// Administrator switches verb.
+        command: AdminControlsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+/// `bookclerk users admin-controls` verbs.
+pub enum AdminControlsCommand {
+    /// Print an Administrator's switches, or the library's default.
+    Get {
+        /// Login name or user id.
+        #[arg(required_unless_present = "default", conflicts_with = "default")]
+        user: Option<String>,
+        /// The library's default, which Administrators follow unless a
+        /// switch is set for them alone.
+        #[arg(long)]
+        default: bool,
+    },
+    /// Change switches of an Administrator, or of the library's default.
+    /// Switches not named keep their value.
+    Set {
+        /// Login name or user id.
+        #[arg(required_unless_present = "default", conflicts_with = "default")]
+        user: Option<String>,
+        /// Change the library's default instead of one Administrator's.
+        #[arg(long)]
+        default: bool,
+        /// Turn a switch on (`manage_members`, `set_patron_limits`,
+        /// `library_scan`, `run_jobs`, `fix_catalog`, `invite_branches`,
+        /// `approve_requests`). Repeatable.
+        #[arg(long, value_name = "SWITCH")]
+        allow: Vec<String>,
+        /// Turn a switch off. Repeatable.
+        #[arg(long, value_name = "SWITCH")]
+        deny: Vec<String>,
+        /// Make the Administrator follow the library's default for a
+        /// switch again. Repeatable; `all` names every switch.
+        #[arg(long, value_name = "SWITCH", conflicts_with = "default")]
+        follow_default: Vec<String>,
     },
 }
 
@@ -130,6 +182,9 @@ pub async fn run(
     let command = match command {
         UsersCommand::Scope { command } => command,
         UsersCommand::Controls { command } => return run_controls(store, command, format).await,
+        UsersCommand::AdminControls { command } => {
+            return run_admin_controls(store, command, format).await
+        }
     };
     match command {
         ScopeCommand::Get { user, default } => match (user, default) {
@@ -319,6 +374,142 @@ fn print_user_controls(
     )
 }
 
+/// Runs a `users admin-controls` command. The CLI writes as the operator.
+///
+/// # Errors
+///
+/// Returns an error for an unknown user or switch, or a failed read or
+/// write.
+async fn run_admin_controls(
+    store: &bookclerk_library::LibraryStore,
+    command: AdminControlsCommand,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    match command {
+        AdminControlsCommand::Get { user, default } => match (user, default) {
+            (_, true) => {
+                print_default_admin_controls(format, &default_admin_controls(store).await?)
+            }
+            (Some(user), false) => {
+                let user = resolve_user(store, &user).await?;
+                let assigned = assigned_admin_controls(store, &user).await?;
+                print_user_admin_controls(format, &user, &assigned)
+            }
+            (None, false) => anyhow::bail!("name a user or pass --default"),
+        },
+        AdminControlsCommand::Set {
+            user,
+            default,
+            allow,
+            deny,
+            follow_default,
+        } => {
+            let mut changes = Vec::new();
+            for (names, value) in [(&allow, Some(true)), (&deny, Some(false))] {
+                for name in names {
+                    changes.push((parse_admin_control(name)?, value));
+                }
+            }
+            for name in &follow_default {
+                if name.trim() == "all" {
+                    changes.extend(AdminControl::ALL.into_iter().map(|control| (control, None)));
+                } else {
+                    changes.push((parse_admin_control(name)?, None));
+                }
+            }
+            if changes.is_empty() {
+                anyhow::bail!("name a switch with --allow, --deny or --follow-default");
+            }
+            match (user, default) {
+                (_, true) => {
+                    let mut controls = default_admin_controls(store).await?;
+                    for (control, value) in changes {
+                        controls.set(control, value.unwrap_or(true));
+                    }
+                    let actor = ConfigActor::Operator { id: "cli".into() };
+                    let stored = set_default_admin_controls(store, &actor, controls).await?;
+                    print_default_admin_controls(format, &stored.body)
+                }
+                (Some(user), false) => {
+                    let user = resolve_user(store, &user).await?;
+                    let mut overrides = admin_control_overrides(store, user.id).await?;
+                    for (control, value) in changes {
+                        overrides.set(control, value);
+                    }
+                    let assigned = set_admin_control_overrides(store, user.id, overrides).await?;
+                    print_user_admin_controls(format, &user, &assigned)
+                }
+                (None, false) => anyhow::bail!("name a user or pass --default"),
+            }
+        }
+    }
+}
+
+/// Parses an Administrator switch name.
+fn parse_admin_control(name: &str) -> anyhow::Result<AdminControl> {
+    AdminControl::parse(name.trim()).ok_or_else(|| {
+        let known: Vec<&str> = AdminControl::ALL.iter().map(|c| c.as_str()).collect();
+        anyhow::anyhow!("unknown switch `{name}`; use one of {}", known.join(", "))
+    })
+}
+
+/// Prints the library's default Administrator switches.
+fn print_default_admin_controls(
+    format: OutputFormat,
+    controls: &AdminControls,
+) -> anyhow::Result<()> {
+    emit(format, &json!({ "controls": controls }), || {
+        println!("Default Administrator switches");
+        for control in AdminControl::ALL {
+            println!(
+                "  {:<18} {}",
+                control.as_str(),
+                allowed_word(controls.allows(control))
+            );
+        }
+    })
+}
+
+/// Prints an Administrator's switches.
+fn print_user_admin_controls(
+    format: OutputFormat,
+    user: &UserRecord,
+    assigned: &AssignedAdminControls,
+) -> anyhow::Result<()> {
+    let applies = user.role == UserRole::Administrator;
+    emit(
+        format,
+        &json!({
+            "user_id": user.id,
+            "defaults": assigned.defaults,
+            "overrides": assigned.overrides,
+            "effective": assigned.effective,
+            "applies": applies,
+        }),
+        || {
+            println!("User {}", user.id);
+            if !applies {
+                println!(
+                    "  not applied: the switches limit Administrators only, not a {}",
+                    user.role.as_str()
+                );
+            }
+            for control in AdminControl::ALL {
+                let source = if assigned.overrides.get(control).is_some() {
+                    "set for this user"
+                } else {
+                    "library default"
+                };
+                println!(
+                    "  {:<18} {} ({source})",
+                    control.as_str(),
+                    allowed_word(assigned.effective.allows(control))
+                );
+            }
+        },
+    )
+}
+
 /// Builds a scope from `--include` and `--exclude` values.
 ///
 /// # Errors
@@ -450,6 +641,15 @@ async fn resolve_user(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admin_switches_parse_by_wire_name() {
+        assert_eq!(
+            parse_admin_control(" run_jobs ").unwrap(),
+            AdminControl::RunJobs
+        );
+        assert!(parse_admin_control("fly").is_err());
+    }
 
     #[test]
     fn controls_parse_by_wire_name() {

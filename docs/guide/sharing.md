@@ -114,6 +114,41 @@ always do everything. From the command line,
 `bookclerk users controls get` and `bookclerk users controls set` do the
 same.
 
+## Limit what an Administrator may do
+
+Seven switches, the **Administrator switches**, say what an
+Administrator may do. Only an Owner or the operator can change them, and
+all are on out of the box. Owners are never limited.
+
+| Switch | Turning it off stops |
+| --- | --- |
+| Manage members | Inviting, adding, changing, resetting the password of, or removing Members. An Administrator can still change their own profile. |
+| Set patron limits | Changing a Member's scope or member controls, and the library's defaults for them |
+| Scan and acquire library-wide | Scanning or acquiring with every store account. They still reach the accounts linked to them. |
+| Run the job queue | Cancelling jobs, retrying, cancelling or resuming event deliveries, and starting a listening sync |
+| Fix the catalog | Pinning a listing to an edition, removing a pin, and splitting a work. The conflicts list stays readable. |
+| Invite branches | Creating invites that let a new branch join the library |
+| Approve interlibrary requests | Answering requests from other libraries |
+
+> [!NOTE]
+> Nothing asks an Administrator to approve an interlibrary request yet, so
+> that switch changes nothing today. It is kept so the setting is ready
+> when it applies.
+
+To set them:
+
+1. Sign in as an Owner and open **Settings → User Management**.
+2. With no one selected, switch **Default Administrator switches**. Every
+   Administrator follows these unless a switch is set for them alone.
+3. To change one Administrator, select them and pick **Allowed** or
+   **Off** for a switch under **Administrator switches**. **Default**
+   makes that switch follow the library's default again.
+
+An Administrator sees their own switches but can't change them. From the
+command line, `bookclerk users admin-controls get` and
+`bookclerk users admin-controls set` do the same (see the
+[CLI reference](../server/cli-reference.md)).
+
 ## Audiobookshelf
 
 If your household listens with [Audiobookshelf](https://www.audiobookshelf.org/),
