@@ -312,7 +312,7 @@ impl DiagnosticsHandle {
     ///
     /// * `event` - The tracing event.
     /// * `span_fields` - Redacted `(span.field, value)` pairs, innermost span
-    ///   first (see [`DiagnosticsLayer`]).
+    ///   first (see `DiagnosticsLayer`).
     pub fn record_event_with_spans(&self, event: &Event<'_>, span_fields: Vec<(String, String)>) {
         let normalized = event.normalized_metadata();
         let meta = normalized.as_ref().unwrap_or_else(|| event.metadata());
