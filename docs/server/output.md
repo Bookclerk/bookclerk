@@ -322,10 +322,9 @@ this book", before anything is downloaded.
 > stored on one destination is not acquired again for another destination
 > that takes it; that changes when each destination's copy is tracked.
 
-> [!NOTE]
-> For now filters apply to acquires that run on the library itself. A
-> branch that acquires for the library still writes to every destination
-> the library names; that changes in a later release.
+The same holds when a branch acquires a book for the library: the
+library works out the destinations that take each book and the branch
+uploads it to those only.
 
 ## Keeping several copies
 

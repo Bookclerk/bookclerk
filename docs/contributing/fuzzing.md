@@ -59,7 +59,7 @@ boundary extends it.
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `diagnostics_submit_reply` | The diagnostics collector's reply to an uploaded report, whose `report_id` joins the install's report history | `bookclerk-config::parse_submit_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
-| `audible_catalog` | Audible public catalog answers (search results and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
+| `audible_catalog` | Audible public catalog answers (search results, titles looked up by ASIN and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
@@ -74,6 +74,7 @@ boundary extends it.
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
 | `members_books_request` | A library operator's "Acquire all of this branch's members' books" choice, the body of `PUT /api/config/branches/members-books` | `bookclerk-library::control_plane::parse_members_books_request` |
+| `member_controls_request` | Member controls an Owner or Administrator sets: the bodies of `PUT /api/users/default-controls` and `PUT /api/users/{id}/controls` | `bookclerk-library::control_plane::parse_member_controls`, `parse_user_controls_request` |
 | `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
@@ -371,7 +372,9 @@ only that. The others check:
   frame version, and serializes and parses back to an equal frame (unless
   its serialized text grows past the limit, as `1e9` written out does). Every
   call number in `acquire.targets` is 1 to 16 ASCII letters and digits,
-  checked byte by byte. A `catalog.ask` or `catalog.found` that passes
+  checked byte by byte, and every target whose destination list passes
+  its validator names only destinations its plan lists, each once and in
+  the plan's order. A `catalog.ask` or `catalog.found` that passes
   its validator names at most 100 works, each once, by plain correlation
   keys; its identifiers are plain ASCII with a marketplace exactly on an
   ASIN, and each answer lists 1 to 8 distinct editions with a title. A
@@ -400,7 +403,9 @@ only that. The others check:
   character or drive prefix), each at most 1 TiB, exactly one of them the
   primary audio. The `copy_*` seeds' names say whether the receiver takes
   the frame, and the replay test checks each against its name. Seeds cover `accounts.update`, `accounts.updated`,
-  `scan.removed`, `scan.pass_end` and a `work` frame with scan tokens. The shared oracle is `fuzz/oracles/node_frame.rs`,
+  `scan.removed`, `scan.pass_end`, a `work` frame with scan tokens, and
+  `acquire.targets` with a destination subset, an empty list and a list
+  that does not fit its plan. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
   has the bundle version and names the library and node it was opened
@@ -553,6 +558,18 @@ only that. The others check:
   and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/members_books_request.rs`, replayed from
   `bookclerk-library`.
+- **`member_controls_request`**: the first byte picks the body (`d` for
+  the default, `u` for a patron's overrides) and the oracle reads the rest
+  as an untyped JSON value. The default is accepted exactly when it is one
+  object with no repeated keys whose keys are among `link_accounts`,
+  `download`, `edit_metadata`, `upload`, `request_books` and `see_prices`,
+  each a boolean; a control left out is allowed. A patron's body is
+  accepted exactly when it is one object with no repeated keys and exactly
+  the key `overrides`, an object of those keys with boolean or `null`
+  values; a control left out or `null` follows the default. The parser
+  then returns exactly those values, and otherwise refuses the body as
+  `Invalid`. The shared oracle is `fuzz/oracles/member_controls_request.rs`,
+  replayed from `bookclerk-library`.
 - **`patron_scope_request`**: the first byte picks the body (`d` for the
   default scope, `u` for a user's) and the oracle reads the rest as an
   untyped JSON value. A scope is accepted exactly when it is one object

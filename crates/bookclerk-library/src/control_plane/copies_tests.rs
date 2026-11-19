@@ -513,6 +513,39 @@ async fn a_library_card_is_granted_a_copy_while_it_is_signed_in_under_every_prof
             "{name}"
         );
 
+        // Turning downloads off for Morgan ends the grant and refuses a
+        // new plan; turning them back on restores both.
+        for allowed in [false, true] {
+            crate::control_plane::set_member_control_overrides(
+                &store,
+                morgan,
+                crate::control_plane::ControlOverrides {
+                    download: Some(allowed),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                authorize_copy(&store, &opened.copy_id, &opened.token)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                allowed,
+                "{name}: downloads {allowed}"
+            );
+            assert_eq!(
+                matches!(
+                    plan_copy(&store, CopyHolder::Card(&card), listing(ASIN))
+                        .await
+                        .unwrap(),
+                    CopyPlanned::Planned(_)
+                ),
+                allowed,
+                "{name}: downloads {allowed}"
+            );
+        }
+
         // Signing the card out ends the grant at once.
         assert!(store.delete_clerk_session(&card).await.unwrap());
         assert_eq!(

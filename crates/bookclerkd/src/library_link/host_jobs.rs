@@ -22,7 +22,9 @@
 //! - **Acquire.** The host asks the owner for the job's titles
 //!   (`acquire.plan`, again until no new title comes back), acquires each
 //!   into a per-title outbox under this host's files dir with one outbox
-//!   destination per owner destination, each with that destination's own
+//!   destination per owner destination in the title's target set (the
+//!   destinations whose filter takes it, as the plan lists them for each
+//!   title; a title none takes fails here), each with that destination's own
 //!   naming options, so every destination's keys come out as a local
 //!   acquire on the owner would name them (the acquire pipeline runs
 //!   against a scratch library
@@ -64,8 +66,8 @@ use bookclerk_library::control_plane::LinkImportOutcome;
 use bookclerk_library::{AcquireTitle, BookRecord, JobKind, LibraryStore, NewBook};
 use bookclerk_node_client::{HostJobCtx, OwnerCallError};
 use bookclerk_node_proto::{
-    AcquireTarget, FileCopy, PlanDestination, TargetTitle, UploadFile, UploadProbe,
-    MAX_SCAN_BATCH_ROWS, MAX_SCAN_REMOVED_IDS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
+    target_destinations_problem, AcquireTarget, FileCopy, PlanDestination, TargetTitle, UploadFile,
+    UploadProbe, MAX_SCAN_BATCH_ROWS, MAX_SCAN_REMOVED_IDS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
 };
 use bookclerk_plugin_host::{HandedScan, RefreshedCredentialSink};
 use bookclerk_source::DownloadOptions;
@@ -180,7 +182,8 @@ pub struct HostTitle {
     pub call_number: Option<String>,
     /// The podcast parent's call number on the owner.
     pub parent_call_number: Option<String>,
-    /// The shared node's destinations, the primary first; never empty.
+    /// The shared node's destinations in the title's target set
+    /// ([`target_set`]), the primary first; never empty.
     pub destinations: Vec<HostDestination>,
 }
 
@@ -1348,7 +1351,8 @@ async fn acquire_titles<G: HostGuests>(
             anyhow::bail!("the owner planned no destination");
         }
         let destinations = planned
-            .into_iter()
+            .iter()
+            .cloned()
             .map(HostDestination::from_plan)
             .collect::<anyhow::Result<Vec<_>>>()?;
         let fresh: Vec<AcquireTarget> = targets
@@ -1369,6 +1373,18 @@ async fn acquire_titles<G: HostGuests>(
                 failed += 1;
                 continue;
             }
+            // The title goes only to its target set, as the owner chose it
+            // by its destinations' filters; nothing takes it, or a list
+            // that does not fit the plan, fails it before anything is
+            // fetched.
+            let targets = match target_set(&target, &planned, &destinations) {
+                Ok(targets) => targets,
+                Err(err) => {
+                    tracing::warn!(job_id = %host.job.job.id, book_uuid = %target.holding_id, error = %err, "a title failed on the host");
+                    failed += 1;
+                    continue;
+                }
+            };
             let book = scratch_book(
                 &target.plugin_key,
                 &target.account_id,
@@ -1386,7 +1402,7 @@ async fn acquire_titles<G: HostGuests>(
                 parent,
                 call_number: target.call_number.map(String::from),
                 parent_call_number: target.parent_call_number.map(String::from),
-                destinations: destinations.clone(),
+                destinations: targets,
             };
             // Both the guest's acquire and the title's upload stop once the
             // job is cancelled; a dropped upload's files are discarded by
@@ -1465,6 +1481,45 @@ async fn acquire_titles<G: HostGuests>(
             }
         }
     }
+}
+
+/// The destinations `target` is written and uploaded to: those of the
+/// plan its list names ([`AcquireTarget::destinations`]), in the plan's
+/// order, or every one when the owner sent no list (an owner that predates
+/// destination filters).
+///
+/// # Arguments
+///
+/// * `target` - One title of the plan.
+/// * `planned` - The plan's destinations as the owner sent them.
+/// * `destinations` - The same destinations, parsed
+///   ([`HostDestination::from_plan`]), in the same order.
+///
+/// # Errors
+///
+/// Returns an error when the list names a destination the plan lacks,
+/// repeats or reorders one, or is empty (no destination accepts the
+/// title).
+pub fn target_set(
+    target: &AcquireTarget,
+    planned: &[PlanDestination],
+    destinations: &[HostDestination],
+) -> anyhow::Result<Vec<HostDestination>> {
+    if let Some(problem) = target_destinations_problem(target, planned) {
+        anyhow::bail!("the owner's destinations for the title do not fit its plan ({problem})");
+    }
+    let Some(chosen) = target.destinations.as_deref() else {
+        return Ok(destinations.to_vec());
+    };
+    let set: Vec<HostDestination> = destinations
+        .iter()
+        .filter(|destination| chosen.iter().any(|id| id == destination.id.as_str()))
+        .cloned()
+        .collect();
+    if set.is_empty() {
+        anyhow::bail!("no destination accepts this book");
+    }
+    Ok(set)
 }
 
 /// Longest owner-supplied id used as a path segment under the work dir.

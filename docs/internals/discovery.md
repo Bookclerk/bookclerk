@@ -450,6 +450,11 @@ Candidates are **unowned** storefront hits (plus open wishlist items), scored by
    also enjoyed"), and keeps that order when it cuts the list to the
    requested size. It never keyword-searches the seed's title: that matched
    words, not books (*The Great Hunt* found *Turkey Hunting for Kids*).
+   A narrator's other titles are kept only when one shares a top-level
+   genre (the first rung of an Audible genre ladder) with the seed, looked
+   up by the seed's ASIN; a seed with no ASIN or no genres gets none.
+   Narrators also record children's books, so the narrator of *The Silent
+   Patient* brought *Panda Panic*.
 3. Overlap with liked authors
 4. **Genres** the person likes, read from the candidate's own genres
    (`genre_match` in `bookclerk-discover`). The genres of the seed the
@@ -467,7 +472,11 @@ languages are the normalized languages of the taste books (the subject's own,
 with the household's blended in while those are few), or the default
 preferred language (`en`) when no taste book has one. A candidate whose store
 gave no language, or one `normalize_language` does not recognize, stays, as
-in catalog search. Editions in two different languages are different
+in catalog search, so a store's related titles should carry their language.
+Libro.fm's search and related lists leave it out (they often hold a seed's
+translations), so its plugin reads each related title from
+`explore/audiobook_details`, which gives the language, the list price and
+whether the title is for sale, and leaves out one that is not. Editions in two different languages are different
 expressions, so they are never merged into one candidate, and dropping one
 language never drops the other edition with it.
 

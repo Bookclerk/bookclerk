@@ -146,12 +146,30 @@ fn visible_to(_person: i64, titles: Vec<AcquireTitle>) -> Vec<AcquireTitle> {
 }
 
 /// The person `holder` asks for, when this library gives it copies: a
-/// trusted branch's owner.
+/// trusted branch's owner, or a library card's person, whose member
+/// controls allow downloads ([`super::MemberControl::Download`]).
 ///
 /// # Errors
 ///
 /// Returns the read error.
 async fn person_of(store: &LibraryStore, holder: CopyHolder<'_>) -> Result<Option<i64>> {
+    let Some(person) = holder_person(store, holder).await? else {
+        return Ok(None);
+    };
+    Ok(
+        super::user_may(store, person, super::MemberControl::Download)
+            .await?
+            .then_some(person),
+    )
+}
+
+/// The person behind `holder`: a trusted branch's owner, or a library
+/// card's person.
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn holder_person(store: &LibraryStore, holder: CopyHolder<'_>) -> Result<Option<i64>> {
     match holder {
         CopyHolder::Node(node_id) => {
             let Some(node) = nodes::Entity::find_by_id(node_id.to_string())
