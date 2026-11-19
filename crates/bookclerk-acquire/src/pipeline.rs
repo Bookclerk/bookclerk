@@ -1424,6 +1424,17 @@ async fn check_copy_folders(
     Ok(())
 }
 
+/// True when any copy the request makes is split by chapter, so the audio
+/// it starts from must be MP4 (the chapter splitter refuses MP3).
+fn splits_any_copy(req: &AcquireRequest) -> bool {
+    req.options.wants_split_by_chapter()
+        || req
+            .options
+            .copies_to_make()
+            .iter()
+            .any(|copy| copy.format == bookclerk_config::CopyFormat::Mp3Chapters)
+}
+
 /// True when every copy the request makes keeps the files as the store
 /// delivered them (`original`), so nothing is decoded or repackaged.
 fn keeps_delivered(req: &AcquireRequest) -> bool {
@@ -1540,7 +1551,9 @@ async fn take_library_copy(
         // A copy from another store replaces a download that already
         // carries the store's own PDF.
         pdf: offer.same_store && req.options.download_pdf,
-        mp4_audio_only: req.options.wants_split_by_chapter(),
+        // Any copy split by chapter needs MP4 audio to split, whichever
+        // copy is the main output.
+        mp4_audio_only: splits_any_copy(req),
         skip_cover: matches!(cover, CopyCover::Skip),
     };
     let taken = match fetch_library_copy(offer.copy.as_ref(), &dir, budget, &media, wants).await {
@@ -5482,6 +5495,17 @@ mod tests {
                 effect,
             }],
         }
+    }
+
+    #[test]
+    fn a_chapter_copy_beside_the_main_output_needs_mp4_audio() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut req = dummy_req(tmp.path(), None, None);
+        req.options.format = bookclerk_config::OutputFormat::SingleMp3;
+        req.options.split_files_by_chapter = false;
+        assert!(!splits_any_copy(&req));
+        req.options.copies = vec![output_copy("mp3_chapters:64k-mono")];
+        assert!(splits_any_copy(&req));
     }
 
     #[tokio::test]
