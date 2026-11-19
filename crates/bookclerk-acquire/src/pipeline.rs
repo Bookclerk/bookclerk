@@ -1346,6 +1346,20 @@ async fn store_copies(
             library_pdf,
         ))
         .await?;
+        // Some packaging paths leave their scratch behind; a finished
+        // copy's files are stored, so they go before the next copy is made
+        // and several copies never hold the scratch quota together.
+        if several {
+            if let Err(err) = tokio::fs::remove_dir_all(&copy_dir).await {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        path = %copy_dir.display(),
+                        error = %err,
+                        "failed to clean a copy's scratch dir"
+                    );
+                }
+            }
+        }
         match result.as_mut() {
             None => result = Some(stored),
             Some(first) => {
