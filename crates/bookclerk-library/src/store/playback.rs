@@ -1020,6 +1020,10 @@ impl LibraryStore {
         let now = now_str();
         let cap = i64::try_from(MAX_BOOKMARKS_PER_EDITION).unwrap_or(i64::MAX);
         let statements = vec![
+            // The topic's row is written first, so two additions from
+            // different database sessions queue on it and the second
+            // counts the first's bookmark: the cap holds across nodes.
+            bump(LiveTopic::Playback),
             batch::exec(
                 "INSERT INTO bookmarks \
                  (id, user_id, edition_id, position_ms, title, created_at, updated_at) \
@@ -1038,13 +1042,13 @@ impl LibraryStore {
                     batch::int(cap),
                 ],
             ),
-            bump(LiveTopic::Playback),
         ];
         let operation_id = format!("bookmark-add-{id}");
         let reply = self
             .execute_host_batch(batch::request(&operation_id, statements))
             .await?;
-        if batch::rows_affected(&reply, 0) == 0 {
+        // Statement 1 is the insert.
+        if batch::rows_affected(&reply, 1) == 0 {
             return Ok(None);
         }
         self.bookmark(&id).await
