@@ -680,3 +680,134 @@ async fn a_refused_login_keeps_an_account_another_login_connected() {
         .unwrap()
         .is_some());
 }
+
+/// The pace route stores each mode for a linked account, reports the pace and
+/// the next automatic download as they now stand, ends a cool-down, and
+/// refuses a body that is not JSON or names an account the caller has not
+/// linked.
+#[tokio::test]
+async fn the_pace_route_sets_each_mode_and_refuses_what_it_should() {
+    let (app, library, cookie) = harness(stores()).await;
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        "/sources/libro/login",
+        Some(&cookie),
+        Some(credentials()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let pace = "/sources/libro/connections/reader@example.com/pace";
+
+    // A custom pace with a download inside its gap: the next automatic
+    // download waits for the gap.
+    library
+        .record_account_download(
+            &bookclerk_library::DownloadId::new(),
+            "test:source-libro",
+            "reader@example.com",
+            chrono::Utc::now(),
+            None,
+            bookclerk_library::DownloadStarter::Host,
+        )
+        .await
+        .unwrap();
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        pace,
+        Some(&cookie),
+        Some(json!({"mode": "custom", "downloads_per_day": 5, "min_gap_seconds": 600})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["mode"], "custom");
+    assert_eq!(body["downloads_per_day"], 5);
+    assert_eq!(body["min_gap_seconds"], 600);
+    assert_eq!(body["custom_downloads_per_day"], 5);
+    assert_eq!(body["custom_min_gap_seconds"], 600);
+    assert_eq!(body["downloads_last_day"], 1);
+    assert!(body["next_automatic_at"].is_string(), "{body}");
+
+    // A cool-down shows until it is cleared; clearing alone needs no mode.
+    library
+        .extend_account_cooldown(
+            "test:source-libro",
+            "reader@example.com",
+            chrono::Utc::now() + chrono::Duration::hours(1),
+        )
+        .await
+        .unwrap();
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        pace,
+        Some(&cookie),
+        Some(json!({"mode": "unlimited"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["mode"], "unlimited");
+    assert!(body["cooldown_until"].is_string(), "{body}");
+    assert_eq!(body["custom_downloads_per_day"], Value::Null);
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        pace,
+        Some(&cookie),
+        Some(json!({"clear_cooldown": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["mode"], "unlimited");
+    assert_eq!(body["cooldown_until"], Value::Null);
+    assert_eq!(body["next_automatic_at"], Value::Null);
+
+    // The alias of the store reaches the same account.
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        "/sources/test:source-libro/connections/reader@example.com/pace",
+        Some(&cookie),
+        Some(json!({"mode": "default"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["mode"], "default");
+
+    // An account the caller has not linked.
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        "/sources/libro/connections/someone@example.com/pace",
+        Some(&cookie),
+        Some(json!({"mode": "default"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body,
+        json!({"error": "account not linked to this identity"})
+    );
+
+    // A body that breaks the rules.
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        pace,
+        Some(&cookie),
+        Some(json!({"mode": "custom"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // A body not declared as JSON.
+    let request = Request::builder()
+        .method("POST")
+        .uri(pace)
+        .header(header::COOKIE, &cookie)
+        .body(Body::from(r#"{"mode":"default"}"#))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}

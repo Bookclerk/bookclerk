@@ -840,32 +840,16 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                         "account `{account}` not found — run `bookclerk library accounts`"
                     )
                 })?;
-            let new_override = if unlimited {
-                Some(bookclerk_library::pacing::PaceOverride::Unlimited)
-            } else if default {
-                Some(bookclerk_library::pacing::PaceOverride::Default)
-            } else if per_day.is_some() || gap_seconds.is_some() {
-                Some(bookclerk_library::pacing::PaceOverride::Custom {
-                    downloads_per_day: per_day.and_then(std::num::NonZeroU32::new),
-                    min_gap_seconds: gap_seconds,
-                })
-            } else {
-                None
-            };
-            if let Some(new_override) = new_override {
-                store
-                    .set_account_pace_override(&acct.plugin_key, &acct.account_id, &new_override)
-                    .await?;
-            }
-            if clear_cooldown {
-                store
-                    .clear_account_cooldown(&acct.plugin_key, &acct.account_id)
-                    .await?;
-            }
-            let state = store
-                .account_pace_state(&acct.plugin_key, &acct.account_id, chrono::Utc::now())
-                .await?;
-            format_out::line(pace_line(&acct.account_id, &state, chrono::Utc::now()));
+            let new_override = pace_override_from_flags(per_day, gap_seconds, unlimited, default);
+            let line = apply_pace(
+                &store,
+                &acct.plugin_key,
+                &acct.account_id,
+                new_override.as_ref(),
+                clear_cooldown,
+            )
+            .await?;
+            format_out::line(line);
             Ok(())
         }
         LibraryCommand::Status { source } => {
@@ -1024,6 +1008,71 @@ async fn list_all_accounts(
         eprintln!("no accounts configured — connect a store in the Bookclerk Accounts UI");
     }
     Ok(())
+}
+
+/// The pace override that `library set-pace`'s flags ask for.
+///
+/// # Arguments
+///
+/// * `per_day` / `gap_seconds`: `--per-day` and `--gap-seconds`; either one
+///   makes a custom pace (the other keeps the store's value).
+/// * `unlimited` / `default`: `--unlimited` and `--default`, which clap keeps
+///   apart from the custom values.
+///
+/// # Returns
+///
+/// `None` when no flag changes the pace (only `--clear-cooldown`, or nothing).
+fn pace_override_from_flags(
+    per_day: Option<u32>,
+    gap_seconds: Option<u32>,
+    unlimited: bool,
+    default: bool,
+) -> Option<bookclerk_library::pacing::PaceOverride> {
+    use bookclerk_library::pacing::PaceOverride;
+    if unlimited {
+        Some(PaceOverride::Unlimited)
+    } else if default {
+        Some(PaceOverride::Default)
+    } else if per_day.is_some() || gap_seconds.is_some() {
+        Some(PaceOverride::Custom {
+            downloads_per_day: per_day.and_then(std::num::NonZeroU32::new),
+            min_gap_seconds: gap_seconds,
+        })
+    } else {
+        None
+    }
+}
+
+/// Stores a new pace and/or ends a cool-down for one account, then describes
+/// the account's pace as it now stands.
+///
+/// # Returns
+///
+/// The line `library set-pace` prints (see [`pace_line`]).
+///
+/// # Errors
+///
+/// Returns an error when a library write or read fails.
+async fn apply_pace(
+    store: &LibraryStore,
+    plugin_key: &str,
+    account_id: &str,
+    new_override: Option<&bookclerk_library::pacing::PaceOverride>,
+    clear_cooldown: bool,
+) -> anyhow::Result<String> {
+    if let Some(new_override) = new_override {
+        store
+            .set_account_pace_override(plugin_key, account_id, new_override)
+            .await?;
+    }
+    if clear_cooldown {
+        store.clear_account_cooldown(plugin_key, account_id).await?;
+    }
+    let now = chrono::Utc::now();
+    let state = store
+        .account_pace_state(plugin_key, account_id, now)
+        .await?;
+    Ok(pace_line(account_id, &state, now))
 }
 
 /// One line describing an account's pace for `library set-pace`.
@@ -1455,5 +1504,107 @@ mod tests {
                 .unwrap(),
             ("acct".to_string(), "B0MISSING1".to_string())
         );
+    }
+
+    /// Each flag combination asks for the override it names, and no flag
+    /// leaves the pace alone.
+    #[test]
+    fn set_pace_flags_name_their_override() {
+        use bookclerk_library::pacing::PaceOverride;
+        assert_eq!(pace_override_from_flags(None, None, false, false), None);
+        assert_eq!(
+            pace_override_from_flags(None, None, true, false),
+            Some(PaceOverride::Unlimited)
+        );
+        assert_eq!(
+            pace_override_from_flags(None, None, false, true),
+            Some(PaceOverride::Default)
+        );
+        assert_eq!(
+            pace_override_from_flags(Some(20), None, false, false),
+            Some(PaceOverride::Custom {
+                downloads_per_day: std::num::NonZeroU32::new(20),
+                min_gap_seconds: None,
+            })
+        );
+        assert_eq!(
+            pace_override_from_flags(None, Some(45), false, false),
+            Some(PaceOverride::Custom {
+                downloads_per_day: None,
+                min_gap_seconds: Some(45),
+            })
+        );
+    }
+
+    /// `set-pace` stores each mode, reports the day's downloads and a live
+    /// cool-down, and ends the cool-down when asked.
+    #[tokio::test]
+    async fn set_pace_stores_the_pace_and_describes_it() {
+        use bookclerk_library::pacing::PaceOverride;
+        let store = library().await;
+        store
+            .record_account_download(
+                &bookclerk_library::DownloadId::new(),
+                "audible",
+                "acct",
+                chrono::Utc::now(),
+                None,
+                bookclerk_library::DownloadStarter::Person,
+            )
+            .await
+            .unwrap();
+
+        let line = apply_pace(&store, "audible", "acct", None, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            line,
+            "account acct pace: the store's default pace; 1 download(s) in the last 24 hours"
+        );
+
+        let custom = PaceOverride::Custom {
+            downloads_per_day: std::num::NonZeroU32::new(20),
+            min_gap_seconds: None,
+        };
+        let line = apply_pace(&store, "audible", "acct", Some(&custom), false)
+            .await
+            .unwrap();
+        assert!(
+            line.contains("pace: 20 a day, gap store default;"),
+            "{line}"
+        );
+        let custom = PaceOverride::Custom {
+            downloads_per_day: None,
+            min_gap_seconds: Some(45),
+        };
+        let line = apply_pace(&store, "audible", "acct", Some(&custom), false)
+            .await
+            .unwrap();
+        assert!(line.contains("pace: store default, gap 45 s;"), "{line}");
+
+        store
+            .extend_account_cooldown(
+                "audible",
+                "acct",
+                chrono::Utc::now() + chrono::Duration::hours(2),
+            )
+            .await
+            .unwrap();
+        let line = apply_pace(
+            &store,
+            "audible",
+            "acct",
+            Some(&PaceOverride::Unlimited),
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(line.contains("pace: no limit;"), "{line}");
+        assert!(line.contains("; cool-down until "), "{line}");
+
+        let line = apply_pace(&store, "audible", "acct", None, true)
+            .await
+            .unwrap();
+        assert!(!line.contains("cool-down"), "{line}");
     }
 }
