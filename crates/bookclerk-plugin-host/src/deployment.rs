@@ -1620,8 +1620,7 @@ impl crate::activation::GuestStarter<dyn crate::on_demand_source::AwakeSource> f
     }
 }
 
-/// Starts a fresh first-party `s3` or `local` guest when an on-demand storage
-/// proxy wakes.
+/// Starts a fresh storage guest when an on-demand storage proxy wakes.
 struct StorageStarter {
     /// Discovered plugin the deployment spawned.
     plugin: crate::DiscoveredPlugin,
@@ -1649,9 +1648,7 @@ impl crate::activation::GuestStarter<dyn crate::on_demand_storage::AwakeStorage>
         )
         .await
         .map_err(|err| err.to_string())?;
-        let parts = spawned
-            .on_demand_parts()
-            .map_err(|_| "storage guest has no host-side backend".to_string())?;
+        let parts = spawned.on_demand_parts();
         Ok(Arc::new(crate::on_demand_storage::StorageGuest {
             session: parts.session,
             backend: parts.backend,
@@ -1685,48 +1682,43 @@ async fn spawn_storage(
                 };
             }
         };
-    // A first-party `s3` or `local` guest sleeps behind a proxy that keeps
-    // its place in the registry; any other storage guest stays resident.
-    let spawned = match starter {
-        Some(starter) => match spawned.on_demand_parts() {
-            Ok(parts) => {
-                let proxy = crate::OnDemandStorage::wrap(
-                    Arc::new(crate::on_demand_storage::StorageGuest {
-                        session: Arc::clone(&parts.session),
-                        backend: parts.backend,
-                    }),
-                    &request.plugin_instance_id,
-                    Box::new(starter),
-                    runtime.storage_idle,
-                );
-                let published = runtime.destinations.write().await.publish_on_demand(
-                    &request.plugin_instance_id,
-                    &parts.session,
-                    Arc::clone(&proxy),
-                    parts.kind,
-                    parts.settings,
-                );
-                if let Err(detail) = published {
-                    crate::OnDemandStatus::retire(proxy.as_ref()).await;
-                    return SpawnHealth::SpawnFailed { detail };
-                }
-                runtime
-                    .remember(
-                        &request.plugin_instance_id,
-                        TrackedGuest {
-                            process: GuestProcess::OnDemand(proxy),
-                            root: request.plugin_root.clone(),
-                            config: tracked_config,
-                            secrets: tracked_secrets,
-                        },
-                    )
-                    .await;
-                return SpawnHealth::Healthy;
-            }
-            Err(spawned) => *spawned,
-        },
-        None => spawned,
-    };
+    // A storage-only guest sleeps behind a proxy that keeps its place in
+    // the registry; a guest that also has another family stays resident.
+    if let Some(starter) = starter {
+        let parts = spawned.on_demand_parts();
+        let proxy = crate::OnDemandStorage::wrap(
+            Arc::new(crate::on_demand_storage::StorageGuest {
+                session: Arc::clone(&parts.session),
+                backend: parts.backend,
+            }),
+            &request.plugin_instance_id,
+            Box::new(starter),
+            runtime.storage_idle,
+        );
+        let published = runtime.destinations.write().await.publish_on_demand(
+            &request.plugin_instance_id,
+            &parts.session,
+            Arc::clone(&proxy),
+            parts.key_style,
+            parts.settings,
+        );
+        if let Err(detail) = published {
+            crate::OnDemandStatus::retire(proxy.as_ref()).await;
+            return SpawnHealth::SpawnFailed { detail };
+        }
+        runtime
+            .remember(
+                &request.plugin_instance_id,
+                TrackedGuest {
+                    process: GuestProcess::OnDemand(proxy),
+                    root: request.plugin_root.clone(),
+                    config: tracked_config,
+                    secrets: tracked_secrets,
+                },
+            )
+            .await;
+        return SpawnHealth::Healthy;
+    }
     let session = {
         let mut registry = runtime.destinations.write().await;
         match registry.publish_spawned(&request.plugin_instance_id, spawned) {

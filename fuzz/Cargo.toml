@@ -375,6 +375,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "destination_id"
+path = "fuzz_targets/destination_id.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "instance_config"
 path = "fuzz_targets/instance_config.rs"
 test = false

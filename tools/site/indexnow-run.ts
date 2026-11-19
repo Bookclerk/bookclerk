@@ -8,10 +8,15 @@
 // It checks that <origin>/<key>.txt serves the key, reads every sitemap the
 // live /sitemap.xml index names, fingerprints each URL (its `<lastmod>`, else
 // a SHA-256 of the page as Markdown), plans the submission against the
-// previous snapshot (indexnow.ts) and posts it. The new snapshot is written
+// previous snapshot (indexnow.ts) and posts it. Without a snapshot it submits
+// only pages dated today or in the RECENT_DAYS days before. The new snapshot is written
 // only after IndexNow accepted every request, so a failed run is retried in
 // full. INDEXNOW_DRY_RUN=1 plans and prints without checking the key file,
 // posting or writing, for a look before the key is deployed.
+//
+// `node indexnow-run.ts --previous-run <listing.json> <branch>` instead
+// prints the run whose snapshot artifact the workflow downloads, read from
+// GitHub's artifact listing (previousSnapshotRun), or nothing.
 //
 // An unset INDEXNOW_KEY is not an error: the run says so and exits, so a fork
 // without a key never submits anything.
@@ -25,6 +30,8 @@ import {
   MAX_DOCUMENT_BYTES,
   parseKey,
   planSubmission,
+  previousSnapshotRun,
+  RECENT_DAYS,
   readSitemap,
   readSnapshot,
   submissionBodies,
@@ -210,14 +217,37 @@ function summary(deps: RunDeps, markdown: string): void {
 }
 
 /**
+ * Prints the workflow run whose snapshot artifact to download, for the
+ * workflow's "Find the previous snapshot" step.
+ *
+ * @param argv - `<listing.json> <branch>`: the artifact listing GitHub
+ *   answered and the default branch.
+ * @param deps - The file reader and logger.
+ * @returns 0 with the run id printed, or with nothing printed when there is
+ *   no snapshot to download; 2 for bad usage.
+ */
+function previousRun(argv: readonly string[], deps: RunDeps): number {
+  const [listing, branch] = argv;
+  if (listing === undefined || branch === undefined || branch === "") {
+    deps.log("usage: node indexnow-run.ts --previous-run <listing.json> <branch>");
+    return 2;
+  }
+  const id = previousSnapshotRun(deps.readFile(listing) ?? "", branch);
+  if (id !== null) deps.log(id);
+  return 0;
+}
+
+/**
  * Runs one submission.
  *
- * @param argv - `<snapshot-in> <snapshot-out>`.
+ * @param argv - `<snapshot-in> <snapshot-out>`, or `--previous-run <listing.json>
+ *   <branch>` (previousRun).
  * @param deps - The environment, fetcher, clock and files.
  * @returns The exit status: 0 when submitted, skipped or nothing changed,
  *   1 when the configuration is wrong or IndexNow refused, 2 for bad usage.
  */
 export async function run(argv: readonly string[], deps: RunDeps): Promise<number> {
+  if (argv[0] === "--previous-run") return previousRun(argv.slice(1), deps);
   const [snapshotIn, snapshotOut] = argv;
   if (snapshotIn === undefined || snapshotOut === undefined) {
     deps.log("usage: node indexnow-run.ts <snapshot-in> <snapshot-out>");
@@ -251,7 +281,10 @@ export async function run(argv: readonly string[], deps: RunDeps): Promise<numbe
     const previous = stored === null ? null : readSnapshot(stored, origin);
     const current = await currentUrls(deps, origin, previous);
     const plan = planSubmission(previous, current, today);
-    const what = previous === null ? "no previous snapshot, so every URL" : "new or changed URLs";
+    const what =
+      previous === null
+        ? `no previous snapshot, so only pages dated today or in the ${RECENT_DAYS} days before`
+        : "new or changed URLs";
     deps.log(`${current.size} URLs listed; submitting ${plan.submit.length} (${what}).`);
     if (dryRun) {
       for (const url of plan.submit) deps.log(url);

@@ -17,7 +17,9 @@ pub use database::{
     ExternalDatabase,
 };
 pub(crate) use destination::spawn_deployed_storage;
-pub use destination::{DestinationRegistry, DestinationSession};
+pub use destination::{
+    DeployedDestination, DestinationRegistry, DestinationSession, DestinationSettings,
+};
 pub use integration::ExternalIntegration;
 pub use plugin_backups::{export_registered_plugin_units, restore_plugin_backup_units};
 pub(crate) use source::list_scope_accounts;

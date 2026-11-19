@@ -11,9 +11,7 @@ use bookclerk_library::{LibraryStore, TasteTitle};
 use bookclerk_source::{CatalogHit, ExpandSeed, SourceRegistry};
 
 use crate::error::Result;
-use crate::identity::{
-    candidate_map_key, hard_work_key, merge_candidate_metadata, push_edition, StoreEdition,
-};
+use crate::identity::{candidate_map_key, merge_candidate_metadata, push_edition, StoreEdition};
 
 /// A purchase candidate discovered from a storefront catalog (not owned locally).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -518,28 +516,7 @@ pub(crate) fn insert_candidate(
         StoreEdition::new(&c.source, &c.product_id),
     );
 
-    // Merge only listings of one recording: the expression the shared
-    // listing pool resolved both into, or a shared ISBN or ASIN. Titles and
-    // authors are never compared here: listings of one work in different
-    // recordings stay apart, and the ranking makes them one card per work
-    // (see `rank_candidates`) without mixing their covers and prices.
-    let match_key = map.iter().find_map(|(key, existing)| {
-        if let Some(hard) = hard_work_key(c.asin.as_deref(), c.isbn.as_deref()) {
-            if key == &hard
-                || hard_work_key(existing.asin.as_deref(), existing.isbn.as_deref()).as_deref()
-                    == Some(hard.as_str())
-            {
-                return Some(key.clone());
-            }
-        }
-        let same_listing = c.source.eq_ignore_ascii_case(&existing.source)
-            && c.product_id.eq_ignore_ascii_case(&existing.product_id);
-        let same_expression = matches!(
-            (c.expression_id.as_deref(), existing.expression_id.as_deref()),
-            (Some(a), Some(b)) if !a.trim().is_empty() && a == b
-        );
-        (same_listing || same_expression).then(|| key.clone())
-    });
+    let match_key = same_recording_key(map, &c);
 
     if let Some(old_key) = match_key {
         let mut existing = map.remove(&old_key).expect("just found");
@@ -557,6 +534,57 @@ pub(crate) fn insert_candidate(
     insert_keyed(map, c);
 }
 
+/// The key of the candidate in `map` that lists the same recording as `c`.
+///
+/// Two listings are one recording when the shared listing pool resolved
+/// both into the same expression, when they share an ISBN or ASIN, or when
+/// they are the same store product. Titles and authors are never compared:
+/// listings of one work in different recordings stay apart, so their
+/// covers, narrators and prices are not mixed.
+///
+/// # Arguments
+///
+/// * `map` - Candidates by key.
+/// * `c` - The incoming candidate, its ISBN already canonical.
+///
+/// # Returns
+///
+/// The matching candidate's key, or `None` when `c` is a recording `map`
+/// does not hold yet.
+pub(crate) fn same_recording_key(
+    map: &HashMap<String, StorefrontCandidate>,
+    c: &StorefrontCandidate,
+) -> Option<String> {
+    // ISBN and ASIN are compared each on their own: a listing with both
+    // and one with only the ASIN are still one recording.
+    let isbn = |v: Option<&str>| {
+        v.map(bookclerk_enrich::canonicalize_isbn)
+            .filter(|s| !s.is_empty())
+    };
+    let asin = |v: Option<&str>| {
+        v.map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_ascii_uppercase)
+    };
+    let (c_isbn, c_asin) = (isbn(c.isbn.as_deref()), asin(c.asin.as_deref()));
+    map.iter().find_map(|(key, existing)| {
+        let shares =
+            |mine: &Option<String>, theirs: Option<String>| mine.is_some() && *mine == theirs;
+        if shares(&c_isbn, isbn(existing.isbn.as_deref()))
+            || shares(&c_asin, asin(existing.asin.as_deref()))
+        {
+            return Some(key.clone());
+        }
+        let same_listing = c.source.eq_ignore_ascii_case(&existing.source)
+            && c.product_id.eq_ignore_ascii_case(&existing.product_id);
+        let same_expression = matches!(
+            (c.expression_id.as_deref(), existing.expression_id.as_deref()),
+            (Some(a), Some(b)) if !a.trim().is_empty() && a == b
+        );
+        (same_listing || same_expression).then(|| key.clone())
+    })
+}
+
 /// Inserts `c` under its map key, kept apart from another candidate
 /// already stored under the same key.
 ///
@@ -570,7 +598,7 @@ pub(crate) fn insert_candidate(
 ///
 /// * `map` - Candidates by key; `c` must not be in it.
 /// * `c` - The candidate to store.
-fn insert_keyed(map: &mut HashMap<String, StorefrontCandidate>, c: StorefrontCandidate) {
+pub(crate) fn insert_keyed(map: &mut HashMap<String, StorefrontCandidate>, c: StorefrontCandidate) {
     let mut key = candidate_map_key(&c);
     if map.contains_key(&key) {
         key = format!("{key}|{}:{}", c.source, c.product_id);

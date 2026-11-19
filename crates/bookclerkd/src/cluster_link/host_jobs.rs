@@ -59,7 +59,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use bookclerk_config::OutputBackendKind;
+use bookclerk_config::DestinationId;
 use bookclerk_library::control_plane::LinkImportOutcome;
 use bookclerk_library::{AcquireTitle, BookRecord, JobKind, LibraryStore, NewBook};
 use bookclerk_node_client::{HostJobCtx, OwnerCallError};
@@ -138,10 +138,8 @@ pub struct HostScan {
 /// One output destination of the shared node an acquire was planned with.
 #[derive(Debug, Clone)]
 pub struct HostDestination {
-    /// Its id on the shared node (`local`, `s3`).
-    pub id: String,
-    /// Its kind (one destination per kind).
-    pub kind: bookclerk_config::OutputBackendKind,
+    /// Its id on the shared node (`local`, `s3`, ...).
+    pub id: DestinationId,
     /// Its naming and packaging options.
     pub options: DownloadOptions,
 }
@@ -154,16 +152,12 @@ impl HostDestination {
     ///
     /// Returns an error naming the destination id.
     pub fn from_plan(plan: PlanDestination) -> anyhow::Result<Self> {
-        let kind: bookclerk_config::OutputBackendKind =
-            serde_json::from_value(serde_json::Value::String(plan.id.clone()))
-                .with_context(|| format!("the owner's destination {:?}", plan.id))?;
+        let id = DestinationId::new(plan.id.as_str())
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("the owner's destination {:?}", plan.id))?;
         let options: DownloadOptions = serde_json::from_value(plan.options)
             .with_context(|| format!("the owner's options for destination {:?}", plan.id))?;
-        Ok(Self {
-            id: plan.id,
-            kind,
-            options,
-        })
+        Ok(Self { id, options })
     }
 }
 
@@ -272,9 +266,9 @@ pub trait HostGuests: Send + Sync + 'static {
     }
 }
 
-/// One of this host's own destinations: its destination id (`local`, `s3`;
-/// [`bookclerk_acquire::destination_id`]) and backend.
-pub type LocalDestination = (&'static str, Box<dyn StorageBackend>);
+/// One of this host's own destinations: its destination id (`local`,
+/// `s3`, ...) and backend.
+pub type LocalDestination = (DestinationId, Box<dyn StorageBackend>);
 
 /// A title of the branch owner's that the owner committed, as this host
 /// kept it ([`HostGuests::import_owner_title`]).
@@ -286,7 +280,7 @@ pub struct OwnerTitleCopy<'a> {
     pub acquired: &'a AcquiredTitle,
     /// Every file this host holds on its own destinations:
     /// `(destination id, key)`.
-    pub files: &'a [(&'static str, String)],
+    pub files: &'a [(DestinationId, String)],
 }
 
 /// The daemon's [`HostGuests`]: spawns the owner's plugin version
@@ -484,16 +478,11 @@ impl HostGuests for GuestHost {
 
     async fn local_destinations(&self) -> anyhow::Result<Vec<LocalDestination>> {
         let registry = self.state.destinations.read().await;
-        let mut out = Vec::new();
-        for (kind, deployed) in [
-            (OutputBackendKind::Local, registry.require_local()),
-            (OutputBackendKind::S3, registry.require_s3()),
-        ] {
-            if let Some(backend) = deployed.map_err(|err| anyhow::anyhow!(err))? {
-                out.push((bookclerk_acquire::destination_id(kind), backend.clone_box()));
-            }
-        }
-        Ok(out)
+        Ok(registry
+            .destinations()
+            .into_iter()
+            .map(|dest| (dest.id, dest.backend.clone_box()))
+            .collect())
     }
 
     fn work_dir(&self) -> PathBuf {
@@ -505,7 +494,7 @@ impl HostGuests for GuestHost {
         let files: Vec<(&str, &str)> = copy
             .files
             .iter()
-            .map(|(destination, key)| (*destination, key.as_str()))
+            .map(|(destination, key)| (destination.as_str(), key.as_str()))
             .collect();
         let import = bookclerk_library::control_plane::LinkImport {
             cluster_id: &self.cluster_id,
@@ -758,7 +747,7 @@ async fn acquire_into(
         let dir = destination_outbox(outbox, index);
         tokio::fs::create_dir_all(&dir).await?;
         items.push(bookclerk_acquire::AcquireDestination {
-            kind: destination.kind,
+            id: destination.id.clone(),
             backend: Box::new(bookclerk_storage::LocalFsBackend::new(dir)?),
             options: destination.options.clone(),
         });
@@ -767,7 +756,7 @@ async fn acquire_into(
     // keys its own options give, exactly as a local acquire does.
     let destinations = bookclerk_acquire::AcquireDestinations {
         items,
-        primary: primary.kind,
+        primary: primary.id.clone(),
         multi_destination: cfg.output.multi_destination,
     };
     // The owner names keys from the same request; the scratch dir does not
@@ -1648,7 +1637,7 @@ pub(crate) async fn upload_manifest_probed_by(
             let path = dir.join(key);
             let (size, sha256) = digest_file(&path).await?;
             let copy = FileCopy {
-                destination: destination.id.clone(),
+                destination: destination.id.to_string(),
                 key: key.clone(),
             };
             // A new manifest entry for this content, probed where it lies.
@@ -1672,7 +1661,7 @@ pub(crate) async fn upload_manifest_probed_by(
             match by_content.get(&(size, sha256.clone())) {
                 Some(&at) => {
                     let (file, _): &mut (UploadFile, PathBuf) = &mut files[at];
-                    if file.key_on(&destination.id).is_some() {
+                    if file.key_on(destination.id.as_str()).is_some() {
                         // The same bytes twice on one destination: a
                         // separate entry, since a file has one copy per
                         // destination.
@@ -1726,8 +1715,8 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
     outbox: &Path,
     acquired: &AcquiredTitle,
     copied: &std::sync::Mutex<Vec<LocalCopy>>,
-) -> anyhow::Result<Vec<(&'static str, String)>> {
-    let local: Vec<(&'static str, Arc<dyn StorageBackend>)> = guests
+) -> anyhow::Result<Vec<(DestinationId, String)>> {
+    let local: Vec<(DestinationId, Arc<dyn StorageBackend>)> = guests
         .local_destinations()
         .await
         .context("this host's own destinations")?
@@ -1759,7 +1748,7 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
                     .unwrap_or_else(|e| e.into_inner())
                     .push((Arc::clone(destination), key.clone()));
             }
-            placed.push((*id, key.clone()));
+            placed.push((id.clone(), key.clone()));
         }
     }
     Ok(placed)

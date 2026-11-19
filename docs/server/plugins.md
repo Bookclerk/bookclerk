@@ -302,8 +302,8 @@ the library and does not wake it. Credentials a guest refreshes are
 written back as they change, so a guest started later begins from the
 stored ones.
 
-The built-in `local` and `s3` destinations sleep after 5 minutes without
-a call. Any storage call, such as an acquire writing a book, a listing or
+Storage plugins (destinations), built-in or not, sleep after 5 minutes
+without a call. Any storage call, such as an acquire writing a book, a listing or
 a playback read, starts the guest again. A write holds the guest until it
 has committed, and an open read stream holds it until the reader is done,
 so a long download or an hour of playback never loses its guest midway.
@@ -311,8 +311,8 @@ The destination's name and instance id stay known while it sleeps, so
 checks that only need to know which destination is which do not wake it.
 
 > [!NOTE]
-> Other storage plugins and plugins that belong to more than one family stay
-> running for now.
+> A plugin that belongs to more than one family, such as a storage plugin
+> that also consumes events, stays running for now.
 
 A Python plugin's first start takes several seconds while Python loads and
 the plugin imports its modules. The host keeps a snapshot of the plugin
