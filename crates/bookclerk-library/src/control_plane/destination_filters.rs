@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 
 use bookclerk_config::DestinationFilter;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::documents::{
     self, import_if_absent, load_document, replace_document, DocumentKey, ReplaceOutcome,
@@ -203,15 +203,24 @@ fn parse_placement(
             stored.schema_version,
         ));
     }
-    let value: serde_json::Value = serde_json::from_str(&stored.document_json)
+    // Read straight into the strict filter reader: a repeated or missing
+    // `filter` key, an unknown key, or a repeated key inside the filter is
+    // refused rather than read as some other filter.
+    let body: StoredPlacement = serde_json::from_str(&stored.document_json)
         .map_err(|err| LibraryError::Invalid(format!("invalid {DESTINATION_NAMESPACE}: {err}")))?;
-    let filter_json = value
-        .get("filter")
-        .map(serde_json::Value::to_string)
-        .unwrap_or_else(|| "{}".to_string());
-    let filter = bookclerk_config::parse_destination_filter(filter_json.as_bytes())
+    let filter = body.filter.normalized();
+    filter
+        .validate()
         .map_err(|err| LibraryError::Invalid(format!("invalid {DESTINATION_NAMESPACE}: {err}")))?;
     Ok(document(stored, DestinationPlacementV1 { filter }))
+}
+
+/// A stored `core.destination` body as it is read back.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredPlacement {
+    /// The destination's filter, read by its strict reader.
+    filter: DestinationFilter,
 }
 
 /// Serializes a body for storage.
@@ -369,6 +378,36 @@ mod tests {
                 assert_eq!(all[id], storefront(id), "{name}");
             }
             assert_eq!(kit.refused_begins(), 0, "{name}");
+        }
+    }
+
+    /// A stored body that is not exactly `{"filter": {...}}` fails closed
+    /// instead of reading as a filter that takes every book.
+    #[tokio::test]
+    async fn a_malformed_stored_body_fails_closed() {
+        for (n, body) in [
+            "null",
+            "{}",
+            r#"{"other":{}}"#,
+            r#"{"filter":{},"extra":1}"#,
+            r#"{"filter":{"rules":[]},"filter":{}}"#,
+            r#"{"filter":{"rules":[{"field":"storefront","value":"a","effect":"exclude"}],"rules":[]}}"#,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let store = crate::control_plane::tests::memory_store().await;
+            import_if_absent(
+                &store,
+                &operator(),
+                &destination_key("a"),
+                DESTINATION_SCHEMA_VERSION,
+                body,
+                &format!("op-{n}"),
+            )
+            .await
+            .unwrap();
+            assert!(destination_filter(&store, "a").await.is_err(), "{body}");
         }
     }
 }

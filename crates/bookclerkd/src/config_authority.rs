@@ -2992,6 +2992,7 @@ mod tests {
         use axum::http::StatusCode;
         use axum::routing::get;
         use serde_json::{json, Value};
+        let _dek = crate::auth::tests::process_dek_lock().await;
         let (state, store, _node, _files) = daemon_state().await;
         let instance = bookclerk_library::control_plane::create_plugin_instance(
             &store,

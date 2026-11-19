@@ -216,7 +216,7 @@ The daemon offers the same operations to an operator session:
 | `GET` / `POST` | `/api/config/plugin-instances` (list; create `{plugin_key, display_name, node_id?}`) |
 | `DELETE` | `/api/config/plugin-instances/{id}` (no deployments left) |
 | `GET` / `PUT` | `/api/config/plugin-instances/{id}/config` (`{expected_revision, settings, secret_refs, secrets}`; `secrets` are sealed server-side) |
-| `GET` / `PUT` | `/api/config/plugin-instances/{id}/filter` (a storage destination's filter, `{rules: [{field, value, effect}]}`; see [Output](output.md#choosing-which-books-a-destination-takes)) |
+| `GET` / `PUT` | `/api/config/plugin-instances/{id}/filter` (a storage destination's filter: `PUT` takes `{rules: [{field, value, effect}]}`, and both answer `{plugin_instance_id, revision, filter}` with the rules under `filter`; see [Output](output.md#choosing-which-books-a-destination-takes)) |
 | `PUT` | `/api/config/plugin-instances/{id}/deployments/{node_id}` (`{desired, expected_revision}`) |
 | `GET` | `/api/config/nodes`; `/api/config/plugins/{key}` carries the pinned schema |
 

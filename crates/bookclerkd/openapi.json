@@ -34122,7 +34122,8 @@
             "items": {
               "$ref": "#/components/schemas/FilterRule"
             },
-            "description": "Filter rules, at most 64. Empty means the destination takes every\nbook."
+            "description": "Filter rules, at most 64. Empty means the destination takes every\nbook.",
+            "maxItems": 64
           }
         },
         "additionalProperties": false

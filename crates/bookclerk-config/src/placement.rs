@@ -88,6 +88,7 @@ pub struct DestinationFilter {
     /// Filter rules, at most 64. Empty means the destination takes every
     /// book.
     #[serde(default)]
+    #[schema(max_items = 64)]
     pub rules: Vec<FilterRule>,
 }
 
