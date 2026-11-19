@@ -21,6 +21,7 @@ mod catalog_search;
 mod embed;
 /// Discover crate error types for shelves, embeddings, and catalog search.
 mod error;
+mod hide_prices;
 mod identity;
 mod listening;
 mod metadata_enrich;

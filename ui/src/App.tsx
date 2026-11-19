@@ -34,6 +34,7 @@ import {
   viewFromPath,
 } from "@/lib/routes";
 import { showStatusNav } from "@/lib/nav";
+import { setPricesVisible } from "@/lib/pricesVisible";
 import type { SettingsTab } from "@/components/SettingsPage";
 
 const AccountsPage = lazy(() =>
@@ -133,6 +134,10 @@ export default function App() {
   const [auth, setAuth] = useState<AuthState>("loading");
   const [session, setSession] = useState<AuthSession | null>(null);
   const { setPreference: setThemePreference } = useTheme();
+  // Store links the app builds itself follow the patron's member controls.
+  useEffect(() => {
+    setPricesVisible(session?.see_prices ?? true);
+  }, [session]);
   // Join a library pages own their URL until they hand over to the app.
   const [join, setJoin] = useState(() => {
     restoreApproveReturn();

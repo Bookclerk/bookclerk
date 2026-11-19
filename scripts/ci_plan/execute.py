@@ -614,6 +614,9 @@ TEST_PARTS = 3
 # writes its built bundle to `<dir>/<bundle>/` for Codecov Bundle Analysis
 # (docs/contributing/ci.md#bundle-sizes). Unset, nothing is kept.
 BUNDLE_DIR_ENV = "CI_BUNDLE_DIR"
+# Directory holding the checked-out visual baselines for the `ui_visual`
+# check; unset, the check records a new set instead of comparing.
+VISUAL_BASELINES_ENV = "CI_VISUAL_BASELINES"
 # The nextest profile (.config/nextest.toml) that writes a JUnit report, and
 # where it writes it, relative to the workspace. The workflow copies the
 # report into the coverage directory even when tests fail.
@@ -1193,6 +1196,39 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             Command("npm run build (ui)", ["npm", "run", "build"], cwd=ui),
             *_copy_bundle("ui", ctx.workspace / "ui" / "dist"),
         ]
+    if check == "ui_visual":
+        # Storybook's static build, then every story checked with axe-core
+        # inside the pinned Playwright image. The first run always records a
+        # full set into the artifact (what the label workflow commits as new
+        # baselines); with baselines checked out (`CI_VISUAL_BASELINES`), a
+        # second run compares against them and fails on any difference
+        # (docs/contributing/ui/visual-testing.md).
+        ui = str(ctx.workspace / "ui")
+        out = ctx.tmp / "ui-visual"
+        baselines = os.environ.get(VISUAL_BASELINES_ENV)
+        cmds = [
+            Command("npm ci (ui)", ["npm", "ci"], cwd=ui),
+            Command("storybook build (ui)", ["npm", "run", "storybook:build"], cwd=ui),
+            Command(
+                "record screenshots + axe-core (ui)",
+                ["npm", "run", "test:visual", "--", "--update-snapshots=all"],
+                cwd=ui,
+                env={"VISUAL_OUTPUT_DIR": str(out / "record"), "VISUAL_BASELINES_DIR": str(out / "baselines")},
+            ),
+            # Only a set whose recording passed is complete enough to propose
+            # (scripts/visual_baselines_bot.py).
+            Command("mark the recorded set complete", ["touch", str(out / "record-complete")]),
+        ]
+        if baselines:
+            cmds.append(
+                Command(
+                    "compare with baselines (ui)",
+                    ["npm", "run", "test:visual"],
+                    cwd=ui,
+                    env={"VISUAL_OUTPUT_DIR": str(out / "compare"), "VISUAL_BASELINES_DIR": baselines},
+                )
+            )
+        return cmds
     if check == "api_docs":
         if params.get("all"):
             return [Command("API docs (all)", [API_DOCS_SCRIPT, "--check", "--all"])]

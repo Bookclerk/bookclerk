@@ -91,6 +91,12 @@ export interface AuthSession {
   portal?: PortalInfo;
   user?: AuthMeUser;
   second_factor?: AuthSecondFactor;
+  /**
+   * Whether the caller may see prices and store links. When false the
+   * library already drops them from its answers, and the app shows no
+   * store links of its own either.
+   */
+  see_prices: boolean;
 }
 
 /** What a work is: a book, or a podcast (its show). */
@@ -443,6 +449,7 @@ const ANON_SESSION: AuthSession = {
   authenticated: false,
   default_view: "discover",
   can_acquire: false,
+  see_prices: false,
 };
 
 /**
@@ -668,6 +675,7 @@ function toAuthSession(body: {
   portal?: PortalInfo;
   user?: AuthMeUser;
   second_factor?: AuthSecondFactor;
+  see_prices?: boolean;
 }): AuthSession {
   return {
     authenticated: body.authenticated,
@@ -680,6 +688,8 @@ function toAuthSession(body: {
     portal: body.portal,
     user: body.user,
     second_factor: body.second_factor,
+    // An older server that does not send it never hid prices.
+    see_prices: body.see_prices !== false,
   };
 }
 
@@ -763,6 +773,7 @@ export async function authMe(): Promise<AuthSession> {
     portal?: PortalInfo;
     user?: AuthMeUser;
     second_factor?: AuthSecondFactor;
+    see_prices?: boolean;
   }>(res);
   return toAuthSession(body);
 }
@@ -795,6 +806,7 @@ export async function login(token: string): Promise<AuthSession> {
     role: normalizeRole(body.role) ?? "operator",
     default_view: normalizeView(body.default_view),
     can_acquire: true,
+    see_prices: true,
   };
 }
 
@@ -1370,8 +1382,8 @@ export interface ListedUser {
     account_id: string;
     label: string | null;
   }[];
-  /** Whether an administrator lets this user connect store accounts here (absent: allowed). */
-  may_connect_accounts?: boolean;
+  /** What the user may do here: the member controls that apply to them. */
+  controls?: MemberControls;
   /** Linked login identities (local + OIDC). */
   identities?: {
     provider: string;
@@ -1568,6 +1580,97 @@ export async function putDefaultScope(scope: PatronScope): Promise<{ scope: Patr
   return parseJson(res);
 }
 
+/** One thing an administrator may allow or refuse a patron. */
+export type MemberControl =
+  "link_accounts" | "download" | "edit_metadata" | "upload" | "request_books" | "see_prices";
+
+/** A value for every member control (`true` = allowed). */
+export type MemberControls = Record<MemberControl, boolean>;
+
+/** One patron's overrides; a missing control follows the library's default. */
+export type ControlOverrides = Partial<Record<MemberControl, boolean>>;
+
+/** A patron's member controls as `GET /api/users/{id}/controls` reports them. */
+export interface UserControls {
+  /** The user. */
+  user_id: number;
+  /** The library's default for every patron. */
+  defaults: MemberControls;
+  /** The controls set for this patron alone. */
+  overrides: ControlOverrides;
+  /** What applies to the user now. */
+  effective: MemberControls;
+  /** False for an Owner, who may always do everything. */
+  applies: boolean;
+  /**
+   * True for a Member, who follows the library default; false for an
+   * Administrator, whom only controls set for them alone limit.
+   */
+  follows_default: boolean;
+}
+
+/**
+ * Reads what a patron may do.
+ *
+ * @param id - The user.
+ * @returns The default, the patron's overrides and what applies.
+ */
+export async function getUserControls(id: number): Promise<UserControls> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/controls`, {
+    credentials: "include",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Sets the controls that differ for one patron; the rest follow the
+ * library's default.
+ *
+ * @param id - The user.
+ * @param overrides - The controls set for them alone (`{}` for none).
+ * @returns The controls after the change.
+ */
+export async function putUserControls(
+  id: number,
+  overrides: ControlOverrides,
+): Promise<UserControls> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/controls`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ overrides }),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Reads the library's default member controls.
+ *
+ * @returns The default.
+ */
+export async function getDefaultControls(): Promise<{ controls: MemberControls }> {
+  const res = await fetch("/api/users/default-controls", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Replaces the library's default member controls.
+ *
+ * @param controls - The new default.
+ * @returns The default after the change.
+ */
+export async function putDefaultControls(
+  controls: MemberControls,
+): Promise<{ controls: MemberControls }> {
+  const res = await fetch("/api/users/default-controls", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(controls),
+  });
+  return parseJson(res);
+}
+
 /**
  * Updates a first-party user role, status, or profile fields.
  *
@@ -1583,8 +1686,6 @@ export async function patchUser(
     display_name?: string;
     login_name?: string;
     email?: string;
-    /** Let the user connect store accounts here, or stop them. */
-    may_connect_accounts?: boolean;
   },
 ): Promise<UserMutationResponse> {
   const res = await fetch(`/api/users/${encodeURIComponent(String(id))}`, {

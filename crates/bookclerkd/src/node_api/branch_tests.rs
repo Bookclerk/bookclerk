@@ -804,7 +804,13 @@ fn offered(plugin_key: &str, account_id: &str) -> bookclerk_node_proto::CarriedA
 #[tokio::test]
 async fn a_branch_adds_and_withdraws_its_persons_connections() {
     use crate::library_link::join::tests::{connect_account, stage_storefront};
-    use bookclerk_library::control_plane::{load_library_row, set_member_may_connect_accounts};
+    use bookclerk_library::control_plane::{
+        load_library_row, set_member_control_overrides, ControlOverrides,
+    };
+    let allow_linking = |allowed: bool| ControlOverrides {
+        link_accounts: Some(allowed),
+        ..ControlOverrides::default()
+    };
     use bookclerk_node_proto::{seal_account_offer, AccountBundle, Body, ACCOUNT_BUNDLE_VERSION};
     let _dek = crate::auth::tests::process_dek_lock().await;
     let files = tempfile::tempdir().unwrap();
@@ -886,7 +892,7 @@ async fn a_branch_adds_and_withdraws_its_persons_connections() {
     );
 
     // With the person's rule off, nothing more is kept.
-    set_member_may_connect_accounts(&store, member, false)
+    set_member_control_overrides(&store, member, allow_linking(false))
         .await
         .unwrap();
     let answer = super::super::host_accounts::add(
@@ -940,7 +946,7 @@ async fn a_branch_adds_and_withdraws_its_persons_connections() {
     // disconnected the account over the new connection): an offer still
     // arriving on the old connection is refused, and one on the new
     // connection is answered.
-    set_member_may_connect_accounts(&store, member, true)
+    set_member_control_overrides(&store, member, allow_linking(true))
         .await
         .unwrap();
     let current = branch_context(&state, &node_id).await;

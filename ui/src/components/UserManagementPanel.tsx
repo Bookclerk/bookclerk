@@ -14,6 +14,7 @@ import { createPortal } from "react-dom";
 import { Check, Copy, Headphones, MoreHorizontal, Search, UserPlus, X } from "lucide-react";
 import { AddBranchDialog } from "@/components/AddBranchDialog";
 import { AvatarPickerDialog } from "@/components/AvatarPickerDialog";
+import { MemberControlsEditor } from "@/components/MemberControlsEditor";
 import { PatronScopeEditor } from "@/components/PatronScopeEditor";
 import { UserAvatar, userDisplayLabel } from "@/components/UserAvatar";
 import { Badge } from "@/components/ui/badge";
@@ -642,19 +643,13 @@ export function UserManagementPanel({
       display_name?: string;
       login_name?: string;
       email?: string;
-      may_connect_accounts?: boolean;
     },
   ) {
     setBusy(true);
     setError(null);
     try {
       const res = await patchUser(id, patch);
-      // The answer's user summary does not carry the store-connection rule.
-      const rule =
-        patch.may_connect_accounts === undefined
-          ? {}
-          : { may_connect_accounts: patch.may_connect_accounts };
-      setUsers((current) => current.map((u) => (u.id === id ? { ...u, ...res.user, ...rule } : u)));
+      setUsers((current) => current.map((u) => (u.id === id ? { ...u, ...res.user } : u)));
     } catch (err) {
       if (isApiError(err) && err.status === 409) {
         setError("Cannot demote or disable the last active owner.");
@@ -1328,32 +1323,19 @@ export function UserManagementPanel({
                 )}
               </div>
 
-              <label className="flex items-start gap-2 text-sm text-ink">
-                <input
-                  type="checkbox"
-                  className="mt-0.5"
-                  aria-label={`Store connections allowed for user ${selected.id}`}
-                  checked={selected.may_connect_accounts ?? true}
-                  disabled={busy || !selectedEditable}
-                  onChange={(e) =>
-                    void onPatchUser(selected.id, { may_connect_accounts: e.target.checked })
-                  }
-                />
-                <span>
-                  <span className="block">May connect store accounts here</span>
-                  <span className="block text-xs text-ink/55">
-                    Covers connecting a store in Accounts and bringing connections from another
-                    library when this server joins it. Connections already here stay.
-                  </span>
-                </span>
-              </label>
-
               {selectedEditable && currentUserId !== selected.id ? (
-                <PatronScopeEditor
-                  key={`${selected.id}:${selected.role}`}
-                  target={{ kind: "user", userId: selected.id }}
-                  disabled={busy}
-                />
+                <>
+                  <MemberControlsEditor
+                    key={`controls-${selected.id}:${selected.role}`}
+                    target={{ kind: "user", userId: selected.id }}
+                    disabled={busy}
+                  />
+                  <PatronScopeEditor
+                    key={`${selected.id}:${selected.role}`}
+                    target={{ kind: "user", userId: selected.id }}
+                    disabled={busy}
+                  />
+                </>
               ) : null}
 
               <div className="space-y-2">
@@ -1391,7 +1373,10 @@ export function UserManagementPanel({
                 Select a user to edit role, status, and review integrations.
               </p>
               {roleChoices.length > 0 ? (
-                <PatronScopeEditor target={{ kind: "default" }} disabled={busy} />
+                <>
+                  <MemberControlsEditor target={{ kind: "default" }} disabled={busy} />
+                  <PatronScopeEditor target={{ kind: "default" }} disabled={busy} />
+                </>
               ) : null}
             </div>
           )}

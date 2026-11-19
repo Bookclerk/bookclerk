@@ -1098,6 +1098,22 @@ pub struct WishlistPurchaseHint {
     pub member_price_label: Option<String>,
 }
 
+impl WishlistPurchaseHint {
+    /// Removes the hint's store link and every price it carries, keeping
+    /// the store and product id, for a patron whose "See prices and store
+    /// links" member control is off.
+    pub fn hide_price_and_link(&mut self) {
+        self.url = None;
+        self.price_cents = None;
+        self.currency = None;
+        self.price_label = None;
+        self.list_price_cents = None;
+        self.list_price_label = None;
+        self.member_price_cents = None;
+        self.member_price_label = None;
+    }
+}
+
 /// Personal wishlist row (also contributes to the shared global queue while open).
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TitleRequestRecord {
@@ -1212,6 +1228,26 @@ pub struct TitleRequestRecord {
     /// RFC 3339 timestamp when the row was last modified.
     #[schema(example = "2026-10-29T10:14:22Z")]
     pub updated_at: DateTime<Utc>,
+}
+
+impl TitleRequestRecord {
+    /// Removes the store links and prices of every purchase hint, for a
+    /// patron whose "See prices and store links" member control is off.
+    pub fn hide_prices_and_links(&mut self) {
+        for hint in &mut self.purchase_hints {
+            hint.hide_price_and_link();
+        }
+        for source in &mut self.sources {
+            source.url = None;
+            source.price_cents = None;
+            source.currency = None;
+            source.price_label = None;
+            source.list_price_cents = None;
+            source.list_price_label = None;
+            source.member_price_cents = None;
+            source.member_price_label = None;
+        }
+    }
 }
 
 /// Compact wisher shown on the global queue (avatar + label).
