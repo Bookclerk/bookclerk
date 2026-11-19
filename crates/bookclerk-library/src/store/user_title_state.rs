@@ -674,4 +674,61 @@ mod tests {
         assert_eq!(states[0].work_id, work);
         assert!(states[0].is_finished);
     }
+
+    /// A store account belongs to one identity (`account_links` is
+    /// exclusive), so the lookup reads at most one link and one identity and
+    /// fits every profile, including the minimum's one row per statement.
+    #[tokio::test]
+    async fn the_linked_user_is_found_under_every_profile() {
+        for profile in Profile::ALL {
+            let name = profile.name();
+            let kit = sqlite::memory(profile).await;
+            let store = kit.store();
+            store
+                .upsert_account("audible", "shared", "us", None, true, "audible")
+                .await
+                .unwrap();
+            let mut users = Vec::new();
+            let mut identities = Vec::new();
+            for who in ["Ana", "Ben"] {
+                let user = store
+                    .create_user(UserRole::Member, Some(who), None)
+                    .await
+                    .unwrap();
+                identities.push(
+                    store
+                        .ensure_local_portal_identity(user.id, Some(who))
+                        .await
+                        .unwrap()
+                        .id,
+                );
+                users.push(user.id);
+            }
+            store
+                .link_account(identities[0], "audible", "shared", "audible")
+                .await
+                .unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert!(
+                store
+                    .link_account(identities[1], "audible", "shared", "audible")
+                    .await
+                    .is_err(),
+                "{name}: a second identity may not link the same account"
+            );
+            assert_eq!(
+                store
+                    .users_linked_to_account("audible", "shared")
+                    .await
+                    .unwrap_or_else(|err| panic!("{name}: {err}")),
+                vec![users[0]],
+                "{name}"
+            );
+            assert!(store
+                .users_linked_to_account("audible", "other")
+                .await
+                .unwrap()
+                .is_empty());
+            assert_eq!(kit.refused_begins(), 0, "{name}");
+        }
+    }
 }

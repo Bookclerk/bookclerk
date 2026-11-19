@@ -26,6 +26,11 @@ pub enum AcquireError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// No deployed destination's filter takes the book, so the acquire
+    /// stops before it fetches anything.
+    #[error("no destination accepts this book")]
+    NoDestinationAccepts,
+
     /// Catch-all for otherwise unclassified failures.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
