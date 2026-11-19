@@ -251,4 +251,59 @@ describe("POST /submit with an install ID", () => {
       { install_key: key, route: "/api/library/works/{id}", peak_latency_ms: 2896 },
     );
   });
+  it("still stores the report, without a key, when the database fails", async () => {
+    const broken = new Proxy(
+      {},
+      {
+        get() {
+          return () => {
+            throw new Error("D1 quota exhausted");
+          };
+        },
+      },
+    ) as D1Database;
+    const env: Env = {
+      DASHBOARD_DB: broken,
+      B2_KEY_ID: "id",
+      B2_APPLICATION_KEY: "secret-application-key",
+      B2_BUCKET_ID: "bucket",
+    };
+    let uploaded = "";
+    globalThis.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url.includes("b2_authorize_account")) {
+        return Response.json({ apiUrl: "https://b2.test", authorizationToken: "auth" });
+      }
+      if (url.includes("b2_get_upload_url")) {
+        return Response.json({ uploadUrl: "https://b2.test/upload", authorizationToken: "up" });
+      }
+      if (url === "https://b2.test/upload") {
+        uploaded = await new Response(init.body).text();
+        return Response.json({ fileId: "f" });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    };
+    const res = await worker.fetch(
+      new Request("https://collector.test/submit", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          version: "0.9.0",
+          trigger: "panic",
+          os: "linux",
+          deployment: "",
+          install_id: ID,
+          events: [
+            { ts_unix_ms: NOW, level: "ERROR", target: "bookclerk", message: "boom", fields: [] },
+          ],
+        }),
+      }),
+      env,
+      { waitUntil: (p: Promise<unknown>) => void p.catch(() => undefined) },
+    );
+    assert.equal(res.status, 201);
+    assert.ok(uploaded, "the report was uploaded");
+    assert.ok(!uploaded.includes(ID), "the install ID never reaches storage");
+    assert.equal((JSON.parse(uploaded) as { install_key?: string }).install_key, undefined);
+  });
 });

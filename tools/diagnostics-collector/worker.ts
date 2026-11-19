@@ -613,13 +613,17 @@ async function handleSubmit(request: Request, env: Env, ctx: Background): Promis
   }
   // The install ID never reaches storage: with the dashboard database bound
   // it becomes this month's install key (checkin.ts), otherwise it is
-  // dropped.
+  // dropped. A database failure only costs the key, never the report.
   const { install_id: installId, ...payload } = checked;
   const receivedAt = Date.now();
-  const key =
-    env.DASHBOARD_DB && isInstallId(installId)
-      ? await installKey(env.DASHBOARD_DB, installId, receivedAt)
-      : null;
+  let key: string | null = null;
+  if (env.DASHBOARD_DB && isInstallId(installId)) {
+    try {
+      key = await installKey(env.DASHBOARD_DB, installId, receivedAt);
+    } catch (err) {
+      console.error(`install key failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   const asText = JSON.stringify(payload);
   if (looksLikeSecretLeak(asText)) {
