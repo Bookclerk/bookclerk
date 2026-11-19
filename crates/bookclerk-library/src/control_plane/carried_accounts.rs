@@ -1,9 +1,9 @@
 //! Store accounts that follow their person between instances ("Accounts
 //! on every instance" in `docs/adr/library-catalog-network.md`).
 //!
-//! - **The operator's rule.** Each instance's operator decides, per
-//!   member, whether the member may connect store accounts there
-//!   (`member_account_rules`; no row means allowed). A connect on this
+//! - **The operator's rule.** Each instance's operator decides, for all
+//!   members or one, whether a member may connect store accounts there
+//!   (the "Link store accounts" member control). A connect on this
 //!   instance and an account that arrives for the member from another
 //!   library both check it ([`member_may_connect_accounts`]).
 //! - **Sending.** When a member lets a branch join and chooses "Bring my
@@ -34,7 +34,7 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use zeroize::Zeroizing;
 
 use super::batch::{self, int, text};
-use crate::entities::{encrypted_secrets, member_account_rules, users};
+use crate::entities::{encrypted_secrets, users};
 use crate::error::{LibraryError, Result};
 use crate::models::{UserRole, UserStatus};
 use crate::secrets::{build_sealed_record, get_secret, secret_account_type, unseal_secret};
@@ -61,23 +61,14 @@ pub fn link_peer(library_id: &str) -> String {
 }
 
 /// Whether `user_id` may connect store accounts on this instance: an
-/// active user with no rule, or whose rule allows it.
+/// active user whose member controls allow it
+/// ([`super::MemberControl::LinkAccounts`]).
 ///
 /// # Errors
 ///
 /// Returns the read error.
 pub async fn member_may_connect_accounts(store: &LibraryStore, user_id: i64) -> Result<bool> {
-    let Some(user) = store.get_user(user_id).await? else {
-        return Ok(false);
-    };
-    if user.status != UserStatus::Active {
-        return Ok(false);
-    }
-    Ok(member_account_rules::Entity::find_by_id(user_id)
-        .one(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .is_none_or(|rule| rule.may_connect != 0))
+    super::user_may(store, user_id, super::MemberControl::LinkAccounts).await
 }
 
 /// Whether the portal identity `identity_id` may connect store accounts
@@ -97,63 +88,6 @@ pub async fn identity_may_connect_accounts(store: &LibraryStore, identity_id: i6
         Some(user_id) => member_may_connect_accounts(store, user_id).await,
         None => Ok(true),
     }
-}
-
-/// Every stored rule, by user id (`true` = may connect). Users with no
-/// rule are left out; they may connect.
-///
-/// # Errors
-///
-/// Returns the read error.
-pub async fn member_account_rules(store: &LibraryStore) -> Result<BTreeMap<i64, bool>> {
-    Ok(member_account_rules::Entity::find()
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .into_iter()
-        .map(|rule| (rule.user_id, rule.may_connect != 0))
-        .collect())
-}
-
-/// Sets whether `user_id` may connect store accounts on this instance.
-///
-/// The caller has already checked that the actor may manage the user. One
-/// atomic batch: the stored rule is updated, or inserted when there is
-/// none. Accounts the member already connected stay connected.
-///
-/// # Errors
-///
-/// Returns [`LibraryError::NotFound`] for an unknown user and the write
-/// error.
-pub async fn set_member_may_connect_accounts(
-    store: &LibraryStore,
-    user_id: i64,
-    allowed: bool,
-) -> Result<()> {
-    if store.get_user(user_id).await?.is_none() {
-        return Err(LibraryError::not_found(EntityKind::User, user_id));
-    }
-    let now = Utc::now().to_rfc3339();
-    let value = i64::from(allowed);
-    let operation_id = format!("member-account-rule-{user_id}-{}", uuid::Uuid::new_v4());
-    store
-        .execute_host_batch(batch::request(
-            &operation_id,
-            vec![
-                batch::exec(
-                    "UPDATE member_account_rules SET may_connect = ?, updated_at = ? \
-                     WHERE user_id = ?",
-                    vec![int(value), text(&now), int(user_id)],
-                ),
-                batch::exec(
-                    "INSERT OR IGNORE INTO member_account_rules (user_id, may_connect, updated_at) \
-                     VALUES (?, ?, ?)",
-                    vec![int(user_id), int(value), text(&now)],
-                ),
-            ],
-        ))
-        .await?;
-    Ok(())
 }
 
 /// One store account a member connected here, as the join consent page
@@ -779,7 +713,18 @@ async fn import_from_peer(
                     .await
                     .unwrap_or(false)
                 {
-                    report.taken.push(key);
+                    // Taken only when a link now holds the account; a batch
+                    // that stopped for another reason (the controls changed
+                    // in a way that still allows linking) kept nothing.
+                    let linked = store
+                        .count_account_links_for_account(&account.plugin_key, &account.account_id)
+                        .await
+                        .is_ok_and(|links| links > 0);
+                    if linked {
+                        report.taken.push(key);
+                    } else {
+                        report.failed.push(key);
+                    }
                 } else {
                     tracing::warn!(
                         "store connections stopped being allowed while they were kept; \
@@ -1009,9 +954,11 @@ fn revoke_unlinked_statements(plugin_key: &str, account_id: &str) -> Vec<TypedDb
 /// the account was linked or `user_id` could no longer connect accounts.
 ///
 /// Every statement before the link is guarded on both: no link holds the
-/// account yet, and the user is active and not barred by a
-/// `member_account_rules` row. An operator who turns the rule off while
-/// an import runs therefore stops every batch that has not committed.
+/// account yet, and the user is active and their member controls (their
+/// role, their overrides and the library's default) are as they were when
+/// "Link store accounts" was read as allowed. An operator who turns the
+/// control off while an import runs therefore stops every batch that has
+/// not committed.
 pub(super) async fn import_one(
     store: &LibraryStore,
     user_id: i64,
@@ -1019,19 +966,22 @@ pub(super) async fn import_one(
     peer: &str,
     account: &CarriedAccount,
 ) -> Result<bool> {
-    const UNLINKED: &str = "NOT EXISTS (SELECT 1 FROM account_links \
-                            WHERE plugin_key = ? AND account_id = ?) \
-                            AND EXISTS (SELECT 1 FROM users WHERE id = ? AND status = 'active') \
-                            AND NOT EXISTS (SELECT 1 FROM member_account_rules \
-                            WHERE user_id = ? AND may_connect = 0)";
+    let Some(guard) =
+        super::member_controls::control_guard(store, user_id, super::MemberControl::LinkAccounts)
+            .await?
+    else {
+        return Ok(false);
+    };
+    let unlinked = format!(
+        "NOT EXISTS (SELECT 1 FROM account_links WHERE plugin_key = ? AND account_id = ?) \
+         AND {}",
+        super::member_controls::ControlGuard::SQL
+    );
     let now = Utc::now().to_rfc3339();
     let key = || {
-        vec![
-            text(&account.plugin_key),
-            text(&account.account_id),
-            int(user_id),
-            int(user_id),
-        ]
+        let mut values = vec![text(&account.plugin_key), text(&account.account_id)];
+        values.extend(guard.values());
+        values
     };
     let with_key = |mut values: Vec<DbValue>| {
         values.extend(key());
@@ -1043,7 +993,7 @@ pub(super) async fn import_one(
                 "INSERT OR IGNORE INTO accounts \
                  (plugin_key, account_id, marketplace, label, scan_enabled, source, \
                   connection_status, created_at, updated_at) \
-                 SELECT ?, ?, ?, ?, 1, ?, 'active', ?, ? WHERE {UNLINKED}"
+                 SELECT ?, ?, ?, ?, 1, ?, 'active', ?, ? WHERE {unlinked}"
             ),
             with_key(vec![
                 text(&account.plugin_key),
@@ -1059,7 +1009,7 @@ pub(super) async fn import_one(
             &format!(
                 "UPDATE accounts SET marketplace = ?, label = COALESCE(?, label), source = ?, \
                  scan_enabled = 1, connection_status = 'active', updated_at = ? \
-                 WHERE plugin_key = ? AND account_id = ? AND {UNLINKED}"
+                 WHERE plugin_key = ? AND account_id = ? AND {unlinked}"
             ),
             with_key(vec![
                 text(&account.marketplace),
@@ -1107,7 +1057,7 @@ pub(super) async fn import_one(
                  cipher_nonce = ?, kdf_algorithm = NULL, kdf_salt = NULL, kdf_m_cost = NULL, \
                  kdf_t_cost = NULL, kdf_p_cost = NULL, updated_at = ? \
                  WHERE kind = ? AND provider = ? AND account_type = ? AND account_id = ? \
-                 AND name = ? AND {UNLINKED}"
+                 AND name = ? AND {unlinked}"
             ),
             with_key(update),
         ));
@@ -1120,7 +1070,7 @@ pub(super) async fn import_one(
                 "INSERT OR IGNORE INTO encrypted_secrets \
                  (kind, provider, account_type, account_id, name, format, ciphertext, \
                   cipher_algorithm, cipher_nonce, created_at, updated_at) \
-                 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE {UNLINKED}"
+                 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE {unlinked}"
             ),
             with_key(insert),
         ));
@@ -1132,7 +1082,7 @@ pub(super) async fn import_one(
         &format!(
             "INSERT OR IGNORE INTO account_links \
              (identity_id, plugin_key, account_id, source, created_at) \
-             SELECT ?, ?, ?, ?, ? WHERE {UNLINKED}"
+             SELECT ?, ?, ?, ?, ? WHERE {unlinked}"
         ),
         with_key(vec![
             int(identity_id),
