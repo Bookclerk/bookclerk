@@ -27,6 +27,34 @@ pub enum DownloadStarter {
     Person,
 }
 
+/// One store download's ledger identity.
+///
+/// It is made once, when a download is kept for recording, and every write
+/// attempt of that download passes the same one, so a write that committed
+/// but whose answer was lost inserts no second row when it is tried again.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DownloadId(String);
+
+impl DownloadId {
+    /// A fresh identity (a random UUID) for a new download.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    /// The identity as the ledger's `id` column stores it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for DownloadId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// One account's pacing state as stored.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AccountPaceState {
@@ -265,8 +293,12 @@ impl LibraryStore {
     /// Records a download that reached the store, and prunes the account's
     /// ledger rows older than [`LEDGER_RETENTION`], in one batch.
     ///
+    /// Writing the same `id` again adds no second row, so a write whose
+    /// answer was lost may be retried.
+    ///
     /// # Arguments
     ///
+    /// * `id` - The download's identity, the same for every write attempt.
     /// * `plugin_key` - The account's plugin.
     /// * `account_id` - The account.
     /// * `started_at` - When the download started.
@@ -278,6 +310,7 @@ impl LibraryStore {
     /// Returns an error when the batch fails.
     pub async fn record_account_download(
         &self,
+        id: &DownloadId,
         plugin_key: &str,
         account_id: &str,
         started_at: DateTime<Utc>,
@@ -290,8 +323,7 @@ impl LibraryStore {
             DownloadStarter::Host => 1,
             DownloadStarter::Person => 0,
         };
-        let id = uuid::Uuid::new_v4().to_string();
-        let operation_id = format!("account-download-{id}");
+        let operation_id = format!("account-download-{}", id.as_str());
         self.execute_host_batch(batch::request(
             &operation_id,
             vec![
@@ -311,7 +343,7 @@ impl LibraryStore {
                          SELECT ?, ?, ?, ?, ?, ? WHERE 1 = 1{ACCOUNT_EXISTS}"
                     ),
                     vec![
-                        batch::text(&id),
+                        batch::text(id.as_str()),
                         batch::text(plugin_key),
                         batch::text(account_id),
                         batch::int(started_ms),
@@ -380,7 +412,7 @@ mod tests {
 
     use sea_orm::EntityTrait;
 
-    use super::DownloadStarter;
+    use super::{DownloadId, DownloadStarter};
     use crate::pacing::PaceOverride;
     use crate::test_support::{sqlite, Profile};
 
@@ -406,7 +438,14 @@ mod tests {
                 (95_000, DownloadStarter::Host),
             ] {
                 store
-                    .record_account_download(KEY, "a1", at(secs), Some("job-1"), starter)
+                    .record_account_download(
+                        &DownloadId::new(),
+                        KEY,
+                        "a1",
+                        at(secs),
+                        Some("job-1"),
+                        starter,
+                    )
                     .await
                     .unwrap();
             }
@@ -417,7 +456,14 @@ mod tests {
             assert_eq!(state.window.starts, vec![at(90_000), at(95_000)]);
             // Three days later the first row is pruned by the next record.
             store
-                .record_account_download(KEY, "a1", at(3 * 86_400), None, DownloadStarter::Host)
+                .record_account_download(
+                    &DownloadId::new(),
+                    KEY,
+                    "a1",
+                    at(3 * 86_400),
+                    None,
+                    DownloadStarter::Host,
+                )
                 .await
                 .unwrap();
             let rows = crate::entities::account_downloads::Entity::find()
@@ -445,7 +491,14 @@ mod tests {
                 .unwrap();
             for secs in [90_000, 90_000, 95_000] {
                 store
-                    .record_account_download(KEY, "a1", at(secs), None, DownloadStarter::Host)
+                    .record_account_download(
+                        &DownloadId::new(),
+                        KEY,
+                        "a1",
+                        at(secs),
+                        None,
+                        DownloadStarter::Host,
+                    )
                     .await
                     .unwrap();
             }
@@ -461,13 +514,42 @@ mod tests {
         }
     }
 
+    /// Writing one download again with the same identity, as a retry after
+    /// a lost answer does, keeps one ledger row.
+    #[tokio::test]
+    async fn a_retried_write_of_one_download_keeps_one_row() {
+        for profile in Profile::ALL {
+            let store = sqlite::memory(profile).await.into_store();
+            store
+                .upsert_account(KEY, "a1", "us", None, true, "audible")
+                .await
+                .unwrap();
+            let id = DownloadId::new();
+            for _ in 0..2 {
+                store
+                    .record_account_download(&id, KEY, "a1", at(0), None, DownloadStarter::Host)
+                    .await
+                    .unwrap();
+            }
+            let state = store.account_pace_state(KEY, "a1", at(1)).await.unwrap();
+            assert_eq!(state.window.count(), 1, "{profile:?}");
+        }
+    }
+
     /// A download for an account the library never recorded is ignored,
     /// not an error.
     #[tokio::test]
     async fn an_unknown_account_records_nothing() {
         let store = sqlite::memory(Profile::ALL[0]).await.into_store();
         store
-            .record_account_download(KEY, "ghost", at(0), None, DownloadStarter::Host)
+            .record_account_download(
+                &DownloadId::new(),
+                KEY,
+                "ghost",
+                at(0),
+                None,
+                DownloadStarter::Host,
+            )
             .await
             .unwrap();
         store

@@ -7,11 +7,11 @@ use bookclerk_acquire::{acquire_book_indexed, AcquireRequest, MatchStorageOption
 use bookclerk_config::BadBookAction;
 use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::pacing::{decide, AcquirePace, PaceVerdict, WaitReason};
-use bookclerk_library::DownloadStarter;
 use bookclerk_library::{
     is_downloadable, AcquireStatus, AcquireTitle, EnqueueJobSpec, EnqueueOutcome, JobKind,
     JobPayload, JobTrigger,
 };
+use bookclerk_library::{DownloadId, DownloadStarter};
 use bookclerk_source::ScanOptions;
 use chrono::{DateTime, Utc};
 use tracing::{error, info, warn};
@@ -953,8 +953,10 @@ pub async fn run_acquire(
         (DateTime<Utc>, WaitReason, AcquirePace),
     > = std::collections::BTreeMap::new();
     // Downloads whose ledger row could not be written yet, by account, with
-    // when each started; written again before that account's next title.
-    let mut unrecorded: std::collections::BTreeMap<(String, String), Vec<DateTime<Utc>>> =
+    // each one's identity and start; written again (same identity, so a
+    // write that did commit adds no second row) before that account's next
+    // title.
+    let mut unrecorded: std::collections::BTreeMap<(String, String), Vec<UnrecordedDownload>> =
         std::collections::BTreeMap::new();
     let job_id = ctx.map(|c| c.fence.job_id.clone());
     let mut set_aside = 0u32;
@@ -997,17 +999,18 @@ pub async fn run_acquire(
         // again while the ledger is short.
         if let Some(starts) = unrecorded.get_mut(&account_key) {
             let mut still = Vec::new();
-            for started_at in starts.drain(..) {
+            for (download_id, started_at) in starts.drain(..) {
                 if !record_download(
                     &library,
                     &account_key,
+                    &download_id,
                     started_at,
                     job_id.as_deref(),
                     starter,
                 )
                 .await
                 {
-                    still.push(started_at);
+                    still.push((download_id, started_at));
                 }
             }
             *starts = still;
@@ -1122,9 +1125,11 @@ pub async fn run_acquire(
             // row that cannot be written stays pending (`unrecorded`).
             if !counted && reached_store(&result) {
                 counted = true;
+                let download_id = DownloadId::new();
                 if !record_download(
                     &library,
                     &account_key,
+                    &download_id,
                     started_at,
                     job_id.as_deref(),
                     starter,
@@ -1134,7 +1139,7 @@ pub async fn run_acquire(
                     unrecorded
                         .entry(account_key.clone())
                         .or_default()
-                        .push(started_at);
+                        .push((download_id, started_at));
                 }
             }
             if let Err(bookclerk_acquire::AcquireError::Source(
@@ -1194,6 +1199,43 @@ pub async fn run_acquire(
                     let placed =
                         !matches!(err, bookclerk_acquire::AcquireError::NoDestinationAccepts);
                     if placed && bad_book == BadBookAction::Retry && attempts < 2 {
+                        // The retry asks the store again, so a paced run
+                        // waits for the account's pace first, as it did
+                        // before the first attempt. A wait longer than a
+                        // sleep sets the title aside for the parked job.
+                        if mode.paced {
+                            let gate =
+                                if unrecorded.get(&account_key).is_some_and(|s| !s.is_empty()) {
+                                    PaceGate::Hold {
+                                        until: Utc::now()
+                                            + chrono::Duration::from_std(PACE_SLEEP_IN_PLACE)
+                                                .unwrap_or_else(|_| chrono::Duration::seconds(120)),
+                                        reason: WaitReason::Gap,
+                                    }
+                                } else {
+                                    wait_for_pace(
+                                        &library,
+                                        &book.plugin_key,
+                                        &book.account_id,
+                                        &declared_pace,
+                                        ctx,
+                                    )
+                                    .await?
+                                };
+                            if let PaceGate::Hold { until, reason } = gate {
+                                info!(
+                                    asin = %book.asin_or_isbn(),
+                                    account = %book.account_id,
+                                    %until,
+                                    reason = reason.phrase(),
+                                    error = %err,
+                                    "acquire failed; the retry waits for the account's pace"
+                                );
+                                held.insert(account_key.clone(), (until, reason, declared_pace));
+                                set_aside += 1;
+                                break;
+                            }
+                        }
                         warn!(asin = %book.asin_or_isbn(), error = %err, "acquire failed; retrying");
                         continue;
                     }
@@ -1213,8 +1255,17 @@ pub async fn run_acquire(
     // the budget, so the run fails rather than end quietly short.
     let mut lost = 0usize;
     for (key, starts) in &unrecorded {
-        for started_at in starts {
-            if !record_download(&library, key, *started_at, job_id.as_deref(), starter).await {
+        for (download_id, started_at) in starts {
+            if !record_download(
+                &library,
+                key,
+                download_id,
+                *started_at,
+                job_id.as_deref(),
+                starter,
+            )
+            .await
+            {
                 lost += 1;
             }
         }
@@ -1279,7 +1330,14 @@ pub async fn run_acquire(
     Ok(detail)
 }
 
+/// A store download whose ledger row is not written yet: its identity,
+/// kept for every later try, and when it started.
+type UnrecordedDownload = (DownloadId, DateTime<Utc>);
+
 /// Writes one download to the account's ledger, trying three times.
+///
+/// Every try passes the download's one `download_id`, so a try whose write
+/// committed but whose answer was lost adds no second row.
 ///
 /// # Returns
 ///
@@ -1288,13 +1346,21 @@ pub async fn run_acquire(
 async fn record_download(
     library: &bookclerk_library::LibraryStore,
     (plugin_key, account_id): &(String, String),
+    download_id: &DownloadId,
     started_at: DateTime<Utc>,
     job_id: Option<&str>,
     starter: DownloadStarter,
 ) -> bool {
     for attempt in 1..=3u32 {
         match library
-            .record_account_download(plugin_key, account_id, started_at, job_id, starter)
+            .record_account_download(
+                download_id,
+                plugin_key,
+                account_id,
+                started_at,
+                job_id,
+                starter,
+            )
             .await
         {
             Ok(()) => return true,
@@ -1706,7 +1772,14 @@ mod tests {
             PaceGate::Go
         );
         store
-            .record_account_download("audible", "a1", Utc::now(), None, DownloadStarter::Host)
+            .record_account_download(
+                &DownloadId::new(),
+                "audible",
+                "a1",
+                Utc::now(),
+                None,
+                DownloadStarter::Host,
+            )
             .await
             .unwrap();
         // One download a moment ago: the one-second gap is slept in place.
@@ -1719,7 +1792,14 @@ mod tests {
         );
         assert!(started.elapsed() >= Duration::from_millis(500));
         store
-            .record_account_download("audible", "a1", Utc::now(), None, DownloadStarter::Person)
+            .record_account_download(
+                &DownloadId::new(),
+                "audible",
+                "a1",
+                Utc::now(),
+                None,
+                DownloadStarter::Person,
+            )
             .await
             .unwrap();
         // Two in the last day with a budget of two: wait about a day.
@@ -1780,7 +1860,14 @@ mod tests {
             cooldown: Duration::from_secs(3600),
         };
         store
-            .record_account_download("audible", "a1", Utc::now(), None, DownloadStarter::Host)
+            .record_account_download(
+                &DownloadId::new(),
+                "audible",
+                "a1",
+                Utc::now(),
+                None,
+                DownloadStarter::Host,
+            )
             .await
             .unwrap();
         let parked_until = Utc::now() + chrono::Duration::hours(23);

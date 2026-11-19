@@ -2048,14 +2048,11 @@ async fn a_committed_uploads_probe_is_kept_on_the_file_row() {
     }
 }
 
-/// An upload is granted only for a title of the job, its token opens only
-/// that upload, the commit waits for every file, and the title's commit
-/// marks the title acquired and publishes `book_acquired` but cannot
-/// finish the job; only the closing upload completes it and gives its
-/// permits back, and a repeat answers the same.
 /// A title's commit and its pace ledger row land in one batch under every
 /// database profile: a batch the database refuses leaves neither the
-/// commit nor the row, and the retry records exactly one.
+/// commit nor the row, and the retry records exactly one. A batch cut off
+/// after any of its statements (the ledger row is the last) leaves nothing
+/// of the commit either.
 #[tokio::test]
 async fn a_refused_commit_records_no_download_and_its_retry_records_one() {
     let _guard = master_key_test_lock_async().await;
@@ -2091,6 +2088,19 @@ async fn a_refused_commit_records_no_download_and_its_retry_records_one() {
                 .await
                 .unwrap());
         }
+        let nothing_landed = |why: String| {
+            let store = w.store.clone();
+            let book_uuid = book_uuid.clone();
+            async move {
+                assert_eq!(ledger_len(&store, "riley-acct").await, 0, "{why}");
+                let book = store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
+                assert_ne!(
+                    book.acquire_status,
+                    crate::models::AcquireStatus::Acquired,
+                    "{why}: nothing of the failed commit landed"
+                );
+            }
+        };
         kit.lock_next_requests(1);
         assert!(
             commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
@@ -2098,13 +2108,36 @@ async fn a_refused_commit_records_no_download_and_its_retry_records_one() {
                 .is_err(),
             "{name}: the refused batch fails the commit"
         );
-        assert_eq!(ledger_len(&w.store, "riley-acct").await, 0, "{name}");
-        let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
-        assert_ne!(
-            book.acquire_status,
-            crate::models::AcquireStatus::Acquired,
-            "{name}: nothing of the refused commit landed"
-        );
+        nothing_landed(format!("{name}: refused")).await;
+        // Cut the commit's batch off after each statement in turn, until
+        // the cut lands past the last one (the ledger row): every cut short
+        // of that rolls the whole commit back.
+        for skip in 0..64u32 {
+            crate::inject_atomic_interrupt_after(
+                crate::AtomicInterruptPhase::BetweenStatements,
+                crate::AtomicInterruptKind::Cancel,
+                skip,
+            );
+            let cut = commit_upload(&w.store, &upload_id, None, SETTINGS.limits).await;
+            // The injection is spent or left over; clear any left over.
+            let _ = crate::proxy_txn::consume_atomic_interrupt(
+                crate::AtomicInterruptPhase::BetweenStatements,
+            );
+            match cut {
+                Err(_) => nothing_landed(format!("{name}: cut after {skip}")).await,
+                Ok(committed) => {
+                    assert_eq!(
+                        committed,
+                        UploadCommit::Committed {
+                            job_completed: false
+                        },
+                        "{name}"
+                    );
+                    assert!(skip > 0, "{name}: the commit ran no statement");
+                    break;
+                }
+            }
+        }
         for _ in 0..2 {
             assert_eq!(
                 commit_upload(&w.store, &upload_id, None, SETTINGS.limits)

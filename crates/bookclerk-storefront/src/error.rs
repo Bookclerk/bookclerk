@@ -65,7 +65,7 @@ const THROTTLE_WORDS: [&str; 6] = [
     "rate limit",
     "rate-limit",
     "ratelimit",
-    "too many",
+    "too many requests",
     "429",
 ];
 

@@ -585,10 +585,12 @@ only that. The others check:
   `fuzz/oracles/pace_request.rs`, replayed from `bookclerk-library`.
 - **`throttle_reason`**: restates the throttle words byte by byte. Refusal
   text is a throttle exactly when it contains `throttl`, `rate limit`,
-  `rate-limit`, `ratelimit`, `too many` or `429`, ignoring ASCII case;
+  `rate-limit`, `ratelimit`, `too many requests` or `429`, ignoring ASCII
+  case;
   changing the text's case never changes the answer, adding "Too Many
   Requests" always makes it a throttle, and adding other limit wording
-  (a device or download limit) never makes a plain refusal one. The
+  (a device or download limit, "Too many devices registered") never
+  makes a plain refusal one. The
   shared oracle is `fuzz/oracles/throttle_reason.rs`, replayed from
   `bookclerk-storefront`.
 - **`window_policy`**: restates the policy from the bytes. A request is

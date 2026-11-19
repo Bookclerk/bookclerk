@@ -109,8 +109,11 @@ impl From<audible_rs::api::client::ApiError> for AudibleError {
                 asin,
                 error_code,
                 message,
+                status,
                 ..
-            } if error_code == "000307" => Self::NoAaxcAsset { asin, message },
+            } if error_code == "000307" && status.as_u16() != 429 => {
+                Self::NoAaxcAsset { asin, message }
+            }
             ApiError::LicenseRejected {
                 asin,
                 status,
@@ -148,6 +151,7 @@ mod throttle_tests {
         assert!(is_throttle_reason("HTTP 429"));
         assert!(is_throttle_reason("rate limit exceeded"));
         assert!(!is_throttle_reason("Not owned"));
+        assert!(!is_throttle_reason("Too many devices registered"));
         assert!(!is_throttle_reason(""));
     }
 
@@ -170,5 +174,20 @@ mod throttle_tests {
         };
         assert!(AudibleError::from(rejected(StatusCode::TOO_MANY_REQUESTS)).is_throttled());
         assert!(!AudibleError::from(rejected(StatusCode::FORBIDDEN)).is_throttled());
+
+        // A 429 is a throttle even with the missing-asset code, which
+        // otherwise means the title has no AAXC asset.
+        let no_asset = |status: StatusCode| ApiError::LicenseRejected {
+            asin: "B000000000".into(),
+            status,
+            error_code: "000307".into(),
+            message: String::new(),
+            request_id: "-".into(),
+        };
+        assert!(AudibleError::from(no_asset(StatusCode::TOO_MANY_REQUESTS)).is_throttled());
+        assert!(matches!(
+            AudibleError::from(no_asset(StatusCode::FORBIDDEN)),
+            AudibleError::NoAaxcAsset { .. }
+        ));
     }
 }

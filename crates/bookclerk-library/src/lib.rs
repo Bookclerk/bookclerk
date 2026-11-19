@@ -188,7 +188,7 @@ pub use store::{
     },
     listening::{ListeningIdentifiers, ListeningMatch, ListeningProgressWrite},
     overrides::{ConflictCursor, PinOutcome, ResolutionConflict, MAX_CONFLICT_PAGE},
-    pacing::{AccountPaceState, DownloadStarter},
+    pacing::{AccountPaceState, DownloadId, DownloadStarter},
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
     prefer_enrichment_source,

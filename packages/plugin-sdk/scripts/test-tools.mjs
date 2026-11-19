@@ -409,6 +409,32 @@ function bindingMessage(manifest) {
   }
   return "";
 }
+// [acquire]: the host parses a table with deny_unknown_fields, so a scalar
+// or array is refused as well as an unknown key, and an empty table is fine.
+{
+  const store = (acquire) => ({
+    ...bindingBase,
+    entrypoints: ["storefront"],
+    media: { works: ["book"], lists: ["audio"], fetches: ["audio"] },
+    acquire,
+  });
+  const cases = [
+    [{}, ""],
+    [{ downloads_per_day: 100 }, ""],
+    [false, "plugin.toml: `[acquire]` must be a table"],
+    [100, "plugin.toml: `[acquire]` must be a table"],
+    [[1], "plugin.toml: `[acquire]` must be a table"],
+    [{ downloads_per_days: 1 }, "unknown field `downloads_per_days`"],
+  ];
+  for (const [acquire, want] of cases) {
+    const got = bindingMessage(store(acquire));
+    if (want === "" ? got !== "" : !got.includes(want)) {
+      console.error("FAIL [acquire]", JSON.stringify(acquire), JSON.stringify(got));
+      process.exit(1);
+    }
+  }
+  console.log("ok [acquire] must be a table of known fields");
+}
 // [metadata_files]: the host parses rows with deny_unknown_fields and a bool `writes`.
 {
   const dialect = { id: "txt", name: "Text", file_names: ["desc.txt"], fields: ["description"] };

@@ -43,11 +43,14 @@ export function ConnectionPace({
 
   // The form starts from the pace as it stands when it opens, so a refresh
   // since the page loaded is never saved back over; edits then stay put.
+  // Only the account's own custom values fill the fields: one it leaves to
+  // the store stays blank (the store's value shows as a placeholder), so
+  // saving does not pin the store's current value on the account.
   function toggle() {
     if (!open) {
       setMode(pace.mode);
-      setPerDay(String(pace.custom_downloads_per_day ?? pace.store_downloads_per_day ?? ""));
-      setGap(String(pace.custom_min_gap_seconds ?? pace.store_min_gap_seconds ?? ""));
+      setPerDay(String(pace.custom_downloads_per_day ?? ""));
+      setGap(String(pace.custom_min_gap_seconds ?? ""));
       setError(null);
     }
     setOpen((v) => !v);
@@ -130,6 +133,11 @@ export function ConnectionPace({
               min={1}
               max={10000}
               value={perDay}
+              placeholder={
+                pace.store_downloads_per_day == null
+                  ? "No limit"
+                  : `Store: ${pace.store_downloads_per_day}`
+              }
               disabled={mode !== "custom"}
               onChange={(e) => setPerDay(e.target.value)}
             />
@@ -141,6 +149,9 @@ export function ConnectionPace({
               min={0}
               max={86400}
               value={gap}
+              placeholder={
+                pace.store_min_gap_seconds == null ? "None" : `Store: ${pace.store_min_gap_seconds}`
+              }
               disabled={mode !== "custom"}
               onChange={(e) => setGap(e.target.value)}
             />

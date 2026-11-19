@@ -578,7 +578,9 @@ holds across plugin instances and every node of the cluster.
 - **Who waits.** An acquire job whose payload has `paced` set waits for the
   pace: scheduled auto-acquire and the acquire a branch queues for a
   request it accepted from a library (which is how "Acquire all of this
-  branch's members' books" reaches it). An acquire a person starts in the
+  branch's members' books" reaches it). A paced title that fails and is
+  retried waits for the pace again before the retry asks the store, and is
+  set aside like any other when the wait is long. An acquire a person starts in the
   web app or CLI leaves `paced` unset: its downloads count against the
   budget but are never held, and when the store answers `rateLimited` the
   job records the cool-down and stops with the store's answer instead of
@@ -586,7 +588,8 @@ holds across plugin instances and every node of the cluster.
   hand-started acquire is never folded into a waiting automatic one.
 - **Ledger.** Every title Bookclerk may have fetched from the store is a
   row in `account_downloads` (start time, job, paced or not), once per
-  title however many attempts it took. That includes a title that failed
+  title however many attempts it took. Each row's id is made once per
+  download, so a write retried after a lost answer adds no second row. That includes a title that failed
   after its fetch (converting or storing it), since the store download
   already happened, and a store download that a better copy from a
   joined library then replaced, and a missing companion PDF fetched for a

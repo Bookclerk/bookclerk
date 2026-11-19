@@ -1132,6 +1132,10 @@ function validateAcquire(m: Manifest): void {
   if (!entrypoints.includes("storefront")) {
     throw new Error("plugin.toml: `[acquire]` needs the `storefront` entrypoint");
   }
+  const table: unknown = acquire;
+  if (typeof table !== "object" || table === null || Array.isArray(table)) {
+    throw new Error("plugin.toml: `[acquire]` must be a table");
+  }
   const known: readonly string[] = ACQUIRE_RANGES.map(([field]) => field);
   const unknown = Object.keys(acquire).filter((key) => !known.includes(key));
   if (unknown.length > 0) {

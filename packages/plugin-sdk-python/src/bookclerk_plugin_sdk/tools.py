@@ -777,7 +777,7 @@ def _validate_acquire(m: dict[str, Any]) -> None:
 
     Raises:
         ValueError: If a plugin without the ``storefront`` entrypoint declares
-            the table, the table names a field the host does not know, or a
+            the table, it is not a table, names a field the host does not know, or a
             value is not a whole number in its range.
     """
     acquire = m.get("acquire")
@@ -785,6 +785,8 @@ def _validate_acquire(m: dict[str, Any]) -> None:
         return
     if "storefront" not in (m.get("entrypoints") or []):
         raise ValueError("plugin.toml: `[acquire]` needs the `storefront` entrypoint")
+    if not isinstance(acquire, dict):
+        raise ValueError("plugin.toml: `[acquire]` must be a table")
     known = [field for field, _, _ in _ACQUIRE_RANGES]
     unknown = [key for key in acquire if key not in known]
     if unknown:

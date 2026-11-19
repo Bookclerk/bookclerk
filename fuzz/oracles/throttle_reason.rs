@@ -26,15 +26,16 @@ const THROTTLE_WORDS: [&[u8]; 6] = [
     b"rate limit",
     b"rate-limit",
     b"ratelimit",
-    b"too many",
+    b"too many requests",
     b"429",
 ];
 
 /// Wording about limits that are not throttling. Each is added after a
 /// `.`, which no throttle word contains, so no word can form across the
 /// join (text ending in "rate" followed by " Limit" would).
-const OTHER_LIMITS: [&str; 3] = [
+const OTHER_LIMITS: [&str; 4] = [
     "device limit reached",
+    "Too many devices registered",
     "download limit",
     "Limit exceeded for this title",
 ];
