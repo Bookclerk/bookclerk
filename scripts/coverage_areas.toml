@@ -74,7 +74,7 @@ test_results = "collector/junit.xml"
 root = "tools/diagnostics-collector"
 paths = ["tools/diagnostics-collector/"]
 suffixes = [".ts"]
-floor = 93
+floor = 94
 
 [areas.python-sdk]
 report = "python-sdk/lcov.info"
