@@ -424,6 +424,8 @@ function bindingMessage(manifest) {
     [false, "plugin.toml: `[acquire]` must be a table"],
     [100, "plugin.toml: `[acquire]` must be a table"],
     [[1], "plugin.toml: `[acquire]` must be a table"],
+    [parse("d = 1979-05-27").d, "plugin.toml: `[acquire]` must be a table"],
+    [Object.create(null), ""],
     [{ downloads_per_days: 1 }, "unknown field `downloads_per_days`"],
   ];
   for (const [acquire, want] of cases) {

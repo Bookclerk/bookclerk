@@ -1132,8 +1132,12 @@ function validateAcquire(m: Manifest): void {
   if (!entrypoints.includes("storefront")) {
     throw new Error("plugin.toml: `[acquire]` needs the `storefront` entrypoint");
   }
+  // A TOML table parses to a plain object; an array, a date (an object with
+  // no keys of its own) or any other value is not one.
   const table: unknown = acquire;
-  if (typeof table !== "object" || table === null || Array.isArray(table)) {
+  const proto: unknown =
+    typeof table === "object" && table !== null ? Object.getPrototypeOf(table) : undefined;
+  if (Array.isArray(table) || (proto !== Object.prototype && proto !== null)) {
     throw new Error("plugin.toml: `[acquire]` must be a table");
   }
   const known: readonly string[] = ACQUIRE_RANGES.map(([field]) => field);

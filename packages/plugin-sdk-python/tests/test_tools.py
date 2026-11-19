@@ -2025,6 +2025,6 @@ def test_acquire_rejects_fields_the_host_does_not_know() -> None:
     validate_manifest({**base, "acquire": {"downloads_per_day": 100}})
     with pytest.raises(ValueError, match="unknown field `downloads_per_days`"):
         validate_manifest({**base, "acquire": {"downloads_per_days": 100}})
-    for scalar in (False, 100, "fast", [1]):
+    for scalar in (False, 100, "fast", [1], date(1979, 5, 27)):
         with pytest.raises(ValueError, match=r"`\[acquire\]` must be a table"):
             validate_manifest({**base, "acquire": scalar})
