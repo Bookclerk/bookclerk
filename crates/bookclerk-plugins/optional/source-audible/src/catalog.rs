@@ -3,10 +3,10 @@
 //! Uses [`bookclerk_audible_catalog`] public catalog HTTP — no account required.
 
 use bookclerk_audible_catalog::{
-    is_valid_asin, normalize_region, public_http_client, region_tld, search_catalog_by_genre_name,
-    search_catalog_by_narrator, search_catalog_by_series_asin, search_catalog_products,
-    search_catalog_products_paged, search_catalog_storefront, search_similar_products,
-    CatalogProduct,
+    fetch_products_by_asins, is_valid_asin, normalize_region, public_http_client, region_tld,
+    search_catalog_by_genre_name, search_catalog_by_narrator, search_catalog_by_series_asin,
+    search_catalog_products, search_catalog_products_paged, search_catalog_storefront,
+    search_similar_products, CatalogProduct,
 };
 use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_storefront::{
@@ -192,6 +192,38 @@ fn seed_audible_asin(seed: &ExpandSeed) -> Option<&str> {
         })
 }
 
+/// The seed's top-level genres as Audible files it, looked up by its ASIN;
+/// empty when it has no ASIN or the lookup fails.
+async fn seed_genre_roots(
+    http: &bookclerk_plugin_sdk::http::Client,
+    region: &str,
+    seed: &ExpandSeed,
+) -> Vec<String> {
+    let Some(asin) = seed_audible_asin(seed) else {
+        return Vec::new();
+    };
+    match fetch_products_by_asins(http, region, &[asin]).await {
+        Ok(products) => products
+            .into_iter()
+            .find(|p| p.asin.eq_ignore_ascii_case(asin))
+            .map(|p| p.genre_roots)
+            .unwrap_or_default(),
+        Err(err) => {
+            tracing::debug!(asin, error = %err, "audible seed genre lookup failed");
+            Vec::new()
+        }
+    }
+}
+
+/// Whether a title filed under `roots` shares a top-level genre with a
+/// seed filed under `seed_roots` (names compared without case). A title
+/// with no genres shares none.
+fn shares_genre_root(roots: &[String], seed_roots: &[String]) -> bool {
+    roots
+        .iter()
+        .any(|r| seed_roots.iter().any(|s| s.eq_ignore_ascii_case(r)))
+}
+
 /// Origin shown for a title Audible lists as similar to `seed_title`.
 fn similar_origin(seed_title: &str) -> String {
     format!("audible related titles (“{seed_title}”)")
@@ -306,12 +338,24 @@ pub async fn expand_candidates(
         }
     }
 
-    // Narrator search when narrators present (noisier; still useful for Audible seeds).
+    // More read by the same narrator, kept only when a title shares a
+    // top-level genre with the seed: narrators also record children's
+    // books, and a voice in common does not make a thriller's listener want
+    // *Llama Llama Red Pajama*. A seed whose genres are unknown gets none.
     if by_asin.len() < limit {
         if let Some(narrator) = primary_person(seed.narrators.as_deref()) {
-            match search_catalog_by_narrator(&http, &region, narrator).await {
+            let roots = seed_genre_roots(&http, &region, seed).await;
+            let found = if roots.is_empty() {
+                Ok(Vec::new())
+            } else {
+                search_catalog_by_narrator(&http, &region, narrator).await
+            };
+            match found {
                 Ok(products) => {
-                    for p in products {
+                    for p in products
+                        .into_iter()
+                        .filter(|p| shares_genre_root(&p.genre_roots, &roots))
+                    {
                         push(
                             &mut by_asin,
                             p,
@@ -1033,6 +1077,7 @@ mod tests {
             length_minutes: None,
             published_at: None,
             categories: None,
+            genre_roots: Vec::new(),
             language: None,
             price_cents: None,
             currency: None,
@@ -1065,6 +1110,21 @@ mod tests {
         assert_eq!(records[0].asin().as_deref(), Some("B0D1KV49FL"));
         assert_eq!(records[0].narrators().as_deref(), Some("Joe Jameson"));
         assert_eq!(records[0].origin, "purchase search");
+    }
+
+    /// A narrator's other title is kept only when it shares a top-level
+    /// genre with the seed: a thriller narrator's picture book is not.
+    #[test]
+    fn narrator_titles_need_a_genre_root_in_common() {
+        let roots = |names: &[&str]| names.iter().map(|n| (*n).to_string()).collect::<Vec<_>>();
+        let seed = roots(&["Mystery, Thriller & Suspense", "Literature & Fiction"]);
+        assert!(shares_genre_root(&roots(&["literature & fiction"]), &seed));
+        assert!(!shares_genre_root(
+            &roots(&["Children's Audiobooks"]),
+            &seed
+        ));
+        assert!(!shares_genre_root(&[], &seed));
+        assert!(!shares_genre_root(&roots(&["Literature & Fiction"]), &[]));
     }
 
     #[test]

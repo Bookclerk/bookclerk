@@ -155,6 +155,12 @@ pub struct CatalogProduct {
     pub published_at: Option<String>,
     /// Genre / subject labels (`;`-separated).
     pub categories: Option<String>,
+    /// The top-level genre of each of the title's genre ladders
+    /// (`Science Fiction & Fantasy`, `Children's Audiobooks`), each once,
+    /// in ladder order; empty when the catalog gave no ladders. Unlike
+    /// [`Self::categories`], which joins every rung, this tells an adult
+    /// "Action & Adventure" from a children's one.
+    pub genre_roots: Vec<String>,
     /// BCP-47 / storefront language code (`en`, `de`, …) when known.
     pub language: Option<String>,
     /// List or deal price in integer cents of [`Self::currency`].
@@ -1059,6 +1065,69 @@ pub async fn search_similar_products_at(
         .collect())
 }
 
+/// Looks titles up by ASIN in the public catalog, with their genre ladders.
+///
+/// # Arguments
+///
+/// * `http` - Client from [`public_http_client`].
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `asins` - ASINs to look up; values that are not ASINs are skipped.
+///
+/// # Returns
+///
+/// The titles the catalog knows, in its order; none when no value is an ASIN.
+///
+/// # Errors
+///
+/// Returns an error when the request fails or the answer is not JSON.
+pub async fn fetch_products_by_asins(
+    http: &Client,
+    region: &str,
+    asins: &[&str],
+) -> Result<Vec<CatalogProduct>> {
+    let region = normalize_region(region);
+    let origin = format!("https://api.audible{}", region_tld(&region));
+    fetch_products_by_asins_at(http, &origin, asins).await
+}
+
+/// [`fetch_products_by_asins`] against a given catalog origin, such as a
+/// test server.
+///
+/// # Arguments
+///
+/// * `http` - Client from [`public_http_client`].
+/// * `origin` - Catalog origin without a trailing slash
+///   (`https://api.audible.com`).
+/// * `asins` - ASINs to look up; values that are not ASINs are skipped.
+///
+/// # Returns
+///
+/// The titles the catalog knows, in its order; none when no value is an ASIN.
+///
+/// # Errors
+///
+/// Returns an error when the request fails or the answer is not JSON.
+pub async fn fetch_products_by_asins_at(
+    http: &Client,
+    origin: &str,
+    asins: &[&str],
+) -> Result<Vec<CatalogProduct>> {
+    let asins: Vec<String> = asins
+        .iter()
+        .map(|a| a.trim().to_ascii_uppercase())
+        .filter(|a| is_valid_asin(a))
+        .collect();
+    if asins.is_empty() {
+        return Ok(Vec::new());
+    }
+    let joined = asins.join(",");
+    let req = http.get(format!("{origin}/1.0/catalog/products")).query(&[
+        ("asins", joined.as_str()),
+        ("response_groups", CATALOG_RESPONSE_GROUPS),
+    ]);
+    catalog_products_from_response(req).await
+}
+
 /// True for Audible podcast shows / episodes (`content_type` / delivery type).
 ///
 /// # Arguments
@@ -1170,6 +1239,7 @@ fn parse_catalog_product(p: &Value) -> Option<CatalogProduct> {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     let categories = categories_from_catalog_product(p);
+    let genre_roots = genre_roots_from_catalog_product(p);
     let (price_cents, currency, price_label) = price_from_catalog_product(p);
     let rating = parse_catalog_rating(p);
     let rating_overall = rating.as_ref().and_then(|r| r.overall);
@@ -1189,6 +1259,7 @@ fn parse_catalog_product(p: &Value) -> Option<CatalogProduct> {
         length_minutes,
         published_at,
         categories,
+        genre_roots,
         language,
         price_cents,
         currency,
@@ -1233,6 +1304,32 @@ fn categories_from_catalog_product(p: &Value) -> Option<String> {
     } else {
         Some(names.join("; "))
     }
+}
+
+/// The first rung's name of each of a product's genre ladders, each once,
+/// in ladder order.
+fn genre_roots_from_catalog_product(p: &Value) -> Vec<String> {
+    let mut roots: Vec<String> = Vec::new();
+    let Some(ladders) = p.get("category_ladders").and_then(Value::as_array) else {
+        return roots;
+    };
+    for ladder in ladders {
+        let root = ladder
+            .get("ladder")
+            .and_then(Value::as_array)
+            .or_else(|| ladder.as_array())
+            .and_then(|rungs| rungs.first())
+            .and_then(|rung| rung.get("name"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        if let Some(root) = root {
+            if !roots.iter().any(|r| r.eq_ignore_ascii_case(root)) {
+                roots.push(root.to_string());
+            }
+        }
+    }
+    roots
 }
 
 /// Lowest/list price as cents, currency code, and a display label (`FREE` when zero).
