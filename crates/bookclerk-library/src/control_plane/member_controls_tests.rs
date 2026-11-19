@@ -408,5 +408,22 @@ async fn a_promotion_after_authorization_stops_the_override_write() {
             .await
             .unwrap();
         assert!(cleared.overrides.is_empty(), "{name}");
+        // Stored overrides that already match the request still refuse a
+        // write authorized against the old role.
+        let pat = store
+            .create_user(UserRole::Member, Some("Pat"), None)
+            .await
+            .unwrap();
+        set_member_control_overrides_for(store, &pat, overrides)
+            .await
+            .unwrap();
+        store
+            .set_user_role(pat.id, UserRole::Administrator)
+            .await
+            .unwrap();
+        let err = set_member_control_overrides_for(store, &pat, overrides)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LibraryError::Conflict(_)), "{name}: {err:?}");
     }
 }

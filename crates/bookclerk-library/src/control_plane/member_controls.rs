@@ -508,7 +508,9 @@ pub async fn set_member_control_overrides(
 /// # Errors
 ///
 /// Returns [`LibraryError::Conflict`] when the user's role changed since
-/// `user` was read (nothing was written), [`LibraryError::NotFound`] when
+/// `user` was read, even when the stored overrides already matched (the
+/// caller authorized against a role the user no longer has, so it reads
+/// again), [`LibraryError::NotFound`] when
 /// the user is gone, or the read or write error.
 pub async fn set_member_control_overrides_for(
     store: &LibraryStore,
@@ -565,7 +567,7 @@ pub async fn set_member_control_overrides_for(
     let Some(current) = store.get_user(user_id).await? else {
         return Err(LibraryError::not_found(EntityKind::User, user_id));
     };
-    if current.role != user.role && member_control_overrides(store, user_id).await? != overrides {
+    if current.role != user.role {
         return Err(LibraryError::Conflict(format!(
             "user {user_id} became {} while their controls were being set; read them again",
             current.role.as_str()
