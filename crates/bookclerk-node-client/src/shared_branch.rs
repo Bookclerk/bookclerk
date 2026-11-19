@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 
 use bookclerk_config::{Config, DatabasePluginKind};
 use bookclerk_library::control_plane::{
-    encode_node_identity_file, library_contents, node_identity_path, LibraryLinkKeys,
-    LibraryContents,
+    encode_node_identity_file, library_contents, node_identity_path, LibraryContents,
+    LibraryLinkKeys,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{
