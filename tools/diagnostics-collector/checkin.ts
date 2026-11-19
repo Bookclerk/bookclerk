@@ -178,8 +178,10 @@ export async function installKey(db: D1Database, installId: string, now: number)
 }
 
 /**
- * Stores a check-in once per install and week, under today's cap. The cap
- * is part of the insert itself, so concurrent check-ins cannot all pass it.
+ * Stores a check-in once per install and week, under today's cap. A repeat
+ * is found by its primary key; a new check-in first reserves a slot in its
+ * day's counter (`checkin_days`) in one statement, so concurrent check-ins
+ * cannot pass the cap and the check costs the same however full the day is.
  *
  * @param db - Dashboard database.
  * @param c - The parsed check-in.
@@ -196,22 +198,32 @@ export async function recordCheckin(
   const day = dayOf(now);
   const week = weekOf(now);
   const key = await installKey(db, c.install_id, now);
-  const res = await db
-    .prepare(
-      `INSERT OR IGNORE INTO checkins (week, install_key, month, day, received_at, version, os, arch, kind)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
-       WHERE (SELECT COUNT(*) FROM checkins WHERE day = ?) < ?`,
-    )
-    .bind(week, key, monthOf(now), day, now, c.version, c.os, c.arch, c.kind, day, dailyRows)
-    .run();
-  if (Number(res.meta?.changes ?? 0) > 0) return "stored";
   const seen = await first(
     db,
     "SELECT 1 AS hit FROM checkins WHERE week = ? AND install_key = ?",
     week,
     key,
   );
-  return seen ? "repeat" : "capped";
+  if (seen) return "repeat";
+  const reserved = await db
+    .prepare(
+      `INSERT INTO checkin_days (day, rows) SELECT ?, 1 WHERE ? > 0
+       ON CONFLICT (day) DO UPDATE SET rows = rows + 1 WHERE rows < ?`,
+    )
+    .bind(day, dailyRows, dailyRows)
+    .run();
+  if (Number(reserved.meta?.changes ?? 0) === 0) return "capped";
+  const res = await db
+    .prepare(
+      `INSERT OR IGNORE INTO checkins (week, install_key, month, day, received_at, version, os, arch, kind)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(week, key, monthOf(now), day, now, c.version, c.os, c.arch, c.kind)
+    .run();
+  if (Number(res.meta?.changes ?? 0) > 0) return "stored";
+  // The same install checked in concurrently: give the slot back.
+  await run(db, "UPDATE checkin_days SET rows = rows - 1 WHERE day = ? AND rows > 0", day);
+  return "repeat";
 }
 
 /**
@@ -224,6 +236,7 @@ export async function recordCheckin(
 export async function pruneUsage(db: D1Database, now: number): Promise<void> {
   await db.batch([
     db.prepare("DELETE FROM checkins WHERE day < ?").bind(dayOf(now - RETENTION_MS)),
+    db.prepare("DELETE FROM checkin_days WHERE day < ?").bind(dayOf(now - RETENTION_MS)),
     db.prepare("DELETE FROM install_salts WHERE month <> ?").bind(monthOf(now)),
   ]);
 }

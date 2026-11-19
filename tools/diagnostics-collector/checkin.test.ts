@@ -113,6 +113,17 @@ describe("check-in rows", () => {
     assert.deepEqual(outcomes.filter((o) => o === "capped").length, 2);
     const n = await first(db, "SELECT COUNT(*) AS n FROM checkins");
     assert.equal(Number(n?.n), 1);
+    const day = await first(db, "SELECT rows FROM checkin_days");
+    assert.equal(Number(day?.rows), 1, "the day's counter matches what was stored");
+  });
+
+  it("does not spend a slot on a repeat", async () => {
+    const db = createD1();
+    assert.equal(await recordCheckin(db, checkin(), NOW, 2), "stored");
+    assert.equal(await recordCheckin(db, checkin(), NOW + 1000, 2), "repeat");
+    assert.equal(await recordCheckin(db, checkin({ install_id: OTHER }), NOW, 2), "stored");
+    const day = await first(db, "SELECT rows FROM checkin_days");
+    assert.equal(Number(day?.rows), 2);
   });
 
   it("counts installs by week, month, kind and version", async () => {

@@ -632,8 +632,9 @@ so that is at most 60,000 of D1's 100,000 free daily row writes. A report
 past the cap is still stored.
 
 `/checkin` is open too, so it stores at most `CHECKIN_DAILY_ROWS` check-ins
-a UTC day (default 5,000) and answers 429 past that. Each writes three
-rows, at most 15,000 a day. The rest is left for sign-ins, the access log,
+a UTC day (default 5,000) and answers 429 past that. Each writes four
+rows (the check-in, its indexes and its day's counter), at most 20,000 a
+day. The rest is left for sign-ins, the access log,
 the sync and triage marks. The cron deletes check-in rows after 35 days
 and every month's salt but the current one.
 

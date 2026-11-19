@@ -688,9 +688,9 @@ export function overviewPage(d: OverviewData): SafeHtml {
             html`<tr><td>${String(p.key).trim() || "unknown"}</td><td class="r num">${fmtInt(p.n)}</td><td class="bar-cell">${meter(Number(p.n) / platMax)}</td></tr>`,
         )}</tbody></table></div></section>
 
-        <section class="panel s7"><h2>Top error signatures <a href="/reports?range=${d.rangeId}">Explore</a></h2><div class="tbl"><table><thead><tr><th>Signature</th><th class="r">${range.label}</th><th>Trend</th><th>Tracked by</th></tr></thead><tbody>${d.signatures.map(
+        <section class="panel s7"><h2>Top error signatures <a href="/reports?range=${d.rangeId}${sourceParam}">Explore</a></h2><div class="tbl"><table><thead><tr><th>Signature</th><th class="r">${range.label}</th><th>Trend</th><th>Tracked by</th></tr></thead><tbody>${d.signatures.map(
           (s) =>
-            html`<tr><td class="mono wrap-any"><a class="quiet" href="/reports?range=${d.rangeId}&amp;signature=${s.signature}">${s.label}</a></td><td class="r num">${fmtInt(s.n)}</td><td>${sparkline(dailySeries(d.now, 14, s.days), s.issue ? "muted" : "amber")}</td><td>${issueChip(d.cfg, s.issue?.number, s.issue?.state)}</td></tr>`,
+            html`<tr><td class="mono wrap-any"><a class="quiet" href="/reports?range=${d.rangeId}&amp;signature=${s.signature}${sourceParam}">${s.label}</a></td><td class="r num">${fmtInt(s.n)}</td><td>${sparkline(dailySeries(d.now, 14, s.days), s.issue ? "muted" : "amber")}</td><td>${issueChip(d.cfg, s.issue?.number, s.issue?.state)}</td></tr>`,
         )}</tbody></table></div></section>
         <section class="panel s5"><h2>Versions</h2><div class="tbl"><table><thead><tr><th>Version</th><th class="r">Reports</th><th class="r">Errors + warnings / report</th><th><span class="sr">Share</span></th></tr></thead><tbody>${d.versions.map(
           (v) =>
@@ -765,7 +765,7 @@ export function reportsPage(d: ReportsData): SafeHtml {
             d.filter.triage ?? "",
           )}
           <noscript><button class="button small" type="submit">Apply</button></noscript>
-          <span class="fine" data-live="total">${fmtInt(d.total)} reports · page ${d.page} of ${pages}${d.filter.signature ? html` · signature <span class="mono">${d.filter.signature}</span> <a href="/reports?range=${d.rangeId}">clear</a>` : ""}</span>
+          <span class="fine" data-live="total">${fmtInt(d.total)} reports · page ${d.page} of ${pages}${d.filter.signature ? html` · signature <span class="mono">${d.filter.signature}</span> <a href="/reports?range=${d.rangeId}${d.filter.source && d.filter.source !== "installs" ? `&source=${d.filter.source}` : ""}">clear</a>` : ""}</span>
         </form>
         <form id="bulk-triage" class="bulk" method="post" action="/reports/triage">
           <input type="hidden" name="back" value="${d.url.pathname}${d.url.search}">

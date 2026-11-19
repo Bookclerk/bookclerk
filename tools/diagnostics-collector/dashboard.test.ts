@@ -4313,6 +4313,12 @@ describe("triage state, mutes and owner close", () => {
       await call(env, new Request(`${ORIGIN}/dash?source=all`, { headers: { cookie } }))
     ).text();
     assert.match(page, /Needs triage<\/a><\/h2><div class="v">3</, "all sources count three");
+    assert.match(
+      page,
+      /href="\/reports\?range=[a-z0-9]+&amp;signature=[0-9a-f]{16}&amp;source=all"/,
+      "signature links keep the source",
+    );
+    assert.match(page, /Top error signatures <a href="\/reports\?range=[a-z0-9]+&amp;source=all">/);
 
     let res = await postForm(env, cookie, "/reports/triage", [
       ["state", "noise"],

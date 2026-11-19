@@ -20,7 +20,7 @@ TRIAGE_DAILY_NEURONS = "2000"
 # Each indexed report writes six rows, so this spends at most 60,000.
 DASHBOARD_INDEX_DAILY_ROWS = "10000"
 # Most usage check-ins /checkin stores per UTC day, for the same reason.
-# Each writes three rows, so this spends at most 15,000.
+# Each writes four rows, so this spends at most 20,000.
 CHECKIN_DAILY_ROWS = "5000"
 
 [ai]

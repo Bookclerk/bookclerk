@@ -22,9 +22,18 @@ CREATE TABLE checkins (
   kind TEXT NOT NULL,
   PRIMARY KEY (week, install_key)
 );
--- Each check-in writes three rows (the row and its two indexes); the counts
--- read the day index, and the table never holds more than 35 days.
+-- Each check-in writes three rows (the row and its two indexes) plus its
+-- day's counter; the counts read the day index, and the table never holds
+-- more than 35 days.
 CREATE INDEX checkins_day ON checkins (day);
+
+-- Check-ins stored per UTC day (days since the epoch), for the daily cap: a
+-- slot is reserved here in one statement, so the cap costs one row read
+-- however many check-ins the day already holds.
+CREATE TABLE checkin_days (
+  day INTEGER PRIMARY KEY,
+  rows INTEGER NOT NULL
+);
 
 -- Reports sent by an install that also shares usage carry its install key
 -- for the month the report arrived ('' otherwise). deployment is 'demo' for
