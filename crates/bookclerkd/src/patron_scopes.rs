@@ -306,7 +306,7 @@ pub(crate) struct UserControlsJson {
     /// The library's default, which Members follow.
     defaults: MemberControls,
     /// The controls set for this patron alone; the others follow the
-    /// default.
+    /// default for a Member and are allowed for an Administrator.
     overrides: ControlOverrides,
     /// What applies to the user now: nothing for a disabled user,
     /// everything for an Owner, the overrides alone for an Administrator,
@@ -391,7 +391,8 @@ pub(crate) async fn get_user_controls(
 }
 
 /// Sets the controls that differ for one patron; every other control
-/// follows the library's default.
+/// follows the library's default for a Member and is allowed for an
+/// Administrator.
 ///
 /// Nobody sets their own. An Owner may always do everything, so
 /// overrides stored for one only apply if their role changes. An

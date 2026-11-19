@@ -187,8 +187,9 @@ impl MemberControls {
     }
 }
 
-/// One patron's overrides: a value for some controls, and the library's
-/// default for the rest (an absent or `null` field).
+/// One patron's overrides: a value for some controls; the rest (an absent
+/// or `null` field) follow the library's default for a Member and are
+/// allowed for an Administrator.
 // Read by a strict hand-written reader (module `strict`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -695,8 +696,8 @@ fn invalid(detail: &str) -> LibraryError {
 #[serde(deny_unknown_fields)]
 pub struct PutUserControls {
     /// The controls set for this patron alone; an absent or `null`
-    /// control follows the library's default, so `{}` returns the patron
-    /// to the default for all of them.
+    /// control follows the library's default for a Member and is allowed
+    /// for an Administrator, so `{}` clears every override.
     pub overrides: ControlOverrides,
 }
 
