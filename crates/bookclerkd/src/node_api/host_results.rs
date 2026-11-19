@@ -19,10 +19,12 @@
 //! complete full pass), under the same checks. An acquire asks for its titles (the owner's
 //! pending rows the job covers, with every destination deployed on this
 //! node and that destination's own options, so the host names each
-//! destination's files as a local acquire would), then for each title asks
-//! for an upload whose manifest gives each file's key per destination (each
-//! key must lie in the title's own scope there, which this node computes
-//! from its own row, and be no other title's file); the
+//! destination's files as a local acquire would, and each title's target
+//! set: the destinations whose filter takes it), then for each title asks
+//! for an upload whose manifest gives each file's key on each destination
+//! of that set and no other (each key must lie in the title's own scope
+//! there, which this node computes from its own row, and be no other
+//! title's file); the
 //! token is sealed to the host's box key and bound to the node, job, fence
 //! and upload, so it is never frame text.
 
@@ -292,6 +294,10 @@ pub(super) async fn acquire_plan(
         _ => return Ok(error(id, "unavailable", "no_destination")),
     };
     let download_episodes = host.state.config.read().await.library.download_episodes;
+    // Read once per plan: every title of one answer is placed by the same
+    // filters, and a filter that cannot be read fails the plan rather than
+    // sending a title where it said not to.
+    let filters = super::uploads::owner_filters(library, &destinations).await?;
     // The same scope the closing commit checks before it completes the job.
     let Some(titles) = job_titles(library, &host.node_id, &job).await? else {
         return Ok(lost(id, job_id, fence));
@@ -313,6 +319,16 @@ pub(super) async fn acquire_plan(
             continue;
         }
         let parent = podcast_parent(library, &title).await?;
+        // Each title goes only to the destinations whose filter takes it,
+        // as a local acquire would place it. A title none takes is still
+        // handed out, with an empty list, so the host fails it like a
+        // local acquire does instead of the job waiting on it.
+        let facts = crate::jobs::placement_facts(library, &title).await?;
+        let accepted: Vec<String> = destinations
+            .iter()
+            .filter(|destination| super::uploads::takes(&filters, &destination.id, &facts))
+            .map(|destination| destination.id.clone())
+            .collect();
         // The host names with this library's edition ids, so it plans the
         // same keys this node grants.
         targets.push(AcquireTarget {
@@ -325,6 +341,7 @@ pub(super) async fn acquire_plan(
                 .as_ref()
                 .and_then(|parent| target_call_number(&parent.edition_id)),
             parent: parent.as_ref().map(target_title),
+            destinations: Some(accepted),
         });
     }
     let destinations = destinations
@@ -408,9 +425,10 @@ pub(super) async fn upload_grant(
     if request.files.len() > MAX_UPLOAD_FILES {
         return Ok(error(id, "refused", "invalid_manifest"));
     }
-    // The manifest must cover exactly the destinations deployed here now
-    // (the upload endpoint re-checks them for every file), each only under
-    // the title's own keys there, computed here from this node's row.
+    // The manifest must cover exactly the title's target set here now (the
+    // upload endpoint re-checks that every one is still deployed for every
+    // file), each only under the title's own keys there, computed here from
+    // this node's row.
     let scoped = if request.holding_id.is_empty() {
         Vec::new()
     } else {
@@ -433,6 +451,15 @@ pub(super) async fn upload_grant(
         let destinations = match super::uploads::owner_destinations(&host.state).await {
             Ok(destinations) if !destinations.is_empty() => destinations,
             _ => return Ok(error(id, "unavailable", "no_destination")),
+        };
+        // Only the destinations whose filter takes the title now: the plan
+        // chose the same set, so a host that names another one (or a filter
+        // edited since the plan) is refused as `destinations_changed`. A
+        // title this node does not have keeps every destination, each with
+        // an empty scope, so nothing of it is granted.
+        let destinations = match &title {
+            Some(title) => super::uploads::title_target_set(library, destinations, title).await?,
+            None => destinations,
         };
         title_destinations(library, host, title.as_ref(), &destinations).await
     };
