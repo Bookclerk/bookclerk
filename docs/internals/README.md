@@ -8,6 +8,8 @@ confined. It assumes you can read Rust.
 
 - [Architecture](architecture.md): how the pieces fit.
 - [Discovery design](discovery.md): how suggestions are found and ranked.
+- [Embedding model benchmarks](embedding-benchmarks.md): how candidate
+  models match taste across languages, and what they cost to run.
 - [Durable job queue](jobs.md): admission, leases and crash recovery.
 - [Bounded storage](storage-bounds.md): size caps, streams, paged scans
   and checkpoints.

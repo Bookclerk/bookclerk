@@ -1,0 +1,6 @@
+xychart-beta
+  title "Two series"
+  x-axis [en, es, fr, de]
+  y-axis "P@10" 0 --> 0.5
+  bar [0.42, 0.40, 0.35, 0.36]
+  line [0.48, 0.41, 0.42, 0.40]

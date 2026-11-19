@@ -172,6 +172,7 @@ export const NAV: NavSpec[] = [
       "internals/README",
       "internals/architecture",
       "internals/discovery",
+      "internals/embedding-benchmarks",
       "internals/jobs",
       "internals/storage-bounds",
       "internals/guest-jail",
