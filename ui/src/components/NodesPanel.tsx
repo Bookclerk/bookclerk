@@ -366,7 +366,7 @@ interface NodesPanelProps {
 }
 
 /**
- * Cluster nodes as their heartbeats report them, with each node's budget
+ * Library nodes as their heartbeats report them, with each node's budget
  * and drain switch. The scheduler places plugins by this headroom, and
  * deliveries go to the live node with the most room first.
  */

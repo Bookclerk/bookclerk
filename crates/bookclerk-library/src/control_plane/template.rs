@@ -4,8 +4,8 @@
 //! does: `packaging/demo/bake-seed.sh`) so that each container starts from
 //! seeded data instead of seeding it again. The library rows are shared by
 //! every copy, so nothing that belongs to one install may stay in it: the
-//! cluster secret fingerprint (it pins the data-encryption key in
-//! `master.key`, which each copy mints for itself), cluster leases and node
+//! library secret fingerprint (it pins the data-encryption key in
+//! `master.key`, which each copy mints for itself), library leases and node
 //! heartbeats from the build. Sealed secrets and sign-in sessions would be
 //! readable by everyone holding the image, so a library that has any is
 //! refused rather than cleaned.
@@ -28,10 +28,10 @@ const MUST_BE_EMPTY: [&str; 4] = [
 /// What [`strip_install_state`] removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TemplateStrip {
-    /// `cluster_identity` rows deleted (0 or 1); each holds the cluster id and
+    /// `library_identity` rows deleted (0 or 1); each holds the library id and
     /// the fingerprint of its key, never the key.
     pub identity_rows: u64,
-    /// Cluster lease rows deleted.
+    /// Library lease rows deleted.
     pub leases: u64,
     /// Node heartbeat rows deleted.
     pub node_status: u64,
@@ -40,9 +40,9 @@ pub struct TemplateStrip {
 /// Removes this install's own state from the library so that copies of it
 /// can start as installs of their own.
 ///
-/// Deletes the cluster secret fingerprint, so the first daemon of each copy
+/// Deletes the library secret fingerprint, so the first daemon of each copy
 /// records the key it mints instead of refusing it as a mismatch, plus the
-/// cluster leases and node heartbeats left by the build. Library data,
+/// library leases and node heartbeats left by the build. Library data,
 /// plugin instances, deployments and the node rows stay. Run it only on a
 /// library no daemon has open.
 ///
@@ -78,8 +78,8 @@ pub async fn strip_install_state(store: &LibraryStore) -> Result<TemplateStrip> 
         .execute_host_batch(request(
             &format!("template-strip-{}", uuid::Uuid::new_v4()),
             vec![
-                exec("DELETE FROM cluster_identity", Vec::new()),
-                exec("DELETE FROM cluster_leases", Vec::new()),
+                exec("DELETE FROM library_identity", Vec::new()),
+                exec("DELETE FROM library_leases", Vec::new()),
                 exec("DELETE FROM node_status", Vec::new()),
                 super::bump(super::LiveTopic::Nodes),
             ],
@@ -118,13 +118,13 @@ mod tests {
         let store = store().await;
         run(
             &store,
-            "INSERT INTO cluster_identity (id, cluster_id, secret_fingerprint, schema_state, created_at) \
+            "INSERT INTO library_identity (id, library_id, secret_fingerprint, schema_state, created_at) \
              VALUES (1, 'c', 'f', 's', 't')",
         )
         .await;
         run(
             &store,
-            "INSERT INTO cluster_leases (name, holder, token, expires_at_ms, renewed_at) \
+            "INSERT INTO library_leases (name, holder, token, expires_at_ms, renewed_at) \
              VALUES ('test.lease', 'n', 1, 0, 't')",
         )
         .await;
@@ -150,7 +150,7 @@ mod tests {
         let store = store().await;
         run(
             &store,
-            "INSERT INTO cluster_identity (id, cluster_id, secret_fingerprint, schema_state, created_at) \
+            "INSERT INTO library_identity (id, library_id, secret_fingerprint, schema_state, created_at) \
              VALUES (1, 'c', 'f', 's', 't')",
         )
         .await;
@@ -177,7 +177,7 @@ mod tests {
             .execute_host_batch(request(
                 "left",
                 vec![query(
-                    "SELECT count(*) FROM cluster_identity",
+                    "SELECT count(*) FROM library_identity",
                     Vec::new(),
                     1,
                 )],

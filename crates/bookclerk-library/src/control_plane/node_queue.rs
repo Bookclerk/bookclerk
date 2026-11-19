@@ -61,7 +61,7 @@ pub enum NodeMessage {
         /// Placement revision (0 for a node label change or a delete).
         revision: i64,
     },
-    /// A configuration document changed (cluster settings or an instance
+    /// A configuration document changed (library settings or an instance
     /// document).
     #[serde(rename = "configuration.changed", rename_all = "camelCase")]
     ConfigurationChanged {

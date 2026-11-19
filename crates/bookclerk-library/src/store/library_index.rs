@@ -7,7 +7,7 @@
 //! row is derived data: [`LibraryStore::refresh_library_works`] reads a
 //! work's model and writes its row (a work with no holding left keeps a
 //! row with a holding count of 0, which pages skip, as the refresh fence),
-//! or deletes it once the work is gone. The daemon's cluster-wide `host:library-index` consumer
+//! or deletes it once the work is gone. The daemon's library-wide `host:library-index` consumer
 //! calls it for the works an event touched, and a rebuild
 //! ([`LibraryStore::rebuild_library_index_page`]) walks every work when the
 //! index has no finished build of [`LIBRARY_INDEX_LAYOUT`].

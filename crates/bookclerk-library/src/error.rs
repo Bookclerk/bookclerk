@@ -32,18 +32,18 @@ pub enum EntityKind {
     OidcState,
     /// A WebAuthn ceremony challenge.
     WebauthnChallenge,
-    /// A cluster node.
+    /// A library node.
     Node,
     /// A node enrollment link.
     EnrollmentLink,
     /// A pending join of this host to another library.
     PendingJoin,
-    /// This cluster's identity.
-    ClusterIdentity,
+    /// This library's identity.
+    LibraryIdentity,
     /// A link to another library.
-    ClusterLink,
+    LibraryLink,
     /// The node keys a linked library published.
-    ClusterNodeKeys,
+    LibraryNodeKeys,
     /// A library this install holds a library card for, as a clerk.
     ClerkLink,
     /// The sealed library card of a clerk link.
@@ -96,9 +96,9 @@ impl EntityKind {
         Self::Node,
         Self::EnrollmentLink,
         Self::PendingJoin,
-        Self::ClusterIdentity,
-        Self::ClusterLink,
-        Self::ClusterNodeKeys,
+        Self::LibraryIdentity,
+        Self::LibraryLink,
+        Self::LibraryNodeKeys,
         Self::ClerkLink,
         Self::ClerkCard,
         Self::Configuration,
@@ -136,9 +136,9 @@ impl EntityKind {
             Self::Node => "node",
             Self::EnrollmentLink => "enrollment link",
             Self::PendingJoin => "pending join",
-            Self::ClusterIdentity => "cluster identity",
-            Self::ClusterLink => "library link",
-            Self::ClusterNodeKeys => "node keys of library",
+            Self::LibraryIdentity => "library identity",
+            Self::LibraryLink => "library link",
+            Self::LibraryNodeKeys => "node keys of library",
             Self::ClerkLink => "library card",
             Self::ClerkCard => "sealed library card",
             Self::Configuration => "configuration",
@@ -440,8 +440,8 @@ mod tests {
             "user 7 not found"
         );
         assert_eq!(
-            LibraryError::missing(EntityKind::ClusterIdentity).to_string(),
-            "cluster identity not found"
+            LibraryError::missing(EntityKind::LibraryIdentity).to_string(),
+            "library identity not found"
         );
         assert!(matches!(
             LibraryError::not_found(EntityKind::Node, "n_1"),

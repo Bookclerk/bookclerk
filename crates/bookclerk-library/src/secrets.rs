@@ -78,16 +78,16 @@ pub mod secret_kind {
     /// Ciphertext stays in this table. The configuration document stores the
     /// ref name only.
     pub const PLUGIN_INSTANCE: &str = "plugin_instance";
-    /// On a branch node: the private node keys of one owner-cluster link
-    /// (`provider` = owner cluster id, `account_id` = this node's id there).
-    pub const CLUSTER_LINK: &str = "cluster_link";
+    /// On a branch node: the private node keys of one owner-library link
+    /// (`provider` = parent library id, `account_id` = this node's id there).
+    pub const LIBRARY_LINK: &str = "library_link";
     /// On a host joining a library: the PKCE verifier and node keys of one
-    /// sign-in in progress (`provider` = owner cluster id, `account_id` =
+    /// sign-in in progress (`provider` = parent library id, `account_id` =
     /// the pending join's state hash). Deleted when the join completes or
     /// expires.
-    pub const CLUSTER_JOIN: &str = "cluster_join";
+    pub const LIBRARY_JOIN: &str = "library_join";
     /// On a clerk: the library card of one library (`provider` = the
-    /// library's cluster id, `account_id` = the same). Deleted when the card
+    /// library's id, `account_id` = the same). Deleted when the card
     /// is signed out.
     pub const CLERK_CARD: &str = "clerk_card";
 }

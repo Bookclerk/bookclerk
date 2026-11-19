@@ -62,8 +62,8 @@ pub struct AppState {
     /// Wakes the durable job worker when a new row is admitted.
     pub job_notify: Arc<Notify>,
     /// How this node splits its machine between its own work and each
-    /// library it is a branch of ([`crate::cluster_link::capacity`]).
-    pub capacity: Arc<crate::cluster_link::capacity::CapacityShares>,
+    /// library it is a branch of ([`crate::library_link::capacity`]).
+    pub capacity: Arc<crate::library_link::capacity::CapacityShares>,
     /// Shared barrier covering admission, claim, and handler execution.
     ///
     /// Workers and admit hold a read permit. A database plugin swap takes the
@@ -108,7 +108,7 @@ pub struct AppState {
     /// turns auth off is checked against it as well as the new config.
     pub node_api_tls_bound: OnceLock<std::net::SocketAddr>,
     /// Counts database swaps: bumped after [`Self::library`] is replaced so
-    /// the cluster-link supervisor restarts its host clients on the new
+    /// the library-link supervisor restarts its host clients on the new
     /// store.
     pub library_swaps: tokio::sync::watch::Sender<u64>,
     /// Signs cover URLs into same-origin paths and serves the processed
@@ -1152,7 +1152,7 @@ fn operator_or_admin_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(sync_listening))
 }
 
-/// Routes for the operator alone (configuration, plugins, cluster consents, joining a library).
+/// Routes for the operator alone (configuration, plugins, library consents, joining a library).
 ///
 /// Kept out of line so the optimizer works on one group at a time: inlined
 /// together, the whole route table is a single function that the
@@ -1205,22 +1205,22 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(crate::plugin_installs::put_active_version))
         .routes(routes!(crate::plugin_installs::approve_plugin_version))
-        .routes(routes!(crate::cluster_link::api::get_cluster_consents))
-        .routes(routes!(crate::cluster_link::api::post_cluster_scan))
-        .routes(routes!(crate::cluster_link::api::post_cluster_jobs))
+        .routes(routes!(crate::library_link::api::get_library_consents))
+        .routes(routes!(crate::library_link::api::post_library_scan))
+        .routes(routes!(crate::library_link::api::post_library_jobs))
         .routes(routes!(
-            crate::cluster_link::api::post_cluster_consent_approve
+            crate::library_link::api::post_library_consent_approve
         ))
         .routes(routes!(
-            crate::cluster_link::api::post_cluster_consent_revoke
+            crate::library_link::api::post_library_consent_revoke
         ))
         // Join a library / Leave library (the welcome screen and wizard).
-        .routes(routes!(crate::cluster_link::join::get_join_status))
-        .routes(routes!(crate::cluster_link::join::post_join_inspect))
-        .routes(routes!(crate::cluster_link::join::post_join_start))
-        .routes(routes!(crate::cluster_link::join::post_join_callback))
-        .routes(routes!(crate::cluster_link::join::post_join_invite))
-        .routes(routes!(crate::cluster_link::join::post_join_leave))
+        .routes(routes!(crate::library_link::join::get_join_status))
+        .routes(routes!(crate::library_link::join::post_join_inspect))
+        .routes(routes!(crate::library_link::join::post_join_start))
+        .routes(routes!(crate::library_link::join::post_join_callback))
+        .routes(routes!(crate::library_link::join::post_join_invite))
+        .routes(routes!(crate::library_link::join::post_join_leave))
         .routes(routes!(get_settings, patch_settings))
         .routes(routes!(get_diagnostics_reports))
         .routes(routes!(get_plugin_consent, post_plugin_consent))
@@ -1250,7 +1250,7 @@ fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
         // Settings → Shared branches: every shared node for the operator or an Owner.
         .routes(routes!(crate::config_authority::get_shared_branches))
         .routes(routes!(crate::config_authority::put_node_runtime))
-        .routes(routes!(crate::config_authority::get_cluster_status))
+        .routes(routes!(crate::config_authority::get_library_status))
 }
 
 /// Routes any signed-in user calls for themselves (enrollment links, branch and client consents, branch settings).
@@ -1311,12 +1311,12 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         // Settings → Library's two sharing settings on a branch (operator
         // or Owner; the handler checks).
         .routes(routes!(
-            crate::cluster_link::join::get_join_sharing,
-            crate::cluster_link::join::post_join_sharing
+            crate::library_link::join::get_join_sharing,
+            crate::library_link::join::post_join_sharing
         ))
         // The window view on a branch (operator or Owner; the handler
         // checks).
-        .routes(routes!(crate::cluster_link::join::get_join_window))
+        .routes(routes!(crate::library_link::join::get_join_window))
         // Library cards: signing in to a library as a clerk (operator or
         // Owner; the handlers check).
         .routes(routes!(crate::clerk_link::api::get_clerk_cards))
@@ -1327,14 +1327,14 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         // Store connections across linked libraries: the branch's person
         // only (the handler checks).
         .routes(routes!(
-            crate::cluster_link::connections::post_join_connections
+            crate::library_link::connections::post_join_connections
         ))
         .routes(routes!(
-            crate::cluster_link::connections::post_join_connections_disconnect
+            crate::library_link::connections::post_join_connections_disconnect
         ))
         // Settings → Library's job cap on a branch (operator or Owner; the
         // handler checks).
-        .routes(routes!(crate::cluster_link::join::post_join_capacity))
+        .routes(routes!(crate::library_link::join::post_join_capacity))
         // The library lets the operator or an Owner revoke any host and
         // anyone else only the hosts they own.
         .routes(routes!(crate::node_api::delete_node_credential))
@@ -1598,7 +1598,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 "/wishlist",
                 "/accounts",
                 // The Status page. `/status` stays the legacy JSON route.
-                "/cluster",
+                "/library-status",
                 "/settings",
                 // Join a library: the owner's consent page and the
                 // joining install's callback.
@@ -1880,12 +1880,12 @@ fn api_timeout_for_path(path: &str) -> Duration {
         // Parallel store searches (~7s each) + optional page enrich (~3.5s).
         "/api/discover/search" => Duration::from_secs(16),
         // Leave library waits for the library to hear `node.leaving`
-        // (`cluster_link::LEAVE_NOTICE_TIMEOUT`, through a fresh connection
+        // (`library_link::LEAVE_NOTICE_TIMEOUT`, through a fresh connection
         // when no client runs) before it records the leave.
         "/api/config/join/leave" => Duration::from_secs(30),
         // A join redeems with the library (at most
-        // `cluster_link::join::REDEEM_TIMEOUT`), then waits for the new
-        // link's client (`cluster_link::start_link_now`).
+        // `library_link::join::REDEEM_TIMEOUT`), then waits for the new
+        // link's client (`library_link::start_link_now`).
         // Their own bounded waits add up to 29 s; the rest is margin for the
         // database round trips around them.
         "/api/config/join/callback" | "/api/config/join/invite" => Duration::from_secs(45),
@@ -1901,7 +1901,7 @@ fn api_timeout_for_path(path: &str) -> Duration {
         "/api/config/join/inspect" | "/api/config/join/start" => Duration::from_secs(45),
         // Adding or disconnecting store connections calls each library
         // once, concurrently, bounded by
-        // `cluster_link::connections::LIBRARY_CALL_TIMEOUT` (12 s), and may
+        // `library_link::connections::LIBRARY_CALL_TIMEOUT` (12 s), and may
         // first wait for one other such request (as long again); the rest
         // is margin for the database round trips around them.
         "/api/config/join/connections" | "/api/config/join/connections/disconnect" => {
@@ -2219,7 +2219,7 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
 
     if db_plugin_changed {
         // Host clients hold the previous store's links and keys; the
-        // cluster-link supervisor stops them and dials the new store's
+        // library-link supervisor stops them and dials the new store's
         // active links.
         state.library_swaps.send_modify(|swaps| *swaps += 1);
     }
@@ -2441,11 +2441,11 @@ pub async fn revert_listen_after_bind_failure(state: &AppState) -> bool {
 enum SettingsAuthority {
     /// `config.toml` (bootstrap and still-transitional tables).
     File,
-    /// The `core.events` cluster document.
+    /// The `core.events` library document.
     Events,
-    /// The `core.output` cluster document.
+    /// The `core.output` library document.
     Output,
-    /// The `core.cache` cluster document.
+    /// The `core.cache` library document.
     Cache,
 }
 
@@ -7878,7 +7878,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
-            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
+            capacity: Arc::new(crate::library_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8307,7 +8307,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
-            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
+            capacity: Arc::new(crate::library_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8410,7 +8410,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
-            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
+            capacity: Arc::new(crate::library_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8571,7 +8571,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
-            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
+            capacity: Arc::new(crate::library_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8701,7 +8701,7 @@ tcp = {tcp}
         let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
             .await
             .unwrap();
-        overlay_events(&mut cfg, &session.events, &session.cluster_id);
+        overlay_events(&mut cfg, &session.events, &session.library_id);
         let original_retention = session.events.body.retention_days;
         let requested = if original_retention == 14 { 15 } else { 14 };
         let audits = audit_count(&store, EVENTS_NAMESPACE).await.unwrap();
@@ -8785,7 +8785,7 @@ tcp = {tcp}
         let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
             .await
             .unwrap();
-        overlay_events(&mut cfg, &session.events, &session.cluster_id);
+        overlay_events(&mut cfg, &session.events, &session.library_id);
         let requested = if session.events.body.retention_days == 14 {
             15
         } else {
@@ -9258,7 +9258,7 @@ tcp = {tcp}
         let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
             .await
             .unwrap();
-        overlay_events(&mut cfg, &session.events, &session.cluster_id);
+        overlay_events(&mut cfg, &session.events, &session.library_id);
         let revision = session.events.revision;
         let retention = session.events.body.retention_days;
         let stopped = Arc::new(AtomicBool::new(false));
@@ -9290,7 +9290,7 @@ tcp = {tcp}
         assert_eq!(live.events.retention_days, retention);
         assert_eq!(
             live.events_authority.as_deref(),
-            Some(session.cluster_id.as_str())
+            Some(session.library_id.as_str())
         );
         let loaded = load_events(&store).await.unwrap();
         assert_eq!(loaded.revision, revision);

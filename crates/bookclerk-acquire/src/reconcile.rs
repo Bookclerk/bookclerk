@@ -577,7 +577,7 @@ pub async fn find_existing_for_request(
             series: req.series.clone(),
             series_index: req.series_index.clone(),
             account_id: Some(req.account_id.clone()),
-            library_id: req.library_id.clone(),
+            call_number: req.call_number.clone(),
             ..Default::default()
         };
         for alt in planned_extensions() {
@@ -777,8 +777,8 @@ pub(crate) fn request_from_title(
         placement: None,
         job_id: None,
         temp_quota_bytes: None,
-        library_id: None,
-        parent_library_id: None,
+        call_number: None,
+        parent_call_number: None,
         metadata: crate::AcquireMetadata::default(),
         library_copies: crate::LibraryCopySource::default(),
     }
@@ -1468,13 +1468,13 @@ mod reconcile_integration {
             .await
             .unwrap()
             .unwrap();
-        // The default layout names the file after the edition's library id.
+        // The default layout names the file after the edition's call number.
         let edition = library
             .edition_of_book(&stored.uuid)
             .await
             .unwrap()
             .unwrap();
-        let short = bookclerk_library::library_id(&edition).unwrap();
+        let short = bookclerk_library::call_number(&edition).unwrap();
         let key = format!("Jane Doe/Hello/Hello_ World _{short}_.m4b");
         let key = key.as_str();
         inner

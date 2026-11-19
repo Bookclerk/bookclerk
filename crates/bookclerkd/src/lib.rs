@@ -22,7 +22,6 @@ mod cache_policy;
 mod catalog_lookup;
 mod clerk_link;
 mod clerk_token;
-mod cluster_link;
 mod config_authority;
 mod covers;
 mod cron_worker;
@@ -37,6 +36,7 @@ mod job_handler;
 mod job_worker;
 mod jobs;
 mod library_index;
+mod library_link;
 mod library_overrides;
 mod library_works;
 mod live;
@@ -379,7 +379,7 @@ struct HostParts {
 }
 
 /// Opens the control plane and starts every background runtime (deployment
-/// reconcile, jobs, events, heartbeat, cluster links, scheduler), then builds
+/// reconcile, jobs, events, heartbeat, library links, scheduler), then builds
 /// the router. Binds nothing: the caller decides how requests reach it.
 ///
 /// # Arguments
@@ -473,7 +473,7 @@ async fn start_host(config: Config, mode: HostMode) -> anyhow::Result<HostParts>
 }
 
 /// Starts every background runtime (deployment reconcile, jobs, events,
-/// heartbeat, cluster links, scheduler) on an opened control plane, then
+/// heartbeat, library links, scheduler) on an opened control plane, then
 /// builds the router. Binds nothing.
 ///
 /// # Arguments
@@ -502,7 +502,7 @@ async fn assemble_host(
     let paths = config.paths().clone();
     tracing::info!(
         node_id = %control_plane.node.node_id,
-        cluster_id = %control_plane.cluster_id,
+        library_id = %control_plane.library_id,
         events_revision = control_plane.events.revision,
         output_revision = control_plane.output.revision,
         enrolled = enrolled.len(),
@@ -533,7 +533,7 @@ async fn assemble_host(
         library: library.clone(),
         database_registry: database_registry.clone(),
         job_notify: Arc::new(Notify::new()),
-        capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
+        capacity: Arc::new(crate::library_link::capacity::CapacityShares::new()),
         job_runtime: Arc::new(RwLock::new(())),
         work_lock: Mutex::new(()),
         discover_gate: Arc::new(Semaphore::new(1)),
@@ -565,8 +565,8 @@ async fn assemble_host(
     config_authority::spawn_config_reconciler(state.clone());
     config_authority::spawn_deployment_reconciler(state.clone());
     heartbeat::spawn_heartbeat(state.clone());
-    // This install as a branch node of the owner clusters it enrolled into.
-    cluster_link::spawn_cluster_links(state.clone());
+    // This install as a branch node of the libraries it enrolled into.
+    library_link::spawn_library_links(state.clone());
     // The libraries this install holds a library card for (as a clerk).
     clerk_link::spawn_clerk_links(state.clone());
     placement::spawn_placement_scheduler(state.clone());

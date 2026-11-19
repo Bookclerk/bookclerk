@@ -492,7 +492,7 @@ Every selected check lists what a clean runner needs, with a reason:
 - **`windows_cluster`**: `cargo build -p bookclerk-plugin-database-sqlite
   -p bookclerk-jail -p bookclerk-workerd` and pinned `workerd`, then the
   existing identity filters and
-  `cargo test -p bookclerk-cli --test cluster_secret_startup`. The CLI
+  `cargo test -p bookclerk-cli --test library_secret_startup`. The CLI
   target still sets `plugins.isolation = "required"` and keeps its
   assertions, and `BOOKCLERK_REQUIRE_TEST_GUESTS=1` is set for it.
 
@@ -740,8 +740,8 @@ On every OS (on macOS, as a step of the [macOS job](#macos-job)) it runs
 ### Windows cluster startup and identity
 
 On `windows-latest` only, the job runs identity create, restart and
-binding, and different-cluster rejection. Then it runs the full
-`cluster_secret_startup` target with the sqlite guest, the jail,
+binding, and different-library rejection. Then it runs the full
+`library_secret_startup` target with the sqlite guest, the jail,
 `bookclerk-workerd` and pinned `workerd`.
 
 Its job saves no cache. Its `bookclerk-cli` and `bookclerk-library` test

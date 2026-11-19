@@ -16,8 +16,8 @@ pub struct Model {
     pub owner_origin: String,
     /// SPKI pin the operator confirmed (self-signed owners).
     pub spki_pin: Option<String>,
-    /// Owner cluster id `GET /api/node/v1/info` reported.
-    pub owner_cluster_id: String,
+    /// Library id `GET /api/node/v1/info` reported.
+    pub parent_library_id: String,
     /// Library name the owner reported.
     pub library_name: String,
     /// Name this install asks to join as.

@@ -21,7 +21,7 @@ export function showSettingsNav(_role?: AuthRole): boolean {
 }
 
 /**
- * Whether the cluster Status page is available to this role: operators,
+ * Whether the library Status page is available to this role: operators,
  * Owners, Administrators, and Hosts (who see the nodes they own).
  *
  * @param role - Effective session role.

@@ -15,7 +15,7 @@ pub struct Model {
     pub account_id: String,
     /// The other instance, as in `account_shares.peer`: `node:<node_id>`
     /// for the keeper branch whose pushes this library applied,
-    /// `link:<cluster_id>` for a library this keeper pushed to.
+    /// `link:<library_id>` for a library this keeper pushed to.
     #[sea_orm(primary_key, auto_increment = false)]
     pub peer: String,
     /// The revision that crossed this share: on a library, the newest one

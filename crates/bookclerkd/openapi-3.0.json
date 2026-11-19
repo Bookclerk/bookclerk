@@ -7163,7 +7163,7 @@
     "/api/config/nodes/{node_id}/labels": {
       "put": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`PUT /api/config/nodes/{node_id}/labels`: replace a node's placement\nlabels. The scheduler re-plans on the wakeup this publishes.",
         "operationId": "put_node_labels",
@@ -7322,7 +7322,7 @@
     "/api/config/nodes/{node_id}/owner": {
       "put": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`PUT /api/config/nodes/{node_id}/owner`: assign or clear a node's owner.\nThe owner may then edit that node's runtime settings without operator\nauthority.",
         "operationId": "put_node_owner",
@@ -8240,20 +8240,20 @@
         "x-bookclerk-access": "The operator (token or session) only."
       }
     },
-    "/api/config/cluster-consents": {
+    "/api/config/library-consents": {
       "get": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
-        "summary": "`GET /api/config/cluster-consents`.",
-        "operationId": "get_cluster_consents",
+        "summary": "`GET /api/config/library-consents`.",
+        "operationId": "get_library_consents",
         "responses": {
           "200": {
-            "description": "Pending and granted cluster consents.",
+            "description": "Pending and granted library consents.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ClusterConsentsResponse"
+                  "$ref": "#/components/schemas/LibraryConsentsResponse"
                 }
               }
             }
@@ -8324,18 +8324,18 @@
         "x-bookclerk-access": "The operator (token or session) only."
       }
     },
-    "/api/config/clusters/{cluster_id}/scan": {
+    "/api/config/libraries/{library_id}/scan": {
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
-        "summary": "`POST /api/config/clusters/{cluster_id}/scan`: asks the owner cluster\nto queue a scan for this node's owner (H-5). The owner's planner decides\nwhat that user may scan; the answer lists the queued job ids.",
-        "operationId": "post_cluster_scan",
+        "summary": "`POST /api/config/libraries/{library_id}/scan`: asks the library\nto queue a scan for this node's owner (H-5). The owner's planner decides\nwhat that user may scan; the answer lists the queued job ids.",
+        "operationId": "post_library_scan",
         "parameters": [
           {
-            "name": "cluster_id",
+            "name": "library_id",
             "in": "path",
-            "description": "Owner cluster id.",
+            "description": "Library id.",
             "required": true,
             "schema": {
               "type": "string"
@@ -8347,11 +8347,11 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "description": "`POST /api/config/clusters/{cluster_id}/scan` body.",
+                "description": "`POST /api/config/libraries/{library_id}/scan` body.",
                 "properties": {
                   "account": {
                     "type": "string",
-                    "description": "Scan only this store account of the owner cluster.",
+                    "description": "Scan only this store account of the library.",
                     "example": "reader@example.com",
                     "nullable": true
                   },
@@ -8370,11 +8370,11 @@
         },
         "responses": {
           "200": {
-            "description": "The owner cluster accepted the scan.",
+            "description": "The library accepted the scan.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ClusterScanPlanned"
+                  "$ref": "#/components/schemas/LibraryScanPlanned"
                 }
               }
             }
@@ -8395,7 +8395,7 @@
                     }
                   },
                   "owner_refused": {
-                    "summary": "The owner cluster refused the request as invalid.",
+                    "summary": "The library refused the request as invalid.",
                     "value": {
                       "detail": "account libro:reader@example.com is not on this node's owner",
                       "error": "invalid"
@@ -8443,7 +8443,7 @@
                     }
                   },
                   "owner_refused": {
-                    "summary": "The owner cluster refused the scan.",
+                    "summary": "The library refused the scan.",
                     "value": {
                       "detail": "this node may not queue library work",
                       "error": "forbidden"
@@ -8478,7 +8478,7 @@
             }
           },
           "502": {
-            "description": "The owner cluster answered with an unexpected frame (`unexpected_answer`), or with an error code other than `forbidden` and `invalid`.",
+            "description": "The library answered with an unexpected frame (`unexpected_answer`), or with an error code other than `forbidden` and `invalid`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8503,7 +8503,7 @@
             }
           },
           "503": {
-            "description": "This daemon has no running link to that cluster (`not_connected`), or the owner did not answer (`owner_unavailable`).",
+            "description": "This daemon has no running link to that library (`not_connected`), or the owner did not answer (`owner_unavailable`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -8511,9 +8511,9 @@
                 },
                 "examples": {
                   "not_connected": {
-                    "summary": "No link to that cluster is running (or no such cluster).",
+                    "summary": "No link to that library is running (or no such library).",
                     "value": {
-                      "detail": "this daemon has no running link to that owner cluster",
+                      "detail": "this daemon has no running link to that library",
                       "error": "not_connected"
                     }
                   },
@@ -8550,18 +8550,18 @@
         "x-bookclerk-access": "The operator (token or session) only."
       }
     },
-    "/api/config/clusters/{cluster_id}/jobs": {
+    "/api/config/libraries/{library_id}/jobs": {
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
-        "summary": "`POST /api/config/clusters/{cluster_id}/jobs`: the owner's view of jobs\nthis node may see (those it would be trusted to claim).",
-        "operationId": "post_cluster_jobs",
+        "summary": "`POST /api/config/libraries/{library_id}/jobs`: the owner's view of jobs\nthis node may see (those it would be trusted to claim).",
+        "operationId": "post_library_jobs",
         "parameters": [
           {
-            "name": "cluster_id",
+            "name": "library_id",
             "in": "path",
-            "description": "Owner cluster id.",
+            "description": "Library id.",
             "required": true,
             "schema": {
               "type": "string"
@@ -8572,7 +8572,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ClusterJobsBody"
+                "$ref": "#/components/schemas/LibraryJobsBody"
               }
             }
           },
@@ -8584,7 +8584,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ClusterJobsResponse"
+                  "$ref": "#/components/schemas/LibraryJobsResponse"
                 }
               }
             }
@@ -8598,7 +8598,7 @@
                 },
                 "examples": {
                   "owner_refused": {
-                    "summary": "The owner cluster refused the request as invalid.",
+                    "summary": "The library refused the request as invalid.",
                     "value": {
                       "detail": "too many job ids",
                       "error": "invalid"
@@ -8652,7 +8652,7 @@
                     }
                   },
                   "owner_refused": {
-                    "summary": "The owner cluster refused the request.",
+                    "summary": "The library refused the request.",
                     "value": {
                       "detail": "this node may not read library work",
                       "error": "forbidden"
@@ -8698,7 +8698,7 @@
             }
           },
           "502": {
-            "description": "The owner cluster answered with an unexpected frame (`unexpected_answer`), or with an error code other than `forbidden` and `invalid`.",
+            "description": "The library answered with an unexpected frame (`unexpected_answer`), or with an error code other than `forbidden` and `invalid`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8723,7 +8723,7 @@
             }
           },
           "503": {
-            "description": "This daemon has no running link to that cluster (`not_connected`), or the owner did not answer (`owner_unavailable`).",
+            "description": "This daemon has no running link to that library (`not_connected`), or the owner did not answer (`owner_unavailable`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -8731,9 +8731,9 @@
                 },
                 "examples": {
                   "not_connected": {
-                    "summary": "No link to that cluster is running (or no such cluster).",
+                    "summary": "No link to that library is running (or no such library).",
                     "value": {
-                      "detail": "this daemon has no running link to that owner cluster",
+                      "detail": "this daemon has no running link to that library",
                       "error": "not_connected"
                     }
                   },
@@ -8770,13 +8770,13 @@
         "x-bookclerk-access": "The operator (token or session) only."
       }
     },
-    "/api/config/cluster-consents/approve": {
+    "/api/config/library-consents/approve": {
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
-        "summary": "`POST /api/config/cluster-consents/approve`.",
-        "operationId": "post_cluster_consent_approve",
+        "summary": "`POST /api/config/library-consents/approve`.",
+        "operationId": "post_library_consent_approve",
         "requestBody": {
           "content": {
             "application/json": {
@@ -8849,14 +8849,14 @@
             }
           },
           "404": {
-            "description": "That cluster has not asked to run that plugin here (`not_requested`).",
+            "description": "That library has not asked to run that plugin here (`not_requested`).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorDetail"
                 },
                 "example": {
-                  "detail": "cluster c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f has not asked to run bookclerk:source-libro here",
+                  "detail": "library c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f has not asked to run bookclerk:source-libro here",
                   "error": "not_requested"
                 }
               }
@@ -8894,7 +8894,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `cluster_id` at line 1 column 2"
+                "example": "Failed to deserialize the JSON body into the target type: missing field `library_id` at line 1 column 2"
               }
             }
           },
@@ -8935,13 +8935,13 @@
         "x-bookclerk-access": "The operator (token or session) only."
       }
     },
-    "/api/config/cluster-consents/revoke": {
+    "/api/config/library-consents/revoke": {
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
-        "summary": "`POST /api/config/cluster-consents/revoke`.",
-        "operationId": "post_cluster_consent_revoke",
+        "summary": "`POST /api/config/library-consents/revoke`.",
+        "operationId": "post_library_consent_revoke",
         "requestBody": {
           "content": {
             "application/json": {
@@ -9035,7 +9035,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `cluster_id` at line 1 column 2"
+                "example": "Failed to deserialize the JSON body into the target type: missing field `library_id` at line 1 column 2"
               }
             }
           },
@@ -9078,7 +9078,7 @@
     "/api/config/join": {
       "get": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`GET /api/config/join`.",
         "operationId": "get_join_status",
@@ -9176,7 +9176,7 @@
     "/api/config/join/inspect": {
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`POST /api/config/join/inspect`.",
         "operationId": "post_join_inspect",
@@ -9384,7 +9384,7 @@
     "/api/config/join/start": {
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`POST /api/config/join/start`.",
         "operationId": "post_join_start",
@@ -9611,7 +9611,7 @@
     "/api/config/join/callback": {
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`POST /api/config/join/callback`: redeems the library's code with the\nsign-in's sealed verifier and keys. The pending sign-in is kept when the\nredeem fails for a reason a retry can fix (answered as 502\n`join_retry`; the page offers Try again with the same code), and ended\non success, refusal, or anything else.",
         "operationId": "post_join_callback",
@@ -9872,7 +9872,7 @@
     "/api/config/join/invite": {
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`POST /api/config/join/invite`: join with a pasted branch invite. The\nlink is redeemed once and dropped; it is never logged or echoed. A\nlibrary slower than [`REDEEM_TIMEOUT`] is answered 504 `join_pending`\nwhile the join carries on and starts its client when it lands.",
         "operationId": "post_join_invite",
@@ -10096,7 +10096,7 @@
     "/api/config/join/leave": {
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`POST /api/config/join/leave`: Leave library. The leave runs on its own\ntask, so a request cut short (the client gone, or the API deadline)\nstill records it once the library has been told.",
         "operationId": "post_join_leave",
@@ -10194,7 +10194,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `cluster_id` at line 1 column 2"
+                "example": "Failed to deserialize the JSON body into the target type: missing field `library_id` at line 1 column 2"
               }
             }
           },
@@ -11356,7 +11356,7 @@
     "/api/config/nodes": {
       "get": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`GET /api/config/nodes`: every node for an operator; the caller's own\nnodes for a node owner.",
         "operationId": "get_nodes",
@@ -11481,7 +11481,7 @@
     "/api/config/nodes/{node_id}": {
       "delete": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`DELETE /api/config/nodes/{node_id}`: remove a shared node (a shared branch, or\nany node sharing this database) that is no longer running from the\nlibrary's node list. The operator or an Owner may remove any; another\nuser only one they own. A running node, this node, or a branch is\nrefused (a branch is revoked instead).",
         "operationId": "delete_shared_node",
@@ -11656,7 +11656,7 @@
     "/api/config/shared-branches": {
       "get": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`GET /api/config/shared-branches`: the shared nodes (this one and its shared branches) for\nSettings → Shared branches, shaped like `GET /api/config/nodes`. The operator or\nan Owner sees every one, as `DELETE /api/config/nodes/{node_id}` lets\nthem remove any; another user only the ones they own, which the nodes\nlisting already shows them. Branches are not listed.",
         "operationId": "get_shared_branches",
@@ -11781,7 +11781,7 @@
     "/api/config/nodes/{node_id}/runtime": {
       "put": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`PUT /api/config/nodes/{node_id}/runtime`: edit a node's label, budgets,\nor drain switch. Applies at that node's next heartbeat. A node owner may\nedit only the nodes it owns.",
         "operationId": "put_node_runtime",
@@ -11996,20 +11996,20 @@
         "x-bookclerk-access": "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
       }
     },
-    "/api/cluster/status": {
+    "/api/library-status": {
       "get": {
         "tags": [
           "Status"
         ],
-        "summary": "`GET /api/cluster/status`: cluster-wide health every node administrator\nmay see (node counts, committed capacity, active jobs, delivery backlog),\nplus detail for the nodes the caller may see.",
-        "operationId": "get_cluster_status",
+        "summary": "`GET /api/library-status`: library-wide health every node administrator\nmay see (node counts, committed capacity, active jobs, delivery backlog),\nplus detail for the nodes the caller may see.",
+        "operationId": "get_library_status",
         "responses": {
           "200": {
-            "description": "Cluster-wide node health.",
+            "description": "Library-wide node health.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ClusterStatusResponse"
+                  "$ref": "#/components/schemas/LibraryStatusResponse"
                 }
               }
             }
@@ -13411,7 +13411,7 @@
     "/api/config/node-invites": {
       "get": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`GET /api/config/node-invites`: every link for the operator or an\nOwner; the caller's own links for anyone else, and with `?mine=true`.",
         "operationId": "get_node_invites",
@@ -13545,7 +13545,7 @@
       },
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`POST /api/config/node-invites`: mint an enrollment link. Any user may\nmint one for themselves while host enrollment is on; the operator or an\nOwner may mint for any active user.",
         "description": "# Arguments\n\n* `caller` - Who is asking; decides whose links they may mint.\n* `body` - Owner, lifetime, and label of the new link.\n\n# Returns\n\n`{link, url}`; the secret appears once, in `url`.\n\n# Errors\n\nReturns 503 `node_api_pin_unavailable` in `self_signed` mode while the\ncertificate's SPKI pin cannot be read (nothing is minted), and an error\nresponse when the library refuses the mint.",
@@ -13639,7 +13639,7 @@
                   "enrollment_disabled": {
                     "summary": "Host enrollment is switched off.",
                     "value": {
-                      "error": "host enrollment is disabled for this cluster"
+                      "error": "host enrollment is disabled for this library"
                     }
                   },
                   "mfa_enrollment_required": {
@@ -13758,7 +13758,7 @@
     "/api/config/node-invites/{id}": {
       "delete": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`DELETE /api/config/node-invites/{id}`: revoke an unredeemed link.",
         "operationId": "delete_node_invite",
@@ -14116,17 +14116,17 @@
             }
           },
           "503": {
-            "description": "The library could not be read; try again (`unavailable`), or this library's cluster row or origin is not available yet (`cluster_unavailable`, `origin_unavailable`). The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "description": "The library could not be read; try again (`unavailable`), or this library's identity row or origin is not available yet (`library_unavailable`, `origin_unavailable`). The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorAnswer"
                 },
                 "examples": {
-                  "cluster_unavailable": {
-                    "summary": "This library's cluster row is not available yet.",
+                  "library_unavailable": {
+                    "summary": "This library's identity row is not available yet.",
                     "value": {
-                      "error": "cluster_unavailable"
+                      "error": "library_unavailable"
                     }
                   },
                   "unavailable": {
@@ -14396,17 +14396,17 @@
             }
           },
           "503": {
-            "description": "The library could not be read; try again (`unavailable`), or this library's cluster row or origin is not available yet (`cluster_unavailable`, `origin_unavailable`). The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "description": "The library could not be read; try again (`unavailable`), or this library's identity row or origin is not available yet (`library_unavailable`, `origin_unavailable`). The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorAnswer"
                 },
                 "examples": {
-                  "cluster_unavailable": {
-                    "summary": "This library's cluster row is not available yet.",
+                  "library_unavailable": {
+                    "summary": "This library's identity row is not available yet.",
                     "value": {
-                      "error": "cluster_unavailable"
+                      "error": "library_unavailable"
                     }
                   },
                   "unavailable": {
@@ -14793,17 +14793,17 @@
             }
           },
           "503": {
-            "description": "The library could not be read; try again (`unavailable`), or this library's cluster row or origin is not available yet (`cluster_unavailable`, `origin_unavailable`). The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "description": "The library could not be read; try again (`unavailable`), or this library's identity row or origin is not available yet (`library_unavailable`, `origin_unavailable`). The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorAnswer"
                 },
                 "examples": {
-                  "cluster_unavailable": {
-                    "summary": "This library's cluster row is not available yet.",
+                  "library_unavailable": {
+                    "summary": "This library's identity row is not available yet.",
                     "value": {
-                      "error": "cluster_unavailable"
+                      "error": "library_unavailable"
                     }
                   },
                   "unavailable": {
@@ -15041,7 +15041,7 @@
     "/api/config/branches": {
       "get": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`GET /api/config/branches`: this library's join settings: whether new\nbranches may join, the transport mode, and the SPKI fingerprint a\njoining operator confirms in `self_signed` mode.",
         "operationId": "get_branches",
@@ -15119,17 +15119,17 @@
             }
           },
           "503": {
-            "description": "This library's cluster row (`cluster_unavailable`) or origin (`origin_unavailable`) is not available yet. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "description": "This library's identity row (`library_unavailable`) or origin (`origin_unavailable`) is not available yet. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "examples": {
-                  "cluster_unavailable": {
-                    "summary": "The cluster row could not be read.",
+                  "library_unavailable": {
+                    "summary": "The library row could not be read.",
                     "value": {
-                      "error": "cluster_unavailable"
+                      "error": "library_unavailable"
                     }
                   },
                   "origin_unavailable": {
@@ -15169,7 +15169,7 @@
       },
       "put": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`PUT /api/config/branches`: turn \"Let new branches join\" on or off.",
         "operationId": "put_branches",
@@ -15356,7 +15356,7 @@
     "/api/config/branches/titles/remove": {
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`POST /api/config/branches/titles/remove`: removes the entries of\ntitles from a branch that stopped sharing or left. Delivered files stay.",
         "operationId": "post_remove_branch_titles",
@@ -15530,7 +15530,7 @@
     "/api/config/branches/members-books": {
       "put": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`PUT /api/config/branches/members-books`: turn this library's \"Acquire\nall of this branch's members' books\" on or off for one branch.",
         "description": "While on, the branch's catalog sync also sends the books its members\nacquired that it lists to this library (its \"List my members' books\"\nsetting and each member's opt-out still decide), not only its owner's.\nA change restarts the branch's catalog pass, so books it no longer sends\nare withdrawn when that pass ends; files already delivered stay.",
@@ -15714,9 +15714,9 @@
     "/api/config/join/sharing": {
       "get": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
-        "summary": "`GET /api/config/join/sharing`: Settings → Library for the operator or\nan Owner: every library this install is a branch of, with its two\nsharing settings (`{clusters: [...]}`).",
+        "summary": "`GET /api/config/join/sharing`: Settings → Library for the operator or\nan Owner: every library this install is a branch of, with its two\nsharing settings (`{libraries: [...]}`).",
         "operationId": "get_join_sharing",
         "responses": {
           "200": {
@@ -15843,7 +15843,7 @@
       },
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`POST /api/config/join/sharing`: Settings → Library's sharing and work\nsettings for one library this install is a branch of (the two\nbook-sharing settings, the two work settings, and optionally \"List my\nmembers' books\"). The operator or\nan Owner (verified from the stored role); anyone else gets 403.",
         "operationId": "post_join_sharing",
@@ -15960,7 +15960,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `cluster_id` at line 1 column 2"
+                "example": "Failed to deserialize the JSON body into the target type: missing field `library_id` at line 1 column 2"
               }
             }
           },
@@ -16031,9 +16031,9 @@
     "/api/config/join/window": {
       "get": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
-        "summary": "`GET /api/config/join/window`: \"Books in other libraries\" for the\noperator or an Owner: every book of each library this install is a\nbranch of, or holds a library card for, merged by work, each edition marked when it\nis this install's person's (`{clusters, cards, books}`).",
+        "summary": "`GET /api/config/join/window`: \"Books in other libraries\" for the\noperator or an Owner: every book of each library this install is a\nbranch of, or holds a library card for, merged by work, each edition marked when it\nis this install's person's (`{libraries, cards, books}`).",
         "operationId": "get_join_window",
         "responses": {
           "200": {
@@ -17047,7 +17047,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `cluster_id` at line 1 column 2"
+                "example": "Failed to deserialize the JSON body into the target type: missing field `library_id` at line 1 column 2"
               }
             }
           },
@@ -17118,7 +17118,7 @@
     "/api/config/join/connections": {
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`POST /api/config/join/connections`: \"Add my connections to *library*\".",
         "operationId": "post_join_connections",
@@ -17258,7 +17258,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `cluster_id` at line 1 column 2"
+                "example": "Failed to deserialize the JSON body into the target type: missing field `library_id` at line 1 column 2"
               }
             }
           },
@@ -17318,7 +17318,7 @@
     "/api/config/join/connections/disconnect": {
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`POST /api/config/join/connections/disconnect`: disconnects one of the\nperson's store accounts here, and with `everywhere` in every linked\nlibrary it was shared with.",
         "operationId": "post_join_connections_disconnect",
@@ -17492,7 +17492,7 @@
     "/api/config/join/capacity": {
       "post": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`POST /api/config/join/capacity`: Settings → Library's job cap for one\nlibrary this install is a branch of. The operator or an Owner (verified\nfrom the stored role); anyone else gets 403. The running link's share\nchanges at once: its claims stop at the new share and its next\nheartbeat reports the library the new part of the machine. Jobs it\nalready runs finish.",
         "operationId": "post_join_capacity",
@@ -17618,7 +17618,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `cluster_id` at line 1 column 2"
+                "example": "Failed to deserialize the JSON body into the target type: missing field `library_id` at line 1 column 2"
               }
             }
           },
@@ -17689,7 +17689,7 @@
     "/api/config/node-credentials/{node_id}": {
       "delete": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`DELETE /api/config/node-credentials/{node_id}`: revoke an enrolled\nhost's credential so it can no longer connect.",
         "description": "# Arguments\n\n* `caller` - Who is asking; the operator or an Owner may revoke any host,\n  any other active user only the hosts they own.\n* `node_id` - The branch node to revoke.\n\n# Returns\n\n`{credential}` with `revoked_at` set; revoking twice keeps the first\ntime.\n\n# Errors\n\nReturns 404 when the node is unknown or not the caller's, 400 when the\nnode has no host credential, 403 for a disabled user, and an error\nresponse when the write fails.",
@@ -17852,7 +17852,7 @@
     "/api/config/host-enrollment": {
       "get": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`GET /api/config/host-enrollment`: whether branch nodes may enroll.",
         "description": "# Returns\n\n`{enabled, revision}`; `revision` is `null` while the default (enabled)\napplies.\n\n# Errors\n\nReturns an error response when the switch cannot be read.",
@@ -17976,7 +17976,7 @@
       },
       "put": {
         "tags": [
-          "Cluster"
+          "Library"
         ],
         "summary": "`PUT /api/config/host-enrollment`: turn host enrollment on or off. The\noperator may always; a user only while the stored role is an active\nOwner.",
         "description": "# Arguments\n\n* `caller` - Who is asking; a user's role is read from the database.\n* `body` - The new switch value.\n\n# Returns\n\n`{enabled, revision}` as stored.\n\n# Errors\n\nReturns 403 when the caller is neither the operator nor an active Owner,\nand an error response when the switch cannot be written.",
@@ -29146,7 +29146,7 @@
         "tags": [
           "Node protocol"
         ],
-        "summary": "`POST /api/node/v1/enroll`: redeem an enrollment link. Answers\n`{cluster_id, node_id}`; 403 `transport_insecure` when the connection\nfails the transport policy, 403 `enrollment_refused` for any link that\ndoes not redeem.",
+        "summary": "`POST /api/node/v1/enroll`: redeem an enrollment link. Answers\n`{library_id, node_id}`; 403 `transport_insecure` when the connection\nfails the transport policy, 403 `enrollment_refused` for any link that\ndoes not redeem.",
         "operationId": "post_enroll",
         "requestBody": {
           "content": {
@@ -29332,17 +29332,17 @@
             }
           },
           "503": {
-            "description": "This library's cluster row (`cluster_unavailable`) or origin (`origin_unavailable`) is not available yet.",
+            "description": "This library's identity row (`library_unavailable`) or origin (`origin_unavailable`) is not available yet.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "examples": {
-                  "cluster_unavailable": {
-                    "summary": "The cluster row could not be read.",
+                  "library_unavailable": {
+                    "summary": "The library row could not be read.",
                     "value": {
-                      "error": "cluster_unavailable"
+                      "error": "library_unavailable"
                     }
                   },
                   "origin_unavailable": {
@@ -29376,7 +29376,7 @@
         "tags": [
           "Node protocol"
         ],
-        "summary": "`POST /api/node/v1/enroll/oauth`: redeem an approved branch sign-in.\nAnswers `{cluster_id, node_id}` for a branch, plus `connection` and the\nsealed `bootstrap` for a shared branch; 403 `transport_insecure` for a refused\nconnection, 403 `enrollment_refused` for a code that does not redeem\n(unknown, used, expired, another client's, a wrong verifier or\nredirect URI, enrollment off, or the user no longer active).",
+        "summary": "`POST /api/node/v1/enroll/oauth`: redeem an approved branch sign-in.\nAnswers `{library_id, node_id}` for a branch, plus `connection` and the\nsealed `bootstrap` for a shared branch; 403 `transport_insecure` for a refused\nconnection, 403 `enrollment_refused` for a code that does not redeem\n(unknown, used, expired, another client's, a wrong verifier or\nredirect URI, enrollment off, or the user no longer active).",
         "operationId": "post_enroll_oauth",
         "requestBody": {
           "content": {
@@ -29390,7 +29390,7 @@
         },
         "responses": {
           "200": {
-            "description": "The install is enrolled: its cluster and node ids for a branch, and for a shared branch join also `connection` and the bootstrap sealed to its box key.",
+            "description": "The install is enrolled: its library and node ids for a branch, and for a shared branch join also `connection` and the bootstrap sealed to its box key.",
             "content": {
               "application/json": {
                 "schema": {
@@ -29400,7 +29400,7 @@
                   "branch": {
                     "summary": "A branch joined.",
                     "value": {
-                      "cluster_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+                      "library_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
                       "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
                     }
                   },
@@ -29408,8 +29408,8 @@
                     "summary": "A shared branch joined; its bootstrap is sealed to its box key.",
                     "value": {
                       "bootstrap": "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0",
-                      "cluster_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
                       "connection": "shared_branch",
+                      "library_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
                       "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
                     }
                   }
@@ -29566,7 +29566,7 @@
         },
         "responses": {
           "200": {
-            "description": "The session token (shown once), this library's cluster id, the signed-in user and how long the session stays signed in unused.",
+            "description": "The session token (shown once), this library's id, the signed-in user and how long the session stays signed in unused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -31990,13 +31990,13 @@
         "type": "object",
         "description": "`POST /api/config/join/connections` body.",
         "required": [
-          "cluster_id",
+          "library_id",
           "accounts"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The library (owner cluster id) to add the connections to.",
+            "description": "The library (parent library id) to add the connections to.",
             "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
           },
           "accounts": {
@@ -32035,16 +32035,16 @@
       },
       "ApproveBody": {
         "type": "object",
-        "description": "`POST /api/config/cluster-consents/approve` body.",
+        "description": "`POST /api/config/library-consents/approve` body.",
         "required": [
-          "cluster_id",
+          "library_id",
           "plugin_key",
           "request_digest"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "Owner cluster id.",
+            "description": "Library id.",
             "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
           },
           "plugin_key": {
@@ -32797,14 +32797,14 @@
         "type": "object",
         "description": "JSON body once this install joined a library as a branch.",
         "required": [
-          "cluster",
+          "library",
           "running"
         ],
         "properties": {
-          "cluster": {
+          "library": {
             "allOf": [
               {
-                "$ref": "#/components/schemas/ClusterLinkView"
+                "$ref": "#/components/schemas/LibraryLinkView"
               }
             ],
             "description": "The new link."
@@ -33263,13 +33263,13 @@
         "type": "object",
         "description": "`POST /api/config/join/capacity` body: one library and the job cap to\nset for it.",
         "required": [
-          "cluster_id",
+          "library_id",
           "max_jobs"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The library (owner cluster id).",
+            "description": "The library (parent library id).",
             "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
           },
           "max_jobs": {
@@ -33771,7 +33771,7 @@
         "type": "object",
         "description": "A library this install holds (or held) a library card for, without the\ncard.",
         "required": [
-          "cluster_id",
+          "library_id",
           "origin",
           "library_name",
           "pinned",
@@ -33780,9 +33780,9 @@
           "signed_in_at"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The library's cluster id.",
+            "description": "The library id.",
             "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
           },
           "origin": {
@@ -33827,12 +33827,12 @@
         "type": "object",
         "description": "`POST /api/config/clerk/sign-out` body.",
         "required": [
-          "cluster_id"
+          "library_id"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The library's cluster id.",
+            "description": "The library id.",
             "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
           }
         },
@@ -33859,13 +33859,13 @@
         "type": "object",
         "description": "JSON body for `POST /api/config/clerk/sign-out`.",
         "required": [
-          "cluster_id",
+          "library_id",
           "library_signed_out"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The library's cluster id.",
+            "description": "The library id.",
             "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
           },
           "library_signed_out": {
@@ -33944,7 +33944,7 @@
         "description": "`POST /api/clerk/v1/token` answer.",
         "required": [
           "token",
-          "cluster_id",
+          "library_id",
           "user",
           "idle_secs"
         ],
@@ -33954,9 +33954,9 @@
             "description": "The session token, sent as `Authorization: Bookclerk-Clerk <token>`.\nShown once; the library keeps only its hash.",
             "example": "Zm9vYmFyYmF6cXV4cXV1eGNvcmdlZ3JhdWx0Z2FycGx5"
           },
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The library's cluster id.",
+            "description": "The library id.",
             "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
           },
           "user": {
@@ -34020,372 +34020,6 @@
             "description": "The user's display name on the library, when set.",
             "example": "Riley",
             "nullable": true
-          }
-        }
-      },
-      "ClusterConsentsResponse": {
-        "type": "object",
-        "description": "JSON body for `GET /api/config/cluster-consents`.",
-        "required": [
-          "clusters",
-          "consents"
-        ],
-        "properties": {
-          "clusters": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ClusterLinkView"
-            },
-            "description": "Every library this install is a branch of."
-          },
-          "consents": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/RemoteConsentView"
-            },
-            "description": "Every plugin request from those libraries, pending or answered."
-          }
-        }
-      },
-      "ClusterJobsBody": {
-        "type": "object",
-        "description": "`POST /api/config/clusters/{cluster_id}/jobs` body.",
-        "required": [
-          "job_ids"
-        ],
-        "properties": {
-          "job_ids": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Job ids on the owner cluster.",
-            "example": [
-              "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
-            ]
-          }
-        },
-        "additionalProperties": false
-      },
-      "ClusterJobsResponse": {
-        "type": "object",
-        "description": "JSON body for `POST /api/config/clusters/{cluster_id}/jobs`.",
-        "required": [
-          "jobs"
-        ],
-        "properties": {
-          "jobs": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/JobStatusEntry"
-            },
-            "description": "The owner's state of each job this install may see, in request order."
-          }
-        }
-      },
-      "ClusterLinkView": {
-        "type": "object",
-        "description": "A library this install is a branch of: ids, origin and state, never key material.",
-        "required": [
-          "cluster_id",
-          "owner_origin",
-          "node_id",
-          "pinned",
-          "state",
-          "enrolled_at",
-          "share_books",
-          "include_branches",
-          "work_for_members",
-          "keep_member_copies",
-          "list_members_books",
-          "keep_copies"
-        ],
-        "properties": {
-          "cluster_id": {
-            "type": "string",
-            "description": "The library's cluster id.",
-            "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
-          },
-          "owner_origin": {
-            "type": "string",
-            "description": "The library's canonical origin.",
-            "example": "https://books.example.com"
-          },
-          "node_id": {
-            "type": "string",
-            "description": "The node id the library minted for this install.",
-            "example": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
-          },
-          "pinned": {
-            "type": "boolean",
-            "description": "Whether the link pins the library's self-signed certificate.",
-            "example": false
-          },
-          "state": {
-            "type": "string",
-            "description": "`active`, `revoked`, or `left`.",
-            "example": "active"
-          },
-          "enrolled_at": {
-            "type": "string",
-            "description": "RFC 3339 enrollment time.",
-            "example": "2026-10-29T09:02:41Z"
-          },
-          "share_books": {
-            "type": "boolean",
-            "description": "\"Share this branch's books with the library\".",
-            "example": true
-          },
-          "include_branches": {
-            "type": "boolean",
-            "description": "\"Include books from my own branches\".",
-            "example": true
-          },
-          "work_for_members": {
-            "type": "boolean",
-            "description": "\"Download for other members of the library\": this install takes the library's work for its other members too, not only its owner's (off by default).",
-            "example": false
-          },
-          "keep_member_copies": {
-            "type": "boolean",
-            "description": "\"Keep copies of other members' books\": a book acquired here for another member is also written to this install's own destinations (off by default).",
-            "example": false
-          },
-          "max_jobs": {
-            "type": "integer",
-            "description": "The most jobs this install runs for the library at once, as its operator set it; `null` gives the library an equal share of the machine.",
-            "example": 2,
-            "maximum": 16,
-            "minimum": 0,
-            "nullable": true
-          },
-          "job_share": {
-            "type": "integer",
-            "description": "How many jobs the library may have running here now: its share of the machine after this install's own work, within `max_jobs`. Only the listing and sharing routes report it, and only while the link's client runs.",
-            "example": 2,
-            "minimum": 0,
-            "nullable": true
-          },
-          "list_members_books": {
-            "type": "boolean",
-            "description": "\"List my members' books to the library\": the library's catalog\nlookups are answered with members' books (except those who opted\nout) as well as the owner's.",
-            "example": true
-          },
-          "keep_copies": {
-            "type": "boolean",
-            "description": "\"Keep copies on this computer\": the branch takes the library's\ncopies of its person's books into its own storage. The branch takes\nthe library's work and shows its books whether or not this is on.",
-            "example": true
-          },
-          "running": {
-            "type": "boolean",
-            "description": "Whether this install's client for the link is running now; only the join routes report it.",
-            "example": true,
-            "nullable": true
-          }
-        }
-      },
-      "ClusterScanBody": {
-        "type": "object",
-        "description": "`POST /api/config/clusters/{cluster_id}/scan` body.",
-        "properties": {
-          "account": {
-            "type": "string",
-            "description": "Scan only this store account of the owner cluster.",
-            "example": "reader@example.com",
-            "nullable": true
-          },
-          "plugin_instance_id": {
-            "type": "string",
-            "description": "Pin every planned job to this owner plugin instance.",
-            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
-            "nullable": true
-          }
-        },
-        "additionalProperties": false
-      },
-      "ClusterScanPlanned": {
-        "type": "object",
-        "description": "JSON body after the owner library queued a scan for this install.",
-        "required": [
-          "cluster_id",
-          "created",
-          "duplicates",
-          "queue_full"
-        ],
-        "properties": {
-          "cluster_id": {
-            "type": "string",
-            "description": "The owner library's cluster id.",
-            "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
-          },
-          "created": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Ids of the jobs the owner created.",
-            "example": [
-              "scan-7f3a9c1e"
-            ]
-          },
-          "duplicates": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Ids of jobs that were already pending or running.",
-            "example": []
-          },
-          "queue_full": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Planned jobs the owner's queue had no room for.",
-            "example": 0,
-            "minimum": 0
-          }
-        }
-      },
-      "ClusterStatusResponse": {
-        "type": "object",
-        "description": "`GET /api/cluster/status` body.",
-        "required": [
-          "cluster",
-          "node_id",
-          "nodes",
-          "capabilities"
-        ],
-        "properties": {
-          "cluster": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/ClusterSummary"
-              }
-            ],
-            "description": "Cluster-wide counters."
-          },
-          "node_id": {
-            "type": "string",
-            "description": "Id of the node that answered.",
-            "example": "node-7f3a9c"
-          },
-          "nodes": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/NodeView"
-            },
-            "description": "The nodes the caller administers."
-          },
-          "capabilities": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/NodeCapabilities"
-              }
-            ],
-            "description": "What the caller may do with them."
-          }
-        }
-      },
-      "ClusterSummary": {
-        "type": "object",
-        "description": "Cluster-wide counters every node administrator may see.",
-        "required": [
-          "nodes",
-          "live",
-          "drained",
-          "branch_nodes",
-          "cpu_budget_millicores",
-          "cpu_reserved_millicores",
-          "memory_budget_bytes",
-          "memory_reserved_bytes",
-          "running_guests",
-          "active_jobs",
-          "deliveries",
-          "leases",
-          "schema"
-        ],
-        "properties": {
-          "nodes": {
-            "type": "integer",
-            "description": "Nodes in the library's node list.",
-            "example": 3,
-            "minimum": 0
-          },
-          "live": {
-            "type": "integer",
-            "description": "Nodes whose last heartbeat is recent enough.",
-            "example": 3,
-            "minimum": 0
-          },
-          "drained": {
-            "type": "integer",
-            "description": "Live nodes an operator drained.",
-            "example": 0,
-            "minimum": 0
-          },
-          "branch_nodes": {
-            "type": "integer",
-            "description": "Enrolled hosts (nodes with their own database).",
-            "example": 1,
-            "minimum": 0
-          },
-          "cpu_budget_millicores": {
-            "type": "integer",
-            "format": "int64",
-            "description": "CPU the scheduler may commit across live nodes, in millicores.",
-            "example": 19200
-          },
-          "cpu_reserved_millicores": {
-            "type": "integer",
-            "format": "int64",
-            "description": "CPU the running guests' ceilings add up to, in millicores.",
-            "example": 3200
-          },
-          "memory_budget_bytes": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Memory the scheduler may commit across live nodes, in bytes.",
-            "example": 37748736000
-          },
-          "memory_reserved_bytes": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Memory the running guests' ceilings add up to, in bytes.",
-            "example": 2147483648
-          },
-          "running_guests": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Guests running across live nodes.",
-            "example": 4
-          },
-          "active_jobs": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Jobs queued or running.",
-            "example": 2
-          },
-          "deliveries": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/DeliveryBacklog"
-              }
-            ],
-            "description": "Event delivery backlog."
-          },
-          "leases": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/LeaseView"
-            },
-            "description": "Every cluster lease, held or expired."
-          },
-          "schema": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/SchemaStateView"
-              }
-            ],
-            "description": "The database schema against this binary."
           }
         }
       },
@@ -35048,7 +34682,7 @@
       },
       "DeliveryBacklog": {
         "type": "object",
-        "description": "Event delivery backlog across the cluster.",
+        "description": "Event delivery backlog across the library.",
         "required": [
           "pending",
           "running",
@@ -35253,7 +34887,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Linked libraries (owner cluster ids) that confirmed the disconnect.",
+            "description": "Linked libraries (parent library ids) that confirmed the disconnect.",
             "example": [
               "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
             ]
@@ -35627,12 +35261,12 @@
           },
           "scope_type": {
             "type": "string",
-            "description": "Scope type: `cluster` for a shared document, `node` for one node's.",
-            "example": "cluster"
+            "description": "Scope type: `library` for a shared document, `node` for one node's.",
+            "example": "library"
           },
           "scope_id": {
             "type": "string",
-            "description": "Scope id: `singleton` for the cluster, else the node id.",
+            "description": "Scope id: `singleton` for the library, else the node id.",
             "example": "singleton"
           },
           "schema_version": {
@@ -35864,13 +35498,13 @@
         "type": "object",
         "description": "JSON body after an enrollment link or branch sign-in was redeemed.",
         "required": [
-          "cluster_id",
+          "library_id",
           "node_id"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The cluster the node joined.",
+            "description": "The library the node joined.",
             "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
           },
           "node_id": {
@@ -36310,7 +35944,7 @@
           "concurrency": {
             "type": "integer",
             "format": "int32",
-            "description": "Local delivery workers and the cluster in-flight cap.",
+            "description": "Local delivery workers and the library in-flight cap.",
             "example": 4,
             "minimum": 0
           }
@@ -36583,7 +36217,7 @@
         "properties": {
           "enabled": {
             "type": "boolean",
-            "description": "Whether branch nodes may enroll into this cluster.",
+            "description": "Whether branch nodes may enroll into this library.",
             "example": true
           },
           "revision": {
@@ -36669,7 +36303,7 @@
         "type": "object",
         "description": "A library as `POST /api/config/join/inspect` saw it.",
         "required": [
-          "cluster_id",
+          "library_id",
           "library_name",
           "origin",
           "transport",
@@ -36677,9 +36311,9 @@
           "needs_fingerprint"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The library's cluster id.",
+            "description": "The library id.",
             "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
           },
           "library_name": {
@@ -37219,7 +36853,7 @@
           "links": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ClusterLinkView"
+              "$ref": "#/components/schemas/LibraryLinkView"
             },
             "description": "Every library this install is a branch of, with whether its client runs."
           }
@@ -37274,7 +36908,7 @@
       },
       "LeaseView": {
         "type": "object",
-        "description": "A cluster lease as the status page shows it.",
+        "description": "A library lease as the status page shows it.",
         "required": [
           "name",
           "holder",
@@ -37316,12 +36950,12 @@
         "type": "object",
         "description": "`POST /api/config/join/leave` body.",
         "required": [
-          "cluster_id"
+          "library_id"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The library (owner cluster id) to leave.",
+            "description": "The library (parent library id) to leave.",
             "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
           }
         },
@@ -37331,14 +36965,14 @@
         "type": "object",
         "description": "JSON body once leaving a library started.",
         "required": [
-          "cluster",
+          "library",
           "owner_notified"
         ],
         "properties": {
-          "cluster": {
+          "library": {
             "allOf": [
               {
-                "$ref": "#/components/schemas/ClusterLinkView"
+                "$ref": "#/components/schemas/LibraryLinkView"
               }
             ],
             "description": "The link, now `left`."
@@ -37347,6 +36981,372 @@
             "type": "boolean",
             "description": "Whether the library was told (otherwise it notices the missed heartbeats).",
             "example": true
+          }
+        }
+      },
+      "LibraryConsentsResponse": {
+        "type": "object",
+        "description": "JSON body for `GET /api/config/library-consents`.",
+        "required": [
+          "libraries",
+          "consents"
+        ],
+        "properties": {
+          "libraries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LibraryLinkView"
+            },
+            "description": "Every library this install is a branch of."
+          },
+          "consents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RemoteConsentView"
+            },
+            "description": "Every plugin request from those libraries, pending or answered."
+          }
+        }
+      },
+      "LibraryJobsBody": {
+        "type": "object",
+        "description": "`POST /api/config/libraries/{library_id}/jobs` body.",
+        "required": [
+          "job_ids"
+        ],
+        "properties": {
+          "job_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Job ids on the library.",
+            "example": [
+              "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "LibraryJobsResponse": {
+        "type": "object",
+        "description": "JSON body for `POST /api/config/libraries/{library_id}/jobs`.",
+        "required": [
+          "jobs"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobStatusEntry"
+            },
+            "description": "The owner's state of each job this install may see, in request order."
+          }
+        }
+      },
+      "LibraryLinkView": {
+        "type": "object",
+        "description": "A library this install is a branch of: ids, origin and state, never key material.",
+        "required": [
+          "library_id",
+          "owner_origin",
+          "node_id",
+          "pinned",
+          "state",
+          "enrolled_at",
+          "share_books",
+          "include_branches",
+          "work_for_members",
+          "keep_member_copies",
+          "list_members_books",
+          "keep_copies"
+        ],
+        "properties": {
+          "library_id": {
+            "type": "string",
+            "description": "The library id.",
+            "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+          },
+          "owner_origin": {
+            "type": "string",
+            "description": "The library's canonical origin.",
+            "example": "https://books.example.com"
+          },
+          "node_id": {
+            "type": "string",
+            "description": "The node id the library minted for this install.",
+            "example": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "Whether the link pins the library's self-signed certificate.",
+            "example": false
+          },
+          "state": {
+            "type": "string",
+            "description": "`active`, `revoked`, or `left`.",
+            "example": "active"
+          },
+          "enrolled_at": {
+            "type": "string",
+            "description": "RFC 3339 enrollment time.",
+            "example": "2026-10-29T09:02:41Z"
+          },
+          "share_books": {
+            "type": "boolean",
+            "description": "\"Share this branch's books with the library\".",
+            "example": true
+          },
+          "include_branches": {
+            "type": "boolean",
+            "description": "\"Include books from my own branches\".",
+            "example": true
+          },
+          "work_for_members": {
+            "type": "boolean",
+            "description": "\"Download for other members of the library\": this install takes the library's work for its other members too, not only its owner's (off by default).",
+            "example": false
+          },
+          "keep_member_copies": {
+            "type": "boolean",
+            "description": "\"Keep copies of other members' books\": a book acquired here for another member is also written to this install's own destinations (off by default).",
+            "example": false
+          },
+          "max_jobs": {
+            "type": "integer",
+            "description": "The most jobs this install runs for the library at once, as its operator set it; `null` gives the library an equal share of the machine.",
+            "example": 2,
+            "maximum": 16,
+            "minimum": 0,
+            "nullable": true
+          },
+          "job_share": {
+            "type": "integer",
+            "description": "How many jobs the library may have running here now: its share of the machine after this install's own work, within `max_jobs`. Only the listing and sharing routes report it, and only while the link's client runs.",
+            "example": 2,
+            "minimum": 0,
+            "nullable": true
+          },
+          "list_members_books": {
+            "type": "boolean",
+            "description": "\"List my members' books to the library\": the library's catalog\nlookups are answered with members' books (except those who opted\nout) as well as the owner's.",
+            "example": true
+          },
+          "keep_copies": {
+            "type": "boolean",
+            "description": "\"Keep copies on this computer\": the branch takes the library's\ncopies of its person's books into its own storage. The branch takes\nthe library's work and shows its books whether or not this is on.",
+            "example": true
+          },
+          "running": {
+            "type": "boolean",
+            "description": "Whether this install's client for the link is running now; only the join routes report it.",
+            "example": true,
+            "nullable": true
+          }
+        }
+      },
+      "LibraryScanBody": {
+        "type": "object",
+        "description": "`POST /api/config/libraries/{library_id}/scan` body.",
+        "properties": {
+          "account": {
+            "type": "string",
+            "description": "Scan only this store account of the library.",
+            "example": "reader@example.com",
+            "nullable": true
+          },
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "Pin every planned job to this owner plugin instance.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LibraryScanPlanned": {
+        "type": "object",
+        "description": "JSON body after the owner library queued a scan for this install.",
+        "required": [
+          "library_id",
+          "created",
+          "duplicates",
+          "queue_full"
+        ],
+        "properties": {
+          "library_id": {
+            "type": "string",
+            "description": "The parent library's id.",
+            "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+          },
+          "created": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids of the jobs the owner created.",
+            "example": [
+              "scan-7f3a9c1e"
+            ]
+          },
+          "duplicates": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids of jobs that were already pending or running.",
+            "example": []
+          },
+          "queue_full": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Planned jobs the owner's queue had no room for.",
+            "example": 0,
+            "minimum": 0
+          }
+        }
+      },
+      "LibraryStatusResponse": {
+        "type": "object",
+        "description": "`GET /api/library-status` body.",
+        "required": [
+          "library",
+          "node_id",
+          "nodes",
+          "capabilities"
+        ],
+        "properties": {
+          "library": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LibrarySummary"
+              }
+            ],
+            "description": "Library-wide counters."
+          },
+          "node_id": {
+            "type": "string",
+            "description": "Id of the node that answered.",
+            "example": "node-7f3a9c"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeView"
+            },
+            "description": "The nodes the caller administers."
+          },
+          "capabilities": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/NodeCapabilities"
+              }
+            ],
+            "description": "What the caller may do with them."
+          }
+        }
+      },
+      "LibrarySummary": {
+        "type": "object",
+        "description": "Library-wide counters every node administrator may see.",
+        "required": [
+          "nodes",
+          "live",
+          "drained",
+          "branch_nodes",
+          "cpu_budget_millicores",
+          "cpu_reserved_millicores",
+          "memory_budget_bytes",
+          "memory_reserved_bytes",
+          "running_guests",
+          "active_jobs",
+          "deliveries",
+          "leases",
+          "schema"
+        ],
+        "properties": {
+          "nodes": {
+            "type": "integer",
+            "description": "Nodes in the library's node list.",
+            "example": 3,
+            "minimum": 0
+          },
+          "live": {
+            "type": "integer",
+            "description": "Nodes whose last heartbeat is recent enough.",
+            "example": 3,
+            "minimum": 0
+          },
+          "drained": {
+            "type": "integer",
+            "description": "Live nodes an operator drained.",
+            "example": 0,
+            "minimum": 0
+          },
+          "branch_nodes": {
+            "type": "integer",
+            "description": "Enrolled hosts (nodes with their own database).",
+            "example": 1,
+            "minimum": 0
+          },
+          "cpu_budget_millicores": {
+            "type": "integer",
+            "format": "int64",
+            "description": "CPU the scheduler may commit across live nodes, in millicores.",
+            "example": 19200
+          },
+          "cpu_reserved_millicores": {
+            "type": "integer",
+            "format": "int64",
+            "description": "CPU the running guests' ceilings add up to, in millicores.",
+            "example": 3200
+          },
+          "memory_budget_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Memory the scheduler may commit across live nodes, in bytes.",
+            "example": 37748736000
+          },
+          "memory_reserved_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Memory the running guests' ceilings add up to, in bytes.",
+            "example": 2147483648
+          },
+          "running_guests": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Guests running across live nodes.",
+            "example": 4
+          },
+          "active_jobs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Jobs queued or running.",
+            "example": 2
+          },
+          "deliveries": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryBacklog"
+              }
+            ],
+            "description": "Event delivery backlog."
+          },
+          "leases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LeaseView"
+            },
+            "description": "Every library lease, held or expired."
+          },
+          "schema": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SchemaStateView"
+              }
+            ],
+            "description": "The database schema against this binary."
           }
         }
       },
@@ -37805,7 +37805,7 @@
       },
       "NodeKind": {
         "type": "string",
-        "description": "How a node joined the cluster.",
+        "description": "How a node joined the library.",
         "enum": [
           "shared",
           "branch"
@@ -37932,7 +37932,7 @@
       },
       "NodeRuntimeSettingsV1": {
         "type": "object",
-        "description": "Typed node-scoped runtime document, schema version 1.\n\nDesired state for one node, editable from any node in the cluster: an\noperator label, and the budget the scheduler may commit on this node.\nBudgets are shares of the capacity the node detects at heartbeat\n(CPU cores and memory, the tighter of the machine and its cgroup).",
+        "description": "Typed node-scoped runtime document, schema version 1.\n\nDesired state for one node, editable from any node in the library: an\noperator label, and the budget the scheduler may commit on this node.\nBudgets are shares of the capacity the node detects at heartbeat\n(CPU cores and memory, the tighter of the machine and its cgroup).",
         "required": [
           "label"
         ],
@@ -37966,7 +37966,7 @@
           "cache_budget_bytes": {
             "type": "integer",
             "format": "int64",
-            "description": "Disk space, in bytes, this node's image caches may use together,\noverriding the cluster's `core.cache` budget (16 MiB to 1 TiB).\nAbsent means the cluster budget applies.",
+            "description": "Disk space, in bytes, this node's image caches may use together,\noverriding the library's `core.cache` budget (16 MiB to 1 TiB).\nAbsent means the library budget applies.",
             "example": 536870912,
             "maximum": 1099511627776,
             "minimum": 16777216,
@@ -38139,7 +38139,7 @@
         "description": "One node with its latest heartbeat, budget and owner.",
         "required": [
           "node_id",
-          "cluster_id",
+          "library_id",
           "created_at",
           "heartbeat_at",
           "software_version",
@@ -38159,9 +38159,9 @@
             "description": "Node id.",
             "example": "node-7f3a9c"
           },
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "Cluster the node belongs to.",
+            "description": "Library the node belongs to.",
             "example": "c0ffee12-3456-4789-8abc-def012345678"
           },
           "created_at": {
@@ -38481,13 +38481,13 @@
         "type": "object",
         "description": "`POST /api/node/v1/enroll/oauth` answer.",
         "required": [
-          "cluster_id",
+          "library_id",
           "node_id"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The library's cluster id.",
+            "description": "The library id.",
             "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
           },
           "node_id": {
@@ -39761,16 +39761,16 @@
         "type": "object",
         "description": "`GET /api/node/v1/info` answer.",
         "required": [
-          "cluster_id",
+          "library_id",
           "library_name",
           "origin",
           "transport",
           "enrollment"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The library's cluster id.",
+            "description": "The library id.",
             "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
           },
           "library_name": {
@@ -39809,7 +39809,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The library's ancestry: its own cluster id first, then the cluster\nid of every library above it up to the root. A joining library\nrefuses a parent whose ancestry names its own cluster id, so a\ntree of libraries never becomes a cycle.",
+            "description": "The library's ancestry: its own library id first, then the library\nid of every library above it up to the root. A joining library\nrefuses a parent whose ancestry names its own library id, so a\ntree of libraries never becomes a cycle.",
             "example": [
               "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
             ]
@@ -41924,7 +41924,7 @@
           },
           "owner_node_id": {
             "type": "string",
-            "description": "Node the instance is local to; `null` for a cluster-wide instance.",
+            "description": "Node the instance is local to; `null` for a library-wide instance.",
             "example": "node-7f3a9c",
             "nullable": true
           }
@@ -42134,7 +42134,7 @@
             "items": {
               "$ref": "#/components/schemas/PluginInstanceView"
             },
-            "description": "Every plugin instance in the cluster."
+            "description": "Every plugin instance in the library."
           }
         }
       },
@@ -43349,7 +43349,7 @@
         "properties": {
           "enabled": {
             "type": "boolean",
-            "description": "Whether branch nodes may enroll into this cluster.",
+            "description": "Whether branch nodes may enroll into this library.",
             "example": true
           }
         },
@@ -43423,7 +43423,7 @@
           "cache_budget_bytes": {
             "type": "integer",
             "format": "int64",
-            "description": "This node's image cache budget in bytes (16 MiB to 1 TiB),\noverriding the cluster's `cache.budget_bytes`. `null` removes the\noverride; leaving the field out keeps it as it is.",
+            "description": "This node's image cache budget in bytes (16 MiB to 1 TiB),\noverriding the library's `cache.budget_bytes`. `null` removes the\noverride; leaving the field out keeps it as it is.",
             "example": 536870912,
             "minimum": 0,
             "nullable": true
@@ -44126,7 +44126,7 @@
         "type": "object",
         "description": "An owner library's request to run a plugin on this install, and what the operator answered.",
         "required": [
-          "cluster_id",
+          "library_id",
           "plugin_key",
           "requested_version",
           "requested_grant",
@@ -44138,9 +44138,9 @@
           "pending"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The owner library's cluster id.",
+            "description": "The parent library's id.",
             "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
           },
           "plugin_key": {
@@ -44384,15 +44384,15 @@
       },
       "RevokeBody": {
         "type": "object",
-        "description": "`POST /api/config/cluster-consents/revoke` body.",
+        "description": "`POST /api/config/library-consents/revoke` body.",
         "required": [
-          "cluster_id",
+          "library_id",
           "plugin_key"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "Owner cluster id.",
+            "description": "Library id.",
             "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
           },
           "plugin_key": {
@@ -44920,7 +44920,7 @@
         "description": "JSON body once this install joined a library as a shared branch.",
         "required": [
           "connection",
-          "cluster_id",
+          "library_id",
           "node_id",
           "library_name",
           "database",
@@ -44933,9 +44933,9 @@
             "description": "Always `shared_branch`.",
             "example": "shared_branch"
           },
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The library's cluster id.",
+            "description": "The library id.",
             "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
           },
           "node_id": {
@@ -45011,14 +45011,14 @@
         "type": "object",
         "description": "`POST /api/config/join/sharing` body: one library and the settings to\nchange for it.",
         "required": [
-          "cluster_id",
+          "library_id",
           "share_books",
           "include_branches"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The library (owner cluster id).",
+            "description": "The library (parent library id).",
             "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
           },
           "share_books": {
@@ -45062,13 +45062,13 @@
         "type": "object",
         "description": "JSON body after `POST /api/config/join/sharing`.",
         "required": [
-          "cluster"
+          "library"
         ],
         "properties": {
-          "cluster": {
+          "library": {
             "allOf": [
               {
-                "$ref": "#/components/schemas/ClusterLinkView"
+                "$ref": "#/components/schemas/LibraryLinkView"
               }
             ],
             "description": "The link with its settings as stored now."
@@ -45079,13 +45079,13 @@
         "type": "object",
         "description": "JSON body for `GET /api/config/join/sharing`.",
         "required": [
-          "clusters"
+          "libraries"
         ],
         "properties": {
-          "clusters": {
+          "libraries": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ClusterLinkView"
+              "$ref": "#/components/schemas/LibraryLinkView"
             },
             "description": "Every library this install is a branch of, with its sharing and work settings."
           }
@@ -47302,15 +47302,15 @@
         "type": "object",
         "description": "JSON body for `GET /api/config/join/window`.",
         "required": [
-          "clusters",
+          "libraries",
           "cards",
           "books"
         ],
         "properties": {
-          "clusters": {
+          "libraries": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ClusterLinkView"
+              "$ref": "#/components/schemas/LibraryLinkView"
             },
             "description": "The libraries this install is an active branch of."
           },
@@ -47334,7 +47334,7 @@
         "type": "object",
         "description": "One edition in [`WindowBooks`], and the library that holds it.",
         "required": [
-          "cluster_id",
+          "library_id",
           "owner_origin",
           "store",
           "marketplace",
@@ -47344,9 +47344,9 @@
           "yours"
         ],
         "properties": {
-          "cluster_id": {
+          "library_id": {
             "type": "string",
-            "description": "The library (owner cluster id) that holds it.",
+            "description": "The library (parent library id) that holds it.",
             "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
           },
           "owner_origin": {
@@ -48016,10 +48016,6 @@
     {
       "name": "Configuration",
       "description": "Live configuration domains and reloads."
-    },
-    {
-      "name": "Cluster",
-      "description": "Nodes, branches, joining a library and host enrollment."
     },
     {
       "name": "Accounts",

@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 
 use bookclerk_config::{Config, DatabasePluginKind};
 use bookclerk_library::control_plane::{
-    encode_node_identity_file, library_contents, node_identity_path, ClusterLinkKeys,
-    LibraryContents,
+    encode_node_identity_file, library_contents, node_identity_path, LibraryContents,
+    LibraryLinkKeys,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{
@@ -57,8 +57,8 @@ pub const DATABASE_ENV_OVERRIDES: &[&str] = &[
 /// A redeemed shared branch sign-in. `Debug` prints no secret.
 #[derive(Debug)]
 pub struct SharedBranchJoined {
-    /// The library's cluster id.
-    pub cluster_id: String,
+    /// The library id.
+    pub library_id: String,
     /// The node id the library recorded (`kind = shared`).
     pub node_id: String,
     /// The opened bootstrap.
@@ -149,14 +149,14 @@ fn active_database_override(lookup: impl Fn(&str) -> Option<String>) -> Option<&
 /// Returns [`JoinError`] when the library is unreachable or refuses (the
 /// code was approved for a branch, the user is no longer an Owner, or its
 /// database cannot be shared). Once the library has enrolled the node, an
-/// answer for another cluster or type, without a bootstrap, or with one
+/// answer for another library or type, without a bootstrap, or with one
 /// that does not open for this node gives [`JoinError::Unsaved`] naming
 /// it. [`JoinError::is_retryable`] tells which failures a repeat of the
 /// same exchange can fix (the library answers it with the same node and a
 /// freshly sealed bootstrap).
 pub async fn redeem_shared_branch_code(
     redeem: &BranchRedeem<'_>,
-    keys: &ClusterLinkKeys,
+    keys: &LibraryLinkKeys,
 ) -> Result<SharedBranchJoined, JoinError> {
     let (_endpoint, enrolled) = post_redeem(redeem, keys, ConnectionType::SharedBranch).await?;
     // The library has enrolled the node by now: a failure names it, so the
@@ -171,19 +171,19 @@ pub async fn redeem_shared_branch_code(
         .ok_or_else(|| unsaved("the library sent no shared branch bootstrap"))?;
     let bootstrap = open_shared_branch_bootstrap(
         keys.box_secret(),
-        &enrolled.cluster_id,
+        &enrolled.library_id,
         &enrolled.node_id,
         sealed,
     )
     .map_err(|_| unsaved("the library's shared branch bootstrap does not open here"))?;
     tracing::info!(
-        cluster_id = %enrolled.cluster_id,
+        library_id = %enrolled.library_id,
         node_id = %enrolled.node_id,
         database = bootstrap.database.plugin(),
         "redeemed a shared branch sign-in"
     );
     Ok(SharedBranchJoined {
-        cluster_id: enrolled.cluster_id,
+        library_id: enrolled.library_id,
         node_id: enrolled.node_id,
         bootstrap,
     })
@@ -793,7 +793,7 @@ pub fn interrupted_shared_branch_join(files_dir: &Path, config_file: &Path) -> O
 ///
 /// - `database-postgres.url` (Postgres only): the URL, mode `0600`;
 /// - `node-identity.json`: the node id the library recorded, bound to its
-///   cluster;
+///   library;
 /// - `master.key`: the library's DEK, wrapped with `password` (this
 ///   install's `BOOKCLERK_AUTH_PASSWORD` or `[auth].password`) when set;
 /// - `[database]` in `config_file` (other settings kept): `postgres` with
@@ -873,7 +873,7 @@ pub fn apply_shared_branch_bootstrap(
             DatabasePluginKind::D1
         }
     };
-    let identity = encode_node_identity_file(&bootstrap.node_id, &bootstrap.cluster_id)
+    let identity = encode_node_identity_file(&bootstrap.node_id, &bootstrap.library_id)
         .map_err(|err| record("node identity", &err))?;
     let password = password.map(str::trim).filter(|p| !p.is_empty());
     let master_key = bookclerk_library::encode_master_key_file(bootstrap.dek.expose(), password)
@@ -922,7 +922,7 @@ pub fn apply_shared_branch_bootstrap(
         ));
     }
     tracing::info!(
-        cluster_id = %bootstrap.cluster_id,
+        library_id = %bootstrap.library_id,
         node_id = %bootstrap.node_id,
         database = database.as_str(),
         wrapped = password.is_some(),
@@ -943,7 +943,7 @@ mod tests {
     fn bootstrap(database: SharedBranchDatabase) -> SharedBranchBootstrap {
         SharedBranchBootstrap {
             v: SHARED_BRANCH_BOOTSTRAP_VERSION,
-            cluster_id: "cluster-1".into(),
+            library_id: "library-1".into(),
             node_id: "0b5c3d52-6f1e-4f39-9a3c-1b7f0a2c9e11".into(),
             database,
             dek: SecretValue::new(vec![5u8; 32]),
@@ -1147,7 +1147,7 @@ mod tests {
             line.contains("this install starts as a shared node of the library"),
             "the line says what this install starts as"
         );
-        assert!(line.contains("cluster-1"), "the line names the library");
+        assert!(line.contains("library-1"), "the line names the library");
         assert!(
             !line.contains("pw-logged"),
             "the database URL reached the log"
@@ -1200,7 +1200,7 @@ mod tests {
         let identity =
             bookclerk_library::control_plane::load_or_create_node_identity(files.path()).unwrap();
         assert_eq!(identity.node_id, "0b5c3d52-6f1e-4f39-9a3c-1b7f0a2c9e11");
-        assert_eq!(identity.cluster_id.as_deref(), Some("cluster-1"));
+        assert_eq!(identity.library_id.as_deref(), Some("library-1"));
         // The join is recorded as pending, which is not an interrupted one;
         // confirming it drops the copies and the record.
         assert!(interrupted_shared_branch_join(files.path(), &config).is_none());

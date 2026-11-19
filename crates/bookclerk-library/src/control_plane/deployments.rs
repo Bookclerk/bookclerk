@@ -525,7 +525,7 @@ pub async fn list_deployments_for_node(
     rows.into_iter().map(deployment_from_model).collect()
 }
 
-/// Every deployment row in the cluster.
+/// Every deployment row in the library.
 ///
 /// # Errors
 ///
@@ -919,7 +919,7 @@ fn authorize_create(actor: &ConfigActor, desired: DesiredState) -> Result<()> {
         ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
         | ConfigActor::NodeOwner(_)
-        | ConfigActor::ClusterOwner(_)
+        | ConfigActor::LibraryOwner(_)
         | ConfigActor::PatronAdministrator(_) => false,
     };
     if allowed {
@@ -938,7 +938,7 @@ fn authorize_replace(actor: &ConfigActor, desired: DesiredState) -> Result<()> {
         | ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
         | ConfigActor::NodeOwner(_)
-        | ConfigActor::ClusterOwner(_)
+        | ConfigActor::LibraryOwner(_)
         | ConfigActor::PatronAdministrator(_) => false,
     };
     if allowed {
@@ -960,7 +960,7 @@ fn unauthorized_state(actor: &ConfigActor, desired: DesiredState) -> LibraryErro
         ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
         | ConfigActor::NodeOwner(_)
-        | ConfigActor::ClusterOwner(_)
+        | ConfigActor::LibraryOwner(_)
         | ConfigActor::PatronAdministrator(_) => unauthorized(),
     }
 }

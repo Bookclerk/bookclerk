@@ -417,7 +417,7 @@ artifacts = ["bookclerk"]
 
 [targets.node_frame]
 crate = "bookclerk-node-proto"
-boundary = "Node-to-node frames on the cluster socket"
+boundary = "Node-to-node frames on the library socket"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]

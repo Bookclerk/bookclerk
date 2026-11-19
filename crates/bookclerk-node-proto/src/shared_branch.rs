@@ -12,7 +12,7 @@
 //! A shared branch's redeem answer carries a [`SharedBranchBootstrap`] sealed to the
 //! joining node's X25519 box key with the H-4 sealed box
 //! ([`crate::seal`]: X25519, HKDF-SHA256, XChaCha20-Poly1305), bound to the
-//! cluster and node ids ([`shared_branch_bootstrap_aad`]). It holds the library's
+//! library and node ids ([`shared_branch_bootstrap_aad`]). It holds the library's
 //! `[database]` connection and the DEK itself, never the passphrase-wrapped
 //! `master.key` file. Only the daemon that generated the box key can open
 //! it; the browser never sees it.
@@ -151,8 +151,8 @@ impl std::fmt::Debug for SharedBranchDatabase {
 pub struct SharedBranchBootstrap {
     /// [`SHARED_BRANCH_BOOTSTRAP_VERSION`].
     pub v: u32,
-    /// The library's cluster id.
-    pub cluster_id: String,
+    /// The library id.
+    pub library_id: String,
     /// The node id recorded for this shared branch.
     pub node_id: String,
     /// How to reach the library's database.
@@ -165,19 +165,19 @@ impl std::fmt::Debug for SharedBranchBootstrap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SharedBranchBootstrap")
             .field("v", &self.v)
-            .field("cluster_id", &self.cluster_id)
+            .field("library_id", &self.library_id)
             .field("node_id", &self.node_id)
             .field("database", &self.database)
             .finish_non_exhaustive()
     }
 }
 
-/// Associated data of a shared branch bootstrap for `node_id` of `cluster_id`: the
+/// Associated data of a shared branch bootstrap for `node_id` of `library_id`: the
 /// domain tag, then each field as a 4-byte big-endian length and its bytes.
 #[must_use]
-pub fn shared_branch_bootstrap_aad(cluster_id: &str, node_id: &str) -> Vec<u8> {
+pub fn shared_branch_bootstrap_aad(library_id: &str, node_id: &str) -> Vec<u8> {
     let mut out = SHARED_BRANCH_BOOTSTRAP_AAD_DOMAIN.to_vec();
-    for field in [cluster_id.as_bytes(), node_id.as_bytes()] {
+    for field in [library_id.as_bytes(), node_id.as_bytes()] {
         out.extend_from_slice(&u32::try_from(field.len()).unwrap_or(u32::MAX).to_be_bytes());
         out.extend_from_slice(field);
     }
@@ -204,23 +204,23 @@ pub fn seal_shared_branch_bootstrap(
     let sealed = seal(
         recipient,
         ephemeral_secret,
-        &shared_branch_bootstrap_aad(&bootstrap.cluster_id, &bootstrap.node_id),
+        &shared_branch_bootstrap_aad(&bootstrap.library_id, &bootstrap.node_id),
         &plaintext,
     )?;
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sealed))
 }
 
 /// Opens a bootstrap made by [`seal_shared_branch_bootstrap`] with the joining
-/// node's box secret, for the cluster and node ids the redeem answered.
+/// node's box secret, for the library and node ids the redeem answered.
 ///
 /// # Errors
 ///
 /// Returns [`SealError::Open`] when the box was sealed to another key, for
-/// another cluster or node, or was altered, and [`SealError::Bundle`] when
+/// another library or node, or was altered, and [`SealError::Bundle`] when
 /// its content is malformed or names other ids.
 pub fn open_shared_branch_bootstrap(
     recipient_secret: &[u8; PUBLIC_KEY_LEN],
-    cluster_id: &str,
+    library_id: &str,
     node_id: &str,
     sealed: &str,
 ) -> Result<SharedBranchBootstrap, SealError> {
@@ -229,14 +229,14 @@ pub fn open_shared_branch_bootstrap(
         .map_err(|_| SealError::Open)?;
     let plaintext = open(
         recipient_secret,
-        &shared_branch_bootstrap_aad(cluster_id, node_id),
+        &shared_branch_bootstrap_aad(library_id, node_id),
         &raw,
     )?;
     let bootstrap: SharedBranchBootstrap =
         serde_json::from_slice(&plaintext).map_err(|_| SealError::Bundle)?;
     if bootstrap.v != SHARED_BRANCH_BOOTSTRAP_VERSION
         || bootstrap.dek.len() != DEK_LEN
-        || bootstrap.cluster_id != cluster_id
+        || bootstrap.library_id != library_id
         || bootstrap.node_id != node_id
     {
         return Err(SealError::Bundle);
@@ -252,7 +252,7 @@ mod tests {
     fn bootstrap() -> SharedBranchBootstrap {
         SharedBranchBootstrap {
             v: SHARED_BRANCH_BOOTSTRAP_VERSION,
-            cluster_id: "cluster-1".into(),
+            library_id: "library-1".into(),
             node_id: "node-1".into(),
             database: SharedBranchDatabase::Postgres {
                 url: SecretValue::new(b"postgres://u:hunter2@db/lib".to_vec()),
@@ -270,16 +270,16 @@ mod tests {
                 .unwrap();
         assert!(!sealed.contains("hunter2"));
         let opened =
-            open_shared_branch_bootstrap(&node_secret, "cluster-1", "node-1", &sealed).unwrap();
+            open_shared_branch_bootstrap(&node_secret, "library-1", "node-1", &sealed).unwrap();
         assert_eq!(opened, bootstrap());
-        // Another key, another node or cluster id, or a flipped byte: no.
-        for (secret, cluster, node) in [
-            (other_secret, "cluster-1", "node-1"),
-            (node_secret, "cluster-2", "node-1"),
-            (node_secret, "cluster-1", "node-2"),
+        // Another key, another node or library id, or a flipped byte: no.
+        for (secret, library, node) in [
+            (other_secret, "library-1", "node-1"),
+            (node_secret, "library-2", "node-1"),
+            (node_secret, "library-1", "node-2"),
         ] {
             assert_eq!(
-                open_shared_branch_bootstrap(&secret, cluster, node, &sealed),
+                open_shared_branch_bootstrap(&secret, library, node, &sealed),
                 Err(SealError::Open)
             );
         }
@@ -290,7 +290,7 @@ mod tests {
         raw[last] ^= 1;
         let tampered = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
         assert_eq!(
-            open_shared_branch_bootstrap(&node_secret, "cluster-1", "node-1", &tampered),
+            open_shared_branch_bootstrap(&node_secret, "library-1", "node-1", &tampered),
             Err(SealError::Open)
         );
     }

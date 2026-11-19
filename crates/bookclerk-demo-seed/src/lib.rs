@@ -599,7 +599,7 @@ pub enum Seeded {
 /// # Arguments
 ///
 /// * `store` - The open library.
-/// * `cluster_id` - The library's cluster id, recorded on the branch's node row.
+/// * `library_id` - The library id, recorded on the branch's node row.
 /// * `plugin_keys` - PluginKey of each enrolled storefront, by plugin id
 ///   ([`Storefront::id`]). A storefront missing from it gets no account and
 ///   its titles are left out, so an image without one still gets the rest.
@@ -619,7 +619,7 @@ pub enum Seeded {
 /// branch, which means the library code changed what makes a branch trusted.
 pub async fn seed(
     store: &LibraryStore,
-    cluster_id: &str,
+    library_id: &str,
     plugin_keys: &BTreeMap<&str, String>,
     records: &StoreRecords,
     when: DateTime<Utc>,
@@ -717,7 +717,7 @@ pub async fn seed(
             .with_context(|| format!("wish for {}", wish.title))?;
     }
 
-    let branch_titles = add_branch(store, cluster_id, user.id, plugin_keys, records, when).await?;
+    let branch_titles = add_branch(store, library_id, user.id, plugin_keys, records, when).await?;
     add_store_text(store, plugin_keys, records).await?;
     Ok(Seeded::Wrote(SeedReport {
         user_id: user.id,
@@ -840,7 +840,7 @@ fn enrichment(store: &str, hit: &CatalogHit, when: DateTime<Utc>) -> CatalogEnri
 /// The number of titles the catalog recorded.
 async fn add_branch(
     store: &LibraryStore,
-    cluster_id: &str,
+    library_id: &str,
     owner: i64,
     plugin_keys: &BTreeMap<&str, String>,
     records: &StoreRecords,
@@ -850,7 +850,7 @@ async fn add_branch(
     let enrolled = (when - Duration::days(30)).to_rfc3339();
     nodes::ActiveModel {
         node_id: Set(SAMPLE_BRANCH.into()),
-        cluster_id: Set(cluster_id.into()),
+        library_id: Set(library_id.into()),
         created_at: Set(enrolled.clone()),
         incarnation: Set("demo".into()),
         heartbeat_at: Set(last_seen.clone()),

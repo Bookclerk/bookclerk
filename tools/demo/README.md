@@ -49,12 +49,12 @@ make for itself, and the build fails if any of it is left:
 
 - `master.key`, and the fingerprint of it the library keeps;
 - the covers cache's URL-signing key;
-- cluster leases, node heartbeats, plugin sessions and logs.
+- library leases, node heartbeats, plugin sessions and logs.
 
 `--bake-finish` refuses a library that holds any sealed secret, sign-in
 session or claim ticket. The node identity (`node-identity.json`) is baked,
-so every demo container shares the same node and cluster id. Each one is a
-VM that never joins a cluster, the ids carry no secret, and the baked plugin
+so every demo container shares the same node and library id. Each one is a
+VM that never joins a library, the ids carry no secret, and the baked plugin
 deployments are keyed by the node id.
 
 A fresh container's entrypoint (`packaging/demo/boot.sh`) copies that
@@ -107,7 +107,7 @@ every content signal to `no` (`use=immediate`).
    then on every request goes through the Worker (`src/app.ts`), which:
    - refuses any operation not allowed for the demo (`src/routes.ts`) before
      the container sees it: acquire and download, plugin installs and
-     settings, users, auth changes, node and cluster routes, among others.
+     settings, users, auth changes, node and library routes, among others.
      Every operation in `crates/bookclerkd/openapi.json` has an explicit verdict and a
      test fails when the two drift;
    - refuses cross-site writes itself, then strips `Authorization`,

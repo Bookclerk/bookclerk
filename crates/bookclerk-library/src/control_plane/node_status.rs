@@ -100,7 +100,7 @@ impl GuestReservation {
 pub struct CacheUsage {
     /// Bytes the caches hold now.
     pub bytes: i64,
-    /// Bytes they may hold: the cluster's `cache.budget_bytes` or the
+    /// Bytes they may hold: the library's `cache.budget_bytes` or the
     /// node's override.
     pub budget_bytes: i64,
     /// When the last eviction sweep finished, in Unix milliseconds; `None`

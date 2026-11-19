@@ -7,7 +7,7 @@
 //! - **Event consumer.** Each node registers its own consumer,
 //!   `host:search-index:<node id>`, on the durable outbox for the library
 //!   model's events ([`INDEX_EVENT_TYPES`]). Because the id names the node,
-//!   every node receives every event (unlike Discover's cluster-wide
+//!   every node receives every event (unlike Discover's library-wide
 //!   consumer). An edition event refreshes the edition's work, and a
 //!   holding event the work of its listing. A refresh deletes the work's
 //!   document and adds it back while the work is held, so
