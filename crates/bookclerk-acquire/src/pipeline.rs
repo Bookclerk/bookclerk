@@ -1292,6 +1292,12 @@ async fn take_library_copy(
     offer: &OfferedCopy,
 ) -> Option<LibraryFetch> {
     let budget = remaining_temp_budget(library, req, work_dir).await.ok()?;
+    // A job's budget is for the whole work directory, which already holds
+    // the store's download when a copy from another store is compared.
+    let budget = match req.job_id {
+        Some(_) if budget != u64::MAX => budget.saturating_sub(dir_size(work_dir).await),
+        Some(_) | None => budget,
+    };
     let dir = work_dir.join(LIBRARY_COPY_DIR);
     let media = req.library_copies.media();
     let wants = CopyWants {
@@ -4451,6 +4457,22 @@ mod tests {
         assert!(!work_dir.join(LIBRARY_COPY_DIR).exists());
         assert!(work_dir.join("own.mp3").exists());
         assert_eq!(req.library_copies.stored_from().get(), None);
+
+        // A better copy that does not fit in scratch beside the download
+        // is not downloaded: the budget counts what the download holds.
+        let flac_len = u64::try_from(tagged_flac().len()).unwrap();
+        let (mut req, fetched, taken) = compare((Some(700), true), tagged_flac(), "Twin.flac");
+        let own_fetch = own(&work_dir);
+        req.temp_quota_bytes = Some(dir_size(&work_dir).await + flac_len - 1);
+        assert!(req.job_id.is_some());
+        let offer = offered_copy(&store, &req).await.unwrap();
+        assert!(matches!(
+            replace_with_better_copy(&store, &req, &work_dir, &offer, own_fetch).await,
+            Compared::Own(_)
+        ));
+        assert_eq!(fetched.load(Ordering::SeqCst), 0);
+        assert_eq!(taken.load(Ordering::SeqCst), 0);
+        assert!(work_dir.join("own.mp3").exists());
 
         // A better copy that cannot be recorded as taken is not used.
         let mut copy = MemoryCopy::new(
