@@ -1,9 +1,9 @@
 # Diagnostics & crash reports
 
-This page explains Bookclerk's opt-in crash and error reports: how to turn
-them on, what they contain, and how logging verbosity works. The second
-half describes the collector service that receives them, for the people
-who run it.
+This page explains Bookclerk's opt-in crash and error reports and its
+opt-in usage check-ins: how to turn them on, what they contain, and how
+logging verbosity works. The second half describes the collector service
+that receives them, for the people who run it.
 
 ## Share reports
 
@@ -35,8 +35,8 @@ To send reports somewhere else, set `collector_url` in `[diagnostics]`, or
 ### When a report is sent
 
 With sharing on, a report is sent on a panic, an ERROR burst, a WARN
-burst, a daemon or CLI job failure, or a CLI command failure. These keys
-tune it:
+burst, a burst of slow responses, a daemon or CLI job failure, or a CLI
+command failure. These keys tune it:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -44,10 +44,19 @@ tune it:
 | `upload_on_error_burst` | `true` | Send when ERROR events cross `error_burst_threshold` |
 | `error_burst_threshold` | `10` | ERROR events inside the window that trigger a report |
 | `error_burst_window_secs` | `60` | Sliding window for the error burst, in seconds |
-| `upload_on_warn_burst` | `true` | Send when WARN events cross `warn_burst_threshold` |
-| `warn_burst_threshold` | `20` | WARN events inside the window that trigger a report |
+| `upload_on_warn_burst` | `true` | Send when WARN events cross `warn_burst_threshold`, and when slow responses do (`slow_burst`) |
+| `warn_burst_threshold` | `20` | WARN events (or slow responses) inside the window that trigger a report |
 | `warn_burst_window_secs` | `60` | Sliding window for the warn burst, in seconds |
-| `ring_buffer_capacity` | `200` | Most recent redacted events kept for a report (every level through TRACE) |
+| `ring_buffer_capacity` | `200` | Most recent redacted events kept for a report (see [the ring buffer](#local-verbosity-vs-ring-buffer)) |
+
+Slow responses are kept apart from faults. The daemon logs a request that
+takes longer than a second (three seconds for static files and unmatched
+paths) as a WARN on the target `bookclerk::slow`, with its method, route
+template, status and `latency_ms`. Those warnings count toward their own
+`slow_burst` trigger, not `warn_burst`, so a starved machine and a real
+fault arrive as different kinds of report. A server error (5xx) is a WARN
+named "server error response" with the same fields, and counts toward
+`warn_burst`.
 
 ## Local verbosity vs ring buffer
 
@@ -59,8 +68,19 @@ The design behind this split is in
   subsystem `app.bookclerk`, Windows Event Log) honor `BOOKCLERK_LOG`,
   then `RUST_LOG`, then the daemon default `bookclerk=info,warn`. The CLI is quiet by default (`off`). Use `-v`,
   `-vv` or `-vvv`, or `BOOKCLERK_LOG`.
-- The **diagnostics ring buffer always keeps TRACE and above**, so crash
-  and burst reports include deep context even when the console is quiet.
+- The **diagnostics ring buffer keeps Bookclerk's own events at TRACE and
+  above, and every dependency's at INFO and above**, so crash and burst
+  reports include deep context even when the console is quiet, without a
+  library's protocol frames (HTTP/2, TLS) pushing it all out.
+- **Warnings and errors outlive the ring.** The last 64 of them are kept
+  beside it, so a report still carries the warnings that triggered it after
+  newer events have filled the ring.
+- **Events carry their span's fields.** An event inside a request span
+  carries that span's fields as `span.field` (for example
+  `http.request.method` and `http.request.route`), except the concrete
+  request path, which stays local.
+- Records from the `log` crate arrive under their own target and module,
+  not as `log`.
 - **The WebSocket library's own log records reach neither.** It traces
   every frame's payload in hex and the request head of each handshake,
   and a frame or a header can carry a bearer token in a form the
@@ -109,6 +129,56 @@ stores the uploader's `User-Agent` (at most 200 characters).
 Reports are kept for 180 days (the website's privacy page says 6 months).
 See [Retention](#retention) for how that is enforced.
 
+## Share usage
+
+Separately from reports, an install can tell the project that it exists,
+so the project has a rough idea of how widely Bookclerk is used. This is
+its own switch, apart from `share_reports`, and it is off until you turn
+it on:
+
+```toml
+[diagnostics]
+share_usage = true
+```
+
+Or from the command line:
+
+```sh
+bookclerk config set diagnostics.share_usage true
+```
+
+With it on, the daemon and the desktop app send one check-in a week to
+the collector's `/checkin` route. A check-in holds only:
+
+- a random install ID, made the first time and kept in
+  `$BOOKCLERK_FILES_DIR/install-id`;
+- the Bookclerk version;
+- the operating system and CPU architecture;
+- whether it is the daemon or the desktop app.
+
+The collector never stores the install ID. It keeps
+`SHA-256(salt ‖ install ID)`, the **install key**, where the salt is 32
+random bytes made for the current UTC month and deleted when the month
+ends. So the project can count installs per week and per month, but cannot
+follow one install from one month to the next. Check-in rows are deleted
+after 35 days. Like reports, check-ins keep no IP address.
+
+When usage sharing is on, reports carry the install ID too, and the
+collector swaps it for the same install key before the report is stored.
+That lets the dashboard say how many installs a failure came from. With
+usage sharing off, reports carry no install identity at all.
+
+To start over with a new install ID:
+
+```sh
+bookclerk diagnostics reset-id
+```
+
+> [!NOTE]
+> The hosted demo never checks in: its copies set `demo = true` in
+> `[diagnostics]`, which turns check-ins off and marks their reports as
+> demo reports, so the dashboard keeps them out of its install figures.
+
 ## Running the collector
 
 The rest of this page is for the maintainers who run the collector
@@ -117,6 +187,7 @@ service.
 ```mermaid
 flowchart TB
   Hosts["bookclerk / bookclerkd"] -- "POST /submit" --> Worker["Collector Worker<br/>(assigns report_id UUID)"]
+  Hosts -- "POST /checkin (weekly, opt-in)" --> Worker
   Worker --> B2[("B2: diagnostics/&lt;version&gt;/&lt;report_id&gt;.json")]
   B2 --> Ingest["GitHub ingest"]
   Ingest -- "POST /triage" --> AI["Workers AI (no tools)"]
@@ -355,8 +426,10 @@ comment per issue**, edited in place. Editing a comment notifies nobody.
 
 The comment shows:
 
-- how many reports the issue tracks (reports carry no install identity,
-  so the dashboard and the comment count reports, not installations);
+- how many reports the issue tracks. The comment counts reports, not
+  installs: only installs that [share usage](#share-usage) carry an
+  install key, so the dashboard shows that partial figure ("from N installs
+  that share usage") and the public comment leaves it out;
 - how they were linked: listed in the issue, matched by signature, added
   by triage, or attached by members;
 - the first and last receipt;
@@ -409,11 +482,26 @@ in with GitHub, and these pages are member-only:
 
 | Page | Shows |
 | --- | --- |
-| `/dash` | The overview |
-| `/reports` | A filterable list of reports |
-| `/reports/<report_id>` | One report, with its event log, level toggles, and **Copy shown** / **Copy all** buttons that copy the log as plain text (one event per line under a line naming the report) |
+| `/dash` | The overview: reports per day, the [triage queue](#triage-queue-and-mutes), active installs from [usage check-ins](#share-usage), top signatures, platforms and versions (with errors and warnings per report) |
+| `/reports` | A filterable list of reports (version, platform, trigger, filed, triage state), with the slowest request in each and checkboxes to mark a page of them at once |
+| `/reports/<report_id>` | One report: its facts (route and slowest request when it has them), triage state and mute, and its event log |
 | `/issues` | Diagnostics issues, their pull requests, the version each fix shipped in, and reports that keep arriving from that version on |
-| `/issues/<number>` | One issue's reports, with the [corrections](#corrections) below |
+| `/issues/<number>` | One issue's reports, with the [corrections](#corrections) below, a **Copy branch command** button, and for owners the [close buttons](#closing-issues) |
+
+The overview and the reports list show reports from real installs by
+default. A **Source** switch shows the hosted demo's reports instead, or
+both. Demo reports carry a **Demo** chip wherever they are listed.
+
+The event log on a report page is built for reading a flood:
+
+- level toggles, and crate toggles (the part of the target before `::`);
+- runs of five or more debug and trace lines in a row from one crate fold
+  into a line that names the crate and the count, and open on a click;
+- a pause of more than 50 ms between two events is marked;
+- **Jump to the first warning or error** links to it;
+- **Copy shown** copies the lines on screen and **Copy all** every line,
+  as plain text under a line naming the report; **Copy for issue** copies
+  the report's facts and the shown lines as Markdown for a GitHub issue.
 
 Links that leave the dashboard, such as issues and pull requests on
 GitHub, open in a new tab without an opener or a referrer.
@@ -472,15 +560,15 @@ Worker mints is narrowed in the request to `read` on `metadata`, `issues`,
 compare reads below), on this one repository. The App's installation must
 grant each of them, or the token can't be minted and sign-in fails.
 
-The one write the Worker can ask GitHub for is an issue's summary comment,
-from the owner's **Update GitHub now** button (below):
+The writes the Worker can ask GitHub for are an issue's summary comment,
+from the owner's **Update GitHub now** button, and closing an issue, from
+the owner's [close buttons](#closing-issues):
 
-- For that call alone it mints a separate token narrowed to
-  `issues: write` and nothing else. It lists the issue's comments, edits
-  or posts the one comment, and keeps no copy.
+- For each such call it mints a separate token narrowed to `issues: write`
+  and nothing else, and keeps no copy.
 - It still can't write pull requests, code or workflows.
-- If the installation doesn't grant Issues: write, the button says so and
-  the scheduled run writes the comment instead.
+- If the installation doesn't grant Issues: write, the button says so. A
+  summary comment is then left to the scheduled run.
 
 The client secret and private key are Worker secrets only. Neither, nor
 any user token, is logged, stored or sent to a browser.
@@ -492,7 +580,7 @@ The App needs, in its settings:
 - the organization permission **Members: read**, accepted on its
   installation;
 - the repository permission **Issues: write**, for the **Update GitHub
-  now** button. The App's token is separate from the ingest Action's
+  now** and close buttons. The App's token is separate from the ingest Action's
   `GITHUB_TOKEN`, so the Action's permission doesn't cover it;
 - the callback URL `https://diagnostics.<DOMAIN>/auth/callback`, or the
   workers.dev URL.
@@ -525,19 +613,29 @@ SHA-256, with the member, their role and the session's times.
 `DASHBOARD_DB` is a D1 database, created on the first deploy, with its
 schema in `tools/diagnostics-collector/migrations/`. It holds one index
 row per report, written by `/submit` after the B2 upload: version,
-platform, trigger, level counts and a signature.
+platform, trigger, level counts, a signature, the route and slowest
+request when the report has them, whether the hosted demo sent it, its
+install key when it has one, and its triage state.
 
 The signature is a hash of the first error's target and its message, with
 numbers, IDs, paths, URLs and quoted text replaced (warnings are used
-when there is no error). Raw messages stay in B2. The report page
+when there is no error). When that event names an HTTP route (a `route`
+field, or the request span's `http.request.route`), the route template is
+part of the signature too, so slow responses on different routes group
+apart. Raw messages stay in B2. The report page
 downloads that one object with the Worker's B2 credentials, never
 `REPORT_API_KEY`.
 
 Because `/submit` is open, indexing stops at `DASHBOARD_INDEX_DAILY_ROWS`
-reports a UTC day. The default is 10,000. Each report writes five D1
-rows, so that is at most half of D1's 100,000 free daily row writes,
-leaving the rest for sign-ins, the access log and the sync. A report past
-the cap is still stored.
+reports a UTC day. The default is 10,000. Each report writes six D1 rows,
+so that is at most 60,000 of D1's 100,000 free daily row writes. A report
+past the cap is still stored.
+
+`/checkin` is open too, so it stores at most `CHECKIN_DAILY_ROWS` check-ins
+a UTC day (default 5,000) and answers 429 past that. Each writes three
+rows, at most 15,000 a day. The rest is left for sign-ins, the access log,
+the sync and triage marks. The cron deletes check-in rows after 35 days
+and every month's salt but the current one.
 
 An owner's **Index older reports** button (also used once after the first
 deploy) adds stored reports the index is missing, up to 40 per press.
@@ -601,6 +699,43 @@ The actions are:
 
 The report page offers **Detach** under each issue that lists it (how a
 conflict is resolved), and an **Attach to issue** picker when none does.
+The picker is an issue-number field with suggestions, empty until the
+member picks: issues that track the report's signature come first.
+
+### Triage queue and mutes
+
+A report **needs triage** while no issue lists it, no member has marked
+it, and its signature isn't muted. The overview counts these and lists
+the newest; `/reports?triage=needs` is the whole queue.
+
+- **Mark seen** and **Mark noise** take a report out of the queue (on its
+  page, or for the checked reports of a list page). **Back to the queue**
+  clears the mark. Marks post to `/reports/triage`.
+- **Mute** on a report page mutes its signature, with a reason and an end:
+  a number of days, or a version. A version mute ends when a report with
+  that signature arrives from that version or a later one, since the
+  failure is then back where it was meant to be fixed. Mutes post to
+  `/signatures/mute`.
+- A muted signature's reports leave the queue, and `GET /report?unfiled=1`
+  passes over them as it does filed reports, so ingest files no issue for
+  them.
+
+Each mark and mute is written to the access log under the member's login,
+and open pages refresh.
+
+### Closing issues
+
+Owners get two buttons on an open issue's page, posting to
+`/admin/close-issue`:
+
+- **Close as not planned** closes the issue on GitHub with that reason.
+- **Close as fixed in** takes a version, adds the `fixed-in:<version>`
+  label (which the sync reads as the issue's
+  [fixed-in version](#fixed-in-version-and-regressions)), then closes the
+  issue as completed.
+
+The index marks the issue closed at once, and the next sync reads it back
+from GitHub.
 
 ### Sending corrections to GitHub
 

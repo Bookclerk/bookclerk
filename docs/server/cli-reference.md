@@ -1855,6 +1855,7 @@ Commands:
 
 - [`bookclerk diagnostics show`](#bookclerk-diagnostics-show): Print recent diagnostics ring-buffer events
 - [`bookclerk diagnostics upload`](#bookclerk-diagnostics-upload): Upload the current diagnostics ring (requires share_reports + collector URL)
+- [`bookclerk diagnostics reset-id`](#bookclerk-diagnostics-reset-id): Replace this install's random usage ID (diagnostics.share_usage) with a new one
 
 ### `bookclerk diagnostics show`
 
@@ -1879,6 +1880,16 @@ bookclerk diagnostics upload [OPTIONS]
 Options:
 
 - `--trigger <TRIGGER>`: Trigger label recorded with the report (default `cli_manual`)
+
+### `bookclerk diagnostics reset-id`
+
+Replace this install's random usage ID (diagnostics.share_usage) with a new one.
+
+The next check-in then counts as a new install. Restart the daemon so its reports carry the new ID.
+
+```text
+bookclerk diagnostics reset-id [OPTIONS]
+```
 
 ## `bookclerk version`
 

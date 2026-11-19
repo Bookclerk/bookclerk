@@ -21,6 +21,63 @@ export const MAX_FIELD_CHARS = 64;
 /** Longest event target used in a signature, in characters. */
 export const MAX_TARGET_CHARS = 96;
 
+/** Longest HTTP route kept from an event, in characters. */
+export const MAX_ROUTE_CHARS = 96;
+
+/** Event fields that name the HTTP route, in the order they are tried. */
+const ROUTE_FIELDS = ["route", "http.request.route"];
+
+/** An install key: 64 lowercase hex characters (checkin.ts). */
+const INSTALL_KEY_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * A structured field of an event. Clients send fields as `[name, value]`
+ * pairs; anything else is ignored.
+ *
+ * @param ev - The event.
+ * @param name - Field name.
+ * @returns The first value under that name, or undefined.
+ */
+function eventField(ev: JsonObject, name: string): unknown {
+  if (!Array.isArray(ev.fields)) return undefined;
+  for (const pair of ev.fields) {
+    if (Array.isArray(pair) && pair.length === 2 && pair[0] === name) return pair[1];
+  }
+  return undefined;
+}
+
+/**
+ * The HTTP route an event names, from its `route` field or the request
+ * span's copy of it.
+ *
+ * @param ev - The event.
+ * @returns At most {@link MAX_ROUTE_CHARS} characters, or "" for none.
+ */
+function eventRoute(ev: JsonObject): string {
+  for (const name of ROUTE_FIELDS) {
+    const route = field(eventField(ev, name), MAX_ROUTE_CHARS);
+    if (route) return route;
+  }
+  return "";
+}
+
+/**
+ * The `latency_ms` an event reports.
+ *
+ * @param ev - The event.
+ * @returns A non-negative safe integer, or null when the event has none.
+ */
+function eventLatency(ev: JsonObject): number | null {
+  const raw = eventField(ev, "latency_ms");
+  const n =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string" && /^\d{1,15}$/.test(raw)
+        ? Number(raw)
+        : NaN;
+  return Number.isSafeInteger(n) && n >= 0 ? n : null;
+}
+
 /**
  * Normalizes a log message so the same failure on different machines reads
  * the same: UUIDs, long hex runs, paths, URLs, quoted strings and numbers are
@@ -76,7 +133,9 @@ function field(value: unknown, max: number): string {
  * Index row for one stored report.
  *
  * The signature comes from the first ERROR event, or the first WARN event
- * when there is no error, and is null when there is neither.
+ * when there is no error, and is null when there is neither. It covers the
+ * event's target, normalized message and, when the event names one, its
+ * HTTP route, so slow responses on different routes group apart.
  *
  * @param stored - The enriched object `/submit` wrote to B2.
  * @returns The fields the index keeps; counts are non-negative integers.
@@ -92,6 +151,10 @@ export async function summarizeReport(stored: unknown): Promise<{
   warnings: number;
   signature: string | null;
   signatureLabel: string | null;
+  route: string;
+  peakLatencyMs: number | null;
+  installKey: string;
+  deployment: string;
 }> {
   const s = asObject(stored);
   const p = asObject(s.payload);
@@ -100,8 +163,13 @@ export async function summarizeReport(stored: unknown): Promise<{
   let warnings = 0;
   let firstError: JsonObject | null = null;
   let firstWarn: JsonObject | null = null;
+  let peakLatencyMs: number | null = null;
   for (const ev of events) {
     if (!isObject(ev)) continue;
+    const latency = eventLatency(ev);
+    if (latency !== null && (peakLatencyMs === null || latency > peakLatencyMs)) {
+      peakLatencyMs = latency;
+    }
     const level = typeof ev.level === "string" ? ev.level.trim().toUpperCase() : "";
     if (level === "ERROR") {
       errors += 1;
@@ -114,12 +182,22 @@ export async function summarizeReport(stored: unknown): Promise<{
   const top = firstError ?? firstWarn;
   let signature: string | null = null;
   let signatureLabel: string | null = null;
+  const route = top ? eventRoute(top) : "";
   if (top) {
     const target = field(top.target, MAX_TARGET_CHARS) || "unknown";
     const message = normalizeMessage(typeof top.message === "string" ? top.message : "");
-    signature = await shortHash(`${target}\n${message}`);
-    signatureLabel = `${target} · ${message}`.slice(0, MAX_LABEL_CHARS);
+    // Without a route the hash input is what it always was, so existing
+    // signatures (and the issues tracking them) stay the same.
+    signature = await shortHash(
+      route ? `${target}\n${message}\n${route}` : `${target}\n${message}`,
+    );
+    signatureLabel = (route ? `${target} · ${message} · ${route}` : `${target} · ${message}`).slice(
+      0,
+      MAX_LABEL_CHARS,
+    );
   }
+  const key =
+    typeof s.install_key === "string" && INSTALL_KEY_RE.test(s.install_key) ? s.install_key : "";
   return {
     version: field(p.version, MAX_FIELD_CHARS),
     os: field(p.os, MAX_FIELD_CHARS),
@@ -131,5 +209,9 @@ export async function summarizeReport(stored: unknown): Promise<{
     warnings,
     signature,
     signatureLabel,
+    route,
+    peakLatencyMs,
+    installKey: key,
+    deployment: p.deployment === "demo" ? "demo" : "",
   };
 }

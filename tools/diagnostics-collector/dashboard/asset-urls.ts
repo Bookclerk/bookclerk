@@ -2,6 +2,6 @@
 
 /** URL of each hashed dashboard file (see asset-names.ts). */
 export const ASSET_URLS = {
-  "dashboard.css": "/static/assets/dashboard.f20eb8ee9955.css",
-  "dashboard.js": "/static/assets/dashboard.1d3341a0433a.js",
+  "dashboard.css": "/static/assets/dashboard.c0c6cce4a2b6.css",
+  "dashboard.js": "/static/assets/dashboard.db71047682f7.js",
 } as const;

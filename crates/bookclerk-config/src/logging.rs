@@ -5,8 +5,9 @@
 //!   set; filtered by `BOOKCLERK_LOG` / `RUST_LOG`
 //! - **OS facility** (when available): journald / macOS os_log / Windows Event Log —
 //!   same configured filter; Bookclerk does not manage log files or rotation
-//! - **diagnostics ring buffer** (always): retains **all** levels through TRACE so
-//!   crash / burst uploads include deep context even when stderr is quieter
+//! - **diagnostics ring buffer** (always): retains Bookclerk's own events through
+//!   TRACE (other crates' from INFO up, see [`ring_filter`]) so crash / burst
+//!   uploads include deep context even when stderr is quieter
 //!
 //! Records from the `log` crate reach the same sinks through a bridge that
 //! drops what [`UNBRIDGED_LOG_TARGETS`] names: the WebSocket library traces
@@ -28,13 +29,13 @@ use std::io::IsTerminal;
 use std::sync::Mutex;
 
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
-use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::filter::{LevelFilter, Targets};
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
-use crate::diagnostics::{self, DiagnosticsHandle, DiagnosticsLayer};
+use crate::diagnostics::{self, DiagnosticsHandle, DiagnosticsLayer, ProcessRole};
 use crate::journal::{OsLogFacility, OsLogLayer};
 use crate::redact::RedactingWriter;
 use crate::settings::DiagnosticsConfig;
@@ -43,6 +44,26 @@ use crate::settings::DiagnosticsConfig;
 /// (and so `tungstenite::protocol` and `tungstenite::handshake`) writes
 /// frame payloads, whole messages and handshake requests at TRACE.
 pub const UNBRIDGED_LOG_TARGETS: [&str; 1] = ["tungstenite"];
+
+/// Target prefixes the diagnostics ring keeps through TRACE. Every other
+/// target (dependencies such as `h2`, `hyper`, `rustls`, `reqwest`, and
+/// `log`-crate records) is kept from INFO up, so their per-frame TRACE events
+/// do not crowd Bookclerk's own events out of the ring.
+pub const RING_TRACE_TARGETS: [&str; 1] = ["bookclerk"];
+
+/// Level the diagnostics ring keeps for targets outside [`RING_TRACE_TARGETS`].
+pub const RING_DEPENDENCY_LEVEL: LevelFilter = LevelFilter::INFO;
+
+/// The diagnostics ring's per-layer filter: TRACE for
+/// [`RING_TRACE_TARGETS`] (matched as prefixes, so `bookclerkd` and
+/// `bookclerk_library` count), [`RING_DEPENDENCY_LEVEL`] for the rest.
+#[must_use]
+pub fn ring_filter() -> Targets {
+    RING_TRACE_TARGETS.iter().fold(
+        Targets::new().with_default(RING_DEPENDENCY_LEVEL),
+        |targets, prefix| targets.with_target(*prefix, LevelFilter::TRACE),
+    )
+}
 
 /// True when records of `target` are dropped by the bridge.
 fn is_unbridged(target: &str) -> bool {
@@ -95,7 +116,8 @@ pub struct TracingOptions {
     /// Stderr format (text vs JSON).
     pub format: LogFormat,
     /// Default `EnvFilter` directive when `BOOKCLERK_LOG` / `RUST_LOG` are unset.
-    /// Affects stderr + OS facility only — the diagnostics ring always keeps TRACE.
+    /// Affects stderr + OS facility only — the diagnostics ring has its own
+    /// filter ([`ring_filter`]).
     pub default_level: String,
     /// Identifier for journald / Event Log source / os_log category.
     pub syslog_identifier: String,
@@ -105,6 +127,8 @@ pub struct TracingOptions {
     pub version: String,
     /// Attempt to attach an OS log facility (no-op when unavailable).
     pub enable_journald: bool,
+    /// What kind of process this is, reported in diagnostics uploads.
+    pub role: ProcessRole,
 }
 
 impl Default for TracingOptions {
@@ -116,6 +140,7 @@ impl Default for TracingOptions {
             diagnostics: DiagnosticsConfig::default(),
             version: String::from(env!("CARGO_PKG_VERSION")),
             enable_journald: true,
+            role: ProcessRole::Daemon,
         }
     }
 }
@@ -139,7 +164,8 @@ pub struct LoggingHandle {
 ///
 /// Filter precedence for stderr/OS facility: `BOOKCLERK_LOG` → `RUST_LOG` →
 /// `opts.default_level`. The diagnostics ring buffer is **not** filtered by that
-/// directive — it always records TRACE and above so uploads retain deep context.
+/// directive — it records Bookclerk's own TRACE and above (other crates' INFO
+/// and above, see [`ring_filter`]) so uploads retain deep context.
 /// Widen local verbosity with e.g. `BOOKCLERK_LOG=bookclerk=debug` when investigating.
 ///
 /// Secrets are redacted on every sink via the public `register_secret` / `redact_str` helpers.
@@ -151,7 +177,8 @@ pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
     // bridge that carries every record.
     install_log_bridge();
 
-    let diag_handle = DiagnosticsHandle::new(opts.diagnostics.clone(), opts.version.clone());
+    let diag_handle =
+        DiagnosticsHandle::new(opts.diagnostics.clone(), opts.version.clone(), opts.role);
     diagnostics::install_global(diag_handle.clone());
 
     let os_layer = if opts.enable_journald {
@@ -162,8 +189,9 @@ pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
     let os_facility = os_layer.as_ref().map(OsLogLayer::facility);
     let journald_active = os_facility.is_some();
 
-    // Ring buffer sees everything; stderr/OS facility honor EnvFilter.
-    let diag_layer = DiagnosticsLayer::new(diag_handle.clone()).with_filter(LevelFilter::TRACE);
+    // The ring keeps Bookclerk's own events through TRACE and other crates'
+    // from INFO up; stderr/OS facility honor EnvFilter.
+    let diag_layer = DiagnosticsLayer::new(diag_handle.clone()).with_filter(ring_filter());
 
     // Non-blocking stderr: a full pipe to a parent process must not stall Tokio.
     let (nb_stderr, stderr_guard) = tracing_appender::non_blocking(std::io::stderr());

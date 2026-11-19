@@ -207,6 +207,13 @@ body.center {
   place-items: center;
   padding: 32px max(16px, env(safe-area-inset-left, 0px));
 }
+/* The card's text would otherwise widen <main> past the card, leaving the
+   card at main's left edge instead of the middle of the page. */
+body.center > main {
+  width: 100%;
+  display: grid;
+  justify-items: center;
+}
 a {
   color: var(--teal-text);
 }
@@ -979,5 +986,71 @@ details summary {
 .log.hide-info .lv-info,
 .log.hide-debug .lv-debug,
 .log.hide-trace .lv-trace {
+  display: none;
+}
+
+/* Event log: crate toggles, folded runs of debug and trace lines, pauses. */
+.crate-tools[hidden] {
+  display: none;
+}
+.log .run > summary {
+  padding: 0 12px 0 118px;
+  min-width: 760px;
+  cursor: pointer;
+  opacity: 0.7;
+  font-style: italic;
+}
+.log.hide-debug .run.only-debug,
+.log.hide-trace .run.only-trace,
+.log.hide-debug.hide-trace .run {
+  display: none;
+}
+.log .gap {
+  padding: 0 12px 0 118px;
+  min-width: 760px;
+  opacity: 0.55;
+  font-size: 11px;
+  border-top: 1px dashed rgb(243 229 198 / 0.25);
+}
+.log .row:target {
+  outline: 2px solid var(--log-warn);
+  outline-offset: -2px;
+}
+
+/* Triage: bulk marks, mute form, attach picker, owner close buttons. */
+.bulk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: 8px 0;
+}
+th.pick,
+td.pick {
+  width: 28px;
+}
+.mute-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: 0;
+}
+.mute-form #mute-reason {
+  flex: 1 1 240px;
+}
+.sel.narrow {
+  width: 9em;
+}
+.picker-input {
+  width: 11em;
+}
+.close-row {
+  margin-top: 6px;
+}
+/* `hidden` wins over the display these elements set. */
+.copy-text[hidden],
+.log .row[hidden],
+.log .run[hidden] {
   display: none;
 }

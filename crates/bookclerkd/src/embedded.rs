@@ -125,7 +125,7 @@ impl EmbeddedHost {
     /// not open, or operator auth that cannot be built).
     pub async fn start(options: EmbeddedOptions, syslog_identifier: &str) -> anyhow::Result<Self> {
         let config = bookclerk_config::Config::load(options.bookclerk_files, options.config)?;
-        init_logging(&config, syslog_identifier);
+        init_logging(&config, syslog_identifier, crate::ProcessRole::Desktop);
         let host = Self::from_host(start_host(config, HostMode::Embedded).await?);
         tracing::info!("host started embedded in the desktop window; no listener is bound");
         Ok(host)

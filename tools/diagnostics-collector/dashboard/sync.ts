@@ -34,6 +34,7 @@ import {
 } from "./github.ts";
 import { parseIssueReportIds, reportIdOf } from "./report-ids.ts";
 import { summarizeReport } from "./signature.ts";
+import { endMuteReachedBy } from "./triage-state.ts";
 import { listPage, MAX_STORED_REPORT_CHARS, type B2Access } from "./storage.ts";
 import { normalizeVersion, parseSemver } from "../version-filter.ts";
 import type { DashboardEnv } from "../env.ts";
@@ -624,8 +625,10 @@ export async function syncIssueNow(
 }
 
 /**
- * Indexes a report `/submit` just stored. Failures are swallowed by the
- * caller: the upload already succeeded and the reindex can pick it up.
+ * Indexes a report `/submit` just stored, and ends a mute on its signature
+ * that lasted until its version (`endMuteReachedBy`). Failures are
+ * swallowed by the caller: the upload already succeeded and the reindex can
+ * pick it up.
  *
  * @param db - Database.
  * @param enriched - The object written to B2.
@@ -639,16 +642,19 @@ export async function indexSubmitted(
   objectKey: string,
   cap: number,
 ): Promise<"indexed" | "capped"> {
-  return indexReport(
+  const summary = await summarizeReport(enriched);
+  const outcome = await indexReport(
     db,
     {
       reportId: enriched.report_id,
       objectKey,
       receivedAt: enriched.received_at_unix_ms,
-      summary: await summarizeReport(enriched),
+      summary,
     },
     cap,
   );
+  if (outcome === "indexed") await endMuteReachedBy(db, summary.signature, summary.version);
+  return outcome;
 }
 
 /**

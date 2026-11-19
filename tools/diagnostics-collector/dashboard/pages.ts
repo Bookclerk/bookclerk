@@ -18,6 +18,8 @@ import {
   type OverviewStats,
   type PrRow,
   type RangeId,
+  REPORT_SOURCES,
+  type ReportSource,
   type ReportBriefRow,
   type ReportFilter,
   type ReportListRow,
@@ -25,6 +27,8 @@ import {
   type TopSignature,
 } from "./db.ts";
 import { fmtDay, fmtInt, fmtTime, html, isoTime, raw, type SafeHtml } from "./html.ts";
+import type { UsageStats } from "../checkin.ts";
+import type { SignatureMute } from "./triage-state.ts";
 import type { Env } from "../env.ts";
 import type { Member } from "./session.ts";
 import { asObject, type JsonObject } from "../json.ts";
@@ -65,8 +69,8 @@ export type OverviewData = MemberPage & {
   versions: TopRow[];
   /** Top signatures. */
   signatures: TopSignature[];
-  /** Newest reports. */
-  recent: ReportListRow[];
+  /** Newest reports that need triage. */
+  queue: ReportListRow[];
   /** Issue → fix. */
   afterFix: Map<number, FixStatus>;
   /** Today's triage neurons. */
@@ -75,6 +79,8 @@ export type OverviewData = MemberPage & {
   versionOptions: string[];
   /** Whether today's index cap is reached. */
   capReached: boolean;
+  /** Active installs from usage check-ins. */
+  usage: UsageStats;
   /** Newest access-log rows (owners only, else empty). */
   access: AccessRow[];
   /** Result of the owner's last reindex or sync. */
@@ -131,6 +137,14 @@ export type ReportData = MemberPage & {
   sigMarker: { index: number; label: string } | null;
   /** Issues offered to attach an untracked report to. */
   openIssues: IssueOption[];
+  /** Issues tracking the report's signature, offered first. */
+  signatureIssues: number[];
+  /** The mute in force on its signature, or null. */
+  mute: SignatureMute | null;
+  /** Distinct installs (by monthly install key) behind its signature. */
+  installs: number;
+  /** Unix ms. */
+  now: number;
 };
 
 /** Query results for the issues board (`issuesPage`). */
@@ -411,14 +425,25 @@ function linkForm(f: {
   danger?: boolean;
   options?: Array<{ number: number; title: string }>;
   pickerLabel?: string;
+  preferred?: number[];
 }): SafeHtml {
   const field = f.issue === undefined ? "issue" : "to";
   const id = `${field}-${f.action}-${f.issue ?? "pick"}-${f.report ?? "all"}`;
+  // A typed issue number with suggestions, and no default: a member picks
+  // the issue on purpose. Issues tracking the same signature come first.
+  const preferred = new Set(f.preferred ?? []);
+  const options = f.options
+    ? [
+        ...f.options.filter((o) => preferred.has(o.number)),
+        ...f.options.filter((o) => !preferred.has(o.number)),
+      ]
+    : [];
   const picker = f.options
     ? html`<label class="sr" for="${id}">${f.pickerLabel ?? "Issue"}</label>
-        <select class="sel" id="${id}" name="${field}" required>${f.options.map(
-          (o) => html`<option value="${o.number}">#${o.number} ${o.title.slice(0, 60)}</option>`,
-        )}</select>`
+        <input class="sel picker-input" id="${id}" name="${field}" list="${id}-list" required inputmode="numeric" pattern="[1-9][0-9]{0,9}" placeholder="Issue number" autocomplete="off"><datalist id="${id}-list">${options.map(
+          (o) =>
+            html`<option value="${o.number}">#${o.number} ${o.title.slice(0, 60)}${preferred.has(o.number) ? " (same signature)" : ""}</option>`,
+        )}</datalist>`
     : "";
   return html`<form method="post" action="/issues/link" class="inline"><input type="hidden" name="action" value="${f.action}">${f.issue === undefined ? "" : html`<input type="hidden" name="issue" value="${f.issue}">`}${f.report ? html`<input type="hidden" name="report" value="${f.report}">` : ""}<input type="hidden" name="back" value="${f.back}">${picker}<button class="button small${f.danger ? " danger" : ""}" type="submit">${f.label}</button></form>`;
 }
@@ -536,19 +561,59 @@ export function dailySeries(now: number, days: number, byDay: Map<number, number
 function reportRows(cfg: Repo, rows: ReportListRow[], full: boolean): SafeHtml {
   return html`${rows.map(
     (r) => html`<tr>
+      ${full ? html`<td class="pick"><input type="checkbox" form="bulk-triage" name="report" value="${r.report_id}" aria-label="Select report ${String(r.report_id).slice(0, 8)}"></td>` : ""}
       <td class="num">${fmtTime(r.received_at)}</td>
-      <td><a class="mono" href="/reports/${r.report_id}">${String(r.report_id).slice(0, 8)}</a></td>
+      <td><a class="mono" href="/reports/${r.report_id}">${String(r.report_id).slice(0, 8)}</a>${reportChips(r)}</td>
       <td class="mono">${r.version}</td>
       <td>${`${r.os} ${r.arch}`.trim()}</td>
       <td>${r.trigger}</td>
       <td class="mono wrap-any">${r.signature_label ?? "none"}</td>
       ${
         full
-          ? html`<td class="r num">${r.errors}</td><td class="r num">${r.warnings}</td>`
+          ? html`<td class="r num">${r.errors}</td><td class="r num">${r.warnings}</td><td class="r num">${r.peak_latency_ms == null ? "" : fmtMs(r.peak_latency_ms)}</td>`
           : html`<td class="r num">${r.events}</td>`
       }
       <td>${issueChip(cfg, r.issue_number, r.issue_state)}${moreIssues(r)}</td></tr>`,
   )}`;
+}
+
+/**
+ * Chips after a report link: demo, triage state and mute.
+ *
+ * @param r - The report.
+ * @returns The chips, or nothing.
+ */
+function reportChips(r: ReportListRow): SafeHtml {
+  return html`${r.deployment === "demo" ? html` <span class="chip none" title="Sent by the hosted demo">Demo</span>` : ""}${r.triage_state === "seen" ? html` <span class="chip none" title="Marked seen${r.triaged_by ? ` by ${r.triaged_by}` : ""}">Seen</span>` : ""}${r.triage_state === "noise" ? html` <span class="chip none" title="Marked noise${r.triaged_by ? ` by ${r.triaged_by}` : ""}">Noise</span>` : ""}${Number(r.muted) > 0 ? html` <span class="chip none" title="Its signature is muted">Muted</span>` : ""}`;
+}
+
+/**
+ * A duration for a table cell.
+ *
+ * @param ms - Milliseconds.
+ * @returns For example `850 ms` or `2.9 s`.
+ */
+function fmtMs(ms: number): string {
+  const n = Number(ms);
+  return n < 1000 ? `${fmtInt(n)} ms` : `${(n / 1000).toFixed(1)} s`;
+}
+
+/**
+ * The source filter: real installs, the hosted demo, or both.
+ *
+ * @param url - The request URL; other parameters are kept.
+ * @param source - The active source.
+ * @returns A link group.
+ */
+function sourcePicker(url: URL, source: ReportSource): SafeHtml {
+  const labels: Record<ReportSource, string> = { installs: "Installs", demo: "Demo", all: "All" };
+  return html`<nav class="picker" aria-label="Report source">${REPORT_SOURCES.map((s) => {
+    const u = new URL(url);
+    if (s === "installs") u.searchParams.delete("source");
+    else u.searchParams.set("source", s);
+    u.searchParams.delete("page");
+    return html`<a href="${u.pathname}${u.search}"${s === source ? raw(' aria-current="true"') : ""}>${labels[s]}</a>`;
+  })}</nav>`;
 }
 
 /**
@@ -578,8 +643,10 @@ export function overviewPage(d: OverviewData): SafeHtml {
   const verMax = Math.max(1, ...d.versions.map((p) => Number(p.n)));
   const afterFixIssues = [...d.afterFix.values()].filter((a) => a.after > 0).length;
   const budgetFrac = d.budget.cap > 0 ? d.budget.spent / d.budget.cap : 0;
+  const source = d.filter.source ?? "installs";
+  const sourceParam = source === "installs" ? "" : `&source=${source}`;
   const versionForm = html`<form class="inline" method="get" action="/dash">
-      <input type="hidden" name="range" value="${d.rangeId}">
+      <input type="hidden" name="range" value="${d.rangeId}">${source === "installs" ? "" : html`<input type="hidden" name="source" value="${source}">`}
       <label class="sr" for="ov-version">Version</label>
       <select id="ov-version" name="version" class="sel autosubmit"><option value="">All versions</option>${d.versionOptions.map(
         (v) =>
@@ -605,13 +672,13 @@ export function overviewPage(d: OverviewData): SafeHtml {
     nav: "overview",
     body: html`<div class="wrap">
       <div data-live="cap">${d.capReached ? html`<p class="banner">Today's indexing limit is reached. New reports are stored but not shown here until an owner presses Index older reports.</p>` : ""}</div>
-      <div class="toolbar"><h1>Overview</h1>${versionForm}${rangePicker(d.url, d.rangeId)}</div>
+      <div class="toolbar"><h1>Overview</h1>${versionForm}${sourcePicker(d.url, source)}${rangePicker(d.url, d.rangeId)}</div>
       <div class="grid" data-live="overview">
         <section class="panel stat s2"><h2>Reports, 24h</h2><div class="v">${fmtInt(d.stats.last24h)}</div><div class="d">${delta >= 0 ? "+" : "−"}${fmtInt(Math.abs(delta))} on the day before</div></section>
         <section class="panel stat s2"><h2>Reports, ${range.label}</h2><div class="v">${fmtInt(d.stats.total)}</div>${sparkline(d.totalSeries, "teal", 120, 28, true)}</section>
-        <section class="panel stat warn s2"><h2>Not filed</h2><div class="v">${fmtInt(d.stats.notFiled)}</div><div class="d">no issue lists them</div></section>
-        <section class="panel stat s2"><h2>Open issues</h2><div class="v">${fmtInt(d.stats.openIssues)}</div><div class="d">labeled diagnostics</div></section>
-        <section class="panel stat${afterFixIssues ? " crit" : ""} s2"><h2>After a fix</h2><div class="v">${fmtInt(afterFixIssues)}</div><div class="d">issues seen again from the fixed version on</div></section>
+        <section class="panel stat warn s2"><h2><a class="quiet" href="/reports?range=${d.rangeId}&amp;triage=needs${sourceParam}">Needs triage</a></h2><div class="v">${fmtInt(d.stats.needsTriage)}</div><div class="d">no issue, not marked, not muted</div></section>
+        <section class="panel stat s2"><h2>Active installs</h2><div class="v">${fmtInt(d.usage.weekly)}</div><div class="d">this week · ${fmtInt(d.usage.monthly)} this month${d.usage.byKind.length ? ` · ${d.usage.byKind.map((k) => `${fmtInt(k.n)} ${k.kind}`).join(", ")}` : ""}</div></section>
+        <section class="panel stat${afterFixIssues ? " crit" : ""} s2"><h2>After a fix</h2><div class="v">${fmtInt(afterFixIssues)}</div><div class="d">of ${fmtInt(d.stats.openIssues)} open issues seen again from the fixed version on</div></section>
         <section class="panel stat s2"><h2>Triage budget</h2><div class="v small">${fmtInt(d.budget.spent)}<span class="of"> / ${fmtInt(d.budget.cap)}</span></div>${meter(budgetFrac, "fill-amber", `${Math.round(budgetFrac * 100)} percent of today's neurons used`)}<div class="d">neurons used today (UTC)</div></section>
 
         <section class="panel s8"><h2>Reports per ${range.bucket < 86_400_000 ? "hour" : "day"}, by trigger <span class="legend">${series.map((s) => html`<span><i class="${s.cls}"></i>${s.key}</span>`)}</span></h2>
@@ -625,12 +692,12 @@ export function overviewPage(d: OverviewData): SafeHtml {
           (s) =>
             html`<tr><td class="mono wrap-any"><a class="quiet" href="/reports?range=${d.rangeId}&amp;signature=${s.signature}">${s.label}</a></td><td class="r num">${fmtInt(s.n)}</td><td>${sparkline(dailySeries(d.now, 14, s.days), s.issue ? "muted" : "amber")}</td><td>${issueChip(d.cfg, s.issue?.number, s.issue?.state)}</td></tr>`,
         )}</tbody></table></div></section>
-        <section class="panel s5"><h2>Versions</h2><div class="tbl"><table><thead><tr><th>Version</th><th class="r">Reports</th><th class="r">Errors / report</th><th><span class="sr">Share</span></th></tr></thead><tbody>${d.versions.map(
+        <section class="panel s5"><h2>Versions</h2><div class="tbl"><table><thead><tr><th>Version</th><th class="r">Reports</th><th class="r">Errors + warnings / report</th><th><span class="sr">Share</span></th></tr></thead><tbody>${d.versions.map(
           (v) =>
-            html`<tr><td class="mono">${String(v.key) || "unknown"}</td><td class="r num">${fmtInt(v.n)}</td><td class="r num">${Number(v.errors ?? 0).toFixed(1)}</td><td class="bar-cell">${meter(Number(v.n) / verMax)}</td></tr>`,
+            html`<tr><td class="mono">${String(v.key) || "unknown"}</td><td class="r num">${fmtInt(v.n)}</td><td class="r num">${(Number(v.errors ?? 0) + Number(v.warnings ?? 0)).toFixed(1)}</td><td class="bar-cell">${meter(Number(v.n) / verMax)}</td></tr>`,
         )}</tbody></table></div></section>
 
-        <section class="panel s12"><h2>Recent reports <a href="/reports?range=${d.rangeId}">All reports</a></h2><div class="tbl"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Top error</th><th class="r">Events</th><th>Issue</th></tr></thead><tbody>${reportRows(d.cfg, d.recent, false)}</tbody></table></div></section>
+        <section class="panel s12"><h2>Needs triage <a href="/reports?range=${d.rangeId}&amp;triage=needs${sourceParam}">Open the queue</a></h2><div class="tbl"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Top error or warning</th><th class="r">Events</th><th>Issue</th></tr></thead><tbody>${d.queue.length ? reportRows(d.cfg, d.queue, false) : html`<tr><td colspan="8" class="empty">Nothing needs triage in this range.</td></tr>`}</tbody></table></div></section>
         ${owner}
       </div></div>`,
   });
@@ -665,10 +732,11 @@ export function reportsPage(d: ReportsData): SafeHtml {
     member: d.member,
     nav: "reports",
     body: html`<div class="wrap">
-      <div class="toolbar"><h1>Reports</h1>${rangePicker(d.url, d.rangeId)}</div>
+      <div class="toolbar"><h1>Reports</h1>${sourcePicker(d.url, d.filter.source ?? "installs")}${rangePicker(d.url, d.rangeId)}</div>
       <section class="panel">
         <form class="filters" method="get" action="/reports">
           <input type="hidden" name="range" value="${d.rangeId}">
+          ${d.filter.source && d.filter.source !== "installs" ? html`<input type="hidden" name="source" value="${d.filter.source}">` : ""}
           ${d.filter.signature ? html`<input type="hidden" name="signature" value="${d.filter.signature}">` : ""}
           ${sel("f-ver", "version", "Version", [["", "All versions"], ...d.options.versions.map((v): [string, string] => [v, v])], d.filter.version ?? "")}
           ${sel("f-os", "platform", "Platform", [["", "All platforms"], ...d.options.platforms.map((v): [string, string] => [v, v])], d.filter.platform ?? "")}
@@ -684,11 +752,30 @@ export function reportsPage(d: ReportsData): SafeHtml {
             ],
             d.filter.filed ?? "",
           )}
+          ${sel(
+            "f-triage",
+            "triage",
+            "Triage",
+            [
+              ["", "Any triage state"],
+              ["needs", "Needs triage"],
+              ["seen", "Seen"],
+              ["noise", "Noise"],
+            ],
+            d.filter.triage ?? "",
+          )}
           <noscript><button class="button small" type="submit">Apply</button></noscript>
           <span class="fine" data-live="total">${fmtInt(d.total)} reports · page ${d.page} of ${pages}${d.filter.signature ? html` · signature <span class="mono">${d.filter.signature}</span> <a href="/reports?range=${d.rangeId}">clear</a>` : ""}</span>
         </form>
-        <div class="tbl" data-live="rows"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Signature</th><th class="r">Errors</th><th class="r">Warnings</th><th>Issue</th></tr></thead>
-          <tbody>${d.rows.length ? reportRows(d.cfg, d.rows, true) : html`<tr><td colspan="9" class="empty">No reports match these filters.</td></tr>`}</tbody></table></div>
+        <form id="bulk-triage" class="bulk" method="post" action="/reports/triage">
+          <input type="hidden" name="back" value="${d.url.pathname}${d.url.search}">
+          <span class="fine">Selected reports:</span>
+          <button class="button small" type="submit" name="state" value="seen">Mark seen</button>
+          <button class="button small" type="submit" name="state" value="noise">Mark noise</button>
+          <button class="button small" type="submit" name="state" value="clear">Back to the queue</button>
+        </form>
+        <div class="tbl" data-live="rows"><table><thead><tr><th class="pick"><span class="sr">Select</span></th><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Signature</th><th class="r">Errors</th><th class="r">Warnings</th><th class="r">Slowest</th><th>Issue</th></tr></thead>
+          <tbody>${d.rows.length ? reportRows(d.cfg, d.rows, true) : html`<tr><td colspan="11" class="empty">No reports match these filters.</td></tr>`}</tbody></table></div>
         <div class="pager" data-live="pager">${d.page > 1 ? pageLink(d.page - 1, "Newer") : ""}${d.page < pages ? pageLink(d.page + 1, "Older") : ""}</div>
       </section></div>`,
   });
@@ -748,23 +835,60 @@ function isLevel(level: string): level is Level {
   return (LEVELS as readonly string[]).includes(level);
 }
 
+/** Shortest run of DEBUG/TRACE rows from one crate that is folded away. */
+export const RUN_MIN = 5;
+
+/** Pause between two events, in milliseconds, that the log marks. */
+export const GAP_MS = 50;
+
+/** Most crates offered as toggles; the rest stay on. */
+const MAX_CRATES = 12;
+
 /**
- * Event rows of a stored report, bounded. Exported for the fuzz tests: the
- * events are whatever anyone submitted.
+ * The crate an event target names: the text before the first `::`.
  *
- * @param events - `payload.events` from storage.
- * @returns Level counts and `<div>` rows.
+ * @param target - Event target.
+ * @returns At most 64 characters, or "unknown".
  */
-export function eventLog(events: unknown): { counts: Record<Level, number>; rows: SafeHtml } {
+export function crateOf(target: string): string {
+  return target.split("::", 1)[0]?.slice(0, 64) || "unknown";
+}
+
+/**
+ * Event log rows for a stored report, with level counts, the crates seen
+ * and the first warning or error.
+ *
+ * Runs of {@link RUN_MIN} or more DEBUG/TRACE rows in a row from the same
+ * crate fold into a `<details>` that names the crate and the count, so a
+ * flood of protocol frames does not bury the lines around it. A pause of
+ * more than {@link GAP_MS} between two events gets a marker. The first
+ * ERROR or WARN row carries the id `first-problem`.
+ *
+ * @param events - `payload.events` from storage (untrusted).
+ * @returns Counts by level, crates by row count (most first, at most
+ *   twelve), whether a problem row exists, and the rows.
+ */
+export function eventLog(events: unknown): {
+  counts: Record<Level, number>;
+  crates: Array<{ crate: string; n: number }>;
+  problem: boolean;
+  rows: SafeHtml;
+} {
   const list: unknown[] = Array.isArray(events) ? events.slice(0, 500) : [];
   const counts: Record<Level, number> = { ERROR: 0, WARN: 0, INFO: 0, DEBUG: 0, TRACE: 0 };
-  const rows = list.map((ev) => {
+  const crateCounts = new Map<string, number>();
+  let problem = false;
+  const parsed = list.map((ev) => {
     const e = asObject(ev);
     const levelText = typeof e.level === "string" ? e.level.toUpperCase() : "";
     const named = levelText === "WARNING" ? "WARN" : levelText;
     const level: Level = isLevel(named) ? named : "INFO";
     counts[level] += 1;
-    const ts = isoTime(e.ts_unix_ms).slice(11, 23);
+    const target = typeof e.target === "string" ? e.target.slice(0, 256) : "";
+    const crate = crateOf(target);
+    crateCounts.set(crate, (crateCounts.get(crate) ?? 0) + 1);
+    const ms =
+      typeof e.ts_unix_ms === "number" && Number.isSafeInteger(e.ts_unix_ms) ? e.ts_unix_ms : null;
     const fields = Array.isArray(e.fields)
       ? e.fields
           .slice(0, 20)
@@ -773,9 +897,43 @@ export function eventLog(events: unknown): { counts: Record<Level, number>; rows
           .join(" ")
       : "";
     const message = typeof e.message === "string" ? e.message.slice(0, 8000) : "";
-    return html`<div class="row lv-${level.toLowerCase()}"><span class="t">${ts}</span><span class="lv">${level}</span><span class="tg">${typeof e.target === "string" ? e.target.slice(0, 256) : ""}</span><span class="msg">${message}${fields ? html` <span class="fields">${fields}</span>` : ""}</span></div>`;
+    const first = !problem && (level === "ERROR" || level === "WARN");
+    if (first) problem = true;
+    const row = html`<div class="row lv-${level.toLowerCase()}" data-crate="${crate}"${first ? raw(' id="first-problem"') : ""}><span class="t">${isoTime(e.ts_unix_ms).slice(11, 23)}</span><span class="lv">${level}</span><span class="tg">${target}</span><span class="msg">${message}${fields ? html` <span class="fields">${fields}</span>` : ""}</span></div>`;
+    return { level, crate, ms, row };
   });
-  return { counts, rows: html`${rows}` };
+  const out: SafeHtml[] = [];
+  let prevMs: number | null = null;
+  for (let i = 0; i < parsed.length;) {
+    const head = parsed[i];
+    if (!head) break;
+    if (head.ms !== null && prevMs !== null && head.ms - prevMs > GAP_MS) {
+      out.push(html`<div class="gap" aria-hidden="true">+${fmtMs(head.ms - prevMs)}</div>`);
+    }
+    const quiet = (x: (typeof parsed)[number] | undefined): boolean =>
+      x !== undefined && (x.level === "DEBUG" || x.level === "TRACE") && x.crate === head.crate;
+    let end = i;
+    while (quiet(parsed[end])) end += 1;
+    if (end - i >= RUN_MIN) {
+      const run = parsed.slice(i, end);
+      const levels = new Set(run.map((x) => x.level.toLowerCase()));
+      const only = levels.size === 1 ? ` only-${[...levels][0]}` : "";
+      out.push(
+        html`<details class="run${only}" data-crate="${head.crate}"><summary>${fmtInt(run.length)} debug and trace lines from ${head.crate}</summary>${run.map((x) => x.row)}</details>`,
+      );
+      prevMs = run[run.length - 1]?.ms ?? prevMs;
+      i = end;
+    } else {
+      out.push(head.row);
+      prevMs = head.ms ?? prevMs;
+      i += 1;
+    }
+  }
+  const crates = [...crateCounts]
+    .map(([crate, n]) => ({ crate, n }))
+    .sort((a, b) => b.n - a.n || a.crate.localeCompare(b.crate))
+    .slice(0, MAX_CRATES);
+  return { counts, crates, problem, rows: html`${out}` };
 }
 
 /**
@@ -809,7 +967,10 @@ export function reportPage(d: ReportData): SafeHtml {
           <div><dt>rustc</dt><dd class="mono">${typeof p.rustc_release === "string" && p.rustc_release ? `${p.rustc_release.slice(0, 64)} ${typeof p.rustc_channel === "string" ? p.rustc_channel.slice(0, 32) : ""}` : "not reported"}</dd></div>
           <div><dt>Trigger</dt><dd>${r.trigger}</dd></div>
           <div><dt>Events</dt><dd class="num">${fmtInt(r.events)} (${plural(r.errors, "error")}, ${plural(r.warnings, "warning")})</dd></div>
-          <div><dt>Signature</dt><dd class="mono">${r.signature ? html`<a href="/reports?range=90d&amp;signature=${r.signature}">${r.signature}</a>` : "none"}</dd></div>
+          <div><dt>Signature</dt><dd class="mono">${r.signature ? html`<a href="/reports?range=90d&amp;signature=${r.signature}">${r.signature}</a>` : "none"}${r.signature ? html` <span class="fine">${d.installs ? `from ${plural(d.installs, "install")} that share usage` : "no install that shares usage reported it"}</span>` : ""}</dd></div>
+          ${r.route ? html`<div><dt>Route</dt><dd class="mono">${r.route}</dd></div>` : ""}
+          ${r.peak_latency_ms == null ? "" : html`<div><dt>Slowest request</dt><dd class="num">${fmtMs(r.peak_latency_ms)}</dd></div>`}
+          ${r.deployment === "demo" ? html`<div><dt>Source</dt><dd><span class="chip none">Demo</span> <span class="fine">sent by the hosted demo, not a real install</span></dd></div>` : ""}
         </dl></section>
         <section class="panel s4" data-live="tracked"><h2>Tracked by</h2><div class="links">
           ${
@@ -820,16 +981,17 @@ export function reportPage(d: ReportData): SafeHtml {
                 )
               : html`<p class="fine">No issue lists this report yet. Triage may have judged it noise, or ingest has not run since it arrived.</p>`
           }
-          ${d.issues.length === 0 && d.openIssues?.length ? html`<div class="link-item">${linkForm({ action: "attach", report: String(r.report_id), back: `/reports/${r.report_id}`, label: "Attach", options: d.openIssues, pickerLabel: "Attach to issue" })}</div>` : ""}
+          ${d.issues.length === 0 && d.openIssues?.length ? html`<div class="link-item">${linkForm({ action: "attach", report: String(r.report_id), back: `/reports/${r.report_id}`, label: "Attach", options: d.openIssues, pickerLabel: "Attach to issue", preferred: d.signatureIssues })}</div>` : ""}
           ${d.issues.length > 1 ? html`<p class="fine"><span class="chip crit">Conflict</span> ${d.issues.length} issues list this report; it counts under #${d.issues[0]?.number} until a member detaches it from the others.</p>` : ""}
           ${d.prs.map((pr) => html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span>${externalLink(ghUrl(d.cfg, "pull", pr.pr_number), `#${pr.pr_number} ${pr.title}`)}</div>`)}
           ${fix && fixNote(fix) ? html`<div class="link-item"><span class="chip ${fix.fixedIn ? "merged" : "none"}">${fix.fixedIn ? "Fixed" : "Merged"}</span><span class="fine">${fixNote(fix)}${d.issues.some((i) => Number(i.number) === fix.issue) ? "" : html`, per ${externalLink(ghUrl(d.cfg, "issues", fix.issue), `#${fix.issue}`)}, which tracks this signature`}</span></div>` : ""}
           ${fix && (d.regression || fix.after > 0) ? html`<div class="link-item"><span class="chip crit">${d.regression ? "Regression" : "Seen after fix"}</span><span class="fine">${d.regression ? `this report runs ${r.version}, after the fix; ` : ""}${afterFixText(fix)}</span></div>` : ""}
         </div></section>
+        ${triagePanel(d)}
         <section class="panel s12"><h2>Event log <span class="note">secrets were redacted on the client before upload</span></h2>
           ${
             d.stored
-              ? html`<div class="log-tools"><div class="filters" role="group" aria-label="Levels">${filters}</div><div class="copy-tools" hidden><button type="button" class="log-copy" data-copy="shown">Copy shown</button><button type="button" class="log-copy" data-copy="all">Copy all</button><span class="fine" id="copy-status" role="status"></span></div></div><div class="log" id="log" role="log" aria-label="Report events" data-report="${r.report_id}" data-version="${r.version}" data-platform="${`${r.os} ${r.arch}`.trim()}" data-trigger="${r.trigger}">${log.rows}</div>`
+              ? html`<div class="log-tools"><div class="filters" role="group" aria-label="Levels">${filters}</div>${log.crates.length > 1 ? html`<div class="filters crate-tools" role="group" aria-label="Crates" hidden>${log.crates.map((c) => html`<button type="button" class="lvl-toggle crate-toggle" data-crate="${c.crate}" aria-pressed="true">${c.crate} ${c.n}</button>`)}</div>` : ""}${log.problem ? html`<a class="fine" href="#first-problem">Jump to the first warning or error</a>` : ""}<div class="copy-tools" hidden><button type="button" class="log-copy" data-copy="shown">Copy shown</button><button type="button" class="log-copy" data-copy="all">Copy all</button><button type="button" class="log-copy" data-copy="issue" title="Markdown for a GitHub issue: the report's facts and the shown lines">Copy for issue</button><span class="fine" id="copy-status" role="status"></span></div></div><div class="log" id="log" role="log" aria-label="Report events" data-report="${r.report_id}" data-version="${r.version}" data-platform="${`${r.os} ${r.arch}`.trim()}" data-trigger="${r.trigger}" data-signature="${r.signature_label ?? ""}" data-route="${r.route}">${log.rows}</div>`
               : html`<p class="banner">The stored report could not be read from storage. The index entry above is all that is available.</p>`
           }
         </section>
@@ -844,6 +1006,75 @@ export function reportPage(d: ReportData): SafeHtml {
         }</tbody></table></div></section>
       </div></div>`,
   });
+}
+
+/**
+ * The report page's triage panel: its triage state with buttons to change
+ * it, and the mute on its signature with a form to set or lift one.
+ *
+ * @param d - The report page's data.
+ * @returns The panel.
+ */
+function triagePanel(d: ReportData): SafeHtml {
+  const r = d.report;
+  const back = `/reports/${r.report_id}`;
+  const mark = (state: string, label: string): SafeHtml =>
+    html`<form method="post" action="/reports/triage" class="inline"><input type="hidden" name="report" value="${r.report_id}"><input type="hidden" name="back" value="${back}"><input type="hidden" name="state" value="${state}"><button class="button small" type="submit">${label}</button></form>`;
+  const state =
+    r.triage_state === "seen" || r.triage_state === "noise"
+      ? html`<span class="chip none">${r.triage_state === "seen" ? "Seen" : "Noise"}</span> <span class="fine">${r.triaged_by ? `marked by ${r.triaged_by}` : ""}</span> ${mark("clear", "Back to the queue")}`
+      : html`<span class="fine">${d.issues.length ? "An issue tracks it." : d.mute ? "Its signature is muted." : "It needs triage."}</span> ${mark("seen", "Mark seen")} ${mark("noise", "Mark noise")}`;
+  const sig = r.signature;
+  const mute = d.mute;
+  const muteRow = !sig
+    ? html`<p class="fine">No signature to mute.</p>`
+    : mute
+      ? html`<div class="link-item"><span class="chip none">Muted</span><span class="fine">by ${mute.muted_by}, ${fmtTime(mute.muted_at)} UTC: ${mute.reason}. ${mute.until ? `Ends ${fmtTime(mute.until)} UTC.` : ""}${mute.until_version ? `Ends when a report from ${mute.until_version} or later arrives.` : ""}</span>
+          <form method="post" action="/signatures/mute" class="inline"><input type="hidden" name="action" value="unmute"><input type="hidden" name="signature" value="${sig}"><input type="hidden" name="back" value="${back}"><button class="button small" type="submit">Unmute</button></form></div>`
+      : html`<form method="post" action="/signatures/mute" class="mute-form"><input type="hidden" name="action" value="mute"><input type="hidden" name="signature" value="${sig}"><input type="hidden" name="back" value="${back}">
+          <label for="mute-reason">Mute this signature</label><input class="sel" id="mute-reason" name="reason" required maxlength="200" placeholder="Why (for example: demo CPU starvation)">
+          <label class="sr" for="mute-days">Days</label><input class="sel narrow" id="mute-days" name="days" inputmode="numeric" pattern="[1-9][0-9]{0,2}" placeholder="Days">
+          <span class="fine">or</span>
+          <label class="sr" for="mute-version">Until version</label><input class="sel narrow" id="mute-version" name="until_version" placeholder="Until version">
+          <button class="button small" type="submit">Mute</button>
+          <span class="fine">Muted reports leave the triage queue, and ingest files no issue for them.</span></form>`;
+  return html`<section class="panel s12" data-live="triage"><h2>Triage</h2><div class="links">
+    <div class="link-item">${state}</div>
+    ${muteRow}
+  </div></section>`;
+}
+
+/**
+ * A git command that starts a branch for an issue: `fix/<number>-<slug>`,
+ * the slug from the title (lowercase ASCII words, at most 40 characters).
+ *
+ * @param n - Issue number.
+ * @param title - Issue title.
+ * @returns The command.
+ */
+export function branchCommand(n: number, title: string): string {
+  const slug = title
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/, "");
+  return `git switch -c fix/${n}${slug ? `-${slug}` : ""} origin/main`;
+}
+
+/**
+ * The owner's close buttons for an open issue: as not planned, or as fixed
+ * in a version (which sets its `fixed-in:` label).
+ *
+ * @param n - Issue number.
+ * @returns The forms.
+ */
+function closeForms(n: number): SafeHtml {
+  return html`<div class="owner-row close-row">
+    <form method="post" action="/admin/close-issue" class="inline"><input type="hidden" name="issue" value="${n}"><input type="hidden" name="how" value="not_planned"><button class="button small" type="submit">Close as not planned</button></form>
+    <form method="post" action="/admin/close-issue" class="inline"><input type="hidden" name="issue" value="${n}"><input type="hidden" name="how" value="fixed"><label class="sr" for="close-version">Fixed in version</label><input class="sel narrow" id="close-version" name="version" required placeholder="Version, like 0.4.2" pattern="v?[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.\\-]+)?"><button class="button small" type="submit">Close as fixed in</button></form>
+  </div>`;
 }
 
 /**
@@ -942,7 +1173,9 @@ export function issuePage(d: IssueData): SafeHtml {
     body: html`<div class="wrap">
       <div class="toolbar column"><span class="crumb"><a href="/issues">Issues</a> / #${n}</span>
         <h1>#${n} ${i.title}</h1>
-        <span class="links-row"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span>${issueKindChip(d.cfg, i)} ${externalLink(ghUrl(d.cfg, "issues", n), "Open on GitHub")}</span></div>
+        <span class="links-row"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span>${issueKindChip(d.cfg, i)} ${externalLink(ghUrl(d.cfg, "issues", n), "Open on GitHub")}
+          <button type="button" class="button small copy-text" hidden data-copy-text="${branchCommand(n, String(i.title))}" title="Copies a git command that starts a branch for this issue">Copy branch command</button><span class="fine" role="status" data-copy-status></span></span>
+        ${owner && i.state === "open" ? closeForms(n) : ""}</div>
       <div data-live="pending">${
         t.outdated || d.updateNote
           ? html`<div class="banner">${
@@ -956,7 +1189,7 @@ export function issuePage(d: IssueData): SafeHtml {
       }</div>
       <div class="grid">
         <section class="panel s7" data-live="stats"><h2>Reports tracked</h2><dl class="meta">
-          <div><dt>Reports</dt><dd class="num">${fmtInt(t.reports)}</dd></div>
+          <div><dt>Reports</dt><dd class="num">${fmtInt(t.reports)}${t.installs ? html` <span class="fine">from ${plural(t.installs, "install")} that share usage</span>` : ""}</dd></div>
           <div><dt>First seen</dt><dd class="num">${t.first_seen ? `${fmtTime(t.first_seen)} UTC` : "no report yet"}</dd></div>
           <div><dt>Last seen</dt><dd class="num">${t.last_seen ? `${fmtTime(t.last_seen)} UTC` : ""}</dd></div>
           <div><dt>Last 14 days</dt><dd>${sparkline(dailySeries(d.now, 14, t.days), fix && fix.after > 0 ? "brick" : "teal")}</dd></div>

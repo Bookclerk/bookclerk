@@ -22,10 +22,51 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  // Crate toggles hide every row (and folded run) from a crate, on top of
+  // the level toggles. They stay hidden without this script.
+  const crates = document.querySelector(".crate-tools");
+  if (log && crates) {
+    crates.hidden = false;
+    for (const button of crates.querySelectorAll(".crate-toggle")) {
+      button.addEventListener("click", () => {
+        const on = button.getAttribute("aria-pressed") !== "true";
+        button.setAttribute("aria-pressed", String(on));
+        for (const el of log.querySelectorAll(":scope > .row, :scope > .run, .run > .row")) {
+          if (el.dataset.crate === button.dataset.crate) el.hidden = !on;
+        }
+      });
+    }
+  }
+
+  // Says something in a status element for a few seconds.
+  const timers = new WeakMap();
+  const say = (el, text) => {
+    if (!el) return;
+    el.textContent = text;
+    clearTimeout(timers.get(el));
+    timers.set(
+      el,
+      setTimeout(() => {
+        el.textContent = "";
+      }, 4000),
+    );
+  };
+  const copy = async (text, el, done) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      say(el, done);
+    } catch {
+      say(el, "Could not copy: the browser refused clipboard access");
+    }
+  };
+
   // Event-log copy buttons put the rows on the clipboard as plain text, one
   // event per line with its fields separated by spaces, under a line naming
-  // the report. "Copy shown" takes the rows the level toggles leave visible;
-  // "Copy all" takes every row. The buttons stay hidden without this script.
+  // the report. "Copy shown" takes the rows on screen now (level and crate
+  // toggles and folded runs leave the rest out); "Copy all" takes every
+  // row; "Copy for issue" wraps the shown rows in Markdown with the
+  // report's facts, ready to paste into a GitHub issue. The buttons stay
+  // hidden without this script.
   const tools = document.querySelector(".copy-tools");
   const status = document.getElementById("copy-status");
   if (log && tools && navigator.clipboard) {
@@ -35,30 +76,43 @@ document.addEventListener("DOMContentLoaded", () => {
       [part(row, "t"), part(row, "lv").padEnd(5), part(row, "tg"), part(row, "msg")]
         .filter((p) => p !== "")
         .join(" ");
-    let clear = 0;
+    const shown = (row) =>
+      typeof row.checkVisibility === "function" ? row.checkVisibility() : row.offsetParent !== null;
     for (const button of tools.querySelectorAll(".log-copy")) {
-      button.addEventListener("click", async () => {
+      button.addEventListener("click", () => {
         const all = button.dataset.copy === "all";
-        const rows = [...log.querySelectorAll(".row")].filter(
-          (row) => all || row.offsetParent !== null,
-        );
+        const rows = [...log.querySelectorAll(".row")].filter((row) => all || shown(row));
         const d = log.dataset;
-        const head = `Report ${d.report} · ${d.version} · ${d.platform} · trigger ${d.trigger}`;
-        const text = [head, ...rows.map(line)].join("\n") + "\n";
-        let said;
-        try {
-          await navigator.clipboard.writeText(text);
-          said = `Copied ${rows.length} ${rows.length === 1 ? "event" : "events"}`;
-        } catch {
-          said = "Could not copy: the browser refused clipboard access";
+        const count = `${rows.length} ${rows.length === 1 ? "event" : "events"}`;
+        if (button.dataset.copy === "issue") {
+          const fence = "```";
+          const facts = [
+            `- Report: ${location.origin}/reports/${d.report}`,
+            `- Version: ${d.version}`,
+            `- Platform: ${d.platform}`,
+            `- Trigger: ${d.trigger}`,
+            d.signature ? `- Signature: \`${d.signature}\`` : "",
+            d.route ? `- Route: \`${d.route}\`` : "",
+          ].filter((f) => f !== "");
+          const text = [...facts, "", `${fence}text`, ...rows.map(line), fence, ""].join("\n");
+          void copy(text, status, `Copied ${count} as Markdown`);
+          return;
         }
-        if (status) status.textContent = said;
-        clearTimeout(clear);
-        clear = setTimeout(() => {
-          if (status) status.textContent = "";
-        }, 4000);
+        const head = `Report ${d.report} · ${d.version} · ${d.platform} · trigger ${d.trigger}`;
+        void copy([head, ...rows.map(line)].join("\n") + "\n", status, `Copied ${count}`);
       });
     }
+  }
+
+  // Buttons that copy a fixed text, such as the issue page's branch command;
+  // hidden without this script or clipboard access.
+  for (const button of document.querySelectorAll(".copy-text")) {
+    if (!navigator.clipboard) continue;
+    button.hidden = false;
+    const near = button.parentElement?.querySelector("[data-copy-status]");
+    button.addEventListener("click", () => {
+      void copy(button.dataset.copyText ?? "", near, "Copied");
+    });
   }
 });
 

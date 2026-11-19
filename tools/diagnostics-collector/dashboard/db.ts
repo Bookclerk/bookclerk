@@ -75,8 +75,20 @@ export type ReportRow = {
   warnings: number;
   /** Error signature (16 hex characters), or null without errors or warnings. */
   signature: string | null;
-  /** Readable signature, `target · message`. */
+  /** Readable signature, `target · message`, then ` · route` when it has one. */
   signature_label: string | null;
+  /** HTTP route of the event behind the signature, or "". */
+  route: string;
+  /** Slowest `latency_ms` among the report's events, or null for none. */
+  peak_latency_ms: number | null;
+  /** "demo" for a report from the hosted demo, else "". */
+  deployment: string;
+  /** "" (needs triage when not filed), "seen" or "noise". */
+  triage_state: string;
+  /** Login of the member who set the triage state, or null. */
+  triaged_by: string | null;
+  /** Whether a mute on the report's signature is in force. */
+  muted: number;
 };
 
 /** A report with its tracking issue, as `REPORT_COLUMNS` selects it. */
@@ -202,8 +214,8 @@ export type OverviewStats = {
   last24h: number;
   /** Reports in the 24 hours before those. */
   prev24h: number;
-  /** Reports in the range no issue lists. */
-  notFiled: number;
+  /** Reports in the range that need triage (`ReportFilter.triage` "needs"). */
+  needsTriage: number;
   /** Open diagnostics issues. */
   openIssues: number;
 };
@@ -226,6 +238,8 @@ export type TopRow = {
   n: number;
   /** Mean errors per report. */
   errors: number;
+  /** Mean warnings per report. */
+  warnings: number;
 };
 
 /** One frequent signature (`topSignatures`). */
@@ -266,10 +280,11 @@ export type FixStatus = {
 
 /**
  * Default daily cap on reports /submit may index. Each indexed report writes
- * five D1 rows (measured with `meta.rows_written`: four for the report row
- * and its indexes, one for the day's ledger), so the cap spends at most half
- * of D1's 100,000 free daily row writes and leaves the rest for sign-ins,
- * the access log, the issue sync and the owner's reindex.
+ * six D1 rows (five for the report row and its indexes, one for the day's
+ * ledger), so the cap spends at most 60,000 of D1's 100,000 free daily row
+ * writes. Usage check-ins (checkin.ts) take at most 15,000 more, which
+ * leaves the rest for sign-ins, the access log, the issue sync, triage
+ * marks and the owner's reindex.
  */
 export const DEFAULT_INDEX_DAILY_ROWS = 10_000;
 
@@ -348,8 +363,8 @@ export function utcDayOf(ms: number): string {
 
 /**
  * The statement that adds one report row, ignoring a report already indexed.
- * It writes four D1 rows (the row, its primary-key index, `reports_received`
- * and `reports_signature`).
+ * It writes five D1 rows (the row, its primary-key index, `reports_received`,
+ * `reports_signature` and `reports_triage`).
  *
  * @param db - Database.
  * @param row - The report and its summary.
@@ -368,8 +383,9 @@ export function reportInsert(
   return db
     .prepare(
       `INSERT OR IGNORE INTO reports (report_id, object_key, received_at, version, os, arch, distro,
-         trigger, events, errors, warnings, signature, signature_label)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         trigger, events, errors, warnings, signature, signature_label, route, peak_latency_ms,
+         install_key, deployment)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       row.reportId,
@@ -385,6 +401,10 @@ export function reportInsert(
       s.warnings,
       s.signature,
       s.signatureLabel,
+      s.route,
+      s.peakLatencyMs,
+      s.installKey,
+      s.deployment,
     );
 }
 
@@ -460,7 +480,42 @@ export type ReportFilter = {
   filed?: "" | "yes" | "no";
   /** Exact crash signature. */
   signature?: string;
+  /**
+   * Which reports by origin: "installs" (not the hosted demo), "demo", or
+   * "all"; unset means all.
+   */
+  source?: ReportSource;
+  /**
+   * Triage state: "needs" for reports nobody has looked at yet (no state,
+   * no issue, signature not muted), "seen" or "noise"; unset or "" for all.
+   */
+  triage?: "" | "needs" | "seen" | "noise";
+  /** Unix ms that mute expiry is judged against; defaults to the current time. */
+  now?: number;
 };
+
+/** Report origins the source filter offers, default first. */
+export const REPORT_SOURCES = ["installs", "demo", "all"] as const;
+
+/** One of {@link REPORT_SOURCES}. */
+export type ReportSource = (typeof REPORT_SOURCES)[number];
+
+/**
+ * Parses the source filter.
+ *
+ * @param raw - The `source` query parameter.
+ * @returns The source; anything unknown is "installs", the default.
+ */
+export function reportSource(raw: string | null): ReportSource {
+  return raw === "demo" || raw === "all" ? raw : "installs";
+}
+
+/**
+ * Condition (alias `r`, one `?` for now) that a mute on the report's
+ * signature is in force.
+ */
+export const MUTED = `EXISTS (SELECT 1 FROM signature_mutes m WHERE m.signature = r.signature
+  AND (m.until IS NULL OR m.until > ?))`;
 
 /**
  * WHERE clause and values for a time range plus filters.
@@ -496,6 +551,18 @@ export function reportWhere(
       `${f.filed === "no" ? "NOT " : ""}EXISTS (SELECT 1 FROM report_issue ri WHERE ri.report_id = r.report_id AND ${LINKED})`,
     );
   }
+  if (f.source === "installs") clauses.push("r.deployment = ''");
+  if (f.source === "demo") clauses.push("r.deployment = 'demo'");
+  if (f.triage === "seen" || f.triage === "noise") {
+    clauses.push("r.triage_state = ?");
+    params.push(f.triage);
+  }
+  if (f.triage === "needs") {
+    clauses.push(
+      `r.triage_state = '' AND NOT EXISTS (SELECT 1 FROM report_issue ri WHERE ri.report_id = r.report_id AND ${LINKED}) AND NOT ${MUTED}`,
+    );
+    params.push(f.now ?? Date.now());
+  }
   return { where: clauses.join(" AND "), params };
 }
 
@@ -524,6 +591,9 @@ const TRACKER = `(SELECT ri.issue_number FROM report_issue ri LEFT JOIN issues t
  */
 const REPORT_COLUMNS = `r.report_id, r.object_key, r.received_at, r.version, r.os, r.arch, r.distro,
   r.trigger, r.events, r.errors, r.warnings, r.signature, r.signature_label,
+  r.route, r.peak_latency_ms, r.deployment, r.triage_state, r.triaged_by,
+  (SELECT COUNT(*) FROM signature_mutes m WHERE m.signature = r.signature
+    AND (m.until IS NULL OR m.until > CAST(strftime('%s', 'now') AS INTEGER) * 1000)) AS muted,
   i.number AS issue_number, i.state AS issue_state,
   (SELECT ri.source FROM report_issue ri WHERE ri.report_id = r.report_id AND ri.issue_number = i.number) AS issue_source,
   (SELECT COUNT(*) FROM report_issue ri WHERE ri.report_id = r.report_id AND ${LINKED}) AS issue_count`;
@@ -753,7 +823,7 @@ export async function matchClosedBySignature(
  * @param db - Database.
  * @param now - Unix time in milliseconds.
  * @param since - Range start, in milliseconds.
- * @param f - Filters (version only on the overview).
+ * @param f - Filters (version and source on the overview).
  * @returns The figures.
  */
 export async function overviewStats(
@@ -763,6 +833,7 @@ export async function overviewStats(
   f: ReportFilter,
 ): Promise<OverviewStats> {
   const range = reportWhere(since, f);
+  const needs = reportWhere(since, { ...f, triage: "needs", now });
   const d1 = reportWhere(now - DAY_MS, f);
   const d2 = reportWhere(now - 2 * DAY_MS, f);
   const [tot, a, b, nf, oi] = await Promise.all([
@@ -774,18 +845,14 @@ export async function overviewStats(
       ...d2.params,
       now - DAY_MS,
     ),
-    first(
-      db,
-      `SELECT COUNT(*) AS n FROM reports r WHERE ${range.where} AND NOT EXISTS (SELECT 1 FROM report_issue ri WHERE ri.report_id = r.report_id AND ${LINKED})`,
-      ...range.params,
-    ),
+    first(db, `SELECT COUNT(*) AS n FROM reports r WHERE ${needs.where}`, ...needs.params),
     first(db, "SELECT COUNT(*) AS n FROM issues WHERE state = 'open'"),
   ]);
   return {
     total: Number(tot?.n ?? 0),
     last24h: Number(a?.n ?? 0),
     prev24h: Number(b?.n ?? 0),
-    notFiled: Number(nf?.n ?? 0),
+    needsTriage: Number(nf?.n ?? 0),
     openIssues: Number(oi?.n ?? 0),
   };
 }
@@ -840,7 +907,7 @@ export async function topBy(
   const w = reportWhere(since, f);
   return all(
     db,
-    `SELECT ${expr} AS key, COUNT(*) AS n, AVG(r.errors) AS errors
+    `SELECT ${expr} AS key, COUNT(*) AS n, AVG(r.errors) AS errors, AVG(r.warnings) AS warnings
      FROM reports r WHERE ${w.where} GROUP BY key ORDER BY n DESC, key LIMIT ?`,
     ...w.params,
     limit,
@@ -1253,7 +1320,11 @@ export async function logAccess(
     | "detach"
     | "move"
     | "merge"
-    | "update-issue",
+    | "update-issue"
+    | "triage"
+    | "mute"
+    | "unmute"
+    | "close-issue",
   reportId: string | null,
   now: number,
 ): Promise<void> {
@@ -1549,6 +1620,11 @@ export type IssueDetail = {
   prs: PrRow[];
   /** Reports it tracks. */
   reports: number;
+  /**
+   * Distinct installs among them, by monthly install key (only installs
+   * that share usage carry one), so an install counts once per month.
+   */
+  installs: number;
   /** First receipt, Unix ms, or null. */
   first_seen: number | null;
   /** Last receipt, Unix ms, or null. */
@@ -1604,7 +1680,8 @@ export async function issueDetail(
         db,
         `${WITH_TRACKED_FOR}
        SELECT COUNT(r.report_id) AS reports,
-         MIN(r.received_at) AS first_seen, MAX(r.received_at) AS last_seen
+         MIN(r.received_at) AS first_seen, MAX(r.received_at) AS last_seen,
+         COUNT(DISTINCT NULLIF(r.install_key, '')) AS installs
        FROM tr JOIN reports r ON r.report_id = tr.report_id WHERE tr.issue_number = ?`,
         number,
         number,
@@ -1677,6 +1754,7 @@ export async function issueDetail(
     issue,
     prs,
     reports: Number(totals?.reports ?? 0),
+    installs: Number(totals?.installs ?? 0),
     first_seen: totals?.first_seen == null ? null : Number(totals.first_seen),
     last_seen: totals?.last_seen == null ? null : Number(totals.last_seen),
     versions: versions.map((v) => ({ key: String(v.key ?? ""), n: Number(v.n) })),

@@ -46,6 +46,9 @@ import {
   PAGE_SIZE,
   RANGES,
   recentAccess,
+  reportSource,
+  reportWhere,
+  run,
   setState,
   signatureDays,
   topBy,
@@ -57,6 +60,7 @@ import {
   type ReportFilter,
 } from "./db.ts";
 import {
+  closeIssue,
   githubConfig,
   writeSummaryComment,
   type AttachLink,
@@ -64,6 +68,14 @@ import {
   type SummaryWrite,
 } from "./github.ts";
 import { MAX_FORM_CHARS, issueNumber, parseLinkAction } from "./links.ts";
+import {
+  parseCloseAction,
+  parseMuteAction,
+  parseTriageMark,
+  type CloseAction,
+} from "./triage-forms.ts";
+import { applyMute, getMute, setTriageState, signatureInstalls } from "./triage-state.ts";
+import { usageStats } from "../checkin.ts";
 import { dashboardOrigin, renderSummary } from "./summary.ts";
 import { announceChange, closeAllLive, connectLive } from "./live.ts";
 import { fmtDay, html, htmlResponse, redirect } from "./html.ts";
@@ -104,6 +116,9 @@ const PATHS = new Set([
   "/admin/sync",
   "/admin/sign-out-all",
   "/admin/update-issue",
+  "/admin/close-issue",
+  "/reports/triage",
+  "/signatures/mute",
   "/live",
 ]);
 
@@ -422,12 +437,28 @@ export async function dashboardFetch(
     return correctLinks(request, env, member, now);
   }
 
+  if (method === "POST" && (path === "/reports/triage" || path === "/signatures/mute")) {
+    if (!sameOrigin(request)) {
+      return htmlResponse(
+        messagePage(
+          "Request refused",
+          html`<p>Triage marks are made from the dashboard's own buttons.</p>`,
+        ),
+        403,
+      );
+    }
+    return path === "/reports/triage"
+      ? markTriage(request, env, member, now)
+      : muteSignature(request, env, member, now);
+  }
+
   if (
     method === "POST" &&
     (path === "/admin/reindex" ||
       path === "/admin/sync" ||
       path === "/admin/sign-out-all" ||
-      path === "/admin/update-issue")
+      path === "/admin/update-issue" ||
+      path === "/admin/close-issue")
   ) {
     if (member.role !== "admin" || !sameOrigin(request)) {
       return htmlResponse(
@@ -452,6 +483,23 @@ export async function dashboardFetch(
       await setState(db, UPDATE_NOTE, `${issue}\t${now}\t${note}`);
       await logAccess(db, member, "update-issue", null, now);
       return redirect(back);
+    }
+    if (path === "/admin/close-issue") {
+      const form = await readForm(request);
+      const close = parseCloseAction(form);
+      if (close === null) {
+        return htmlResponse(
+          messagePage(
+            "Request refused",
+            html`<p>The close form needs an issue, and a version when closing as fixed.</p>`,
+          ),
+          400,
+        );
+      }
+      const note = await closeIssueNow(env, cfg, close, now);
+      await setState(db, UPDATE_NOTE, `${close.issue}\t${now}\t${note}`);
+      await logAccess(db, member, "close-issue", null, now);
+      return redirect(`/issues/${close.issue}`);
     }
     if (path === "/admin/sign-out-all") {
       await logAccess(db, member, "sign-out-all", null, now);
@@ -516,37 +564,41 @@ export async function dashboardFetch(
     const rangeId = rangeOf(q);
     const range = RANGES[rangeId];
     const since = now - range.ms;
-    const filter = { version: param(q, "version") };
+    const source = reportSource(q.get("source"));
+    const filter: ReportFilter = { version: param(q, "version"), source };
     const [
       stats,
       counts,
       platforms,
       versions,
       signatures,
-      recent,
+      queue,
       afterFix,
       budget,
       versionOptions,
       capReached,
+      usage,
     ] = await Promise.all([
       overviewStats(db, now, since, filter),
       countsByBucket(db, since, range.bucket, filter),
       topBy(db, "platform", since, filter, 6),
-      topBy(db, "version", since, {}, 6),
+      topBy(db, "version", since, { source }, 6),
       topSignatures(db, since, filter, 6),
-      listReports(db, since, filter, 8, 0).then((r) => r.rows),
+      listReports(db, since, { ...filter, triage: "needs", now }, 8, 0).then((r) => r.rows),
       fixStatus(db),
       triageBudget(env, now),
       topBy(db, "version", now - 90 * DAY_MS, {}, 30).then((r) =>
         r.map((x) => String(x.key)).filter(Boolean),
       ),
       indexCapReached(db, now, indexCap(env)),
+      usageStats(db, now),
     ]);
+    const daily = reportWhere(now - 14 * DAY_MS, { source });
     const totals = await all(
       db,
-      "SELECT CAST(received_at / ? AS INTEGER) AS day, COUNT(*) AS n FROM reports WHERE received_at >= ? GROUP BY day",
+      `SELECT CAST(r.received_at / ? AS INTEGER) AS day, COUNT(*) AS n FROM reports r WHERE ${daily.where} GROUP BY day`,
       DAY_MS,
-      now - 14 * DAY_MS,
+      ...daily.params,
     );
     const admin = member.role === "admin";
     const [access, reindexNote] = admin
@@ -565,11 +617,12 @@ export async function dashboardFetch(
         platforms,
         versions,
         signatures,
-        recent,
+        queue,
         afterFix,
         budget,
         versionOptions,
         capReached,
+        usage,
         access,
         reindexNote: reindexNote ?? "",
         totalSeries: dailySeries(now, 14, new Map(totals.map((t) => [Number(t.day), Number(t.n)]))),
@@ -582,12 +635,16 @@ export async function dashboardFetch(
     const since = now - RANGES[rangeId].ms;
     const filed = q.get("filed");
     const signature = param(q, "signature");
+    const triage = q.get("triage");
     const filter: ReportFilter = {
       version: param(q, "version"),
       platform: param(q, "platform"),
       trigger: param(q, "trigger"),
       filed: filed === "yes" || filed === "no" ? filed : "",
       signature: /^[0-9a-f]{16}$/.test(signature) ? signature : "",
+      source: reportSource(q.get("source")),
+      triage: triage === "needs" || triage === "seen" || triage === "noise" ? triage : "",
+      now,
     };
     const page = Math.min(Math.max(1, Number.parseInt(q.get("page") || "1", 10) || 1), 10_000);
     const [list, options] = await Promise.all([
@@ -638,7 +695,7 @@ export async function dashboardFetch(
           now - 8 * 3_600_000,
         ),
       );
-    const [stored, afterFix, similar, days, sameSignature] = await Promise.all([
+    const [stored, afterFix, similar, days, sameSignature, mute, installs] = await Promise.all([
       liveRefresh
         ? Promise.resolve(null)
         : readStoredReport(b2, String(r.object_key)).catch(() => null),
@@ -653,6 +710,8 @@ export async function dashboardFetch(
         : Promise.resolve([]),
       r.signature ? signatureDays(db, r.signature, now - 14 * DAY_MS) : Promise.resolve(new Map()),
       r.signature ? issuesTrackingSignature(db, r.signature) : Promise.resolve([]),
+      r.signature ? getMute(db, r.signature, now) : Promise.resolve(null),
+      r.signature ? signatureInstalls(db, r.signature) : Promise.resolve(0),
     ]);
     if (!liveRefresh) await logAccess(db, member, "view-report", r.report_id, now);
     // The fix shown is the tracking issue's, the issue the report counts
@@ -706,6 +765,10 @@ export async function dashboardFetch(
         sigMarker:
           fix?.fixAt && fixPr ? { index: markerIndex, label: `#${fixPr.pr_number} merged` } : null,
         openIssues,
+        signatureIssues: sameSignature,
+        mute,
+        installs,
+        now,
       }),
     );
   }
@@ -873,6 +936,133 @@ async function correctLinks(
 }
 
 /**
+ * `POST /reports/triage` (members, same origin): marks reports seen or
+ * noise, or puts them back in the triage queue, logs it under the member's
+ * name and tells open pages.
+ *
+ * @param request - The form post.
+ * @param env - Worker bindings.
+ * @param member - The signed-in member.
+ * @param now - Unix time in milliseconds.
+ * @returns A redirect back to the page the form came from.
+ */
+async function markTriage(
+  request: Request,
+  env: DashboardEnv,
+  member: Member,
+  now: number,
+): Promise<Response> {
+  const body = await readForm(request);
+  const mark = parseTriageMark(body);
+  if (!mark) {
+    return htmlResponse(
+      messagePage(
+        "Request not understood",
+        html`<p>Choose at least one report and a triage state, then try again.</p>`,
+      ),
+      400,
+    );
+  }
+  const changed = await setTriageState(
+    env.DASHBOARD_DB,
+    mark.reports,
+    mark.state,
+    member.login,
+    now,
+  );
+  await logAccess(
+    env.DASHBOARD_DB,
+    member,
+    "triage",
+    mark.reports.length === 1 ? (mark.reports[0] ?? null) : null,
+    now,
+  );
+  if (changed > 0) await announceChange(env);
+  const back = safeNext(formField(body, "back"));
+  return redirect(back ?? (mark.reports.length === 1 ? `/reports/${mark.reports[0]}` : "/reports"));
+}
+
+/**
+ * `POST /signatures/mute` (members, same origin): mutes a signature with a
+ * reason and an end, or lifts the mute, and tells open pages.
+ *
+ * @param request - The form post.
+ * @param env - Worker bindings.
+ * @param member - The signed-in member.
+ * @param now - Unix time in milliseconds.
+ * @returns A redirect back to the page the form came from.
+ */
+async function muteSignature(
+  request: Request,
+  env: DashboardEnv,
+  member: Member,
+  now: number,
+): Promise<Response> {
+  const body = await readForm(request);
+  const action = parseMuteAction(body);
+  if (!action) {
+    return htmlResponse(
+      messagePage(
+        "Request not understood",
+        html`<p>A mute needs a reason and either a number of days or a version that ends it.</p>`,
+      ),
+      400,
+    );
+  }
+  await applyMute(env.DASHBOARD_DB, action, member.login, now);
+  await logAccess(env.DASHBOARD_DB, member, action.action, null, now);
+  await announceChange(env);
+  const back = safeNext(formField(body, "back"));
+  return redirect(back ?? `/reports?signature=${action.signature}`);
+}
+
+/**
+ * The owner's close button: closes the issue on GitHub (as not planned, or
+ * as completed with its fixed-in label) and marks it closed in the index
+ * until the next sync reads it back.
+ *
+ * @param env - Worker bindings.
+ * @param cfg - GitHub settings.
+ * @param close - The parsed form.
+ * @param now - Unix time in milliseconds.
+ * @returns A note for the issue page.
+ */
+async function closeIssueNow(
+  env: DashboardEnv,
+  cfg: GitHubConfig,
+  close: CloseAction,
+  now: number,
+): Promise<string> {
+  const db = env.DASHBOARD_DB;
+  const known = await first(db, "SELECT state FROM issues WHERE number = ?", close.issue);
+  if (!known) return "That issue is not synced yet; sync issues from GitHub first.";
+  if (known.state === "closed") return "The issue is already closed.";
+  try {
+    await closeIssue(cfg, now, close.issue, close.version);
+  } catch (err) {
+    const text = err instanceof Error ? err.message : String(err);
+    console.error(`issue close failed: ${text}`);
+    return text.startsWith("installation token failed")
+      ? `GitHub refused the token to close the issue (${text}); the App needs Issues: write on the repository.`
+      : `GitHub did not close the issue (${text}); try again later.`;
+  }
+  await run(
+    db,
+    `UPDATE issues SET state = 'closed', closed_at = ?, updated_at = ?, prs_synced_at = NULL,
+       fixed_in_label = COALESCE(?, fixed_in_label)
+     WHERE number = ?`,
+    now,
+    now,
+    close.version,
+    close.issue,
+  );
+  await announceChange(env);
+  return close.version === null
+    ? "Closed on GitHub as not planned."
+    : `Closed on GitHub as fixed in ${close.version}.`;
+}
+
+/**
  * Cron entry: issue and pull request sync when the dashboard is on.
  *
  * @param env - Worker bindings.
@@ -1008,17 +1198,27 @@ export async function dashboardSummarySent(
 /**
  * `GET /report?unfiled=1`: the reports some issue already lists, so ingest
  * does not triage them again when its pull cursor is lost (the Actions cache
- * that holds it can be evicted) or a run re-pulls from the start.
+ * that holds it can be evicted) or a run re-pulls from the start, and the
+ * reports whose signature a member muted, so ingest files nothing for them.
  *
  * @param env - Worker bindings.
+ * @param now - Unix time in milliseconds, for mute expiry.
  * @returns Lowercase report UUIDs linked to at
- *   least one issue, or null when the dashboard database is not bound.
+ *   least one issue or muted, or null when the dashboard database is not
+ *   bound.
  */
-export async function dashboardFiledReportIds(env: Env): Promise<Set<string> | null> {
+export async function dashboardFiledReportIds(
+  env: Env,
+  now: number = Date.now(),
+): Promise<Set<string> | null> {
   if (!env.DASHBOARD_DB) return null;
   const rows = await all(
     env.DASHBOARD_DB,
-    "SELECT DISTINCT report_id FROM report_issue WHERE source <> 'excluded'",
+    `SELECT report_id FROM report_issue WHERE source <> 'excluded'
+     UNION
+     SELECT r.report_id FROM reports r JOIN signature_mutes m ON m.signature = r.signature
+     WHERE m.until IS NULL OR m.until > ?`,
+    now,
   );
   return new Set(rows.map((r) => String(r.report_id)));
 }

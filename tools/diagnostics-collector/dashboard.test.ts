@@ -31,10 +31,10 @@ import {
 import { escapeHtml, fmtTime, html, isoTime } from "./dashboard/html.ts";
 import { buckets } from "./dashboard/pages.ts";
 import { parseIssueReportIds, reportIdOf } from "./dashboard/report-ids.ts";
-import { dashboardFetch } from "./dashboard/routes.ts";
+import { dashboardFetch, dashboardFiledReportIds } from "./dashboard/routes.ts";
 import { SESSION_COOKIE, createSession } from "./dashboard/session.ts";
 import { normalizeMessage, summarizeReport } from "./dashboard/signature.ts";
-import { storeIssue, syncIssueNow, syncIssues } from "./dashboard/sync.ts";
+import { indexSubmitted, storeIssue, syncIssueNow, syncIssues } from "./dashboard/sync.ts";
 import { makeB2 } from "./test-support/b2.ts";
 import { createD1 } from "./test-support/d1.ts";
 import type { DashboardEnv, Env } from "./env.ts";
@@ -3583,8 +3583,12 @@ describe("issue page and ledger corrections", () => {
     ).text();
     assert.match(
       untracked,
-      /Attach to issue<\/label>\s*<select[^>]*name="issue"/,
+      /Attach to issue<\/label>\s*<input[^>]*name="issue"[^>]*list="[^"]+"[^>]*required/,
       "the picker chooses the issue itself",
+    );
+    assert.ok(
+      !/<input[^>]*name="issue"[^>]*value=/.test(untracked),
+      "the picker starts empty, so a member picks the issue on purpose",
     );
     assert.ok(
       !/name="issue" value=/.test(untracked.slice(untracked.indexOf("Attach to issue"))),
@@ -4257,5 +4261,245 @@ describe("issue page and ledger corrections", () => {
       0,
       "nothing posted",
     );
+  });
+});
+
+describe("triage state, mutes and owner close", () => {
+  const ID3 = "d2b80f13-0000-4000-8000-000000000003";
+
+  /**
+   * Posts a form as a signed-in member, from the dashboard's own origin.
+   *
+   * @param env - Bindings.
+   * @param cookie - Cookie header.
+   * @param path - Form action.
+   * @param fields - Form fields; repeated names as `[name, value]` pairs.
+   * @returns The dashboard's answer.
+   */
+  function postForm(
+    env: Env,
+    cookie: string,
+    path: string,
+    fields: [string, string][],
+  ): Promise<Response> {
+    return call(
+      env,
+      new Request(`${ORIGIN}${path}`, {
+        method: "POST",
+        headers: {
+          cookie,
+          origin: ORIGIN,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams(fields).toString(),
+      }),
+    );
+  }
+
+  it("keeps a queue of reports that need triage, and members mark them seen or noise", async () => {
+    const env = makeEnv();
+    await seed(env, ID1);
+    await seed(env, ID2);
+    await seed(env, ID3, NOW - 3_600_000, { deployment: "demo" });
+    const cookie = await signedIn(env);
+
+    let page = await (
+      await call(env, new Request(`${ORIGIN}/dash`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /Needs triage<\/a><\/h2><div class="v">2</, "the demo report is left out");
+    assert.match(page, /Active installs/);
+    page = await (
+      await call(env, new Request(`${ORIGIN}/dash?source=all`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /Needs triage<\/a><\/h2><div class="v">3</, "all sources count three");
+
+    let res = await postForm(env, cookie, "/reports/triage", [
+      ["state", "noise"],
+      ["report", ID1],
+      ["report", ID2],
+      ["back", "/reports?triage=needs"],
+    ]);
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("location"), "/reports?triage=needs");
+    const rows = await all(
+      env.DASHBOARD_DB,
+      "SELECT report_id, triage_state, triaged_by FROM reports ORDER BY report_id",
+    );
+    assert.deepEqual(
+      rows.map((r) => [r.report_id, r.triage_state, r.triaged_by]),
+      [
+        [ID1, "noise", "octo"],
+        [ID2, "noise", "octo"],
+        [ID3, "", null],
+      ],
+    );
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports?triage=needs`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /0 reports/, "the installs queue is empty");
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports?triage=noise`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /2 reports/);
+    assert.match(page, /title="Marked noise by octo">Noise</);
+    assert.match(page, /form="bulk-triage" name="report" value="/);
+
+    res = await postForm(env, cookie, "/reports/triage", [
+      ["state", "clear"],
+      ["report", ID1],
+    ]);
+    assert.equal(res.headers.get("location"), `/reports/${ID1}`);
+    assert.equal(
+      (await first(env.DASHBOARD_DB, "SELECT triage_state FROM reports WHERE report_id = ?", ID1))
+        ?.triage_state,
+      "",
+    );
+    const logged = await all(
+      env.DASHBOARD_DB,
+      "SELECT action FROM access_log WHERE action = 'triage'",
+    );
+    assert.equal(logged.length, 2);
+
+    res = await postForm(env, cookie, "/reports/triage", [["state", "seen"]]);
+    assert.equal(res.status, 400, "a mark names at least one report");
+    const crossSite = await call(
+      env,
+      new Request(`${ORIGIN}/reports/triage`, {
+        method: "POST",
+        headers: {
+          cookie,
+          origin: "https://elsewhere.test",
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: `state=seen&report=${ID1}`,
+      }),
+    );
+    assert.equal(crossSite.status, 403);
+  });
+
+  it("mutes a signature out of the queue and the ingest pull, until a version ends it", async () => {
+    // Report pages list the stored object over B2; nothing reaches the network.
+    gh = scriptGitHub([]);
+    const env = makeEnv();
+    const s = await seed(env, ID1);
+    const sig = String(
+      (await first(env.DASHBOARD_DB, "SELECT signature FROM reports WHERE report_id = ?", ID1))
+        ?.signature,
+    );
+    const cookie = await signedIn(env);
+    let page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /Mute this signature/);
+    assert.match(page, /It needs triage\./);
+
+    const res = await postForm(env, cookie, "/signatures/mute", [
+      ["action", "mute"],
+      ["signature", sig],
+      ["reason", "demo CPU starvation"],
+      ["until_version", "0.9.0"],
+      ["back", `/reports/${ID1}`],
+    ]);
+    assert.equal(res.status, 303);
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /by octo, .* UTC: demo CPU starvation\. Ends when a report from 0\.9\.0/);
+    assert.match(page, /value="unmute"/);
+    const filed = await dashboardFiledReportIds(env, NOW);
+    assert.ok(filed?.has(ID1), "the ingest pull passes over a muted report");
+    page = await (await call(env, new Request(`${ORIGIN}/dash`, { headers: { cookie } }))).text();
+    assert.match(page, /Needs triage<\/a><\/h2><div class="v">0</);
+
+    // A report from an older version keeps the mute; one from 0.9.0 ends it.
+    await indexSubmitted(
+      env.DASHBOARD_DB,
+      { ...stored(ID2), received_at_unix_ms: NOW },
+      `diagnostics/0.9.0-rc.2/${ID2}.json`,
+      100,
+    );
+    assert.ok(await first(env.DASHBOARD_DB, "SELECT 1 AS hit FROM signature_mutes"));
+    const fixed = { ...s, report_id: ID3, payload: { ...s.payload, version: "0.9.0" } };
+    await indexSubmitted(env.DASHBOARD_DB, fixed, `diagnostics/0.9.0/${ID3}.json`, 100);
+    assert.equal(await first(env.DASHBOARD_DB, "SELECT 1 AS hit FROM signature_mutes"), null);
+
+    assert.equal(
+      (
+        await postForm(env, cookie, "/signatures/mute", [
+          ["action", "mute"],
+          ["signature", sig],
+          ["reason", "no end"],
+        ])
+      ).status,
+      400,
+    );
+  });
+
+  it("lets owners close an issue as not planned or fixed in a version", async () => {
+    const env = makeEnv();
+    await storeIssue(env.DASHBOARD_DB, {
+      number: 412,
+      title: "[diagnostics] bookclerkd::api: GET /api/library/works/{id} responds slowly",
+      state: "open",
+      body: "<!-- bookclerk-diagnostics: workers-ai triage -->\nx",
+      created_at: new Date(NOW - 86_400_000).toISOString(),
+      updated_at: new Date(NOW - 86_400_000).toISOString(),
+    });
+    const member = await signedIn(env, "member");
+    let page = await (
+      await call(env, new Request(`${ORIGIN}/issues/412`, { headers: { cookie: member } }))
+    ).text();
+    assert.ok(!page.includes("Close as not planned"), "members get no close buttons");
+    assert.match(
+      page,
+      /data-copy-text="git switch -c fix\/412-diagnostics-bookclerkd-api-get-api-libra origin\/main"/,
+    );
+    const refused = await postForm(env, member, "/admin/close-issue", [
+      ["issue", "412"],
+      ["how", "not_planned"],
+    ]);
+    assert.equal(refused.status, 403);
+
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      [
+        "POST https://api.github.com/repos/Bookclerk/bookclerk/issues/412/labels",
+        () => Response.json([]),
+      ],
+      [
+        "PATCH https://api.github.com/repos/Bookclerk/bookclerk/issues/412",
+        () => Response.json({}),
+      ],
+    ]);
+    const owner = await signedIn(env, "admin");
+    page = await (
+      await call(env, new Request(`${ORIGIN}/issues/412`, { headers: { cookie: owner } }))
+    ).text();
+    assert.match(page, /Close as not planned/);
+    const res = await postForm(env, owner, "/admin/close-issue", [
+      ["issue", "412"],
+      ["how", "fixed"],
+      ["version", "v0.9.1"],
+    ]);
+    assert.equal(res.status, 303);
+    const writes = gh.calls.filter((c) => c.method !== "GET" && c.url.includes("/issues/412"));
+    assert.deepEqual(
+      writes.map((c) => [c.method, c.body]),
+      [
+        ["POST", { labels: ["fixed-in:0.9.1"] }],
+        ["PATCH", { state: "closed", state_reason: "completed" }],
+      ],
+    );
+    const tokenAsk = gh.calls.find((c) => c.url.endsWith("/access_tokens"));
+    assert.deepEqual(tokenAsk?.body?.["permissions"], { issues: "write" });
+    const row = await first(
+      env.DASHBOARD_DB,
+      "SELECT state, fixed_in_label FROM issues WHERE number = 412",
+    );
+    assert.deepEqual({ ...row }, { state: "closed", fixed_in_label: "0.9.1" });
+    page = await (
+      await call(env, new Request(`${ORIGIN}/issues/412`, { headers: { cookie: owner } }))
+    ).text();
+    assert.match(page, /Closed on GitHub as fixed in 0\.9\.1\./);
   });
 });

@@ -1,15 +1,15 @@
 # Privacy
 
-Last changed 28 October 2026
+Last changed 19 November 2026
 
-Bookclerk is free software you run on your own computer. This page explains what information reaches the Bookclerk project when you visit this website{{#demo}}, try the live demo{{/demo}} or choose to share problem reports from the app, what we do with it, and how long we keep it. We do not sell or share it for advertising, and nothing here tracks you from one site to another.
+Bookclerk is free software you run on your own computer. This page explains what information reaches the Bookclerk project when you visit this website{{#demo}}, try the live demo{{/demo}} or choose to share problem reports or usage check-ins from the app, what we do with it, and how long we keep it. We do not sell or share it for advertising, and nothing here tracks you from one site to another.
 
 ## The short version
 
 - This website sets no cookies. The documentation pages remember display preferences, such as the language of a code sample, in your browser only; nothing identifying is stored or sent.
 - We count visits with Cloudflare Web Analytics, which uses no cookies and does not identify you.
 {{#demo}}- The live demo uses cookies only to keep your own private copy running, sends us problem reports so we can fix its bugs, and deletes that copy when you leave.
-{{/demo}}- The Bookclerk app sends us nothing unless you turn on problem reports.
+{{/demo}}- The Bookclerk app sends us nothing unless you turn on problem reports or weekly usage check-ins.
 - This website{{#demo}}, the demo{{/demo}} and the report collector run on Cloudflare; problem reports are stored with Backblaze.
 
 ## This website
@@ -65,9 +65,23 @@ Reports are deleted automatically 6 months after they arrive, or sooner when you
 
 You can turn reports off at any time. To have a report you sent deleted, email us the time it was sent and your Bookclerk version, or its report ID if you have it.
 
+## Usage check-ins from the app
+
+To get a rough idea of how many people use Bookclerk, the app can check in with our collector once a week. This is a separate switch (`diagnostics.share_usage`), and it is off unless you choose it. A check-in holds only:
+
+- a random ID your copy of Bookclerk makes for itself the first time, which says nothing about you or your computer;
+- the Bookclerk version, your operating system and its processor type;
+- whether it is the background service or the desktop app.
+
+The collector does not keep that ID. It keeps a scrambled form of it (a hash) made with a secret that changes every month and is then deleted, so we can count how many copies checked in this week or this month, but cannot follow one copy from month to month. Check-ins are deleted after 35 days, and the collector does not store the IP address a check-in came from.
+
+With check-ins turned on, problem reports carry the same ID, and the collector swaps it for the same monthly scrambled form before storing the report. That lets us see how many copies a problem affects. With check-ins off, reports carry no ID at all.
+
+You can turn check-ins off at any time, and `bookclerk diagnostics reset-id` gives your copy a new ID.
+
 ## The diagnostics dashboard
 
-The diagnostics dashboard is only for members of the Bookclerk organization on GitHub. Signing in with GitHub tells us your GitHub user name and ID and whether you are a member. We keep that with your session for 8 hours, and keep a log of sign-ins and of which reports were opened for 90 days. We do not keep your GitHub token.
+The diagnostics dashboard is only for members of the Bookclerk organization on GitHub. Signing in with GitHub tells us your GitHub user name and ID and whether you are a member. We keep that with your session for 8 hours, and keep a log of sign-ins, of which reports were opened and of the triage changes members made for 90 days. We do not keep your GitHub token.
 
 ## Who else handles your information
 
@@ -80,7 +94,7 @@ The diagnostics dashboard is only for members of the Bookclerk organization on G
 
 - Block or clear cookies and site data in your browser; this website works the same either way.
 - Use a content blocker to stop the visit counter; nothing on the site depends on it.
-- Leave problem reports off, or turn them off again in Bookclerk's settings.
+- Leave problem reports and usage check-ins off, or turn them off again in Bookclerk's settings.
 - Ask us what we hold about you, or to delete it, at the address below.
 
 ## Changes and contact

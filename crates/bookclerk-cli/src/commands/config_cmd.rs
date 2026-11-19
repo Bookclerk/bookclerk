@@ -296,6 +296,11 @@ pub async fn run(
                 "diagnostics.ring_buffer_capacity = {}",
                 config.diagnostics.ring_buffer_capacity
             );
+            println!(
+                "diagnostics.share_usage = {}",
+                config.diagnostics.share_usage
+            );
+            println!("diagnostics.demo = {}", config.diagnostics.demo);
             print_events_authority(config).await;
             Ok(())
         }
@@ -1167,6 +1172,8 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
             config.diagnostics.warn_burst_window_secs.to_string()
         }
         "diagnostics.ring_buffer_capacity" => config.diagnostics.ring_buffer_capacity.to_string(),
+        "diagnostics.share_usage" => config.diagnostics.share_usage.to_string(),
+        "diagnostics.demo" => config.diagnostics.demo.to_string(),
         "paths.files_dir" => paths?.files_dir.display().to_string(),
         "paths.config_file" => paths?.config_file.display().to_string(),
         "paths.library_db" => paths?.library_db.display().to_string(),
