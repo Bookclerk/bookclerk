@@ -577,12 +577,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let source = dir.path().join("source.m4b");
         let encoded = dir.path().join("encoded.mp3");
+        // Long enough at 320 kbps stereo to outgrow the source's reserved
+        // `moov` slack, which an M4B carries however short its audio.
         let sample_rate = 48_000usize;
-        let pcm = vec![0i16; 32];
+        let pcm = vec![0i16; sample_rate * 2 * 40];
         crate::package_m4b_from_pcm(
             &pcm,
             u32::try_from(sample_rate).expect("rate"),
-            1,
+            2,
             &source,
             &[("One".to_string(), 0)],
         )
@@ -629,7 +631,9 @@ mod tests {
             &[("One".to_string(), 0)],
         )
         .expect("32 kbps AAC source");
-        let source_len = std::fs::metadata(&source).expect("source").len();
+        // The audio, without the `moov` slack reserved for later edits.
+        let (moov, _) = bookclerk_mp4::read_moov(&source).expect("moov");
+        let source_len = std::fs::metadata(&source).expect("source").len() - moov.len;
         let lame = bookclerk_config::LameConfig {
             constant_bitrate: true,
             bitrate_kbps: 320,

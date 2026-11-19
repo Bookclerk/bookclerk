@@ -157,7 +157,7 @@ impl AacM4bWriter {
         // only grows, and only once from stco to co64).
         let mut moov_len = 0u64;
         let moov = loop {
-            let moov = build_moov(
+            let mut moov = build_moov(
                 self.sample_rate,
                 self.channels,
                 &self.asc,
@@ -166,6 +166,13 @@ impl AacM4bWriter {
                 &[self.first_sample + moov_len],
                 media_duration,
             )?;
+            // Tags, a cover and the chapter track are written into `moov`
+            // after the media is on disk. The reserved slack takes them in
+            // place; without it every edit rebuilds the whole file beside
+            // the original and renames it over, which a confined worker on
+            // Windows may not be allowed to do.
+            let reserved = moov.len() + bookclerk_mp4::RESERVED_MOOV_SLACK;
+            bookclerk_mp4::pad_moov_to(&mut moov, reserved)?;
             let len = moov.len() as u64;
             if len == moov_len {
                 break moov;
@@ -662,6 +669,11 @@ mod tests {
 
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(top_level_boxes(&bytes), [*b"ftyp", *b"moov", *b"mdat"]);
+        let (at, _) = bookclerk_mp4::read_moov(&path).unwrap();
+        assert!(
+            at.len > u64::try_from(bookclerk_mp4::RESERVED_MOOV_SLACK).unwrap(),
+            "moov reserves slack for later edits"
+        );
         let mp4 = bookclerk_mp4::parse_mp4(&path).unwrap();
         assert_eq!(mp4.audio.samples.len(), units.len());
         let mut reader = bookclerk_mp4::SampleReader::open(&path).unwrap();

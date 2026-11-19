@@ -59,7 +59,8 @@ to convert rather than losing the audio after the change.
 The worker writes AAC-LC M4B and MP3, and writes tags, covers and
 chapters into MP4 and MP3 files. Every M4B it writes is faststart: the
 sample table comes before the audio, so a player can start the book from
-its first bytes.
+its first bytes. The sample table keeps 1 MiB of room for tags, a
+cover and chapters, so adding them later never moves the audio.
 
 When an output re-encodes or repackages audio, the acquire takes another
 store's copy from a library only if the worker reads its kind of file and

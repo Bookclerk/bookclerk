@@ -972,6 +972,23 @@ mod tests {
     }
 
     #[test]
+    fn chapters_on_a_packaged_book_fit_its_reserved_moov() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = dir.path().join("book.m4b");
+        package_m4b_from_pcm(&vec![0i16; 16_000 * 2], 16_000, 1, &book, &[]).unwrap();
+        let (before, _) = bookclerk_mp4::read_moov(&book).unwrap();
+        assert!(!before.is_last, "packaging writes faststart");
+        let chapters = [("Opening".to_string(), 0), ("Chapter 1".to_string(), 500)];
+        write_audiobook_chapters(&book, &chapters).unwrap();
+        // The edit lands in the slack, so the file is not rebuilt and
+        // renamed (which a confined worker on Windows may not do).
+        let (after, _) = bookclerk_mp4::read_moov(&book).unwrap();
+        assert_eq!((after.start, after.len), (before.start, before.len));
+        let record = bookclerk_tags::read_all(&std::fs::read(&book).unwrap()).unwrap();
+        assert_eq!(record.chapters.len(), 2);
+    }
+
+    #[test]
     fn chapter_titles_survive_when_moov_is_the_last_box() {
         let dir = tempfile::tempdir().unwrap();
         let book = dir.path().join("book.m4b");
