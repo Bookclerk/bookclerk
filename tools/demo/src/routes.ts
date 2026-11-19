@@ -153,6 +153,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/database/migrate", "deny"],
   ["GET", "/api/settings", "allow"],
   ["PATCH", "/api/settings", "deny"],
+  // The visitor's own copy's sent diagnostics reports: read-only.
+  ["GET", "/api/diagnostics/reports", "allow"],
 
   // Plugins: the image's own storefronts only; no installs or changes.
   ["GET", "/api/config/plugin-instances", "allow"],

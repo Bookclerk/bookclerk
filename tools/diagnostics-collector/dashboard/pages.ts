@@ -28,6 +28,7 @@ import {
 } from "./db.ts";
 import { fmtDay, fmtInt, fmtTime, html, isoTime, raw, type SafeHtml } from "./html.ts";
 import type { UsageStats } from "../checkin.ts";
+import type { DemoStats } from "../demo-runs.ts";
 import type { SignatureMute } from "./triage-state.ts";
 import type { Env } from "../env.ts";
 import type { Member } from "./session.ts";
@@ -204,7 +205,7 @@ export function layout(p: {
   const header = p.member
     ? html`<header class="band"><div class="wrap band-row">
         <a class="brand" href="/dash">${MARK}<span>Bookclerk</span> <small>Diagnostics</small></a>
-        <nav aria-label="Dashboard">${navItem("overview", "Overview", "/dash")}${navItem("reports", "Reports", "/reports")}${navItem("issues", "Issues", "/issues")}</nav>
+        <nav aria-label="Dashboard">${navItem("overview", "Overview", "/dash")}${navItem("reports", "Reports", "/reports")}${navItem("issues", "Issues", "/issues")}${navItem("demo", "Demo", "/demo")}</nav>
         <span class="spacer"></span>
         <span class="live" id="live" hidden title="This page updates on its own when reports or issue links change">Live</span>
         <div class="who"><span>${p.member.login}${p.member.role === "admin" ? " · owner" : ""}</span>
@@ -1268,6 +1269,130 @@ export function issuePage(d: IssueData): SafeHtml {
               <span class="fine">Every report linked here is attached to the chosen issue and detached from this one; close this issue on GitHub as a duplicate yourself.</span></div></section>`
             : ""
         }
+      </div></div>`,
+  });
+}
+
+/** Day ranges the Demo page offers. */
+export const DEMO_RANGES = [30, 90, 365] as const;
+
+/** How demo runs ended, as chart series, bottom first. */
+export const DEMO_SERIES = [
+  { key: "visitor", label: "left", cls: "fill-teal" },
+  { key: "idle", label: "idle", cls: "fill-ink" },
+  { key: "time", label: "time limit", cls: "fill-amber" },
+  { key: "failed", label: "failed", cls: "fill-brick" },
+  { key: "other", label: "other", cls: "fill-muted" },
+];
+
+/** What the Demo page needs. */
+export type DemoData = {
+  /** Signed-in member. */
+  member: Member;
+  /** Current time, Unix ms. */
+  now: number;
+  /** Days shown, one of {@link DEMO_RANGES}. */
+  days: number;
+  /** Runs and live use. */
+  stats: DemoStats;
+};
+
+/**
+ * Minutes and seconds, or hours and minutes past an hour.
+ *
+ * @param seconds - A length in seconds.
+ * @returns The length.
+ */
+function fmtLength(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s >= 3600) return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
+  if (s >= 60) return `${Math.floor(s / 60)} min ${s % 60} s`;
+  return `${s} s`;
+}
+
+/**
+ * The hosted demo's runs: live use now, and runs and use per day.
+ *
+ * @param d - Query results assembled by routes.ts.
+ * @returns The document.
+ */
+export function demoPage(d: DemoData): SafeHtml {
+  const nowS = Math.floor(d.now / 1000);
+  const today = Math.floor(nowS / 86_400);
+  const byDay = new Map(d.stats.days.map((x) => [x.day, x]));
+  const sum = (pick: (x: DemoStats["days"][number]) => number, from: number): number =>
+    d.stats.days.filter((x) => x.day >= from).reduce((acc, x) => acc + pick(x), 0);
+  const first = today - d.days + 1;
+  const runs = sum((x) => x.runs, first);
+  const timed = sum((x) => x.timed, first);
+  const seconds = sum((x) => x.seconds, first);
+  const startups = sum((x) => x.startups, first);
+  const startupSum = sum((x) => x.startupSum, first);
+  const missed = sum((x) => x.byReason.missed ?? 0, first);
+  const todayRow = byDay.get(today);
+  const label = (day: number): string => fmtDay(day * 86_400_000);
+  const series = (day: number): Record<string, number> => {
+    const r = byDay.get(day)?.byReason ?? {};
+    const out: Record<string, number> = {};
+    for (const [reason, n] of Object.entries(r)) {
+      const key = DEMO_SERIES.some((s) => s.key === reason && s.key !== "other") ? reason : "other";
+      out[key] = (out[key] ?? 0) + n;
+    }
+    return out;
+  };
+  const dayList: number[] = [];
+  for (let day = first; day <= today; day++) dayList.push(day);
+  const runBars = dayList.map((day) => ({ label: label(day), values: series(day) }));
+  const hourBars = dayList.map((day) => ({
+    label: label(day),
+    values: { hours: Math.round(((byDay.get(day)?.seconds ?? 0) / 3600) * 10) / 10 },
+  }));
+  const recent = [...d.stats.days].filter((x) => x.day >= today - 13).reverse();
+  const picker = html`<nav class="picker" aria-label="Time range">${DEMO_RANGES.map(
+    (n) =>
+      html`<a href="/demo?days=${n}"${n === d.days ? raw(' aria-current="true"') : ""}>${n} days</a>`,
+  )}</nav>`;
+  return layout({
+    title: "Demo",
+    member: d.member,
+    nav: "demo",
+    body: html`<div class="wrap">
+      <div class="toolbar"><h1>Hosted demo</h1>${picker}</div>
+      <div class="grid">
+        <section class="panel stat s2"><h2>Live now</h2><div class="v">${fmtInt(d.stats.live.length)}</div><div class="d">runs open at ${fmtTime(d.now)} UTC</div></section>
+        <section class="panel stat s2"><h2>Runs today</h2><div class="v">${fmtInt(todayRow?.runs ?? 0)}</div><div class="d">${fmtLength(todayRow?.seconds ?? 0)} of use (UTC day)</div></section>
+        <section class="panel stat s2"><h2>Runs, ${d.days} days</h2><div class="v">${fmtInt(runs)}</div>${sparkline(
+          dayList.map((day) => byDay.get(day)?.runs ?? 0),
+          "teal",
+          120,
+          28,
+          true,
+        )}</section>
+        <section class="panel stat s2"><h2>Use, ${d.days} days</h2><div class="v small">${fmtLength(seconds)}</div><div class="d">in ${fmtInt(timed)} runs that stopped normally</div></section>
+        <section class="panel stat s2"><h2>Average run</h2><div class="v small">${timed ? fmtLength(seconds / timed) : "none"}</div><div class="d">${fmtInt(missed)} runs had no stop and are left out</div></section>
+        <section class="panel stat s2"><h2>Average startup</h2><div class="v small">${startups ? fmtLength(startupSum / startups) : "none"}</div><div class="d">from Start to the copy answering</div></section>
+
+        <section class="panel s12"><h2>Runs per day, by how they ended <span class="legend">${DEMO_SERIES.map((s) => html`<span><i class="${s.cls}"></i>${s.label}</span>`)}</span></h2>
+          ${stackedBars(runBars, DEMO_SERIES, "Stacked bars of demo runs per day by how they ended")}</section>
+        <section class="panel s12"><h2>Hours of use per day</h2>
+          ${stackedBars(hourBars, [{ key: "hours", cls: "fill-teal" }], "Bars of demo hours of use per day")}</section>
+
+        <section class="panel s5"><h2>Live runs</h2><div class="tbl"><table><thead><tr><th>Started (UTC)</th><th class="r">Running</th><th class="r">Startup</th><th>Version</th></tr></thead><tbody>${
+          d.stats.live.length
+            ? d.stats.live.map(
+                (r) =>
+                  html`<tr><td class="num">${fmtTime(r.started_at * 1000)}</td><td class="r num">${fmtLength(nowS - r.started_at)}</td><td class="r num">${r.startup_seconds === null ? "starting" : fmtLength(r.startup_seconds)}</td><td class="mono">${r.version || "unknown"}</td></tr>`,
+              )
+            : html`<tr><td colspan="4" class="empty">No run is open.</td></tr>`
+        }</tbody></table></div></section>
+        <section class="panel s7"><h2>Last 14 days</h2><div class="tbl"><table><thead><tr><th>Day (UTC)</th><th class="r">Runs</th><th class="r">Use</th><th class="r">Average run</th><th class="r">Average startup</th><th class="r">Failed</th><th class="r">No stop</th></tr></thead><tbody>${
+          recent.length
+            ? recent.map(
+                (x) =>
+                  html`<tr><td class="num">${label(x.day)}</td><td class="r num">${fmtInt(x.runs)}</td><td class="r num">${fmtLength(x.seconds)}</td><td class="r num">${x.timed ? fmtLength(x.seconds / x.timed) : "none"}</td><td class="r num">${x.startups ? fmtLength(x.startupSum / x.startups) : "none"}</td><td class="r num">${fmtInt(x.byReason.failed ?? 0)}</td><td class="r num">${fmtInt(x.byReason.missed ?? 0)}</td></tr>`,
+              )
+            : html`<tr><td colspan="7" class="empty">No demo runs in the last 14 days.</td></tr>`
+        }</tbody></table></div></section>
       </div></div>`,
   });
 }

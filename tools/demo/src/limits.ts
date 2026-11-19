@@ -116,7 +116,9 @@ export async function admit(
   db: D1Database,
   s: { id: string; ipHash: string; now: number; version: string },
   limits: Limits,
-): Promise<{ ok: true; endsAt: number } | { ok: false; reason: "rate" | "busy" | "budget" }> {
+): Promise<
+  { ok: true; endsAt: number; runId: string } | { ok: false; reason: "rate" | "busy" | "budget" }
+> {
   const hour = s.now - (s.now % 3600);
   if ((await bump(db, s.ipHash, "session", hour)) > limits.sessionsPerHour) {
     return { ok: false, reason: "rate" };
@@ -136,13 +138,16 @@ export async function admit(
     .first();
   if (!reserved) return { ok: false, reason: "budget" };
   const endsAt = s.now + limits.sessionSeconds;
+  // A fresh random ID per run for usage tracking (src/usage.ts), separate
+  // from the session id so the dashboard learns nothing about the visitor.
+  const runId = crypto.randomUUID();
   await db
     .prepare(
-      "INSERT INTO sessions (id, ip_hash, started_at, ends_at, version) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO sessions (id, ip_hash, started_at, ends_at, version, run_id) VALUES (?, ?, ?, ?, ?, ?)",
     )
-    .bind(s.id, s.ipHash, s.now, endsAt, s.version)
+    .bind(s.id, s.ipHash, s.now, endsAt, s.version, runId)
     .run();
-  return { ok: true, endsAt };
+  return { ok: true, endsAt, runId };
 }
 
 /**
@@ -178,21 +183,22 @@ export async function countSignin(
  * @param db - Database.
  * @param e - Session id, current Unix seconds, why it ended, and how many store
  *   accounts were signed out and failed to sign out.
- * @returns True when this call ended the session; false
- *   when it had already ended or does not exist.
+ * @returns The ended run's row (`run_id`, `started_at`, `ends_at`,
+ *   `version`) when this call ended the session; null when it had already
+ *   ended or does not exist.
  */
 export async function finish(
   db: D1Database,
   e: { id: string; now: number; reason: string; revoked: number; failed: number },
-): Promise<boolean> {
+): Promise<Record<string, unknown> | null> {
   const row = await db
     .prepare(
       `UPDATE sessions SET ended_at = ?, end_reason = ?, revoked = ?, revoke_failed = ?
-       WHERE id = ? AND ended_at IS NULL RETURNING started_at, ends_at`,
+       WHERE id = ? AND ended_at IS NULL RETURNING started_at, ends_at, run_id, version`,
     )
     .bind(e.now, e.reason, e.revoked, e.failed, e.id)
     .first();
-  if (!row) return false;
+  if (!row) return null;
   const unused = Math.max(0, Number(row.ends_at) - e.now);
   if (unused > 0) {
     await db
@@ -200,7 +206,7 @@ export async function finish(
       .bind(unused, utcDay(Number(row.started_at)))
       .run();
   }
-  return true;
+  return row;
 }
 
 /** Most recent starts the estimate looks at. */
@@ -220,16 +226,22 @@ const STARTUP_MAX_SECONDS = 600;
  *
  * @param db - Database.
  * @param s - Session id and the seconds from Start to ready.
+ * @returns The run's row (`run_id`, `started_at`, `ends_at`, `version`,
+ *   `startup_seconds`) when this call recorded it; null when the time was
+ *   out of range or already recorded.
  */
 export async function recordStartup(
   db: D1Database,
   s: { id: string; seconds: number },
-): Promise<void> {
-  if (!Number.isFinite(s.seconds) || s.seconds < 0 || s.seconds > STARTUP_MAX_SECONDS) return;
-  await db
-    .prepare("UPDATE sessions SET startup_seconds = ? WHERE id = ? AND startup_seconds IS NULL")
+): Promise<Record<string, unknown> | null> {
+  if (!Number.isFinite(s.seconds) || s.seconds < 0 || s.seconds > STARTUP_MAX_SECONDS) return null;
+  return db
+    .prepare(
+      `UPDATE sessions SET startup_seconds = ? WHERE id = ? AND startup_seconds IS NULL
+       RETURNING run_id, started_at, ends_at, version, startup_seconds`,
+    )
     .bind(Math.round(s.seconds), s.id)
-    .run();
+    .first();
 }
 
 /**

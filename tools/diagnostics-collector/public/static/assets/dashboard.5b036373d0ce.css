@@ -628,6 +628,9 @@ form.inline {
 .legend i.fill-muted {
   background: var(--muted);
 }
+.legend i.fill-teal {
+  background: var(--teal);
+}
 
 /* SVG marks */
 svg.chart {

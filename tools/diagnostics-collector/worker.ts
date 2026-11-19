@@ -80,6 +80,7 @@ import {
   pruneUsage,
   recordCheckin,
 } from "./checkin.ts";
+import { sweepDemoRuns } from "./demo-runs.ts";
 import { MAX_CURSOR_CHARS, commitCursor, parseCursor, readCursor } from "./ingest-cursor.ts";
 import { handleTriage, readCapped } from "./triage.ts";
 import { extractVersionFromKey, normalizeVersion, versionAcceptable } from "./version-filter.ts";
@@ -322,6 +323,9 @@ Content-Signal: search=no, ai-input=no, ai-train=no, use=immediate
 Disallow: /
 `;
 
+// The demo Worker's private entrypoint for live run events (no route).
+export { DemoRuns } from "./demo-runs.ts";
+
 export default {
   /**
    * Answers one request, with a `Cache-Control` from the cache-class table
@@ -345,6 +349,13 @@ export default {
       ctx.waitUntil(
         pruneUsage(db, now).catch((err: unknown) => {
           console.error(`usage prune failed: ${err instanceof Error ? err.message : String(err)}`);
+        }),
+      );
+      ctx.waitUntil(
+        sweepDemoRuns(db, Math.floor(now / 1000)).catch((err: unknown) => {
+          console.error(
+            `demo run sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }),
       );
     }
