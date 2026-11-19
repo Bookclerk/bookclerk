@@ -372,11 +372,13 @@ library database, so the whole library shares one index:
 - **Rebuild job.** A finished rebuild records the index layout in
   `library_index_builds`. When the current layout has no row (a new
   library, a database copied to another backend, or a binary that changed
-  how rows are derived), the heartbeat queues a `library_index_rebuild`
+  how rows are derived, or a change to the library's collections, which
+  removes the row and queues the job at once), the heartbeat queues a `library_index_rebuild`
   job at priority 50. It queues at most one every ten minutes while the
   index stays unbuilt. The job refreshes every top-level work in pages of
   100, reporting progress and stopping when cancelled, then records the
-  build. A page is read in a fixed number of chunked lookups (works,
+  build, unless the collections changed during the walk, in which case it
+  leaves the build unrecorded so the next job starts over. A page is read in a fixed number of chunked lookups (works,
   editions, listings, holdings, acquire rows, credits and series for all
   100 works at once) and its rows and filter values are written in shared
   atomic batches, so a page costs about as many round trips as one work.
@@ -413,7 +415,8 @@ The same refresh writes the work's filter values to
 `library_work_facets`: its authors and narrators (from credits and
 listings), series, genres (the work's and listings' categories, split on
 commas, semicolons and bars), publishers, the storefronts it is held
-through and its library tags (`work_tags`), each under its lower-cased key. The row write, the removal of
+through, its library tags (`work_tags`) and the collections whose
+storage prefixes hold one of its editions' files (`core.collections`), each under its lower-cased key. The row write, the removal of
 the old values and as many new values as fit share one atomic batch; the
 rest follow in further batches, each checking that the row still carries
 this refresh's stamp, so a later refresh's values are never mixed with an

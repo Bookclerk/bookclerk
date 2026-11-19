@@ -14,7 +14,7 @@
 //! - A scope is one JSON object with no repeated keys and at most the key
 //!   `rules`, an array (missing means no rules) of at most 16 rules. Each
 //!   rule is an object with no repeated keys and exactly the keys `field`
-//!   (`genre`, `series`, `author`, `narrator` or `tag`), `value` (a string) and
+//!   (`genre`, `series`, `author`, `narrator`, `tag` or `collection`), `value` (a string) and
 //!   `effect` (`include` or `exclude`). Each value, trimmed, is 1 to 256
 //!   bytes with no NUL, no two rules share field, effect and trimmed
 //!   lowercase value, and the rules with trimmed values come to at most
@@ -179,6 +179,7 @@ fn scope_rules(fields: &Map<String, Value>) -> Option<Vec<Rule>> {
                 "author" => ScopeField::Author,
                 "narrator" => ScopeField::Narrator,
                 "tag" => ScopeField::Tag,
+                "collection" => ScopeField::Collection,
                 _ => return None,
             },
             _ => return None,

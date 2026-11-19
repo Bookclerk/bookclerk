@@ -131,6 +131,7 @@ export type WorkFacet =
   | "source"
   | "tag"
   | "library_tag"
+  | "collection"
   | "progress";
 
 /** One value of a facet, from `GET /api/library/works/facets/{facet}`. */
@@ -1451,7 +1452,7 @@ export interface ListedUser {
 }
 
 /** The book field a patron scope rule matches one value of. */
-export type ScopeField = "genre" | "series" | "author" | "narrator" | "tag";
+export type ScopeField = "genre" | "series" | "author" | "narrator" | "tag" | "collection";
 
 /** Whether a patron scope rule lets matching books in or keeps them out. */
 export type RuleEffect = "include" | "exclude";
@@ -3785,6 +3786,46 @@ export async function putWorkState(id: string, edit: WorkStateEdit): Promise<Wor
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(edit),
+  });
+  return parseJson(res);
+}
+
+/** One collection: a name and the storage key prefixes whose files belong to it. */
+export interface LibraryCollection {
+  /** The name people see and scope rules match. */
+  name: string;
+  /** Folders relative to a destination's root, each ending in `/`. */
+  prefixes: string[];
+}
+
+/** The library's collections. */
+export interface LibraryCollections {
+  /** The collections, in the order shown. */
+  collections: LibraryCollection[];
+}
+
+/**
+ * Reads the library's collections (operator, Owner or Administrator).
+ *
+ * @returns The collections.
+ */
+export async function getCollections(): Promise<LibraryCollections> {
+  const res = await fetch("/api/library/collections", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Replaces the library's collections; the Library is re-indexed after.
+ *
+ * @param collections - The new collections.
+ * @returns The collections as saved (names trimmed, prefixes ending in `/`).
+ */
+export async function putCollections(collections: LibraryCollections): Promise<LibraryCollections> {
+  const res = await fetch("/api/library/collections", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(collections),
   });
   return parseJson(res);
 }

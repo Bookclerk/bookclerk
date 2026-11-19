@@ -18,8 +18,8 @@ use super::library_model::{find_chunked, find_chunked_paged};
 use super::work_search::WorkNames;
 use super::LibraryStore;
 use crate::entities::{
-    contributors, credits, edition_acquisitions, editions, expressions, holdings, series,
-    series_entries, store_listings, work_tags, works,
+    contributors, credits, edition_acquisitions, edition_files, editions, expressions, holdings,
+    series, series_entries, store_listings, work_tags, works,
 };
 use crate::error::Result;
 use crate::WorkKind;
@@ -83,6 +83,11 @@ struct Assembler<'a> {
     series_names: HashMap<&'a str, &'a str>,
     /// Library tags by work id, each list in key order, one per key.
     tags_of: HashMap<&'a str, Vec<&'a str>>,
+    /// Storage keys of the files of each edition (by edition id), read
+    /// only when the library defines collections.
+    file_keys_of: HashMap<&'a str, Vec<&'a str>>,
+    /// The library's collections.
+    collections: &'a crate::control_plane::LibraryCollections,
 }
 
 impl Assembler<'_> {
@@ -133,6 +138,23 @@ impl Assembler<'_> {
             return (ordered.into_iter().map(|c| c.name.clone()).collect(), first);
         }
         (Vec::new(), None)
+    }
+
+    /// The collections any file of `editions` is in.
+    fn collections_of(&self, editions: &[editions::Model]) -> Vec<String> {
+        if self.collections.collections.is_empty() {
+            return Vec::new();
+        }
+        let keys: Vec<&str> = editions
+            .iter()
+            .flat_map(|e| self.file_keys_of.get(e.id.as_str()).into_iter().flatten())
+            .copied()
+            .collect();
+        self.collections
+            .names_for_keys(keys.iter().copied())
+            .into_iter()
+            .map(str::to_string)
+            .collect()
     }
 
     /// Builds the model of `work`.
@@ -214,6 +236,7 @@ impl Assembler<'_> {
             }
         }
 
+        let collections = self.collections_of(&editions);
         WorkModel {
             inputs: WorkRowInputs {
                 work: Some(work.clone()),
@@ -230,6 +253,7 @@ impl Assembler<'_> {
                     .get(work.id.as_str())
                     .map(|list| list.iter().map(|t| (*t).to_string()).collect())
                     .unwrap_or_default(),
+                collections,
             },
             names,
         }
@@ -372,6 +396,22 @@ impl LibraryStore {
             series::Entity::find().filter(series::Column::Id.is_in(part.iter().cloned()))
         })
         .await?;
+        // Collection membership comes from the editions' file keys, read
+        // only when the library defines any collection.
+        let collections = crate::control_plane::library_collections(self).await?;
+        let file_rows = if collections.collections.is_empty() {
+            Vec::new()
+        } else {
+            find_chunked_paged::<edition_files::Entity, _>(self, &edition_ids, |part| {
+                edition_files::Entity::find()
+                    .filter(edition_files::Column::OwnerKind.eq("edition"))
+                    .filter(edition_files::Column::OwnerId.is_in(part.iter().cloned()))
+                    .order_by_asc(edition_files::Column::OwnerId)
+                    .order_by_asc(edition_files::Column::Destination)
+                    .order_by_asc(edition_files::Column::StorageKey)
+            })
+            .await?
+        };
         let tag_rows = find_chunked_paged::<work_tags::Entity, _>(self, &top_ids, |part| {
             work_tags::Entity::find()
                 .filter(work_tags::Column::WorkId.is_in(part.iter().cloned()))
@@ -394,7 +434,16 @@ impl LibraryStore {
                 .map(|s| (s.id.as_str(), s.name.as_str()))
                 .collect(),
             tags_of: HashMap::new(),
+            file_keys_of: HashMap::new(),
+            collections: &collections,
         };
+        for file in &file_rows {
+            assembler
+                .file_keys_of
+                .entry(file.owner_id.as_str())
+                .or_default()
+                .push(file.storage_key.as_str());
+        }
         for edition in &editions {
             let top = work_of_expression
                 .get(edition.expression_id.as_str())

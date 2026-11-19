@@ -857,6 +857,13 @@ library holds as works, expressions and editions:
   Library filter (facet `library_tag`) and patron scopes see the change
   at once. A split copies them to the new work.
 
+The library's collections are not a table: they live in the
+`core.collections` configuration document (names and storage key
+prefixes). The page index stores each work's collections as facet
+`collection`, read from its editions' files (`edition_files`), so a
+change to the document drops the finished index build and the next
+rebuild recomputes every work.
+
 Per-person rows point at works instead of copying a title:
 `listening_progress` (one row per listener and work, with the edition when
 the item's identifier named one) and `title_requests` (every wish names its

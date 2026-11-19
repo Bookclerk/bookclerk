@@ -212,6 +212,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["PUT", "/api/library/works/{id}/state", "allow"],
   ["GET", "/api/library/works/{id}/tags", "allow"],
   ["PUT", "/api/library/works/{id}/tags", "deny"],
+  ["GET", "/api/library/collections", "allow"],
+  ["PUT", "/api/library/collections", "deny"],
   ["GET", "/api/library/works/facets/{facet}", "allow"],
   ["GET", "/api/library/editions/{id}/cover", "allow"],
   ["GET", "/api/library/conflicts", "allow"],

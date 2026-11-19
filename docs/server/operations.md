@@ -78,6 +78,7 @@ OS.
 | `GET /api/library/works` | Yes | The library's works, one row per work, paged by cursor and filterable by media kind, kind, acquire status and account; `q` searches titles, people, series and store identifiers |
 | `GET /api/library/works/{id}` | Yes | One work with its editions, store listings, holdings and the caller's own state |
 | `GET`/`PUT /api/library/works/{id}/tags` | Provisioner | A work's library tags, or replace the ones set in Bookclerk (sidecar tags stay); `facet=library_tag` filters the works list by one |
+| `GET`/`PUT /api/library/collections` | Provisioner | The library's collections (names and storage folder prefixes), or replace them; a change re-indexes the Library, and `facet=collection` filters the works list by one |
 | `PUT`/`DELETE /api/library/listings/{id}/pin` | Provisioner | Pin a store listing to the edition it sells (it moves there at once, with its holdings and offers, and later scans keep it there), or remove the pin (the listing stays where it is) |
 | `POST /api/library/works/{id}/split` | Provisioner | Split a wrongly merged work: up to 12 of its expressions move, with their editions, listings and holdings, to a new work that copies its title, credits, series and each person's own state; new listings with the same title keep joining the original |
 | `GET /api/library/conflicts` | Provisioner | The identifier clashes and ambiguous matches the resolver left for an Administrator, paged by cursor |

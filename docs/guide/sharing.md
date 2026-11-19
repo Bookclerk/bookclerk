@@ -45,7 +45,7 @@ As with other changes to a person, an Administrator can set the scope of
 a Member. Anyone who can set scopes can edit the library's default.
 
 A scope is a list of rules. Each rule names a field (genre, series,
-author, narrator or library tag), one value of it, and whether it **shows
+author, narrator, library tag or collection), one value of it, and whether it **shows
 only** books with that value or **hides** them:
 
 - With no rules, every book is visible.
@@ -96,6 +96,30 @@ are listed under the tags you set and can't be edited here.
 
 From the command line, `bookclerk library tags get` and
 `bookclerk library tags set` do the same.
+
+### Collections
+
+A **collection** is a named part of the library made of storage folders,
+for example `Kids` for everything under `kids/`. A book with a file under
+one of a collection's folders is in it, so the Library can filter by
+collection and a scope can show or hide one.
+
+1. Open **Settings → User Management**.
+2. With no one selected, under **Collections**, add a collection: a name
+   and its folders, separated by commas, relative to the storage root.
+3. Choose **Save collections**.
+
+A library holds up to 32 collections of up to 8 folders each. A folder
+matches whole path segments, so `kids` covers `kids/Gruffalo.m4b` but not
+`kidsbooks/`. A book held only through a store account has no file until
+it is downloaded, so it is in no collection until then.
+
+Saving a change re-indexes the Library in the background, and the filter
+and scopes follow once that finishes. Who may change collections is the
+same as for library tags. From the command line,
+`bookclerk library collections get` and
+`bookclerk library collections set --collection 'Kids=kids/,children/'`
+do the same.
 
 ## Limit what a patron may do
 

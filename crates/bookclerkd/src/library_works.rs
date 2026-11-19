@@ -101,6 +101,8 @@ pub(crate) enum WorkFacetParam {
     /// A library tag: one an Administrator set on the work, or one read
     /// from a sidecar file, the same for everyone.
     LibraryTag,
+    /// A collection: a named part of the library, by storage key prefix.
+    Collection,
     /// The caller's progress: `value` is `finished` or `not_finished`. Not
     /// a value list.
     Progress,
@@ -117,6 +119,7 @@ impl WorkFacetParam {
             Self::Publisher => Some(WorkFacet::Publisher),
             Self::Source => Some(WorkFacet::Source),
             Self::LibraryTag => Some(WorkFacet::Tag),
+            Self::Collection => Some(WorkFacet::Collection),
             Self::Tag | Self::Progress => None,
         }
     }
@@ -176,7 +179,8 @@ fn work_filter(
         | WorkFacetParam::Genre
         | WorkFacetParam::Publisher
         | WorkFacetParam::Source
-        | WorkFacetParam::LibraryTag => return Ok(None),
+        | WorkFacetParam::LibraryTag
+        | WorkFacetParam::Collection => return Ok(None),
     }))
 }
 

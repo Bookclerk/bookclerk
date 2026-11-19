@@ -1298,6 +1298,10 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
             crate::work_tags::put_work_tags
         ))
         .routes(routes!(
+            crate::collections::get_collections,
+            crate::collections::put_collections
+        ))
+        .routes(routes!(
             crate::node_api::get_node_invites,
             crate::node_api::post_node_invite
         ))

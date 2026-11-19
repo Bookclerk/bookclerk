@@ -23,6 +23,7 @@ mod cache_policy;
 mod catalog_lookup;
 mod clerk_link;
 mod clerk_token;
+mod collections;
 mod config_authority;
 mod covers;
 mod cron_worker;

@@ -1802,13 +1802,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     // The page index's filter values: one row per value a held top-level
     // work has under a facet (author, narrator, series, genre, publisher,
-    // source, library tag). `key` is the lower-cased value the filter matches; `value`
+    // source, library tag, collection). `key` is the lower-cased value the filter matches; `value`
     // is how it is shown. Written with the work's `library_work_rows` row
     // and fenced by its `refreshed_at`; an unheld work has none.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS library_work_facets (
         work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
-        facet TEXT NOT NULL CHECK (facet IN ('author', 'narrator', 'series', 'genre', 'publisher', 'source', 'tag')),
+        facet TEXT NOT NULL CHECK (facet IN ('author', 'narrator', 'series', 'genre', 'publisher', 'source', 'tag', 'collection')),
         key TEXT NOT NULL,
         value TEXT NOT NULL,
         PRIMARY KEY (work_id, facet, key)

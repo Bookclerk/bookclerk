@@ -18,6 +18,7 @@ mod cache;
 mod carried_accounts;
 mod catalog_lookup;
 mod clerk_links;
+mod collections;
 mod library_links;
 pub(crate) use catalog_lookup::read_paged;
 pub(crate) use library_links::from_object;
@@ -125,6 +126,12 @@ pub use catalog_lookup::{
 pub use clerk_links::{
     forget_clerk_link, list_clerk_links, load_clerk_card, load_clerk_link, record_clerk_link,
     sign_out_clerk_link, ClerkLink, ClerkLinkState, LibraryCard, NewClerkLink, CLERK_CARD_NAME,
+};
+pub use collections::{
+    collections_revision, library_collections, load_collections, parse_collections_request,
+    set_library_collections, LibraryCollection, LibraryCollections, COLLECTIONS_NAMESPACE,
+    COLLECTIONS_SCHEMA_VERSION, MAX_COLLECTIONS, MAX_COLLECTIONS_JSON_BYTES,
+    MAX_COLLECTION_NAME_BYTES, MAX_COLLECTION_PREFIXES, MAX_COLLECTION_PREFIX_BYTES,
 };
 pub use connections_request::{
     parse_add_connections_request, parse_disconnect_request, AccountRef, AddConnectionsBody,
