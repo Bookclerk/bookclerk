@@ -5737,11 +5737,45 @@ mod tests {
                 "the 64k mono copy is encoded again, not the store's 192k MP3: {key}"
             );
             assert_eq!(
+                mp3_frame_shape(&bytes),
+                Some((64, true)),
+                "the copy holds 64 kbit/s mono audio: {key}"
+            );
+            assert_eq!(
                 store.edition_file_copy("phone", key).await.unwrap(),
                 Some(output_copy("mp3_chapters:64k-mono"))
             );
         }
         assert!(!work_dir.exists(), "the scratch copies are cleaned up");
+    }
+
+    /// The bitrate in kbit/s and whether the audio is mono, read from the
+    /// first MPEG audio frame header of an MP3 (after any ID3v2 tag).
+    fn mp3_frame_shape(bytes: &[u8]) -> Option<(u32, bool)> {
+        let mut at = 0;
+        if bytes.starts_with(b"ID3") && bytes.len() >= 10 {
+            let size = bytes[6..10]
+                .iter()
+                .fold(0usize, |size, b| (size << 7) | usize::from(b & 0x7f));
+            at = 10 + size;
+        }
+        while at + 4 <= bytes.len() {
+            let h = &bytes[at..at + 4];
+            if h[0] == 0xff && h[1] & 0xe0 == 0xe0 && h[1] & 0x06 == 0x02 {
+                let mpeg1 = h[1] & 0x18 == 0x18;
+                let index = usize::from(h[2] >> 4);
+                let table: [u32; 15] = if mpeg1 {
+                    [
+                        0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+                    ]
+                } else {
+                    [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160]
+                };
+                return Some((*table.get(index)?, h[3] >> 6 == 3));
+            }
+            at += 1;
+        }
+        None
     }
 
     /// Every file under `root`, recursively.
