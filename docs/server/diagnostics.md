@@ -7,12 +7,17 @@ that receives them, for the people who run it.
 
 ## Share reports
 
-Reporting is off until you turn it on:
+Reporting is off until you turn it on. The first-install setup asks, and
+the operator can change it any time under **Settings → Server Settings →
+Diagnostics** in the web app, or in `config.toml`:
 
 ```toml
 [diagnostics]
 share_reports = true
 ```
+
+A change from Settings applies without a restart; an edit to
+`config.toml` applies on the daemon's next config reload or restart.
 
 A build sends reports to the collector address baked in when it was
 built. Release builds in CI pick it up on their own. To build with it
@@ -57,6 +62,26 @@ template, status and `latency_ms`. Those warnings count toward their own
 fault arrive as different kinds of report. A server error (5xx) is a WARN
 named "server error response" with the same fields, and counts toward
 `warn_burst`.
+
+### Your report history
+
+Each report the collector accepts gets a report ID (see
+[Report IDs](#report-ids)). The install keeps the IDs of the last 200
+reports it sent, with when and why each was sent, in
+`$BOOKCLERK_FILES_DIR/diagnostics/reports.json`. To follow up on a report,
+search the project's GitHub issues for its ID: the issue the dashboard
+files for it, and its summary comment, name the IDs it tracks. Or give the
+ID to a maintainer, who can open the report itself.
+
+The operator sees the history under **Settings → Server Settings →
+Diagnostics**, where each ID has a copy button and a link that searches
+the issues for it. From the command line:
+
+```sh
+bookclerk diagnostics reports
+```
+
+The API is `GET /api/diagnostics/reports` (operator only), newest first.
 
 ## Local verbosity vs ring buffer
 
@@ -146,6 +171,11 @@ Or from the command line:
 ```sh
 bookclerk config set diagnostics.share_usage true
 ```
+
+The first-install setup asks about it too, next to report sharing, and
+the operator can change it under **Settings → Server Settings →
+Diagnostics**. A change from Settings applies without a restart: the
+daemon loads (or makes) the install ID the first time the switch is on.
 
 With it on, the daemon and the desktop app send one check-in a week to
 the collector's `/checkin` route. A check-in holds only:
@@ -426,10 +456,11 @@ comment per issue**, edited in place. Editing a comment notifies nobody.
 
 The comment shows:
 
-- how many reports the issue tracks. The comment counts reports, not
-  installs: only installs that [share usage](#share-usage) carry an
-  install key, so the dashboard shows that partial figure ("from N installs
-  that share usage") and the public comment leaves it out;
+- how many reports the issue tracks, and from how many installs. Only
+  installs that [share usage](#share-usage) carry an install key, so when
+  some of the reports carry none the count reads "at least N installs",
+  and it is left out when none do. Install keys change every month, so an
+  install that reported in two months counts twice;
 - how they were linked: listed in the issue, matched by signature, added
   by triage, or attached by members;
 - the first and last receipt;
@@ -487,6 +518,7 @@ in with GitHub, and these pages are member-only:
 | `/reports/<report_id>` | One report: its facts (route and slowest request when it has them), triage state and mute, and its event log |
 | `/issues` | Diagnostics issues, their pull requests, the version each fix shipped in, and reports that keep arriving from that version on |
 | `/issues/<number>` | One issue's reports, with the [corrections](#corrections) below, a **Copy branch command** button, and for owners the [close buttons](#closing-issues) |
+| `/demo` | The [hosted demo's runs](#hosted-demo-runs): runs open now, and runs, hours of use, run length and startup time per day over 30, 90 or 365 days |
 
 The overview and the reports list show reports from real installs by
 default. A **Source** switch shows the hosted demo's reports instead, or
@@ -638,6 +670,9 @@ day. The rest is left for sign-ins, the access log,
 the sync and triage marks. The cron deletes check-in rows after 35 days
 and every month's salt but the current one.
 
+The hosted demo's runs take one row each (see
+[Hosted demo runs](#hosted-demo-runs)), kept 400 days.
+
 An owner's **Index older reports** button (also used once after the first
 deploy) adds stored reports the index is missing, up to 40 per press.
 
@@ -645,6 +680,33 @@ The cron sync and the reindex stay within Workers Free's 50 D1 queries and
 50 subrequests per invocation. Each issue page, pull request batch or
 listing page is written in one or two batches that also save the cursor,
 and work left over continues in the next run or press.
+
+### Hosted demo runs
+
+The [hosted demo](../../tools/demo/README.md) reports each visitor run to
+the collector as it happens, over a service binding: a private
+Worker-to-Worker link to the collector's `DemoRuns` entrypoint, which has
+no public route.
+
+1. When a run starts, the demo sends its start and hard stop.
+2. When the visitor's copy first answers, it sends how long startup took.
+3. When the run stops, it sends when and why (the visitor left, it sat
+   idle, it reached its time limit, it failed, its machine stopped, or the
+   demo's sweep ended it).
+
+Each event names the run by a random run ID the demo makes for it,
+separate from the visitor's session, and repeats the run's start and hard
+stop, so any one event can create the row. No address, cookie or session
+reaches the collector. A run whose stop never arrives is closed as
+**missed** 15 minutes after its hard stop; it counts as a run but not
+toward use or run length. A stop that arrives later replaces that. Runs
+still open are the live use the `/demo` page shows. The cron deletes runs
+after 400 days.
+
+Reporting never holds the demo up: without the binding nothing is sent,
+and a refused event, a failure or an answer slower than two seconds is
+logged and dropped. Events are parsed strictly
+(`parseDemoRunEvent` in `demo-runs.ts`, fuzzed in `demo-runs.fuzz.test.ts`).
 
 ### Report ledger
 

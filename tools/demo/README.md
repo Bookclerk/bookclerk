@@ -205,6 +205,21 @@ Set in `wrangler.toml` `[vars]`:
 
 IP addresses are stored only as a keyed hash that changes every day.
 
+## Usage reports
+
+With the `USAGE` service binding (`wrangler.toml`), the Worker reports each
+run to the diagnostics collector as it happens: its start, the moment the
+visitor's copy first answers (the startup time) and its stop with the end
+reason (`src/usage.ts`). The binding names the collector's `DemoRuns`
+entrypoint, a private Worker-to-Worker link with no public route, so the
+collector Worker `bookclerk-diagnostics` must be deployed first. Each event
+names the run by a random run ID made when the session is admitted (the
+`run_id` column), never the session id, the address hash or the cookie.
+A report never holds a visitor up: a failure, or an answer slower than two
+seconds, is logged and dropped. The dashboard's Demo page shows live runs
+and the daily trends (see
+[`docs/server/diagnostics.md`](../../docs/server/diagnostics.md#hosted-demo-runs)).
+
 ## Deploying
 
 `.github/workflows/demo-deploy.yml` deploys on demo changes to `main`, on

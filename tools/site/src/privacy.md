@@ -46,6 +46,7 @@ The [live demo]({{demoUrl}}) starts a private copy of Bookclerk just for you, on
 - **In your browser.** The app inside the demo remembers a few display choices in your browser's storage, such as light or dark mode and whether you closed the welcome message. These stay on your device and you can clear them in your browser's settings.
 - **Problem reports.** Your copy sends problem reports, the same ones the app sends when you turn them on (described below), so we hear about bugs in the demo. They have your passwords, sign-in tokens, book titles and account IDs removed, and never your IP address.
 - **What we keep.** For each demo we keep a record of when it started and ended, why it ended, how many store sign-ins were started and signed out, and the daily code above. The records name no one. We delete them after 30 days, and the daily counts after two days.
+- **Usage figures.** So we can see how much the demo is used, each demo also sends our diagnostics dashboard when it started, how long it took to start, and when and why it ended, under a random number made for that demo alone. It does not include your IP address, the daily code or your cookie. We keep these figures for 400 days.
 {{/demo}}
 ## Problem reports from the app
 
@@ -63,7 +64,9 @@ Reports are stored with [Backblaze B2](https://www.backblaze.com/company/policy/
 
 Reports are deleted automatically 6 months after they arrive, or sooner when you ask. A one-line summary of each (the version, system and type of error, without the log) stays in the dashboard's counts.
 
-You can turn reports off at any time. To have a report you sent deleted, email us the time it was sent and your Bookclerk version, or its report ID if you have it.
+Your Bookclerk keeps a list of the reports it sent, with each report's ID, on your own computer (in Settings, under Diagnostics). You can search our GitHub tracker for an ID to find the issue about it.
+
+You can turn reports off at any time. To have a report you sent deleted, email us its report ID, or the time it was sent and your Bookclerk version.
 
 ## Usage check-ins from the app
 
