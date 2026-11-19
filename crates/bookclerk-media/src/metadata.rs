@@ -440,8 +440,8 @@ fn fixup_mp3(req: &FixupRequest) -> Result<()> {
 /// Element id of the table of contents that lists the chapters Bookclerk writes.
 const MP3_TOC_ID: &str = "toc";
 
-/// Writes `req.chapters` as ID3 `CHAP` frames listed by one top-level, ordered
-/// `CTOC`, unless the file already has chapters and `replace_chapters` is off.
+/// Writes `req.chapters` as ID3 `CHAP` frames listed by a top-level, ordered
+/// `CTOC` (with child tables past 255 chapters), unless the file already has chapters and `replace_chapters` is off.
 ///
 /// Each chapter ends where the next one starts; the last ends at the file's
 /// running time, read from its headers by the same reader the tag worker uses.
@@ -474,6 +474,15 @@ fn write_mp3_chapters(tag: &mut Id3Tag, req: &FixupRequest) -> Result<()> {
         );
         return Ok(());
     }
+    let mut spans = spans;
+    if spans.len() > MP3_MAX_CHAPTERS {
+        tracing::warn!(
+            chapters = spans.len(),
+            kept = MP3_MAX_CHAPTERS,
+            "more chapters than two levels of ID3 tables of contents can list; extra chapters dropped"
+        );
+        spans.truncate(MP3_MAX_CHAPTERS);
+    }
     tag.remove_all_chapters();
     tag.remove_all_tables_of_contents();
     let mut elements = Vec::with_capacity(spans.len());
@@ -490,14 +499,56 @@ fn write_mp3_chapters(tag: &mut Id3Tag, req: &FixupRequest) -> Result<()> {
         });
         elements.push(element_id);
     }
-    tag.add_frame(TableOfContents {
-        element_id: MP3_TOC_ID.to_string(),
-        top_level: true,
+    for toc in mp3_tables_of_contents(elements) {
+        tag.add_frame(toc);
+    }
+    Ok(())
+}
+
+/// Most entries one ID3 `CTOC` frame can list: its entry count is one byte.
+const MP3_MAX_TOC_CHILDREN: usize = 255;
+
+/// Most chapters Bookclerk writes into one MP3: a top-level `CTOC` listing
+/// [`MP3_MAX_TOC_CHILDREN`] child tables of the same size each.
+const MP3_MAX_CHAPTERS: usize = MP3_MAX_TOC_CHILDREN * MP3_MAX_TOC_CHILDREN;
+
+/// Builds the ordered tables of contents that list `chapter_ids` in order.
+///
+/// Up to [`MP3_MAX_TOC_CHILDREN`] chapters fit in the one top-level table.
+/// Beyond that, the top-level table lists child tables (`toc0`, `toc1`, …),
+/// each listing up to that many chapters, so no table overflows its one-byte
+/// entry count. The caller keeps `chapter_ids` within [`MP3_MAX_CHAPTERS`];
+/// anything past that is not listed.
+///
+/// # Returns
+///
+/// The top-level table first, then the child tables in order.
+fn mp3_tables_of_contents(chapter_ids: Vec<String>) -> Vec<TableOfContents> {
+    let table = |element_id: String, top_level: bool, elements: Vec<String>| TableOfContents {
+        element_id,
+        top_level,
         ordered: true,
         elements,
         frames: Vec::new(),
-    });
-    Ok(())
+    };
+    if chapter_ids.len() <= MP3_MAX_TOC_CHILDREN {
+        return vec![table(MP3_TOC_ID.to_string(), true, chapter_ids)];
+    }
+    let children: Vec<TableOfContents> = chapter_ids
+        .chunks(MP3_MAX_TOC_CHILDREN)
+        .take(MP3_MAX_TOC_CHILDREN)
+        .enumerate()
+        .map(|(index, ids)| table(format!("{MP3_TOC_ID}{index}"), false, ids.to_vec()))
+        .collect();
+    let top = table(
+        MP3_TOC_ID.to_string(),
+        true,
+        children
+            .iter()
+            .map(|child| child.element_id.clone())
+            .collect(),
+    );
+    std::iter::once(top).chain(children).collect()
 }
 
 /// One chapter as an ID3 `CHAP` frame states it: title and a half-open
@@ -693,6 +744,45 @@ mod tests {
         let toc = tag.tables_of_contents().next().expect("toc");
         assert!(toc.top_level && toc.ordered);
         assert_eq!(toc.elements, vec!["ch0", "ch1"]);
+    }
+
+    #[test]
+    fn mp3_tables_of_contents_split_past_255_chapters_and_round_trip() {
+        let small = mp3_tables_of_contents(vec!["ch0".into(), "ch1".into()]);
+        assert_eq!(small.len(), 1);
+        assert!(small[0].top_level && small[0].ordered);
+        assert_eq!(small[0].elements, vec!["ch0", "ch1"]);
+
+        let ids: Vec<String> = (0..600).map(|index| format!("ch{index}")).collect();
+        let mut tag = Id3Tag::new();
+        for toc in mp3_tables_of_contents(ids.clone()) {
+            tag.add_frame(toc);
+        }
+        let mut bytes = Vec::new();
+        tag.write_to(&mut bytes, Id3Version::Id3v24).expect("write");
+        let read = Id3Tag::read_from2(std::io::Cursor::new(&bytes)).expect("read");
+        let tables: Vec<&TableOfContents> = read.tables_of_contents().collect();
+        let top: Vec<&&TableOfContents> = tables.iter().filter(|toc| toc.top_level).collect();
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].elements, vec!["toc0", "toc1", "toc2"]);
+        let mut listed = Vec::new();
+        for child_id in &top[0].elements {
+            let child = tables
+                .iter()
+                .find(|toc| &toc.element_id == child_id)
+                .expect("child table");
+            assert!(!child.top_level && child.ordered);
+            assert!(child.elements.len() <= MP3_MAX_TOC_CHILDREN);
+            listed.extend(child.elements.iter().cloned());
+        }
+        assert_eq!(listed, ids);
+
+        let too_many: Vec<String> = (0..MP3_MAX_CHAPTERS + 1)
+            .map(|i| format!("ch{i}"))
+            .collect();
+        let tables = mp3_tables_of_contents(too_many);
+        assert_eq!(tables[0].elements.len(), MP3_MAX_TOC_CHILDREN);
+        assert_eq!(tables.len(), MP3_MAX_TOC_CHILDREN + 1);
     }
 
     #[test]
