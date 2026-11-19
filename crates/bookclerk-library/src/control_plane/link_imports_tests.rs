@@ -156,7 +156,8 @@ async fn the_owners_book_from_a_library_joins_the_branch() {
 
 /// The catalog sync sends a library only the branch owner's books: not a
 /// member's, not an unlinked account's, and not one imported from that
-/// same library (though it is sent to another library).
+/// same library, through any account holding its edition (though it is
+/// sent to another library).
 #[tokio::test]
 async fn only_the_owners_own_books_are_shared_upward() {
     for profile in Profile::ALL {
@@ -215,11 +216,23 @@ async fn only_the_owners_own_books_are_shared_upward() {
             panic!("{name}: imported");
         };
 
-        let keys = store.acquired_book_keys_page(None, 100).await.unwrap();
+        // The owner's second account holds the imported edition too; its
+        // holding must not send library A's copy back either.
+        store
+            .upsert_book(&NewBook::minimal("FROM-A", "own-acct-2", "us", "FROM-A"))
+            .await
+            .unwrap();
+        let keys = store.all_acquired_title_keys().await;
+        assert_eq!(
+            keys.iter().filter(|key| key.product_id == "FROM-A").count(),
+            2,
+            "{name}: both owner accounts hold the imported edition"
+        );
         let sent = |filter: &OwnerShareFilter| -> BTreeSet<String> {
-            keys.iter()
-                .filter(|key| filter.admits(key))
-                .map(|key| key.product_id.clone())
+            filter
+                .admit_editions(keys.clone())
+                .into_iter()
+                .map(|key| key.product_id)
                 .collect()
         };
         let to_a = OwnerShareFilter::load(&store, "lib-a", false)
@@ -372,7 +385,7 @@ async fn a_primary_key_another_edition_holds_is_not_imported() {
             ),
             "{name}"
         );
-        let books = store.acquired_book_keys_page(None, 100).await.unwrap();
+        let books = store.all_acquired_title_keys().await;
         assert!(
             books.iter().all(|key| key.product_id != "P9"),
             "{name}: not acquired"

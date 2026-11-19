@@ -7933,6 +7933,7 @@ impl LibraryStore {
 }
 
 pub(crate) mod acquire_title;
+pub(crate) mod acquired_keys;
 pub(crate) mod catalog_listings;
 pub(crate) mod discover;
 pub(crate) mod edition_enrichment;
@@ -7978,7 +7979,7 @@ pub(crate) mod job_queue;
 mod book_lookup;
 mod books_page;
 mod lock_retry;
-pub use book_lookup::{AcquiredBookKey, ACQUIRED_KEYS_MAX_PAGE};
+pub use acquired_keys::{AcquiredTitleKey, AcquiredTitleKeyPage, ACQUIRED_KEYS_MAX_PAGE};
 pub use books_page::{BookPage, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT};
 
 #[cfg(test)]

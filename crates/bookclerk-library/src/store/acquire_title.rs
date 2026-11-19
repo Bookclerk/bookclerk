@@ -65,6 +65,8 @@ pub struct AcquireTitle {
     pub categories: Option<String>,
     /// Running time in whole minutes, from the store or the edition.
     pub length_minutes: Option<i64>,
+    /// Language as the store lists it.
+    pub language: Option<String>,
     /// True when the store or the expression marks it abridged.
     pub is_abridged: bool,
     /// What the title is, in the flat row's labels: `episode` for a
@@ -800,6 +802,7 @@ impl TitleRows {
             publisher: listing.publisher,
             categories: listing.categories,
             length_minutes: listing.length_minutes.or(edition_minutes),
+            language: listing.language,
             is_abridged: listing.is_abridged == Some(1) || abridged_expression,
             content_kind,
             purchased_at: parse_time(holding.purchased_at.as_deref()),

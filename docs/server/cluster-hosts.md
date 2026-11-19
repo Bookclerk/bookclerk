@@ -898,8 +898,9 @@ C is B's.
   A has no record of C and never learns it exists. A's work runs on B
   itself and is never passed on to C. No store account, store token or
   user of B or C is ever sent to A.
-- **Books flow up.** B shares its owner's books with A: those acquired on
-  B on a store account connected there to B's Owner, and (when "Include
+- **Books flow up.** B shares its owner's books with A: those held on B
+  by a store account connected there to B's Owner whose edition B has
+  acquired (whichever of B's store accounts downloaded it), and (when "Include
   books from my own branches" is on) those C shared with B. B's other
   members' books stay on B, unless A requests one or A's operator turns on
   **Acquire all of this branch's members' books** (see below). Each title
