@@ -619,13 +619,18 @@ impl LibraryStore {
                 ],
             ),
             batch::exec(
-                "UPDATE playback_progress SET position_ms = ?, \
-                 duration_ms = COALESCE(?, duration_ms), is_finished = ?, \
+                // A field the edit leaves out keeps the row's value as
+                // it is when this statement runs, not as it was read
+                // above, so a report landing in between is not undone.
+                "UPDATE playback_progress SET position_ms = COALESCE(?, position_ms), \
+                 duration_ms = COALESCE(?, duration_ms), \
+                 is_finished = COALESCE(?, CASE WHEN ? = 1 THEN 1 ELSE is_finished END), \
                  finished_at = CASE WHEN ? = 1 THEN ? ELSE finished_at END, updated_at = ? \
                  WHERE user_id = ? AND edition_id = ?",
                 vec![
-                    batch::int(position.stored()),
+                    ms_opt(edit.position),
                     ms_opt(edit.duration),
+                    batch::int_opt(edit.finished.map(i64::from)),
                     batch::int(i64::from(finished)),
                     batch::int(i64::from(became_finished)),
                     batch::text(&now),
