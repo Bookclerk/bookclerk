@@ -1057,6 +1057,46 @@ pub struct AcquireTarget {
     /// saves episodes to the parent's folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_library_id: Option<LibraryId>,
+    /// The ids of the plan's destinations whose filter takes this title, in
+    /// the plan's order: the title's target set, which the host writes and
+    /// uploads to and nowhere else. An empty list means no destination
+    /// takes it, so the host fails the title without fetching it. `None`
+    /// comes from an owner that predates destination filters and means
+    /// every destination of the plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destinations: Option<Vec<String>>,
+}
+
+/// Why `target`'s destination list ([`AcquireTarget::destinations`]) does
+/// not fit the plan it came with, or `None`: every id it names is one of
+/// `plan`'s destinations, named once, in the plan's order.
+///
+/// # Arguments
+///
+/// * `target` - One target of an `acquire.targets` answer.
+/// * `plan` - That answer's destinations, the primary first.
+///
+/// # Returns
+///
+/// `None` when the list fits (or is absent), otherwise a short reason.
+#[must_use]
+pub fn target_destinations_problem(
+    target: &AcquireTarget,
+    plan: &[PlanDestination],
+) -> Option<&'static str> {
+    let chosen = target.destinations.as_deref()?;
+    if chosen.len() > plan.len() {
+        return Some("too_many_destinations");
+    }
+    // Each id must match a plan destination after the previous match, so a
+    // repeated or reordered id finds none.
+    let mut rest = plan.iter();
+    for id in chosen {
+        if !rest.any(|destination| destination.id == *id) {
+            return Some("unknown_destination");
+        }
+    }
+    None
 }
 
 /// A title an [`AcquireTarget`] names, as the owner's library holds it:
@@ -1448,6 +1488,59 @@ mod tests {
         let all: ClaimFilter = serde_json::from_str(r#"{"scope":"all_members"}"#).unwrap();
         assert_eq!(all.scope, ClaimScope::AllMembers);
         assert!(serde_json::from_str::<ClaimFilter>(r#"{"scope":"everyone"}"#).is_err());
+    }
+
+    /// A target's destination list fits its plan only when each id is one
+    /// of the plan's destinations, named once, in the plan's order; no list
+    /// always fits.
+    #[test]
+    fn a_target_names_only_its_plans_destinations_in_order() {
+        let plan: Vec<PlanDestination> = ["local", "nas", "s3"]
+            .into_iter()
+            .map(|id| PlanDestination {
+                id: id.into(),
+                options: serde_json::json!({}),
+            })
+            .collect();
+        let target = |destinations: Option<&[&str]>| -> AcquireTarget {
+            let mut value = serde_json::json!({
+                "holding_id": "b",
+                "plugin_key": "store",
+                "account_id": "a",
+                "title": {"product_id": "p", "source": "store", "marketplace": "us", "title": "T", "content_kind": "book"},
+            });
+            if let Some(ids) = destinations {
+                value["destinations"] = serde_json::json!(ids);
+            }
+            serde_json::from_value(value).unwrap()
+        };
+        for fits in [
+            None,
+            Some(&[][..]),
+            Some(&["local"][..]),
+            Some(&["nas", "s3"][..]),
+            Some(&["local", "nas", "s3"][..]),
+        ] {
+            assert_eq!(
+                target_destinations_problem(&target(fits), &plan),
+                None,
+                "{fits:?}"
+            );
+        }
+        for (bad, why) in [
+            (&["r2"][..], "unknown_destination"),
+            (&["s3", "local"][..], "unknown_destination"),
+            (&["nas", "nas"][..], "unknown_destination"),
+            (&["local", "nas", "s3", "s3"][..], "too_many_destinations"),
+        ] {
+            assert_eq!(
+                target_destinations_problem(&target(Some(bad)), &plan),
+                Some(why),
+                "{bad:?}"
+            );
+        }
+        let absent = serde_json::to_value(target(None)).unwrap();
+        assert!(absent.get("destinations").is_none(), "{absent}");
     }
 
     #[test]
@@ -1908,6 +2001,7 @@ mod tests {
                         parent: None,
                         library_id: Some(LibraryId::try_from("abc12345".to_string()).unwrap()),
                         parent_library_id: None,
+                        destinations: Some(vec!["local".into()]),
                     }],
                     destinations: vec![PlanDestination {
                         id: "local".into(),

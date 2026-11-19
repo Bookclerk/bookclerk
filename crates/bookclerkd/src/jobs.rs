@@ -976,16 +976,7 @@ pub async fn run_acquire(
             cache_dir: cfg.download_cache_dir(),
             force: mode.force,
             write_destinations: None,
-            placement: Some(bookclerk_config::PlacementFacts {
-                patrons: library
-                    .users_linked_to_account(&book.plugin_key, &book.account_id)
-                    .await?,
-                storefront: book.source.clone(),
-                account: book.account_id.clone(),
-                media_kind: bookclerk_config::PlacementMediaKind::from_content_kind(
-                    book.content_kind,
-                ),
-            }),
+            placement: Some(placement_facts(&library, &book).await?),
             job_id: ctx.map(|c| c.fence.job_id.clone()),
             temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
             library_id: None,
@@ -1235,6 +1226,28 @@ async fn acquire_candidates(
     }
     targets.sort_by(|a, b| a.title.cmp(&b.title));
     Ok(targets)
+}
+
+/// What a destination filter knows about `title` when its acquire starts:
+/// the patrons linked to the store account that holds it, its storefront,
+/// that account and its media kind. A local acquire and a branch's plan
+/// for the library place a title from the same facts.
+///
+/// # Errors
+///
+/// Returns the read error for the account's linked patrons.
+pub(crate) async fn placement_facts(
+    library: &bookclerk_library::LibraryStore,
+    title: &AcquireTitle,
+) -> bookclerk_library::Result<bookclerk_config::PlacementFacts> {
+    Ok(bookclerk_config::PlacementFacts {
+        patrons: library
+            .users_linked_to_account(&title.plugin_key, &title.account_id)
+            .await?,
+        storefront: title.source.clone(),
+        account: title.account_id.clone(),
+        media_kind: bookclerk_config::PlacementMediaKind::from_content_kind(title.content_kind),
+    })
 }
 
 /// True for a content kind an acquire downloads: never a podcast show, and

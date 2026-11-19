@@ -138,14 +138,15 @@ pub use copies::{
 };
 pub use ed25519_dalek::SigningKey;
 pub use frames::{
-    is_destination_id, is_storage_key, scan_pass_end_problem, scan_removed_problem, AcquireTarget,
-    Body, ClaimFilter, ClaimScope, FileCopy, Frame, FrameError, HeldFence, JobStatusEntry,
-    KeeperOutcome, LibraryId, PlanDestination, RemoteArtifact, RemoteDeployment, RemoteVersion,
-    ScanImport, ScanToken, TargetTitle, UploadAnswer, UploadCommitRequest, UploadFile, UploadProbe,
-    WorkJob, ITEM_JOB, MAX_DESTINATION_ID_BYTES, MAX_LIBRARY_ID_BYTES, MAX_PROBE_BITRATE_KBPS,
-    MAX_SCAN_BATCH_ROWS, MAX_SCAN_PRODUCT_ID_BYTES, MAX_SCAN_REMOVED_IDS, MAX_SCAN_ROW_BYTES,
-    MAX_SCAN_SYNC_TOKEN_BYTES, MAX_SCAN_TOKENS, MAX_STATUS_JOBS, MAX_UPLOAD_COPIES,
-    MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_KEY_BYTES,
+    is_destination_id, is_storage_key, scan_pass_end_problem, scan_removed_problem,
+    target_destinations_problem, AcquireTarget, Body, ClaimFilter, ClaimScope, FileCopy, Frame,
+    FrameError, HeldFence, JobStatusEntry, KeeperOutcome, LibraryId, PlanDestination,
+    RemoteArtifact, RemoteDeployment, RemoteVersion, ScanImport, ScanToken, TargetTitle,
+    UploadAnswer, UploadCommitRequest, UploadFile, UploadProbe, WorkJob, ITEM_JOB,
+    MAX_DESTINATION_ID_BYTES, MAX_LIBRARY_ID_BYTES, MAX_PROBE_BITRATE_KBPS, MAX_SCAN_BATCH_ROWS,
+    MAX_SCAN_PRODUCT_ID_BYTES, MAX_SCAN_REMOVED_IDS, MAX_SCAN_ROW_BYTES, MAX_SCAN_SYNC_TOKEN_BYTES,
+    MAX_SCAN_TOKENS, MAX_STATUS_JOBS, MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_BYTES,
+    MAX_UPLOAD_KEY_BYTES,
 };
 pub use join::{
     is_branch_name, is_branch_redirect_uri, is_library_name, pkce_challenge, OAuthEnrollAnswer,

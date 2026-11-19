@@ -349,7 +349,9 @@ only that. The others check:
   frame version, and serializes and parses back to an equal frame (unless
   its serialized text grows past the limit, as `1e9` written out does). Every
   library id in `acquire.targets` is 1 to 16 ASCII letters and digits,
-  checked byte by byte. A `catalog.ask` or `catalog.found` that passes
+  checked byte by byte, and every target whose destination list passes
+  its validator names only destinations its plan lists, each once and in
+  the plan's order. A `catalog.ask` or `catalog.found` that passes
   its validator names at most 100 works, each once, by plain correlation
   keys; its identifiers are plain ASCII with a marketplace exactly on an
   ASIN, and each answer lists 1 to 8 distinct editions with a title. A
@@ -378,7 +380,9 @@ only that. The others check:
   character or drive prefix), each at most 1 TiB, exactly one of them the
   primary audio. The `copy_*` seeds' names say whether the receiver takes
   the frame, and the replay test checks each against its name. Seeds cover `accounts.update`, `accounts.updated`,
-  `scan.removed`, `scan.pass_end` and a `work` frame with scan tokens. The shared oracle is `fuzz/oracles/node_frame.rs`,
+  `scan.removed`, `scan.pass_end`, a `work` frame with scan tokens, and
+  `acquire.targets` with a destination subset, an empty list and a list
+  that does not fit its plan. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
   has the bundle version and names the cluster and node it was opened
