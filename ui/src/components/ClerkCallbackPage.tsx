@@ -11,7 +11,8 @@ import {
 
 type Phase =
   | { kind: "working" }
-  | { kind: "signed_in"; library: string }
+  /** `leftBranch`: what became of the branch the card replaced, if any. */
+  | { kind: "signed_in"; library: string; leftBranch: string | null }
   /** `retry`: the request got no answer, so the same code may be sent again. */
   | { kind: "failed"; message: string; retry: boolean };
 
@@ -41,8 +42,16 @@ export function ClerkCallbackPage({ onOpenLibrary }: ClerkCallbackPageProps) {
   const redeem = useCallback((callback: ClerkCallback) => {
     setPhase({ kind: "working" });
     void finishClerkSignIn(callback)
-      .then(({ card }) =>
-        setPhase({ kind: "signed_in", library: card.library_name || card.origin }),
+      .then(({ card, left_branch }) =>
+        setPhase({
+          kind: "signed_in",
+          library: card.library_name || card.origin,
+          leftBranch: left_branch
+            ? left_branch.owner_notified
+              ? "This server is no longer a branch of it: it stopped running the library's work, and the library was told."
+              : "This server is no longer a branch of it, but the library could not be told; remove this branch there."
+            : null,
+        }),
       )
       .catch((err: unknown) =>
         setPhase({
@@ -116,6 +125,7 @@ export function ClerkCallbackPage({ onOpenLibrary }: ClerkCallbackPageProps) {
         </>
       }
     >
+      {phase.leftBranch ? <p className="text-sm text-ink/75">{phase.leftBranch}</p> : null}
       <div className="flex gap-2">
         <Button type="button" onClick={() => window.location.assign("/library")}>
           Open your books

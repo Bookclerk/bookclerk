@@ -203,6 +203,14 @@ export interface BranchJoined {
   running: boolean;
   /** The store connections that came with the join, when the person brought them. */
   connections?: BroughtConnectionsView | null;
+  /**
+   * Set when this server held a library card for the library: the branch
+   * replaced it, and the card was signed out.
+   */
+  replaced_card?: {
+    /** Whether the library ended the card's session too. */
+    library_signed_out: boolean;
+  } | null;
 }
 
 /** Counts of the titles one branch shared with this library. */
@@ -378,16 +386,23 @@ export function inspectLibrary(address: string): Promise<{ library: LibraryInfoV
  * @returns The authorize URL and what it is for.
  */
 export function startJoin(body: {
-  address: string;
+  /** The library's address; left out with `from_card`. */
+  address?: string;
   fingerprint?: string | null;
   branch_name?: string;
   /** Offer to join as a shared branch (this install must be empty). */
   shared_branch?: boolean;
+  /**
+   * The library id of a library this install holds a card for: the branch
+   * replaces the card, and the address and pinned certificate come from it.
+   */
+  from_card?: string;
 }): Promise<JoinStart> {
   return request("/api/config/join/start", {
     method: "POST",
     body: {
       address: body.address,
+      from_card: body.from_card,
       fingerprint: body.fingerprint ?? undefined,
       branch_name: body.branch_name?.trim() || undefined,
       shared_branch: body.shared_branch ? true : undefined,

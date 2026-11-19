@@ -335,6 +335,23 @@ An install that is already an active branch of a library reads
 that library's books through its link, so a card for it is refused
 (409 `already_joined`). These routes are for the operator or an Owner.
 
+A card can replace a branch instead. `POST /api/config/clerk/start`
+`{ from_branch, clerk_name? }` (a library id instead of `address` and
+`fingerprint`) signs in to a library this install is an active branch of,
+with the address and pinned certificate of the branch link. Only the
+operator may, as only the operator leaves a library (403 otherwise), and
+the library must still answer with the same library id (409
+`origin_mismatch`) and certificate (409 `fingerprint_unconfirmed`). The
+callback gets the card from the library first, then leaves the branch as
+`POST /api/config/join/leave` does, then seals the card. Both run on their
+own task, so a request cut short still finishes them. The answer's
+`left_branch.owner_notified` says whether the library was told. If the
+person doesn't approve the card, the branch stays.
+
+The other way, a branch join of a library this install holds a card for
+signs the card out (see
+[How the sign-in works](branches.md#how-the-sign-in-works)).
+
 In the web app this is Settings → Library → **Library cards**: **Sign in
 with a library card** reads the library, asks for the fingerprint and the
 name, and sends the browser to the library's sign-in page. The library
@@ -342,7 +359,8 @@ sends it back to `/clerk/callback`, which posts the `code` and `state` to
 `POST /api/config/clerk/callback` and removes them from the address bar.
 Only a request that got no answer offers **Try again**; any answer ends
 the pending sign-in. Each card in the list has **Sign out** (**Remove** once
-the library ended it). See
+the library ended it), and for the operator **Make this server a branch**.
+A branch in Settings → Library has **Use a library card instead**. See
 [Sign in with a library card](../guide/branches.md#sign-in-with-a-library-card).
 
 ## API endpoints

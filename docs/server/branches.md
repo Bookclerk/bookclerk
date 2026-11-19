@@ -206,7 +206,21 @@ The exchange runs in five steps:
    `node_credentials` and a receipt.
 5. **Done.** The daemon checks that the answer names the library it read.
    It seals both private keys into its `encrypted_secrets`, records the
-   link in `library_links`, and starts the link's client.
+   link in `library_links`, and starts the link's client. A library card
+   this install held for the library is signed out, as with
+   `POST /api/config/clerk/sign-out`: the branch replaces it. The answer's
+   `replaced_card.library_signed_out` says whether the library ended the
+   card's session too. An invite join does the same.
+
+`POST /api/config/join/start` `{ from_card }` (a library id instead of
+`address` and `fingerprint`) joins a library this install holds an active
+card for. The address and pinned certificate come from the card, and the
+branch name defaults to the card's name. The library must still answer
+with the same library id (409 `origin_mismatch`) and certificate (409
+`fingerprint_unconfirmed`). It can't be a shared branch join (400
+`invalid_request`), and a library with no such card answers 404
+`not_found`. In the web app this is **Make this server a branch** beside
+a card in Settings → Library → **Library cards**.
 
 A clerk's library card uses the same authorization server with a
 second built-in public client, `bookclerk-clerk` (scope
@@ -1229,6 +1243,11 @@ A revoked branch deletes the library's plugin state the same way.
 > If the library can't be reached within 10 seconds, the branch leaves
 > anyway and says the library wasn't told. Revoke the node there
 > (**Settings → Nodes** or `bookclerk nodes revoke <node_id>`).
+
+To keep a library card instead, choose **Use a library card instead**
+beside the library. The branch is left only once the library hands over
+the card (see
+[Signing in with a library card](sign-in.md#signing-in-with-a-library-card)).
 
 Joining again needs a new sign-in or invite. Files of books the branch
 shared stay in the library, marked as from a branch that left (see

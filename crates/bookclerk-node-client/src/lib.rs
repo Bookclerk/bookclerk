@@ -67,7 +67,10 @@ pub use branch::{
     keep_brought_connections, library_origin, redeem_branch_code, BranchAuthorization,
     BranchRedeem, BroughtConnections, InspectedLibrary, RedeemedBranch,
 };
-pub use clerk::{authorize_clerk, redeem_clerk_code, ClerkAuthorization, ClerkRedeem};
+pub use clerk::{
+    authorize_clerk, exchange_clerk_code, redeem_clerk_code, ClerkAuthorization, ClerkRedeem,
+    ExchangedCard,
+};
 pub use client::{
     CatalogBatchAccepted, CatalogSession, ClientExit, ClientTiming, HeartbeatSource, HostClient,
     HostClientConfig, HostClientHandle, OfferedAccounts, AWAITING_HOST_CONSENT, KIND_NOT_RUN_HERE,

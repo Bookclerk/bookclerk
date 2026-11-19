@@ -30,6 +30,7 @@ import {
   windowEntryLibraries,
   setMembersListing,
   setBranchSharing,
+  startJoin,
 } from "./join";
 import { isAppPath, isConsentPage, joinPage } from "./routes";
 
@@ -610,5 +611,25 @@ describe("setLinkKeepCopies", () => {
       include_branches: true,
       keep_copies: false,
     });
+  });
+});
+
+describe("startJoin", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("joins from a card by its library id, with no address", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(
+          JSON.stringify({ authorize_url: "https://books.example.com/oidc/authorize" }),
+          {
+            status: 200,
+          },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await startJoin({ from_card: "lib-1" });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/config/join/start");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({ from_card: "lib-1" });
   });
 });
