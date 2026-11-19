@@ -106,6 +106,7 @@ jobs:
       job_windows_cluster: ${{ steps.resolve.outputs.job_windows_cluster }}
       check_windows_cluster: ${{ steps.resolve.outputs.check_windows_cluster }}
       job_site: ${{ steps.resolve.outputs.job_site }}
+      job_ui_visual: ${{ steps.resolve.outputs.job_ui_visual }}
       check_lint: ${{ steps.resolve.outputs.check_lint }}
       check_ui: ${{ steps.resolve.outputs.check_ui }}
       check_plugin_sdk_abi: ${{ steps.resolve.outputs.check_plugin_sdk_abi }}
@@ -248,6 +249,7 @@ jobs:
           "$PY" scripts/tests/test_cflite_artifacts.py
           "$PY" scripts/tests/test_dev_env.py
           "$PY" scripts/tests/test_tool_versions.py
+          "$PY" scripts/tests/test_visual_baselines.py
 
       - name: Database plugin isolation
         run: python3 scripts/tests/test_db_plugin_isolation.py -q
@@ -1594,6 +1596,106 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # The SPA's Storybook stories, each checked with axe-core and compared
+  # with its baseline screenshot at two viewports in light and dark. Runs
+  # inside the pinned Playwright image so every run renders with the same
+  # browser, fonts and libraries; the image's tag must match the
+  # `@playwright/test` version in ui/package.json
+  # (docs/contributing/ui/visual-testing.md).
+  ui-visual:
+    name: UI visual and accessibility${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('ui-visual-{0}', strategy.job-index)].label }}
+    # Pull request runs wait in the lane the plan picked, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-lanes).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && (fromJSON(needs.plan.outputs.lanes || '{}')[format('ui-visual-{0}', strategy.job-index)].group || 'ci-pr-lane-0') || format('ci-{0}-{1}-ui-visual-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      queue: max
+    needs: plan
+    if: needs.plan.outputs.job_ui_visual == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+    steps:
+      # npm ci runs dependency code here; keep the token out of .git/config.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/contributing/automation.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+
+      # The image ships Node.js, Python and the browsers. Its root user
+      # doesn't own the runner's checkout, and git refuses a repository with
+      # another owner, which the plan scripts read.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Validate CI plan
+        run: python3 scripts/ci-exec.py validate
+
+      # The baselines commit this tree is checked against: `none` until a
+      # set is approved, then a commit of the public baselines repository.
+      - name: Read the baselines lock
+        id: lock
+        run: python3 scripts/visual_baselines.py lock ui/visual/baselines.lock >> "$GITHUB_OUTPUT"
+
+      # Only a set the approval workflow tagged counts: a pull request could
+      # otherwise copy a pending set's commit into the lock and skip the
+      # approval. Only the App can create `approved/*` tags (ruleset).
+      - name: Check the locked set is approved
+        if: steps.lock.outputs.sha != ''
+        env:
+          BASELINES: https://github.com/${{ github.repository_owner }}/bookclerk-visual-baselines
+          SHA: ${{ steps.lock.outputs.sha }}
+        run: |
+          tagged="$(git ls-remote "$BASELINES" "refs/tags/approved/$SHA" | cut -f1)"
+          if [ "$tagged" != "$SHA" ]; then
+            echo "::error file=ui/visual/baselines.lock::$SHA is not an approved baselines set (no approved/$SHA tag)."
+            exit 1
+          fi
+
+      # Public, so no token: a fork's pull request fetches it the same way.
+      - name: Check out the baselines
+        if: steps.lock.outputs.sha != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository_owner }}/bookclerk-visual-baselines
+          ref: ${{ steps.lock.outputs.sha }}
+          path: visual-baselines
+          persist-credentials: false
+
+      # Records a full set for the artifact below, and compares with the
+      # checked-out baselines when there are any. axe-core violations and
+      # screenshot differences fail the run.
+      - name: Visual and accessibility checks
+        env:
+          CI_VISUAL_BASELINES: ${{ steps.lock.outputs.sha != '' && format('{0}/visual-baselines', github.workspace) || '' }}
+        run: python3 scripts/ci-exec.py run ui_visual
+
+      # The recorded set (`baselines/`, which the label workflow commits as
+      # new baselines) and the reports, with each mismatch's expected,
+      # actual and diff images under `compare/`. Not for an unpublished OSV
+      # remediation bump.
+      - name: Upload the visual results
+        if: ${{ !cancelled() && !inputs.private-head }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ui-visual
+          path: ${{ runner.temp }}/ui-visual
+          if-no-files-found: ignore
+          retention-days: 7
+
   # A merge group, like an OSV remediation run, only needs to know whether it
   # can land. Once any job fails, cancel the rest of the run so CI Gate
   # reports at once and the queue ejects the group instead of holding runners
@@ -1670,6 +1772,7 @@ jobs:
       - postgres
       - windows-cluster
       - site
+      - ui-visual
     if: always()
     runs-on: ubuntu-latest
     permissions:

@@ -285,9 +285,34 @@ class ScenarioTests(unittest.TestCase):
 
     def test_ui_only(self) -> None:
         p = plan("ui/src/App.tsx")
-        self.assertEqual(sorted(p.checks), ["api_docs", "lint", "ui"])
+        self.assertEqual(sorted(p.checks), ["api_docs", "lint", "ui", "ui_visual"])
         self.assertEqual(p.params("api_docs"), {"rust_packages": [], "typescript": False, "ui": True, "python": False})
-        self.assertEqual({j for j, on in p.jobs.items() if on}, {"check"})
+        self.assertEqual({j for j, on in p.jobs.items() if on}, {"check", "ui-visual"})
+
+    def test_ui_visual_follows_spa_sources_not_the_host(self) -> None:
+        """Stories render the SPA's sources; a host change alone renders nothing new."""
+        for path in ("ui/src/components/ui/button.tsx", "ui/.storybook/preview.tsx", "ui/visual/stories.spec.ts"):
+            with self.subTest(path=path):
+                self.assertTrue(plan(path).selected("ui_visual"))
+        p = plan("crates/bookclerkd/src/lib.rs")
+        self.assertTrue(p.selected("ui"))
+        self.assertFalse(p.selected("ui_visual"))
+
+    def test_ui_visual_records_then_compares_with_baselines(self) -> None:
+        p = plan("ui/src/App.tsx")
+        record = ["npm", "run", "test:visual", "--", "--update-snapshots=all"]
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CI_VISUAL_BASELINES", None)
+            cmds = [c for key, c in planned_commands(artifact(p), "ui_visual", CTX) if not key]
+            self.assertEqual(cmds[-2].argv, record)
+            self.assertTrue(cmds[-2].env["VISUAL_BASELINES_DIR"].endswith("baselines"))
+            self.assertEqual(cmds[-1].argv[0], "touch")
+            self.assertTrue(cmds[-1].argv[1].endswith("record-complete"))
+        with mock.patch.dict(os.environ, {"CI_VISUAL_BASELINES": "/b"}):
+            cmds = [c for key, c in planned_commands(artifact(p), "ui_visual", CTX) if not key]
+            self.assertEqual([cmds[-3].argv, cmds[-1].argv], [record, ["npm", "run", "test:visual"]])
+            self.assertEqual(cmds[-1].env["VISUAL_BASELINES_DIR"], "/b")
+            self.assertNotEqual(cmds[-3].env["VISUAL_OUTPUT_DIR"], cmds[-1].env["VISUAL_OUTPUT_DIR"])
 
     def test_cli_only_binary_package_uses_tests_target_selection(self) -> None:
         p = plan("crates/bookclerk-cli/src/main.rs")
