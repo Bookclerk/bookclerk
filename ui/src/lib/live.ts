@@ -39,7 +39,7 @@ export type LiveTopic =
   | "nodes"
   | "config"
   | "consents"
-  | "clusters"
+  | "libraries"
   | "users"
   | "discover";
 

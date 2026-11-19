@@ -2625,7 +2625,7 @@ pub fn spawn_grant(
 ) -> Result<PluginGrant> {
     if let Some(version_grant) = &plugin.version_grant {
         // A released plugin's consent is the grant recorded on its release
-        // row (approved once for the cluster), checked against this tree's
+        // row (approved once for the library), checked against this tree's
         // manifest exactly as a host grant would be.
         let requested = consent_request(&plugin.manifest, plugin.plugin_key());
         return if grant_covers(version_grant, &requested) {

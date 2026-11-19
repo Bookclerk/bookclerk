@@ -35,7 +35,7 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::{AcquireTitle, JobKind, LibraryStore};
 use bookclerk_node_proto::{
-    seal_upload_token, AcquireTarget, Body, Frame, LibraryId, PlanDestination, TargetTitle,
+    seal_upload_token, AcquireTarget, Body, CallNumber, Frame, PlanDestination, TargetTitle,
     MAX_FRAME_BYTES, MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
 };
 use rand::RngCore as _;
@@ -270,9 +270,9 @@ fn target_title(title: &AcquireTitle) -> TargetTitle {
     }
 }
 
-/// The `<library id>` of `edition_id`, as a target carries it.
-fn target_library_id(edition_id: &str) -> Option<LibraryId> {
-    bookclerk_library::library_id(edition_id).and_then(|id| LibraryId::try_from(id).ok())
+/// The `<call number>` of `edition_id`, as a target carries it.
+fn target_call_number(edition_id: &str) -> Option<CallNumber> {
+    bookclerk_library::call_number(edition_id).and_then(|id| CallNumber::try_from(id).ok())
 }
 
 /// `acquire.plan`: the titles the job still needs, and how to name them.
@@ -336,10 +336,10 @@ pub(super) async fn acquire_plan(
             plugin_key: title.plugin_key.clone(),
             account_id: title.account_id.clone(),
             title: target_title(&title),
-            library_id: target_library_id(&title.edition_id),
-            parent_library_id: parent
+            call_number: target_call_number(&title.edition_id),
+            parent_call_number: parent
                 .as_ref()
-                .and_then(|parent| target_library_id(&parent.edition_id)),
+                .and_then(|parent| target_call_number(&parent.edition_id)),
             parent: parent.as_ref().map(target_title),
             destinations: Some(accepted),
         });
@@ -389,7 +389,7 @@ async fn title_destinations(
     for destination in destinations {
         let (title_folders, title_names) = match title {
             Some(title) => {
-                let request = crate::cluster_link::host_jobs::acquire_request(
+                let request = crate::library_link::host_jobs::acquire_request(
                     &cfg,
                     title.into(),
                     &destination.options,

@@ -30,7 +30,7 @@ interface PlacementPanelProps {
 
 /**
  * Where a plugin instance runs: by hand on this node (the Deployed switch), or
- * on `replicas` nodes the cluster scheduler picks among those carrying every
+ * on `replicas` nodes the library scheduler picks among those carrying every
  * label constraint.
  */
 export function PlacementBadge({ plugin }: { plugin: PluginSettingsGroup }) {
@@ -126,7 +126,7 @@ export function PlacementPanel({
       <p className="text-xs font-medium text-ink/70">Placement</p>
       <p className="mt-1 text-xs text-ink/50">
         {placement
-          ? `The cluster scheduler runs this instance on ${placement.placed}${
+          ? `The library scheduler runs this instance on ${placement.placed}${
               placement.replicas === "all" ? " (every node with room)" : ` of ${placement.replicas}`
             } node(s)${
               placement.constraints.length ? ` labelled ${placement.constraints.join(", ")}` : ""

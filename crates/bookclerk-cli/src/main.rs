@@ -127,13 +127,13 @@ enum Commands {
         /// Nested `events` verb (list, dead-letters, retry, ack, cancel, resume).
         command: commands::events::EventsCommand,
     },
-    /// Owner clusters this install hosts for, and consent to their plugins.
-    Clusters {
+    /// Owner libraries this install hosts for, and consent to their plugins.
+    Libraries {
         #[command(subcommand)]
-        /// Nested `clusters` verb (list, consents, approve, revoke).
-        command: commands::clusters::ClustersCommand,
+        /// Nested `libraries` verb (list, consents, approve, revoke).
+        command: commands::libraries::LibrariesCommand,
     },
-    /// Cluster nodes: liveness, capacity, budgets, and placement labels.
+    /// Library nodes: liveness, capacity, budgets, and placement labels.
     Nodes {
         #[command(subcommand)]
         /// Nested `nodes` verb (list, set, label).
@@ -242,6 +242,10 @@ async fn cli_main() -> ExitCode {
     bookclerk_media::init_pool_from_config(&config.media);
     if let Some(paths) = config.paths.as_ref() {
         bookclerk_plugin_host::retry_abandoned_acl_journals(&paths.files_dir);
+        // Reports a failing command sends join the install's report history.
+        if let Some(diag) = bookclerk_config::diagnostics_global() {
+            diag.set_files_dir(&paths.files_dir);
+        }
     }
 
     let format = early
@@ -377,7 +381,7 @@ fn print_cli_setup_warnings(config: &Config) {
 /// Dispatches the parsed verb after ensuring the files-dir layout.
 ///
 /// The master key is not minted here. Commands that open the library align the
-/// cluster secret root inside that open, before any secret is sealed.
+/// library secret root inside that open, before any secret is sealed.
 /// Standalone key commands (`config master-key`) do not open the database.
 async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     if let Some(paths) = &config.paths {
@@ -397,7 +401,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         Commands::Daemon { command } => commands::daemon_cmd::run(command, &config, format).await,
         Commands::Events { command } => commands::events::run(command, &config, format).await,
         Commands::Nodes { command } => commands::nodes::run(command, &config, format).await,
-        Commands::Clusters { command } => commands::clusters::run(command, &config, format).await,
+        Commands::Libraries { command } => commands::libraries::run(command, &config, format).await,
         Commands::Queues { command } => commands::queues::run(command, &config, format).await,
         Commands::Users { command } => commands::users::run(command, &config, format).await,
         Commands::Login => commands::daemon_cmd::run_login(&config, format).await,

@@ -1,4 +1,4 @@
-//! Fetching an archive whose URL an owner cluster chose, on a branch node.
+//! Fetching an archive whose URL a library chose, on a branch node.
 //!
 //! A host fetches owner `https:` archives itself, outside any plugin jail
 //! and network consent, so the URL is held to more than the installer's
@@ -86,7 +86,7 @@ fn owner_address_allowed(ip: IpAddr) -> bool {
         }
 }
 
-/// Checks a URL an owner cluster asks this host to fetch an archive from.
+/// Checks a URL a library asks this host to fetch an archive from.
 ///
 /// This is the textual half of the policy; the fetch enforces the address
 /// half again on what each name resolves to (`PublicOnlyResolver`).

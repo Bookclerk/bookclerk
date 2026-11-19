@@ -553,13 +553,13 @@ frozen `ScheduledController` (`cron`, `scheduled_time`, `fire_id`,
   February 29 on a Sunday). A manifest declares at most 8 schedules of at most 128 bytes each
   (`MAX_CRON_BYTES`).
 - **One fire per instance.** Each fire runs once per deployed plugin
-  instance, cluster-wide. Every daemon checks its schedules every 15
+  instance, library-wide. Every daemon checks its schedules every 15
   seconds, and a compare-and-swap on the shared `plugin_cron_cursors` row
   lets exactly one node claim a fire. The claim admits a durable
   `plugin_scheduled` job in the same batch, and the job queue routes it to
   a node that runs the instance (see
   [Job kinds](../internals/jobs.md#job-kinds)).
-- **Missed fires coalesce.** A cluster that was down through several fire
+- **Missed fires coalesce.** A library that was down through several fire
   times runs one late fire for the newest of them, with that time as
   `scheduledTime`. The same goes for an instance that was undeployed and
   is deployed again. A schedule seen for the first time (a new instance,
@@ -828,7 +828,7 @@ supports_suspend = false
   Subscriptions are the consented `[[events.consumers]]` and
   `[[queues.consumers]]` rows of what the deployment would run: the active
   installed version and its grant, or the discovered manifest for a
-  plugin with no cluster install.
+  plugin with no library install.
 - The catalog key is the node id from `node-identity.json`. Nodes don't
   delete catalog rows they lack.
 
@@ -971,7 +971,7 @@ command with one handler, and is *claimed* (see
 - The host evaluates catalog JSON filters, then compare-and-sets a
   concrete delivery id inside a generic atomic plan.
 - `[events.concurrency]` (default 1) is the number of local delivery
-  workers **and** the cluster-wide maximum of `running` deliveries per
+  workers **and** the library-wide maximum of `running` deliveries per
   `(plugin_id, resource_class)` (`network` today). It is enforced at
   lease time with a portable `bookclerk_slots` row, so two VPSes can't
   over-admit under `READ COMMITTED`.

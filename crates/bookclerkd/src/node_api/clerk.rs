@@ -204,9 +204,9 @@ pub struct ClerkConsentPage {
             ("user_required" = (summary = "The session is not a library user.", value = json!({"error": "user_required", "detail": "a branch belongs to a user: sign in with your account on this library"}))),
             ("user_inactive" = (summary = "The account is not active.", value = json!({"error": "user_inactive", "detail": "this account is not active"}))),
         )),
-        (status = 503, description = "The library could not be read; try again (`unavailable`), or this library's cluster row or origin is not available yet (`cluster_unavailable`, `origin_unavailable`).", body = crate::http_error::ErrorAnswer, examples(
+        (status = 503, description = "The library could not be read; try again (`unavailable`), or this library's identity row or origin is not available yet (`library_unavailable`, `origin_unavailable`).", body = crate::http_error::ErrorAnswer, examples(
             ("unavailable" = (summary = "A read failed; try again.", value = json!({"error": "unavailable", "detail": "try again"}))),
-            ("cluster_unavailable" = (summary = "This library's cluster row is not available yet.", value = json!({"error": "cluster_unavailable"}))),
+            ("library_unavailable" = (summary = "This library's identity row is not available yet.", value = json!({"error": "library_unavailable"}))),
         )),
     ),
 )]
@@ -384,7 +384,7 @@ fn token_error(status: StatusCode, error: &'static str) -> Response {
     path = "/api/clerk/v1/token",
     request_body = ClerkTokenRequest,
     responses(
-        (status = 200, description = "The session token (shown once), this library's cluster id, the signed-in user and how long the session stays signed in unused.", body = ClerkTokenAnswer),
+        (status = 200, description = "The session token (shown once), this library's id, the signed-in user and how long the session stays signed in unused.", body = ClerkTokenAnswer),
         (status = 400, description = "The body is not a token request (`invalid_request`).", body = crate::http_error::ErrorMessage, example = json!({"error": "invalid_request"})),
         (status = 403, description = "The connection failed the transport policy (`transport_insecure`, with the check in `reason`), or the code does not redeem: blank, unknown, used, expired, another client's, a wrong verifier or redirect URI, or the user is no longer active (`sign_in_refused`).", body = crate::http_error::NodeRefusal, examples(
             ("transport_insecure" = (summary = "Plain HTTP from another machine.", value = json!({"error": "transport_insecure", "reason": "plain_http"}))),
@@ -493,7 +493,7 @@ pub async fn post_clerk_token(State(state): State<Arc<AppState>>, request: Reque
     no_store(
         Json(ClerkTokenAnswer {
             token: token.to_string(),
-            cluster_id: info.cluster_id,
+            library_id: info.library_id,
             user: ClerkUser {
                 id: user.id,
                 display_name: user.display_name,

@@ -1424,7 +1424,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         identity = (
             ("node identity create", "node_identity_is_stable_and_distinct"),
             ("node identity restart and binding", "restart_keeps_node_id_and_distinct_nodes_stay_distinct"),
-            ("copied identity rejects a different cluster", "copied_identity_rejects_a_different_cluster"),
+            ("copied identity rejects a different library", "copied_identity_rejects_a_different_library"),
         )
         cmds = [
             Command(
@@ -1435,14 +1435,14 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         ]
         cmds.append(
             Command(
-                "cluster_secret_startup",
+                "library_secret_startup",
                 [
                     "cargo",
                     "test",
                     "-p",
                     "bookclerk-cli",
                     "--test",
-                    "cluster_secret_startup",
+                    "library_secret_startup",
                     "--",
                     "--nocapture",
                 ],

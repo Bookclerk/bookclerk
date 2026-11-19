@@ -2,6 +2,7 @@
 // declare them.
 
 import type { LiveStatus } from "./live.ts";
+import type { UsageService } from "./usage.ts";
 
 /** What the Worker asks of a visitor's `DemoSession` object over RPC. */
 /** The visitor's portal session as the Worker hands it to the browser. */
@@ -96,6 +97,13 @@ export interface Env {
    * without it, the copies send none.
    */
   DIAGNOSTICS_URL?: string;
+  /**
+   * The diagnostics Worker's `DemoRuns` entrypoint (a service binding).
+   * When bound, each run's start, ready and stop are reported there for
+   * the dashboard's live use and trends (src/usage.ts); without it nothing
+   * is sent.
+   */
+  USAGE?: UsageService;
   /** Sessions that may run at once, as decimal text. */
   MAX_LIVE_SESSIONS?: string;
   /** Visitor-hours per UTC day, as decimal text. */

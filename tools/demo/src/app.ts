@@ -40,6 +40,7 @@ import {
 } from "./pages.ts";
 import { LIVE_PATH, liveRequest, NO_SESSION, siteUrl } from "./live.ts";
 import { timed } from "./timing.ts";
+import { reportRun, stopEvent } from "./usage.ts";
 
 /** Turnstile's server-side check. */
 const SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
@@ -417,6 +418,13 @@ async function start(request: Request, url: URL, env: Env, deps: Deps): Promise<
   );
   if (!admitted.ok) return page(REFUSALS[admitted.reason], 429);
   await sessionStub(env, id).open({ id, endsAt: admitted.endsAt, version, origin: url.origin });
+  await reportRun(env, {
+    kind: "start",
+    run_id: admitted.runId,
+    started_at: now,
+    ends_at: admitted.endsAt,
+    version: version.slice(0, 64),
+  });
   const maxAge = admitted.endsAt - now;
   return redirect("/_demo/wait", [
     `${SESSION_COOKIE}=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`,
@@ -748,12 +756,14 @@ export async function sweep(env: Env, deps: Deps = DEFAULT_DEPS): Promise<number
       // Leave the row live so the next sweep tries the teardown again, until
       // it is so late that the slot matters more.
       if (now - endsAt < SWEEP_GIVE_UP_SECONDS) continue;
-      await finish(env.DB, { id, now, reason: "sweep", revoked: 0, failed: 1 });
+      const ended = await finish(env.DB, { id, now, reason: "sweep", revoked: 0, failed: 1 });
+      await reportRun(env, stopEvent(ended, now, "sweep"));
       continue;
     }
     // The object records its own end; this closes the row when it could not
     // (it had already ended, or never opened), so no row stays live forever.
-    await finish(env.DB, { id, now, reason: "sweep", revoked: 0, failed: 0 });
+    const ended = await finish(env.DB, { id, now, reason: "sweep", revoked: 0, failed: 0 });
+    await reportRun(env, stopEvent(ended, now, "sweep"));
   }
   await prune(env.DB, now);
   return rows.length;

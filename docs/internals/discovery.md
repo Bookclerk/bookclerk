@@ -177,7 +177,7 @@ operator, a household user, or a portal identity) has a **subject key**
 
 > [!NOTE]
 > A candidate fetch asks the storefronts deployed on the node that claims
-> it. In a cluster that splits storefronts across nodes, stores deployed
+> it. In a library that splits storefronts across nodes, stores deployed
 > only on other nodes are not asked yet.
 
 Storefront answers are cached for 24 hours in `discover_store_calls`, keyed by
@@ -310,7 +310,7 @@ after the event (waiting, running or finished), so with more people than
 the queue holds, finished refreshes are not queued again ahead of the
 people still waiting for room.
 Every node registers the same consumer and the outbox delivers each event
-once in the cluster.
+once in the library.
 
 A listening sync compares each row it writes with the row stored before it,
 so a sync that reports only some people, or repeats what is stored, publishes

@@ -210,7 +210,7 @@ async fn node_bound_output_keys_from(
 }
 
 /// Plugin keys of the instances whose key names the first-party `local`
-/// destination, read from the cluster's instance list.
+/// destination, read from the library's instance list.
 ///
 /// This does not depend on what is installed on this node, so it is the
 /// fallback when discovery fails and the floor of what the requirements
@@ -233,7 +233,7 @@ async fn local_output_keys_from_instances(
         .collect())
 }
 
-/// Node-bound output keys for acquire admission and the cluster-wide
+/// Node-bound output keys for acquire admission and the library-wide
 /// requirements sweep.
 ///
 /// Admission and the sweep must agree, or an acquire admitted on a node
@@ -979,8 +979,8 @@ pub async fn run_acquire(
             placement: Some(placement_facts(&library, &book).await?),
             job_id: ctx.map(|c| c.fence.job_id.clone()),
             temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
-            library_id: None,
-            parent_library_id: None,
+            call_number: None,
+            parent_call_number: None,
             metadata: metadata.clone(),
             library_copies: library_copies.clone(),
         };

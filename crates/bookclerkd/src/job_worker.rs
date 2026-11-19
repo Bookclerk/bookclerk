@@ -298,11 +298,11 @@ fn spawn_network_worker(state: Arc<AppState>, index: u32) {
     });
 }
 
-/// Claims the next network job this node can run, under the cluster
+/// Claims the next network job this node can run, under the library
 /// semaphores, retrying an unavailable database.
 ///
 /// The routed claim only claims a job this node meets the requirements of
-/// and takes the job's cluster permits first (see
+/// and takes the job's library permits first (see
 /// `control_plane::claim_routed_job`). Its claim is a single CAS on the
 /// row's lease generation, so a replay after a lost response cannot claim
 /// the same row twice; a row it did claim before the response was lost
@@ -415,7 +415,7 @@ fn classify_handler_failure(local_cancel: bool, operator_cancel: bool) -> Handle
     }
 }
 
-/// Runs a routed claim, then gives its cluster semaphore permits back.
+/// Runs a routed claim, then gives its library semaphore permits back.
 ///
 /// The permits are released after the row is finalized (or the fence was
 /// found lost), so another node never runs past the limit while this one is
@@ -434,7 +434,7 @@ async fn run_claimed_job(
     }
 }
 
-/// Heartbeats the lease (and renews the job's cluster permits) while the
+/// Heartbeats the lease (and renews the job's library permits) while the
 /// handler runs, then completes or fails the row.
 async fn run_fenced_job(
     state: Arc<AppState>,

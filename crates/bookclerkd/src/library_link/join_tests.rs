@@ -1,0 +1,1349 @@
+//! Join a library from the web UI, end to end in one process: the joining
+//! daemon reads the owner's `info`, starts a sign-in, the owner's user
+//! consents, the callback redeems the code, and the link's client starts
+//! at once (no restart); Leave library tells the owner (`node.leaving`),
+//! which revokes the node. Also the "I have an invite" tab, who may
+//! change Settings → Library's sharing settings (the operator or an Owner),
+//! and a shared branch join (the owner's database is simulated: its config names
+//! Postgres while the store is SQLite, since no Postgres runs in tests).
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use axum::http::{header, StatusCode};
+use axum::routing::{get, post};
+use bookclerk_library::control_plane::{
+    load_library_link, load_node, load_node_credential, mint_enrollment_link, EnrollmentActor,
+};
+use bookclerk_library::{LibraryStore, UserRole};
+use serde_json::{json, Value};
+
+use crate::api::AppState;
+use crate::auth::UserCaller;
+use crate::node_api::branch::tests::{call, routes, LOOPBACK};
+
+/// Tests have no database guests installed: treat the library's as present.
+pub(super) static ASSUME_DATABASE_GUESTS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Serves `app` on a loopback port, as the daemon's listener does.
+async fn serve(app: axum::Router) -> SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local = listener.local_addr().unwrap();
+    let app = app.layer(axum::Extension(crate::node_api::transport::LocalAddr(
+        local,
+    )));
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    local
+}
+
+/// An owner library served on loopback, with one member. Answers its state,
+/// store, canonical origin and the member.
+async fn owner(files: &tempfile::TempDir) -> (Arc<AppState>, LibraryStore, String, i64) {
+    owner_with(files, "").await
+}
+
+/// [`owner`] with `config_toml` as the library's config.
+async fn owner_with(
+    files: &tempfile::TempDir,
+    config_toml: &str,
+) -> (Arc<AppState>, LibraryStore, String, i64) {
+    let (state, store) = crate::node_api::tests::test_state_with(files, config_toml).await;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    state.config.write().await.integrations.public_origin =
+        Some(format!("http://127.0.0.1:{}", addr.port()));
+    let member = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap();
+    (
+        state,
+        store,
+        format!("http://localhost:{}", addr.port()),
+        member.id,
+    )
+}
+
+/// The joining daemon's operator routes (the auth layer is the daemon's).
+fn host_routes(state: &Arc<AppState>) -> axum::Router {
+    host_routes_as(state, UserCaller::Operator)
+}
+
+/// The joining daemon's routes as `caller` reaches them (the sharing
+/// routes read the caller the daemon's auth layer puts in the request).
+fn host_routes_as(state: &Arc<AppState>, caller: UserCaller) -> axum::Router {
+    axum::Router::new()
+        .route("/api/config/join", get(super::get_join_status))
+        .route("/api/config/join/inspect", post(super::post_join_inspect))
+        .route("/api/config/join/start", post(super::post_join_start))
+        .route("/api/config/join/callback", post(super::post_join_callback))
+        .route("/api/config/join/invite", post(super::post_join_invite))
+        .route("/api/config/join/leave", post(super::post_join_leave))
+        .route(
+            "/api/config/join/sharing",
+            get(super::get_join_sharing).post(super::post_join_sharing),
+        )
+        .route(
+            "/api/config/join/connections",
+            post(crate::library_link::connections::post_join_connections),
+        )
+        .route(
+            "/api/config/join/connections/disconnect",
+            post(crate::library_link::connections::post_join_connections_disconnect),
+        )
+        .route("/api/config/join/capacity", post(super::post_join_capacity))
+        .route("/api/config/join/window", get(super::get_join_window))
+        .layer(axum::Extension(caller))
+        .with_state(Arc::clone(state))
+}
+
+/// Waits up to 10 s for `check`.
+async fn eventually<F, Fut>(what: &str, mut check: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if check().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+/// The owner's user consents to the authorize URL's request; answers the
+/// callback's query pairs.
+async fn consent(
+    owner: &Arc<AppState>,
+    member: i64,
+    authorize_url: &str,
+    approve: bool,
+) -> std::collections::HashMap<String, String> {
+    consent_with(owner, member, authorize_url, approve, json!({})).await
+}
+
+/// [`consent`] with `extra` fields in the body (`connection`, `step_up`).
+async fn consent_with(
+    owner: &Arc<AppState>,
+    member: i64,
+    authorize_url: &str,
+    approve: bool,
+    extra: Value,
+) -> std::collections::HashMap<String, String> {
+    let url = url::Url::parse(authorize_url).unwrap();
+    assert_eq!(url.path(), "/oidc/authorize");
+    let mut body = serde_json::Map::new();
+    for (name, value) in url.query_pairs() {
+        body.insert(name.into_owned(), json!(value.into_owned()));
+    }
+    body.insert("approve".into(), json!(approve));
+    for (name, value) in extra.as_object().unwrap() {
+        body.insert(name.clone(), value.clone());
+    }
+    let app = routes(owner, UserCaller::User { user_id: member }, LOOPBACK);
+    let (status, _, answer) = call(
+        &app,
+        "POST",
+        "/api/auth/branch-consent",
+        Some(Value::Object(body)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let redirect = url::Url::parse(answer["redirect"].as_str().unwrap()).unwrap();
+    assert_eq!(redirect.path(), "/join/callback");
+    redirect.query_pairs().into_owned().collect()
+}
+
+#[tokio::test]
+async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let (owner_state, owner_store, origin, member) = owner(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let (host_state, host_store) = crate::node_api::tests::test_state(&host_files).await;
+    // The supervisor a join wakes, as the daemon runs it.
+    super::super::spawn_library_links(Arc::clone(&host_state));
+    let host = host_routes(&host_state);
+
+    let (status, _, fresh) = call(&host, "GET", "/api/config/join", None).await;
+    assert_eq!(status, StatusCode::OK, "{fresh}");
+    assert_eq!(fresh["fresh"], true);
+
+    // The address must be the library's own origin.
+    let port = origin.rsplit(':').next().unwrap();
+    let (status, _, mismatch) = call(
+        &host,
+        "POST",
+        "/api/config/join/inspect",
+        Some(json!({ "address": format!("http://127.0.0.1:{port}") })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{mismatch}");
+    assert_eq!(mismatch["origin"], origin.as_str());
+    let (status, _, inspected) = call(
+        &host,
+        "POST",
+        "/api/config/join/inspect",
+        Some(json!({ "address": origin })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{inspected}");
+    assert_eq!(inspected["library"]["needs_fingerprint"], false);
+    assert_eq!(inspected["library"]["enrollment"], true);
+
+    // A denied sign-in uses up its pending join.
+    let start = json!({ "address": origin, "branch_name": "Den PC" });
+    let (status, headers, started) =
+        call(&host, "POST", "/api/config/join/start", Some(start.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    let back = consent(
+        &owner_state,
+        member,
+        started["authorize_url"].as_str().unwrap(),
+        false,
+    )
+    .await;
+    assert_eq!(back["error"], "access_denied");
+    let callback = json!({ "state": back["state"], "error": "access_denied" });
+    let (status, _, denied) = call(
+        &host,
+        "POST",
+        "/api/config/join/callback",
+        Some(callback.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+    let (status, _, _) = call(&host, "POST", "/api/config/join/callback", Some(callback)).await;
+    assert_eq!(status, StatusCode::GONE);
+
+    // Approve: the callback redeems and the client starts at once.
+    let (_, _, started) = call(&host, "POST", "/api/config/join/start", Some(start)).await;
+    let authorize_url = started["authorize_url"].as_str().unwrap();
+    assert!(
+        !authorize_url.contains("code_verifier"),
+        "the verifier never leaves the daemon: {authorize_url}"
+    );
+    let back = consent(&owner_state, member, authorize_url, true).await;
+    let callback = json!({ "code": back["code"], "state": back["state"] });
+    let (status, _, joined) = call(
+        &host,
+        "POST",
+        "/api/config/join/callback",
+        Some(callback.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["running"], true);
+    let library_id = joined["library"]["library_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let node_id = joined["library"]["node_id"].as_str().unwrap().to_string();
+    assert!(super::super::is_link_running(&library_id));
+    let node = load_node(&owner_store, &node_id).await.unwrap();
+    assert_eq!(node.owner_user_id, Some(member));
+    eventually("the branch to connect", || async {
+        load_node_credential(&owner_store, &node_id)
+            .await
+            .unwrap()
+            .is_some_and(|credential| credential.last_connected_at.is_some())
+    })
+    .await;
+    // The state is single use.
+    let (status, _, _) = call(&host, "POST", "/api/config/join/callback", Some(callback)).await;
+    assert_eq!(status, StatusCode::GONE);
+    let (_, _, status_now) = call(&host, "GET", "/api/config/join", None).await;
+    assert_eq!(status_now["fresh"], false);
+    assert_eq!(status_now["links"][0]["running"], true);
+    assert_eq!(status_now["links"][0]["share_books"], true);
+    assert_eq!(status_now["links"][0]["include_branches"], true);
+    eventually("the branch to report its sharing settings", || async {
+        load_node(&owner_store, &node_id).await.unwrap().share_books == Some(true)
+    })
+    .await;
+
+    // Settings → Library: the settings reach the library at once.
+    let (status, _, shared) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({ "library_id": library_id, "share_books": false, "include_branches": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shared}");
+    assert_eq!(shared["library"]["share_books"], false);
+    // Work for other members and copies of their books start off, and a
+    // body that leaves them out keeps them as they are.
+    assert_eq!(shared["library"]["work_for_members"], false);
+    assert_eq!(shared["library"]["keep_member_copies"], false);
+    assert_eq!(
+        shared["library"]["list_members_books"], true,
+        "left as it is when absent"
+    );
+    let (status, _, listing) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({
+            "library_id": library_id,
+            "share_books": false,
+            "include_branches": true,
+            "list_members_books": false,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{listing}");
+    assert_eq!(listing["library"]["list_members_books"], false);
+    eventually("the library to see sharing off", || async {
+        load_node(&owner_store, &node_id).await.unwrap().share_books == Some(false)
+    })
+    .await;
+    let (status, _, worked) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({
+            "library_id": library_id,
+            "share_books": false,
+            "include_branches": true,
+            "work_for_members": true,
+            "keep_member_copies": true,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{worked}");
+    assert_eq!(worked["library"]["work_for_members"], true);
+    assert_eq!(worked["library"]["keep_member_copies"], true);
+    let (status, _, kept) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({
+            "library_id": library_id,
+            "share_books": false,
+            "include_branches": true,
+            "keep_member_copies": false,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    assert_eq!(kept["library"]["work_for_members"], true);
+    assert_eq!(kept["library"]["keep_member_copies"], false);
+    let link = load_library_link(&host_store, &library_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        link.claim_scope(),
+        bookclerk_node_proto::ClaimScope::AllMembers
+    );
+    assert!(!link.keep_member_copies);
+    let (status, _, _) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({ "library_id": "no-such-library", "share_books": true, "include_branches": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // "Keep copies on this computer" off: the other settings keep their
+    // values, and Books in other libraries lists the link either way.
+    let (status, headers, window) = call(&host, "GET", "/api/config/join/window", None).await;
+    assert_eq!(status, StatusCode::OK, "{window}");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(window["libraries"][0]["library_id"], library_id.as_str());
+    assert_eq!(window["libraries"][0]["keep_copies"], true);
+    assert!(window["books"].is_array(), "{window}");
+    let (status, _, kept) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({ "library_id": library_id, "share_books": false, "include_branches": true, "keep_copies": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    assert_eq!(kept["library"]["keep_copies"], false);
+    assert_eq!(kept["library"]["share_books"], false);
+    assert_eq!(
+        kept["library"]["list_members_books"], false,
+        "left as it is"
+    );
+    let (_, _, window) = call(&host, "GET", "/api/config/join/window", None).await;
+    assert_eq!(window["libraries"][0]["keep_copies"], false);
+    // The old name is refused.
+    let (status, _, refused) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({ "library_id": library_id, "share_books": false, "include_branches": true, "download": true })),
+    )
+    .await;
+    assert!(status.is_client_error(), "{refused}");
+
+    // Settings → Library's job cap: the running link's share follows it.
+    let (status, _, listed) = call(&host, "GET", "/api/config/join/sharing", None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["libraries"][0]["max_jobs"], Value::Null);
+    let machine = host_state.capacity.machine();
+    assert_eq!(listed["libraries"][0]["job_share"], machine);
+    let (status, _, capped) = call(
+        &host,
+        "POST",
+        "/api/config/join/capacity",
+        Some(json!({ "library_id": library_id, "max_jobs": 0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{capped}");
+    assert_eq!(capped["library"]["max_jobs"], 0);
+    assert_eq!(capped["library"]["job_share"], 0);
+    assert_eq!(host_state.capacity.share_of(&library_id), Some(0));
+    let (status, _, uncapped) = call(
+        &host,
+        "POST",
+        "/api/config/join/capacity",
+        Some(json!({ "library_id": library_id, "max_jobs": null })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{uncapped}");
+    assert_eq!(uncapped["library"]["max_jobs"], Value::Null);
+    assert_eq!(uncapped["library"]["job_share"], machine);
+    let (status, _, refused) = call(
+        &host,
+        "POST",
+        "/api/config/join/capacity",
+        Some(json!({ "library_id": library_id, "max_jobs": 17 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert_eq!(refused["error"], "invalid");
+    // Leaving `max_jobs` out is refused, not read as an equal share.
+    let (status, _, _) = call(
+        &host,
+        "POST",
+        "/api/config/join/capacity",
+        Some(json!({ "library_id": library_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _, _) = call(
+        &host,
+        "POST",
+        "/api/config/join/capacity",
+        Some(json!({ "library_id": "no-such-library", "max_jobs": 1 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // An Owner of this branch may change them too, and the change reaches
+    // the running link; an Administrator or a Member may not.
+    let mut users = Vec::new();
+    for role in [UserRole::Owner, UserRole::Administrator, UserRole::Member] {
+        let user = host_store
+            .create_user(role, Some("Sam"), None)
+            .await
+            .unwrap();
+        users.push(user.id);
+    }
+    let (owner_user, admin_user, member_user) = (users[0], users[1], users[2]);
+    for refused in [admin_user, member_user] {
+        let app = host_routes_as(&host_state, UserCaller::User { user_id: refused });
+        let (status, _, _) = call(&app, "GET", "/api/config/join/sharing", None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = call(&app, "GET", "/api/config/join/window", None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = call(
+            &app,
+            "POST",
+            "/api/config/join/sharing",
+            Some(
+                json!({ "library_id": library_id, "share_books": true, "include_branches": false }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = call(
+            &app,
+            "POST",
+            "/api/config/join/capacity",
+            Some(json!({ "library_id": library_id, "max_jobs": 1 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+    let unchanged = load_library_link(&host_store, &library_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!unchanged.share_books && unchanged.include_branches);
+    assert_eq!(unchanged.max_jobs, None);
+    let as_owner = host_routes_as(
+        &host_state,
+        UserCaller::User {
+            user_id: owner_user,
+        },
+    );
+    let (status, _, listed) = call(&as_owner, "GET", "/api/config/join/sharing", None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let (status, _, _) = call(&as_owner, "GET", "/api/config/join/window", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["libraries"][0]["library_id"], library_id.as_str());
+    assert_eq!(listed["libraries"][0]["share_books"], false);
+    let (status, _, shared) = call(
+        &as_owner,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({ "library_id": library_id, "share_books": true, "include_branches": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shared}");
+    assert_eq!(shared["library"]["share_books"], true);
+    assert_eq!(shared["library"]["include_branches"], false);
+    assert!(super::super::is_link_running(&library_id));
+    eventually("the library to see the Owner's settings", || async {
+        let node = load_node(&owner_store, &node_id).await.unwrap();
+        node.share_books == Some(true) && node.include_branches == Some(false)
+    })
+    .await;
+    // The operator still may.
+    let (status, _, listed) = call(&host, "GET", "/api/config/join/sharing", None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["libraries"][0]["include_branches"], false);
+
+    // Leave library: the owner hears node.leaving and revokes the node.
+    let (status, _, left) = call(
+        &host,
+        "POST",
+        "/api/config/join/leave",
+        Some(json!({ "library_id": library_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{left}");
+    assert_eq!(left["owner_notified"], true);
+    let credential = load_node_credential(&owner_store, &node_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        credential.revoked_at.is_some(),
+        "the owner revoked the node"
+    );
+    let link = load_library_link(&host_store, &library_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!link.is_active());
+    eventually("the client to stop", || async {
+        !super::super::is_link_running(&library_id)
+    })
+    .await;
+    let (status, _, _) = call(
+        &host,
+        "POST",
+        "/api/config/join/leave",
+        Some(json!({ "library_id": "no-such-library" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn an_invite_joins_and_starts_at_once_and_a_closed_library_refuses() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let (owner_state, owner_store, origin, member) = owner(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let (host_state, _host_store) = crate::node_api::tests::test_state(&host_files).await;
+    // The supervisor a join wakes, as the daemon runs it.
+    super::super::spawn_library_links(Arc::clone(&host_state));
+    let host = host_routes(&host_state);
+
+    let (status, _, refused) = call(
+        &host,
+        "POST",
+        "/api/config/join/invite",
+        Some(json!({ "link": "not a link" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert_eq!(refused["error"], "invalid_invite");
+
+    let minted = mint_enrollment_link(
+        &owner_store,
+        &EnrollmentActor::Operator { id: "test".into() },
+        member,
+        "",
+        None,
+    )
+    .await
+    .unwrap();
+    let (status, _, joined) = call(
+        &host,
+        "POST",
+        "/api/config/join/invite",
+        Some(json!({ "link": minted.url(&origin, None).as_str() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["running"], true);
+    let library_id = joined["library"]["library_id"].as_str().unwrap();
+    let node_id = joined["library"]["node_id"].as_str().unwrap();
+    eventually("the branch to connect", || async {
+        load_node_credential(&owner_store, node_id)
+            .await
+            .unwrap()
+            .is_some_and(|credential| credential.last_connected_at.is_some())
+    })
+    .await;
+    let (status, _, left) = call(
+        &host,
+        "POST",
+        "/api/config/join/leave",
+        Some(json!({ "library_id": library_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{left}");
+    assert_eq!(left["owner_notified"], true);
+
+    // "Let new branches join" off: the wizard stops before any sign-in.
+    let operator = routes(&owner_state, UserCaller::Operator, LOOPBACK);
+    let (status, _, _) = call(
+        &operator,
+        "PUT",
+        "/api/config/branches",
+        Some(json!({ "enrollment": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, closed) = call(
+        &host,
+        "POST",
+        "/api/config/join/start",
+        Some(json!({ "address": origin })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{closed}");
+    assert_eq!(closed["error"], "enrollment_disabled");
+}
+
+#[tokio::test]
+async fn an_empty_install_joins_as_a_shared_branch_and_takes_the_librarys_bootstrap() {
+    use crate::node_api::branch::shared_branch_tests::{owner_with_totp, totp, POSTGRES_CONFIG};
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    ASSUME_DATABASE_GUESTS.store(true, std::sync::atomic::Ordering::SeqCst);
+    let owner_files = tempfile::tempdir().unwrap();
+    let (owner_state, owner_store, origin, _member) =
+        owner_with(&owner_files, POSTGRES_CONFIG).await;
+
+    // A server that already holds a user can only join as a branch.
+    let busy_files = tempfile::tempdir().unwrap();
+    let (busy_state, busy_store) = crate::node_api::tests::test_state(&busy_files).await;
+    busy_store
+        .create_user(UserRole::Member, Some("Sam"), None)
+        .await
+        .unwrap();
+    let busy = host_routes(&busy_state);
+    let (_, _, status_busy) = call(&busy, "GET", "/api/config/join", None).await;
+    assert_eq!(
+        status_busy["shared_branch_eligible"], false,
+        "{status_busy}"
+    );
+    let (status, _, refused) = call(
+        &busy,
+        "POST",
+        "/api/config/join/start",
+        Some(json!({ "address": origin, "shared_branch": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["error"], "not_empty");
+
+    let host_files = tempfile::tempdir().unwrap();
+    let (host_state, _host_store) = crate::node_api::tests::test_state(&host_files).await;
+    let host = host_routes(&host_state);
+    let (_, _, status_now) = call(&host, "GET", "/api/config/join", None).await;
+    assert_eq!(status_now["shared_branch_eligible"], true, "{status_now}");
+    let master_key = bookclerk_library::master_key_path(host_files.path());
+    let before = std::fs::read(&master_key).ok();
+    let config_file = host_state.config.read().await.paths().config_file.clone();
+    // One process holds one DEK, and each test state above cached its own:
+    // the one cached last is the library's from here on.
+    let dek = bookclerk_library::require_master_key(None).unwrap();
+    let (owner_user, secret) = owner_with_totp(&owner_store).await;
+
+    // Approved as a branch, a code cannot be redeemed as a shared branch: the
+    // callback's `connection` is only a hint, the code carries the choice.
+    let start = json!({ "address": origin, "branch_name": "Rack 2", "shared_branch": true });
+    let (status, _, started) =
+        call(&host, "POST", "/api/config/join/start", Some(start.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    assert_eq!(started["shared_branch_offered"], true);
+    let authorize_url = started["authorize_url"].as_str().unwrap();
+    assert!(
+        authorize_url.contains("shared_branch_offer=1"),
+        "{authorize_url}"
+    );
+    let back = consent(&owner_state, owner_user, authorize_url, true).await;
+    assert!(!back.contains_key("connection"));
+    let (status, _, tampered) = call(
+        &host,
+        "POST",
+        "/api/config/join/callback",
+        Some(
+            json!({ "code": back["code"], "state": back["state"], "connection": "shared_branch" }),
+        ),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{tampered}");
+    assert_eq!(
+        std::fs::read(&master_key).ok(),
+        before,
+        "master.key untouched"
+    );
+    assert!(!host_files
+        .path()
+        .join(bookclerk_node_client::SHARED_BRANCH_POSTGRES_URL_FILE)
+        .exists());
+
+    // Approved as a shared branch with a fresh code: the bootstrap is applied.
+    let (_, _, started) = call(&host, "POST", "/api/config/join/start", Some(start)).await;
+    let back = consent_with(
+        &owner_state,
+        owner_user,
+        started["authorize_url"].as_str().unwrap(),
+        true,
+        json!({ "connection": "shared_branch", "step_up": totp(&secret) }),
+    )
+    .await;
+    assert_eq!(back["connection"], "shared_branch");
+    let (status, _, joined) = call(
+        &host,
+        "POST",
+        "/api/config/join/callback",
+        Some(
+            json!({ "code": back["code"], "state": back["state"], "connection": "shared_branch" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["connection"], "shared_branch");
+    assert_eq!(joined["database"], "postgres");
+    assert_eq!(joined["restarting"], true);
+    assert!(!joined.to_string().contains("pg-secret"), "{joined}");
+    let node_id = joined["node_id"].as_str().unwrap().to_string();
+    let library_id = joined["library_id"].as_str().unwrap().to_string();
+
+    // The library recorded a shared node; the joiner holds its bootstrap.
+    let node = load_node(&owner_store, &node_id).await.unwrap();
+    assert_eq!(
+        node.kind,
+        bookclerk_library::control_plane::NodeKind::Shared
+    );
+    assert!(load_node_credential(&owner_store, &node_id)
+        .await
+        .unwrap()
+        .is_none());
+    let mut want = b"BCK1".to_vec();
+    want.extend_from_slice(dek.as_bytes());
+    assert_eq!(
+        std::fs::read(&master_key).unwrap(),
+        want,
+        "the library's DEK"
+    );
+    let identity: Value = serde_json::from_slice(
+        &std::fs::read(host_files.path().join("node-identity.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(identity["node_id"], node_id.as_str());
+    assert_eq!(identity["library_id"], library_id.as_str());
+    let written = bookclerk_config::Config::from_toml_file(&config_file).unwrap();
+    assert_eq!(written.database.plugin, "postgres");
+    assert_eq!(written.database.postgres.url, None);
+    let url_file = written.database.postgres.url_file.clone().unwrap();
+    assert!(url_file.is_absolute());
+    assert_eq!(
+        std::fs::read_to_string(&url_file).unwrap(),
+        "postgres://lib:pg-secret@db.example/library"
+    );
+    assert!(!std::fs::read_to_string(&config_file)
+        .unwrap()
+        .contains("pg-secret"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&url_file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    let actions: Vec<String> = owner_store
+        .list_security_audit_events(50)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|event| event.action)
+        .collect();
+    assert!(
+        actions.iter().any(|a| a == "shared_branch_authorize"),
+        "{actions:?}"
+    );
+    assert!(
+        actions.iter().any(|a| a == "shared_branch_enrolled"),
+        "{actions:?}"
+    );
+    ASSUME_DATABASE_GUESTS.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Writes a storefront `plugin.toml` declaring `credentials` under the
+/// library's `plugins/` directory, and answers the plugin key discovery
+/// gives it.
+pub(crate) fn stage_storefront(
+    files: &tempfile::TempDir,
+    state: &Arc<AppState>,
+    credentials: &str,
+) -> String {
+    let dir = files.path().join("plugins/libro");
+    std::fs::create_dir_all(&dir).unwrap();
+    // Discovery wants the guest's command to exist; it is never run here.
+    std::fs::write(dir.join("guest"), b"").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir.join("guest"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+    }
+    std::fs::write(
+        dir.join("plugin.toml"),
+        format!(
+            "api_version = 3\nid = \"libro\"\nname = \"Libro.fm\"\nversion = \"0.1.0\"\n\
+             runtime = \"native\"\ncommand = \"./guest\"\nentrypoints = [\"storefront\"]\nmedia = {{ works = [\"book\"], lists = [\"audio\"], fetches = [\"audio\"] }}\n\
+             credentials = \"{credentials}\"\n\n[capabilities.network]\nmode = \"deny\"\n"
+        ),
+    )
+    .unwrap();
+    let cfg = state.config.try_read().unwrap().clone();
+    let found = bookclerk_plugin_host::discover_plugins(&cfg).unwrap();
+    assert_eq!(found.len(), 1, "the staged storefront is discovered");
+    found[0].identity.plugin_key.to_string()
+}
+
+/// Connects `account_id` of `plugin_key` for `user_id`, with an `auth`
+/// secret holding `value`.
+pub(crate) async fn connect_account(
+    store: &LibraryStore,
+    user_id: i64,
+    plugin_key: &str,
+    account_id: &str,
+    value: &[u8],
+) {
+    use bookclerk_library::secrets::{
+        build_sealed_record, secret_account_type, secret_kind, upsert_secret,
+    };
+    store
+        .upsert_account(plugin_key, account_id, "us", Some("Reader"), true, "libro")
+        .await
+        .unwrap();
+    let identity = store
+        .ensure_local_portal_identity(user_id, None)
+        .await
+        .unwrap();
+    store
+        .link_account(identity.id, plugin_key, account_id, "libro")
+        .await
+        .unwrap();
+    let record = build_sealed_record(
+        value,
+        secret_kind::SOURCE_AUTH,
+        plugin_key,
+        secret_account_type::INTEGRATION,
+        account_id,
+        "auth",
+    )
+    .unwrap();
+    upsert_secret(store.db(), &record).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_branch_join_brings_the_persons_store_connections_when_asked() {
+    use bookclerk_library::secrets::{get_secret, secret_account_type, secret_kind, unseal_secret};
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let (owner_state, owner_store, origin, member) = owner(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let (host_state, host_store) = crate::node_api::tests::test_state(&host_files).await;
+    // Both libraries share this process's master key, which the last
+    // bootstrap set: seal the library's secret after both exist.
+    let plugin_key = stage_storefront(&owner_files, &owner_state, "shareable");
+    // A token big enough that the sealed answer outgrows an ordinary
+    // response (64 KiB) once encoded.
+    let token = "t".repeat(60 * 1024);
+    connect_account(
+        &owner_store,
+        member,
+        &plugin_key,
+        "riley@example.com",
+        token.as_bytes(),
+    )
+    .await;
+    // The branch's single Owner is the person the connections are kept for.
+    let me = host_store
+        .create_user(UserRole::Owner, Some("Riley"), None)
+        .await
+        .unwrap();
+    let host = host_routes(&host_state);
+    let start = json!({ "address": origin, "branch_name": "Den PC" });
+    let (status, _, started) = call(&host, "POST", "/api/config/join/start", Some(start)).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let authorize_url = started["authorize_url"].as_str().unwrap().to_string();
+
+    // The consent page lists the connection as one that travels.
+    let query = url::Url::parse(&authorize_url)
+        .unwrap()
+        .query()
+        .unwrap()
+        .to_string();
+    let page_routes = routes(&owner_state, UserCaller::User { user_id: member }, LOOPBACK);
+    let (status, _, page) = call(
+        &page_routes,
+        "GET",
+        &format!("/api/auth/branch-consent?{query}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(
+        page["connections"],
+        json!([{ "source": "libro", "account_id": "riley@example.com", "label": "Reader", "travels": true }])
+    );
+
+    let back = consent_with(
+        &owner_state,
+        member,
+        &authorize_url,
+        true,
+        json!({ "bring_connections": true }),
+    )
+    .await;
+    let callback = json!({ "code": back["code"], "state": back["state"] });
+    let (status, _, joined) =
+        call(&host, "POST", "/api/config/join/callback", Some(callback)).await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(
+        joined["connections"],
+        json!({ "offered": 1, "added": 1, "already_here": 0, "taken": 0, "failed": 0, "not_kept": null })
+    );
+
+    // The account is connected on the branch for its Owner, with its secret.
+    let account = host_store
+        .get_account(&plugin_key, "riley@example.com")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(account.connection_status, "active");
+    let identity = host_store
+        .ensure_local_portal_identity(me.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        host_store
+            .list_account_links(identity.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let secret = get_secret(
+        host_store.db(),
+        secret_kind::SOURCE_AUTH,
+        Some(&plugin_key),
+        secret_account_type::INTEGRATION,
+        Some("riley@example.com"),
+        "auth",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(unseal_secret(&secret).unwrap(), token.as_bytes());
+    // The library recorded what it sent.
+    let sent = owner_store
+        .list_security_audit_events(50)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.action == "branch_connections_sent")
+        .count();
+    assert_eq!(sent, 1);
+}
+
+#[tokio::test]
+async fn a_branch_adds_a_connection_to_its_library_and_disconnects_it_everywhere() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let (owner_state, owner_store, origin, member) = owner(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let (host_state, host_store) = crate::node_api::tests::test_state(&host_files).await;
+    let plugin_key = stage_storefront(&owner_files, &owner_state, "shareable");
+    // Both installs discover the same package, so its path-provenance key
+    // matches on both, as a platform key does in a real install.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        owner_files.path().join("plugins"),
+        host_files.path().join("plugins"),
+    )
+    .unwrap();
+    #[cfg(not(unix))]
+    return;
+    let host_cfg = host_state.config.read().await.clone();
+    let found = bookclerk_plugin_host::discover_plugins(&host_cfg).unwrap();
+    assert_eq!(found[0].identity.plugin_key.to_string(), plugin_key);
+    let me = host_store
+        .create_user(UserRole::Owner, Some("Riley"), None)
+        .await
+        .unwrap();
+    // The supervisor a join wakes, as the daemon runs it.
+    super::super::spawn_library_links(Arc::clone(&host_state));
+    let host = host_routes(&host_state);
+    let start = json!({ "address": origin, "branch_name": "Den PC" });
+    let (status, _, started) = call(&host, "POST", "/api/config/join/start", Some(start)).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let authorize_url = started["authorize_url"].as_str().unwrap().to_string();
+    let back = consent(&owner_state, member, &authorize_url, true).await;
+    let callback = json!({ "code": back["code"], "state": back["state"] });
+    let (status, _, joined) =
+        call(&host, "POST", "/api/config/join/callback", Some(callback)).await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    let library_id = bookclerk_library::control_plane::list_library_links(&host_store)
+        .await
+        .unwrap()[0]
+        .parent_library_id
+        .clone();
+
+    // The branch's Owner connects an account on the branch afterwards.
+    connect_account(
+        &host_store,
+        me.id,
+        &plugin_key,
+        "den@example.com",
+        b"den-token",
+    )
+    .await;
+    let as_person = host_routes_as(&host_state, UserCaller::User { user_id: me.id });
+    let add = json!({
+        "library_id": library_id,
+        "accounts": [{ "plugin_key": plugin_key, "account_id": "den@example.com" }],
+    });
+    // Only the person this branch belongs to may add them.
+    let (status, _, refused) = call(
+        &host,
+        "POST",
+        "/api/config/join/connections",
+        Some(add.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["error"], "not_branch_person");
+
+    // The link's client may still be connecting: retry while it is.
+    assert_eq!(joined["running"], true, "{joined}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let added = loop {
+        let (status, _, answer) = call(
+            &as_person,
+            "POST",
+            "/api/config/join/connections",
+            Some(add.clone()),
+        )
+        .await;
+        if status == StatusCode::OK {
+            break answer;
+        }
+        assert!(
+            status == StatusCode::SERVICE_UNAVAILABLE && Instant::now() < deadline,
+            "{status} {answer}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(
+        added,
+        json!({ "added": 1, "already_here": 0, "taken": 0, "failed": 0, "not_sent": 0, "not_allowed": false })
+    );
+    // The library keeps it for the user who let the branch join.
+    let identity = owner_store
+        .ensure_local_portal_identity(member, None)
+        .await
+        .unwrap();
+    assert!(owner_store
+        .list_account_links(identity.id)
+        .await
+        .unwrap()
+        .iter()
+        .any(|link| link.account_id == "den@example.com"));
+    // A shareable account's refresh in a job for the library is not kept
+    // here instead: it goes back to the library as a write-back.
+    {
+        use super::super::host_jobs::{DaemonKeeper, LocalKeeper as _};
+        let keeper = DaemonKeeper {
+            state: Arc::clone(&host_state),
+            library_id: library_id.clone(),
+        };
+        assert_eq!(
+            keeper
+                .keep(&plugin_key, "den@example.com", b"{}", br#"{"t":"2"}"#)
+                .await,
+            None
+        );
+    }
+
+    // Disconnect everywhere: gone on the branch and on the library.
+    let (status, _, gone) = call(
+        &as_person,
+        "POST",
+        "/api/config/join/connections/disconnect",
+        Some(json!({ "plugin_key": plugin_key, "account_id": "den@example.com", "everywhere": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{gone}");
+    assert_eq!(
+        gone,
+        json!({ "here": true, "libraries": [library_id], "unreached": [] })
+    );
+    for store in [&owner_store, &host_store] {
+        let account = store
+            .get_account(&plugin_key, "den@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(account.connection_status, "revoked");
+    }
+
+    // The join bound the link to Riley, so a second Owner may not act
+    // through it: their add is refused and their disconnect stays here.
+    let link = bookclerk_library::control_plane::load_library_link(&host_store, &library_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(link.person_user_id, Some(me.id));
+    let sam = host_store
+        .create_user(UserRole::Owner, Some("Sam"), None)
+        .await
+        .unwrap();
+    let as_sam = host_routes_as(&host_state, UserCaller::User { user_id: sam.id });
+    let (status, _, refused) =
+        call(&as_sam, "POST", "/api/config/join/connections", Some(add)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["error"], "not_branch_person");
+    let (status, _, gone) = call(
+        &as_sam,
+        "POST",
+        "/api/config/join/connections/disconnect",
+        Some(json!({ "plugin_key": plugin_key, "account_id": "den@example.com", "everywhere": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{gone}");
+    assert_eq!(
+        gone,
+        json!({ "here": false, "libraries": [], "unreached": [] })
+    );
+}
+
+/// The branch keeps a single-keeper account it added for its library: a
+/// job's refresh is saved on the branch, the branch's link pushes that
+/// newer sign-in up to the library, and a pass with nothing newer sends
+/// nothing.
+#[tokio::test]
+async fn a_keeping_branch_pushes_its_newer_sign_ins_up_the_link() {
+    use super::super::host_jobs::{DaemonKeeper, KeptHere, LocalKeeper as _};
+    use super::super::keeper::{PushPass, SignInPusher};
+    use bookclerk_library::control_plane::keeping_branch;
+    use bookclerk_library::secrets::{get_secret, secret_account_type, secret_kind, unseal_secret};
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let (owner_state, owner_store, origin, member) = owner(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let (host_state, host_store) = crate::node_api::tests::test_state(&host_files).await;
+    let plugin_key = stage_storefront(&owner_files, &owner_state, "single_keeper");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        owner_files.path().join("plugins"),
+        host_files.path().join("plugins"),
+    )
+    .unwrap();
+    #[cfg(not(unix))]
+    return;
+    let me = host_store
+        .create_user(UserRole::Owner, Some("Riley"), None)
+        .await
+        .unwrap();
+    super::super::spawn_library_links(Arc::clone(&host_state));
+    let host = host_routes(&host_state);
+    let start = json!({ "address": origin, "branch_name": "Den PC" });
+    let (status, _, started) = call(&host, "POST", "/api/config/join/start", Some(start)).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let authorize_url = started["authorize_url"].as_str().unwrap().to_string();
+    let back = consent(&owner_state, member, &authorize_url, true).await;
+    let callback = json!({ "code": back["code"], "state": back["state"] });
+    let (status, _, joined) =
+        call(&host, "POST", "/api/config/join/callback", Some(callback)).await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    let link = bookclerk_library::control_plane::list_library_links(&host_store)
+        .await
+        .unwrap()
+        .remove(0);
+    let library_id = link.parent_library_id.clone();
+
+    // The branch's person adds a single-keeper account: the library keeps
+    // it, and this branch keeps it fresh there.
+    let account = "den@example.com";
+    connect_account(&host_store, me.id, &plugin_key, account, b"legacy").await;
+    // The credentials blob a plugin storefront is handed and hands back.
+    let blob = format!("{account}.plugin.auth");
+    {
+        use bookclerk_library::secrets::{build_sealed_record, upsert_secret};
+        let record = build_sealed_record(
+            br#"{"t":"1"}"#,
+            secret_kind::SOURCE_AUTH,
+            &plugin_key,
+            secret_account_type::INTEGRATION,
+            account,
+            &blob,
+        )
+        .unwrap();
+        upsert_secret(host_store.db(), &record).await.unwrap();
+    }
+    let as_person = host_routes_as(&host_state, UserCaller::User { user_id: me.id });
+    let add = json!({
+        "library_id": library_id,
+        "accounts": [{ "plugin_key": plugin_key, "account_id": account }],
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let added = loop {
+        let (status, _, answer) = call(
+            &as_person,
+            "POST",
+            "/api/config/join/connections",
+            Some(add.clone()),
+        )
+        .await;
+        if status == StatusCode::OK {
+            break answer;
+        }
+        assert!(
+            status == StatusCode::SERVICE_UNAVAILABLE && Instant::now() < deadline,
+            "{status} {answer}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(added["added"], 1, "{added}");
+    assert_eq!(
+        keeping_branch(&owner_store, &plugin_key, account)
+            .await
+            .unwrap(),
+        Some(link.remote_node_id.clone())
+    );
+    let secret_in = |store: LibraryStore| {
+        let plugin_key = plugin_key.clone();
+        let blob = blob.clone();
+        async move {
+            let record = get_secret(
+                store.db(),
+                secret_kind::SOURCE_AUTH,
+                Some(&plugin_key),
+                secret_account_type::INTEGRATION,
+                Some(account),
+                &blob,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            unseal_secret(&record).unwrap()
+        }
+    };
+
+    let pusher = SignInPusher {
+        state: Arc::clone(&host_state),
+        library: host_store.clone(),
+        library_id: library_id.clone(),
+        handle: super::super::link_handle(&library_id, &link.remote_node_id).unwrap(),
+    };
+    // Whatever the link's own pusher already sent, the library now holds
+    // the branch's sign-in and nothing is left to retry.
+    let first = pusher.push_once().await.unwrap();
+    assert_eq!(first.retry, 0, "{first:?}");
+    assert_eq!(secret_in(owner_store.clone()).await, br#"{"t":"1"}"#);
+
+    // A job on this branch refreshes the account: the branch saves it here
+    // (a write-back would be refused by the library) ...
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let keeper = DaemonKeeper {
+        state: Arc::clone(&host_state),
+        library_id: library_id.clone(),
+    };
+    assert_eq!(
+        keeper
+            .keep(&plugin_key, account, br#"{"t":"1"}"#, br#"{"t":"2"}"#)
+            .await,
+        Some(KeptHere::Saved)
+    );
+    // A refresh of a copy that is no longer the one here loses to it.
+    assert_eq!(
+        keeper
+            .keep(&plugin_key, account, br#"{"t":"1"}"#, br#"{"t":"9"}"#)
+            .await,
+        Some(KeptHere::Superseded)
+    );
+    assert_eq!(secret_in(host_store.clone()).await, br#"{"t":"2"}"#);
+    // ... and an account this branch does not keep is not its to save.
+    assert_eq!(
+        keeper
+            .keep(&plugin_key, "other@example.com", b"{}", br#"{"t":"x"}"#)
+            .await,
+        None
+    );
+
+    // The next pass pushes the newer sign-in, and the library applies it.
+    let pass = pusher.push_once().await.unwrap();
+    assert_eq!(pass.applied + pass.settled, 1, "{pass:?}");
+    assert_eq!(pass.retry, 0, "{pass:?}");
+    assert_eq!(secret_in(owner_store.clone()).await, br#"{"t":"2"}"#);
+    // Nothing newer: nothing is sent.
+    assert_eq!(pusher.push_once().await.unwrap(), PushPass::default());
+
+    // A share recorded here before the library took the offer (still on
+    // its way, or to be retried): the library doesn't take its sign-in
+    // from this branch yet, and the next pass sends it again.
+    let later = "later@example.com";
+    connect_account(&host_store, me.id, &plugin_key, later, b"later").await;
+    bookclerk_library::control_plane::record_accounts_sent_to(
+        &host_store,
+        &bookclerk_library::control_plane::link_peer(&library_id),
+        &[bookclerk_node_proto::CarriedAccount {
+            plugin_key: plugin_key.clone(),
+            account_id: later.into(),
+            source: "libro".into(),
+            marketplace: "us".into(),
+            label: None,
+            secrets: Vec::new(),
+        }],
+    )
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        let pass = pusher.push_once().await.unwrap();
+        assert_eq!(
+            pass,
+            PushPass {
+                not_kept: 1,
+                ..PushPass::default()
+            }
+        );
+    }
+}

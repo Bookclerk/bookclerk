@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub enum NamingProfile {
     /// [Audiobookshelf](https://audiobookshelf.org/docs/documentation/libraries/book-library/directory-structure/)
     /// layout: `{Author}/{Series}/{N} - {Book}` or `{Author}/{Book}`; the
-    /// file is the full title with the edition's library id.
+    /// file is the full title with the edition's call number.
     #[default]
     Audiobookshelf,
     /// Previous Libation desktop defaults (`Templates.*.DefaultTemplate`).
@@ -57,7 +57,7 @@ impl NamingProfile {
     pub fn description(self) -> &'static str {
         match self {
             Self::Audiobookshelf => {
-                "Audiobookshelf Author/{Series/}{N - }Short Title/Title [library id]"
+                "Audiobookshelf Author/{Series/}{N - }Short Title/Title [call number]"
             }
             Self::Classic => "Classic Libation <title short> [<id>]/<title> [<id>]",
         }
@@ -77,21 +77,21 @@ impl NamingProfile {
     #[must_use]
     pub fn templates(self) -> NamingProfileTemplates {
         match self {
-            // Author/{Series/}{N - }Short Title/Full Title [library id]
+            // Author/{Series/}{N - }Short Title/Full Title [call number]
             // Matches Audiobookshelf Author/Series/Book (or Author/Book)
             // scanning; Audiobookshelf reads the sequence only before ` - `.
-            // The library id stays out of the folder, where Audiobookshelf
+            // The call number stays out of the folder, where Audiobookshelf
             // would read a bracketed value as an ASIN.
             Self::Audiobookshelf => NamingProfileTemplates {
                 folder: "<first author>/<has series-><first series>/<-has><has series#-><series#> - <-has><title short>",
-                file: "<title> [<library id>]",
-                chapter_file: "<ch#> - <chapter title> [<library id>]",
+                file: "<title> [<call number>]",
+                chapter_file: "<ch#> - <chapter title> [<call number>]",
             },
             // Classic Libation Templates.*.DefaultTemplate, with the edition's
-            // library id added to the folder so editions never share a path
+            // call number added to the folder so editions never share a path
             // (Source/LibationFileManager/Templates/Templates.cs).
             Self::Classic => NamingProfileTemplates {
-                folder: "<title short> [<id>] [<library id>]",
+                folder: "<title short> [<id>] [<call number>]",
                 file: "<title> [<id>]",
                 chapter_file: "<title> [<id>] - <ch# 0> - <ch title>",
             },
@@ -160,14 +160,14 @@ mod tests {
             Some("<ch#>"),
         );
         assert_eq!(resolved.folder, "<author>");
-        assert_eq!(resolved.file, "<title> [<library id>]");
+        assert_eq!(resolved.file, "<title> [<call number>]");
         assert_eq!(resolved.chapter_file, "<ch#>");
     }
 
     #[test]
-    fn classic_matches_bookclerk_desktop_defaults_plus_the_library_id() {
+    fn classic_matches_bookclerk_desktop_defaults_plus_the_call_number() {
         let t = NamingProfile::Classic.templates();
-        assert_eq!(t.folder, "<title short> [<id>] [<library id>]");
+        assert_eq!(t.folder, "<title short> [<id>] [<call number>]");
         assert_eq!(t.file, "<title> [<id>]");
         assert_eq!(t.chapter_file, "<title> [<id>] - <ch# 0> - <ch title>");
     }

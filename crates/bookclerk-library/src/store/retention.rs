@@ -270,7 +270,7 @@ mod tests {
                  VALUES (1, 'local', 'u1', 1, '{t}')"
             ),
             format!(
-                "INSERT INTO nodes (node_id, cluster_id, created_at, incarnation, heartbeat_at, \
+                "INSERT INTO nodes (node_id, library_id, created_at, incarnation, heartbeat_at, \
                  software_version, schema_state, compatible) \
                  VALUES ('n1', 'c1', '{t}', 'i', '{t}', 'v', 's', 1)"
             ),
@@ -372,16 +372,16 @@ mod tests {
             format!(
                 "INSERT INTO configuration_audit (scope_type, scope_id, namespace, schema_version, \
                  revision, actor, recorded_at) VALUES \
-                 ('cluster', '', 'host.events', 1, 1, 'op', '{}'), \
-                 ('cluster', '', 'host.events', 1, 2, 'op', '{}')",
+                 ('library', '', 'host.events', 1, 1, 'op', '{}'), \
+                 ('library', '', 'host.events', 1, 2, 'op', '{}')",
                 at(-366),
                 at(-364)
             ),
             format!(
                 "INSERT INTO configuration_changes (scope_type, scope_id, namespace, revision, \
                  committed_at) VALUES \
-                 ('cluster', '', 'host.events', 1, '{}'), \
-                 ('cluster', '', 'host.events', 2, '{}')",
+                 ('library', '', 'host.events', 1, '{}'), \
+                 ('library', '', 'host.events', 2, '{}')",
                 at(-31),
                 at(-29)
             ),

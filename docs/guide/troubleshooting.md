@@ -93,4 +93,4 @@ in **Settings → Branches**.
 
 A branch only connects to a library over HTTPS, except on the same
 computer. The library's operator sets that up; see
-[Libraries and branches](../server/cluster-hosts.md#on-the-library-let-branches-in).
+[Libraries and branches](../server/branches.md#on-the-library-let-branches-in).

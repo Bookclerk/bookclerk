@@ -965,7 +965,7 @@ test("a search index missing a doc lists it by title and is cached only briefly"
 
 test("a page shows no date when the dates file leaves it out, is broken or cannot be read", async () => {
   assert.doesNotMatch(
-    await (await get("/docs/server/cluster-hosts", BROWSER)).text(),
+    await (await get("/docs/server/branches", BROWSER)).text(),
     /Last updated|dateModified/,
   );
   const broken =
@@ -1077,8 +1077,8 @@ test("a folder's page is served at the folder, with its Markdown copy as index.m
 });
 
 test("raw HTML in a doc is shown as text", async () => {
-  // docs/server/cluster-hosts.md says "Let **<branch>** join".
-  assert.match(await (await get("/docs/server/cluster-hosts", BROWSER)).text(), /&lt;branch&gt;/);
+  // docs/server/branches.md says "Let **<branch>** join".
+  assert.match(await (await get("/docs/server/branches", BROWSER)).text(), /&lt;branch&gt;/);
 });
 
 test("a failing or oversized docs repository answer is a 503, not a page", async () => {

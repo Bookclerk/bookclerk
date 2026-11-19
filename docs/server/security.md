@@ -66,7 +66,7 @@ Details: [Operations → Reverse proxy](operations.md#reverse-proxy--tls).
 ### Branches talk over TLS
 
 Hosts of one library talk to each other over TLS, except on loopback.
-Details: [Libraries and branches](cluster-hosts.md).
+Details: [Libraries and branches](branches.md).
 
 ### Store connections a branch receives
 
@@ -82,7 +82,7 @@ can later add connections to a library over the branch's link; that bundle
 is sealed to the library's per-connection box key, so it opens only on
 that connection, and the library keeps it only for the user who let the
 branch join. Details:
-[Store connections that follow the person](cluster-hosts.md#store-connections-that-follow-the-person).
+[Store connections that follow the person](branches.md#store-connections-that-follow-the-person).
 
 ### Leave the web app's policy in place
 

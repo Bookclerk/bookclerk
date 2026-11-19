@@ -3,7 +3,7 @@
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 //!
 //! The input is the text of one node-to-node frame, as a peer node sends it
-//! over the cluster socket. The invariants:
+//! over the library socket. The invariants:
 //!
 //! - parsing never panics, and refuses text over the frame size limit or of
 //!   another frame version;
@@ -11,7 +11,7 @@
 //!   parses back to an equal frame (a float inside an opaque JSON field may
 //!   move by a rounding step, as `serde_json` parses floats without exact
 //!   round trips);
-//! - every library id an `acquire.targets` frame carries is 1 to 16 ASCII
+//! - every call number an `acquire.targets` frame carries is 1 to 16 ASCII
 //!   letters and digits, checked byte by byte here rather than through the
 //!   parser's own rule, since a host names storage keys with it;
 //! - every target of an `acquire.targets` frame the host would accept
@@ -83,7 +83,7 @@ use bookclerk_node_proto::{
     claimed_problem, copy_grant_problem, copy_granted_problem, finish_problem, found_problem,
     questions_problem, scan_pass_end_problem, scan_removed_problem, target_destinations_problem,
     window_page_problem, Availability, Body, CopyGrantedFrame, CopyRole, Frame, LookupScheme,
-    LookupWork, WindowCursor, FRAME_VERSION, MAX_FRAME_BYTES, MAX_LIBRARY_ID_BYTES,
+    LookupWork, WindowCursor, FRAME_VERSION, MAX_CALL_NUMBER_BYTES, MAX_FRAME_BYTES,
 };
 use serde_json::Value;
 
@@ -119,16 +119,16 @@ pub fn check(data: &[u8]) {
                     assert!(chosen.len() <= destinations.len(), "a longer list accepted");
                 }
             }
-            for id in [&target.library_id, &target.parent_library_id]
+            for id in [&target.call_number, &target.parent_call_number]
                 .into_iter()
                 .flatten()
             {
                 let id = id.as_str();
                 assert!(
                     !id.is_empty()
-                        && id.len() <= MAX_LIBRARY_ID_BYTES
+                        && id.len() <= MAX_CALL_NUMBER_BYTES
                         && id.bytes().all(|b| b.is_ascii_alphanumeric()),
-                    "library id {id:?} accepted"
+                    "call number {id:?} accepted"
                 );
             }
         }

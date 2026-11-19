@@ -51,11 +51,12 @@ boundary extends it.
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
-| `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
+| `node_frame` | Node-to-node frames on the library socket | `bookclerk-node-proto::Frame` |
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
 | `destination_filter` | A storage destination's filter: the body of `PUT /api/config/plugin-instances/{id}/filter` and the stored `core.destination` document | `bookclerk-config::parse_destination_filter` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
+| `diagnostics_submit_reply` | The diagnostics collector's reply to an uploaded report, whose `report_id` joins the install's report history | `bookclerk-config::parse_submit_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `audible_catalog` | Audible public catalog answers (search results and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
@@ -188,6 +189,13 @@ only that. The others check:
   digits whose number, read digit by digit with overflow detection, lies in
   the key's documented range, and the parser returns that number. The
   shared oracle is `fuzz/oracles/cache_settings.rs`, replayed from
+  `bookclerk-config`.
+- **`diagnostics_submit_reply`**: a reply longer than 4096 bytes is
+  refused. Otherwise it is accepted exactly when, read independently as a
+  JSON value, it is an object whose `report_id` is a string that is a
+  lowercase hyphenated version-4 UUID, checked group by group, and the
+  parser returns that string unchanged. The shared oracle is
+  `fuzz/oracles/diagnostics_submit_reply.rs`, replayed from
   `bookclerk-config`.
 - **`cover_wire`**: the first byte picks the request or the reply decoder.
   An accepted frame re-encodes to exactly its own bytes, and an accepted
@@ -348,7 +356,7 @@ only that. The others check:
 - **`node_frame`**: an accepted frame is within the size limit and the
   frame version, and serializes and parses back to an equal frame (unless
   its serialized text grows past the limit, as `1e9` written out does). Every
-  library id in `acquire.targets` is 1 to 16 ASCII letters and digits,
+  call number in `acquire.targets` is 1 to 16 ASCII letters and digits,
   checked byte by byte, and every target whose destination list passes
   its validator names only destinations its plan lists, each once and in
   the plan's order. A `catalog.ask` or `catalog.found` that passes
@@ -385,7 +393,7 @@ only that. The others check:
   that does not fit its plan. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
-  has the bundle version and names the cluster and node it was opened
+  has the bundle version and names the library and node it was opened
   for. It carries at most the account and secret limits; every text field
   is non-empty, within its limit, free of control characters and
   surrounding whitespace; every secret is 1 byte to its limit; no account,
@@ -435,7 +443,7 @@ only that. The others check:
 - **`clerk_token_answer`**: the input is the answer body, checked
   against the body read as an untyped JSON value. It parses exactly when
   it is at most 8 KiB and one object, no field it reads is written twice,
-  `token` is 43 base64url characters, `cluster_id` is a cluster id,
+  `token` is 43 base64url characters, `library_id` is a library id,
   `user.id` is a positive integer, `user.display_name` (optional) is at
   most 128 bytes with no control characters, and `idle_secs` is from 1
   second to a year; other keys are ignored, and each field is the value
@@ -515,7 +523,7 @@ only that. The others check:
   replayed from `bookclerk-library`.
 - **`job_cap_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
-  besides `cluster_id` (a string) and `max_jobs` (`null` or a whole number
+  besides `library_id` (a string) and `max_jobs` (`null` or a whole number
   from 0 to 16), both present; the parser then returns the trimmed id and
   that cap, and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/job_cap_request.rs`, replayed from `bookclerk-library`.
@@ -557,9 +565,9 @@ only that. The others check:
   replayed from `bookclerk-library`.
 - **`sharing_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
-  besides `cluster_id`, `share_books`, `include_branches`,
+  besides `library_id`, `share_books`, `include_branches`,
   `list_members_books`, `work_for_members`, `keep_member_copies` and
-  `keep_copies`, with a string `cluster_id` and booleans for `share_books`
+  `keep_copies`, with a string `library_id` and booleans for `share_books`
   and `include_branches`, and each of the other four absent, `null` or a
   boolean. The parser then returns the trimmed id and those values, with
   an absent or `null` setting left unset (kept as stored) rather than read
@@ -567,7 +575,7 @@ only that. The others check:
   `fuzz/oracles/sharing_request.rs`, replayed from `bookclerk-library`.
 - **`connections_request`**: feeds each input to both parsers and reads it
   as an untyped JSON value. An add body is accepted exactly when it is one
-  object with no repeated keys anywhere and only `cluster_id` (a string)
+  object with no repeated keys anywhere and only `library_id` (a string)
   and `accounts`, an array of 1 to 64 objects that each hold exactly a
   string `plugin_key` and a string `account_id`; the parser then returns
   the trimmed id and the accounts as sent. A disconnect body is accepted
@@ -985,6 +993,18 @@ The tests and corpora live in `tools/diagnostics-collector/`.
     of JSON naming an object with exactly the five fields, a lowercase
     version-4 UUID checked by position, and version, platform and kind
     tokens checked character by character.
+- **Hosted demo run event** (`parseDemoRunEvent` in `demo-runs.ts`). It is
+  the value the demo Worker passes to the collector's `DemoRuns`
+  entrypoint over its service binding (no public route), and decides what
+  a `demo_runs` row stores.
+  - Test and corpus: `demo-runs.fuzz.test.ts`, `corpus/demo_run/`.
+  - Oracle: an event exactly when the value is an object with exactly its
+    kind's keys, a lowercase version-4 UUID checked group by group, a
+    version of `[0-9A-Za-z._+-]` checked character by character, whole
+    times from 2020 to 2100 with the hard stop after the start and at most
+    six hours later, a whole startup of 0 to 600 seconds, a stop between
+    the start and a day after the hard stop, and one of the demo's six end
+    reasons.
 
 ### Member dashboard
 

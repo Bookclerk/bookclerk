@@ -190,7 +190,7 @@ credentials = "shareable"   # or "single_keeper" (the default)
   keeps and refreshes the sign-in, so a copy refreshing on its own would
   break it. Audible is a single keeper. A branch keeps such an account for
   each library it shares it with and pushes its newer sign-ins there (see
-  [One refresh keeper](../server/cluster-hosts.md#one-refresh-keeper)).
+  [One refresh keeper](../server/branches.md#one-refresh-keeper)).
 
 A plugin counts as shareable only when every copy of it the install knows
 says `shareable`.

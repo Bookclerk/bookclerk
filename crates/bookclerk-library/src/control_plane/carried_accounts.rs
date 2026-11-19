@@ -56,8 +56,8 @@ pub fn node_peer(node_id: &str) -> String {
 /// The `account_shares.peer` of a library this install received accounts
 /// from.
 #[must_use]
-pub fn link_peer(cluster_id: &str) -> String {
-    format!("link:{cluster_id}")
+pub fn link_peer(library_id: &str) -> String {
+    format!("link:{library_id}")
 }
 
 /// Whether `user_id` may connect store accounts on this instance: an
@@ -322,7 +322,7 @@ fn travels(account: &CarriedAccount) -> bool {
     check_account_bundle(
         &AccountBundle {
             v: ACCOUNT_BUNDLE_VERSION,
-            cluster_id: PROBE.to_owned(),
+            library_id: PROBE.to_owned(),
             node_id: PROBE.to_owned(),
             accounts: vec![account.clone()],
         },
@@ -651,7 +651,7 @@ pub struct CarriedImport {
 }
 
 /// Imports the accounts a library sent with its person, for `user_id`,
-/// recording that they came from the library `cluster_id`.
+/// recording that they came from the library `library_id`.
 ///
 /// Refused whole, storing nothing, when this instance's rule does not let
 /// the person connect accounts ([`member_may_connect_accounts`]). Each
@@ -671,10 +671,10 @@ pub struct CarriedImport {
 pub async fn import_carried_accounts(
     store: &LibraryStore,
     user_id: i64,
-    cluster_id: &str,
+    library_id: &str,
     accounts: &[CarriedAccount],
 ) -> Result<CarriedImport> {
-    import_from_peer(store, user_id, &link_peer(cluster_id), accounts).await
+    import_from_peer(store, user_id, &link_peer(library_id), accounts).await
 }
 
 /// Imports the accounts a branch offered up its link ("Add my connections

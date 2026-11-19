@@ -992,7 +992,7 @@ fn build_spec_with_grant(
 
 /// CPU and memory one guest may use at most on this host: its grant's
 /// ceilings after `[plugins.jail]`, the numbers its jail enforces. The
-/// cluster scheduler accounts host budgets against these.
+/// library scheduler accounts host budgets against these.
 #[must_use]
 pub fn guest_reservation(
     manifest: &bookclerk_plugin_manifest::PluginManifest,
@@ -1876,9 +1876,9 @@ entrypoints = ["{entrypoint}"]
         let config = config_at(files.path());
         let own = plugin_at(install.path(), "audible", JailNetworkNeed::Outbound);
         let mut for_x = own.clone();
-        for_x.state_scope = StateScope::Link(crate::LinkStateDir::for_cluster("cluster-x"));
+        for_x.state_scope = StateScope::Link(crate::LinkStateDir::for_library("library-x"));
         let mut for_y = own.clone();
-        for_y.state_scope = StateScope::Link(crate::LinkStateDir::for_cluster("cluster-y"));
+        for_y.state_scope = StateScope::Link(crate::LinkStateDir::for_library("library-y"));
         let own_dir = plugin_data_dir(&config, &own).unwrap();
         let x_dir = plugin_data_dir(&config, &for_x).unwrap();
         let y_dir = plugin_data_dir(&config, &for_y).unwrap();
@@ -1888,7 +1888,7 @@ entrypoints = ["{entrypoint}"]
             assert!(!a.starts_with(b) && !b.starts_with(a));
         }
         let fs_id = own.plugin_key().fs_id();
-        let x_leaf = crate::LinkStateDir::for_cluster("cluster-x");
+        let x_leaf = crate::LinkStateDir::for_library("library-x");
         assert_eq!(
             x_dir,
             files
@@ -1911,11 +1911,11 @@ entrypoints = ["{entrypoint}"]
 
     #[test]
     fn link_state_dirs_are_fixed_length_and_never_a_plugin_fs_id() {
-        let dir = crate::LinkStateDir::for_cluster("../../etc/passwd");
+        let dir = crate::LinkStateDir::for_library("../../etc/passwd");
         assert!(crate::LinkStateDir::is_leaf(dir.as_str()));
         assert_eq!(dir.as_str().len(), "link-".len() + 32);
-        assert_eq!(dir, crate::LinkStateDir::for_cluster("../../etc/passwd"));
-        assert_ne!(dir, crate::LinkStateDir::for_cluster("cluster-x"));
+        assert_eq!(dir, crate::LinkStateDir::for_library("../../etc/passwd"));
+        assert_ne!(dir, crate::LinkStateDir::for_library("library-x"));
         assert!(!crate::LinkStateDir::is_leaf(
             "pk-0123456789abcdef0123456789abcdef"
         ));
@@ -1932,10 +1932,10 @@ entrypoints = ["{entrypoint}"]
         let config = config_at(files.path());
         let own = plugin_at(install.path(), "audible", JailNetworkNeed::Outbound);
         let mut for_x = own.clone();
-        let x_leaf = crate::LinkStateDir::for_cluster("cluster-x");
+        let x_leaf = crate::LinkStateDir::for_library("library-x");
         for_x.state_scope = StateScope::Link(x_leaf.clone());
         let mut for_y = own.clone();
-        for_y.state_scope = StateScope::Link(crate::LinkStateDir::for_cluster("cluster-y"));
+        for_y.state_scope = StateScope::Link(crate::LinkStateDir::for_library("library-y"));
         for plugin in [&own, &for_x, &for_y] {
             let data = plugin_data_dir(&config, plugin).unwrap();
             std::fs::create_dir_all(&data).unwrap();
