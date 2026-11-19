@@ -46932,7 +46932,8 @@
           "defaults",
           "overrides",
           "effective",
-          "applies"
+          "applies",
+          "follows_default"
         ],
         "properties": {
           "user_id": {
@@ -46963,11 +46964,16 @@
                 "$ref": "#/components/schemas/MemberControls"
               }
             ],
-            "description": "What applies to the user now: everything for an Owner or\nAdministrator, nothing for a disabled user, and the default with the\noverrides applied for a Member."
+            "description": "What applies to the user now: nothing for a disabled user,\neverything for an Owner, the overrides alone for an Administrator,\nand the default with the overrides applied for a Member."
           },
           "applies": {
             "type": "boolean",
-            "description": "Whether the controls apply to the user's role: false for an Owner\nor Administrator, who may always do everything.",
+            "description": "Whether controls can limit the user's role: false for an Owner, who\nmay always do everything.",
+            "example": true
+          },
+          "follows_default": {
+            "type": "boolean",
+            "description": "Whether the user follows the library's default: true for a Member,\nfalse for an Administrator, whom only controls set for them alone\nlimit (and only an Owner or the operator sets those).",
             "example": true
           }
         }

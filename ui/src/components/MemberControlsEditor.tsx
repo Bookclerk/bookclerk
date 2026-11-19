@@ -41,6 +41,7 @@ export function MemberControlsEditor({ target, disabled = false }: MemberControl
   const [defaults, setDefaults] = useState<MemberControls>(ALL_ALLOWED);
   const [overrides, setOverrides] = useState<ControlOverrides>({});
   const [applies, setApplies] = useState(true);
+  const [followsDefault, setFollowsDefault] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const userId = target.kind === "user" ? target.userId : null;
@@ -56,6 +57,7 @@ export function MemberControlsEditor({ target, disabled = false }: MemberControl
         setDefaults(res.defaults);
         setOverrides(res.overrides);
         setApplies(res.applies);
+        setFollowsDefault(res.follows_default);
       }
       setLoaded(true);
     } catch (err) {
@@ -94,7 +96,12 @@ export function MemberControlsEditor({ target, disabled = false }: MemberControl
   }
 
   const locked = disabled || saving || !loaded;
-  const heading = userId === null ? "Default member controls" : "What this patron may do";
+  const heading =
+    userId === null
+      ? "Default member controls"
+      : followsDefault
+        ? "What this patron may do"
+        : "What this Administrator may do";
 
   return (
     <section className="space-y-2" aria-label={heading}>
@@ -105,8 +112,12 @@ export function MemberControlsEditor({ target, disabled = false }: MemberControl
         </p>
       ) : !applies ? (
         <p className="text-xs text-ink/55">
-          Owners and Administrators may always do everything. Controls set here apply if their role
-          changes to Member.
+          Owners may always do everything. Controls set here apply if their role changes.
+        </p>
+      ) : !followsDefault ? (
+        <p className="text-xs text-ink/55">
+          Administrators don&apos;t follow the members&apos; default. Only controls turned off here
+          limit them, and only an Owner can change these.
         </p>
       ) : null}
       <ul className="space-y-2">
@@ -136,7 +147,9 @@ export function MemberControlsEditor({ target, disabled = false }: MemberControl
                 }
               >
                 <option value="default">
-                  Default ({defaults[info.control] ? "allowed" : "off"})
+                  {followsDefault
+                    ? `Default (${defaults[info.control] ? "allowed" : "off"})`
+                    : "Not set (allowed)"}
                 </option>
                 <option value="on">Allowed</option>
                 <option value="off">Off</option>

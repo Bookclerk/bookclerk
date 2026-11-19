@@ -1582,8 +1582,13 @@ export interface UserControls {
   overrides: ControlOverrides;
   /** What applies to the user now. */
   effective: MemberControls;
-  /** False for an Owner or Administrator, who may always do everything. */
+  /** False for an Owner, who may always do everything. */
   applies: boolean;
+  /**
+   * True for a Member, who follows the library default; false for an
+   * Administrator, whom only controls set for them alone limit.
+   */
+  follows_default: boolean;
 }
 
 /**

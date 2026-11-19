@@ -104,8 +104,13 @@ sets, and an Administrator can set single switches for one Member. A
 switch set for one Member overrides only that switch; the others keep
 following the default, so a later change of the default still reaches
 them. This differs from the rules, where a Member's own rules replace
-the default rules as a whole. Owners and Administrators are never
-limited, and a disabled user may do none of it.
+the default rules as a whole. A disabled user may do none of it.
+
+An Owner or the operator can also set single switches for an
+Administrator (an Administrator manages Members alone, so never another
+Administrator's switches). The default is for patrons: it never limits
+an Administrator, whom only the switches set for them alone limit.
+Owners are never limited.
 
 "Link store accounts" replaces the earlier per-member rule "may connect
 store accounts here". Like that rule it is checked again inside each

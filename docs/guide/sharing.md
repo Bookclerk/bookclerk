@@ -107,9 +107,13 @@ To set them:
    control under **What this patron may do**. **Default** makes that
    control follow the library's default again.
 
-Owners and Administrators may always do everything. From the command
-line, `bookclerk users controls get` and `bookclerk users controls set`
-do the same.
+An Owner can also turn single controls off for an Administrator, under
+**What this Administrator may do**: for example, to stop them linking
+store accounts. Administrators don't follow the members' default, and
+only an Owner or the operator can change their controls. Owners may
+always do everything. From the command line,
+`bookclerk users controls get` and `bookclerk users controls set` do the
+same.
 
 ## Audiobookshelf
 

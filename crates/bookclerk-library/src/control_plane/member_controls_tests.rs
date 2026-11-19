@@ -83,9 +83,37 @@ async fn members_follow_the_default_except_where_overridden() {
                 .unwrap(),
             "{name}"
         );
-        // Owners and Administrators are never limited.
+        // The default is for patrons: it never limits an Administrator.
         assert!(
             user_may(store, admin.id, MemberControl::Download)
+                .await
+                .unwrap(),
+            "{name}"
+        );
+        // A control set for an Administrator alone does.
+        let mut admin_overrides = ControlOverrides::default();
+        admin_overrides.set(MemberControl::LinkAccounts, Some(false));
+        let limited = set_member_control_overrides(store, admin.id, admin_overrides)
+            .await
+            .unwrap();
+        assert!(!limited.effective.link_accounts, "{name}");
+        assert!(limited.effective.download, "{name}: not the default");
+        assert!(
+            !user_may(store, admin.id, MemberControl::LinkAccounts)
+                .await
+                .unwrap(),
+            "{name}"
+        );
+        // An Owner never is.
+        let owner = store
+            .create_user(UserRole::Owner, Some("Olu"), None)
+            .await
+            .unwrap();
+        set_member_control_overrides(store, owner.id, admin_overrides)
+            .await
+            .unwrap();
+        assert!(
+            user_may(store, owner.id, MemberControl::LinkAccounts)
                 .await
                 .unwrap(),
             "{name}"

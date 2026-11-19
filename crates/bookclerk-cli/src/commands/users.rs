@@ -9,9 +9,10 @@
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
     assigned_member_controls, assigned_patron_scope, default_member_controls, default_patron_scope,
-    member_control_overrides, role_is_scoped, set_default_member_controls,
-    set_default_patron_scope, set_member_control_overrides, set_patron_scope, AssignedControls,
-    ConfigActor, MemberControl, MemberControls, PatronScope, RuleEffect, ScopeField, ScopeRule,
+    member_control_overrides, role_follows_default_controls, role_has_controls, role_is_scoped,
+    set_default_member_controls, set_default_patron_scope, set_member_control_overrides,
+    set_patron_scope, AssignedControls, ConfigActor, MemberControl, MemberControls, PatronScope,
+    RuleEffect, ScopeField, ScopeRule,
 };
 use bookclerk_library::UserRecord;
 use clap::Subcommand;
@@ -280,7 +281,8 @@ fn print_user_controls(
     user: &UserRecord,
     assigned: &AssignedControls,
 ) -> anyhow::Result<()> {
-    let applies = role_is_scoped(user.role);
+    let applies = role_has_controls(user.role);
+    let follows_default = role_follows_default_controls(user.role);
     emit(
         format,
         &json!({
@@ -289,6 +291,7 @@ fn print_user_controls(
             "overrides": assigned.overrides,
             "effective": assigned.effective,
             "applies": applies,
+            "follows_default": follows_default,
         }),
         || {
             println!("User {}", user.id);
@@ -301,8 +304,10 @@ fn print_user_controls(
             for control in MemberControl::ALL {
                 let source = if assigned.overrides.get(control).is_some() {
                     "set for this user"
-                } else {
+                } else if follows_default {
                     "library default"
+                } else {
+                    "not set"
                 };
                 println!(
                     "  {:<14} {} ({source})",

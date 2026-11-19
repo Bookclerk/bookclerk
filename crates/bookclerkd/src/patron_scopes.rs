@@ -14,10 +14,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use bookclerk_library::control_plane::{
     assigned_member_controls, assigned_patron_scope, default_member_controls, default_patron_scope,
-    role_is_scoped, set_default_member_controls, set_default_patron_scope,
-    set_member_control_overrides, set_patron_scope, verify_patron_administrator, AssignedControls,
-    AssignedScope, ConfigActor, ControlOverrides, MemberControl, MemberControls, PatronScope,
-    PutUserScope,
+    role_follows_default_controls, role_has_controls, role_is_scoped, set_default_member_controls,
+    set_default_patron_scope, set_member_control_overrides, set_patron_scope,
+    verify_patron_administrator, AssignedControls, AssignedScope, ConfigActor, ControlOverrides,
+    MemberControl, MemberControls, PatronScope, PutUserScope,
 };
 use bookclerk_library::LibraryError;
 use serde::{Deserialize, Serialize};
@@ -308,14 +308,19 @@ pub(crate) struct UserControlsJson {
     /// The controls set for this patron alone; the others follow the
     /// default.
     overrides: ControlOverrides,
-    /// What applies to the user now: everything for an Owner or
-    /// Administrator, nothing for a disabled user, and the default with the
-    /// overrides applied for a Member.
+    /// What applies to the user now: nothing for a disabled user,
+    /// everything for an Owner, the overrides alone for an Administrator,
+    /// and the default with the overrides applied for a Member.
     effective: MemberControls,
-    /// Whether the controls apply to the user's role: false for an Owner
-    /// or Administrator, who may always do everything.
+    /// Whether controls can limit the user's role: false for an Owner, who
+    /// may always do everything.
     #[schema(example = true)]
     applies: bool,
+    /// Whether the user follows the library's default: true for a Member,
+    /// false for an Administrator, whom only controls set for them alone
+    /// limit (and only an Owner or the operator sets those).
+    #[schema(example = true)]
+    follows_default: bool,
 }
 
 /// `PUT /api/users/{id}/controls` body.
@@ -346,7 +351,8 @@ fn user_controls_json(
         defaults: assigned.defaults,
         overrides: assigned.overrides,
         effective: assigned.effective,
-        applies: role_is_scoped(user.role),
+        applies: role_has_controls(user.role),
+        follows_default: role_follows_default_controls(user.role),
     }
 }
 
@@ -539,7 +545,8 @@ async fn caller_allowed(
     headers: &HeaderMap,
     control: MemberControl,
 ) -> Result<bool, ScopeError> {
-    let user_id = match crate::auth::caller_subject(state, headers).await {
+    let library = state.library_snapshot().await;
+    let user_id = match crate::auth::caller_subject(state, &library, headers).await {
         crate::auth::CallerSubject::Operator => return Ok(true),
         crate::auth::CallerSubject::Person(user_id) => user_id,
         crate::auth::CallerSubject::SignedOut => {
@@ -556,7 +563,6 @@ async fn caller_allowed(
             ));
         }
     };
-    let library = state.library_snapshot().await;
     let allowed = match user_id {
         Some(user_id) => {
             bookclerk_library::control_plane::user_may(&library, user_id, control).await

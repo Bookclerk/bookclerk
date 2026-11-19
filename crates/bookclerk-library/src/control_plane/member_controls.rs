@@ -20,11 +20,11 @@ use super::documents::{
     self, import_if_absent, load_document, replace_document, DocumentKey, ReplaceOutcome,
     StoredDocument,
 };
-use super::{document, role_is_scoped, ConfigActor, ConfigurationDocument};
+use super::{document, ConfigActor, ConfigurationDocument};
 use crate::control_plane::batch::{self, int, text};
 use crate::entities::patron_controls;
 use crate::error::{LibraryError, Result};
-use crate::models::{UserRecord, UserStatus};
+use crate::models::{UserRecord, UserRole, UserStatus};
 use crate::store::LibraryStore;
 use crate::EntityKind;
 
@@ -410,10 +410,34 @@ pub async fn assigned_member_controls(
     })
 }
 
+/// Whether member controls ever limit a role: Members, Hosts and
+/// Administrators can be limited; Owners never are.
+///
+/// An Administrator's controls are set only by an Owner or the operator,
+/// because an Administrator may manage Members alone.
+#[must_use]
+pub fn role_has_controls(role: UserRole) -> bool {
+    match role {
+        UserRole::Member | UserRole::Host | UserRole::Administrator => true,
+        UserRole::Owner => false,
+    }
+}
+
+/// Whether a role follows the library's default controls: Members and
+/// Hosts do. An Administrator may do everything except the controls set
+/// for them alone, so a default meant for patrons never limits staff.
+#[must_use]
+pub fn role_follows_default_controls(role: UserRole) -> bool {
+    match role {
+        UserRole::Member | UserRole::Host => true,
+        UserRole::Administrator | UserRole::Owner => false,
+    }
+}
+
 /// What applies to `user` given the library's default and their
-/// overrides: everything for an active Owner or Administrator, nothing for
-/// a user who is not active, and the default with the overrides applied
-/// for an active Member.
+/// overrides: nothing for a user who is not active, everything for an
+/// active Owner, the overrides over "everything allowed" for an active
+/// Administrator, and the overrides over the default for an active Member.
 #[must_use]
 pub fn effective_controls(
     user: &UserRecord,
@@ -422,8 +446,10 @@ pub fn effective_controls(
 ) -> MemberControls {
     if user.status != UserStatus::Active {
         MemberControls::all(false)
-    } else if role_is_scoped(user.role) {
+    } else if role_follows_default_controls(user.role) {
         overrides.apply(defaults)
+    } else if role_has_controls(user.role) {
+        overrides.apply(MemberControls::all(true))
     } else {
         MemberControls::all(true)
     }
@@ -564,15 +590,11 @@ pub(crate) async fn control_guard(
     let overrides = row
         .as_ref()
         .map_or_else(|| Ok(ControlOverrides::default()), parse_row)?;
-    let allowed = !role_is_scoped(user.role)
-        || overrides
-            .apply(
-                default
-                    .as_ref()
-                    .map(|document| document.body)
-                    .unwrap_or_default(),
-            )
-            .allows(control);
+    let defaults = default
+        .as_ref()
+        .map(|document| document.body)
+        .unwrap_or_default();
+    let allowed = effective_controls(&user, defaults, overrides).allows(control);
     Ok(allowed.then(|| ControlGuard {
         user_id,
         role: user.role.as_str().to_string(),

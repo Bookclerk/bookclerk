@@ -237,6 +237,7 @@ async fn an_administrator_sets_the_default_and_a_patrons_own_controls() {
     assert_eq!(body["overrides"], serde_json::json!({}));
     assert_eq!(body["effective"]["download"], true);
     assert_eq!(body["applies"], true);
+    assert_eq!(body["follows_default"], true);
 
     // The default turns prices off; the member follows it.
     let (status, body) = send(
@@ -307,6 +308,27 @@ async fn an_administrator_sets_the_default_and_a_patrons_own_controls() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // An Owner limits an Administrator; the patrons' default does not.
+    let owner = portal_cookie_for(&library, "test", "admin-ext").await;
+    let (status, body) = send(
+        &app,
+        "PUT",
+        &format!("/api/users/{administrator}/controls"),
+        &owner,
+        Some(r#"{"overrides":{"link_accounts":false}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["applies"], true);
+    assert_eq!(body["follows_default"], false);
+    assert_eq!(body["effective"]["link_accounts"], false);
+    assert_eq!(body["effective"]["see_prices"], true, "not the default");
+    assert!(
+        !bookclerk_library::control_plane::member_may_connect_accounts(&library, administrator)
+            .await
+            .unwrap()
+    );
 
     // A member may neither read nor write controls.
     let (status, _) = send(
