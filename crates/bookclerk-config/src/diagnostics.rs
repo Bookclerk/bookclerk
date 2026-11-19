@@ -294,6 +294,18 @@ impl DiagnosticsHandle {
             .share_reports
             .store(share_reports, Ordering::Relaxed);
         self.inner.share_usage.store(share_usage, Ordering::Relaxed);
+        // Turning reports on live also arms crash reports, as starting with
+        // them on does; the hook reports through the global handle only.
+        if self.is_global() && self.upload_enabled() && self.inner.config.upload_on_crash {
+            install_panic_hook();
+        }
+    }
+
+    /// Whether this handle is the process-global one ([`install_global`]).
+    fn is_global(&self) -> bool {
+        GLOBAL_DIAGNOSTICS
+            .get()
+            .is_some_and(|g| Arc::ptr_eq(&g.inner, &self.inner))
     }
 
     /// Tells the handle where the files directory is, so accepted reports
@@ -1147,6 +1159,8 @@ mod tests {
         handle.set_sharing(false, false);
         assert!(!handle.upload_enabled());
         assert!(!handle.share_usage());
+        // Only the process-global handle arms the crash hook.
+        assert!(!handle.is_global());
     }
 
     #[test]

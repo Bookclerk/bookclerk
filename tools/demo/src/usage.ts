@@ -10,7 +10,7 @@
 import type { Env } from "./env.ts";
 
 /** How a run ended, as `finish` records it. */
-export type EndReason = "visitor" | "idle" | "time" | "failed" | "stopped" | "sweep";
+export type EndReason = "visitor" | "idle" | "time" | "failed" | "stopped" | "sweep" | "restart";
 
 /** What every event repeats about its run, so any one event can create it. */
 export type RunFields = {
@@ -45,7 +45,15 @@ export interface UsageService {
 export const REPORT_TIMEOUT_MS = 2000;
 
 /** The reasons `finish` may record, as the collector knows them. */
-const REASONS: readonly string[] = ["visitor", "idle", "time", "failed", "stopped", "sweep"];
+const REASONS: readonly string[] = [
+  "visitor",
+  "idle",
+  "time",
+  "failed",
+  "stopped",
+  "sweep",
+  "restart",
+];
 
 /**
  * Whether `reason` is one the collector accepts.

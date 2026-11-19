@@ -28,7 +28,15 @@ import type { Env } from "./env.ts";
 import { isObject } from "./json.ts";
 
 /** Why a run ended, as the demo records it (`end_reason` in its database). */
-export const DEMO_END_REASONS = ["visitor", "idle", "time", "failed", "stopped", "sweep"] as const;
+export const DEMO_END_REASONS = [
+  "visitor",
+  "idle",
+  "time",
+  "failed",
+  "stopped",
+  "sweep",
+  "restart",
+] as const;
 
 /** One of {@link DEMO_END_REASONS}. */
 export type DemoEndReason = (typeof DEMO_END_REASONS)[number];

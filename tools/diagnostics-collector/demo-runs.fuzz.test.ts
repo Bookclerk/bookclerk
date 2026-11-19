@@ -90,7 +90,9 @@ function check(value: unknown, label: string): void {
       oracleTime(e) &&
       e >= Number(obj["started_at"]) &&
       e <= Number(obj["ends_at"]) + 86_400 &&
-      ["visitor", "idle", "time", "failed", "stopped", "sweep"].includes(String(obj["reason"])) &&
+      ["visitor", "idle", "time", "failed", "stopped", "sweep", "restart"].includes(
+        String(obj["reason"]),
+      ) &&
       typeof obj["reason"] === "string";
   }
   if (!ok || obj === null) {
@@ -157,7 +159,13 @@ const FRAGMENTS = [
 describe("parseDemoRunEvent", () => {
   it("replays the seed corpus", () => {
     for (const [name, raw] of seeds("demo_run")) check(valueOf(raw), name);
-    for (const ok of ["start.json", "ready.json", "stop.json", "stop_reordered.json"]) {
+    for (const ok of [
+      "start.json",
+      "ready.json",
+      "stop.json",
+      "stop_reordered.json",
+      "stop_restart.json",
+    ]) {
       assert.ok(parseDemoRunEvent(valueOf(seed("demo_run", ok))), ok);
     }
     for (const off of [

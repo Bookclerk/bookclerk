@@ -696,8 +696,8 @@ no public route.
 1. When a run starts, the demo sends its start and hard stop.
 2. When the visitor's copy first answers, it sends how long startup took.
 3. When the run stops, it sends when and why (the visitor left, it sat
-   idle, it reached its time limit, it failed, its machine stopped, or the
-   demo's sweep ended it).
+   idle, it reached its time limit, it failed, its machine stopped, the
+   demo's sweep ended it, or the visitor started a new run in its place).
 
 Each event names the run by a random run ID the demo makes for it,
 separate from the visitor's session, and repeats the run's start and hard

@@ -37,6 +37,16 @@ describe("run events", () => {
       ended_at: ROW.started_at + 600,
       reason: "idle",
     });
+    // A visitor who starts again ends the old run with "restart".
+    assert.deepEqual(stopEvent(ROW, ROW.started_at + 60, "restart"), {
+      kind: "stop",
+      run_id: ROW.run_id,
+      started_at: ROW.started_at,
+      ends_at: ROW.ends_at,
+      version: ROW.version,
+      ended_at: ROW.started_at + 60,
+      reason: "restart",
+    });
   });
 
   it("are not built for rows without a run ID, odd versions or unknown reasons", () => {
@@ -44,7 +54,7 @@ describe("run events", () => {
     assert.equal(stopEvent(null, 1, "idle"), null);
     assert.equal(runFields({ ...ROW, run_id: "" }), null, "a row from before run IDs");
     assert.equal(runFields({ ...ROW, version: "v 1" }), null);
-    assert.equal(stopEvent(ROW, ROW.started_at, "restart"), null);
+    assert.equal(stopEvent(ROW, ROW.started_at, "bogus"), null);
   });
 });
 
