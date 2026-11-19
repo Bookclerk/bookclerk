@@ -44,9 +44,9 @@ scope**. Owners and Administrators always see the whole library.
 As with other changes to a person, an Administrator can set the scope of
 a Member. Anyone who can set scopes can edit the library's default.
 
-A scope is a list of rules. Each rule names a field (genre, series, author
-or narrator), one value of it, and whether it **shows only** books with
-that value or **hides** them:
+A scope is a list of rules. Each rule names a field (genre, series,
+author, narrator or library tag), one value of it, and whether it **shows
+only** books with that value or **hides** them:
 
 - With no rules, every book is visible.
 - With any "show only" rule, a book needs to match at least one of them.
@@ -73,6 +73,29 @@ not apply it yet.
 From the command line, `bookclerk users scope get` and
 `bookclerk users scope set` do the same (see the
 [CLI reference](../server/cli-reference.md)).
+
+### Library tags
+
+Genres come from the stores and don't always fit your household. A
+**library tag** is a label you choose, such as `Kids` or `Bedtime`, which
+everyone sees and a scope can show or hide by.
+
+1. Open a book on the **Library** page.
+2. Under **Library tags**, type the tags, separated by commas, and choose
+   **Save tags**.
+
+Only an Owner, an Administrator or the operator can set them, and an
+Owner can turn that off for one Administrator with the **Set patron
+limits** switch (see
+[Limit what an Administrator may do](#limit-what-an-administrator-may-do)).
+Anyone can filter the Library by them under **Library tags**. They are
+separate from **My tags**, which each person keeps for themselves.
+
+A book's tags can also come from a sidecar metadata file beside it. Those
+are listed under the tags you set and can't be edited here.
+
+From the command line, `bookclerk library tags get` and
+`bookclerk library tags set` do the same.
 
 ## Limit what a patron may do
 
@@ -122,7 +145,7 @@ all are on out of the box. Owners are never limited.
 | Switch | Turning it off stops |
 | --- | --- |
 | Manage members | Inviting, adding, changing, resetting the password of, or removing Members. An Administrator can still change their own profile. |
-| Set patron limits | Changing a Member's scope or member controls, and the library's defaults for them |
+| Set patron limits | Changing a Member's scope or member controls, the library's defaults for them, and library tags |
 | Scan and acquire library-wide | Scanning or acquiring with every store account. They still reach the accounts linked to them. |
 | Run the job queue | Cancelling jobs, retrying, cancelling or resuming event deliveries, and starting a listening sync |
 | Fix the catalog | Pinning a listing to an edition, removing a pin, and splitting a work. The conflicts list stays readable. |

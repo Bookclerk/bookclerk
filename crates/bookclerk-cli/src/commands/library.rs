@@ -4,7 +4,7 @@ use bookclerk_acquire::{
     convert_book, match_storage_to_library, AcquireRequest, ConvertRequest, MatchStorageOptions,
 };
 use bookclerk_config::{AudioQuality, Config};
-use bookclerk_library::{AcquireStatus, AcquireTitle, LibraryStore};
+use bookclerk_library::{AcquireStatus, AcquireTitle, LibraryStore, WorkTagSource};
 use bookclerk_plugin_host::HostControlPlane;
 use bookclerk_search::WorkSearchIndex;
 use bookclerk_source::{source_scope, DownloadOptions, FetchOptions};
@@ -280,6 +280,34 @@ pub enum LibraryCommand {
         #[command(subcommand)]
         /// Nested saved-filter list/save/delete action.
         command: FilterCommand,
+    },
+    /// Read or set a work's library tags, which everyone sees, the Library
+    /// filters by, and a patron scope can include or exclude.
+    Tags {
+        #[command(subcommand)]
+        /// Nested get/set action.
+        command: TagsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+/// Nested `library tags` actions.
+pub(crate) enum TagsCommand {
+    /// Print a work's library tags, one per line, with where each came from.
+    Get {
+        /// The work id (a top-level work, as `GET /api/library/works`
+        /// lists it).
+        work: String,
+    },
+    /// Replace the tags set in Bookclerk on a work; tags read from a
+    /// sidecar file stay.
+    Set {
+        /// The work id.
+        work: String,
+        /// A tag to set (repeatable). With none, the work's tags set in
+        /// Bookclerk are removed.
+        #[arg(long = "tag", value_name = "TAG")]
+        tags: Vec<String>,
     },
 }
 
@@ -765,6 +793,20 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 Ok(())
             }
         },
+        LibraryCommand::Tags { command } => {
+            let tags = match command {
+                TagsCommand::Get { work } => store.work_tags(&work).await?,
+                TagsCommand::Set { work, tags } => store.set_work_tags(&work, &tags).await?,
+            };
+            for tag in tags {
+                let source = match tag.source {
+                    WorkTagSource::Admin => "set here",
+                    WorkTagSource::Sidecar => "from a sidecar",
+                };
+                println!("{}\t{source}", tag.value);
+            }
+            Ok(())
+        }
         LibraryCommand::List { account, status } => {
             let titles = library_titles(&store, account.as_deref()).await?;
             for line in list_lines(&titles, status.as_deref()) {

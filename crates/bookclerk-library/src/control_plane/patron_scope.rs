@@ -65,6 +65,9 @@ pub enum ScopeField {
     Author,
     /// A narrator.
     Narrator,
+    /// A library tag: one an Administrator set on the work, or one read
+    /// from a sidecar file.
+    Tag,
 }
 
 impl ScopeField {
@@ -76,6 +79,7 @@ impl ScopeField {
             Self::Series => WorkFacet::Series,
             Self::Author => WorkFacet::Author,
             Self::Narrator => WorkFacet::Narrator,
+            Self::Tag => WorkFacet::Tag,
         }
     }
 }
@@ -300,8 +304,9 @@ mod strict {
                     ("series", ScopeField::Series),
                     ("author", ScopeField::Author),
                     ("narrator", ScopeField::Narrator),
+                    ("tag", ScopeField::Tag),
                 ],
-                expected: &["genre", "series", "author", "narrator"],
+                expected: &["genre", "series", "author", "narrator", "tag"],
             })
         }
     }

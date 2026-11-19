@@ -19,7 +19,7 @@ use super::work_search::WorkNames;
 use super::LibraryStore;
 use crate::entities::{
     contributors, credits, edition_acquisitions, editions, expressions, holdings, series,
-    series_entries, store_listings, works,
+    series_entries, store_listings, work_tags, works,
 };
 use crate::error::Result;
 use crate::WorkKind;
@@ -81,6 +81,8 @@ struct Assembler<'a> {
     entries_of: HashMap<&'a str, Vec<&'a series_entries::Model>>,
     /// Series names by series id.
     series_names: HashMap<&'a str, &'a str>,
+    /// Library tags by work id, each list in key order, one per key.
+    tags_of: HashMap<&'a str, Vec<&'a str>>,
 }
 
 impl Assembler<'_> {
@@ -223,6 +225,11 @@ impl Assembler<'_> {
                 first_author_sort,
                 series,
                 acquisitions,
+                tags: self
+                    .tags_of
+                    .get(work.id.as_str())
+                    .map(|list| list.iter().map(|t| (*t).to_string()).collect())
+                    .unwrap_or_default(),
             },
             names,
         }
@@ -365,6 +372,14 @@ impl LibraryStore {
             series::Entity::find().filter(series::Column::Id.is_in(part.iter().cloned()))
         })
         .await?;
+        let tag_rows = find_chunked_paged::<work_tags::Entity, _>(self, &top_ids, |part| {
+            work_tags::Entity::find()
+                .filter(work_tags::Column::WorkId.is_in(part.iter().cloned()))
+                .order_by_asc(work_tags::Column::WorkId)
+                .order_by_asc(work_tags::Column::Key)
+                .order_by_asc(work_tags::Column::Source)
+        })
+        .await?;
 
         let mut assembler = Assembler {
             editions_of: HashMap::new(),
@@ -378,6 +393,7 @@ impl LibraryStore {
                 .iter()
                 .map(|s| (s.id.as_str(), s.name.as_str()))
                 .collect(),
+            tags_of: HashMap::new(),
         };
         for edition in &editions {
             let top = work_of_expression
@@ -429,6 +445,17 @@ impl LibraryStore {
                 .entry(entry.work_id.as_str())
                 .or_default()
                 .push(entry);
+        }
+        for tag in &tag_rows {
+            let list = assembler.tags_of.entry(tag.work_id.as_str()).or_default();
+            // Rows come in key order, so a key two sources share is adjacent;
+            // the first spelling stands.
+            let last_key = list
+                .last()
+                .map(|v| crate::store::library_index::facet_key(v));
+            if last_key.as_deref() != Some(tag.key.as_str()) {
+                list.push(tag.value.as_str());
+            }
         }
         let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
         Ok(found

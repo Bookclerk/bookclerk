@@ -20,10 +20,10 @@
 //! and the show's row counts the episodes' editions and holdings.
 //!
 //! The same refresh writes the work's filter values (`library_work_facets`:
-//! authors, narrators, series, genres, publishers and sources), fenced by
-//! the row's stamp, so a page can filter by one value without joining the
-//! model. Tags and progress are per person and filter through
-//! `user_work_tags` and `user_title_state` instead.
+//! authors, narrators, series, genres, publishers, sources and library
+//! tags), fenced by the row's stamp, so a page can filter by one value
+//! without joining the model. A person's own tags and progress filter
+//! through `user_work_tags` and `user_title_state` instead.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -125,17 +125,21 @@ pub enum WorkFacet {
     Publisher,
     /// Storefront plugins the work is held through.
     Source,
+    /// Library tags (`work_tags`): set by an Administrator or read from a
+    /// sidecar, the same for everyone.
+    Tag,
 }
 
 impl WorkFacet {
     /// Every facet, in the order a work's values are written.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Author,
         Self::Narrator,
         Self::Series,
         Self::Genre,
         Self::Publisher,
         Self::Source,
+        Self::Tag,
     ];
 
     /// The stored `facet` value.
@@ -148,6 +152,7 @@ impl WorkFacet {
             Self::Genre => "genre",
             Self::Publisher => "publisher",
             Self::Source => "source",
+            Self::Tag => "tag",
         }
     }
 }
@@ -466,6 +471,9 @@ pub(crate) struct WorkRowInputs {
     pub series: Option<(String, Option<String>)>,
     /// Acquire rows of the editions.
     pub acquisitions: Vec<edition_acquisitions::Model>,
+    /// The work's library tags as written (`work_tags.value`), every
+    /// source, in key order.
+    pub tags: Vec<String>,
 }
 
 /// Derives a work's page index row; `None` when the work is gone (the row
@@ -732,6 +740,7 @@ pub(crate) fn build_work_facets(
             values.push((WorkFacet::Source, listing.plugin_key.as_str()));
         }
     }
+    values.extend(inputs.tags.iter().map(|t| (WorkFacet::Tag, t.as_str())));
     let mut seen: HashSet<(WorkFacet, String)> = HashSet::new();
     let mut out = Vec::new();
     for (facet, value) in values {
@@ -1926,6 +1935,7 @@ mod tests {
                 acquisition("e1", AcquireStatus::Error),
                 acquisition("e2", AcquireStatus::Queued),
             ],
+            tags: Vec::new(),
         };
         let row = build_work_row(&inputs, "now").unwrap();
         assert_eq!(row.sort_title, "dispossessed");

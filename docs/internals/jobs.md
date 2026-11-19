@@ -412,8 +412,8 @@ cursor issued for one `sort` is refused under another.
 The same refresh writes the work's filter values to
 `library_work_facets`: its authors and narrators (from credits and
 listings), series, genres (the work's and listings' categories, split on
-commas, semicolons and bars), publishers and the storefronts it is held
-through, each under its lower-cased key. The row write, the removal of
+commas, semicolons and bars), publishers, the storefronts it is held
+through and its library tags (`work_tags`), each under its lower-cased key. The row write, the removal of
 the old values and as many new values as fit share one atomic batch; the
 rest follow in further batches, each checking that the row still carries
 this refresh's stamp, so a later refresh's values are never mixed with an

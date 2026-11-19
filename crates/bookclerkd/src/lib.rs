@@ -71,6 +71,7 @@ mod startup_tests;
 mod totp;
 mod tray_companion;
 mod uploads;
+mod work_tags;
 
 pub mod embedded;
 
