@@ -845,26 +845,3 @@ fn a_track_states_a_media_type_a_player_can_use() {
         assert_eq!(track_content_type(&track(key, probed)), expected, "{key}");
     }
 }
-
-/// A page cursor round-trips, and anything else is refused.
-#[test]
-fn a_progress_cursor_round_trips() {
-    let cursor = ProgressCursor {
-        updated_at: "2026-11-19T09:02:41+00:00".into(),
-        edition_id: "5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d".into(),
-    };
-    let token = progress_cursor(&cursor);
-    let back = progress_cursor_of(&token).expect("a cursor");
-    assert_eq!(back.updated_at, cursor.updated_at);
-    assert_eq!(back.edition_id, cursor.edition_id);
-    let encode = |text: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text);
-    for bad in [
-        String::new(),
-        encode("no separator"),
-        encode("yesterday|edition"),
-        encode("2026-11-19T09:02:41+00:00|"),
-        "****".to_string(),
-    ] {
-        assert!(progress_cursor_of(&bad).is_none(), "{bad}");
-    }
-}

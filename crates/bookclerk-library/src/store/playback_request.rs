@@ -8,6 +8,8 @@
 //!   change a bookmark ([`parse_open_session_request`],
 //!   [`parse_progress_edit_request`], [`parse_new_bookmark_request`],
 //!   [`parse_bookmark_edit_request`]);
+//! - the `cursor` of `GET /api/playback/progress`
+//!   ([`parse_progress_cursor`]);
 //! - the path of `GET /api/playback/sessions/{id}/tracks/{n}`
 //!   ([`parse_track_path`]), which names the file a stream request reads.
 //!   Its `Range` header is `bookclerk_node_proto::parse_copy_range`'s.
@@ -15,8 +17,8 @@
 use serde::Deserialize;
 
 use super::playback::{
-    PlaybackMs, PlaybackProgressEdit, PlaybackSync, PlayerKind, MAX_BOOKMARK_TITLE_BYTES,
-    MAX_PLAYBACK_MS, MAX_PLAYER_NAME_BYTES,
+    PlaybackMs, PlaybackProgressEdit, PlaybackSync, PlayerKind, ProgressCursor,
+    MAX_BOOKMARK_TITLE_BYTES, MAX_PLAYBACK_MS, MAX_PLAYER_NAME_BYTES,
 };
 use crate::error::{LibraryError, Result};
 
@@ -567,6 +569,94 @@ pub fn parse_bookmark_edit_request(body: &[u8]) -> Result<BookmarkEditRequest> {
     read_body::<BookmarkEditBody>(body, "bookmark body")?.validate()
 }
 
+/// Longest progress cursor token the route reads, in bytes; a real one is
+/// about 100.
+pub const MAX_PROGRESS_CURSOR_BYTES: usize = 256;
+
+/// The opaque token of a progress cursor: unpadded URL-safe Base64 of
+/// the row's change time, a `|`, and its edition id.
+#[must_use]
+pub fn progress_cursor_token(cursor: &ProgressCursor) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(format!("{}|{}", cursor.updated_at, cursor.edition_id))
+}
+
+/// True when `text` has the shape of a stored change time: an RFC 3339
+/// date and time with up to nine fraction digits and either `Z` or a
+/// numeric offset. The cursor only compares it with stored text, so the
+/// shape is checked and the calendar is not.
+fn is_stamp(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let digits = |from: usize, to: usize| {
+        bytes
+            .get(from..to)
+            .is_some_and(|run| run.iter().all(u8::is_ascii_digit))
+    };
+    let is = |at: usize, byte: u8| bytes.get(at) == Some(&byte);
+    let date_time = digits(0, 4)
+        && is(4, b'-')
+        && digits(5, 7)
+        && is(7, b'-')
+        && digits(8, 10)
+        && is(10, b'T')
+        && digits(11, 13)
+        && is(13, b':')
+        && digits(14, 16)
+        && is(16, b':')
+        && digits(17, 19);
+    if !date_time {
+        return false;
+    }
+    let mut rest = &bytes[19..];
+    if let Some((b'.', fraction)) = rest.split_first() {
+        let count = fraction.iter().take_while(|b| b.is_ascii_digit()).count();
+        if count == 0 || count > 9 {
+            return false;
+        }
+        rest = &fraction[count..];
+    }
+    match rest {
+        [b'Z'] => true,
+        [b'+' | b'-', h1, h2, b':', m1, m2] => {
+            [h1, h2, m1, m2].iter().all(|byte| byte.is_ascii_digit())
+        }
+        _ => false,
+    }
+}
+
+/// Parses the `cursor` of `GET /api/playback/progress`, sans IO.
+///
+/// # Arguments
+///
+/// * `token` - The query value as sent.
+///
+/// # Returns
+///
+/// `None` unless `token` is at most [`MAX_PROGRESS_CURSOR_BYTES`] of
+/// canonical unpadded URL-safe Base64 that decodes to UTF-8 text of a
+/// change time (see [`progress_cursor_token`]), a `|` and an edition id
+/// of 1 to [`MAX_EDITION_ID_BYTES`] bytes. An accepted token is exactly
+/// what [`progress_cursor_token`] writes for the cursor it yields.
+#[must_use]
+pub fn parse_progress_cursor(token: &str) -> Option<ProgressCursor> {
+    use base64::Engine as _;
+    if token.len() > MAX_PROGRESS_CURSOR_BYTES {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(token)
+        .ok()?;
+    let text = String::from_utf8(bytes).ok()?;
+    let (updated_at, edition_id) = text.split_once('|')?;
+    let fits =
+        is_stamp(updated_at) && !edition_id.is_empty() && edition_id.len() <= MAX_EDITION_ID_BYTES;
+    fits.then(|| ProgressCursor {
+        updated_at: updated_at.to_string(),
+        edition_id: edition_id.to_string(),
+    })
+}
+
 /// The file a stream request names ([`parse_track_path`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackPath {
@@ -814,6 +904,43 @@ mod tests {
                 "{:?}",
                 String::from_utf8_lossy(refused)
             );
+        }
+    }
+
+    #[test]
+    fn a_progress_cursor_round_trips_and_refuses_what_the_route_never_made() {
+        use base64::Engine as _;
+        let token_of = |text: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text);
+        for stamp in [
+            "2026-11-19T09:02:41+00:00",
+            "2026-11-19T09:02:41.123456789+00:00",
+            "2026-11-19T09:02:41.5Z",
+            "2026-11-19T09:02:41-05:30",
+        ] {
+            let cursor = ProgressCursor {
+                updated_at: stamp.into(),
+                edition_id: "5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d".into(),
+            };
+            let token = progress_cursor_token(&cursor);
+            assert_eq!(parse_progress_cursor(&token), Some(cursor), "{stamp}");
+        }
+        let long_id = "e".repeat(MAX_EDITION_ID_BYTES + 1);
+        for refused in [
+            String::new(),
+            "not base64!".into(),
+            token_of("no delimiter"),
+            token_of("2026-11-19T09:02:41+00:00|"),
+            token_of("yesterday|ed1"),
+            token_of("2026-11-19 09:02:41+00:00|ed1"),
+            token_of("2026-11-19T09:02:41.+00:00|ed1"),
+            token_of("2026-11-19T09:02:41.1234567890Z|ed1"),
+            token_of("2026-11-19T09:02:41|ed1"),
+            token_of("2026-11-19T09:02:41+0000|ed1"),
+            token_of(&format!("2026-11-19T09:02:41Z|{long_id}")),
+            format!("{}=", token_of("2026-11-19T09:02:41Z|e")),
+            "A".repeat(MAX_PROGRESS_CURSOR_BYTES + 4),
+        ] {
+            assert_eq!(parse_progress_cursor(&refused), None, "{refused}");
         }
     }
 

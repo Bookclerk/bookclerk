@@ -52,13 +52,25 @@
 //!   bytes and has no control character. An accepted body yields the
 //!   position and the trimmed title.
 //!
+//! - `q`: the rest is the `cursor` query value of
+//!   `GET /api/playback/progress`, read by [`parse_progress_cursor`]. The
+//!   invariant, checked with this file's own Base64 decoder and a
+//!   character-class pattern rather than the parser's: a token is
+//!   accepted exactly when it is at most 256 bytes of canonical unpadded
+//!   URL-safe Base64 that decodes to UTF-8 text of a change time
+//!   (`YYYY-MM-DDTHH:MM:SS`, an optional fraction of one to nine digits,
+//!   then `Z` or a `+HH:MM` / `-HH:MM` offset; digits are not range
+//!   checked), a `|`, and an edition id of 1 to 128 bytes. An accepted
+//!   token yields that time and id, and writing them back gives the same
+//!   token.
+//!
 //! Any other first byte, and an empty input, is outside the boundary and
 //! checks nothing. A refused body is `Invalid`, never another error.
 
 use bookclerk_library::{
     parse_bookmark_edit_request, parse_new_bookmark_request, parse_open_session_request,
-    parse_playback_sync_request, parse_progress_edit_request, parse_track_path, LibraryError,
-    PlayerKind,
+    parse_playback_sync_request, parse_progress_cursor, parse_progress_edit_request,
+    parse_track_path, progress_cursor_token, LibraryError, PlayerKind,
 };
 use serde::de::{Deserializer as _, IgnoredAny, MapAccess, Visitor};
 use serde_json::Value;
@@ -75,6 +87,9 @@ const DOCUMENTED_MAX_EDITION_ID_BYTES: usize = 128;
 
 /// Longest stored player name the routes document, in bytes.
 const DOCUMENTED_MAX_PLAYER_NAME_BYTES: usize = 64;
+
+/// Longest progress cursor the routes document, in bytes.
+const DOCUMENTED_MAX_CURSOR_BYTES: usize = 256;
 
 /// Longest bookmark title the routes document, in bytes.
 const DOCUMENTED_MAX_TITLE_BYTES: usize = 200;
@@ -124,6 +139,7 @@ pub fn check(data: &[u8]) -> bool {
         Some((b'p', body)) => check_progress(body),
         Some((b'b', body)) => check_bookmark(body, false),
         Some((b'e', body)) => check_bookmark(body, true),
+        Some((b'q', token)) => check_cursor(token),
         Some(_) | None => false,
     }
 }
@@ -360,6 +376,94 @@ fn expected_bookmark(body: &[u8], edit: bool) -> Option<(Option<u64>, Option<Str
         Some(value) => Some(documented_title(value.as_str()?)?),
     };
     Some((position, title))
+}
+
+/// Checks one progress cursor against [`expected_cursor`].
+fn check_cursor(token: &[u8]) -> bool {
+    // A query value reaches the route as text; bytes that are not UTF-8
+    // never do.
+    let Ok(token) = std::str::from_utf8(token) else {
+        return false;
+    };
+    let got = parse_progress_cursor(token);
+    match expected_cursor(token) {
+        None => {
+            assert_eq!(got, None, "{token:?}");
+            false
+        }
+        Some((updated_at, edition_id)) => {
+            let Some(cursor) = got else {
+                panic!("{token:?} refused");
+            };
+            assert_eq!(cursor.updated_at, updated_at, "{token:?}");
+            assert_eq!(cursor.edition_id, edition_id, "{token:?}");
+            assert_eq!(progress_cursor_token(&cursor), token);
+            true
+        }
+    }
+}
+
+/// Decodes canonical unpadded URL-safe Base64 by hand; `None` for any
+/// other text (padding, another alphabet, a dangling character, or
+/// leftover bits that are not zero).
+fn base64url(text: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let (mut bits, mut held) = (0u32, 0u32);
+    for byte in text.bytes() {
+        let six = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            _ => return None,
+        };
+        held = (held << 6) | u32::from(six);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(u8::try_from((held >> bits) & 0xff).ok()?);
+        }
+    }
+    // Six leftover bits are a dangling character; any set leftover bit is
+    // a second spelling of the same bytes.
+    (bits < 6 && held & ((1 << bits) - 1) == 0).then_some(out)
+}
+
+/// Applies the documented cursor rules; `None` is a refusal.
+fn expected_cursor(token: &str) -> Option<(String, String)> {
+    if token.len() > DOCUMENTED_MAX_CURSOR_BYTES {
+        return None;
+    }
+    let text = String::from_utf8(base64url(token)?).ok()?;
+    let (updated_at, edition_id) = text.split_once('|')?;
+    if edition_id.is_empty() || edition_id.len() > DOCUMENTED_MAX_EDITION_ID_BYTES {
+        return None;
+    }
+    // The time as a pattern: `d` for each digit, every other character
+    // as itself (a written `d` becomes `?`, which no shape has).
+    let pattern: String = updated_at
+        .chars()
+        .map(|c| match c {
+            '0'..='9' => 'd',
+            'd' => '?',
+            other => other,
+        })
+        .collect();
+    let mut shapes = Vec::new();
+    for fraction in 0..=9 {
+        let fraction = if fraction == 0 {
+            String::new()
+        } else {
+            format!(".{}", "d".repeat(fraction))
+        };
+        for zone in ["Z", "+dd:dd", "-dd:dd"] {
+            shapes.push(format!("dddd-dd-ddTdd:dd:dd{fraction}{zone}"));
+        }
+    }
+    shapes
+        .contains(&pattern)
+        .then(|| (updated_at.to_string(), edition_id.to_string()))
 }
 
 /// True when the top-level JSON object in `data` writes a key twice.

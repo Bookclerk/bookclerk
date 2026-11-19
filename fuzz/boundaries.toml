@@ -380,7 +380,7 @@ artifacts = ["bookclerk"]
 
 [targets.playback_request]
 crate = "bookclerk-library"
-boundary = "What a player sends the playback routes: the bodies that open a session, report or set progress and add or change a bookmark, and the stream path of GET /api/playback/sessions/{id}/tracks/{n}"
+boundary = "What a player sends the playback routes: the bodies that open a session, report or set progress and add or change a bookmark, the progress page cursor, and the stream path of GET /api/playback/sessions/{id}/tracks/{n}"
 input_from = "any signed-in patron"
 side = "host"
 artifacts = ["bookclerk"]

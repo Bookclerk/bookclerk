@@ -44,15 +44,14 @@ use axum::extract::{Path as AxumPath, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::Json;
-use base64::Engine as _;
 use bookclerk_library::control_plane::{
     authorize_playback, load_or_create_node_identity, plan_playback, PlaybackPlan, PlaybackTrack,
 };
 use bookclerk_library::{
-    parse_track_path, Bookmark, BookmarkEditBody, EntityKind, LibraryError, LibraryStore,
-    NewBookmarkBody, NewPlaybackSession, OpenSessionBody, PlaybackChange, PlaybackEdition,
-    PlaybackEvent, PlaybackMs, PlaybackProgress, PlaybackSession, PlaybackSyncBody, ProgressCursor,
-    ProgressEditBody, MAX_PLAYBACK_TRACKS,
+    parse_progress_cursor, parse_track_path, progress_cursor_token, Bookmark, BookmarkEditBody,
+    EntityKind, LibraryError, LibraryStore, NewBookmarkBody, NewPlaybackSession, OpenSessionBody,
+    PlaybackChange, PlaybackEdition, PlaybackEvent, PlaybackMs, PlaybackProgress, PlaybackSession,
+    PlaybackSyncBody, ProgressEditBody, MAX_PLAYBACK_TRACKS,
 };
 use serde::{Deserialize, Serialize};
 
@@ -803,29 +802,6 @@ pub(crate) struct ProgressPage {
     next_cursor: Option<String>,
 }
 
-/// The opaque token of a progress cursor.
-fn progress_cursor(cursor: &ProgressCursor) -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(format!("{}|{}", cursor.updated_at, cursor.edition_id))
-}
-
-/// The cursor a token names, or `None` for one this route never made.
-fn progress_cursor_of(token: &str) -> Option<ProgressCursor> {
-    if token.len() > 256 {
-        return None;
-    }
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(token)
-        .ok()?;
-    let text = String::from_utf8(bytes).ok()?;
-    let (updated_at, edition_id) = text.split_once('|')?;
-    chrono::DateTime::parse_from_rfc3339(updated_at).ok()?;
-    (!edition_id.is_empty()).then(|| ProgressCursor {
-        updated_at: updated_at.to_string(),
-        edition_id: edition_id.to_string(),
-    })
-}
-
 /// Lists the caller's progress, most recently played first.
 #[utoipa::path(
     get,
@@ -848,7 +824,7 @@ pub(crate) async fn list_progress(
     let user_id = listener(&state, &headers).await?;
     let after = match query.cursor.as_deref() {
         Some(token) => Some(
-            progress_cursor_of(token)
+            parse_progress_cursor(token)
                 .ok_or_else(|| refuse(StatusCode::BAD_REQUEST, "invalid page cursor"))?,
         ),
         None => None,
@@ -888,7 +864,7 @@ pub(crate) async fn list_progress(
     }
     Ok(Json(ProgressPage {
         items,
-        next_cursor: next.as_ref().map(progress_cursor),
+        next_cursor: next.as_ref().map(progress_cursor_token),
     }))
 }
 
