@@ -28,7 +28,6 @@ boundary extends it.
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
-| `https_url_policy` | URLs from untrusted output checked against a host allowlist (no caller since covers moved to the cover service) | `bookclerk-plugin-manifest::https_url_on_hosts` |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec and the database envelope decoders | `bookclerk-plugin-abi` |
 | `db_stream` | `executeStreamed` frames an adapter sends, reassembled by the host and the SDKs under the streamed result budget. The TypeScript and Python SDK tests replay the same corpus as shared vectors against their own decoders | `bookclerk-plugin-abi::ExecuteStreamDecoder` |
 | `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
@@ -123,11 +122,6 @@ only that. The others check:
   normalized source, and `next_after` / `latest_at_or_before` agree with a
   minute-by-minute scan of `matches`. The shared oracle is
   `fuzz/oracles/cron_schedule.rs`, replayed from
-  `bookclerk-plugin-manifest`.
-- **`https_url_policy`**: the check is idempotent, and an accepted URL is
-  `https://` with no user info, port or IP literal, on a host the patterns
-  cover, read byte by byte rather than by the URL parser. The shared oracle
-  is `fuzz/oracles/https_url_policy.rs`, replayed from
   `bookclerk-plugin-manifest`.
 - **`abi_decode`**: the traversal budget is derived from the input size.
   Structured seeds cover the book records, the metadata replies and the
