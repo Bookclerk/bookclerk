@@ -463,6 +463,150 @@ mod tests {
         assert!(!controls.upload && controls.download);
     }
 
+    /// A `users controls set` with the given changes.
+    fn set(
+        user: Option<&str>,
+        allow: &[&str],
+        deny: &[&str],
+        follow_default: &[&str],
+    ) -> ControlsCommand {
+        let owned = |names: &[&str]| names.iter().map(|n| (*n).to_string()).collect();
+        ControlsCommand::Set {
+            default: user.is_none(),
+            user: user.map(str::to_string),
+            allow: owned(allow),
+            deny: owned(deny),
+            follow_default: owned(follow_default),
+        }
+    }
+
+    #[tokio::test]
+    async fn controls_commands_read_and_change_defaults_and_overrides() {
+        use bookclerk_library::{LibraryStore, UserRole};
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("sqlite memory"),
+        );
+        let member = store
+            .create_user_with_login(UserRole::Member, Some("Kit"), Some("kit"), None)
+            .await
+            .unwrap();
+        let owner = store
+            .create_user_with_login(UserRole::Owner, Some("Ola"), Some("ola"), None)
+            .await
+            .unwrap();
+
+        for format in [OutputFormat::Text, OutputFormat::Json] {
+            run_controls(
+                &store,
+                ControlsCommand::Get {
+                    user: None,
+                    default: true,
+                },
+                format,
+            )
+            .await
+            .unwrap();
+            for user in ["kit", "ola"] {
+                let get = ControlsCommand::Get {
+                    user: Some(user.into()),
+                    default: false,
+                };
+                run_controls(&store, get, format).await.unwrap();
+            }
+        }
+
+        // The default turns uploads off; the member follows it.
+        run_controls(&store, set(None, &[], &["upload"], &[]), OutputFormat::Text)
+            .await
+            .unwrap();
+        assert!(!default_member_controls(&store).await.unwrap().upload);
+        let assigned = assigned_member_controls(&store, &member).await.unwrap();
+        assert!(!assigned.effective.upload);
+
+        // An override allows it for the member alone, and shows in the text.
+        run_controls(
+            &store,
+            set(Some("kit"), &["upload"], &["see_prices"], &[]),
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap();
+        let assigned = assigned_member_controls(&store, &member).await.unwrap();
+        assert!(assigned.effective.upload && !assigned.effective.see_prices);
+
+        // `all` drops every override again.
+        run_controls(
+            &store,
+            set(Some("kit"), &[], &[], &["all"]),
+            OutputFormat::Json,
+        )
+        .await
+        .unwrap();
+        let overrides = member_control_overrides(&store, member.id).await.unwrap();
+        assert!(MemberControl::ALL
+            .iter()
+            .all(|c| overrides.get(*c).is_none()));
+        run_controls(
+            &store,
+            set(Some("kit"), &[], &[], &["download"]),
+            OutputFormat::Json,
+        )
+        .await
+        .unwrap();
+        run_controls(
+            &store,
+            ControlsCommand::Get {
+                user: Some(owner.id.to_string()),
+                default: false,
+            },
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap();
+
+        // Mistakes are refused.
+        let err = run_controls(&store, set(Some("kit"), &[], &[], &[]), OutputFormat::Text)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("name a control"), "{err}");
+        let err = run_controls(
+            &store,
+            set(Some("kit"), &["fly"], &[], &[]),
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown control"), "{err}");
+        assert!(run_controls(
+            &store,
+            set(Some("nobody"), &["upload"], &[], &[]),
+            OutputFormat::Text
+        )
+        .await
+        .is_err());
+        let unnamed = ControlsCommand::Get {
+            user: None,
+            default: false,
+        };
+        assert!(run_controls(&store, unnamed, OutputFormat::Text)
+            .await
+            .is_err());
+        let unnamed = ControlsCommand::Set {
+            user: None,
+            default: false,
+            allow: vec!["upload".into()],
+            deny: Vec::new(),
+            follow_default: Vec::new(),
+        };
+        assert!(run_controls(&store, unnamed, OutputFormat::Text)
+            .await
+            .is_err());
+        assert_eq!(allowed_word(true), "allowed");
+        assert_eq!(allowed_word(false), "off");
+    }
+
     #[test]
     fn rules_parse_from_field_value_pairs() {
         let scope = scope_from_args(&["genre=Kids".into()], &["Series=Discworld".into()]).unwrap();

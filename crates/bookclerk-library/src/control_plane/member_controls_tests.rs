@@ -311,3 +311,59 @@ async fn a_guarded_write_stops_once_the_controls_change() {
         assert_eq!(kit.refused_begins(), 0, "{name}");
     }
 }
+
+#[test]
+fn every_control_sets_and_reads_back() {
+    for control in MemberControl::ALL {
+        let mut controls = MemberControls::all(true);
+        controls.set(control, false);
+        for other in MemberControl::ALL {
+            assert_eq!(controls.allows(other), other != control, "{control:?}");
+        }
+        let mut overrides = ControlOverrides::default();
+        overrides.set(control, Some(false));
+        for other in MemberControl::ALL {
+            let expected = (other == control).then_some(false);
+            assert_eq!(overrides.get(other), expected, "{control:?}");
+        }
+    }
+}
+
+#[test]
+fn a_stored_default_of_another_schema_or_bad_json_is_refused() {
+    let stored = |schema_version: i64, document_json: &str| StoredDocument {
+        key: DocumentKey::cluster(MEMBER_CONTROLS_NAMESPACE),
+        schema_version,
+        revision: 1,
+        document_json: document_json.into(),
+        updated_at: String::new(),
+        updated_by: String::new(),
+        write_operation_id: String::new(),
+    };
+    assert!(parse_default(stored(MEMBER_CONTROLS_SCHEMA_VERSION + 1, "{}")).is_err());
+    let err = parse_default(stored(MEMBER_CONTROLS_SCHEMA_VERSION, "[")).unwrap_err();
+    assert!(err.to_string().contains("invalid member controls"), "{err}");
+    assert!(parse_default(stored(MEMBER_CONTROLS_SCHEMA_VERSION, "{}")).is_ok());
+}
+
+#[tokio::test]
+async fn an_unchanged_default_keeps_its_revision_and_unknown_users_may_not() {
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let actor = ConfigActor::Operator { id: "test".into() };
+        let mut controls = MemberControls::all(true);
+        controls.upload = false;
+        let first = set_default_member_controls(store, &actor, controls)
+            .await
+            .unwrap();
+        let again = set_default_member_controls(store, &actor, controls)
+            .await
+            .unwrap();
+        assert_eq!(first.revision, again.revision, "{}", profile.name());
+        let guard = control_guard(store, 999_999, MemberControl::Download)
+            .await
+            .unwrap();
+        assert!(guard.is_none(), "{}", profile.name());
+    }
+}

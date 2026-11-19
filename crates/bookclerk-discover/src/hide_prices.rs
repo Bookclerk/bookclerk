@@ -133,8 +133,42 @@ mod tests {
         }))
         .unwrap_or_else(|err| panic!("hit: {err}"));
         hit.purchase_hints = vec![priced("libro")];
-        hit.hide_prices_and_links();
-        assert_eq!(hit.price_cents, None);
-        assert_eq!(hit.purchase_hints, vec![bare("libro")]);
+        let mut page = CatalogSearchPage {
+            items: vec![hit],
+            page_size: 20,
+            has_more: false,
+            next_cursor: None,
+            sort: "relevance".into(),
+            sort_dir: "desc".into(),
+        };
+        page.hide_prices_and_links();
+        assert_eq!(page.items[0].price_cents, None);
+        assert_eq!(page.items[0].purchase_hints, vec![bare("libro")]);
+    }
+
+    #[test]
+    fn every_card_on_every_shelf_loses_its_prices_and_links() {
+        use crate::shelves::DiscoverShelf;
+        let card = Recommendation {
+            purchase_hints: vec![priced("libro"), priced("audible")],
+            ..Recommendation::default()
+        };
+        let shelf = |id: &str| DiscoverShelf {
+            id: id.into(),
+            title: id.into(),
+            subtitle: None,
+            items: vec![card.clone()],
+        };
+        let mut feed = DiscoverFeed {
+            shelves: vec![shelf("author:le-guin"), shelf("genre:fantasy")],
+            ..DiscoverFeed::default()
+        };
+        feed.hide_prices_and_links();
+        for shelf in &feed.shelves {
+            assert_eq!(
+                shelf.items[0].purchase_hints,
+                vec![bare("libro"), bare("audible")]
+            );
+        }
     }
 }

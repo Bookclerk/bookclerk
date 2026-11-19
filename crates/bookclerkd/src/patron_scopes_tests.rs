@@ -445,3 +445,95 @@ async fn the_caller_check_follows_the_callers_controls() {
     );
     assert!(super::caller_may(&state, &operator, MemberControl::SeePrices).await);
 }
+
+#[tokio::test]
+async fn discover_answers_drop_prices_for_a_patron_who_may_not_see_them() {
+    let (_state, app, library) = phase2_harness("op-token-hide-prices").await;
+    let member_cookie = portal_cookie_for(&library, "test", "member-ext").await;
+    let member = library
+        .get_portal_identity("test", "member-ext")
+        .await
+        .expect("read")
+        .and_then(|identity| identity.user_id)
+        .expect("member user");
+    bookclerk_library::control_plane::set_member_control_overrides(
+        &library,
+        member,
+        bookclerk_library::control_plane::ControlOverrides {
+            see_prices: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let query = r#"{"title":"The Left Hand of Darkness","isbn":"9780441478125"}"#;
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/api/discover/purchase-hints",
+        &member_cookie,
+        Some(query),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body["best"].is_null() || body["best"]["url"].is_null(),
+        "{body}"
+    );
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/api/discover/purchase-hints/batch",
+        &member_cookie,
+        Some(&format!(r#"{{"queries":[{query}]}}"#)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(
+        &app,
+        "GET",
+        "/api/discover/search?q=darkness",
+        &member_cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(
+        &app,
+        "GET",
+        "/api/discover/recommendations",
+        &member_cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn the_operator_sets_the_default_controls_and_a_stale_session_may_not() {
+    use bookclerk_library::control_plane::MemberControl;
+    let (state, app, _library) = phase2_harness("op-token-default-controls").await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/users/default-controls")
+                .header(header::AUTHORIZATION, "Bearer op-token-default-controls")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"upload":false}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    // A cookie for no session is refused rather than given the default.
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        header::COOKIE,
+        "bookclerk_portal_session=not-a-session"
+            .parse()
+            .expect("cookie header"),
+    );
+    assert!(!super::caller_may(&state, &headers, MemberControl::Download).await);
+}
