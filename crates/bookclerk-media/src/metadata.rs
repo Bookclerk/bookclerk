@@ -458,18 +458,18 @@ fn write_mp3_chapters(tag: &mut Id3Tag, req: &FixupRequest) -> Result<()> {
         );
         return Ok(());
     }
-    let Some(duration_ms) = audio_duration_ms(&req.output)? else {
+    let Some(duration) = audio_duration(&req.output)? else {
         tracing::warn!(
             chapters = req.chapters.len(),
             "MP3 running time unknown; chapters not embedded"
         );
         return Ok(());
     };
-    let spans = mp3_chapter_spans(&req.chapters, duration_ms);
+    let spans = mp3_chapter_spans(&req.chapters, duration);
     if spans.is_empty() {
         tracing::warn!(
             chapters = req.chapters.len(),
-            duration_ms,
+            duration_ms = duration.ms,
             "no chapter starts inside the MP3's running time; chapters not embedded"
         );
         return Ok(());
@@ -563,26 +563,36 @@ struct Mp3ChapterSpan {
     end_ms: u32,
 }
 
-/// Turns chapter starts into `CHAP` windows over a file `duration_ms` long.
+/// Turns chapter starts into `CHAP` windows over a file `duration` long.
 ///
 /// Chapters are ordered by start, and two chapters starting at the same
-/// time keep the first. Starts at or past the running time are dropped,
-/// since a player could never reach them, as is every start that does not
-/// fit the frame's 32-bit millisecond field.
+/// time keep the first. Every start that does not fit the frame's 32-bit
+/// millisecond field is dropped. When the running time is exact, starts at
+/// or past it are dropped too, since a player could never reach them. An
+/// estimated running time (a variable bit rate MP3 without a frame count)
+/// can be far too short, so no start is dropped for it and the last
+/// chapter ends at the later of the estimate and its own start.
 ///
 /// # Returns
 ///
-/// The windows in order: each ends where the next starts, the last at
-/// `duration_ms` (capped to the field).
-fn mp3_chapter_spans(chapters: &[(String, u64)], duration_ms: u64) -> Vec<Mp3ChapterSpan> {
+/// The windows in order: each ends where the next starts, the last at the
+/// running time (capped to the field).
+fn mp3_chapter_spans(
+    chapters: &[(String, u64)],
+    duration: bookclerk_tags::Duration,
+) -> Vec<Mp3ChapterSpan> {
+    let reachable = |start: u64| match duration.precision {
+        bookclerk_tags::DurationPrecision::Exact => start < duration.ms,
+        bookclerk_tags::DurationPrecision::Estimated => true,
+    };
     let mut starts: Vec<(u32, &str)> = chapters
         .iter()
-        .filter(|(_, start)| *start < duration_ms)
+        .filter(|(_, start)| reachable(*start))
         .filter_map(|(title, start)| u32::try_from(*start).ok().map(|s| (s, title.as_str())))
         .collect();
     starts.sort_by_key(|(start, _)| *start);
     starts.dedup_by_key(|(start, _)| *start);
-    let end_of_file = u32::try_from(duration_ms).unwrap_or(u32::MAX);
+    let end_of_file = u32::try_from(duration.ms).unwrap_or(u32::MAX);
     let next_starts = starts
         .iter()
         .skip(1)
@@ -599,8 +609,8 @@ fn mp3_chapter_spans(chapters: &[(String, u64)], duration_ms: u64) -> Vec<Mp3Cha
         .collect()
 }
 
-/// Running time of the audio file at `path` in milliseconds, read from its
-/// headers by [`bookclerk_tags::TagReader`].
+/// Running time of the audio file at `path`, read from its headers by
+/// [`bookclerk_tags::TagReader`], with whether it is exact or estimated.
 ///
 /// # Returns
 ///
@@ -609,7 +619,7 @@ fn mp3_chapter_spans(chapters: &[(String, u64)], duration_ms: u64) -> Vec<Mp3Cha
 /// # Errors
 ///
 /// Returns an error when the file cannot be opened or read.
-fn audio_duration_ms(path: &Path) -> Result<Option<u64>> {
+fn audio_duration(path: &Path) -> Result<Option<bookclerk_tags::Duration>> {
     use std::io::{Read as _, Seek as _, SeekFrom};
 
     let mut file = std::fs::File::open(path)?;
@@ -618,7 +628,7 @@ fn audio_duration_ms(path: &Path) -> Result<Option<u64>> {
     loop {
         match reader.poll() {
             bookclerk_tags::Poll::Done(record) => {
-                return Ok(record.ok().and_then(|r| r.duration).map(|d| d.ms));
+                return Ok(record.ok().and_then(|r| r.duration));
             }
             bookclerk_tags::Poll::Need(spans) => {
                 for span in spans {
@@ -663,6 +673,27 @@ fn guess_img_fmt(path: &Path, bytes: &[u8]) -> ImgFmt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An exact running time of `ms` milliseconds.
+    fn exact(ms: u64) -> bookclerk_tags::Duration {
+        bookclerk_tags::Duration {
+            ms,
+            precision: bookclerk_tags::DurationPrecision::Exact,
+        }
+    }
+
+    #[test]
+    fn chapter_spans_keep_starts_past_an_estimated_running_time() {
+        let chapters = vec![("One".to_string(), 0), ("Ten seconds".to_string(), 10_000)];
+        let estimated = bookclerk_tags::Duration {
+            ms: 4_937,
+            precision: bookclerk_tags::DurationPrecision::Estimated,
+        };
+        let spans = mp3_chapter_spans(&chapters, estimated);
+        let windows: Vec<(u32, u32)> = spans.iter().map(|s| (s.start_ms, s.end_ms)).collect();
+        assert_eq!(windows, vec![(0, 10_000), (10_000, 10_000)]);
+        assert_eq!(mp3_chapter_spans(&chapters, exact(4_937)).len(), 1);
+    }
 
     /// A fix-up of the MP3 at `path` in place, carrying `chapters`.
     fn mp3_request(path: &Path, chapters: &[(&str, u64)], replace: bool) -> FixupRequest {
@@ -724,9 +755,10 @@ mod tests {
     #[test]
     fn mp3_fixup_embeds_chapters_the_tag_reader_reads_back() {
         let file = fixture_mp3(false);
-        let duration = audio_duration_ms(file.path())
+        let duration = audio_duration(file.path())
             .expect("read")
-            .expect("duration");
+            .expect("duration")
+            .ms;
         assert!(duration > 100, "fixture runs {duration} ms");
         let req = mp3_request(
             file.path(),
@@ -824,7 +856,7 @@ mod tests {
             ("late".to_string(), 10_000),
             ("huge".to_string(), u64::MAX),
         ];
-        let spans = mp3_chapter_spans(&chapters, 5_000);
+        let spans = mp3_chapter_spans(&chapters, exact(5_000));
         assert_eq!(
             spans,
             vec![
@@ -840,13 +872,13 @@ mod tests {
                 },
             ]
         );
-        assert!(mp3_chapter_spans(&chapters, 0).is_empty());
+        assert!(mp3_chapter_spans(&chapters, exact(0)).is_empty());
     }
 
     #[test]
     fn chapter_spans_cap_a_running_time_past_the_frame_field() {
         let long = u64::from(u32::MAX) + 10;
-        let spans = mp3_chapter_spans(&[("only".to_string(), 5)], long);
+        let spans = mp3_chapter_spans(&[("only".to_string(), 5)], exact(long));
         assert_eq!(spans[0].end_ms, u32::MAX);
     }
 
@@ -854,7 +886,7 @@ mod tests {
     fn duration_of_a_file_the_reader_refuses_is_unknown() {
         let file = tempfile::NamedTempFile::new().expect("tmp");
         std::fs::write(file.path(), b"not audio at all").expect("write");
-        assert_eq!(audio_duration_ms(file.path()).expect("read"), None);
+        assert_eq!(audio_duration(file.path()).expect("read"), None);
     }
 
     #[test]
