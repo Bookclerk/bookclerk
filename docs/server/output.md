@@ -333,13 +333,16 @@ time:
    minutes the daemon queues an acquire for each edition with a retry
    due on a destination it has deployed; the destinations that already
    hold the edition are left alone. An acquire of one title tries its
-   pending copies at once, without waiting for the delay.
+   pending copies at once, without waiting for the delay. A retry that
+   fails counts as an attempt on the copy, and the title stays acquired
+   from the destinations that hold it.
 5. A destination that cannot be listed when an acquire run starts sits
    that run out. The titles go to the destinations that answer, and the
    run clears nothing as missing and moves no files, since a title it
-   cannot see may be on the destination that did not answer. A later run
-   writes the copies it missed. The run fails only when no destination
-   answers.
+   cannot see may be on the destination that did not answer. Each title
+   the run acquires gets a pending copy there, so the background retry
+   writes it once the destination answers. The run fails only when no
+   destination answers.
 
 An acquire run also visits an edition that is already acquired when a
 destination that takes it has no copy at all: one deployed after the

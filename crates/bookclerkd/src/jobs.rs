@@ -1114,6 +1114,11 @@ pub async fn run_acquire(
                 )
                 .await
             };
+            if result.is_ok() && !mode.pdf_only {
+                if let Some(facts) = req.placement.as_ref() {
+                    record_unreachable_copies(&library, &book, facts, &unreachable).await?;
+                }
+            }
             match result {
                 Ok(result) if result.matched_existing => {
                     info!(asin = %result.asin, key = %result.storage_key, "matched existing");
@@ -1455,6 +1460,54 @@ async fn titles_lacking_copies(
         }
     }
     Ok(revisit)
+}
+
+/// Records a pending copy of `title`'s edition on each destination an
+/// acquire run left out as unreachable whose filter takes the title and
+/// that has no copy row yet, so the background retry writes it once the
+/// destination answers again. An existing row is left as it is: a stored
+/// copy stays stored, and a pending one keeps its own retry time.
+///
+/// # Arguments
+///
+/// * `title` - The title the run just acquired or matched.
+/// * `facts` - What the destination filters know about it.
+/// * `unreachable` - Each destination left out, with its listing error.
+///
+/// # Errors
+///
+/// Returns the read or write error.
+async fn record_unreachable_copies(
+    library: &bookclerk_library::LibraryStore,
+    title: &AcquireTitle,
+    facts: &bookclerk_config::PlacementFacts,
+    unreachable: &[(bookclerk_config::DestinationId, String)],
+) -> bookclerk_library::Result<()> {
+    if unreachable.is_empty() || title.edition_id.is_empty() {
+        return Ok(());
+    }
+    let mut filters = std::collections::BTreeMap::new();
+    for (id, _) in unreachable {
+        let one =
+            bookclerk_library::control_plane::destination_filters(library, [id.as_str()]).await?;
+        filters.extend(one);
+    }
+    let copies = library
+        .copies_of_editions(std::slice::from_ref(&title.edition_id))
+        .await?;
+    let now = chrono::Utc::now();
+    for (id, error) in unreachable {
+        let takes = filters
+            .get(id.as_str())
+            .is_none_or(|filter| filter.accepts(facts));
+        let recorded = copies.iter().any(|copy| copy.destination == id.as_str());
+        if takes && !recorded {
+            library
+                .set_copy_pending(&title.edition_id, id.as_str(), error, now)
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// What a destination filter knows about `title` when its acquire starts:
@@ -1830,6 +1883,59 @@ mod tests {
                 .await
                 .unwrap(),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_destination_gets_a_pending_copy_to_retry() {
+        let store = test_store().await;
+        let book = book_with(
+            &store,
+            AcquireStatus::Acquired,
+            Some("A/Test.m4b"),
+            AcquireStatus::NotAcquired,
+            None,
+            "book",
+        )
+        .await;
+        store
+            .set_copy_stored(&book.edition_id, "local", "A/Test.m4b")
+            .await
+            .unwrap();
+        let facts = placement_facts(&store, &book).await.unwrap();
+        let unreachable = vec![
+            (
+                bookclerk_config::DestinationId::new("local").unwrap(),
+                "offline".to_owned(),
+            ),
+            (
+                bookclerk_config::DestinationId::new("second").unwrap(),
+                "offline".to_owned(),
+            ),
+        ];
+        for _ in 0..2 {
+            record_unreachable_copies(&store, &book, &facts, &unreachable)
+                .await
+                .unwrap();
+        }
+        let states: Vec<(String, bookclerk_library::CopyState, u32)> = store
+            .copies_of_editions(std::slice::from_ref(&book.edition_id))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|copy| (copy.destination, copy.state, copy.attempts))
+            .collect();
+        // The stored copy stays stored; the missing one is pending once.
+        assert_eq!(
+            states,
+            vec![
+                ("local".to_owned(), bookclerk_library::CopyState::Stored, 0),
+                (
+                    "second".to_owned(),
+                    bookclerk_library::CopyState::Pending,
+                    1
+                ),
+            ]
         );
     }
 

@@ -704,6 +704,52 @@ async fn acquire_book_recorded(
                 .await?;
             Ok(result)
         }
+        // A fetch that only filled missing destinations failed while others
+        // hold the title: the title stays acquired at their key, and the
+        // failure counts as an attempt on each copy it was to write.
+        Err(err) if !already_stored.is_empty() => {
+            let primary_key = already_stored
+                .iter()
+                .find(|(id, _)| *id == destinations.primary)
+                .or_else(|| already_stored.first())
+                .map(|(_, key)| key.clone())
+                .unwrap_or_default();
+            library
+                .set_acquire_status(
+                    status_key(&req),
+                    &req.account_id,
+                    AcquireStatus::Acquired,
+                    Some(&primary_key),
+                    None,
+                )
+                .await?;
+            let error = err.to_string();
+            let mut copies = stored_outcomes(&already_stored);
+            copies.extend(
+                req.write_destinations
+                    .iter()
+                    .flatten()
+                    .map(|id| CopyOutcome {
+                        destination: id.clone(),
+                        result: CopyResult::Failed {
+                            error: error.clone(),
+                        },
+                    }),
+            );
+            tracing::warn!(
+                asin = %req.asin,
+                %error,
+                "writing the missing destinations failed; they are retried in the background"
+            );
+            Ok(AcquireResult {
+                asin: req.asin.clone(),
+                storage_key: primary_key,
+                written_keys: Vec::new(),
+                matched_existing: true,
+                from_library: false,
+                copies,
+            })
+        }
         Err(err) => {
             let message = err.to_string();
             let _ = library
@@ -5900,6 +5946,60 @@ mod tests {
                 ("local".to_owned(), CopyState::Stored, 0),
             ]
         );
+    }
+
+    /// A refetch that only fills a missing destination and fails there
+    /// leaves the title acquired and counts an attempt on that copy.
+    #[tokio::test]
+    async fn a_failed_refetch_into_a_missing_destination_counts_an_attempt() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00SOME", "user-1", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let local_only = title_named_destinations(&tmp.path().join("local"), Arc::default());
+        let job = job_id(&store).await;
+        let req = edition_req(&cache, job.clone(), "B00SOME", "user-1", &uuid);
+        let first = acquire_book(&store, &local_only, req, &source)
+            .await
+            .unwrap();
+
+        let mut destinations = title_named_destinations(&tmp.path().join("local"), Arc::default());
+        let broken_root = tmp.path().join("broken");
+        let mut broken = title_named_destinations(&broken_root, Arc::default())
+            .items
+            .remove(0);
+        broken.id = DestinationId::new("broken").unwrap();
+        destinations.items.push(broken);
+        destinations.multi_destination = MultiDestinationMode::RefetchMissing;
+        std::fs::remove_dir_all(&broken_root).unwrap();
+        std::fs::write(&broken_root, b"not a folder").unwrap();
+
+        let req = edition_req(&cache, job, "B00SOME", "user-1", &uuid);
+        let again = acquire_book(&store, &destinations, req, &source)
+            .await
+            .expect("the stored copy keeps the title acquired");
+        assert!(again.matched_existing);
+        assert_eq!(again.storage_key, first.storage_key);
+        assert_eq!(
+            fetches.load(Ordering::SeqCst),
+            2,
+            "refetched for the missing copy"
+        );
+        assert_eq!(
+            copy_states(&store, &uuid).await,
+            vec![
+                ("broken".to_owned(), CopyState::Pending, 1),
+                ("local".to_owned(), CopyState::Stored, 0),
+            ]
+        );
+        let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
+        assert_eq!(book.acquire_status, AcquireStatus::Acquired);
     }
 
     #[tokio::test]
