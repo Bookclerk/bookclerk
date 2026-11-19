@@ -7,9 +7,10 @@ calls and the rules behind them. The decisions are in the
 [Web API](api/README.md) reference with example requests and responses.
 
 > [!NOTE]
-> The core is in place; the web app's player, the desktop player and the
-> app-compatible `/player` API are being built on it and are not in this
-> release.
+> The web app's player uses this core (see
+> [Listen in the web app](../guide/listening.md)). The desktop player and
+> the app-compatible `/player` API are being built on it and are not in
+> this release.
 
 ## What is stored
 

@@ -121,6 +121,7 @@ export const NAV: NavSpec[] = [
       "guide/where-books-go",
       "guide/discover",
       "guide/web-app",
+      "guide/listening",
       "guide/sharing",
       "guide/branches",
       "guide/from-libation",

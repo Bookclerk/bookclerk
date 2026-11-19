@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw, ScanSearch } from "lucide-react";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
+import { ContinueListening } from "@/components/ContinueListening";
 import { TitleDetailModal, type TitleMetaSearchKind } from "@/components/TitleDetailModal";
 import { titleDetailFromWork } from "@/lib/titleDetail";
 import { WorkRow } from "@/components/WorkRow";
@@ -41,6 +42,8 @@ import {
 } from "@/lib/libraryWorks";
 import { canChangeBranchSharing } from "@/lib/join";
 import { useLiveRefresh } from "@/lib/live";
+import { playableEdition } from "@/lib/playTarget";
+import { playWork } from "@/lib/webPlayer";
 import { cn, pageWidthClass } from "@/lib/utils";
 
 const PAGE_SIZE = 40;
@@ -345,6 +348,9 @@ export function LibraryPage({
     [status, works],
   );
 
+  // The operator token is no library user, so it has nothing to play as.
+  const isLibraryUser = role != null && role !== "operator";
+
   async function onScan() {
     setBusyKey("scan");
     try {
@@ -386,6 +392,16 @@ export function LibraryPage({
       setError(err instanceof Error ? err.message : "Acquire failed");
     } finally {
       setBusyKey(null);
+    }
+  }
+
+  /** Plays the audio of `work`, saying so when none is on this server. */
+  async function onPlayWork(work: WorkSummary, known?: WorkDetail | null) {
+    try {
+      const refusal = await playWork(work.id, known);
+      setError(refusal);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not play this book");
     }
   }
 
@@ -530,6 +546,8 @@ export function LibraryPage({
         <main className={cn("w-full", pageWidthClass)}>
           {/* On a window: the books the libraries it joined hold for its person. */}
           {canChangeBranchSharing(role) ? <WindowBooksSection query={debouncedQ} /> : null}
+          {/* Only on the unfiltered library: a search is for finding something else. */}
+          {isLibraryUser && !debouncedQ && appliedFacet === "all" ? <ContinueListening /> : null}
           <div className="animate-[rowIn_500ms_ease-out] bg-card shadow-[inset_0_1px_0_rgba(11,53,83,0.06)]">
             {works.length === 0 && !loaded ? (
               <div className="flex justify-center px-4 py-16" role="status">
@@ -549,6 +567,7 @@ export function LibraryPage({
                   busy={busyKey !== null}
                   showAcquire={canAcquire}
                   onOpen={setSelected}
+                  onPlay={isLibraryUser ? (w) => void onPlayWork(w) : undefined}
                   onAcquire={(w) => void onAcquireWork(w)}
                 />
               ))
@@ -569,6 +588,11 @@ export function LibraryPage({
             setLoadedDetail(null);
           }}
           onAcquire={() => void onAcquireWork(selected, selectedDetail)}
+          onPlay={
+            isLibraryUser && playableEdition(selectedDetail)
+              ? () => void onPlayWork(selected, selectedDetail)
+              : undefined
+          }
           onMetaSearch={(kind: TitleMetaSearchKind, value: string) => {
             setSelected(null);
             setLoadedDetail(null);

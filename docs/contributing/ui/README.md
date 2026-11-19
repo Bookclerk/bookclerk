@@ -293,6 +293,40 @@ the Linux GTK3 graph. Only the desktop window brings gtk-rs into the root
 > [!WARNING]
 > Don't enable the `tray-icon` or `muda` default features in the tray.
 
+## The player
+
+The web player is split so that everything with behavior is plain
+TypeScript under `ui/src/lib`, tested without a browser:
+
+| Module | Role |
+| --- | --- |
+| `playback.ts` | The daemon's playback routes ([Playback reference](../../server/playback.md)) |
+| `player.ts` | The engine: one audio element, one play session, position reports, the sleep timer |
+| `playerTimeline.ts` | One timeline over an edition's files, clock text, speeds |
+| `playTarget.ts` | Which edition of a work plays; the Continue listening shelf |
+| `mediaSession.ts` | The browser's Media Session: lock screen, OS media panel, media keys |
+| `webPlayer.ts` | The page's one engine, wired to `fetch`, `Audio` and `localStorage`, and its React hook |
+
+`Player` takes its routes, clock and audio element as `PlayerDeps`, so
+`player.test.ts` drives it with a fake element. The components
+(`PlayerBar`, `NowPlaying`, `PlayerControls`, `ContinueListening`) only
+render `Player.state` and call its methods.
+
+Rules the engine keeps:
+
+- The audio element streams `GET /api/playback/sessions/{id}/tracks/{index}`
+  from the same origin with the session cookie. No token goes in a URL,
+  and the app's content security policy needs no exception.
+- A report goes out every 15 seconds while playing, on pause and at the
+  end of the book. Stopping, signing out or leaving the page closes the
+  session; the close on page hide is a `keepalive` request.
+- `409 session_ended` on a report, or a stream error, opens one new
+  session at the same position. A second stream error within a minute is
+  shown to the listener instead.
+- An edition in several files has every file's length read from its
+  stream before a position is placed, because the server does not store
+  per-file lengths yet.
+
 ## Brand assets
 
 The production logo, mark and favicons live under
