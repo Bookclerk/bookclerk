@@ -18,9 +18,11 @@
 //! A test fails when a new table is neither copied nor listed there.
 
 use sea_orm::{
-    ConnectionTrait, DatabaseConnection, DbBackend, EntityName, EntityTrait, FromQueryResult,
-    PaginatorTrait, Statement, TransactionTrait,
+    ConnectionTrait, DatabaseConnection, EntityName, EntityTrait, FromQueryResult, PaginatorTrait,
+    Statement, TransactionTrait,
 };
+
+use bookclerk_db_exec::canonical_statement;
 
 use crate::column_read::only_column;
 use crate::control_plane::{load_artifact_blob, put_artifact_blob};
@@ -425,7 +427,7 @@ async fn copy_works(source: &DatabaseConnection, dest: &impl ConnectionTrait) ->
 
 /// A canonical (SQL-v1) statement with no parameters.
 fn canonical(sql: &str) -> Statement {
-    Statement::from_string(DbBackend::Sqlite, sql)
+    canonical_statement(sql, [])
 }
 
 /// Copies one table that has no SeaORM entity, reading and writing every
@@ -444,8 +446,7 @@ async fn copy_raw(
         .map_err(LibraryError::Orm)?
         .into_iter()
         .map(|row| {
-            Statement::from_sql_and_values(
-                DbBackend::Sqlite,
+            canonical_statement(
                 "INSERT INTO plugin_instance_defaults (plugin_key, plugin_instance_id) \
                  VALUES (?, ?)",
                 [row.plugin_key.into(), row.plugin_instance_id.into()],
