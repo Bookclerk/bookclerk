@@ -58,7 +58,7 @@ pub fn main() -> ExitCode {
     let mut stdin = std::io::stdin().lock();
     let outcome = pool.in_place_scope(|scope| -> Result<(), String> {
         loop {
-            let Some(body) = read_frame(&mut stdin)? else {
+            let Some(body) = read_frame(&mut stdin, wire::MAX_REQUEST_BODY)? else {
                 return Ok(());
             };
             let request = wire::decode_request(&body).map_err(|err| err.to_string())?;
@@ -86,9 +86,9 @@ pub fn main() -> ExitCode {
 ///
 /// # Errors
 ///
-/// A message for a read failure, a truncated frame, or a frame over
-/// [`wire::MAX_REQUEST_BODY`].
-fn read_frame(input: &mut impl Read) -> Result<Option<Vec<u8>>, String> {
+/// A message for a read failure, a truncated frame, or a frame over `max`
+/// bytes.
+pub(crate) fn read_frame(input: &mut impl Read, max: usize) -> Result<Option<Vec<u8>>, String> {
     let mut prefix = [0u8; 4];
     let mut filled = 0;
     while filled < prefix.len() {
@@ -101,7 +101,7 @@ fn read_frame(input: &mut impl Read) -> Result<Option<Vec<u8>>, String> {
         }
     }
     let len = wire::body_len(prefix);
-    if len > wire::MAX_REQUEST_BODY {
+    if len > max {
         return Err(format!("request of {len} bytes is too large"));
     }
     let mut body = vec![0u8; len];
@@ -165,22 +165,24 @@ mod tests {
         let mut input = [one.clone(), one].concat();
         let mut reader = &input[..];
         for _ in 0..2 {
-            let body = read_frame(&mut reader).expect("read").expect("frame");
+            let body = read_frame(&mut reader, wire::MAX_REQUEST_BODY)
+                .expect("read")
+                .expect("frame");
             assert_eq!(
                 wire::decode_request(&body).expect("decode").cover,
                 vec![7, 8]
             );
         }
-        assert_eq!(read_frame(&mut reader), Ok(None));
+        assert_eq!(read_frame(&mut reader, wire::MAX_REQUEST_BODY), Ok(None));
 
         input.truncate(3);
-        assert!(read_frame(&mut &input[..]).is_err());
+        assert!(read_frame(&mut &input[..], wire::MAX_REQUEST_BODY).is_err());
         let huge = u32::try_from(wire::MAX_REQUEST_BODY + 1)
             .expect("fits")
             .to_be_bytes();
-        assert!(read_frame(&mut &huge[..]).is_err());
+        assert!(read_frame(&mut &huge[..], wire::MAX_REQUEST_BODY).is_err());
         let short = [0, 0, 0, 9, 1];
-        assert!(read_frame(&mut &short[..]).is_err());
+        assert!(read_frame(&mut &short[..], wire::MAX_REQUEST_BODY).is_err());
     }
 
     #[test]

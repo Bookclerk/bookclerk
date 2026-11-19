@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-search"
-description = "Full-text library search (Tantivy; classic Lucene parity)"
+description = "Full-text search over library works (Tantivy)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

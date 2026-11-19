@@ -32,7 +32,8 @@ export type Manifest = {
   args?: string[];
   /**
    * Named entrypoints the guest exports (`storefront`, `storage`,
-   * `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`, `covers`). Triggers for the
+   * `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`, `covers`,
+   * `metadataFiles`). Triggers for the
    * default entrypoint live under `[triggers]` / `[[events.consumers]]`.
    */
   entrypoints?: string[];
@@ -47,6 +48,14 @@ export type Manifest = {
     lists?: string[];
     /** Carriers `fetchTitle` can deliver; a subset of `lists`, storefronts only. */
     fetches?: string[];
+  };
+  /**
+   * `[metadata_files]` — the metadata file dialects a `metadataFiles` plugin
+   * implements. Required for that entrypoint, forbidden for others.
+   */
+  metadata_files?: {
+    /** One row per dialect; never empty. */
+    dialects?: MetadataFileDialectToml[];
   };
   /** Workerd isolate settings (required when `runtime = "workerd"`). */
   workerd?: {
@@ -108,6 +117,12 @@ export type Manifest = {
   work_fs?: { binding?: string };
   /** `[oauth]` — loopback OAuth callback binding (default name `OAUTH`). */
   oauth?: { binding?: string };
+  /**
+   * `[sockets]` — host-brokered WebSockets (default name `SOCKETS`) that stay
+   * open while the plugin sleeps; needs `capabilities.network.mode =
+   * "outbound"`.
+   */
+  sockets?: { binding?: string };
   /** Network policy the operator must consent to. */
   capabilities: {
     /** Egress policy (`deny` / `outbound`, plus hostname domains for workerd). */
@@ -345,7 +360,37 @@ function validateQueues(m: Manifest): void {
 }
 
 /** Value types accepted in `[[settings]] type`. */
-export const SETTING_TYPES = ["string", "bool", "integer", "enum", "secret"] as const;
+export const SETTING_TYPES = ["string", "bool", "integer", "enum", "secret", "table"] as const;
+
+/** Value types a `[[settings.columns]]` entry of a `table` setting may have. */
+export const COLUMN_TYPES = ["string", "bool", "integer", "enum"] as const;
+
+/** Most columns one `table` setting may declare. */
+const MAX_TABLE_COLUMNS = 16;
+
+/** Most rows one `table` value may hold. */
+const MAX_TABLE_ROWS = 64;
+
+/** One cell of a `table` setting row. */
+export type SettingCellToml = string | number | boolean;
+
+/** One `[[settings.columns]]` entry: a record field every row of a `table` setting has. */
+export type SettingColumnToml = {
+  /** Field name (`^[a-z][a-z0-9_]{0,63}$`), unique within the table. */
+  key: string;
+  /** Column heading; defaults to the key. */
+  label?: string;
+  /** Value type of the cells. */
+  type: (typeof COLUMN_TYPES)[number];
+  /** Allowed values for `type = "enum"`. */
+  values?: Array<{ id: string; label?: string }>;
+  /** Value a row takes when it leaves the column out. */
+  default?: SettingCellToml;
+  /** When true, every row must have a value (from the row or `default`). */
+  required?: boolean;
+  /** Optional help text. */
+  description?: string;
+};
 
 /** One `[[settings]]` row: an operator setting the host validates and renders. */
 export type SettingToml = {
@@ -357,13 +402,150 @@ export type SettingToml = {
   type: (typeof SETTING_TYPES)[number];
   /** Allowed values for `type = "enum"`. */
   values?: Array<{ id: string; label?: string }>;
-  /** Default applied when the instance document omits the key (not for secrets). */
-  default?: string | number | boolean;
+  /**
+   * Default applied when the instance document omits the key (not for
+   * secrets); an array of row tables for `type = "table"`.
+   */
+  default?: SettingCellToml | Array<Record<string, SettingCellToml>>;
   /** When true, a spawn without a value fails. */
   required?: boolean;
   /** Optional help text. */
   description?: string;
+  /** Columns of a `type = "table"` setting, in display order. */
+  columns?: SettingColumnToml[];
 };
+
+/**
+ * Validates an enum entry's `values`, or that a non-enum declares none.
+ *
+ * @param where - Message prefix naming the entry.
+ * @param type - The entry's declared type.
+ * @param values - The entry's `values`.
+ * @throws {Error} When an enum has no values or a duplicated or empty id, or a
+ *   non-enum declares values.
+ */
+function validateEnumValues(
+  where: string,
+  type: string,
+  values: Array<{ id: string; label?: string }>,
+): void {
+  if (type === "enum") {
+    if (values.length === 0) {
+      throw new Error(`plugin.toml: [[settings]] enum ${where} must declare \`values\``);
+    }
+    const ids = new Set<string>();
+    for (const value of values) {
+      const id = String(value.id ?? "");
+      if (!id || ids.has(id)) {
+        throw new Error(
+          `plugin.toml: [[settings]] enum ${where} has an invalid or duplicated value id`,
+        );
+      }
+      ids.add(id);
+    }
+  } else if (values.length > 0) {
+    throw new Error(`plugin.toml: [[settings]] ${where} declares \`values\` but is not an enum`);
+  }
+}
+
+/**
+ * Whether `value` fits a scalar entry of `type`.
+ *
+ * @param type - Declared scalar type.
+ * @param values - Allowed ids of an enum.
+ * @param value - Candidate value.
+ * @returns True when the value has the type's JSON shape (and is an allowed id).
+ */
+function scalarFits(
+  type: string,
+  values: Array<{ id: string; label?: string }>,
+  value: unknown,
+): boolean {
+  return type === "bool"
+    ? typeof value === "boolean"
+    : type === "integer"
+      ? typeof value === "number" && Number.isInteger(value)
+      : type === "enum"
+        ? typeof value === "string" && values.some((v) => v.id === value)
+        : typeof value === "string";
+}
+
+/**
+ * Validates the columns of a `table` setting and, when given, its default rows.
+ *
+ * @param key - The table setting's key.
+ * @param spec - The table setting.
+ * @throws {Error} When the columns are missing, too many, duplicated, not
+ *   scalar, or badly declared, or the default rows do not fit them.
+ */
+function validateTableColumns(key: string, spec: SettingToml): void {
+  const columns = spec.columns ?? [];
+  if (columns.length === 0) {
+    throw new Error(`plugin.toml: [[settings]] table setting \`${key}\` must declare \`columns\``);
+  }
+  if (columns.length > MAX_TABLE_COLUMNS) {
+    throw new Error(
+      `plugin.toml: [[settings]] table setting \`${key}\` declares more than ${MAX_TABLE_COLUMNS} columns`,
+    );
+  }
+  const seen = new Set<string>();
+  for (const column of columns) {
+    const name = String(column.key ?? "");
+    const where = `table setting \`${key}\` column \`${name}\``;
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(name)) {
+      throw new Error(`plugin.toml: [[settings]] ${where} must match ^[a-z][a-z0-9_]{0,63}$`);
+    }
+    if (seen.has(name)) {
+      throw new Error(`plugin.toml: [[settings]] ${where} is duplicated`);
+    }
+    seen.add(name);
+    if (!(COLUMN_TYPES as readonly string[]).includes(String(column.type))) {
+      throw new Error(`plugin.toml: [[settings]] ${where} must be a string, bool, integer or enum`);
+    }
+    if ("columns" in column) {
+      throw new Error(`plugin.toml: [[settings]] ${where} may not declare columns`);
+    }
+    const values = column.values ?? [];
+    validateEnumValues(where, column.type, values);
+    if (column.default !== undefined && !scalarFits(column.type, values, column.default)) {
+      throw new Error(`plugin.toml: [[settings]] default for ${where} does not match its type`);
+    }
+  }
+  if (spec.default === undefined) return;
+  const rows = spec.default;
+  const fits =
+    Array.isArray(rows) &&
+    rows.length <= MAX_TABLE_ROWS &&
+    rows.every(
+      (row) =>
+        !!row &&
+        typeof row === "object" &&
+        !Array.isArray(row) &&
+        Object.entries(row).every(([field, cell]) => {
+          const column = columns.find((c) => c.key === field);
+          return !!column && scalarFits(column.type, column.values ?? [], cell);
+        }) &&
+        columns.every(
+          (column) => !column.required || column.default !== undefined || fieldIn(row, column.key),
+        ),
+    );
+  if (!fits) {
+    throw new Error(
+      `plugin.toml: [[settings]] default for setting \`${key}\` does not match its columns`,
+    );
+  }
+}
+
+/**
+ * Whether a default row sets `field`.
+ *
+ * @param row - Row table from a `table` default.
+ * @param field - Column key.
+ * @returns True when the row has an own entry for the field.
+ */
+function fieldIn(row: object, field: string): boolean {
+  return Object.prototype.hasOwnProperty.call(row, field);
+}
 
 /**
  * Validates `[[settings]]` the way `bookclerk-plugin-manifest` does.
@@ -394,25 +576,12 @@ function validateSettings(m: Manifest): void {
       );
     }
     const values = spec.values ?? [];
-    if (spec.type === "enum") {
-      if (values.length === 0) {
-        throw new Error(
-          `plugin.toml: [[settings]] enum setting \`${key}\` must declare \`values\``,
-        );
-      }
-      const ids = new Set<string>();
-      for (const value of values) {
-        const id = String(value.id ?? "");
-        if (!id || ids.has(id)) {
-          throw new Error(
-            `plugin.toml: [[settings]] enum setting \`${key}\` has an invalid or duplicated value id`,
-          );
-        }
-        ids.add(id);
-      }
-    } else if (values.length > 0) {
+    validateEnumValues(`setting \`${key}\``, spec.type, values);
+    if (spec.type === "table") {
+      validateTableColumns(key, spec);
+    } else if (spec.columns !== undefined) {
       throw new Error(
-        `plugin.toml: [[settings]] setting \`${key}\` declares \`values\` but is not an enum`,
+        `plugin.toml: [[settings]] setting \`${key}\` declares \`columns\` but is not a table`,
       );
     }
     if (spec.type === "secret") {
@@ -434,21 +603,216 @@ function validateSettings(m: Manifest): void {
       );
     }
     const def = spec.default;
-    if (def === undefined) continue;
-    const ok =
-      spec.type === "bool"
-        ? typeof def === "boolean"
-        : spec.type === "integer"
-          ? typeof def === "number" && Number.isInteger(def)
-          : spec.type === "enum"
-            ? typeof def === "string" && values.some((v) => v.id === def)
-            : typeof def === "string";
-    if (!ok) {
+    if (def === undefined || spec.type === "table") continue;
+    if (!scalarFits(spec.type, values, def)) {
       throw new Error(
         `plugin.toml: [[settings]] default for setting \`${key}\` does not match its type`,
       );
     }
   }
+}
+
+/** One `[[metadata_files.dialects]]` row. */
+export type MetadataFileDialectToml = {
+  /** Dialect id (`[a-z][a-z0-9_]{0,63}`), unique within the plugin. */
+  id?: string;
+  /** Name shown in settings and on a book's files list. */
+  name?: string;
+  /** Exact file names the dialect reads, compared without ASCII case. */
+  file_names?: string[];
+  /** File name endings (each starting with `.`), compared without ASCII case. */
+  suffixes?: string[];
+  /** Fields the format carries (wire names such as `title`, `publishedAt`). */
+  fields?: string[];
+  /** Credit roles the format carries; required exactly when `fields` names `credits`. */
+  credit_roles?: string[];
+  /** Whether the dialect also writes files. */
+  writes?: boolean;
+};
+
+/** Fields a `[[metadata_files.dialects]].fields` entry may name. */
+const METADATA_FIELDS = [
+  "title",
+  "subtitle",
+  "description",
+  "publisher",
+  "publishedAt",
+  "language",
+  "genres",
+  "tags",
+  "abridgement",
+  "expressionKind",
+  "identifiers",
+  "credits",
+  "series",
+  "chapters",
+  "duration",
+];
+
+/** Credit roles a `[[metadata_files.dialects]].credit_roles` entry may name. */
+const CREDIT_ROLES = [
+  "author",
+  "narrator",
+  "translator",
+  "editor",
+  "illustrator",
+  "publisher",
+  "host",
+  "cast",
+  "adaptor",
+];
+
+/** Dialect id grammar, as the host's `is_dialect_id`. */
+const DIALECT_ID = /^[a-z][a-z0-9_]{0,63}$/;
+
+/**
+ * True when `name` is printable ASCII naming one file with no folder, as the
+ * host's `is_ascii_file_name`.
+ *
+ * @param name - File name or suffix as written in `plugin.toml`.
+ * @returns Whether the host would accept it.
+ */
+function isAsciiFileName(name: string): boolean {
+  return (
+    /^[\x20-\x7e]+$/.test(name) &&
+    name.length <= 255 &&
+    name !== "." &&
+    name !== ".." &&
+    !name.includes("/") &&
+    !name.includes("\\")
+  );
+}
+
+/**
+ * Checks `[metadata_files]` against the entrypoints, with the host's rules and
+ * messages (`manifest-cases.json`).
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} When a `metadataFiles` plugin has no dialects or another
+ *   plugin has the table, or a dialect has a bad or repeated id, no name, no
+ *   file names or suffixes, a malformed or repeated name or suffix, no or
+ *   unknown fields, a repeated field or credit role, or credit roles that do
+ *   not match `credits`.
+ */
+/** Keys a `[[metadata_files.dialects]]` row may carry (the host's fields). */
+const DIALECT_KEYS: ReadonlySet<string> = new Set([
+  "id",
+  "name",
+  "file_names",
+  "suffixes",
+  "fields",
+  "credit_roles",
+  "writes",
+]);
+
+function validateMetadataFiles(m: Manifest): void {
+  const exported = ((m.entrypoints ?? []) as readonly string[]).includes("metadataFiles");
+  const table = m.metadata_files;
+  if (table == null) {
+    if (exported) {
+      throw new Error(
+        "plugin.toml: `[metadata_files]` is required for a plugin with the `metadataFiles` entrypoint (declare at least one dialect)",
+      );
+    }
+    return;
+  }
+  if (!exported) {
+    throw new Error("plugin.toml: `[metadata_files]` needs the `metadataFiles` entrypoint");
+  }
+  // The host parses these tables with `deny_unknown_fields`.
+  for (const key of Object.keys(table)) {
+    if (key !== "dialects") {
+      throw new Error(`plugin.toml: \`[metadata_files]\` has unknown key \`${key}\``);
+    }
+  }
+  const dialects = table.dialects ?? [];
+  if (dialects.length === 0) {
+    throw new Error("plugin.toml: `[metadata_files].dialects` is empty");
+  }
+  const ids = new Set<string>();
+  const claimed = new Set<string>();
+  dialects.forEach((dialect, i) => {
+    const row = `plugin.toml: metadata_files.dialects[${i}]`;
+    for (const key of Object.keys(dialect)) {
+      if (!DIALECT_KEYS.has(key)) {
+        throw new Error(`${row} has unknown key \`${key}\``);
+      }
+    }
+    if (dialect.writes !== undefined && typeof dialect.writes !== "boolean") {
+      throw new Error(`${row}.writes must be a boolean`);
+    }
+    const id = String(dialect.id ?? "");
+    if (!DIALECT_ID.test(id)) {
+      throw new Error(`${row}.id \`${id}\` is not an identifier ([a-z][a-z0-9_]{0,63})`);
+    }
+    if (ids.has(id)) {
+      throw new Error(`plugin.toml: metadata_files dialect id \`${id}\` is declared twice`);
+    }
+    ids.add(id);
+    if (!String(dialect.name ?? "").trim()) {
+      throw new Error(`${row}.name is required`);
+    }
+    const names = dialect.file_names ?? [];
+    const suffixes = dialect.suffixes ?? [];
+    if (names.length === 0 && suffixes.length === 0) {
+      throw new Error(`${row} declares no \`file_names\` or \`suffixes\``);
+    }
+    for (const name of names) {
+      if (!isAsciiFileName(name)) {
+        throw new Error(`${row}.file_names entry \`${name}\` is not a plain ASCII file name`);
+      }
+    }
+    for (const suffix of suffixes) {
+      if (suffix.length < 2 || !suffix.startsWith(".") || !isAsciiFileName(suffix)) {
+        throw new Error(
+          `${row}.suffixes entry \`${suffix}\` must start with \`.\` and be a plain ASCII file name`,
+        );
+      }
+    }
+    for (const name of [...names, ...suffixes]) {
+      const key = name.toLowerCase();
+      if (claimed.has(key)) {
+        throw new Error(`plugin.toml: metadata_files \`${name}\` is claimed twice`);
+      }
+      claimed.add(key);
+    }
+    const fields = dialect.fields ?? [];
+    for (const field of fields) {
+      if (!METADATA_FIELDS.includes(field)) {
+        throw new Error(`${row}.fields names unknown field \`${field}\``);
+      }
+    }
+    const roles = dialect.credit_roles ?? [];
+    for (const role of roles) {
+      if (!CREDIT_ROLES.includes(role)) {
+        throw new Error(`${row}.credit_roles names unknown role \`${role}\``);
+      }
+    }
+    if (fields.length === 0) {
+      throw new Error(`${row}.fields is empty`);
+    }
+    const seenFields = new Set<string>();
+    for (const field of fields) {
+      if (seenFields.has(field)) {
+        throw new Error(`${row}.fields names \`${field}\` twice`);
+      }
+      seenFields.add(field);
+    }
+    const seenRoles = new Set<string>();
+    for (const role of roles) {
+      if (seenRoles.has(role)) {
+        throw new Error(`${row}.credit_roles names \`${role}\` twice`);
+      }
+      seenRoles.add(role);
+    }
+    const credits = fields.includes("credits");
+    if (credits && roles.length === 0) {
+      throw new Error(`${row}.credit_roles is empty but \`fields\` names \`credits\``);
+    }
+    if (!credits && roles.length > 0) {
+      throw new Error(`${row}.credit_roles needs \`credits\` in \`fields\``);
+    }
+  });
 }
 
 /** Entrypoint wire names accepted in `entrypoints`. */
@@ -461,6 +825,7 @@ export const ENTRYPOINT_NAMES = [
   "oidc",
   "metadata",
   "covers",
+  "metadataFiles",
 ] as const;
 
 const LOGO_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico"] as const;
@@ -610,9 +975,15 @@ export function validateManifest(m: Manifest): void {
     validateLogo(String(m.logo));
   }
   validateMedia(m);
+  validateMetadataFiles(m);
   validateSurface(m);
   validateSettings(m);
   validateOwnUserAgent(m);
+  if (m.sockets && m.capabilities?.network?.mode !== "outbound") {
+    throw new Error(
+      'plugin.toml: [sockets] needs capabilities.network.mode = "outbound" (every socket URL must pass the network grant)',
+    );
+  }
   const runtime = m.runtime ?? "native";
   if (runtime === "native") {
     if (!m.command || !String(m.command).trim()) {
@@ -905,13 +1276,14 @@ function validateSurface(m: Manifest): void {
     }
     bindings.add(name);
   }
-  const reserved = new Set(["CONFIG", "SECRETS", "EVENTS", "WORK_FS", "OAUTH"]);
+  const reserved = new Set(["CONFIG", "SECRETS", "EVENTS", "WORK_FS", "OAUTH", "SOCKETS"]);
   // Row index, not the binding text. The text can be an oauth name, and an
   // error that includes it is logged as clear text.
   const named: Array<[string, string, number]> = [];
   if (m.secrets) named.push(["secrets", m.secrets.binding || "SECRETS", 0]);
   if (m.work_fs) named.push(["work_fs", m.work_fs.binding || "WORK_FS", 0]);
   if (m.oauth) named.push(["oauth", m.oauth.binding || "OAUTH", 0]);
+  if (m.sockets) named.push(["sockets", m.sockets.binding || "SOCKETS", 0]);
   for (const [index, kv] of (m.kv_namespaces ?? []).entries()) {
     named.push(["kv_namespaces", kv.binding || "KV", index]);
   }
@@ -939,10 +1311,24 @@ function validateSurface(m: Manifest): void {
     }
     bindings.add(name);
   }
+  // Producers may share one publisher binding, but `env.SOCKETS` is its own
+  // property and cannot take a publisher's name, nor `EVENTS`, which the
+  // generated `Env` always carries when the plugin publishes.
+  const socketsName = named.find(([table]) => table === "sockets")?.[1];
+  const producerNames = named
+    .filter(([table]) => table === "events.producers")
+    .map(([, name]) => name);
+  if (
+    socketsName !== undefined &&
+    producerNames.length > 0 &&
+    (socketsName === "EVENTS" || producerNames.includes(socketsName))
+  ) {
+    throw new Error("plugin.toml: [sockets][0] binding collides with another binding");
+  }
 }
 
 /** Newest compatibility date the pinned workerd binary honors. */
-export const WORKERD_PIN_COMPAT_DATE = "2026-11-07";
+export const WORKERD_PIN_COMPAT_DATE = "2026-11-10";
 
 /** Author flags allowed on this pin. Required together for Python guests. */
 export const PYTHON_COMPATIBILITY_FLAGS = [

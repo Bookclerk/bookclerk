@@ -1,4 +1,4 @@
-//! Tantivy search index with classic Libation field names and query normalization.
+//! Tantivy full-text search over the library's works.
 //!
 //! # Audience
 //!
@@ -7,11 +7,10 @@
 //!
 //! Style: `docs/contributing/code-documentation.md`.
 
-mod engine;
-mod query;
+mod index_dir;
+mod works;
 
-pub use engine::{SearchEngine, SearchHit, SearchPage};
-pub use query::normalize_lucene_query;
+pub use works::{WorkHit, WorkMatches, WorkSearchIndex};
 
 use thiserror::Error;
 
@@ -29,6 +28,11 @@ pub enum SearchError {
     /// index lock; the write can be retried shortly.
     #[error("search index is busy with another writer")]
     Busy,
+
+    /// The index has not been built under the current layout yet; the
+    /// daemon's rebuild job is building it.
+    #[error("search index is not built yet")]
+    NotReady,
 
     /// Query parse failure after Lucene-style normalization.
     #[error("invalid search query: {0}")]

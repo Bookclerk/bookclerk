@@ -18,6 +18,12 @@
 //!
 //! A podcast episode is a child work: its show is the work that gets a row,
 //! and the show's row counts the episodes' editions and holdings.
+//!
+//! The same refresh writes the work's filter values (`library_work_facets`:
+//! authors, narrators, series, genres, publishers and sources), fenced by
+//! the row's stamp, so a page can filter by one value without joining the
+//! model. Tags and progress are per person and filter through
+//! `user_work_tags` and `user_title_state` instead.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -29,11 +35,15 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::library_model::find_chunked_paged;
+use super::work_search::WorkNames;
+use super::write_batches::{CountedBatches, WriteBatches};
 use super::LibraryStore;
 use crate::control_plane::batch;
 use crate::entities::{
-    contributors, credits, edition_acquisitions, editions, expressions, holdings,
-    library_index_builds, library_work_rows, series, series_entries, store_listings, works,
+    account_links, contributors, credits, edition_acquisitions, editions, expressions, holdings,
+    library_index_builds, library_work_facets, library_work_rows, patron_scope_keys,
+    portal_identities, series, series_entries, store_listings, user_title_state, user_work_tags,
+    works,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::AcquireStatus;
@@ -41,7 +51,11 @@ use crate::models::AcquireStatus;
 /// Layout of `library_work_rows` this binary writes. A library with no
 /// finished build of this layout is rebuilt; bump it when a change to how
 /// rows are derived needs every row rewritten.
-pub const LIBRARY_INDEX_LAYOUT: i64 = 1;
+///
+/// - 2: every work with an edition names a cover edition, whose cover may
+///   come from a store listing or the work, so libraries indexed under 1
+///   (no cover edition unless the edition row had a cover) are rebuilt.
+pub const LIBRARY_INDEX_LAYOUT: i64 = 2;
 
 /// RFC 3339 now, with microseconds so stamps order as text.
 fn stamp(at: chrono::DateTime<Utc>) -> String {
@@ -85,6 +99,97 @@ pub enum WorkSort {
     Author,
     /// Newest holding first ("recently added").
     Added,
+    /// By first series name and position, then title; works in no series
+    /// last.
+    Series,
+    /// Newest purchase first; works no store reported a purchase time for
+    /// last.
+    Purchased,
+    /// Longest runtime first; works with no known runtime last.
+    Length,
+}
+
+/// A filter value list of the page index (`library_work_facets`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkFacet {
+    /// Authors (hosts, for a podcast).
+    Author,
+    /// Narrators.
+    Narrator,
+    /// Series names.
+    Series,
+    /// Genres (store categories).
+    Genre,
+    /// Publishers.
+    Publisher,
+    /// Storefront plugins the work is held through.
+    Source,
+}
+
+impl WorkFacet {
+    /// Every facet, in the order a work's values are written.
+    pub const ALL: [Self; 6] = [
+        Self::Author,
+        Self::Narrator,
+        Self::Series,
+        Self::Genre,
+        Self::Publisher,
+        Self::Source,
+    ];
+
+    /// The stored `facet` value.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Author => "author",
+            Self::Narrator => "narrator",
+            Self::Series => "series",
+            Self::Genre => "genre",
+            Self::Publisher => "publisher",
+            Self::Source => "source",
+        }
+    }
+}
+
+/// The key a facet value or tag is stored and matched under: trimmed and
+/// lower-cased, so "Fantasy" and "fantasy " are one value.
+///
+/// # Arguments
+///
+/// * `value` - A value as shown or as a client sent it.
+#[must_use]
+pub fn facet_key(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+/// One filter on a page of library works.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkFilter {
+    /// Works with this value under a facet (matched by [`facet_key`]). An
+    /// empty series value matches works in no series.
+    Facet {
+        /// The facet.
+        facet: WorkFacet,
+        /// The value.
+        value: String,
+    },
+    /// Works the user tagged with this tag (matched by [`facet_key`]). With
+    /// no user (an operator token), nothing matches.
+    Tag {
+        /// The user (`users.id`) whose tags count.
+        user_id: Option<i64>,
+        /// The tag.
+        tag: String,
+    },
+    /// Works the user marked finished, or did not. With no user, no work is
+    /// finished.
+    Finished {
+        /// The user (`users.id`) whose state counts.
+        user_id: Option<i64>,
+        /// `true` for finished works, `false` for the rest.
+        finished: bool,
+    },
 }
 
 /// Where the next page of a [`WorkSort`] order starts: the sort values of
@@ -93,11 +198,11 @@ pub enum WorkSort {
 pub struct WorkCursor {
     /// The order the cursor belongs to; a cursor is refused under another.
     pub sort: WorkSort,
-    /// The last row's primary sort value (sort title, sort author or
-    /// added-at stamp).
+    /// The last row's primary sort value (sort title, sort author, added-at
+    /// stamp, series key, purchase stamp or runtime in minutes).
     pub key: String,
-    /// The last row's sort title; set for [`WorkSort::Author`], whose ties
-    /// break on title.
+    /// The last row's sort title; set for [`WorkSort::Author`] and
+    /// [`WorkSort::Series`], whose ties break on title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// The last row's work id, the final tie-break.
@@ -143,11 +248,80 @@ pub struct WorkPageQuery {
     pub status: Option<AcquireStatus>,
     /// Only works held by this store account id (any plugin).
     pub account: Option<String>,
+    /// Only works that pass this filter.
+    pub filter: Option<WorkFilter>,
+    /// Only works inside this patron scope; `None` for a caller who sees
+    /// the whole library.
+    pub scope: Option<WorkScope>,
     /// Continue after this cursor.
     pub after: Option<WorkCursor>,
     /// Most rows to return; at least 1.
     pub limit: u64,
 }
+
+/// The part of the library a patron may see, as the page index applies it.
+///
+/// A work passes when one of the patron's own store accounts holds it, or
+/// when it matches no exclude value and, if there are include values,
+/// matches at least one of them. Values are [`facet_key`]s of the page
+/// index's facets.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkScope {
+    /// `(facet, key)` pairs a work must match one of; empty lets every
+    /// work through.
+    pub include: Vec<(WorkFacet, String)>,
+    /// `(facet, key)` pairs that hide a work, whatever `include` says.
+    pub exclude: Vec<(WorkFacet, String)>,
+    /// The patron (`users.id`) whose linked store accounts' books always
+    /// pass; `None` for a caller with no accounts of their own.
+    pub owner: Option<i64>,
+}
+
+impl WorkScope {
+    /// True when the scope hides nothing.
+    #[must_use]
+    pub fn sees_everything(&self) -> bool {
+        self.include.is_empty() && self.exclude.is_empty()
+    }
+
+    /// The scope's values as `(effect, facet, key)` rows, sorted and
+    /// without duplicates, as `patron_scope_keys` stores them.
+    fn key_rows(&self) -> BTreeSet<(&'static str, &'static str, &str)> {
+        let include = self
+            .include
+            .iter()
+            .map(|(facet, key)| (SCOPE_INCLUDE, facet.as_str(), key.as_str()));
+        let exclude = self
+            .exclude
+            .iter()
+            .map(|(facet, key)| (SCOPE_EXCLUDE, facet.as_str(), key.as_str()));
+        include.chain(exclude).collect()
+    }
+
+    /// Content id of the scope's include and exclude values: lowercase hex
+    /// SHA-256 over its `(effect, facet, key)` rows, sorted and without
+    /// duplicates, each field length-prefixed, so two
+    /// scopes share an id exactly when they hold the same values.
+    #[must_use]
+    pub fn key_set_id(&self) -> String {
+        use sha2::{Digest as _, Sha256};
+        let mut hash = Sha256::new();
+        for (effect, facet, key) in self.key_rows() {
+            for field in [effect, facet, key] {
+                let len = u64::try_from(field.len()).unwrap_or(u64::MAX);
+                hash.update(len.to_be_bytes());
+                hash.update(field.as_bytes());
+            }
+        }
+        hex::encode(hash.finalize())
+    }
+}
+
+/// `patron_scope_keys.effect` of an include value.
+const SCOPE_INCLUDE: &str = "include";
+
+/// `patron_scope_keys.effect` of an exclude value.
+const SCOPE_EXCLUDE: &str = "exclude";
 
 /// One row of the page index, as list views show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,6 +350,10 @@ pub struct LibraryWorkRow {
     pub holding_count: u64,
     /// RFC 3339 time of the newest holding.
     pub added_at: String,
+    /// Runtime in minutes of the longest held edition, when known.
+    pub length_minutes: Option<u64>,
+    /// RFC 3339 time of the newest purchase a store reported.
+    pub purchased_at: Option<String>,
 }
 
 /// One page of library works.
@@ -185,6 +363,36 @@ pub struct WorkPage {
     pub works: Vec<LibraryWorkRow>,
     /// Where the next page starts; `None` on the last page.
     pub next: Option<WorkCursor>,
+}
+
+/// Whose values a facet value list reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FacetValuesOf {
+    /// A facet of the page index.
+    Facet(WorkFacet),
+    /// One user's tags (`users.id`).
+    Tags(i64),
+}
+
+/// One value of a facet value list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FacetValue {
+    /// The value's [`facet_key`], the list's order and cursor.
+    pub key: String,
+    /// The value as shown (one of its spellings).
+    pub value: String,
+    /// How many held works have it.
+    pub works: u64,
+}
+
+/// One page of a facet value list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FacetValuesPage {
+    /// The values, by key.
+    pub values: Vec<FacetValue>,
+    /// The last key returned, where the next page starts; `None` on the
+    /// last page.
+    pub next: Option<String>,
 }
 
 /// Parses a stored comma-joined media kind set, skipping unknown values.
@@ -217,6 +425,8 @@ impl LibraryWorkRow {
             series_position: model.series_position,
             cover_edition_id: model.cover_edition_id,
             added_at: model.added_at,
+            length_minutes: (model.length_minutes > 0).then(|| count(model.length_minutes)),
+            purchased_at: (!model.purchased_at.is_empty()).then_some(model.purchased_at),
         })
     }
 }
@@ -244,6 +454,8 @@ pub(crate) struct WorkRowInputs {
     pub editions: Vec<editions::Model>,
     /// Listing id to edition id, for the editions above.
     pub listing_editions: HashMap<String, String>,
+    /// The listings of those editions, in id order.
+    pub listings: Vec<store_listings::Model>,
     /// Holdings of those listings.
     pub holdings: Vec<holdings::Model>,
     /// Display names of the work's authors (or hosts), in billing order.
@@ -303,15 +515,32 @@ pub(crate) fn build_work_row(
         .copied()
         .max_by_key(|s| acquire_rank(*s))
         .unwrap_or(AcquireStatus::NotAcquired);
-    // The cover: a held edition with a cover, acquired editions first, then
-    // audio, then by id so the choice is stable.
+    // The cover edition: held editions first, then one with a cover of its
+    // own or a store's on one of its listings, then acquired, then audio,
+    // then by id so the choice is stable. Every work with an edition gets
+    // one, so a cover that arrives after this row was written (store text
+    // and a title's enrichment are written after the link that refreshed
+    // it) still shows: the API reads the edition's cover, else its work's,
+    // when it serves the row (`edition_cover_urls`).
+    let has_cover = |e: &editions::Model| {
+        super::work_detail::edition_cover(
+            std::iter::once(e.cover_url.as_deref()).chain(
+                inputs
+                    .listings
+                    .iter()
+                    .filter(|l| l.edition_id == e.id)
+                    .map(|l| l.cover_url.as_deref()),
+            ),
+        )
+        .is_some()
+    };
     let cover_edition_id = inputs
         .editions
         .iter()
-        .filter(|e| e.cover_url.as_deref().is_some_and(|url| !url.is_empty()))
         .min_by_key(|e| {
             (
                 !held_editions.contains(e.id.as_str()),
+                !has_cover(e),
                 statuses.get(e.id.as_str()) != Some(&AcquireStatus::Acquired),
                 e.media_kind != MediaKind::Audio.as_str(),
                 e.id.clone(),
@@ -328,6 +557,31 @@ pub(crate) fn build_work_row(
         Some((name, position)) => (Some(name.clone()), position.clone()),
         None => (None, None),
     };
+    let held_listings: HashSet<&str> = held.iter().map(|h| h.listing_id.as_str()).collect();
+    // The longest held edition's runtime; a listing's when no held edition
+    // has one. A runtime of 0 or less is unknown, not a runtime.
+    let length_minutes = inputs
+        .editions
+        .iter()
+        .filter(|e| held_editions.contains(e.id.as_str()))
+        .filter_map(|e| e.duration_minutes)
+        .filter(|minutes| *minutes > 0)
+        .max()
+        .or_else(|| {
+            inputs
+                .listings
+                .iter()
+                .filter(|l| held_listings.contains(l.id.as_str()))
+                .filter_map(|l| l.length_minutes)
+                .filter(|minutes| *minutes > 0)
+                .max()
+        })
+        .unwrap_or(0);
+    let purchased_at = held
+        .iter()
+        .filter_map(|h| h.purchased_at.as_deref())
+        .max()
+        .unwrap_or_default();
     Some(library_work_rows::Model {
         work_id: work.id.clone(),
         kind: work.kind.clone(),
@@ -343,8 +597,154 @@ pub(crate) fn build_work_row(
         edition_count: i64::try_from(inputs.editions.len()).unwrap_or(i64::MAX),
         holding_count: i64::try_from(held.len()).unwrap_or(i64::MAX),
         added_at: added_at.to_string(),
+        sort_series: series_sort_key(inputs.series.as_ref()),
+        length_minutes,
+        purchased_at: purchased_at.to_string(),
         refreshed_at: refreshed_at.to_string(),
+        facets_ready: 0,
     })
+}
+
+/// One work's write in a refresh: its id, its row (`None` when the work is
+/// gone, so its row is deleted) and its filter values.
+pub(crate) type WorkRowWrite = (
+    String,
+    Option<library_work_rows::Model>,
+    Vec<(WorkFacet, String, String)>,
+);
+
+/// Separates the series name from the position in a series sort key; below
+/// every printable character, so "Dune" sorts before "Dune Chronicles".
+const SERIES_KEY_SEPARATOR: char = '\u{1}';
+
+/// The series sort key of a work: `0`, the lower-cased series name, a
+/// separator and the position key; `1` for a work in no series, so those
+/// sort last.
+///
+/// The position key is the first number in the position, its whole part
+/// zero-padded to ten digits so "2" sorts before "10", or `~` (after every
+/// digit) when the position has no number.
+///
+/// # Arguments
+///
+/// * `series` - The work's first series name and its position there.
+fn series_sort_key(series: Option<&(String, Option<String>)>) -> String {
+    let Some((name, position)) = series else {
+        return "1".to_string();
+    };
+    let position = position.as_deref().and_then(first_number).map_or_else(
+        || "~".to_string(),
+        |(whole, fraction)| match fraction {
+            Some(fraction) => format!("{whole:0>10}.{fraction}"),
+            None => format!("{whole:0>10}"),
+        },
+    );
+    format!(
+        "0{}{SERIES_KEY_SEPARATOR}{position}",
+        name.trim().to_lowercase()
+    )
+}
+
+/// The first number in `text` (as in "Book 3" or "#3.5"): its whole part
+/// without leading zeros and its fractional digits, if any.
+fn first_number(text: &str) -> Option<(String, Option<String>)> {
+    let start = text.find(|c: char| c.is_ascii_digit())?;
+    let rest = &text[start..];
+    let whole_len = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    let whole = rest[..whole_len].trim_start_matches('0');
+    let whole = if whole.is_empty() { "0" } else { whole };
+    let fraction = rest[whole_len..].strip_prefix('.').and_then(|tail| {
+        let len = tail
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(tail.len());
+        (len > 0).then(|| tail[..len].to_string())
+    });
+    Some((whole.to_string(), fraction))
+}
+
+/// Longest facet value (in bytes) the index stores; a longer one is left
+/// out rather than fail the row's write against the database's cell limit.
+const MAX_FACET_VALUE_BYTES: usize = 256;
+
+/// Splits a store's category text into genres: on commas, semicolons and
+/// bars, trimmed, empty pieces dropped.
+fn split_genres(text: &str) -> impl Iterator<Item = &str> {
+    text.split([',', ';', '|'])
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+}
+
+/// Derives a work's filter values: `(facet, key, value)`, one per key and
+/// facet, the first spelling of a key kept. An unheld work has none.
+///
+/// # Arguments
+///
+/// * `inputs` - What [`LibraryStore::work_row_inputs`] read.
+/// * `names` - The work's authors, narrators, series and publishers
+///   ([`LibraryStore::work_names`]).
+pub(crate) fn build_work_facets(
+    inputs: &WorkRowInputs,
+    names: &WorkNames,
+) -> Vec<(WorkFacet, String, String)> {
+    let held_listings: HashSet<&str> = inputs
+        .holdings
+        .iter()
+        .filter(|h| inputs.listing_editions.contains_key(&h.listing_id))
+        .map(|h| h.listing_id.as_str())
+        .collect();
+    let Some(work) = inputs.work.as_ref() else {
+        return Vec::new();
+    };
+    if held_listings.is_empty() {
+        return Vec::new();
+    }
+    let mut values: Vec<(WorkFacet, &str)> = Vec::new();
+    values.extend(
+        names
+            .authors
+            .iter()
+            .map(|n| (WorkFacet::Author, n.as_str())),
+    );
+    values.extend(
+        names
+            .narrators
+            .iter()
+            .map(|n| (WorkFacet::Narrator, n.as_str())),
+    );
+    values.extend(names.series.iter().map(|n| (WorkFacet::Series, n.as_str())));
+    values.extend(
+        names
+            .publishers
+            .iter()
+            .map(|n| (WorkFacet::Publisher, n.as_str())),
+    );
+    values.extend(
+        split_genres(work.categories.as_deref().unwrap_or_default()).map(|g| (WorkFacet::Genre, g)),
+    );
+    for listing in &inputs.listings {
+        values.extend(
+            split_genres(listing.categories.as_deref().unwrap_or_default())
+                .map(|g| (WorkFacet::Genre, g)),
+        );
+        if held_listings.contains(listing.id.as_str()) {
+            values.push((WorkFacet::Source, listing.plugin_key.as_str()));
+        }
+    }
+    let mut seen: HashSet<(WorkFacet, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for (facet, value) in values {
+        let value = value.trim();
+        let key = facet_key(value);
+        if key.is_empty() || value.len() > MAX_FACET_VALUE_BYTES {
+            continue;
+        }
+        if seen.insert((facet, key.clone())) {
+            out.push((facet, key, value.to_string()));
+        }
+    }
+    out
 }
 
 impl LibraryStore {
@@ -360,7 +760,7 @@ impl LibraryStore {
     /// The top-level works of `work_ids`: a podcast episode's show stands
     /// in for the episode, and ids with no work are kept (their rows are
     /// deleted by the refresh).
-    async fn top_level_works(&self, work_ids: &[String]) -> Result<Vec<String>> {
+    pub(super) async fn top_level_works(&self, work_ids: &[String]) -> Result<Vec<String>> {
         let found =
             super::library_model::find_chunked::<works::Entity, _>(self, work_ids, |part| {
                 works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
@@ -382,83 +782,20 @@ impl LibraryStore {
         Ok(out)
     }
 
-    /// Reads everything `work_id`'s row is derived from.
+    /// Reads everything `work_id`'s row is derived from (empty when the
+    /// work is gone).
     ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when a read fails.
+    #[cfg(test)]
     pub(crate) async fn work_row_inputs(&self, work_id: &str) -> Result<WorkRowInputs> {
-        let db = self.db();
-        let Some(work) = works::Entity::find_by_id(work_id.to_string())
-            .one(db)
-            .await
-            .map_err(LibraryError::Orm)?
-        else {
-            return Ok(WorkRowInputs::default());
-        };
-        let mut work_ids = vec![work.id.clone()];
-        let episodes = find_chunked_paged::<works::Entity, _>(self, &work_ids, |part| {
-            works::Entity::find()
-                .filter(works::Column::ParentWorkId.is_in(part.iter().cloned()))
-                .order_by_asc(works::Column::Id)
-        })
-        .await?;
-        work_ids.extend(episodes.into_iter().map(|w| w.id));
-        let expression_ids: Vec<String> =
-            find_chunked_paged::<expressions::Entity, _>(self, &work_ids, |part| {
-                expressions::Entity::find()
-                    .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
-                    .order_by_asc(expressions::Column::Id)
-            })
+        Ok(self
+            .work_models(&[work_id.to_string()])
             .await?
-            .into_iter()
-            .map(|x| x.id)
-            .collect();
-        let editions = find_chunked_paged::<editions::Entity, _>(self, &expression_ids, |part| {
-            editions::Entity::find()
-                .filter(editions::Column::ExpressionId.is_in(part.iter().cloned()))
-                .order_by_asc(editions::Column::Id)
-        })
-        .await?;
-        let edition_ids: Vec<String> = editions.iter().map(|e| e.id.clone()).collect();
-        let listing_editions: HashMap<String, String> =
-            find_chunked_paged::<store_listings::Entity, _>(self, &edition_ids, |part| {
-                store_listings::Entity::find()
-                    .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
-                    .order_by_asc(store_listings::Column::Id)
-            })
-            .await?
-            .into_iter()
-            .map(|l| (l.id, l.edition_id))
-            .collect();
-        let listing_ids: Vec<String> = listing_editions.keys().cloned().collect();
-        let holdings = find_chunked_paged::<holdings::Entity, _>(self, &listing_ids, |part| {
-            holdings::Entity::find()
-                .filter(holdings::Column::ListingId.is_in(part.iter().cloned()))
-                .order_by_asc(holdings::Column::Id)
-        })
-        .await?;
-        let acquisitions = super::library_model::find_chunked::<edition_acquisitions::Entity, _>(
-            self,
-            &edition_ids,
-            |part| {
-                edition_acquisitions::Entity::find()
-                    .filter(edition_acquisitions::Column::EditionId.is_in(part.iter().cloned()))
-            },
-        )
-        .await?;
-        let (authors, first_author_sort) = self.work_authors(&work, &editions).await?;
-        let series = self.work_series(&work.id).await?;
-        Ok(WorkRowInputs {
-            work: Some(work),
-            editions,
-            listing_editions,
-            holdings,
-            authors,
-            first_author_sort,
-            series,
-            acquisitions,
-        })
+            .remove(work_id)
+            .map(|model| model.inputs)
+            .unwrap_or_default())
     }
 
     /// The display names of a work's authors (hosts for a podcast) in
@@ -477,24 +814,35 @@ impl LibraryStore {
         let mut targets: Vec<(&str, &str)> = vec![("work", work.id.as_str())];
         targets.extend(editions.iter().map(|e| ("edition", e.id.as_str())));
         for (kind, id) in targets {
-            let credits = credits::Entity::find()
-                .filter(credits::Column::TargetKind.eq(kind))
-                .filter(credits::Column::TargetId.eq(id))
-                .filter(credits::Column::Role.eq(role))
-                .order_by_asc(credits::Column::Position)
-                .order_by_asc(credits::Column::ContributorId)
-                .all(self.db())
-                .await
-                .map_err(LibraryError::Orm)?;
+            // Paged, so a target with more credits than the database
+            // returns per statement still reads them all.
+            let credits = super::library_model::find_chunked_paged::<credits::Entity, _>(
+                self,
+                &[id.to_string()],
+                |part| {
+                    credits::Entity::find()
+                        .filter(credits::Column::TargetKind.eq(kind))
+                        .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
+                        .filter(credits::Column::Role.eq(role))
+                        .order_by_asc(credits::Column::Position)
+                        .order_by_asc(credits::Column::ContributorId)
+                },
+            )
+            .await?;
             if credits.is_empty() {
                 continue;
             }
             let ids: Vec<String> = credits.iter().map(|c| c.contributor_id.clone()).collect();
             let people: HashMap<String, contributors::Model> =
-                super::library_model::find_chunked::<contributors::Entity, _>(self, &ids, |part| {
-                    contributors::Entity::find()
-                        .filter(contributors::Column::Id.is_in(part.iter().cloned()))
-                })
+                super::library_model::find_chunked_paged::<contributors::Entity, _>(
+                    self,
+                    &ids,
+                    |part| {
+                        contributors::Entity::find()
+                            .filter(contributors::Column::Id.is_in(part.iter().cloned()))
+                            .order_by_asc(contributors::Column::Id)
+                    },
+                )
                 .await?
                 .into_iter()
                 .map(|c| (c.id.clone(), c))
@@ -547,13 +895,27 @@ impl LibraryStore {
     /// Returns [`LibraryError::Orm`] or a batch error when a read or write
     /// fails.
     pub async fn refresh_library_works(&self, work_ids: &[String]) -> Result<u64> {
-        let mut changed = 0;
-        for work_id in self.top_level_works(work_ids).await? {
-            let refreshed_at = stamp(Utc::now());
-            let inputs = self.work_row_inputs(&work_id).await?;
-            let row = build_work_row(&inputs, &refreshed_at);
-            changed += self.write_work_row(&work_id, row, &refreshed_at).await?;
+        let tops = self.top_level_works(work_ids).await?;
+        if tops.is_empty() {
+            return Ok(0);
         }
+        // Stamped before anything is read, so a refresh that read the works
+        // later always wins.
+        let refreshed_at = stamp(Utc::now());
+        let mut models = self.work_models(&tops).await?;
+        let mut writes = Vec::with_capacity(tops.len());
+        for work_id in tops {
+            let model = models.remove(&work_id).unwrap_or_default();
+            let row = build_work_row(&model.inputs, &refreshed_at);
+            let facets = match &row {
+                Some(row) if row.holding_count > 0 => {
+                    build_work_facets(&model.inputs, &model.names)
+                }
+                _ => Vec::new(),
+            };
+            writes.push((work_id, row, facets));
+        }
+        let changed = self.write_work_rows(&writes, &refreshed_at).await?;
         if changed > 0 {
             self.bump_live_topic(crate::control_plane::LiveTopic::Library)
                 .await?;
@@ -561,73 +923,138 @@ impl LibraryStore {
         Ok(changed)
     }
 
-    /// Writes (or, for a work that is gone, deletes) one work's row, unless
-    /// a refresh that started later already wrote it.
-    async fn write_work_row(
-        &self,
-        work_id: &str,
-        row: Option<library_work_rows::Model>,
-        refreshed_at: &str,
-    ) -> Result<u64> {
-        let operation_id = format!("library-index-{}", Uuid::new_v4());
-        let statements = match row {
-            None => vec![batch::exec(
-                "DELETE FROM library_work_rows WHERE work_id = ? AND refreshed_at <= ?",
-                vec![batch::text(work_id), batch::text(refreshed_at)],
-            )],
-            Some(row) => {
-                let values = || {
-                    vec![
-                        batch::text(&row.kind),
-                        batch::text(&row.title),
-                        batch::text(&row.sort_title),
-                        batch::text_opt(row.authors.as_deref()),
-                        batch::text(&row.sort_author),
-                        batch::text_opt(row.series.as_deref()),
-                        batch::text_opt(row.series_position.as_deref()),
-                        batch::text_opt(row.cover_edition_id.as_deref()),
-                        batch::text(&row.media_kinds),
-                        batch::text(&row.acquire_status),
-                        batch::int(row.edition_count),
-                        batch::int(row.holding_count),
-                        batch::text(&row.added_at),
-                        batch::text(&row.refreshed_at),
-                    ]
-                };
-                let mut insert = vec![batch::text(&row.work_id)];
-                insert.extend(values());
-                let mut update = values();
-                update.push(batch::text(&row.work_id));
-                update.push(batch::text(refreshed_at));
+    /// Writes (or, for a work that is gone, deletes) each work's row and its
+    /// filter values, unless a refresh that started later already wrote it.
+    ///
+    /// Each row, with the removal of its old values, goes in one atomic
+    /// group; the rows and values of all the works share as few batches as
+    /// the database's limits allow. Every value write checks that the row
+    /// still carries this refresh's stamp, so once a later refresh has
+    /// written a row, this one's values for it are dropped.
+    ///
+    /// # Arguments
+    ///
+    /// * `writes` - Each work's id, its row (`None` when the work is gone)
+    ///   and its filter values.
+    /// * `refreshed_at` - This refresh's stamp.
+    ///
+    /// # Returns
+    ///
+    /// How many rows were written or deleted.
+    async fn write_work_rows(&self, writes: &[WorkRowWrite], refreshed_at: &str) -> Result<u64> {
+        // Holds while the row carries this refresh's stamp.
+        const FENCE: &str =
+            "EXISTS (SELECT 1 FROM library_work_rows WHERE work_id = ? AND refreshed_at = ?)";
+        let mut plan =
+            CountedBatches::new(WriteBatches::new(self.db_capabilities(), "library index"));
+        for (work_id, row, facets) in writes {
+            let Some(row) = row else {
+                // The work is gone; its values went with it.
+                plan.push_group(
+                    vec![batch::exec(
+                        "DELETE FROM library_work_rows WHERE work_id = ? AND refreshed_at <= ?",
+                        vec![batch::text(work_id), batch::text(refreshed_at)],
+                    )],
+                    0,
+                )?;
+                continue;
+            };
+            let values = || {
+                vec![
+                    batch::text(&row.kind),
+                    batch::text(&row.title),
+                    batch::text(&row.sort_title),
+                    batch::text_opt(row.authors.as_deref()),
+                    batch::text(&row.sort_author),
+                    batch::text_opt(row.series.as_deref()),
+                    batch::text_opt(row.series_position.as_deref()),
+                    batch::text_opt(row.cover_edition_id.as_deref()),
+                    batch::text(&row.media_kinds),
+                    batch::text(&row.acquire_status),
+                    batch::int(row.edition_count),
+                    batch::int(row.holding_count),
+                    batch::text(&row.added_at),
+                    batch::text(&row.sort_series),
+                    batch::int(row.length_minutes),
+                    batch::text(&row.purchased_at),
+                    batch::text(&row.refreshed_at),
+                ]
+            };
+            let mut insert = vec![batch::text(&row.work_id)];
+            insert.extend(values());
+            insert.push(batch::text(&row.work_id));
+            let mut update = values();
+            update.push(batch::text(&row.work_id));
+            update.push(batch::text(refreshed_at));
+            // The row's `UPDATE` (the group's second statement) counts it.
+            plan.push_group(
                 vec![
                     batch::exec(
                         "INSERT OR IGNORE INTO library_work_rows (\
                             work_id, kind, title, sort_title, authors, sort_author, series, \
                             series_position, cover_edition_id, media_kinds, acquire_status, \
-                            edition_count, holding_count, added_at, refreshed_at\
-                         ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? \
+                            edition_count, holding_count, added_at, sort_series, length_minutes, \
+                            purchased_at, refreshed_at, facets_ready\
+                         ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 \
                          WHERE EXISTS (SELECT 1 FROM works WHERE id = ?)",
-                        {
-                            let mut binds = insert;
-                            binds.push(batch::text(&row.work_id));
-                            binds
-                        },
+                        insert,
                     ),
                     batch::exec(
                         "UPDATE library_work_rows SET kind = ?, title = ?, sort_title = ?, \
                             authors = ?, sort_author = ?, series = ?, series_position = ?, \
                             cover_edition_id = ?, media_kinds = ?, acquire_status = ?, \
-                            edition_count = ?, holding_count = ?, added_at = ?, refreshed_at = ? \
+                            edition_count = ?, holding_count = ?, added_at = ?, sort_series = ?, \
+                            length_minutes = ?, purchased_at = ?, refreshed_at = ?, \
+                            facets_ready = 0 \
                          WHERE work_id = ? AND refreshed_at <= ?",
                         update,
                     ),
-                ]
+                    batch::exec(
+                        &format!("DELETE FROM library_work_facets WHERE work_id = ? AND {FENCE}"),
+                        vec![
+                            batch::text(work_id),
+                            batch::text(work_id),
+                            batch::text(refreshed_at),
+                        ],
+                    ),
+                ],
+                1,
+            )?;
+            for (facet, key, value) in facets {
+                plan.push(batch::exec(
+                    &format!(
+                        "INSERT OR IGNORE INTO library_work_facets (work_id, facet, key, value) \
+                         SELECT ?, ?, ?, ? WHERE {FENCE}"
+                    ),
+                    vec![
+                        batch::text(work_id),
+                        batch::text(facet.as_str()),
+                        batch::text(key),
+                        batch::text(value),
+                        batch::text(work_id),
+                        batch::text(refreshed_at),
+                    ],
+                ))?;
             }
-        };
-        let reply = self
-            .execute_host_batch(batch::request(&operation_id, statements))
-            .await?;
-        Ok(batch::rows_affected(&reply, reply.statements.len().saturating_sub(1)).min(1))
+            // Batches run in order, so this lands after every facet above;
+            // until it does, scoped patrons don't see the work.
+            plan.push(batch::exec(
+                "UPDATE library_work_rows SET facets_ready = 1 \
+                 WHERE work_id = ? AND refreshed_at = ?",
+                vec![batch::text(work_id), batch::text(refreshed_at)],
+            ))?;
+        }
+        let mut changed = 0;
+        for (statements, counted) in plan.finish() {
+            let operation_id = format!("library-index-{}", Uuid::new_v4());
+            let reply = self
+                .execute_host_batch(batch::request(&operation_id, statements))
+                .await?;
+            for index in counted {
+                changed += batch::rows_affected(&reply, index).min(1);
+            }
+        }
+        Ok(changed)
     }
 
     /// Refreshes one page of the rebuild: the works with an id after
@@ -647,20 +1074,7 @@ impl LibraryStore {
     /// Returns [`LibraryError::Orm`] or a batch error when a read or write
     /// fails.
     pub async fn rebuild_library_index_page(&self, after: Option<&str>) -> Result<Option<String>> {
-        let mut query = works::Entity::find()
-            .filter(works::Column::ParentWorkId.is_null())
-            .order_by_asc(works::Column::Id)
-            .limit(REBUILD_PAGE.min(self.result_row_cap()));
-        if let Some(after) = after {
-            query = query.filter(works::Column::Id.gt(after));
-        }
-        let ids: Vec<String> = query
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|w| w.id)
-            .collect();
+        let ids = self.top_level_work_ids_page(after, REBUILD_PAGE).await?;
         let Some(last) = ids.last().cloned() else {
             // Rows of works past the last id (none can exist: rows cascade
             // with their work) need no sweep.
@@ -668,6 +1082,39 @@ impl LibraryStore {
         };
         self.refresh_library_works(&ids).await?;
         Ok(Some(last))
+    }
+
+    /// One page of top-level work ids (podcast shows, not their episodes)
+    /// in id order, for a walk over every work.
+    ///
+    /// # Arguments
+    ///
+    /// * `after` - The last id of the previous page; `None` to start.
+    /// * `limit` - Most ids to return, further capped at the database's
+    ///   result-row limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    pub async fn top_level_work_ids_page(
+        &self,
+        after: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<String>> {
+        let mut query = works::Entity::find()
+            .filter(works::Column::ParentWorkId.is_null())
+            .order_by_asc(works::Column::Id)
+            .limit(limit.max(1).min(self.result_row_cap()));
+        if let Some(after) = after {
+            query = query.filter(works::Column::Id.gt(after));
+        }
+        Ok(query
+            .all(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(|w| w.id)
+            .collect())
     }
 
     /// True when the page index has a finished build of
@@ -743,6 +1190,234 @@ impl LibraryStore {
         self.work_of_edition(&listing.edition_id).await
     }
 
+    /// Writes the `patron_scope_keys` rows of `scope`'s value set when they
+    /// are not all there yet, so the Library filter can join them.
+    ///
+    /// Rows are keyed by the set's content id and never change, so the
+    /// write is idempotent: one `INSERT OR IGNORE` per value, grouped into
+    /// as few batches as the database plugin's limits allow. A read finds
+    /// the rows already there after the first use of a scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the count fails, or the write
+    /// error.
+    pub(crate) async fn ensure_scope_keys(&self, scope: Option<&WorkScope>) -> Result<()> {
+        use sea_orm::PaginatorTrait as _;
+        let Some(scope) = scope.filter(|scope| !scope.sees_everything()) else {
+            return Ok(());
+        };
+        let key_set = scope.key_set_id();
+        let rows = scope.key_rows();
+        let stored = patron_scope_keys::Entity::find()
+            .filter(patron_scope_keys::Column::ScopeHash.eq(key_set.as_str()))
+            .count(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        if usize::try_from(stored).is_ok_and(|stored| stored >= rows.len()) {
+            return Ok(());
+        }
+        let mut batches = WriteBatches::new(self.db_capabilities(), "patron scope key");
+        let mut full = Vec::new();
+        for (effect, facet, key) in rows {
+            let statement = batch::exec(
+                "INSERT OR IGNORE INTO patron_scope_keys (scope_hash, effect, facet, key) \
+                 VALUES (?, ?, ?, ?)",
+                vec![
+                    batch::text(&key_set),
+                    batch::text(effect),
+                    batch::text(facet),
+                    batch::text(key),
+                ],
+            );
+            if let Some(done) = batches.push(statement)? {
+                full.push(done);
+            }
+        }
+        full.extend(batches.finish());
+        for statements in full {
+            let operation_id = format!("patron-scope-keys-{}", Uuid::new_v4().simple());
+            self.execute_host_batch(batch::request(&operation_id, statements))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// The rows of `ids` that pass `query`'s filters, in the order of
+    /// `ids` (a search's relevance order); `query`'s order, cursor and
+    /// limit are not used. Unheld works and ids with no row are left out.
+    ///
+    /// # Arguments
+    ///
+    /// * `ids` - Top-level work ids.
+    /// * `query` - The filters to apply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn library_works_by_ids(
+        &self,
+        ids: &[String],
+        query: &WorkPageQuery,
+    ) -> Result<Vec<LibraryWorkRow>> {
+        use library_work_rows::Column as C;
+        self.ensure_scope_keys(query.scope.as_ref()).await?;
+        let mut found: HashMap<String, LibraryWorkRow> =
+            find_chunked_paged::<library_work_rows::Entity, _>(self, ids, |part| {
+                filtered_rows(query)
+                    .filter(C::WorkId.is_in(part.iter().cloned()))
+                    .order_by_asc(C::WorkId)
+            })
+            .await?
+            .into_iter()
+            .filter_map(LibraryWorkRow::from_model)
+            .map(|row| (row.work_id.clone(), row))
+            .collect();
+        Ok(ids.iter().filter_map(|id| found.remove(id)).collect())
+    }
+
+    /// Whether a work is inside a patron scope: its top-level work (the
+    /// show, for an episode) is a held work of the page index that passes
+    /// `scope`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn work_in_scope(&self, work_id: &str, scope: &WorkScope) -> Result<bool> {
+        use library_work_rows::Column as C;
+        self.ensure_scope_keys(Some(scope)).await?;
+        let top = works::Entity::find_by_id(work_id.to_string())
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .map_or_else(
+                || work_id.to_string(),
+                |work| work.parent_work_id.unwrap_or(work.id),
+            );
+        let query = WorkPageQuery {
+            scope: Some(scope.clone()),
+            ..WorkPageQuery::default()
+        };
+        Ok(filtered_rows(&query)
+            .filter(C::WorkId.eq(top))
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .is_some())
+    }
+
+    /// One page of the values a facet has across the held works, by key.
+    ///
+    /// # Arguments
+    ///
+    /// * `of` - The facet, or the user whose tags to list.
+    /// * `after` - The `next` key of the previous page; `None` to start.
+    /// * `limit` - Most values to return; at least 1, further capped at the
+    ///   database's result-row limit.
+    /// * `scope` - Count only the works inside this patron scope; `None`
+    ///   for a caller who sees the whole library.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    pub async fn library_facet_values(
+        &self,
+        of: FacetValuesOf,
+        after: Option<&str>,
+        limit: u64,
+        scope: Option<&WorkScope>,
+    ) -> Result<FacetValuesPage> {
+        /// One group of the read, decoded by column name.
+        #[derive(Debug, sea_orm::FromQueryResult)]
+        struct Group {
+            /// The value's key.
+            key: String,
+            /// One spelling of the value.
+            value: String,
+            /// Works in the group.
+            works: i64,
+        }
+        self.ensure_scope_keys(scope).await?;
+        let cap = self.result_row_cap();
+        let limit = limit.max(1).min(cap);
+        let probe = limit.saturating_add(1).min(cap);
+        let held = || {
+            let mut held = Condition::all().add(library_work_rows::Column::HoldingCount.gt(0));
+            if let Some(scope) = scope {
+                held = held.add(scope_condition(scope));
+            }
+            Query::select()
+                .column(library_work_rows::Column::WorkId)
+                .from(library_work_rows::Entity)
+                .cond_where(held)
+                .to_owned()
+        };
+        let mut groups = match of {
+            FacetValuesOf::Facet(facet) => {
+                use library_work_facets::Column as F;
+                let mut select = library_work_facets::Entity::find()
+                    .select_only()
+                    .column(F::Key)
+                    .column_as(F::Value.min(), "value")
+                    .column_as(F::WorkId.count(), "works")
+                    .filter(F::Facet.eq(facet.as_str()));
+                if scope.is_some_and(|scope| !scope.sees_everything()) {
+                    select = select.filter(F::WorkId.in_subquery(held()));
+                }
+                if let Some(after) = after {
+                    select = select.filter(F::Key.gt(after));
+                }
+                select
+                    .group_by(F::Key)
+                    .order_by_asc(F::Key)
+                    .limit(probe)
+                    .into_model::<Group>()
+                    .all(self.db())
+                    .await
+            }
+            FacetValuesOf::Tags(user_id) => {
+                use user_work_tags::Column as T;
+                let mut select = user_work_tags::Entity::find()
+                    .select_only()
+                    .column_as(T::TagKey, "key")
+                    .column_as(T::Tag.min(), "value")
+                    .column_as(T::WorkId.count(), "works")
+                    .filter(T::UserId.eq(user_id))
+                    .filter(T::WorkId.in_subquery(held()));
+                if let Some(after) = after {
+                    select = select.filter(T::TagKey.gt(after));
+                }
+                select
+                    .group_by(T::TagKey)
+                    .order_by_asc(T::TagKey)
+                    .limit(probe)
+                    .into_model::<Group>()
+                    .all(self.db())
+                    .await
+            }
+        }
+        .map_err(LibraryError::Orm)?;
+        let fetched = u64::try_from(groups.len()).unwrap_or(u64::MAX);
+        let more = fetched > limit || (probe == limit && fetched == limit);
+        groups.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        let next = if more {
+            groups.last().map(|g| g.key.clone())
+        } else {
+            None
+        };
+        Ok(FacetValuesPage {
+            values: groups
+                .into_iter()
+                .map(|g| FacetValue {
+                    key: g.key,
+                    value: g.value,
+                    works: count(g.works),
+                })
+                .collect(),
+            next,
+        })
+    }
+
     /// One page of the library's works from the page index.
     ///
     /// # Arguments
@@ -755,32 +1430,14 @@ impl LibraryStore {
     /// order, or [`LibraryError::Orm`] when the read fails.
     pub async fn library_works_page(&self, query: &WorkPageQuery) -> Result<WorkPage> {
         use library_work_rows::Column as C;
+        self.ensure_scope_keys(query.scope.as_ref()).await?;
         let cap = self.result_row_cap();
         let limit = query.limit.max(1).min(cap);
         // One row past the page tells whether another follows; an adapter
         // that answers fewer rows than that gets a cursor after every full
         // page (the last one may come back empty).
         let probe = limit.saturating_add(1).min(cap);
-        let mut select = library_work_rows::Entity::find().filter(C::HoldingCount.gt(0));
-        if let Some(kind) = query.media_kind {
-            let kind = kind.as_str();
-            select = select.filter(
-                Condition::any()
-                    .add(C::MediaKinds.eq(kind))
-                    .add(C::MediaKinds.like(format!("{kind},%")))
-                    .add(C::MediaKinds.like(format!("%,{kind}")))
-                    .add(C::MediaKinds.like(format!("%,{kind},%"))),
-            );
-        }
-        if let Some(kind) = query.kind {
-            select = select.filter(C::Kind.eq(kind.as_str()));
-        }
-        if let Some(status) = query.status {
-            select = select.filter(C::AcquireStatus.eq(status.as_str()));
-        }
-        if let Some(account) = &query.account {
-            select = select.filter(C::WorkId.in_subquery(account_works_subquery(account)));
-        }
+        let mut select = filtered_rows(query);
         if let Some(after) = &query.after {
             if after.sort != query.sort {
                 return Err(LibraryError::Invalid(
@@ -814,6 +1471,38 @@ impl LibraryStore {
                         .add(C::AddedAt.eq(&after.key))
                         .add(C::WorkId.lt(&after.work_id)),
                 ),
+                WorkSort::Series => {
+                    let title = after.title.clone().unwrap_or_default();
+                    Condition::any()
+                        .add(C::SortSeries.gt(&after.key))
+                        .add(
+                            Condition::all()
+                                .add(C::SortSeries.eq(&after.key))
+                                .add(C::SortTitle.gt(&title)),
+                        )
+                        .add(
+                            Condition::all()
+                                .add(C::SortSeries.eq(&after.key))
+                                .add(C::SortTitle.eq(&title))
+                                .add(C::WorkId.gt(&after.work_id)),
+                        )
+                }
+                WorkSort::Purchased => Condition::any().add(C::PurchasedAt.lt(&after.key)).add(
+                    Condition::all()
+                        .add(C::PurchasedAt.eq(&after.key))
+                        .add(C::WorkId.lt(&after.work_id)),
+                ),
+                WorkSort::Length => {
+                    let minutes: i64 = after
+                        .key
+                        .parse()
+                        .map_err(|_| LibraryError::Invalid("invalid page cursor".into()))?;
+                    Condition::any().add(C::LengthMinutes.lt(minutes)).add(
+                        Condition::all()
+                            .add(C::LengthMinutes.eq(minutes))
+                            .add(C::WorkId.lt(&after.work_id)),
+                    )
+                }
             });
         }
         select = match query.sort {
@@ -823,6 +1512,16 @@ impl LibraryStore {
                 .order_by_asc(C::SortTitle)
                 .order_by_asc(C::WorkId),
             WorkSort::Added => select.order_by_desc(C::AddedAt).order_by_desc(C::WorkId),
+            WorkSort::Series => select
+                .order_by_asc(C::SortSeries)
+                .order_by_asc(C::SortTitle)
+                .order_by_asc(C::WorkId),
+            WorkSort::Purchased => select
+                .order_by_desc(C::PurchasedAt)
+                .order_by_desc(C::WorkId),
+            WorkSort::Length => select
+                .order_by_desc(C::LengthMinutes)
+                .order_by_desc(C::WorkId),
         };
         let mut models = select
             .limit(probe)
@@ -839,8 +1538,12 @@ impl LibraryStore {
                     WorkSort::Title => last.sort_title.clone(),
                     WorkSort::Author => last.sort_author.clone(),
                     WorkSort::Added => last.added_at.clone(),
+                    WorkSort::Series => last.sort_series.clone(),
+                    WorkSort::Purchased => last.purchased_at.clone(),
+                    WorkSort::Length => last.length_minutes.to_string(),
                 },
-                title: (query.sort == WorkSort::Author).then(|| last.sort_title.clone()),
+                title: matches!(query.sort, WorkSort::Author | WorkSort::Series)
+                    .then(|| last.sort_title.clone()),
                 work_id: last.work_id.clone(),
             })
         } else {
@@ -856,9 +1559,199 @@ impl LibraryStore {
     }
 }
 
+/// The rows a page of `query` reads from: held works that pass its media
+/// kind, kind, status and account filters (not its order or cursor).
+fn filtered_rows(query: &WorkPageQuery) -> sea_orm::Select<library_work_rows::Entity> {
+    use library_work_rows::Column as C;
+    let mut select = library_work_rows::Entity::find().filter(C::HoldingCount.gt(0));
+    if let Some(kind) = query.media_kind {
+        let kind = kind.as_str();
+        select = select.filter(
+            Condition::any()
+                .add(C::MediaKinds.eq(kind))
+                .add(C::MediaKinds.like(format!("{kind},%")))
+                .add(C::MediaKinds.like(format!("%,{kind}")))
+                .add(C::MediaKinds.like(format!("%,{kind},%"))),
+        );
+    }
+    if let Some(kind) = query.kind {
+        select = select.filter(C::Kind.eq(kind.as_str()));
+    }
+    if let Some(status) = query.status {
+        select = select.filter(C::AcquireStatus.eq(status.as_str()));
+    }
+    if let Some(account) = &query.account {
+        select = select.filter(C::WorkId.in_subquery(account_works_subquery(account)));
+    }
+    if let Some(filter) = &query.filter {
+        select = select.filter(filter_condition(filter));
+    }
+    if let Some(scope) = &query.scope {
+        select = select.filter(scope_condition(scope));
+    }
+    select
+}
+
+/// The condition a [`WorkScope`] puts on `library_work_rows`; empty (no
+/// restriction) when the scope hides nothing.
+fn scope_condition(scope: &WorkScope) -> Condition {
+    use library_work_rows::Column as C;
+    if scope.sees_everything() {
+        return Condition::all();
+    }
+    let key_set = scope.key_set_id();
+    // A row whose facets are still being replaced could slip past an
+    // exclude rule, so a scope admits only rows with all their facets.
+    let mut permitted = Condition::all().add(C::FacetsReady.eq(1));
+    if !scope.include.is_empty() {
+        permitted =
+            permitted.add(C::WorkId.in_subquery(scope_works_subquery(&key_set, SCOPE_INCLUDE)));
+    }
+    if !scope.exclude.is_empty() {
+        permitted =
+            permitted.add(C::WorkId.not_in_subquery(scope_works_subquery(&key_set, SCOPE_EXCLUDE)));
+    }
+    match scope.owner {
+        None => permitted,
+        Some(user_id) => Condition::any()
+            .add(permitted)
+            .add(C::WorkId.in_subquery(owner_works_subquery(user_id))),
+    }
+}
+
+/// The works with any of a stored scope's values of one effect: the facet
+/// rows joined to `patron_scope_keys`, two binds whatever the rule count.
+///
+/// # Arguments
+///
+/// * `key_set` - [`WorkScope::key_set_id`] of a scope whose rows
+///   [`LibraryStore::ensure_scope_keys`] wrote.
+/// * `effect` - [`SCOPE_INCLUDE`] or [`SCOPE_EXCLUDE`].
+fn scope_works_subquery(key_set: &str, effect: &str) -> sea_orm::sea_query::SelectStatement {
+    use library_work_facets::Column as F;
+    use patron_scope_keys::Column as K;
+    use sea_orm::sea_query::ExprTrait as _;
+    Query::select()
+        .column((library_work_facets::Entity, F::WorkId))
+        .from(library_work_facets::Entity)
+        .inner_join(
+            patron_scope_keys::Entity,
+            Condition::all()
+                .add(
+                    Expr::col((patron_scope_keys::Entity, K::Facet))
+                        .equals((library_work_facets::Entity, F::Facet)),
+                )
+                .add(
+                    Expr::col((patron_scope_keys::Entity, K::Key))
+                        .equals((library_work_facets::Entity, F::Key)),
+                ),
+        )
+        .and_where(Expr::col((patron_scope_keys::Entity, K::ScopeHash)).eq(Expr::val(key_set)))
+        .and_where(Expr::col((patron_scope_keys::Entity, K::Effect)).eq(Expr::val(effect)))
+        .to_owned()
+}
+
+/// The condition a [`WorkFilter`] puts on `library_work_rows`.
+fn filter_condition(filter: &WorkFilter) -> Condition {
+    use library_work_rows::Column as C;
+    match filter {
+        WorkFilter::Facet { facet, value } => {
+            let key = facet_key(value);
+            let mut works = Query::select()
+                .column(library_work_facets::Column::WorkId)
+                .from(library_work_facets::Entity)
+                .and_where(library_work_facets::Column::Facet.eq(facet.as_str()))
+                .to_owned();
+            if *facet == WorkFacet::Series && key.is_empty() {
+                // In no series: no series value at all.
+                Condition::all().add(C::WorkId.not_in_subquery(works))
+            } else {
+                works.and_where(library_work_facets::Column::Key.eq(key));
+                Condition::all().add(C::WorkId.in_subquery(works))
+            }
+        }
+        WorkFilter::Tag { user_id, tag } => match user_id {
+            Some(user_id) => Condition::all().add(
+                C::WorkId.in_subquery(
+                    Query::select()
+                        .column(user_work_tags::Column::WorkId)
+                        .from(user_work_tags::Entity)
+                        .and_where(user_work_tags::Column::UserId.eq(*user_id))
+                        .and_where(user_work_tags::Column::TagKey.eq(facet_key(tag)))
+                        .to_owned(),
+                ),
+            ),
+            // No user, no tags: the work id is never null, so nothing matches.
+            None => Condition::all().add(C::WorkId.is_null()),
+        },
+        WorkFilter::Finished { user_id, finished } => {
+            let Some(user_id) = user_id else {
+                return if *finished {
+                    Condition::all().add(C::WorkId.is_null())
+                } else {
+                    Condition::all()
+                };
+            };
+            let done = Query::select()
+                .column(user_title_state::Column::WorkId)
+                .from(user_title_state::Entity)
+                .and_where(user_title_state::Column::UserId.eq(*user_id))
+                .and_where(user_title_state::Column::IsFinished.ne(0))
+                .to_owned();
+            if *finished {
+                Condition::all().add(C::WorkId.in_subquery(done))
+            } else {
+                Condition::all().add(C::WorkId.not_in_subquery(done))
+            }
+        }
+    }
+}
+
 /// The top-level works an account id holds a listing of: the works of the
 /// held editions, and the shows of held episodes.
 fn account_works_subquery(account: &str) -> sea_orm::sea_query::SelectStatement {
+    use sea_orm::sea_query::ExprTrait as _;
+    held_works_subquery(
+        Condition::all()
+            .add(Expr::col((holdings::Entity, holdings::Column::AccountId)).eq(Expr::val(account))),
+    )
+}
+
+/// The top-level works a store account linked to `user_id` holds a
+/// listing of, through any of the user's portal identities: one bind
+/// whatever the number of accounts.
+fn owner_works_subquery(user_id: i64) -> sea_orm::sea_query::SelectStatement {
+    use sea_orm::sea_query::ExprTrait as _;
+    let mut select = held_works_subquery(
+        Condition::all().add(
+            Expr::col((portal_identities::Entity, portal_identities::Column::UserId))
+                .eq(Expr::val(user_id)),
+        ),
+    );
+    select
+        .inner_join(
+            account_links::Entity,
+            Condition::all()
+                .add(
+                    Expr::col((account_links::Entity, account_links::Column::PluginKey))
+                        .equals((holdings::Entity, holdings::Column::PluginKey)),
+                )
+                .add(
+                    Expr::col((account_links::Entity, account_links::Column::AccountId))
+                        .equals((holdings::Entity, holdings::Column::AccountId)),
+                ),
+        )
+        .inner_join(
+            portal_identities::Entity,
+            Expr::col((portal_identities::Entity, portal_identities::Column::Id))
+                .equals((account_links::Entity, account_links::Column::IdentityId)),
+        );
+    select
+}
+
+/// The top-level works of the holdings that pass `holding`: the works of
+/// the held editions, and the shows of held episodes.
+fn held_works_subquery(holding: Condition) -> sea_orm::sea_query::SelectStatement {
     use sea_orm::sea_query::ExprTrait as _;
     Query::select()
         .expr(Expr::cust(
@@ -885,9 +1778,7 @@ fn account_works_subquery(account: &str) -> sea_orm::sea_query::SelectStatement 
             Expr::col((works::Entity, works::Column::Id))
                 .equals((expressions::Entity, expressions::Column::WorkId)),
         )
-        .and_where(
-            Expr::col((holdings::Entity, holdings::Column::AccountId)).eq(Expr::val(account)),
-        )
+        .cond_where(holding)
         .to_owned()
 }
 
@@ -951,6 +1842,9 @@ mod tests {
             cover_url: cover.then(|| format!("https://img.example/{id}.jpg")),
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
+            enrich_source: None,
+            enrich_confidence: None,
+            enrich_updated_at: None,
         }
     }
 
@@ -982,8 +1876,11 @@ mod tests {
             status: status.as_str().into(),
             storage_key: None,
             error_message: None,
-            title_uuid: "t".into(),
+            holding_id: "t".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
+            pdf_status: AcquireStatus::NotAcquired.as_str().into(),
+            pdf_storage_key: None,
+            pdf_holding_id: None,
         }
     }
 
@@ -1015,6 +1912,7 @@ mod tests {
                 ("l2".into(), "e2".into()),
                 ("l3".into(), "e3".into()),
             ]),
+            listings: Vec::new(),
             holdings: vec![
                 holding("h1", "l1", "2026-02-01T00:00:00Z"),
                 holding("h2", "l2", "2026-03-01T00:00:00Z"),
@@ -1076,6 +1974,95 @@ mod tests {
         assert_eq!(row.sort_author, "");
     }
 
+    fn listing(id: &str, edition: &str, length: Option<i64>) -> store_listings::Model {
+        store_listings::Model {
+            id: id.into(),
+            plugin_key: "p".into(),
+            marketplace: "us".into(),
+            product_id: id.into(),
+            edition_id: edition.into(),
+            title: "The Dispossessed".into(),
+            categories: None,
+            subtitle: None,
+            authors: None,
+            narrators: None,
+            series: None,
+            series_index: None,
+            series_product_id: None,
+            description: None,
+            publisher: None,
+            published_at: None,
+            length_minutes: length,
+            language: None,
+            cover_url: None,
+            url: None,
+            rating_overall: None,
+            rating_count: None,
+            is_abridged: None,
+            observed_at: "2026-01-01T00:00:00Z".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn a_listing_cover_makes_its_edition_the_cover_edition() {
+        let mut covered = listing("l2", "e2", None);
+        covered.cover_url = Some("https://img.example/e2.jpg".into());
+        let mut blank = listing("l1", "e1", None);
+        blank.cover_url = Some("  ".into());
+        let inputs = WorkRowInputs {
+            work: Some(work("w1")),
+            editions: vec![edition("e1", "audio", false), edition("e2", "audio", false)],
+            listing_editions: HashMap::from([
+                ("l1".into(), "e1".into()),
+                ("l2".into(), "e2".into()),
+            ]),
+            listings: vec![blank, covered],
+            holdings: vec![
+                holding("h1", "l1", "2026-02-01T00:00:00Z"),
+                holding("h2", "l2", "2026-02-01T00:00:00Z"),
+            ],
+            ..WorkRowInputs::default()
+        };
+        let row = build_work_row(&inputs, "now").expect("row");
+        assert_eq!(row.cover_edition_id.as_deref(), Some("e2"));
+        let none = WorkRowInputs {
+            listings: vec![listing("l1", "e1", None)],
+            editions: vec![edition("e1", "audio", false)],
+            ..inputs
+        };
+        assert_eq!(
+            build_work_row(&none, "now")
+                .expect("row")
+                .cover_edition_id
+                .as_deref(),
+            // With no cover known, the best held edition is still named, so
+            // a cover stored later (or the work's) shows without a refresh.
+            Some("e1")
+        );
+    }
+
+    #[test]
+    fn a_zero_edition_runtime_falls_back_to_the_listings() {
+        let mut zero = edition("e1", "audio", false);
+        zero.duration_minutes = Some(0);
+        let inputs = WorkRowInputs {
+            work: Some(work("w1")),
+            editions: vec![zero],
+            listing_editions: HashMap::from([("l1".into(), "e1".into())]),
+            listings: vec![listing("l1", "e1", Some(600))],
+            holdings: vec![holding("h1", "l1", "2026-02-01T00:00:00Z")],
+            ..WorkRowInputs::default()
+        };
+        assert_eq!(build_work_row(&inputs, "now").unwrap().length_minutes, 600);
+        let unknown = WorkRowInputs {
+            listings: vec![listing("l1", "e1", Some(0))],
+            ..inputs
+        };
+        assert_eq!(build_work_row(&unknown, "now").unwrap().length_minutes, 0);
+    }
+
     #[test]
     fn stored_rows_read_back_typed() {
         let model = library_work_rows::Model {
@@ -1093,7 +2080,11 @@ mod tests {
             edition_count: 2,
             holding_count: -1,
             added_at: "a".into(),
+            sort_series: "1".into(),
+            length_minutes: 0,
+            purchased_at: String::new(),
             refreshed_at: "r".into(),
+            facets_ready: 1,
         };
         let row = LibraryWorkRow::from_model(model.clone()).unwrap();
         assert_eq!(row.kind, WorkKind::Podcast);

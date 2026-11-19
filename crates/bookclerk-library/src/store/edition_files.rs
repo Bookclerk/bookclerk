@@ -177,6 +177,74 @@ pub struct EditionFile {
     pub sha256: Option<String>,
 }
 
+/// What a probe found in one stored audio file, and where the copy came
+/// from (`edition_files`).
+///
+/// The same values decide which of two copies of one edition is kept
+/// ([`FileProbe::is_better_than`]), wherever the comparison runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileProbe {
+    /// Media type of the file (`audio/mp4`, `audio/mpeg`, `audio/flac`).
+    pub content_type: String,
+    /// Average audio bitrate in kilobits per second; `None` when the file
+    /// states no running time to divide its size by.
+    pub bitrate_kbps: Option<u32>,
+    /// True for a lossless encoding (FLAC, ALAC).
+    pub lossless: bool,
+    /// Plain id of the storefront the copy was downloaded from, when known.
+    pub source_store: Option<String>,
+}
+
+impl FileProbe {
+    /// Longest media type a probe may carry, in bytes.
+    pub const MAX_CONTENT_TYPE_BYTES: usize = 64;
+
+    /// Highest bitrate a probe may carry, in kilobits per second: above any
+    /// audiobook encoding, so a forged value cannot win by size alone.
+    pub const MAX_BITRATE_KBPS: u32 = 20_000;
+
+    /// True when a copy with this probe should replace one with `other`
+    /// (library data model ADR, section 3): a lossless copy beats a lossy
+    /// one, and within the same kind the higher bitrate wins. A copy whose
+    /// bitrate is unknown never replaces one whose bitrate is known, and
+    /// equal copies do not replace each other.
+    #[must_use]
+    pub fn is_better_than(&self, other: &Self) -> bool {
+        if self.lossless != other.lossless {
+            return self.lossless;
+        }
+        match (self.bitrate_kbps, other.bitrate_kbps) {
+            (Some(mine), Some(theirs)) => mine > theirs,
+            (Some(_), None) => true,
+            (None, Some(_) | None) => false,
+        }
+    }
+
+    /// True when the values are ones an honest probe can produce: a short
+    /// media type of visible ASCII, a bitrate within
+    /// [`Self::MAX_BITRATE_KBPS`], and a storefront that is a store's plain
+    /// id (lowercase letters, digits, `_`, `-` and `.`, as node frames name
+    /// stores).
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        let type_ok = !self.content_type.is_empty()
+            && self.content_type.len() <= Self::MAX_CONTENT_TYPE_BYTES
+            && self.content_type.bytes().all(|b| b.is_ascii_graphic());
+        let store_ok = self.source_store.as_deref().is_none_or(|store| {
+            !store.is_empty()
+                && store.len() <= Self::MAX_CONTENT_TYPE_BYTES
+                && store
+                    .bytes()
+                    .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.'))
+        });
+        type_ok
+            && store_ok
+            && self
+                .bitrate_kbps
+                .is_none_or(|kbps| kbps > 0 && kbps <= Self::MAX_BITRATE_KBPS)
+    }
+}
+
 /// An edition's acquire state (`edition_acquisitions`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditionAcquisition {
@@ -189,10 +257,19 @@ pub struct EditionAcquisition {
     pub storage_key: Option<String>,
     /// Last acquire failure message.
     pub error_message: Option<String>,
-    /// The library title (`books.uuid`) whose write set the state.
-    pub title_uuid: String,
+    /// The account holding (`holdings.id`) whose title's write set the
+    /// state.
+    pub holding_id: String,
     /// RFC 3339 time of that write.
     pub updated_at: String,
+    /// Where the edition's companion PDF acquire stands; a status this
+    /// build does not know reads as [`AcquireStatus::NotAcquired`].
+    pub pdf_status: AcquireStatus,
+    /// Destination key of the companion PDF once acquired.
+    pub pdf_storage_key: Option<String>,
+    /// The account holding (`holdings.id`) whose title's write set the PDF
+    /// state; `None` until a PDF write happens.
+    pub pdf_holding_id: Option<String>,
 }
 
 impl From<edition_acquisitions::Model> for EditionAcquisition {
@@ -202,10 +279,23 @@ impl From<edition_acquisitions::Model> for EditionAcquisition {
             edition_id: row.edition_id,
             storage_key: row.storage_key,
             error_message: row.error_message,
-            title_uuid: row.title_uuid,
+            holding_id: row.holding_id,
             updated_at: row.updated_at,
+            pdf_status: AcquireStatus::parse(&row.pdf_status).unwrap_or_default(),
+            pdf_storage_key: row.pdf_storage_key,
+            pdf_holding_id: row.pdf_holding_id,
         }
     }
+}
+
+/// The edition a library title sells and the account holding it is held
+/// by: the key its acquire writes are recorded under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitleHolding {
+    /// The edition the title's listing sells.
+    pub edition_id: String,
+    /// The account's holding of that listing (`holdings.id`).
+    pub holding_id: String,
 }
 
 /// A row read back into an [`EditionFile`]; `None` for a row whose
@@ -258,6 +348,52 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
             .map(|listing| listing.edition_id))
+    }
+
+    /// The edition a library title (`books.uuid`) sells and its account's
+    /// holding of the listing; `None` when the title is unknown, not
+    /// resolved yet, or no longer held by its account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read fails.
+    pub async fn title_holding_of_book(&self, book_uuid: &str) -> Result<Option<TitleHolding>> {
+        let Some(book) = books::Entity::find()
+            .filter(books::Column::Uuid.eq(book_uuid))
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        let Some(listing) = store_listings::Entity::find()
+            .filter(store_listings::Column::PluginKey.eq(book.plugin_key.as_str()))
+            .filter(
+                store_listings::Column::Marketplace
+                    .eq(bookclerk_resolve::stored_marketplace(&book.marketplace)),
+            )
+            .filter(
+                store_listings::Column::ProductId
+                    .eq(bookclerk_resolve::stored_product_id(&book.product_id)),
+            )
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        Ok(super::holdings::find_holdings()
+            .filter(holdings::Column::ListingId.eq(listing.id.as_str()))
+            .filter(holdings::Column::HolderKind.eq("account"))
+            .filter(holdings::Column::PluginKey.eq(book.plugin_key.as_str()))
+            .filter(holdings::Column::AccountId.eq(book.account_id.as_str()))
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(|holding| TitleHolding {
+                edition_id: listing.edition_id,
+                holding_id: holding.id,
+            }))
     }
 
     /// An edition's acquire state; `None` when no title of it was ever
@@ -369,6 +505,9 @@ impl LibraryStore {
             role: Set(role.as_str().to_string()),
             lossless: Set(0),
             bitrate_kbps: Set(None),
+            content_type: Set(None),
+            source_store: Set(None),
+            probed_at: Set(None),
             sha256: Set(None),
             writer: Set(ACQUIRE_WRITER.to_string()),
             written_at: Set(now.clone()),
@@ -405,6 +544,18 @@ impl LibraryStore {
             .col_expr(
                 edition_files::Column::BitrateKbps,
                 Expr::value(Option::<i64>::None),
+            )
+            .col_expr(
+                edition_files::Column::ContentType,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::SourceStore,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::ProbedAt,
+                Expr::value(Option::<String>::None),
             )
             .col_expr(
                 edition_files::Column::Sha256,
@@ -446,8 +597,8 @@ impl LibraryStore {
     /// * `writer` - The host upload id.
     /// * `role`, `sha256` - What the file is and its declared digest.
     /// * `expected` - The record read before the claim.
-    /// * `title` - What the upload writes for: the library title
-    ///   (`books.uuid`) of a job upload, or the node holding
+    /// * `title` - What the upload writes for: the
+    ///   account holding (`holdings.id`) of a job upload, or the node holding
     ///   (`holdings.id`) of a catalog upload. A key its edition already
     ///   holds is taken over only when this upload or an earlier upload for
     ///   the same title (or, for a catalog upload, an earlier catalog upload
@@ -487,6 +638,9 @@ impl LibraryStore {
                 role: Set(role.as_str().to_string()),
                 lossless: Set(0),
                 bitrate_kbps: Set(None),
+                content_type: Set(None),
+                source_store: Set(None),
+                probed_at: Set(None),
                 sha256: Set(sha256.map(str::to_string)),
                 writer: Set(writer.to_string()),
                 written_at: Set(now.clone()),
@@ -527,7 +681,7 @@ impl LibraryStore {
         let mut writers = Condition::any()
             .add(edition_files::Column::Writer.eq(writer))
             .add(uploads_for(
-                Condition::all().add(node_upload_sessions::Column::BookUuid.eq(title)),
+                Condition::all().add(node_upload_sessions::Column::HoldingId.eq(title)),
             ));
         if catalog {
             // The same branch's other catalog uploads: a title it shares
@@ -562,6 +716,25 @@ impl LibraryStore {
             .col_expr(
                 edition_files::Column::Sha256,
                 Expr::value(sha256.map(str::to_string)),
+            )
+            // The new copy's probe is stored after the claim; the old
+            // copy's says nothing about it.
+            .col_expr(edition_files::Column::Lossless, Expr::value(0))
+            .col_expr(
+                edition_files::Column::BitrateKbps,
+                Expr::value(Option::<i64>::None),
+            )
+            .col_expr(
+                edition_files::Column::ContentType,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::SourceStore,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::ProbedAt,
+                Expr::value(Option::<String>::None),
             )
             .col_expr(edition_files::Column::Writer, Expr::value(writer))
             .col_expr(edition_files::Column::WrittenAt, Expr::value(now))
@@ -633,6 +806,26 @@ impl LibraryStore {
                         edition_files::Column::Writer,
                         Expr::value(prior.writer.as_str()),
                     )
+                    // The probe on the row is the given-back upload's, and
+                    // the earlier copy's was cleared by its claim: unknown
+                    // again until the file is probed.
+                    .col_expr(edition_files::Column::Lossless, Expr::value(0))
+                    .col_expr(
+                        edition_files::Column::BitrateKbps,
+                        Expr::value(Option::<i64>::None),
+                    )
+                    .col_expr(
+                        edition_files::Column::ContentType,
+                        Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        edition_files::Column::SourceStore,
+                        Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        edition_files::Column::ProbedAt,
+                        Expr::value(Option::<String>::None),
+                    )
                     .filter(ours)
                     .exec(self.db())
                     .await
@@ -679,6 +872,128 @@ impl LibraryStore {
                 writer,
                 role: FileRole::Sidecar,
                 sha256: None,
+            })
+        }))
+    }
+
+    /// Stores what a probe found in `owner`'s file at `key` on
+    /// `destination`, stamped with the time of the write.
+    ///
+    /// The row is changed only while `owner` still holds the key, so a
+    /// probe that finishes after another edition took the key over
+    /// describes nothing.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the row was `owner`'s and now carries `probe`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `probe` is not well formed
+    /// ([`FileProbe::is_well_formed`]) or the write fails.
+    pub async fn set_edition_file_probe(
+        &self,
+        destination: &str,
+        key: &str,
+        owner: &FileOwner,
+        probe: &FileProbe,
+    ) -> Result<bool> {
+        let held = Condition::all()
+            .add(edition_files::Column::OwnerKind.eq(owner.kind()))
+            .add(edition_files::Column::OwnerId.eq(owner.id()));
+        self.write_file_probe(destination, key, held, probe).await
+    }
+
+    /// Stores what a probe found in the file the upload `writer` wrote at
+    /// `key` on `destination`, as [`Self::set_edition_file_probe`] does for
+    /// an owner.
+    ///
+    /// The row is changed only while `writer` is still the upload that
+    /// claimed the key last, so a committed upload never describes a file
+    /// a later write replaced.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the row was `writer`'s and now carries `probe`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `probe` is not well formed or the write fails.
+    pub async fn set_uploaded_file_probe(
+        &self,
+        destination: &str,
+        key: &str,
+        writer: &str,
+        probe: &FileProbe,
+    ) -> Result<bool> {
+        let written = Condition::all().add(edition_files::Column::Writer.eq(writer));
+        self.write_file_probe(destination, key, written, probe)
+            .await
+    }
+
+    /// Writes `probe` on the row of `key` on `destination` when it also
+    /// matches `holder`.
+    async fn write_file_probe(
+        &self,
+        destination: &str,
+        key: &str,
+        holder: Condition,
+        probe: &FileProbe,
+    ) -> Result<bool> {
+        if !probe.is_well_formed() {
+            return Err(LibraryError::Invalid(
+                "a file probe has a malformed media type, store or bitrate".to_string(),
+            ));
+        }
+        let updated = edition_files::Entity::update_many()
+            .col_expr(
+                edition_files::Column::ContentType,
+                Expr::value(probe.content_type.clone()),
+            )
+            .col_expr(
+                edition_files::Column::BitrateKbps,
+                Expr::value(probe.bitrate_kbps.map(i64::from)),
+            )
+            .col_expr(
+                edition_files::Column::Lossless,
+                Expr::value(i64::from(probe.lossless)),
+            )
+            .col_expr(
+                edition_files::Column::SourceStore,
+                Expr::value(probe.source_store.clone()),
+            )
+            .col_expr(edition_files::Column::ProbedAt, Expr::value(now_str()))
+            .filter(edition_files::Column::Destination.eq(destination))
+            .filter(edition_files::Column::StorageKey.eq(key))
+            .filter(holder)
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(updated.rows_affected > 0)
+    }
+
+    /// What the last probe found in the file at `key` on `destination`;
+    /// `None` when the key is unrecorded or was never probed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn edition_file_probe(
+        &self,
+        destination: &str,
+        key: &str,
+    ) -> Result<Option<FileProbe>> {
+        let row = edition_files::Entity::find_by_id((destination.to_string(), key.to_string()))
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(row.and_then(|row| {
+            row.probed_at.as_ref()?;
+            Some(FileProbe {
+                content_type: row.content_type?,
+                bitrate_kbps: row.bitrate_kbps.and_then(|kbps| u32::try_from(kbps).ok()),
+                lossless: row.lossless != 0,
+                source_store: row.source_store,
             })
         }))
     }
@@ -801,6 +1116,28 @@ mod tests {
         assert_eq!(FileRole::for_key("A/T/T.epub", None), FileRole::Epub);
         assert_eq!(FileRole::for_key("A/T/T.cue", None), FileRole::Sidecar);
         assert_eq!(FileRole::for_key("A/T/README", None), FileRole::Sidecar);
+    }
+
+    #[test]
+    fn the_better_copy_is_lossless_then_higher_bitrate() {
+        let probe = |lossless, bitrate_kbps| FileProbe {
+            content_type: "audio/mp4".into(),
+            bitrate_kbps,
+            lossless,
+            source_store: None,
+        };
+        // Lossless beats lossy whatever the bitrates say.
+        assert!(probe(true, Some(700)).is_better_than(&probe(false, Some(900))));
+        assert!(!probe(false, Some(900)).is_better_than(&probe(true, Some(700))));
+        assert!(probe(true, None).is_better_than(&probe(false, Some(64))));
+        // Within a kind the higher bitrate wins, and equals keep what is there.
+        assert!(probe(false, Some(128)).is_better_than(&probe(false, Some(64))));
+        assert!(!probe(false, Some(64)).is_better_than(&probe(false, Some(128))));
+        assert!(!probe(false, Some(64)).is_better_than(&probe(false, Some(64))));
+        // An unknown bitrate never replaces a known one.
+        assert!(probe(false, Some(32)).is_better_than(&probe(false, None)));
+        assert!(!probe(false, None).is_better_than(&probe(false, Some(32))));
+        assert!(!probe(false, None).is_better_than(&probe(false, None)));
     }
 
     #[test]

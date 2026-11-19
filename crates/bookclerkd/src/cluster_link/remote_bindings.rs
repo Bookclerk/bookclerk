@@ -1,4 +1,4 @@
-//! What a host node knows of the instances an owner cluster deployed to
+//! What a branch node knows of the instances an owner cluster deployed to
 //! it, and the bindings a handed job runs with (H-4 design, step 8).
 //!
 //! [`RemoteCatalog`] is per link and in memory only: [`super::consent`]

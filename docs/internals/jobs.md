@@ -220,7 +220,7 @@ ticker claims a due fire with a compare-and-swap on the instance's
 dedup key holds one fire per schedule, so a fire that comes due while the
 previous one is still active is skipped. A failed fire retries up to 3
 attempts with the same `scheduled_time_ms`. A pinned fire can only be
-claimed by a node trusted with every job (an owner node, or a Host whose
+claimed by a node trusted with every job (a shared node, or a Host whose
 owner is an Owner or Administrator). When no such node runs the instance
 past the requirements sweep's grace period, the sweep fails the fire as
 `unroutable`. That covers an instance deployed nowhere and one deployed only
@@ -280,44 +280,61 @@ Reserved classes (no worker in this release): `media`, `transcription`,
 
 ## Search index
 
-`GET /api/library/books?q=` reads a Tantivy index under the node's own
-`search_index/`, so each daemon keeps its own copy current:
+Searches read a Tantivy works index on the node's own disk, so each
+daemon keeps its own copy current. `GET /api/library/works?q=` and
+`bookclerk library search` read it, under `search_index_works/`, with one
+document per held top-level work (its titles, authors, narrators, series
+and store identifiers). It is kept current two ways:
 
 - **From events.** Each node registers its own consumer,
   `host:search-index:{node id}`, on the `core.events` outbox for
-  `edition_linked`, `edition_updated`, `holding_added`, `holding_removed`
-  and `book_acquired`, all host event types no plugin may produce. The id names
-  the node, so every node gets every event (Discover's `host:discover` is
-  one consumer for the cluster). An edition event refreshes each listing
-  that sells the edition, a holding event its listing, and `book_acquired`
-  its title. A listing refresh deletes the listing's documents and adds
-  back the titles that still sell it (and any older document of the same
-  title), so a title that is gone leaves the index. A holding event whose
-  listing is already gone removes the marker below, so the node rebuilds.
-  The index holds one document per `books` row, and a removed holding
-  leaves its row in place until the library model replaces `books`, so
-  until then `holding_removed` refreshes the title rather than dropping it.
+  `edition_linked`, `edition_updated`, `holding_added` and
+  `holding_removed`, all host event types no plugin may produce. The id
+  names the node, so every node gets every event (Discover's
+  `host:discover` is one consumer for the cluster). An edition event
+  refreshes the document of the edition's work, and a holding event the
+  document of its listing's work. A refresh deletes the work's document
+  and adds it back while the work is held, so a work nobody holds any
+  more leaves the index. A holding event whose listing is already gone
+  removes the marker below, since its work can no longer be found, so the
+  node rebuilds.
 - **Rebuild job.** A finished rebuild leaves a marker for the current
   document layout in the index folder. When it is missing (a new node, a
   deleted folder, or an index of an older layout, which is discarded), the
   heartbeat queues a `search_index_rebuild` job pinned to the node, at
   priority 50, after its beat is recorded. It queues at most one every ten
   minutes while the index stays incomplete, so a failing rebuild is not
-  re-queued on every beat. The job reads every title in pages and replaces
-  the index in one commit.
+  re-queued on every beat. The job reads every top-level work in pages and
+  replaces the index in one commit.
 
-One writer runs at a time per index. A delivery that finds a rebuild (or
-the CLI) writing is retried after 10 s, for up to an hour. A CLI rebuild
+One writer runs at a time. A delivery that finds a rebuild (or the CLI)
+writing is retried after 10 s, for up to an hour. A CLI rebuild
 (`library search --rebuild-index`, or the one after `library scan`) that
 finds a daemon writing waits for it, pausing up to 2 s between tries, and
 gives up after five minutes. Searches read the last commit, so they keep
-answering from the old index while a rebuild runs.
+answering from the old index while a rebuild runs. A search on a node
+whose works index was never built (or is of an older layout) answers 503
+(the CLI says to run `library search --rebuild-index`) until the job
+finishes; a search never creates or replaces an index.
 
-The search matches, sorts by title, pages and counts in the index, and
-only the page's titles are read from the database, so there is no hit cap.
-A search that also filters by account or status takes every hit and lets
-the database filter and page them, since those columns can change without
-an event.
+> [!NOTE]
+> Earlier builds also kept a per-title index under `search_index/`.
+> Nothing reads or writes it any more, so that folder can be deleted.
+
+A works search answers in relevance order (title matches weigh most, then
+authors) and ignores `sort`; the CLI prints each match's work id and
+title, best first. `author:`, `narrator:`, `series:`, `title:`
+and `identifiers:` (also spelled `asin:`, `isbn:` or `productid:`) narrow
+a term to one field; identifiers match whole and ignore case. Each request
+reads a window of at most 1,000 matches from the cursor's position, and
+only those documents, then reads the matched works' rows from the library
+index by id in chunks, applying the other filters there. A page can
+therefore come back with fewer rows than `limit` and still carry a
+`next_cursor`. The cursor holds the query, the filters and how many
+matches earlier pages used, and is refused under another query or other
+filters. Relevance is computed again for each page, so a work indexed or
+dropped between two requests can make the next page repeat or skip a
+match.
 
 ## Library index
 
@@ -348,7 +365,13 @@ library database, so the whole cluster shares one index:
   job at priority 50. It queues at most one every ten minutes while the
   index stays unbuilt. The job refreshes every top-level work in pages of
   100, reporting progress and stopping when cancelled, then records the
-  build.
+  build. A page is read in a fixed number of chunked lookups (works,
+  editions, listings, holdings, acquire rows, credits and series for all
+  100 works at once) and its rows and filter values are written in shared
+  atomic batches, so a page costs about as many round trips as one work.
+  The works search rebuild reads its documents the same way. The ignored
+  `library_index_timing` test in `bookclerk-library` times a rebuild of
+  10,000 works.
 
 Two refreshes of one work can run at once, from two deliveries or a
 delivery and the rebuild. Each stamps its row with the time it started
@@ -357,10 +380,37 @@ refresh never overwrites a newer one. Keeping an unheld work's row (rather
 than deleting it) keeps that stamp, so a slow refresh that read the work
 while it was still held cannot add it back.
 
-Pages use a keyset cursor (the last row's sort values, sent back as an
-opaque `cursor`), so every page costs the same and a row added between two
-requests never shifts the next page. A cursor issued for one `sort` is
-refused under another.
+Each row names a cover edition: a held edition, preferring one with a
+cover of its own or a store's cover on one of its listings, then an
+acquired one, then audio. A held work always names one, even before any
+cover is known, because store text and a title's enrichment are written
+after the link whose event refreshed the row. The route reads the cover
+when it serves the page: the edition's own (the first store cover a
+listing of it reported), else the first store cover among its listings, else its work's (or, for an episode, its show's), so
+a cover stored later shows without another refresh. The work detail route
+gives each edition its cover the same way.
+
+Each row carries the sort keys of every order the page offers: title,
+first author, newest holding, series then position (works in no series
+last), newest reported purchase and longest held runtime (works with no
+purchase time or runtime last). Pages use a keyset cursor (the last row's
+sort values, sent back as an opaque `cursor`), so every page costs the
+same and a row added between two requests never shifts the next page. A
+cursor issued for one `sort` is refused under another.
+
+The same refresh writes the work's filter values to
+`library_work_facets`: its authors and narrators (from credits and
+listings), series, genres (the work's and listings' categories, split on
+commas, semicolons and bars), publishers and the storefronts it is held
+through, each under its lower-cased key. The row write, the removal of
+the old values and as many new values as fit share one atomic batch; the
+rest follow in further batches, each checking that the row still carries
+this refresh's stamp, so a later refresh's values are never mixed with an
+older one's. `facet` and `value` on `GET /api/library/works` filter by one
+value, and `GET /api/library/works/facets/{facet}` pages a facet's values
+with how many held works have each. Tags and progress are per person, so
+they are read from the caller's own `user_work_tags` and
+`user_title_state` rows instead.
 
 ## Admission and backpressure
 
@@ -419,13 +469,25 @@ Every scan and acquire is admitted through a planner, whoever asks:
   (`titles`, UUID, ASIN, ISBN or product id) becomes its own job, so each
   can go to any node trusted with it. Operator authority, an Owner or an
   Administrator acquiring everything gets one unsplit job. Anyone else must
-  own a named account and every library row a named title matches (403
-  otherwise); with neither, they get one job per account they wholly own.
+  own the account they name, when they name one, and every account that
+  holds a title a named id matches (a listing's product id, an ASIN or ISBN
+  of its edition, or a holding id; 403 otherwise). An account is named by
+  its id or label, ignoring ASCII case, and a job matches it the same way
+  when it runs. With neither an account nor a title, they get one job per
+  account they wholly own. A node is trusted with an acquire the same way: by the
+  accounts holding the titles its filters match.
   `POST /api/library/acquire` takes `{account, plugin_instance_id, titles,
-  force, pdf_only}` and answers a multi-job plan like a scan (`job_ids`;
-  200, 409, 429, or 422 `nothing_to_acquire` for an empty plan).
+  editions, force, pdf_only}` and answers a multi-job plan like a scan
+  (`job_ids`; 200, 409, 429, or 422 `nothing_to_acquire` for an empty
+  plan).
+- `editions` names editions (the ids a work's detail lists). Each becomes
+  one title: of the library titles that sell it, the first in an account
+  the caller may acquire for (and in `account` when that is set). The
+  edition's titles share its files, so one is enough. An edition with no
+  title (or none in `account`) is 400; one whose titles are all in other
+  people's accounts is 403. The title is then planned like any other.
 - `force` (re-download acquired titles) and `pdf_only` (companion PDFs only)
-  are part of the acquire's dedup key and run only on owner nodes; a host
+  are part of the acquire's dedup key and run only on shared nodes; a host
   is never handed such a job. A pinned instance is part of the key too, so
   a pinned acquire never stands in for an unpinned one or another pin.
 
@@ -444,8 +506,8 @@ from events (see [Search index](#search-index)). `library acquire
 --dry-run` plans keys locally without queueing. `library acquire` has no `--license` or `-o key=value` flags
 (both were removed, never implemented); a queued acquire runs with the
 settings of the node that claims it.
-A host node's operator asks its owner cluster for a scan with `bookclerk
-clusters scan` ([Clusters and host nodes](../server/cluster-hosts.md)).
+A branch node's operator asks its owner cluster for a scan with `bookclerk
+clusters scan` ([Clusters and branch nodes](../server/cluster-hosts.md)).
 
 ## Leases and crash recovery
 
@@ -581,7 +643,7 @@ nothing; the holder's timer picks the change up within 30 s.
 
 Before requirements and permits, the routed claim filters candidates
 through the trust predicate (`control_plane::trust`). The daemon's own
-worker holds the database and is trusted with every job. A Host node
+worker holds the database and is trusted with every job. A Branch node
 (H-4) owned by a user who is not an Owner or Administrator may claim only
 a scan or acquire of a named account linked to that user; a scan-all, any
 pinned or instance-bound job, listen sync, integration scans, and plugin

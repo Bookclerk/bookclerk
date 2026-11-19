@@ -454,6 +454,16 @@ move_into_cgroup() {
   fi
 }
 
+# A library that has been running has its works search index; without it the
+# daemon builds it in a job that races the timed load. The seed built the
+# library page index the same way.
+prebuild_log="${FILES}/envelope-prebuild.log"
+if ! BOOKCLERK_FILES_DIR="${FILES}" "${CLI}" library search --rebuild-index --limit 0 Title \
+  >"${prebuild_log}" 2>&1; then
+  cat "${prebuild_log}" >&2
+  fail "search index prebuild failed"
+fi
+
 drop_file_cache
 # From here a failed step still writes envelope-metrics.json.
 METRICS_STARTED=1
@@ -517,7 +527,7 @@ run_phase() {
   local phase="$1"
   local out="$2"
   ENVELOPE_PHASE="${phase}" ENVELOPE_PHASE_OUT="${out}" BOOKCLERK_ENVELOPE_TOKEN="${token}" python3 - "${FILES}" <<'PY'
-import json, os, random, sys, threading, time, urllib.error, urllib.request
+import json, os, random, sys, threading, time, urllib.error, urllib.parse, urllib.request
 files = sys.argv[1]
 token = os.environ["BOOKCLERK_ENVELOPE_TOKEN"]
 base = "http://127.0.0.1:8787"
@@ -557,12 +567,53 @@ def fetch(path, authed):
             f"envelope: sample non-200 status={code} path={path} body={text!r}",
             file=sys.stderr,
         )
-    if path.startswith("/api/library/books"):
+    if code == 200 and path.startswith("/api/library/works"):
         try:
-            total = json.loads(body).get("total")
-        except json.JSONDecodeError:
+            total = len(json.loads(body).get("works") or [])
+        except (json.JSONDecodeError, AttributeError):
             total = None
     return code, (time.perf_counter() - started) * 1000, total
+
+def get_json(path):
+    """One authed GET decoded as JSON, or None when it fails."""
+    req = urllib.request.Request(base + path, headers=auth, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read())
+    except (OSError, ValueError):
+        return None
+
+def deep_cursor(skip=8000):
+    """`next_cursor` after the first `skip` works in title order, or None."""
+    cursor, read = None, 0
+    while read < skip:
+        path = "/api/library/works?limit=200"
+        if cursor:
+            path += "&cursor=" + urllib.parse.quote(cursor, safe="")
+        page = get_json(path)
+        if not page:
+            return None
+        read += len(page.get("works") or [])
+        cursor = page.get("next_cursor")
+        if not cursor:
+            return None
+    return cursor
+
+def works_ready():
+    """True once no index rebuild is pending and the works routes answer."""
+    jobs = get_json("/api/jobs")
+    if not isinstance(jobs, list):
+        return False
+    rebuilding = any(
+        job.get("kind") in ("search_index_rebuild", "library_index_rebuild")
+        and job.get("status") in ("pending", "running")
+        for job in jobs
+    )
+    if rebuilding:
+        return False
+    page = get_json("/api/library/works?limit=1")
+    hits = get_json("/api/library/works?q=Title&limit=1")
+    return bool(page and page.get("works")) and bool(hits and hits.get("works"))
 
 def percentile(values, p):
     if not values:
@@ -571,16 +622,28 @@ def percentile(values, p):
     index = min(len(ordered) - 1, max(0, int(round((p / 100) * (len(ordered) - 1)))))
     return ordered[index]
 
-ROUTES = [
-    ("GET /health", "/health", False),
-    ("GET /api/status", "/api/status", True),
-    ("GET /api/jobs", "/api/jobs", True),
-    ("GET /api/library/books?limit=40&offset=0", "/api/library/books?limit=40&offset=0", True),
-    ("GET /api/library/books?limit=40&offset=8000&status=acquired", "/api/library/books?limit=40&offset=8000&status=acquired", True),
-    ("GET /api/library/books?account=envelope-b&limit=40", "/api/library/books?account=envelope-b&limit=40", True),
-    ("GET /api/library/books?q=Title&limit=40", "/api/library/books?q=Title&limit=40", True),
-    ("GET /api/library/books?q=Title&limit=8", "/api/library/books?q=Title&limit=8", True),
-]
+DEEP_PAGE = "GET /api/library/works?limit=40&cursor=(8000 in)"
+
+def routes():
+    """The timed routes; the deep page follows a cursor 8,000 works in."""
+    cursor = deep_cursor()
+    if not cursor:
+        # An empty cursor would time the first page under the deep label.
+        print("envelope: no works cursor 8000 in; the library is too small", file=sys.stderr)
+        sys.exit(1)
+    deep = "/api/library/works?limit=40&cursor=" + urllib.parse.quote(cursor, safe="")
+    return [
+        ("GET /health", "/health", False),
+        ("GET /api/status", "/api/status", True),
+        ("GET /api/jobs", "/api/jobs", True),
+        ("GET /api/library/works?limit=40", "/api/library/works?limit=40", True),
+        ("GET /api/library/works?limit=40&sort=author", "/api/library/works?limit=40&sort=author", True),
+        ("GET /api/library/works?limit=40&status=acquired", "/api/library/works?limit=40&status=acquired", True),
+        ("GET /api/library/works?account=envelope-b&limit=40", "/api/library/works?account=envelope-b&limit=40", True),
+        (DEEP_PAGE, deep, True),
+        ("GET /api/library/works?q=Title&limit=40", "/api/library/works?q=Title&limit=40", True),
+        ("GET /api/library/works?q=Title&limit=8", "/api/library/works?q=Title&limit=8", True),
+    ]
 
 def time_route(path, authed, samples=40, clients=4):
     latencies, errors, totals = [], [], []
@@ -609,16 +672,16 @@ def time_route(path, authed, samples=40, clients=4):
         "errors": len(errors),
         "p50_ms": percentile(latencies, 50),
         "p95_ms": percentile(latencies, 95),
-        "min_total": min(totals) if totals else None,
+        "min_works": min(totals) if totals else None,
     }
 
 def mix_for(seconds, include_search):
     pages = [
-        "/api/library/books?limit=40&offset=0",
-        "/api/library/books?limit=40&offset=40",
-        "/api/library/books?limit=40&offset=400",
-        "/api/library/books?limit=40&offset=4000",
-        "/api/library/books?limit=40&offset=8000&status=acquired",
+        "/api/library/works?limit=40",
+        "/api/library/works?limit=40&sort=author",
+        "/api/library/works?limit=40&sort=added",
+        "/api/library/works?limit=40&status=acquired",
+        "/api/library/works?account=envelope-b&limit=40",
     ]
     buckets, errors = {}, 0
     lock = threading.Lock()
@@ -628,15 +691,15 @@ def mix_for(seconds, include_search):
         while time.perf_counter() < stop:
             roll = random.random()
             if roll < 0.70:
-                path, name = random.choice(pages), "books_page"
+                path, name = random.choice(pages), "works_page"
             elif roll < 0.85:
                 path, name = "/api/status", "GET /api/status"
             elif roll < 0.95:
                 path, name = "/api/jobs", "GET /api/jobs"
             elif include_search:
-                path, name = "/api/library/books?q=Title&limit=40", "GET /api/library/books?q=Title"
+                path, name = "/api/library/works?q=Title&limit=40", "GET /api/library/works?q=Title"
             else:
-                path, name = random.choice(pages), "books_page"
+                path, name = random.choice(pages), "works_page"
             code, ms, _total = fetch(path, True)
             with lock:
                 buckets.setdefault(name, []).append(ms)
@@ -654,10 +717,21 @@ def mix_for(seconds, include_search):
         summary[name] = {"samples": len(values), "p50_ms": percentile(values, 50), "p95_ms": percentile(values, 95)}
     return {"elapsed_s": time.perf_counter() - started, "requests": total, "errors": errors, "routes": summary}
 
-if phase == "routes":
-    report = {name: time_route(path, authed) for name, path, authed in ROUTES}
+if phase == "wait-works":
+    # The daemon rebuilds its works page index and works search index in
+    # jobs after it starts; the timed routes need both.
+    deadline = time.monotonic() + 900
+    ready = works_ready()
+    while not ready and time.monotonic() < deadline:
+        time.sleep(2)
+        ready = works_ready()
+    report = {"ready": ready}
+    if not ready:
+        print("envelope: works index not ready after 900 s", file=sys.stderr)
+elif phase == "routes":
+    report = {name: time_route(path, authed) for name, path, authed in routes()}
 elif phase == "mix-pages":
-    # Pages only. q=Title runs after the rebuild commits, when the index is real.
+    # Pages only. q=Title runs after the rebuilds commit, when the indexes are real.
     report = mix_for(60, False)
 else:
     report = mix_for(60, True)
@@ -687,7 +761,7 @@ wait "${MIX_PID}"
 MIX_REBUILD_RC=$?
 set -e
 rebuild_ms="$(( (rebuild_end_ns - rebuild_start_ns) / 1000000 ))"
-indexed="$(sed -n 's/search index rebuilt: \([0-9]*\) book(s)/\1/p' "${rebuild_log}" | head -n 1)"
+indexed="$(sed -n 's/works search index rebuilt: \([0-9]*\) work(s)/\1/p' "${rebuild_log}" | head -n 1)"
 indexed="${indexed:-0}"
 stop_anon_poll "${rebuild_poll_pid}" "${rebuild_poll}"
 rebuild_window="$(anon_window_max "${rebuild_poll}")"
@@ -705,6 +779,18 @@ if [[ "${REBUILD_RC}" != 0 ]]; then
 fi
 if [[ "${MIX_REBUILD_RC}" != 0 ]]; then
   echo "envelope: rebuild-window load failed" >&2
+fi
+
+# The timed routes read the works indexes, which the daemon builds in jobs.
+set +e
+run_phase wait-works "${FILES}/envelope-wait-works.json"
+WAIT_RC=$?
+if ! python3 -c 'import json, sys; sys.exit(0 if json.load(open(sys.argv[1])).get("ready") else 1)' "${FILES}/envelope-wait-works.json"; then
+  WAIT_RC=1
+fi
+set -e
+if [[ "${WAIT_RC}" != 0 ]]; then
+  echo "envelope: works index rebuild did not finish" >&2
 fi
 
 scratch_before="$(scratch_snapshot)"
@@ -728,7 +814,7 @@ write_metrics
 echo "envelope metrics written to ${METRICS}"
 python3 "${ROOT}/scripts/bench/assert_envelope.py" "${METRICS}"
 status=0
-if [[ "${REBUILD_RC}" != 0 || "${MIX_REBUILD_RC}" != 0 || "${ROUTES_RC}" != 0 || "${API_MIX_RC}" != 0 ]]; then
+if [[ "${REBUILD_RC}" != 0 || "${MIX_REBUILD_RC}" != 0 || "${WAIT_RC}" != 0 || "${ROUTES_RC}" != 0 || "${API_MIX_RC}" != 0 ]]; then
   status=1
 fi
 exit "${status}"

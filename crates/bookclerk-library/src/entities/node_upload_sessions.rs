@@ -1,5 +1,5 @@
 //! SeaORM entity for `node_upload_sessions`: one title's streamed upload
-//! from a host node to an owner node (H-4 design, section 6). Written by
+//! from a branch node to a shared node (H-4 design, section 6). Written by
 //! `control_plane::uploads`.
 
 use sea_orm::entity::prelude::*;
@@ -13,17 +13,19 @@ pub struct Model {
     pub upload_id: String,
     /// `hash_token` of the bearer token; the token itself is never stored.
     pub token_hash: String,
-    /// Host node the upload was granted to.
+    /// Branch node the upload was granted to.
     pub node_id: String,
     /// Acquire job the upload belongs to.
     pub job_id: String,
     /// Lease generation the grant was made under; the upload is accepted
     /// only while it is the job's live fence for this node.
     pub lease_generation: i64,
-    /// Owner node that streams the files to its destinations.
+    /// Shared node that streams the files to its destinations.
     pub receiving_node_id: String,
-    /// Library id of the title.
-    pub book_uuid: String,
+    /// The title's holding (`holdings.id`): the account holding of a job
+    /// upload, or the node holding of a branch's catalog upload; empty for
+    /// a job's closing upload.
+    pub holding_id: String,
     /// Storage key of the title's primary audio file.
     pub primary_key: String,
     /// The declared files and PDF key (JSON object `{files, pdfKey}`, each

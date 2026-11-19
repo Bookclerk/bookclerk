@@ -772,9 +772,9 @@ pub struct PortalSessionView {
     /// Raw User-Agent captured when the session was created.
     #[schema(example = "Mozilla/5.0 (Linux; Android 15) Chrome/131.0 Mobile")]
     pub user_agent: Option<String>,
-    /// How the session is used: `browser` for a browser session, `client`
-    /// for a client sign-in (a library card), whose `client_label` is the
-    /// name the client gave itself.
+    /// How the session is used: `browser` for a browser session, `clerk`
+    /// for a library card, whose `client_label` is the name the clerk gave
+    /// itself.
     #[schema(example = "browser")]
     pub channel: bookclerk_library::PortalSessionKind,
 }
@@ -1311,19 +1311,19 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
             tracing::warn!(error = %err, "failed to revoke portal session on operator logout");
         }
     }
-    // A client signing itself out ends its own session.
-    if let Some(token) = crate::client_token::client_token_from_headers(&headers) {
-        match library.delete_client_session(&hash_token(token)).await {
+    // A clerk signing itself out ends its own library card.
+    if let Some(token) = crate::clerk_token::clerk_token_from_headers(&headers) {
+        match library.delete_clerk_session(&hash_token(token)).await {
             Ok(true) => {
                 let _ = library
-                    .insert_security_audit_event("client", "client_sign_out", None)
+                    .insert_security_audit_event("clerk", "clerk_sign_out", None)
                     .await;
             }
             Ok(false) => {}
             Err(err) => {
                 // Unlike a browser, whose cookies are cleared below, a card
                 // stays signed in until its row is gone: say so.
-                tracing::warn!(error = %err, "failed to end a client session");
+                tracing::warn!(error = %err, "failed to end a clerk session");
                 return json_auth_error(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "sign_out_failed",
@@ -1958,6 +1958,69 @@ pub async fn caller_portal_identity(
     timed_portal_identity_from_headers(&library, headers).await
 }
 
+/// Who an admitted request acts as, for checks that must fail closed.
+///
+/// Unlike [`caller_portal_identity`], which folds "nobody", "the operator"
+/// and "the library did not answer" into `None`, this keeps them apart so a
+/// patron limit (scope or member control) is lifted only for a caller that
+/// is positively the operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallerSubject {
+    /// The operator (token, operator session not impersonating, or auth
+    /// turned off): never limited.
+    Operator,
+    /// A signed-in person, or an operator impersonating one. `None` when
+    /// the session's identity is linked to no library user, which is
+    /// limited like a patron with no store accounts of their own.
+    Person(Option<i64>),
+    /// The session cookie or card no longer names a live session.
+    SignedOut,
+    /// The library failed or did not answer, so the caller is unknown.
+    Unavailable,
+}
+
+/// Resolves who an admitted request acts as ([`CallerSubject`]).
+///
+/// # Arguments
+///
+/// * `state` - Daemon state holding the auth configuration.
+/// * `library` - The library the request reads, so the caller is resolved
+///   against the same store as the rows it then sees.
+/// * `headers` - Request headers carrying the operator token, operator
+///   session or portal session.
+///
+/// # Returns
+///
+/// [`CallerSubject::Unavailable`] when a library read fails or times out.
+pub(crate) async fn caller_subject(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    headers: &HeaderMap,
+) -> CallerSubject {
+    let auth = state.auth_snapshot().await;
+    if !auth.enabled {
+        return CallerSubject::Operator;
+    }
+    match lookup_operator_session(library, headers).await {
+        OperatorSessionLookup::Found(op) => {
+            return match op.impersonating_user_id {
+                Some(user_id) => CallerSubject::Person(Some(user_id)),
+                None => CallerSubject::Operator,
+            };
+        }
+        OperatorSessionLookup::Unavailable => return CallerSubject::Unavailable,
+        OperatorSessionLookup::Absent => {}
+    }
+    if authorize_operator_bearer_only(&auth, headers) {
+        return CallerSubject::Operator;
+    }
+    match portal_lookup_from_headers(library, headers).await {
+        PortalLookup::SignedIn(identity) => CallerSubject::Person(identity.user_id),
+        PortalLookup::SignedOut => CallerSubject::SignedOut,
+        PortalLookup::Unavailable => CallerSubject::Unavailable,
+    }
+}
+
 /// Subject key + optional portal identity id for the caller's preferences row.
 ///
 /// Portal callers must resolve to their own prefs key. If the portal-identity
@@ -2188,10 +2251,10 @@ pub(crate) async fn portal_lookup_from_headers(
 ) -> PortalLookup {
     let lookup = if let Some(raw) = cookie_value(headers, PORTAL_SESSION_COOKIE) {
         timeout(AUTH_DB_TIMEOUT, identity_from_session(library, &raw)).await
-    } else if let Some(token) = crate::client_token::client_token_from_headers(headers) {
+    } else if let Some(token) = crate::clerk_token::clerk_token_from_headers(headers) {
         // Only an admitted request still carries the token
-        // (`crate::client_token`).
-        timeout(AUTH_DB_TIMEOUT, client_identity_from_token(library, token)).await
+        // (`crate::clerk_token`).
+        timeout(AUTH_DB_TIMEOUT, clerk_identity_from_token(library, token)).await
     } else {
         return PortalLookup::SignedOut;
     };
@@ -2227,22 +2290,102 @@ pub(crate) async fn portal_lookup_from_headers(
     PortalLookup::SignedIn(identity)
 }
 
-/// Resolves a client sign-in's session token to its identity, keeping the
-/// session signed in for another [`bookclerk_node_proto::CLIENT_IDLE_DAYS`].
+/// Resolves a library card to its identity, keeping the
+/// session signed in for another [`bookclerk_node_proto::CLERK_IDLE_DAYS`].
 ///
 /// # Errors
 ///
 /// Returns the store's error when the read fails.
-async fn client_identity_from_token(
+async fn clerk_identity_from_token(
     library: &bookclerk_library::LibraryStore,
     token: &str,
 ) -> bookclerk_integrations::Result<Option<PortalIdentity>> {
     Ok(library
-        .get_client_session_identity(
+        .get_clerk_session_identity(
             &hash_token(token),
-            ChronoDuration::days(bookclerk_node_proto::CLIENT_IDLE_DAYS),
+            ChronoDuration::days(bookclerk_node_proto::CLERK_IDLE_DAYS),
         )
         .await?)
+}
+
+/// What a library card turned out to mean on a route that takes nothing
+/// else ([`resolve_card`]).
+#[derive(Debug)]
+pub(crate) enum CardLookup {
+    /// A live card of this user, who is not disabled and may use it.
+    Person(i64),
+    /// An unknown, expired or ended card, a disabled user, or a card that
+    /// names no user.
+    SignedOut,
+    /// The library failed or did not answer, so the card could not be
+    /// checked.
+    Unavailable,
+    /// The user must finish second-factor enrollment first; the response
+    /// says so.
+    Refused(Response),
+}
+
+/// Resolves a library card's token for a route that admits only cards
+/// (the clerk socket), with the same checks the routes a card may use
+/// apply: a live clerk session, a user who is not disabled, and the
+/// second-factor enrollment rule. Each successful check keeps the card
+/// signed in for another [`bookclerk_node_proto::CLERK_IDLE_DAYS`].
+///
+/// # Arguments
+///
+/// * `state` - Shared daemon state.
+/// * `token` - The card's token, already well formed.
+/// * `path` - The route, for the enrollment rule.
+///
+/// # Returns
+///
+/// What the card means.
+pub(crate) async fn resolve_card(state: &AppState, token: &str, path: &str) -> CardLookup {
+    let library = state.library_snapshot().await;
+    resolve_card_in(state, &library, token, path).await
+}
+
+/// [`resolve_card`] against one library snapshot, so a caller that then
+/// reads that snapshot reads the library the card was checked in.
+///
+/// # Arguments
+///
+/// * `state` - The daemon, for the second-factor policy.
+/// * `library` - The library snapshot to check the card in.
+/// * `token` - The library card.
+/// * `path` - The request path, for the enrollment exemptions.
+///
+/// # Returns
+///
+/// What the card resolves to in `library`.
+pub(crate) async fn resolve_card_in(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    token: &str,
+    path: &str,
+) -> CardLookup {
+    let Ok(mut value) = HeaderValue::from_str(&format!(
+        "{} {token}",
+        bookclerk_node_proto::CLERK_AUTH_SCHEME
+    )) else {
+        return CardLookup::SignedOut;
+    };
+    value.set_sensitive(true);
+    let mut headers = HeaderMap::new();
+    headers.insert(header::AUTHORIZATION, value);
+    match portal_lookup_from_headers(library, &headers).await {
+        PortalLookup::SignedIn(identity) => {
+            let Some(user_id) = identity.user_id else {
+                return CardLookup::SignedOut;
+            };
+            match reject_if_enrollment_required(state, library, user_id, path).await {
+                Some(denied) => CardLookup::Refused(denied),
+                None => CardLookup::Person(user_id),
+            }
+        }
+        PortalLookup::SignedOut => CardLookup::SignedOut,
+        PortalLookup::Unavailable => CardLookup::Unavailable,
+    }
 }
 
 /// Seconds a browser is told to wait before retrying when its session
@@ -2314,6 +2457,44 @@ pub(crate) struct ResolvedOperatorSession {
     pub(crate) impersonating_user_id: Option<i64>,
 }
 
+/// What looking up an operator session cookie found.
+pub(crate) enum OperatorSessionLookup {
+    /// The cookie names a live operator session.
+    Found(ResolvedOperatorSession),
+    /// No operator session cookie, or one naming no session.
+    Absent,
+    /// The library failed or did not answer in time.
+    Unavailable,
+}
+
+/// Looks up the hashed operator session cookie in `library`, keeping a
+/// failed or timed-out read apart from a missing session.
+async fn lookup_operator_session(
+    library: &bookclerk_library::LibraryStore,
+    headers: &HeaderMap,
+) -> OperatorSessionLookup {
+    let Some(session_id) = session_id_from_headers(headers) else {
+        return OperatorSessionLookup::Absent;
+    };
+    let token_hash = hash_token(&session_id);
+    match timeout(AUTH_DB_TIMEOUT, library.get_operator_session(&token_hash)).await {
+        Ok(Ok(Some(session))) => OperatorSessionLookup::Found(ResolvedOperatorSession {
+            token_hash,
+            elevated_from_user_id: session.elevated_from_user_id,
+            impersonating_user_id: session.impersonating_user_id,
+        }),
+        Ok(Ok(None)) => OperatorSessionLookup::Absent,
+        Ok(Err(err)) => {
+            tracing::warn!(error = %err, "operator session lookup failed");
+            OperatorSessionLookup::Unavailable
+        }
+        Err(_) => {
+            tracing::warn!("operator session lookup timed out");
+            OperatorSessionLookup::Unavailable
+        }
+    }
+}
+
 /// Looks up the hashed session cookie; missing, timed-out, or failed lookups fail closed.
 pub(crate) async fn resolve_operator_session(
     state: &AppState,
@@ -2321,24 +2502,11 @@ pub(crate) async fn resolve_operator_session(
     headers: &HeaderMap,
 ) -> Option<ResolvedOperatorSession> {
     let _ = auth;
-    let session_id = session_id_from_headers(headers)?;
-    let token_hash = hash_token(&session_id);
+    session_id_from_headers(headers)?;
     let library = state.library_snapshot().await;
-    match timeout(AUTH_DB_TIMEOUT, library.get_operator_session(&token_hash)).await {
-        Ok(Ok(Some(session))) => Some(ResolvedOperatorSession {
-            token_hash,
-            elevated_from_user_id: session.elevated_from_user_id,
-            impersonating_user_id: session.impersonating_user_id,
-        }),
-        Ok(Ok(None)) => None,
-        Ok(Err(err)) => {
-            tracing::warn!(error = %err, "operator session lookup failed");
-            None
-        }
-        Err(_) => {
-            tracing::warn!("operator session lookup timed out");
-            None
-        }
+    match lookup_operator_session(&library, headers).await {
+        OperatorSessionLookup::Found(session) => Some(session),
+        OperatorSessionLookup::Absent | OperatorSessionLookup::Unavailable => None,
     }
 }
 
@@ -3887,7 +4055,7 @@ pub async fn set_password(
 
 /// Who may provision users, and which roles they may assign or manage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Provisioner {
+pub(crate) enum Provisioner {
     /// Daemon operator token or session (no first-party `users` row).
     Operator,
     /// Elevated owner principal for privileged operator actions.
@@ -3909,7 +4077,7 @@ enum Provisioner {
 
 impl Provisioner {
     /// Security-audit actor string (`operator` or `user:{id}`).
-    fn audit_actor(self) -> String {
+    pub(crate) fn audit_actor(self) -> String {
         match self {
             Self::Operator => String::from("operator"),
             Self::ElevatedOwner { user_id }
@@ -3919,7 +4087,7 @@ impl Provisioner {
     }
 
     /// First-party user id for portal provisioners; `None` for the operator principal.
-    fn user_id(self) -> Option<i64> {
+    pub(crate) fn user_id(self) -> Option<i64> {
         match self {
             Self::Operator => None,
             Self::ElevatedOwner { user_id }
@@ -3929,7 +4097,7 @@ impl Provisioner {
     }
 
     /// Whether this principal may assign `role` (operators and elevated owners: any; owners: not Owner; admins: Member only).
-    fn can_assign_role(self, role: UserRole) -> bool {
+    pub(crate) fn can_assign_role(self, role: UserRole) -> bool {
         match self {
             Self::Operator | Self::ElevatedOwner { .. } => true,
             Self::Owner { .. } => !matches!(role, UserRole::Owner),
@@ -3939,7 +4107,7 @@ impl Provisioner {
 
     /// Profile patch / self-delete may target the caller. Authenticator reset,
     /// claim remint, and `PUT /api/auth/password` with `user_id` must not.
-    fn can_manage_target(self, target_role: UserRole, is_self: bool) -> bool {
+    pub(crate) fn can_manage_target(self, target_role: UserRole, is_self: bool) -> bool {
         if is_self {
             return true;
         }
@@ -3956,7 +4124,7 @@ impl Provisioner {
 ///
 /// Impersonation uses the target user's role (Owner / Administrator), not
 /// operator privileges.
-async fn authorize_provisioner(
+pub(crate) async fn authorize_provisioner(
     state: &AppState,
     auth: &OperatorAuthState,
     headers: &HeaderMap,
@@ -3994,6 +4162,32 @@ async fn authorize_provisioner(
         "administrator" => Ok(Provisioner::Administrator { user_id }),
         _ => Err(StatusCode::FORBIDDEN),
     }
+}
+
+/// The library Administrator behind `headers`, for the routes that change
+/// how the library resolves listings (pins and conflicts).
+///
+/// The operator, an elevated Owner, an Owner or an Administrator is
+/// admitted, and an impersonating operator acts with the impersonated
+/// user's role, as for user provisioning.
+///
+/// # Returns
+///
+/// `None` for the operator, else the user's id.
+///
+/// # Errors
+///
+/// 401 when no one is signed in, 403 for a Member, Host or a session
+/// without a user.
+pub(crate) async fn library_administrator(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<i64>, StatusCode> {
+    let auth = state.auth_snapshot().await;
+    let library = state.library_snapshot().await;
+    Ok(authorize_provisioner(state, &auth, headers, &library)
+        .await?
+        .user_id())
 }
 
 /// Maps an impersonated first-party user onto that user's provisioner role.
@@ -4351,7 +4545,7 @@ pub async fn list_sessions(
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let current_portal = cookie_value(&headers, PORTAL_SESSION_COOKIE)
         .map(|raw| hash_token(&raw))
-        .or_else(|| crate::client_token::client_token_from_headers(&headers).map(hash_token));
+        .or_else(|| crate::clerk_token::clerk_token_from_headers(&headers).map(hash_token));
     Ok(Json(SessionsResponse {
         sessions: portal_session_rows(&library, identity.id, current_portal.as_deref()).await?,
     }))
@@ -5279,7 +5473,7 @@ pub(crate) mod tests {
         // owner, node owner, administrator and user-scoped.
         for uri in [
             "/api/auth/me",
-            "/api/library/books",
+            "/api/library/works",
             "/api/auth/mfa-policy",
             "/api/config/nodes",
             "/status",
@@ -5488,6 +5682,80 @@ pub(crate) mod tests {
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         assert_eq!(body["error"], "forbidden");
+
+        // By edition: the member's own title of it is queued; an edition
+        // held only on someone else's account is refused, and an unknown
+        // one names nothing to acquire.
+        let mine = library
+            .scope("pk", "test")
+            .upsert_book(&bookclerk_library::NewBook {
+                uuid: None,
+                product_id: "mine-book".into(),
+                plugin_key: "pk".into(),
+                source: "test".into(),
+                account_id: "mine".into(),
+                asin: Some("B0MINE".into()),
+                isbn: None,
+                marketplace: "us".into(),
+                title: "Mine".into(),
+                authors: None,
+                narrators: None,
+                series: None,
+                series_index: None,
+                series_asin: None,
+                purchased_at: None,
+                publisher: None,
+                length_minutes: None,
+                is_abridged: false,
+                content_kind: "book".into(),
+                categories: None,
+                subtitle: None,
+                published_at: None,
+            })
+            .await
+            .unwrap();
+        let edition_of = |uuid: String| {
+            let library = library.clone();
+            async move {
+                library
+                    .edition_of_book(&uuid)
+                    .await
+                    .unwrap()
+                    .expect("edition")
+            }
+        };
+        let (mine_edition, foreign_edition) = (
+            edition_of(mine.uuid.clone()).await,
+            edition_of(foreign.uuid.clone()).await,
+        );
+        let (status, body) = send(post(
+            "/api/library/acquire",
+            Some(&cookie),
+            serde_json::json!({ "editions": [mine_edition] }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let job_id = body["job_id"].as_str().expect("job id").to_string();
+        let job = library.get_job(&job_id).await.unwrap().expect("job");
+        assert_eq!(job.payload.title.as_deref(), Some(mine.uuid.as_str()));
+        assert_eq!(job.payload.account.as_deref(), Some("mine"));
+        for (editions, want, slug) in [
+            (vec![foreign_edition], StatusCode::FORBIDDEN, "forbidden"),
+            (
+                vec!["no-such-edition".to_string()],
+                StatusCode::BAD_REQUEST,
+                "invalid",
+            ),
+        ] {
+            let (status, body) = send(post(
+                "/api/library/acquire",
+                Some(&cookie),
+                serde_json::json!({ "editions": editions }),
+            ))
+            .await;
+            assert_eq!(status, want, "{body}");
+            assert_eq!(body["error"], slug, "{body}");
+        }
 
         // The operator token still plans for every account through the
         // same layer.
@@ -5953,30 +6221,20 @@ pub(crate) mod tests {
         assert!(body.contains("impersonating"));
         assert!(body.contains(&user_id.to_string()));
 
-        // Portal-scoped library: member has no links → empty (not full library).
-        // Seed a book on an unlinked account; impersonation should hide it.
-        let _ = library
-            .upsert_account(
-                "audible",
-                "acct-hidden",
-                "us",
-                Some("Hidden"),
-                true,
-                "audible",
-            )
-            .await;
-        let books = app
+        // Authenticated callers share the full library, so the works page
+        // answers for the impersonated member as it does for the operator.
+        let works = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/library/books")
+                    .uri("/api/library/works")
                     .header(header::COOKIE, &op_cookie)
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(books.status(), StatusCode::OK);
+        assert_eq!(works.status(), StatusCode::OK);
 
         let events = library.list_security_audit_events(20).await.unwrap();
         assert!(events.iter().any(|e| e.action == "impersonate_start"));

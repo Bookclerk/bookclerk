@@ -33,6 +33,29 @@ pub const MAX_KV_VALUE_BYTES: u32 = crate::plugin_capnp::MAX_KV_VALUE_BYTES;
 
 /// Longest `KvNamespace` key in UTF-8 bytes.
 pub const MAX_KV_KEY_BYTES: u32 = crate::plugin_capnp::MAX_KV_KEY_BYTES;
+
+/// Largest WebSocket message `Sockets.send` accepts or
+/// `SocketHandler.message` delivers, in bytes.
+pub const MAX_SOCKET_FRAME_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_FRAME_BYTES;
+
+/// Largest per-socket attachment the host keeps, in bytes.
+pub const MAX_SOCKET_ATTACHMENT_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_ATTACHMENT_BYTES;
+
+/// Most host-brokered sockets one plugin instance may hold open at once.
+pub const MAX_SOCKETS_PER_INSTANCE: u32 = crate::plugin_capnp::MAX_SOCKETS_PER_INSTANCE;
+
+/// Most heartbeat pairs one `Sockets.connect` may declare.
+pub const MAX_SOCKET_AUTO_RESPONSES: u32 = crate::plugin_capnp::MAX_SOCKET_AUTO_RESPONSES;
+
+/// Largest heartbeat request or response frame, in bytes.
+pub const MAX_SOCKET_AUTO_RESPONSE_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_AUTO_RESPONSE_BYTES;
+
+/// Longest `Sockets.connect` URL, in bytes.
+pub const MAX_SOCKET_URL_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_URL_BYTES;
+
+/// Most request headers, and separately subprotocols, on one
+/// `Sockets.connect`.
+pub const MAX_SOCKET_HEADERS: u32 = crate::plugin_capnp::MAX_SOCKET_HEADERS;
 /// Most URLs in one `CoverFetcher.fetchCovers` call.
 pub const MAX_COVER_URLS: u32 = crate::plugin_capnp::MAX_COVER_URLS;
 
@@ -42,6 +65,26 @@ pub const MAX_COVER_BYTES: u32 = crate::plugin_capnp::MAX_COVER_BYTES;
 /// Longest cache header value one `CoverFetcher.fetchCovers` call carries in
 /// either direction, in bytes.
 pub const MAX_COVER_HEADER_BYTES: u32 = crate::plugin_capnp::MAX_COVER_HEADER_BYTES;
+
+/// Largest metadata file `MetadataFiles.parse` reads and `MetadataFiles.render`
+/// returns, in bytes.
+pub const MAX_METADATA_FILE_BYTES: u32 = crate::plugin_capnp::MAX_METADATA_FILE_BYTES;
+
+/// Longest description a `MetadataFileRecord` carries, in UTF-8 bytes.
+pub const MAX_METADATA_FILE_DESCRIPTION_BYTES: u32 =
+    crate::plugin_capnp::MAX_METADATA_FILE_DESCRIPTION_BYTES;
+
+/// Longest other text value in a `MetadataFileRecord`, in UTF-8 bytes.
+pub const MAX_METADATA_FILE_TEXT_BYTES: u32 = crate::plugin_capnp::MAX_METADATA_FILE_TEXT_BYTES;
+
+/// Most entries in each non-chapter list of a `MetadataFileRecord`.
+pub const MAX_METADATA_FILE_LIST_ENTRIES: u32 = crate::plugin_capnp::MAX_METADATA_FILE_LIST_ENTRIES;
+
+/// Most chapters in a `MetadataFileRecord`.
+pub const MAX_METADATA_FILE_CHAPTERS: u32 = crate::plugin_capnp::MAX_METADATA_FILE_CHAPTERS;
+
+/// Most audio files a `MetadataFiles.render` request names.
+pub const MAX_METADATA_AUDIO_FILES: u32 = crate::plugin_capnp::MAX_METADATA_AUDIO_FILES;
 
 /// Parses a `CoverFetcher.fetchCovers` sink key into the URL index it names.
 ///

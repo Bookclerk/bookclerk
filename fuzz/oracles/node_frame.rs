@@ -14,6 +14,12 @@
 //! - every library id an `acquire.targets` frame carries is 1 to 16 ASCII
 //!   letters and digits, checked byte by byte here rather than through the
 //!   parser's own rule, since a host names storage keys with it;
+//! - every probe on a file an `upload.grant` or `catalog.upload` frame the
+//!   library would accept (`UploadFile::is_well_formed`) states a bitrate
+//!   of 1 to 20000 kbit/s when it states one, and names a storefront of 1
+//!   to 64 lowercase letters, digits, `_`, `-` or `.` when it names one,
+//!   checked byte by byte here, since the library stores them on the
+//!   file's row and compares two copies of an edition by them;
 //! - every marketplace a `catalog.sync` title the library would accept
 //!   carries is at most 16 lowercase ASCII letters and digits, checked byte
 //!   by byte here, since the library scopes ASIN identifiers to it.
@@ -38,7 +44,11 @@
 //!   finds nothing for the cursor it asked with) carries at most 100 works,
 //!   each once, with plain grouping keys, plain identifiers (a marketplace
 //!   exactly on an ASIN), 1 to 8 distinct owned editions with a non-blank
-//!   title, and a next cursor past the one asked with, so a window's paging
+//!   title and, where the library states the copy it holds, a copy with a
+//!   lowercase `type/subtype` content type of at most 64 bytes, a bitrate
+//!   of 1 to 20000 kbit/s when stated, a short lowercase source store when
+//!   stated and a plain version of at most 64 bytes, and a plain next cursor (1 to 64 letters, digits or `-`)
+//!   sorting byte-wise past the one asked with, so a window's paging
 //!   always moves forward. Checked byte by byte here, since the window
 //!   stores them.
 //! - a `scan.removed` or `scan.pass_end` frame the owner would accept
@@ -48,12 +58,26 @@
 //!   sync token of at most 4096 bytes with no control characters. Checked
 //!   character by character here, since the owner removes holdings by
 //!   those ids and stores the token for the account's next pass.
+//! - a `copy.grant` the library would accept (`copy_grant_problem` finds
+//!   nothing) names a plain store id, a lowercase marketplace and a
+//!   product id with no control characters or outer whitespace, since the
+//!   library looks the listing up by them. A `copy.granted` a branch would
+//!   accept (`copy_granted_problem` finds nothing) carries a lowercase
+//!   hyphenated UUID as its copy id (the branch puts it in a URL path), a
+//!   token of 1 to 1024 base64url characters, a life of one second to a
+//!   day, and 1 to 1000 files with distinct names, exactly one of them
+//!   the primary audio, each at most 1 TiB with a name of at most 512
+//!   bytes that is a relative path (no empty, `.` or `..` segment, no
+//!   leading `/`, no backslash, no control character, no drive prefix).
+//!   Checked character by character here, since the branch asks for byte
+//!   ranges by those sizes and reads the names when it places the files.
 
 use std::collections::BTreeSet;
 
 use bookclerk_node_proto::{
-    claimed_problem, finish_problem, found_problem, questions_problem, scan_pass_end_problem,
-    scan_removed_problem, window_page_problem, Availability, Body, Frame, LookupScheme, LookupWork,
+    claimed_problem, copy_grant_problem, copy_granted_problem, finish_problem, found_problem,
+    questions_problem, scan_pass_end_problem, scan_removed_problem, window_page_problem,
+    Availability, Body, CopyGrantedFrame, CopyRole, Frame, LookupScheme, LookupWork, WindowCursor,
     FRAME_VERSION, MAX_FRAME_BYTES, MAX_LIBRARY_ID_BYTES,
 };
 use serde_json::Value;
@@ -84,6 +108,31 @@ pub fn check(data: &[u8]) {
             }
         }
     }
+    if let Body::UploadGrant { files, .. } | Body::CatalogUpload { files, .. } = &frame.body {
+        for probe in files
+            .iter()
+            .filter(|file| file.is_well_formed())
+            .filter_map(|file| file.probe.as_ref())
+        {
+            assert!(
+                probe
+                    .bitrate_kbps
+                    .is_none_or(|kbps| (1..=20_000).contains(&kbps)),
+                "probe bitrate {:?} accepted",
+                probe.bitrate_kbps
+            );
+            if let Some(store) = &probe.source_store {
+                assert!(
+                    !store.is_empty()
+                        && store.len() <= 64
+                        && store.bytes().all(|b| b.is_ascii_lowercase()
+                            || b.is_ascii_digit()
+                            || matches!(b, b'_' | b'-' | b'.')),
+                    "probe store {store:?} accepted"
+                );
+            }
+        }
+    }
     if let Body::CatalogSync { titles, .. } = &frame.body {
         for title in titles.iter().filter(|title| title.problem().is_none()) {
             let market = title.marketplace.as_bytes();
@@ -101,6 +150,7 @@ pub fn check(data: &[u8]) {
     check_requests(&frame.body);
     check_window(&frame.body);
     check_scan_reports(&frame.body);
+    check_copies(&frame.body);
     let text_again = frame.to_text();
     // Serializing can lengthen an opaque JSON field (`1e9` is written out
     // in full), past the limit the parser enforces: such a frame is never
@@ -116,6 +166,110 @@ pub fn check(data: &[u8]) {
         same(&json(&again), &json(&frame)),
         "a frame changed across a round trip: {frame:?} became {again:?}"
     );
+}
+
+/// The rules of a `copy.grant` the library would accept and of a
+/// `copy.granted` a branch would accept.
+fn check_copies(body: &Body) {
+    match body {
+        Body::CopyGrant {
+            store,
+            marketplace,
+            product_id,
+        } if copy_grant_problem(store, marketplace, product_id).is_none() => {
+            assert!(
+                !store.is_empty()
+                    && store.len() <= 64
+                    && store
+                        .bytes()
+                        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.')),
+                "copy store {store:?} accepted"
+            );
+            assert!(
+                marketplace.len() <= 16
+                    && marketplace
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()),
+                "copy marketplace {marketplace:?} accepted"
+            );
+            assert!(
+                !product_id.is_empty()
+                    && product_id.len() <= 256
+                    && product_id.trim() == product_id
+                    && !product_id.chars().any(char::is_control),
+                "copy product id {product_id:?} accepted"
+            );
+        }
+        Body::CopyGranted {
+            copy_id,
+            sealed_token,
+            expires_in_secs,
+            copy,
+            files,
+        } if copy_granted_problem(&CopyGrantedFrame {
+            copy_id,
+            sealed_token,
+            expires_in_secs: *expires_in_secs,
+            copy,
+            files,
+        })
+        .is_none() =>
+        {
+            let groups: Vec<&str> = copy_id.split('-').collect();
+            assert!(
+                groups.iter().map(|group| group.len()).eq([8, 4, 4, 4, 12])
+                    && groups.iter().all(|group| group
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))),
+                "copy id {copy_id:?} accepted"
+            );
+            assert!(
+                (1..=1024).contains(&sealed_token.len())
+                    && sealed_token
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+                "a sealed token that is not base64url text accepted"
+            );
+            assert!(
+                (1..=86_400).contains(expires_in_secs),
+                "a token life of {expires_in_secs} s accepted"
+            );
+            assert!(
+                (1..=1000).contains(&files.len()),
+                "a copy of {} files accepted",
+                files.len()
+            );
+            let mut names = BTreeSet::new();
+            for file in files {
+                let name = file.name.as_str();
+                let drive = name.chars().nth(1) == Some(':')
+                    && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
+                assert!(
+                    name.len() <= 512
+                        && !drive
+                        && !name.chars().any(|c| c == '\\' || c.is_control())
+                        && name.split('/').all(|part| !matches!(part, "" | "." | "..")),
+                    "copy file name {name:?} accepted"
+                );
+                assert!(names.insert(name), "a copy file named twice was accepted");
+                assert!(
+                    file.size <= 1 << 40,
+                    "a copy file of {} bytes accepted",
+                    file.size
+                );
+            }
+            assert_eq!(
+                files
+                    .iter()
+                    .filter(|file| file.role == CopyRole::Audio)
+                    .count(),
+                1,
+                "a copy without exactly one primary audio file accepted"
+            );
+        }
+        Body::CopyGrant { .. } | Body::CopyGranted { .. } => {}
+        _ => {}
+    }
 }
 
 /// The rules of a `scan.removed` or `scan.pass_end` the owner would accept.
@@ -335,15 +489,21 @@ fn check_window(body: &Body) {
     let Body::WindowPage { works, next } = body else {
         return;
     };
-    let afters = [0, next.map_or(0, |n| n.saturating_sub(1))];
-    for after in afters {
-        if window_page_problem(after, works, *next).is_some() {
+    // The first page's cursor, and the next cursor less its last byte,
+    // which sorts just before it.
+    let before_next = next
+        .as_ref()
+        .and_then(|n| WindowCursor::parse(&n.as_str()[..n.as_str().len().saturating_sub(1)]))
+        .unwrap_or_default();
+    for after in [WindowCursor::start(), before_next] {
+        if window_page_problem(&after, works, next.as_ref()).is_some() {
             continue;
         }
         assert!(works.len() <= 100, "too many window works accepted");
         if let Some(next) = next {
+            assert!(plain(next.as_str(), 64), "next cursor {next:?} accepted");
             assert!(
-                *next > after,
+                next.as_str().as_bytes() > after.as_str().as_bytes(),
                 "a cursor that does not move forward accepted"
             );
         }
@@ -373,7 +533,44 @@ fn check_window(body: &Body) {
                 work.editions.len()
             );
             let mut keys = BTreeSet::new();
-            for edition in &work.editions {
+            for copy in work.editions.iter().filter_map(|e| e.copy.as_ref()) {
+                let token = |text: &str, extra: &[u8]| {
+                    !text.is_empty()
+                        && text.chars().all(|c| {
+                            c.is_ascii_lowercase()
+                                || c.is_ascii_digit()
+                                || u8::try_from(c).is_ok_and(|b| extra.contains(&b))
+                        })
+                };
+                let mut parts = copy.content_type.split('/');
+                assert!(
+                    copy.content_type.len() <= 64
+                        && parts.next().is_some_and(|kind| token(kind, b"+-."))
+                        && parts.next().is_some_and(|sub| token(sub, b"+-."))
+                        && parts.next().is_none(),
+                    "copy content type {:?} accepted",
+                    copy.content_type
+                );
+                assert!(
+                    copy.bitrate_kbps
+                        .is_none_or(|kbps| (1..=20_000).contains(&kbps)),
+                    "copy bitrate {:?} accepted",
+                    copy.bitrate_kbps
+                );
+                assert!(
+                    copy.source_store
+                        .as_deref()
+                        .is_none_or(|store| store.len() <= 64 && token(store, b"_-.")),
+                    "copy source store {:?} accepted",
+                    copy.source_store
+                );
+                assert!(
+                    plain(&copy.version, 64),
+                    "copy version {:?} accepted",
+                    copy.version
+                );
+            }
+            for edition in work.editions.iter().map(|e| &e.edition) {
                 assert_eq!(
                     edition.availability,
                     Availability::Owned,

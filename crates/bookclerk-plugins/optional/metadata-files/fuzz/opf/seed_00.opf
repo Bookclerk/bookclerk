@@ -1,0 +1,25 @@
+<?xml version='1.0' encoding='utf-8'?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="uuid_id" version="2.0">
+    <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+        <dc:identifier opf:scheme="calibre" id="calibre_id">42</dc:identifier>
+        <dc:identifier opf:scheme="uuid" id="uuid_id">0f3c5e1a-7b2d-4c8e-9a1f-6d2b8e4c7a90</dc:identifier>
+        <dc:title>The Hobbit</dc:title>
+        <dc:creator opf:file-as="Tolkien, J. R. R." opf:role="aut">J. R. R. Tolkien</dc:creator>
+        <dc:creator opf:role="nrt">Andy Serkis</dc:creator>
+        <dc:contributor opf:role="bkp">calibre (7.0.0) [https://calibre-ebook.com]</dc:contributor>
+        <dc:date>2020-09-24T00:00:00+00:00</dc:date>
+        <dc:description>&lt;p&gt;Bilbo Baggins is a hobbit who enjoys a comfortable life.&lt;/p&gt;&lt;p&gt;Then Gandalf &amp;amp; thirteen dwarves arrive.&lt;/p&gt;</dc:description>
+        <dc:publisher>HarperCollins</dc:publisher>
+        <dc:identifier opf:scheme="ISBN">9780008376109</dc:identifier>
+        <dc:identifier opf:scheme="ASIN">B08GXXLC6J</dc:identifier>
+        <dc:language>eng</dc:language>
+        <dc:subject>Fantasy</dc:subject>
+        <dc:subject>Classics</dc:subject>
+        <meta name="calibre:series" content="Middle-earth"/>
+        <meta name="calibre:series_index" content="1.0"/>
+        <meta name="calibre:timestamp" content="2024-03-01T12:00:00+00:00"/>
+    </metadata>
+    <guide>
+        <reference type="cover" title="Cover" href="cover.jpg"/>
+    </guide>
+</package>

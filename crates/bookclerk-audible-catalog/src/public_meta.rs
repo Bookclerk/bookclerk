@@ -83,6 +83,12 @@ pub fn normalize_region(region: &str) -> String {
 
 /// Shared HTTP client for public metadata calls.
 ///
+/// Built once per process and cloned, so every public lookup reuses one
+/// connection pool (and its TLS connections) instead of handshaking per
+/// call. The client holds no cookies and only a fixed `User-Agent`, so
+/// sharing it carries nothing between calls; in a plugin guest it lives in
+/// that guest's own process.
+///
 /// # Returns
 ///
 /// On success, the inner `Client` value.
@@ -91,6 +97,24 @@ pub fn normalize_region(region: &str) -> String {
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn public_http_client() -> Result<Client> {
+    static SHARED: Mutex<Option<Client>> = Mutex::new(None);
+    let mut shared = SHARED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(client) = shared.as_ref() {
+        return Ok(client.clone());
+    }
+    let client = build_public_http_client()?;
+    *shared = Some(client.clone());
+    Ok(client)
+}
+
+/// Builds the client [`public_http_client`] shares.
+///
+/// # Errors
+///
+/// Returns [`CatalogError::Http`] when the client cannot be built.
+fn build_public_http_client() -> Result<Client> {
     Client::builder()
         .timeout(HTTP_TIMEOUT)
         .user_agent(concat!("bookclerk/", env!("CARGO_PKG_VERSION")))
@@ -203,12 +227,14 @@ pub async fn search_catalog_keywords(
     )
 }
 
-/// Lean response groups for expand / enrich (identity + blurb/runtime when present).
+/// Lean response groups for expand / enrich (identity, blurb, runtime and genres).
 ///
-/// Avoid `price` / `category_ladders` / `rating` here — those inflate every Discover
-/// expand call and routinely push the feed past the daemon’s 8s API timeout.
+/// `category_ladders` is the only source of a title's genres, and Discover
+/// ranks candidates by them, so it stays even here (it adds about 7% to a
+/// 50-title answer). `price` and `rating` stay off: they are heavier, and
+/// Discover fetches prices on their own.
 const CATALOG_RESPONSE_GROUPS: &str =
-    "product_attrs,product_desc,contributors,series,product_extended_attrs,media";
+    "product_attrs,product_desc,contributors,series,product_extended_attrs,media,category_ladders";
 
 /// Richer groups for user-facing catalog search (includes list price).
 const CATALOG_RESPONSE_GROUPS_RICH: &str = "product_attrs,product_desc,contributors,series,\
@@ -881,17 +907,71 @@ pub async fn search_catalog_by_narrator(
 
 /// Sends the catalog request and maps `products` into titles, dropping podcasts and unparseable rows.
 async fn catalog_products_from_response(req: RequestBuilder) -> Result<Vec<CatalogProduct>> {
-    let response = req
+    catalog_list_from_response(req, CatalogList::Products).await
+}
+
+/// Sends a catalog request and parses the product list `list` names.
+async fn catalog_list_from_response(
+    req: RequestBuilder,
+    list: CatalogList,
+) -> Result<Vec<CatalogProduct>> {
+    let body = req
         .send()
         .await
         .map_err(|err| CatalogError::Http(err.to_string()))?
         .error_for_status()
-        .map_err(|err| CatalogError::Http(err.to_string()))?;
-    let body: Value = response
-        .json()
+        .map_err(|err| CatalogError::Http(err.to_string()))?
+        .bytes()
         .await
         .map_err(|err| CatalogError::Http(err.to_string()))?;
-    let Some(products) = body.get("products").and_then(Value::as_array) else {
+    parse_catalog_products(&body, list)
+}
+
+/// Which product list of an Audible catalog answer to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogList {
+    /// `products`, the list a search (`/1.0/catalog/products`,
+    /// `/1.0/catalog/search`) answers with.
+    Products,
+    /// `similar_products`, the list `/1.0/catalog/products/{asin}/sims`
+    /// answers with.
+    SimilarProducts,
+}
+
+impl CatalogList {
+    /// The JSON key of this list in the answer's top-level object.
+    #[must_use]
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Products => "products",
+            Self::SimilarProducts => "similar_products",
+        }
+    }
+}
+
+/// Parses one Audible catalog answer into its titles, without any I/O.
+///
+/// The bytes come from the store, so this is the boundary the
+/// `audible_catalog` fuzz target drives. Rows that are podcasts or carry no
+/// ASIN are dropped; an answer without the list (or whose list is not an
+/// array) has no titles.
+///
+/// # Arguments
+///
+/// * `body` - The answer body as the store sent it.
+/// * `list` - Which product list to read.
+///
+/// # Returns
+///
+/// The titles of the list, in the store's order.
+///
+/// # Errors
+///
+/// Returns [`CatalogError::Http`] when the body is not JSON.
+pub fn parse_catalog_products(body: &[u8], list: CatalogList) -> Result<Vec<CatalogProduct>> {
+    let body: Value =
+        serde_json::from_slice(body).map_err(|err| CatalogError::Http(err.to_string()))?;
+    let Some(products) = body.get(list.key()).and_then(Value::as_array) else {
         return Ok(Vec::new());
     };
     // Podcasts are out of Bookclerk v1 (search + Discover expand). Filter at the
@@ -900,6 +980,82 @@ async fn catalog_products_from_response(req: RequestBuilder) -> Result<Vec<Catal
         .iter()
         .filter(|p| !is_audible_podcast_product(p))
         .filter_map(parse_catalog_product)
+        .collect())
+}
+
+/// Titles Audible lists as similar to one title (its "listeners also
+/// enjoyed" recommendations), from the public catalog.
+///
+/// Unlike a keyword search on the title, these are chosen by what listeners
+/// of the title go on to listen to, so a title shares no words with them by
+/// chance (a search for *The Great Hunt* returns hunting guides).
+///
+/// # Arguments
+///
+/// * `http` - Client from [`public_http_client`].
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `asin` - ASIN of the title to find neighbours of.
+/// * `num_results` - Most titles to ask for (1 to 50).
+///
+/// # Returns
+///
+/// The similar titles in Audible's order, without the title itself; none
+/// when `asin` is not an ASIN.
+///
+/// # Errors
+///
+/// Returns an error when the request fails or the answer is not JSON.
+pub async fn search_similar_products(
+    http: &Client,
+    region: &str,
+    asin: &str,
+    num_results: usize,
+) -> Result<Vec<CatalogProduct>> {
+    let region = normalize_region(region);
+    let origin = format!("https://api.audible{}", region_tld(&region));
+    search_similar_products_at(http, &origin, asin, num_results).await
+}
+
+/// [`search_similar_products`] against a given catalog origin, such as a
+/// test server.
+///
+/// # Arguments
+///
+/// * `http` - Client from [`public_http_client`].
+/// * `origin` - Catalog origin without a trailing slash
+///   (`https://api.audible.com`).
+/// * `asin` - ASIN of the title to find neighbours of.
+/// * `num_results` - Most titles to ask for (1 to 50).
+///
+/// # Returns
+///
+/// The similar titles in the store's order, without the title itself; none
+/// when `asin` is not an ASIN.
+///
+/// # Errors
+///
+/// Returns an error when the request fails or the answer is not JSON.
+pub async fn search_similar_products_at(
+    http: &Client,
+    origin: &str,
+    asin: &str,
+    num_results: usize,
+) -> Result<Vec<CatalogProduct>> {
+    let asin = asin.trim().to_ascii_uppercase();
+    if !is_valid_asin(&asin) {
+        return Ok(Vec::new());
+    }
+    let url = format!("{origin}/1.0/catalog/products/{asin}/sims");
+    let num = num_results.clamp(1, 50).to_string();
+    let req = http.get(&url).query(&[
+        ("similarity_type", "RawSimilarities"),
+        ("num_results", num.as_str()),
+        ("response_groups", CATALOG_RESPONSE_GROUPS),
+    ]);
+    let products = catalog_list_from_response(req, CatalogList::SimilarProducts).await?;
+    Ok(products
+        .into_iter()
+        .filter(|p| !p.asin.eq_ignore_ascii_case(&asin))
         .collect())
 }
 
@@ -1042,7 +1198,13 @@ fn parse_catalog_product(p: &Value) -> Option<CatalogProduct> {
     })
 }
 
-/// Joins unique category-ladder (or thesaurus keyword) names with `; `, or `None` if empty.
+/// Joins the unique names of a product's genre ladders with `; `, or `None`
+/// when it has none.
+///
+/// Only `category_ladders` name genres. `thesaurus_subject_keywords` is never
+/// read: it mixes a few subjects with Audible's internal merchandising flags
+/// (`AI_edition_inclusion`, `la_confidential`, `audible_original`), which
+/// showed up on Discover as genres.
 fn categories_from_catalog_product(p: &Value) -> Option<String> {
     let mut names = Vec::new();
     if let Some(ladders) = p.get("category_ladders").and_then(Value::as_array) {
@@ -1060,20 +1222,6 @@ fn categories_from_catalog_product(p: &Value) -> Option<String> {
                     if !name.is_empty()
                         && !names.iter().any(|n: &String| n.eq_ignore_ascii_case(name))
                     {
-                        names.push(name.to_string());
-                    }
-                }
-            }
-        }
-    }
-    if names.is_empty() {
-        if let Some(keywords) = p
-            .get("thesaurus_subject_keywords")
-            .and_then(Value::as_array)
-        {
-            for kw in keywords {
-                if let Some(name) = kw.as_str().map(str::trim).filter(|s| !s.is_empty()) {
-                    if !names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
                         names.push(name.to_string());
                     }
                 }

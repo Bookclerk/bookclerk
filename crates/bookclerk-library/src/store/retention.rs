@@ -18,7 +18,7 @@ use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
 
 use super::LibraryStore;
 use crate::entities::{
-    claim_tickets, configuration_audit, configuration_changes, edition_files,
+    claim_tickets, configuration_audit, configuration_changes, copy_grants, edition_files,
     node_enrollment_links, node_upload_sessions, oidc_auth_codes, oidc_refresh_tokens,
     portal_sessions, security_audit_events, user_invites,
 };
@@ -68,6 +68,8 @@ pub enum RecordPruneStep {
     /// Committed or aborted uploads expired more than
     /// [`UPLOAD_HISTORY_DAYS`] ago.
     UploadSessions,
+    /// Copy grants past their expiry; no download accepts one after it.
+    CopyGrants,
     /// Storage-scan generations whose job is terminal or gone, and jobless
     /// ones silent for [`STORAGE_SCAN_STALE_DAYS`], with their rows.
     StorageScans,
@@ -82,7 +84,7 @@ pub enum RecordPruneStep {
 
 impl RecordPruneStep {
     /// Every step, in the order a maintenance pass runs them.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::OidcAuthCodes,
         Self::OidcRefreshTokens,
         Self::PortalSessions,
@@ -90,6 +92,7 @@ impl RecordPruneStep {
         Self::UserInvites,
         Self::EnrollmentLinks,
         Self::UploadSessions,
+        Self::CopyGrants,
         Self::StorageScans,
         Self::SecurityAudit,
         Self::ConfigurationAudit,
@@ -190,6 +193,12 @@ impl LibraryStore {
                         node_upload_sessions::Column::ExpiresAt
                             .lte(days_before(now, UPLOAD_HISTORY_DAYS)),
                     )
+                    .exec(&self.db)
+                    .await
+            }
+            RecordPruneStep::CopyGrants => {
+                copy_grants::Entity::delete_many()
+                    .filter(copy_grants::Column::ExpiresAt.lte(now_text))
                     .exec(&self.db)
                     .await
             }
@@ -318,7 +327,7 @@ mod tests {
             // recently expired one stay.
             format!(
                 "INSERT INTO node_upload_sessions (upload_id, token_hash, node_id, job_id, \
-                 lease_generation, receiving_node_id, book_uuid, primary_key, manifest_json, \
+                 lease_generation, receiving_node_id, holding_id, primary_key, manifest_json, \
                  state, created_at, expires_at) VALUES \
                  ('u-committed', 'uh1', 'n1', 'j', 1, 'n0', 'b', 'k', '{{}}', 'committed', '{t}', '{old}'), \
                  ('u-aborted', 'uh2', 'n1', 'j', 1, 'n0', 'b', 'k', '{{}}', 'aborted', '{t}', '{old}'), \
@@ -333,6 +342,15 @@ mod tests {
                 "INSERT INTO edition_files (destination, storage_key, owner_kind, owner_id, role, \
                  lossless, writer, written_at) VALUES \
                  ('local', 'A/b.m4b', 'edition', 'e1', 'audio', 0, 'u-catalog', '{t}')"
+            ),
+            // Copy grants: expired goes, live stays.
+            format!(
+                "INSERT INTO copy_grants (copy_id, token_hash, holder_kind, holder_id, user_id, \
+                 edition_id, serving_node_id, destination, files_digest, created_at, expires_at) \
+                 VALUES ('g-old', 'gh1', 'node', 'n1', 1, 'e1', 'n0', 'local', 'd', '{t}', '{}'), \
+                 ('g-live', 'gh2', 'card', 'c1', 1, 'e1', 'n0', 'local', 'd', '{t}', '{}')",
+                at(0),
+                at(1)
             ),
             // Scans: a jobless generation silent past the window goes, a
             // fresh one stays.
@@ -386,7 +404,15 @@ mod tests {
             for step in RecordPruneStep::ALL {
                 removed.push(store.prune_record_step(step, now()).await.unwrap());
             }
-            assert_eq!(removed, [1, 2, 1, 1, 1, 1, 3, 1, 1, 1, 1], "{name}");
+            assert_eq!(removed, [1, 2, 1, 1, 1, 1, 3, 1, 1, 1, 1, 1], "{name}");
+            let grants: Vec<String> = crate::entities::copy_grants::Entity::find()
+                .all(kit.connection())
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|row| row.copy_id)
+                .collect();
+            assert_eq!(grants, ["g-live"], "{name}");
             assert_eq!(kit.refused_begins(), 0, "{name}");
 
             let db = kit.connection();

@@ -1,6 +1,8 @@
 # ADR: Event delivery follows the Workers model
 
-- **Status:** Accepted (decisions 1 to 6); later phases proposed
+- **Status:** Accepted (decisions 1 to 13); later phases proposed.
+  Amended 2026-11-18: decision 7 covers every storage-only plugin, not
+  only `local` and `s3`
 - **Date:** 2026-11-11
 
 ## Context
@@ -101,14 +103,111 @@ callers await a promise, and long work is a durable job.
    call returns once its work is done (a fetch hands back files on
    disk), so a call in flight is all that keeps the guest up. Account
    listing reads the library and never wakes the guest.
+7. **On-demand storage destinations.** The first-party `local` and `s3`
+   destinations, whose host side is a storage backend, sleep behind a
+   storage proxy on the same activation core, with a 5-minute idle
+   timeout. Every backend call starts the guest when it sleeps. A write
+   commits inside one call, so the call in flight holds the guest from
+   upload to commit. A read stream carries its own hold and keeps the
+   guest up until it is dropped, and a job that lends the guest's session
+   holds it the same way. The backend's name, instance id, scan placement
+   and copy support are captured from the first guest, so placement and
+   dedupe never wake it. Other storage guests have no host backend to
+   proxy and stay running. (Amended 2026-11-18: every storage guest now
+   has a host backend and is a destination, so every storage-only guest
+   sleeps this way; a guest that also belongs to another family stays
+   running.)
+8. **Pushed sockets are host-brokered.** A plugin that listens on a
+   WebSocket can still sleep, as with Durable Objects' hibernatable
+   WebSockets. It opens sockets through a `[sockets]` binding; the host
+   holds each one, answers declared heartbeat pairs itself, and wakes the
+   plugin's `SocketHandler` only for a real message, handing back up to
+   2 KiB of attachment the plugin stored with the socket. Sockets are
+   held by a jailed broker per plugin instance (the front door in a
+   broker mode, under the plugin's network grant and egress checks), not
+   by the daemon, so a socket gives a plugin no reach its grant lacks and
+   untrusted frames are never parsed in the daemon. Remote libraries
+   without a push channel move to a host-scheduled poll instead. The ABI
+   shape and checks land first; the broker, the SDK WebSocket API and
+   on-demand remote libraries woken by socket messages follow.
+9. **On-demand remote libraries and sign-in providers.** Every
+   integration that is not Python sleeps behind the integration proxy,
+   including plugins that export `remoteLibrary` or `oidc`. The proxy
+   owns the remote library's new-user poll (`pollEvents`): it wakes the
+   guest every 5 minutes, several idle timeouts apart, and hands each
+   user to the daemon's hook. Woken guests never get the hook, so a guest
+   runs no poll of its own. A resident Python guest is still polled every
+   30 seconds through its session. A guest keeps what must outlive a
+   sleep in its plugin database: Audiobookshelf stores a hash of each
+   user it has reported, so a user created while it slept is still
+   reported. A `remoteLibrary` guest therefore sleeps only when it
+   declares a `[[databases]]` binding and its grant holds every one;
+   otherwise it stays resident. A sign-in call wakes the guest like a
+   lookup, and the guest's first successful `oidcClients` answer is kept
+   per proxy, since a changed package or config replaces the proxy.
+10. **Pushed new users.** A remote library may also learn of new users
+    from a pushed socket (decision 8). Its `SocketHandler.message` reply
+    (`SocketMessageOk`) carries `pollEvents`; when the guest sets it, the
+    host runs the user poll at once, on the guest the message already
+    woke, instead of waiting out the interval. Only the plugin can tell
+    which of a service's messages announce a user (Audiobookshelf pushes
+    many unrelated events to admins), so the plugin decides, and the
+    scheduled poll stays as the fallback that catches anything a closed
+    socket missed. Asks that arrive while a poll runs fold into one more
+    poll; an ask with no poll running is dropped.
+11. **Python start-up snapshots.** A Python isolate took about 4 s to
+    start on one CPU, too slow to sleep. workerd can save the isolate's
+    memory after Pyodide loaded and the plugin imported its modules (a
+    dedicated snapshot) and start later isolates from it: measured on the
+    echo plugin with the Python SDK, about 0.6 s on one CPU (a snapshot of
+    Pyodide alone, without the plugin's imports, gave about 1.9 s). Through
+    the whole host path (jail, launcher, handshake and first `describe`) the
+    echo plugin's start went from about 4.8 s to about 1.2 s on one CPU. The
+    host keeps one dedicated snapshot per installed plugin version, keyed
+    by the workerd release and the install's files, in host-owned plugin
+    state. The guest's jail reads only that file and writes only a fresh
+    staging directory; the launcher saves there when there is nothing to
+    load or the stored snapshot fails to start, and marks the file ready
+    once the isolate answered, and the host promotes only a ready regular
+    file. A missing or broken snapshot costs only the slow start.
+12. **Python guests sleep.** With a snapshot, a Python guest starts in
+    about 1.2 s on one CPU through the whole host path, against about
+    0.1 s for a native or JavaScript guest. That is slower, but a sleeping
+    plugin's start happens once per burst of work and its idle timeout
+    keeps it up through the burst, so Python integrations, storefronts and
+    the storage destinations sleep under the same rules as the others
+    (decisions 5 to 9, which this lifts the Python exclusion from). A
+    `remoteLibrary` guest still sleeps only when its databases are granted.
+    The first start of a new plugin version still takes the slow path
+    while it saves the snapshot.
+13. **A live watch keeps the local destination awake.** One process may
+    stay up while idle: the `local` destination with its `watch` setting
+    on. Its change feed is a file-system watcher whose journal lives in the
+    guest's memory, so stopping the guest would lose the changes it has
+    not handed out yet. A `changes` page carries `liveWatch` for such a
+    feed. While the latest page from the running guest has `complete` and
+    `liveWatch` both true, the on-demand proxy holds one call's worth of
+    activity on that guest (a `Busy` guard from the activation core), so
+    the idle sweep leaves it running. An incomplete or non-live page, a
+    `changes` error, or the guest exiting drops the hold, and the guest
+    then sleeps after the usual idle timeout. The watcher runs only on a
+    local disk; on a network share or FUSE mount, or when the operating
+    system refuses or overflows the watch, its pages say `complete: false`
+    and the guest sleeps like any other. The host honours `liveWatch` only
+    from the first-party storage plugins it starts on demand, and only the
+    `local` package sets it; a durable feed, such as a queue an
+    object-store plugin drains, leaves it false. Measured on Linux with
+    release builds: the idle guest is resident at about 3.7 MiB; a watch
+    over a 1,000-book library (1,201 folders) adds about 0.6 MiB, one over
+    10,000 books (12,001 folders) about 3 MiB, and a full journal (16,384
+    unread changes) about 3 MiB more. The kernel also keeps roughly 1 KiB
+    per watched folder for inotify, outside the guest.
 
 The following phases are proposed and get their own pull requests and
 updates to this record:
 
-- **On-demand activation for the rest.** Storage and remote libraries
-  sleep too, with an idle timeout per family; storage holds its guest
-  from a staged upload to its commit. Python guests need a faster start
-  (snapshots or prewarming) before they can.
+- **On-demand activation for the rest.** The remaining storage guests
+  sleep too, with an idle timeout per family.
 - **Batched delivery.** `event(batch)` and `queue(batch)` receive up to
   `max_batch_size` messages per call.
 - **Richer host-side filters.** Envelope selectors and per-instance
@@ -136,7 +235,17 @@ updates to this record:
 - Decisions 1 to 3 needed no `plugin.capnp` change: `EventConsumer.event`
   already takes a batch and `PluginWorker.shutdown` already exists.
   Decision 4 appends `EventPublisher.read`, its request, page and reply
-  structs, and `maxEventCursorBytes`.
+  structs, and `maxEventCursorBytes`. Decision 8 appends `Bindings.sockets`,
+  `Entrypoints.socketHandler`, `PluginCapabilities.sockets`, the `Sockets`
+  and `SocketHandler` interfaces, their structs and the `maxSocket*`
+  limits.
+- Untrusted socket requests and deliveries are a new boundary with the
+  `socket_request` fuzz target.
+- Decision 13 appends `ChangesPage.liveWatch`. A library whose `local`
+  instance watches keeps that one guest resident; every other plugin
+  still sleeps, and listing stays the backstop for anything a watch
+  missed.
 - See [Entrypoints, events and the ABI](../plugins/abi.md#how-events-are-delivered),
+  [Pushed sockets](../plugins/abi.md#pushed-sockets-sockets),
   [Reading past events](../plugins/abi.md#reading-past-events-enveventsread)
   and [Durable job queue](../internals/jobs.md).

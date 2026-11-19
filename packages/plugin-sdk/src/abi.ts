@@ -17,6 +17,18 @@ export const MAX_STREAM_WINDOW_BYTES = 1048576 as const;
 /** Maximum objects in one `Destination.list` page. */
 export const MAX_LIST_PAGE = 256 as const;
 
+/**
+ * Maximum keys or key pairs in one `Destination.moveMany`, `deleteMany` or
+ * `headMany` call, and maximum outcomes in one reply.
+ */
+export const MAX_BATCH_KEYS = 256 as const;
+
+/** Maximum changes in one `Destination.changes` page. */
+export const MAX_CHANGES_PAGE = 256 as const;
+
+/** Maximum bytes of a `Destination.changes` cursor. */
+export const MAX_CHANGES_CURSOR_BYTES = 4096 as const;
+
 /** Maximum job / event checkpoint payload size (bytes). */
 export const MAX_CHECKPOINT_BYTES = 65536 as const;
 
@@ -66,8 +78,59 @@ export const MAX_COVER_BYTES = 10485760 as const;
  */
 export const MAX_COVER_HEADER_BYTES = 1024 as const;
 
+/**
+ * Largest metadata file `MetadataFiles.parse` reads and `MetadataFiles.render`
+ * returns. The host skips a larger sidecar before any plugin sees it.
+ */
+export const MAX_METADATA_FILE_BYTES = 262144 as const;
+
+/** Longest description a `MetadataFileRecord` carries, in UTF-8 bytes. */
+export const MAX_METADATA_FILE_DESCRIPTION_BYTES = 65536 as const;
+
+/**
+ * Longest other text value in a `MetadataFileRecord` (a title, a name, a
+ * genre, a chapter title), in UTF-8 bytes.
+ */
+export const MAX_METADATA_FILE_TEXT_BYTES = 1024 as const;
+
+/**
+ * Most entries in each list of a `MetadataFileRecord` other than chapters
+ * (credits, genres, tags, identifiers, series).
+ */
+export const MAX_METADATA_FILE_LIST_ENTRIES = 256 as const;
+
+/** Most chapters in a `MetadataFileRecord`. */
+export const MAX_METADATA_FILE_CHAPTERS = 2000 as const;
+
+/** Most entries in `MetadataFileRenderParams.audioFiles`. */
+export const MAX_METADATA_AUDIO_FILES = 4096 as const;
+
 /** Longest `KvNamespace` key in UTF-8 bytes. */
 export const MAX_KV_KEY_BYTES = 512 as const;
+
+/**
+ * Largest WebSocket message, text or binary, that `Sockets.send` accepts or
+ * `SocketHandler.message` delivers.
+ */
+export const MAX_SOCKET_FRAME_BYTES = 262144 as const;
+
+/** Largest per-socket attachment the host keeps for a sleeping guest. */
+export const MAX_SOCKET_ATTACHMENT_BYTES = 2048 as const;
+
+/** Most host-brokered sockets one plugin instance may hold open at once. */
+export const MAX_SOCKETS_PER_INSTANCE = 8 as const;
+
+/** Most heartbeat pairs one `Sockets.connect` may declare. */
+export const MAX_SOCKET_AUTO_RESPONSES = 4 as const;
+
+/** Largest heartbeat request or response frame, in bytes. */
+export const MAX_SOCKET_AUTO_RESPONSE_BYTES = 256 as const;
+
+/** Longest `SocketConnectRequest.url`, in bytes. */
+export const MAX_SOCKET_URL_BYTES = 2048 as const;
+
+/** Most request headers, and separately subprotocols, on one `Sockets.connect`. */
+export const MAX_SOCKET_HEADERS = 16 as const;
 
 /** Largest `KvNamespace` metadata JSON text in bytes. */
 export const MAX_KV_METADATA_BYTES = 1024 as const;
@@ -92,6 +155,35 @@ export const FEATURE_STREAMS = "rpc.streams" as const;
 /** Guest implements server-side `Destination.copy` (`storage.copy`). */
 export const FEATURE_STORAGE_COPY = "storage.copy" as const;
 
+/** Guest implements `Destination.move` (`storage.move`). */
+export const FEATURE_STORAGE_MOVE = "storage.move" as const;
+
+/** Guest implements `Destination.moveMany` (`storage.moveMany`). */
+export const FEATURE_STORAGE_MOVE_MANY = "storage.moveMany" as const;
+
+/** Guest implements `Destination.deleteMany` (`storage.deleteMany`). */
+export const FEATURE_STORAGE_DELETE_MANY = "storage.deleteMany" as const;
+
+/** Guest implements `Destination.headMany` (`storage.headMany`). */
+export const FEATURE_STORAGE_HEAD_MANY = "storage.headMany" as const;
+
+/** Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` (`storage.conditionalWrite`). */
+export const FEATURE_STORAGE_CONDITIONAL_WRITE = "storage.conditionalWrite" as const;
+
+/** Guest implements `Destination.changes` (`storage.changes`). */
+export const FEATURE_STORAGE_CHANGES = "storage.changes" as const;
+
+/**
+ * What happened to an object in a change feed. Unknown codes are kept and
+ * treated as `changed`.
+ *
+ * Ordinal-ordered `ObjectChangeKind` wire names (index = Cap'n Proto ordinal).
+ */
+export const OBJECT_CHANGE_KINDS = ["changed", "upserted", "removed"] as const;
+
+/** Union of `OBJECT_CHANGE_KINDS` wire names. */
+export type ObjectChangeKind = (typeof OBJECT_CHANGE_KINDS)[number];
+
 /**
  * Stable `PluginError.code` strings. Unknown future codes are forwarded
  * as-is; SDKs surface them as a local `unknown` while keeping the raw wire
@@ -111,7 +203,7 @@ export type PluginErrorCode = (typeof PLUGIN_ERROR_CODES)[number];
  *
  * Ordinal-ordered `Entrypoint` wire names (index = Cap'n Proto ordinal).
  */
-export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers"] as const;
+export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles"] as const;
 
 /** Union of `ENTRYPOINTS` wire names. */
 export type Entrypoint = (typeof ENTRYPOINTS)[number];
@@ -238,6 +330,16 @@ export const CATALOG_FIELDS = ["any", "author", "narrator", "series", "genre"] a
 export type CatalogField = (typeof CATALOG_FIELDS)[number];
 
 /**
+ * How a purchase-hint query names the title to price.
+ *
+ * Ordinal-ordered `PriceLookup` wire names (index = Cap'n Proto ordinal).
+ */
+export const PRICE_LOOKUPS = ["unspecified", "product", "isbn", "asin", "title"] as const;
+
+/** Union of `PRICE_LOOKUPS` wire names. */
+export type PriceLookup = (typeof PRICE_LOOKUPS)[number];
+
+/**
  * Whether an edition is abridged.
  *
  * Ordinal-ordered `Abridgement` wire names (index = Cap'n Proto ordinal).
@@ -246,6 +348,18 @@ export const ABRIDGEMENTS = ["unknown", "unabridged", "abridged"] as const;
 
 /** Union of `ABRIDGEMENTS` wire names. */
 export type Abridgement = (typeof ABRIDGEMENTS)[number];
+
+/**
+ * A field of a `MetadataFileRecord`. Dialects declare in the manifest which
+ * fields their format carries; a parsed record lists the ones its file
+ * states, and a render request lists the ones to write.
+ *
+ * Ordinal-ordered `MetadataField` wire names (index = Cap'n Proto ordinal).
+ */
+export const METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration"] as const;
+
+/** Union of `METADATA_FIELDS` wire names. */
+export type MetadataField = (typeof METADATA_FIELDS)[number];
 
 /**
  * Universal database cell/parameter domain. Engine-native arrays, enums,

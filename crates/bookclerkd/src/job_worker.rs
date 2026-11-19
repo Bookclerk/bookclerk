@@ -257,7 +257,7 @@ fn spawn_network_worker(state: Arc<AppState>, index: u32) {
             let claim = JobClaimRequest {
                 resource_class: JobResourceClass::Network,
                 node_id: &node_id,
-                // This worker holds the library database: an owner node.
+                // This worker holds the library database: a shared node.
                 claimant: Claimant::Local,
                 owner: &owner,
                 lease_secs: cfg.jobs.lease_seconds,

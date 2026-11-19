@@ -20,13 +20,25 @@ mod bounded;
 /// Error types returned by destination storage backends.
 mod error;
 mod fanout;
+pub mod fs_kind;
+/// Serving a backend's intent operations from a storage guest.
+pub mod guest;
+/// Intent operations (moves, batches, conditional writes, change feeds) and
+/// their fallbacks.
+pub mod intent;
 /// On-disk local list index (external sort, O(page) reads).
 mod list_index;
 mod local;
+#[cfg(feature = "watch")]
+mod local_watch;
 mod placement;
+#[cfg(feature = "s3")]
 mod s3;
-#[cfg(any(unix, windows))]
+pub mod s3_events;
+#[cfg(all(feature = "s3", any(unix, windows)))]
 mod s3_http;
+#[cfg(feature = "s3")]
+mod s3_queue;
 /// [`StorageBackend`] trait plus object metadata and audio-key helpers.
 mod traits;
 /// Source-to-destination copy that stays within stream windows.
@@ -38,9 +50,17 @@ pub use bounded::{
 };
 pub use error::{Result, StorageError};
 pub use fanout::FanoutBackend;
+pub use intent::{
+    ChangeFeedPage, ConditionalPutResult, HintedListPage, KeyResult, ListRequest, MoveOptions,
+    MovePrefixPage, MoveResult, ObjectChange, ObjectChangeKind, StorageCapabilities,
+    WriteCondition,
+};
 pub use local::LocalFsBackend;
 pub use placement::node_placement_id;
+#[cfg(feature = "s3")]
 pub use s3::{S3Backend, S3Credentials, S3Settings};
+#[cfg(feature = "s3")]
+pub use s3_queue::QueueUrl;
 pub use traits::{
     bookclerk_meta_sidecar_key, is_audio_key, ByteRange, ListPage, ObjectInfo, ObjectMeta,
     ObjectProbe, PutStreamResult, StorageBackend, AUDIO_EXTENSIONS,

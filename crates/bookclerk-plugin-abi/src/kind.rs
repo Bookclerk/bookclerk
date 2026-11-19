@@ -56,6 +56,11 @@ pub struct OutputS3ContextDto {
     /// When true, force path-style addressing (wire `forcePathStyle`).
     #[serde(default)]
     pub force_path_style: bool,
+    /// Amazon SQS queue URL the bucket sends its object events to (wire
+    /// `notificationQueueUrl`); when set the guest serves `changes` from
+    /// it. Absent means no change feed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_queue_url: Option<String>,
     /// When absent the guest may use the AWS SDK default provider chain
     /// (unconfined dev only).
     #[serde(default, skip_serializing_if = "Option::is_none")]

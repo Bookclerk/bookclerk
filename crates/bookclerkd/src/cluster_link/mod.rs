@@ -1,4 +1,4 @@
-//! This daemon as a host node of owner clusters (H-4 design, steps 7-8).
+//! This daemon as a branch node of owner clusters (H-4 design, steps 7-8).
 //!
 //! Every active `cluster_links` row in this install's database gets one
 //! [`HostClient`]: it connects to the owner's node socket under the
@@ -44,10 +44,11 @@
 //! client claims no more than its share, and its heartbeat reports the
 //! owner only that part of the machine's CPU and memory.
 //!
-//! A link whose "Use this computer to download" setting is off makes this
-//! install a window of that library: its supervisor withdraws every plugin
-//! (no job is claimed), and its [`window::WindowReader`] reads the books the
-//! library holds for this install's person instead.
+//! Each link's [`window::WindowReader`] reads the library's books, marked
+//! where they are this install's person's, into Library → "Books in other
+//! libraries". The link's "Keep copies on this computer" setting decides
+//! only whether the branch takes the library's copies of its person's
+//! books; it takes the library's work either way.
 //!
 //! A close with 4403 (this node revoked) marks the link `revoked`, cancels
 //! held work, and stops that client; the link is not dialed again.
@@ -61,6 +62,7 @@ pub mod consent;
 pub mod host_jobs;
 pub mod join;
 pub mod keeper;
+pub(crate) mod library_copies;
 pub mod remote_bindings;
 pub mod requests;
 pub mod window;
@@ -689,11 +691,8 @@ async fn start_clients(
         let failure = failure_key(&link);
         let serial = NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // The link's share of the machine: its claims stop there, and its
-        // heartbeat reports the library only that part. A window link
-        // (download off) takes none.
-        let share = state
-            .capacity
-            .register(&cluster_id, serial, link.max_jobs, !link.download);
+        // heartbeat reports the library only that part.
+        let share = state.capacity.register(&cluster_id, serial, link.max_jobs);
         let share_entry =
             capacity::ShareEntry::new(Arc::clone(&state.capacity), &cluster_id, serial);
         let config = HostClientConfig {
@@ -787,9 +786,8 @@ async fn start_clients(
             }
             .run(link_shutdown.clone()),
         )));
-        // The link's window reader (the books the library holds for this
-        // install's person, while the link does not download) stops with
-        // its client the same way.
+        // The link's window reader (the library's books, marked where they
+        // are this install's person's) stops with its client the same way.
         let window_reader = AbortOnDrop(Some(tokio::spawn(
             window::WindowReader {
                 library: library.clone(),

@@ -1,6 +1,7 @@
 //! Local filesystem storage backend.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -14,6 +15,11 @@ use crate::bounded::{
     reject_scalar_hint, ReadSpan, TempGuard, MAX_SCALAR_OBJECT_BYTES,
 };
 use crate::error::{Result, StorageError};
+use crate::fs_kind::{self, FsKind};
+use crate::intent::{
+    require_disjoint_prefixes, ConditionalPutResult, HintedListPage, KeyResult, ListRequest,
+    MoveOptions, MovePrefixPage, MoveResult, StorageCapabilities, WriteCondition,
+};
 use crate::list_index::list_page_indexed;
 use crate::normalize_prefix;
 use crate::traits::{bookclerk_meta_sidecar_key, ObjectMeta, ObjectProbe, StorageBackend};
@@ -30,9 +36,33 @@ pub struct LocalFsBackend {
     prefix: String,
     /// Test override for [`StorageBackend::scan_placement`].
     placement_override: Option<String>,
+    /// Serializes `ifMatch` writes (and `ifNoneMatch` writes on a file
+    /// system without hard links) through this backend and its clones, so
+    /// two of them never both pass the same check.
+    check_then_write: Arc<tokio::sync::Mutex<()>>,
+    /// Test override for the file-system kind of every path (see
+    /// [`Self::with_fs_kind`]); `None` classifies each path.
+    fs_kind_override: Option<FsKind>,
+    /// The change feed, when [`Self::with_watch`] started one; shared by
+    /// clones.
+    #[cfg(feature = "watch")]
+    watch: Option<Arc<crate::local_watch::LocalWatch>>,
 }
 
 impl LocalFsBackend {
+    /// What every local backend does natively: moves are renames, batches
+    /// run in one call, and conditional writes are checked here. A backend
+    /// built with [`Self::with_watch`] (feature `watch`) also has a change
+    /// feed.
+    pub const CAPABILITIES: StorageCapabilities = StorageCapabilities {
+        move_object: true,
+        move_many: true,
+        delete_many: true,
+        head_many: true,
+        conditional_write: true,
+        changes: false,
+    };
+
     /// Create a backend rooted at `root` with no key prefix.
     ///
     /// # Errors
@@ -108,7 +138,56 @@ impl LocalFsBackend {
             root,
             prefix,
             placement_override: None,
+            check_then_write: Arc::new(tokio::sync::Mutex::new(())),
+            fs_kind_override: None,
+            #[cfg(feature = "watch")]
+            watch: None,
         })
+    }
+
+    /// Starts a change feed for this backend's root (below its prefix),
+    /// served by [`StorageBackend::changes`] for as long as the backend or
+    /// a clone of it lives.
+    ///
+    /// The watcher runs only on a local disk; on a network file system or a
+    /// FUSE mount (see [`crate::fs_kind`]), or when the operating system
+    /// refuses it, every page says the feed may have missed changes, so the
+    /// caller lists instead. Call it after [`Self::with_fs_kind`] for the
+    /// override to apply.
+    #[cfg(feature = "watch")]
+    #[must_use]
+    pub fn with_watch(mut self) -> Self {
+        let dir = self.root.join(self.prefix.trim_end_matches('/'));
+        self.watch = Some(Arc::new(crate::local_watch::LocalWatch::start(
+            &dir,
+            "",
+            self.fs_kind_override,
+        )));
+        self
+    }
+
+    /// Treats every path as living on a file system of `kind`, instead of
+    /// classifying it.
+    ///
+    /// Tests use it to drive the network-mount paths on a local disk.
+    /// Production backends leave it unset.
+    #[must_use]
+    pub fn with_fs_kind(mut self, kind: FsKind) -> Self {
+        self.fs_kind_override = Some(kind);
+        self
+    }
+
+    /// The file-system kind of `path` (see [`kind_of`]), or the override.
+    async fn fs_kind(&self, path: &Path) -> FsKind {
+        match self.fs_kind_override {
+            Some(kind) => kind,
+            None => kind_of(path).await,
+        }
+    }
+
+    /// The change signature of the file at `path` whose metadata is `meta`.
+    async fn signature_at(&self, path: &Path, meta: &std::fs::Metadata) -> Option<String> {
+        file_signature(meta, self.fs_kind(path).await)
     }
 
     /// Overrides the host placement reported for scan adoption.
@@ -118,6 +197,18 @@ impl LocalFsBackend {
     pub fn with_scan_placement(mut self, placement: impl Into<String>) -> Self {
         self.placement_override = Some(placement.into());
         self
+    }
+
+    /// True when [`Self::with_watch`] started a change feed (live or not).
+    fn has_watch(&self) -> bool {
+        #[cfg(feature = "watch")]
+        {
+            self.watch.is_some()
+        }
+        #[cfg(not(feature = "watch"))]
+        {
+            false
+        }
     }
 
     /// Prepends the storage prefix to `key` (no-op when the prefix is empty).
@@ -221,6 +312,147 @@ impl LocalFsBackend {
     }
 }
 
+/// A file's modification time in milliseconds since the Unix epoch, when the
+/// platform reports one at or after the epoch.
+fn modified_ms(meta: &std::fs::Metadata) -> Option<u64> {
+    let since = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    u64::try_from(since.as_millis()).ok()
+}
+
+/// A file's change signature, also used as its etag: size and modification
+/// time, plus inode and status-change time on a local Unix disk. Reading the
+/// file leaves it unchanged; writing, replacing, renaming onto it or touching
+/// it changes it. `None` when the platform reports no modification time.
+///
+/// On network and FUSE file systems (`kind` not local) inode numbers and
+/// status-change times can change after a remount or a cache eviction
+/// without the file changing, so the signature there is size and
+/// modification time only.
+fn file_signature(meta: &std::fs::Metadata, kind: FsKind) -> Option<String> {
+    #[cfg(unix)]
+    if kind.is_local() {
+        use std::os::unix::fs::MetadataExt;
+        return Some(format!(
+            "{:x}-{:x}-{}.{:09}-{}.{:09}",
+            meta.ino(),
+            meta.size(),
+            meta.mtime(),
+            meta.mtime_nsec(),
+            meta.ctime(),
+            meta.ctime_nsec()
+        ));
+    }
+    #[cfg(not(unix))]
+    let _ = kind;
+    let since = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some(format!(
+        "{:x}-{}.{:09}",
+        meta.len(),
+        since.as_secs(),
+        since.subsec_nanos()
+    ))
+}
+
+/// Classifies the file system holding `path` (or, when it does not exist
+/// yet, its nearest existing ancestor) off the async runtime, since a
+/// `statfs` on a stalled network mount can block.
+async fn kind_of(path: &Path) -> FsKind {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || fs_kind::classify_nearest(&path))
+        .await
+        .unwrap_or(FsKind::Unknown)
+}
+
+/// The device id of the file system holding `path`, off the async runtime.
+async fn device_of(path: &Path) -> Option<u64> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || fs_kind::device_of(&path))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Renames `from` to `to`, settling the answer a network file system can
+/// give for a retried request: a `NotFound` while `from` is gone and `to`
+/// exists means an earlier attempt already did the rename.
+///
+/// # Errors
+///
+/// Returns the rename's I/O error otherwise.
+async fn rename_settled(from: &Path, to: &Path) -> std::io::Result<()> {
+    match fs::rename(from, to).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let from_gone = matches!(fs::symlink_metadata(from).await, Err(e) if e.kind() == std::io::ErrorKind::NotFound);
+            if from_gone && fs::symlink_metadata(to).await.is_ok() {
+                Ok(())
+            } else {
+                Err(err)
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// True when `a` and `b` are names of one file (same device and inode on
+/// Unix). Always false elsewhere, where callers only reach this after a
+/// failed hard link, which left no second name.
+async fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (fs::metadata(a).await, fs::metadata(b).await) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (a, b);
+        false
+    }
+}
+
+/// Flushes a directory's entries to disk after a rename into it, so the new
+/// name survives a crash. Best effort: some file systems refuse to sync a
+/// directory, and Windows has no directory handle to sync.
+async fn sync_dir(dir: &Path) {
+    #[cfg(unix)]
+    if let Ok(handle) = fs::File::open(dir).await {
+        let _ = handle.sync_all().await;
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
+/// Maps a `NotFound` I/O error to [`StorageError::NotFound`] for `key`.
+fn io_for(key: &str) -> impl FnOnce(std::io::Error) -> StorageError + '_ {
+    move |err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            StorageError::NotFound(key.into())
+        } else {
+            StorageError::Io(err)
+        }
+    }
+}
+
+/// Metadata for `path`, or `None` when nothing is there.
+async fn metadata_if_present(path: &Path) -> Result<Option<std::fs::Metadata>> {
+    match fs::metadata(path).await {
+        Ok(meta) => Ok(Some(meta)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(StorageError::Io(err)),
+    }
+}
+
 /// Rejects empty keys, absolute keys, and any `ParentDir` segment.
 fn validate_key(key: &str) -> Result<()> {
     if key.is_empty() || key.starts_with('/') {
@@ -272,6 +504,214 @@ impl StorageBackend for LocalFsBackend {
         Box::new(self.clone())
     }
 
+    fn capabilities(&self) -> StorageCapabilities {
+        StorageCapabilities {
+            changes: self.has_watch(),
+            ..Self::CAPABILITIES
+        }
+    }
+
+    /// The watcher's journal (see [`Self::with_watch`]); `None` without
+    /// one.
+    async fn changes(
+        &self,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<Option<crate::ChangeFeedPage>> {
+        #[cfg(feature = "watch")]
+        if let Some(watch) = &self.watch {
+            return watch.changes(cursor, limit).map(Some);
+        }
+        let _ = (cursor, limit);
+        Ok(None)
+    }
+
+    /// Renames the file (and its meta sidecar).
+    ///
+    /// - Source and target on different devices (a folder inside the
+    ///   library can be another mount): [`crate::intent::fallback_move`],
+    ///   which copies, syncs, verifies and then deletes.
+    /// - Both on a local disk: with `no_overwrite` the file is hard-linked
+    ///   to the target first, which fails when anything is already there,
+    ///   and then unlinked from the source; the move is atomic. Without
+    ///   hard links it falls back as above.
+    /// - On a network or FUSE file system: no hard links. `no_overwrite`
+    ///   checks the target just before the rename under the backend's
+    ///   check-then-write lock, and the move reports `atomic: false`.
+    ///
+    /// A retried network rename that answers "not found" after it already
+    /// happened counts as done.
+    async fn move_object(&self, from: &str, to: &str, options: &MoveOptions) -> Result<MoveResult> {
+        let src = self.resolve(from)?;
+        let dest = self.resolve(to)?;
+        let Some(source) = metadata_if_present(&src).await? else {
+            if src != dest && metadata_if_present(&dest).await?.is_some() {
+                return Ok(MoveResult {
+                    atomic: true,
+                    already_moved: true,
+                });
+            }
+            return Err(StorageError::NotFound(from.into()));
+        };
+        if !source.is_file() {
+            return Err(StorageError::InvalidKey(format!("{from} is not an object")));
+        }
+        if let Some(expected) = &options.if_source_match {
+            if self.signature_at(&src, &source).await.as_deref() != Some(expected.as_str()) {
+                return Err(StorageError::Conflict(format!(
+                    "{from} changed since it was read"
+                )));
+            }
+        }
+        if src == dest {
+            return Ok(MoveResult {
+                atomic: true,
+                already_moved: false,
+            });
+        }
+        let dest_dir = dest.parent().unwrap_or(&dest).to_path_buf();
+        fs::create_dir_all(&dest_dir).await?;
+        // A folder inside the library can be another mount. A rename or a
+        // hard link cannot cross into it, so go straight to the copy,
+        // verify and delete path instead of relying on the error code.
+        if let (Some(a), Some(b)) = (device_of(&src).await, device_of(&dest_dir).await) {
+            if a != b {
+                return crate::intent::fallback_move(self, from, to, options).await;
+            }
+        }
+        let src_dir = src.parent().unwrap_or(&src).to_path_buf();
+        let trusted =
+            self.fs_kind(&src_dir).await.is_local() && self.fs_kind(&dest_dir).await.is_local();
+        if options.no_overwrite && trusted {
+            match fs::hard_link(&src, &dest).await {
+                Ok(()) => {
+                    if let Err(err) = fs::remove_file(&src).await {
+                        // The source is still there (on Windows another
+                        // program may hold it open): undo the link so the
+                        // object keeps exactly one name, and report it.
+                        let _ = fs::remove_file(&dest).await;
+                        return Err(io_for(from)(err));
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(StorageError::Conflict(format!("{to} already exists")));
+                }
+                // No hard links on this file system.
+                Err(_) => return crate::intent::fallback_move(self, from, to, options).await,
+            }
+        } else {
+            let _held = if options.no_overwrite {
+                let held = self.check_then_write.lock().await;
+                if metadata_if_present(&dest).await?.is_some() {
+                    return Err(StorageError::Conflict(format!("{to} already exists")));
+                }
+                Some(held)
+            } else {
+                None
+            };
+            match rename_settled(&src, &dest).await {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::CrossesDevices => {
+                    return crate::intent::fallback_move(self, from, to, options).await;
+                }
+                Err(err) => return Err(io_for(from)(err)),
+            }
+        }
+        self.move_sidecar(from, to).await;
+        sync_dir(&dest_dir).await;
+        if src_dir != dest_dir {
+            sync_dir(&src_dir).await;
+        }
+        Ok(MoveResult {
+            atomic: trusted,
+            already_moved: false,
+        })
+    }
+
+    async fn move_prefix(
+        &self,
+        from_prefix: &str,
+        to_prefix: &str,
+        cursor: Option<&str>,
+        limit: u32,
+        options: &MoveOptions,
+    ) -> Result<MovePrefixPage> {
+        require_disjoint_prefixes(from_prefix, to_prefix)?;
+        let page = self.list_page(from_prefix, cursor, limit).await?;
+        let options = MoveOptions {
+            if_source_match: None,
+            ..options.clone()
+        };
+        let mut out = MovePrefixPage {
+            results: Vec::with_capacity(page.objects.len()),
+            next_cursor: page.next_cursor,
+            atomic: true,
+            objects_moved: 0,
+        };
+        for object in page.objects {
+            let Some(rest) = object.key.strip_prefix(from_prefix) else {
+                continue;
+            };
+            let target = format!("{to_prefix}{rest}");
+            match self.move_object(&object.key, &target, &options).await {
+                Ok(moved) => {
+                    out.atomic &= moved.atomic;
+                    out.objects_moved = out.objects_moved.saturating_add(1);
+                    out.results.push(KeyResult::from_result(object.key, Ok(())));
+                }
+                Err(err) => out
+                    .results
+                    .push(KeyResult::from_result(object.key, Err(err))),
+            }
+        }
+        Ok(out)
+    }
+
+    async fn put_stream_conditional(
+        &self,
+        key: &str,
+        body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        meta: ObjectMeta,
+        condition: &WriteCondition,
+    ) -> Result<ConditionalPutResult> {
+        self.write_stream(key, body, meta, Some(condition)).await
+    }
+
+    /// Fills each entry's etag, signature and modification time from the
+    /// file, and leaves out files modified before `modified_since_ms`.
+    async fn list_hinted(&self, request: &ListRequest) -> Result<HintedListPage> {
+        let mut page = self
+            .list_page(&request.prefix, request.cursor.as_deref(), request.limit)
+            .await?;
+        let wants_stat = request.with_signatures || request.modified_since_ms.is_some();
+        if wants_stat {
+            let mut kept = Vec::with_capacity(page.objects.len());
+            for mut object in page.objects {
+                let Some(meta) = metadata_if_present(&self.resolve(&object.key)?).await? else {
+                    // Removed since the listing; the next listing drops it.
+                    continue;
+                };
+                object.size = meta.len();
+                object.modified_at_ms = modified_ms(&meta);
+                object.signature = self.signature_at(&self.resolve(&object.key)?, &meta).await;
+                object.etag.clone_from(&object.signature);
+                let older = matches!(
+                    (request.modified_since_ms, object.modified_at_ms),
+                    (Some(since), Some(at)) if at < since
+                );
+                if !older {
+                    kept.push(object);
+                }
+            }
+            page.objects = kept;
+        }
+        Ok(HintedListPage {
+            page,
+            signatures_included: wants_stat,
+            modified_since_applied: request.modified_since_ms.is_some(),
+        })
+    }
+
     async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()> {
         ensure_scalar_len(data.len(), MAX_SCALAR_OBJECT_BYTES)?;
         if let Some(expected) = meta.sha256_hex.as_deref() {
@@ -297,12 +737,14 @@ impl StorageBackend for LocalFsBackend {
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).await?;
         }
-        // Prefer hard-link/copy without loading the whole audiobook into RAM.
-        match fs::hard_link(source, &dest).await {
-            Ok(()) => {}
-            Err(_) => {
-                fs::copy(source, &dest).await?;
-            }
+        // Prefer a hard link, then a copy, without loading the whole
+        // audiobook into RAM. Links are only trusted on a local disk: a
+        // retried NFS `LINK` can fail after it succeeded, and copying a file
+        // onto a link to itself would truncate it.
+        let linked =
+            self.fs_kind(&dest).await.is_local() && fs::hard_link(source, &dest).await.is_ok();
+        if !linked && !same_file(source, &dest).await {
+            fs::copy(source, &dest).await?;
         }
         write_local_meta_sidecar(self, key, &meta).await?;
         Ok(())
@@ -342,15 +784,19 @@ impl StorageBackend for LocalFsBackend {
                 StorageError::Io(err)
             }
         })?;
+        let signature = self.signature_at(&path, &file_meta).await;
         let mut probe = ObjectProbe {
             key: key.to_string(),
             size: file_meta.len(),
             content_type: None,
-            etag: None,
+            etag: signature.clone(),
             meta: ObjectMeta {
                 content_length: Some(file_meta.len()),
                 ..Default::default()
             },
+            modified_at_ms: modified_ms(&file_meta),
+            signature,
+            ..ObjectProbe::default()
         };
         // Cheap sidecar read — never opens the audio body.
         let meta_key = bookclerk_meta_sidecar_key(key);
@@ -523,9 +969,30 @@ impl StorageBackend for LocalFsBackend {
     async fn put_stream(
         &self,
         key: &str,
+        body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        meta: ObjectMeta,
+    ) -> Result<crate::PutStreamResult> {
+        self.write_stream(key, body, meta, None)
+            .await
+            .map(|written| written.put)
+    }
+}
+
+impl LocalFsBackend {
+    /// Streams `body` into a sibling temp file, then publishes it under `key`
+    /// when `condition` holds (always when it is `None`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Conflict`] when `condition` fails, integrity
+    /// and size errors for the body, and I/O errors.
+    async fn write_stream(
+        &self,
+        key: &str,
         mut body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
         mut meta: ObjectMeta,
-    ) -> Result<crate::PutStreamResult> {
+        condition: Option<&WriteCondition>,
+    ) -> Result<ConditionalPutResult> {
         use sha2::{Digest, Sha256};
         use tokio::io::AsyncWriteExt;
         if let Some(expected) = meta.sha256_hex.as_deref() {
@@ -595,20 +1062,116 @@ impl StorageBackend for LocalFsBackend {
             file.flush().await?;
             file.sync_all().await?;
             drop(file);
-            tokio::fs::rename(&tmp, &path).await?;
+            let atomic = self.publish(&tmp, &path, key, condition).await?;
             guard.disarm();
-            Ok(bytes_written)
+            Ok((bytes_written, atomic))
         };
-        match put.await {
-            Ok(bytes_written) => {
-                write_local_meta_sidecar(self, key, &meta).await?;
-                Ok(crate::PutStreamResult {
-                    bytes_written,
-                    etag: None,
-                    sha256_hex: meta.sha256_hex,
-                })
+        let (bytes_written, atomic) = put.await?;
+        write_local_meta_sidecar(self, key, &meta).await?;
+        let etag = match metadata_if_present(&path).await? {
+            Some(meta) => self.signature_at(&path, &meta).await,
+            None => None,
+        };
+        Ok(ConditionalPutResult {
+            put: crate::PutStreamResult {
+                bytes_written,
+                etag,
+                sha256_hex: meta.sha256_hex,
+            },
+            atomic,
+        })
+    }
+
+    /// Moves the finished temp file `tmp` to `path` when `condition` holds.
+    /// Returns whether the check and the publish were one step.
+    ///
+    /// On a local disk `IfNoneMatch` hard-links the temp file into place,
+    /// which fails if anything is already there. `IfMatch`, and
+    /// `IfNoneMatch` on a network or FUSE file system or one without hard
+    /// links, checks just before the rename while holding
+    /// [`Self::check_then_write`], so another conditional write through
+    /// Bookclerk cannot pass the same check; a write from outside Bookclerk
+    /// in that instant can. A plain publish counts as atomic only on a
+    /// local disk. The directory is synced after the rename.
+    async fn publish(
+        &self,
+        tmp: &Path,
+        path: &Path,
+        key: &str,
+        condition: Option<&WriteCondition>,
+    ) -> Result<bool> {
+        let dir = path.parent().unwrap_or(path);
+        let kind = self.fs_kind(dir).await;
+        let atomic = match condition {
+            None => {
+                rename_settled(tmp, path).await?;
+                kind.is_local()
             }
-            Err(err) => Err(err),
+            // Only a local disk answers a hard link reliably: a retried NFS
+            // `LINK` can say "exists" after it succeeded, and SMB, AFP and
+            // many FUSE file systems fake links or have none.
+            Some(WriteCondition::IfNoneMatch) if kind.is_local() => {
+                match fs::hard_link(tmp, path).await {
+                    Ok(()) => {
+                        // The object is published; a leftover temp name is harmless.
+                        let _ = fs::remove_file(tmp).await;
+                        true
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                        return Err(StorageError::Conflict(format!("{key} already exists")));
+                    }
+                    Err(_) => self.publish_if_absent(tmp, path, key).await?,
+                }
+            }
+            Some(WriteCondition::IfNoneMatch) => self.publish_if_absent(tmp, path, key).await?,
+            Some(WriteCondition::IfMatch(expected)) => {
+                let _held = self.check_then_write.lock().await;
+                let current = match metadata_if_present(path).await? {
+                    Some(meta) => file_signature(&meta, kind),
+                    None => None,
+                };
+                if current.as_deref() != Some(expected.as_str()) {
+                    return Err(StorageError::Conflict(format!(
+                        "{key} changed since it was read"
+                    )));
+                }
+                rename_settled(tmp, path).await?;
+                false
+            }
+        };
+        sync_dir(dir).await;
+        Ok(atomic)
+    }
+
+    /// Checks that nothing is at `path` and renames `tmp` there, holding
+    /// [`Self::check_then_write`]. Not atomic against writers outside
+    /// Bookclerk; returns `false` to say so.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Conflict`] when something is already there,
+    /// and I/O errors from the check or the rename.
+    async fn publish_if_absent(&self, tmp: &Path, path: &Path, key: &str) -> Result<bool> {
+        let _held = self.check_then_write.lock().await;
+        if metadata_if_present(path).await?.is_some() {
+            return Err(StorageError::Conflict(format!("{key} already exists")));
+        }
+        rename_settled(tmp, path).await?;
+        Ok(false)
+    }
+
+    /// Moves the companion meta sidecar of `from` to `to`, or removes a
+    /// stale sidecar at `to` when `from` has none. Best effort: the object
+    /// itself has already moved.
+    async fn move_sidecar(&self, from: &str, to: &str) {
+        let (Ok(src), Ok(dest)) = (
+            self.resolve(&bookclerk_meta_sidecar_key(from)),
+            self.resolve(&bookclerk_meta_sidecar_key(to)),
+        ) else {
+            return;
+        };
+        if fs::rename(&src, &dest).await.is_err() {
+            let _ = fs::remove_file(&dest).await;
         }
     }
 }
@@ -1286,5 +1849,435 @@ mod tests {
         );
         assert_eq!(backend.get("dest.m4b").await.unwrap().as_ref(), b"keeper");
         assert!(src.metadata().unwrap().len() > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES);
+    }
+
+    /// A local backend in a fresh directory.
+    fn intent_backend() -> (tempfile::TempDir, LocalFsBackend) {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        (dir, backend)
+    }
+
+    /// Writes `body` under `key` with a digest, so a meta sidecar exists.
+    async fn put_with_sidecar(backend: &LocalFsBackend, key: &str, body: &'static [u8]) {
+        backend
+            .put(
+                key,
+                Bytes::from_static(body),
+                ObjectMeta {
+                    sha256_hex: Some(hex::encode(sha2::Sha256::digest(body))),
+                    ..ObjectMeta::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Streams `body` under `key` with `condition`.
+    async fn put_if(
+        backend: &LocalFsBackend,
+        key: &str,
+        body: &'static [u8],
+        condition: &WriteCondition,
+    ) -> Result<ConditionalPutResult> {
+        backend
+            .put_stream_conditional(
+                key,
+                Box::pin(std::io::Cursor::new(body)),
+                ObjectMeta::default(),
+                condition,
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_native_move_renames_the_file_and_its_sidecar_and_repeats_safely() {
+        let (_dir, b) = intent_backend();
+        put_with_sidecar(&b, "Old/book.m4b", b"audio").await;
+        let moved = b
+            .move_object("Old/book.m4b", "New/book.m4b", &MoveOptions::default())
+            .await
+            .unwrap();
+        assert!(moved.atomic && !moved.already_moved);
+        assert_eq!(b.get("New/book.m4b").await.unwrap().as_ref(), b"audio");
+        assert!(!b.exists("Old/book.m4b").await.unwrap());
+        assert!(b
+            .exists(&bookclerk_meta_sidecar_key("New/book.m4b"))
+            .await
+            .unwrap());
+        assert!(!b
+            .exists(&bookclerk_meta_sidecar_key("Old/book.m4b"))
+            .await
+            .unwrap());
+        let again = b
+            .move_object("Old/book.m4b", "New/book.m4b", &MoveOptions::default())
+            .await
+            .unwrap();
+        assert!(again.already_moved);
+        let missing = b
+            .move_object("Gone/x", "Else/x", &MoveOptions::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(missing, StorageError::NotFound(_)), "{missing}");
+    }
+
+    #[tokio::test]
+    async fn a_move_without_a_sidecar_clears_a_stale_one_at_the_target() {
+        let (_dir, b) = intent_backend();
+        put_with_sidecar(&b, "to.m4b", b"old").await;
+        b.put(
+            "from.m4b",
+            Bytes::from_static(b"new"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        b.move_object("from.m4b", "to.m4b", &MoveOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(b.get("to.m4b").await.unwrap().as_ref(), b"new");
+        assert!(!b
+            .exists(&bookclerk_meta_sidecar_key("to.m4b"))
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn no_overwrite_keeps_an_existing_target_and_the_source() {
+        let (_dir, b) = intent_backend();
+        b.put("a", Bytes::from_static(b"a"), ObjectMeta::default())
+            .await
+            .unwrap();
+        b.put("b", Bytes::from_static(b"b"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let options = MoveOptions {
+            no_overwrite: true,
+            ..MoveOptions::default()
+        };
+        let err = b.move_object("a", "b", &options).await.unwrap_err();
+        assert!(matches!(err, StorageError::Conflict(_)), "{err}");
+        assert_eq!(b.get("a").await.unwrap().as_ref(), b"a");
+        assert_eq!(b.get("b").await.unwrap().as_ref(), b"b");
+        let moved = b.move_object("a", "c/d", &options).await.unwrap();
+        assert!(moved.atomic);
+        assert_eq!(b.get("c/d").await.unwrap().as_ref(), b"a");
+        assert!(!b.exists("a").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn if_source_match_moves_only_the_object_that_was_read() {
+        let (_dir, b) = intent_backend();
+        b.put("a", Bytes::from_static(b"one"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let read = b.head("a").await.unwrap().unwrap().etag.unwrap();
+        b.put("a", Bytes::from_static(b"two"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let stale = MoveOptions {
+            if_source_match: Some(read),
+            ..MoveOptions::default()
+        };
+        let err = b.move_object("a", "b", &stale).await.unwrap_err();
+        assert!(matches!(err, StorageError::Conflict(_)), "{err}");
+        let current = MoveOptions {
+            if_source_match: b.head("a").await.unwrap().unwrap().etag,
+            ..MoveOptions::default()
+        };
+        b.move_object("a", "b", &current).await.unwrap();
+        assert_eq!(b.get("b").await.unwrap().as_ref(), b"two");
+    }
+
+    #[tokio::test]
+    async fn moving_a_directory_key_is_refused() {
+        let (_dir, b) = intent_backend();
+        b.put("dir/x", Bytes::from_static(b"x"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let err = b
+            .move_object("dir", "other", &MoveOptions::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::InvalidKey(_)), "{err}");
+        assert!(b.exists("dir/x").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_etag_changes_when_the_file_is_rewritten_and_not_when_it_is_read() {
+        let (_dir, b) = intent_backend();
+        b.put("a", Bytes::from_static(b"same"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let first = b.head("a").await.unwrap().unwrap();
+        assert!(first.etag.is_some());
+        assert_eq!(first.etag, first.signature);
+        let _ = b.get("a").await.unwrap();
+        assert_eq!(b.head("a").await.unwrap().unwrap().etag, first.etag);
+        b.put("a", Bytes::from_static(b"diff"), ObjectMeta::default())
+            .await
+            .unwrap();
+        assert_ne!(b.head("a").await.unwrap().unwrap().etag, first.etag);
+    }
+
+    #[tokio::test]
+    async fn if_none_match_publishes_once_and_atomically() {
+        let (_dir, b) = intent_backend();
+        let first = put_if(&b, "k", b"first", &WriteCondition::IfNoneMatch)
+            .await
+            .unwrap();
+        assert!(first.atomic);
+        assert_eq!(first.put.etag, b.head("k").await.unwrap().unwrap().etag);
+        let err = put_if(&b, "k", b"second", &WriteCondition::IfNoneMatch)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Conflict(_)), "{err}");
+        assert_eq!(b.get("k").await.unwrap().as_ref(), b"first");
+        let leftovers: Vec<_> = std::fs::read_dir(&b.root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains("bookclerk-tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
+    }
+
+    #[tokio::test]
+    async fn if_match_writes_only_over_the_object_that_was_read() {
+        let (_dir, b) = intent_backend();
+        b.put("k", Bytes::from_static(b"v1"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let read = b.head("k").await.unwrap().unwrap().etag.unwrap();
+        let written = put_if(&b, "k", b"v2", &WriteCondition::IfMatch(read.clone()))
+            .await
+            .unwrap();
+        assert!(!written.atomic, "ifMatch is a check just before the rename");
+        let err = put_if(&b, "k", b"v3", &WriteCondition::IfMatch(read))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Conflict(_)), "{err}");
+        assert_eq!(b.get("k").await.unwrap().as_ref(), b"v2");
+        let absent = put_if(&b, "new", b"x", &WriteCondition::IfMatch("e".into()))
+            .await
+            .unwrap_err();
+        assert!(matches!(absent, StorageError::Conflict(_)), "{absent}");
+        assert!(!b.exists("new").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_hinted_listing_fills_signatures_and_filters_by_time() {
+        let (dir, b) = intent_backend();
+        b.put("p/old", Bytes::from_static(b"o"), ObjectMeta::default())
+            .await
+            .unwrap();
+        b.put("p/new", Bytes::from_static(b"n"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let past = FileTime::from_unix_time(1_000_000, 0);
+        set_file_times(dir.path().join("p/old"), past, past).unwrap();
+        let since = 2_000_000_000;
+        let page = b
+            .list_hinted(&ListRequest {
+                prefix: "p/".into(),
+                limit: 10,
+                with_signatures: true,
+                modified_since_ms: Some(since),
+                ..ListRequest::default()
+            })
+            .await
+            .unwrap();
+        assert!(page.signatures_included && page.modified_since_applied);
+        let keys: Vec<_> = page.page.objects.iter().map(|o| o.key.as_str()).collect();
+        assert_eq!(keys, ["p/new"]);
+        let entry = &page.page.objects[0];
+        assert!(entry.signature.is_some() && entry.modified_at_ms.is_some());
+        assert_eq!(
+            entry.etag,
+            b.head("p/new").await.unwrap().unwrap().etag,
+            "a listing and a probe agree"
+        );
+        let plain = b
+            .list_hinted(&ListRequest {
+                prefix: "p/".into(),
+                limit: 10,
+                ..ListRequest::default()
+            })
+            .await
+            .unwrap();
+        assert!(!plain.signatures_included && !plain.modified_since_applied);
+        assert_eq!(plain.page.objects.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_prefix_move_renames_a_page_and_refuses_overlap() {
+        let (_dir, b) = intent_backend();
+        for key in ["a/1", "a/2", "a/sub/3"] {
+            b.put(key, Bytes::from_static(b"x"), ObjectMeta::default())
+                .await
+                .unwrap();
+        }
+        let page = b
+            .move_prefix("a/", "b/", None, 100, &MoveOptions::default())
+            .await
+            .unwrap();
+        assert!(page.atomic);
+        assert_eq!(page.objects_moved, 3);
+        assert!(page.results.iter().all(|r| r.error.is_none()));
+        for key in ["b/1", "b/2", "b/sub/3"] {
+            assert!(b.exists(key).await.unwrap(), "{key}");
+        }
+        let err = b
+            .move_prefix("b/", "b/sub/", None, 100, &MoveOptions::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::InvalidKey(_)), "{err}");
+    }
+
+    #[test]
+    fn the_backend_reports_its_native_operations() {
+        let (_dir, b) = intent_backend();
+        assert_eq!(b.capabilities(), LocalFsBackend::CAPABILITIES);
+    }
+
+    fn put_if_absent_body(
+        body: &'static [u8],
+    ) -> (
+        std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        ObjectMeta,
+    ) {
+        (
+            Box::pin(std::io::Cursor::new(body.to_vec())),
+            ObjectMeta {
+                content_length: Some(body.len() as u64),
+                ..ObjectMeta::default()
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn network_mounts_never_use_hard_links_and_say_so() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf())
+            .unwrap()
+            .with_fs_kind(FsKind::Remote);
+        let (body, meta) = put_if_absent_body(b"one");
+        let first = backend
+            .put_stream_conditional("a.m4b", body, meta, &WriteCondition::IfNoneMatch)
+            .await
+            .unwrap();
+        assert!(!first.atomic);
+        let (body, meta) = put_if_absent_body(b"two");
+        let again = backend
+            .put_stream_conditional("a.m4b", body, meta, &WriteCondition::IfNoneMatch)
+            .await;
+        assert!(matches!(again, Err(StorageError::Conflict(_))), "{again:?}");
+        assert_eq!(backend.get("a.m4b").await.unwrap().as_ref(), b"one");
+
+        backend
+            .put(
+                "taken.m4b",
+                Bytes::from_static(b"other"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        let no_overwrite = MoveOptions {
+            no_overwrite: true,
+            ..MoveOptions::default()
+        };
+        let refused = backend
+            .move_object("a.m4b", "taken.m4b", &no_overwrite)
+            .await;
+        assert!(
+            matches!(refused, Err(StorageError::Conflict(_))),
+            "{refused:?}"
+        );
+        assert_eq!(backend.get("taken.m4b").await.unwrap().as_ref(), b"other");
+
+        let moved = backend
+            .move_object("a.m4b", "b/a.m4b", &no_overwrite)
+            .await
+            .unwrap();
+        assert!(!moved.atomic);
+        assert!(!backend.exists("a.m4b").await.unwrap());
+        assert_eq!(backend.get("b/a.m4b").await.unwrap().as_ref(), b"one");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let nlink = std::fs::metadata(dir.path().join("b/a.m4b"))
+                .unwrap()
+                .nlink();
+            assert_eq!(nlink, 1, "a network-mount move left a second name");
+        }
+    }
+
+    #[tokio::test]
+    async fn network_mount_signatures_leave_out_inode_and_ctime() {
+        let dir = tempdir().unwrap();
+        let local = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        local
+            .put("a.json", Bytes::from_static(b"{}"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let remote = local.clone().with_fs_kind(FsKind::Remote);
+        let signature = remote.probe("a.json").await.unwrap().signature.unwrap();
+        assert_eq!(signature.split('-').count(), 2, "{signature}");
+        assert!(signature.starts_with("2-"), "size first: {signature}");
+        let page = remote
+            .list_hinted(&ListRequest {
+                prefix: String::new(),
+                limit: 10,
+                with_signatures: true,
+                ..ListRequest::default()
+            })
+            .await
+            .unwrap();
+        let listed = page
+            .page
+            .objects
+            .iter()
+            .find(|o| o.key == "a.json")
+            .unwrap();
+        assert_eq!(listed.signature.as_deref(), Some(signature.as_str()));
+        // An ifMatch write on the mount compares against the same form.
+        let (body, meta) = put_if_absent_body(b"[]");
+        remote
+            .put_stream_conditional("a.json", body, meta, &WriteCondition::IfMatch(signature))
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn put_file_onto_a_link_to_its_own_source_keeps_the_bytes() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("lib")).unwrap();
+        let backend = LocalFsBackend::new(dir.path().join("lib"))
+            .unwrap()
+            .with_fs_kind(FsKind::Remote);
+        let source = dir.path().join("scratch.m4b");
+        std::fs::write(&source, b"audiobook").unwrap();
+        // What a retried NFS link leaves behind: the target already names
+        // the source.
+        std::fs::hard_link(&source, dir.path().join("lib/book.m4b")).unwrap();
+        backend
+            .put_file("book.m4b", &source, ObjectMeta::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            backend.get("book.m4b").await.unwrap().as_ref(),
+            b"audiobook"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retried_rename_that_already_happened_counts_as_done() {
+        let dir = tempdir().unwrap();
+        let from = dir.path().join("from");
+        let to = dir.path().join("to");
+        std::fs::write(&to, b"moved").unwrap();
+        rename_settled(&from, &to).await.unwrap();
+        let neither = rename_settled(&from, &dir.path().join("nowhere")).await;
+        assert_eq!(neither.unwrap_err().kind(), std::io::ErrorKind::NotFound);
     }
 }

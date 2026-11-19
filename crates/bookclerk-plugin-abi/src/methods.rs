@@ -2,7 +2,7 @@
 //!
 //! Each submodule exposes a single [`NAME`](health::NAME) constant equal to
 //! the corresponding `ContentSource` / `RemoteLibrary` / `Oidc` /
-//! `MetadataProvider` / `CoverFetcher` / `Cli` /
+//! `MetadataProvider` / `CoverFetcher` / `MetadataFiles` / `Cli` /
 //! `EventConsumer` / `EventPublisher` / `QueueConsumer` / `QueueProducer` /
 //! `PluginWorker` method in
 //! `schema/plugin.capnp`. Prefer these constants over string literals when
@@ -50,6 +50,8 @@ pub const METHOD_NAMES: &[&str] = &[
     search::NAME,
     chapters::NAME,
     fetch_covers::NAME,
+    parse::NAME,
+    render::NAME,
     put::NAME,
     get::NAME,
     exists::NAME,
@@ -215,6 +217,25 @@ pub mod chapters {
 pub mod fetch_covers {
     /// Wire method name `"fetchCovers"`.
     pub const NAME: &str = "fetchCovers";
+}
+
+/// What one metadata file says (Cap'n Proto `MetadataFiles.parse`).
+///
+/// Params: [`crate::MetadataFileParseParams`]. Result:
+/// [`crate::MetadataFileParsed`].
+pub mod parse {
+    /// Wire method name `"parse"`.
+    pub const NAME: &str = "parse";
+}
+
+/// A metadata file's bytes with chosen fields rewritten (Cap'n Proto
+/// `MetadataFiles.render`).
+///
+/// Params: [`crate::MetadataFileRenderParams`]. Result:
+/// [`crate::MetadataFileRendered`].
+pub mod render {
+    /// Wire method name `"render"`.
+    pub const NAME: &str = "render";
 }
 
 /// Plugin-provided OIDC client templates (Cap'n Proto `Oidc.clients`).

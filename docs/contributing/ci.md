@@ -419,7 +419,7 @@ paths):
 | A declared `check_input` (a workspace executable a non-Cargo check launches, such as the `bookclerk-db-testkit` kit the SDK test wrappers spawn) | The checks declared for it, on top of the owner's own selection |
 | A declared `test_guests` executable | The launching package's tests re-run, with no propagation |
 | `ui/`, `packages/plugin-sdk*/`, ABI scripts | The UI, SDK ABI and API-doc checks |
-| A first-party workerd guest without a Cargo package (`crates/bookclerk-plugins/<tier>/<name>/`) | Its type-check, build and tests (`workerd_guests`) and its staged E2E. `packages/plugin-sdk/` also selects `workerd_guests`, because the guests type-check against it |
+| A first-party workerd guest without a Cargo package (`crates/bookclerk-plugins/<tier>/<name>/`) | Its type-check, build and tests (`workerd_guests`) and its staged E2E. `packages/plugin-sdk/` also selects `workerd_guests`, because the guests type-check against it, and so does `crates/bookclerk-db-testkit/`, because a guest with a plugin database tests it under every profile through the kit |
 | A reference example that declares `[[databases]]` and has a `test` script in `package.json`, a `pyproject.toml` or a `Cargo.toml` (`examples/plugins-<name>/`) | Its checks and suite under every database profile (`plugin_examples`) and its staged E2E. `crates/bookclerk-db-testkit/` and `crates/bookclerk-plugin-tools/` also select `plugin_examples`, as do `packages/plugin-sdk/` (with a TypeScript example), `packages/plugin-sdk-python/` (with a Python one) and anything that affects a Rust example's tests, such as the Rust SDK |
 | `docs/**` | The website tests (`site_test`) |
 | `tools/site/**`, `assets/brand/**` | The website tests and audit (`site_test`, `site_audit`) |
@@ -787,8 +787,8 @@ with the locked one when there is one. See
 ### Small-VPS envelope
 
 The check makes sure Bookclerk fits a small VPS. Its paths are the harness,
-the seed, the search rebuild, the library book page and the books HTTP
-handler. It runs in the release job, after the release build step when both
+the seed, the search rebuilds, the works page index and the works HTTP
+handlers. It runs in the release job, after the release build step when both
 are selected, so the hosts are compiled once per run.
 
 1. On the `ubuntu-latest` VM, `install-platform --release` builds what the
@@ -802,7 +802,9 @@ are selected, so the hosts are compiled once per run.
    into both release caches. Without that, they compile from scratch and the
    job gets slower, not faster.
 2. `docker run --memory=1g --memory-swap=1g --cpus=1` runs the seed (10,000
-   titles written 200 at a time, the way a scan page writes them), the
+   titles written 200 at a time, the way a scan page writes them, then the
+   works page index built over them), a `bookclerk library search
+   --rebuild-index` that builds the works search index, the
    daemon and the load in an Ubuntu container of the runner's own release
    (`ubuntu:<VERSION_ID>` from `/etc/os-release`, or `ubuntu:24.04` on a
    non-Ubuntu host), because the hosts link the runner's glibc and libssl.
@@ -815,7 +817,13 @@ later step fails.
 
 What is gated:
 
-- Books routes must return 200, and `q=Title` must hit the rebuilt index.
+- The works routes must return 200 with at least one work each: the first
+  page by title and by author, the `status` and `account` filters, a page
+  8,000 works in (by following `next_cursor`), and `q=Title`. The indexes
+  are built before the daemon starts, as a library that has been running
+  has them, so the daemon queues no rebuild of its own; before the routes
+  are timed, the harness still waits up to 900 s for any index rebuild job
+  to finish and for both indexes to answer.
 - Daemon anonymous memory stays under 256 MiB after idle and during the API
   windows. That is `RssAnon` when `/proc/<pid>/status` reports it,
   otherwise `memory.stat` `anon`, or `memory.current` when anon is absent.
@@ -1822,13 +1830,20 @@ the macOS checks are best effort:
 3. The gate prints a warning and a step-summary note that the macOS checks
    didn't run on that commit.
 
+A [build-only `main` push](#build-only-main-pushes) needs no retry. There
+the macOS job only compiles and saves the macOS `debug` cache, and the
+merge queue already ran the macOS checks on that commit. If GitHub never
+gives it a runner, the same step vouches for it on the first try, so
+`main` doesn't show a failed run for a cache save. The next `main` push
+that gets a runner saves the cache.
+
 `CI Gate` sees such a job as `abandoned` in `needs` (the jobs API reports
 it as `cancelled`), so it accepts either result for a job the step
 vouched for.
 
 A macOS job that ran and failed, or was cancelled after it started, always
-fails the gate. So does a stranded job on a `main` push or an OSV
-remediation run. The gate job reads the GitHub API with a read-only token
+fails the gate. So does a stranded job on an OSV remediation run or a push
+to any branch other than `main`. The gate job reads the GitHub API with a read-only token
 (`actions`, `checks` and `issues`).
 
 ### Merge-queue re-enqueue

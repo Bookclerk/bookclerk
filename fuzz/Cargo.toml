@@ -14,8 +14,9 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 httparse = "1"
 serde_json = "1"
-# Determinism checks in the libro_catalog oracle serialize the records.
-serde = "1"
+# Determinism checks in the libro_catalog oracle serialize the records;
+# the clerk_socket_frame oracle reads a page's works with a derived struct.
+serde = { version = "1", features = ["derive"] }
 # The event_read oracle restates the cursor time rule.
 chrono = "0.4"
 bookclerk-plugin-abi = { path = "../crates/bookclerk-plugin-abi", features = ["host"] }
@@ -27,16 +28,23 @@ bookclerk-plugin-sdk = { path = "../crates/bookclerk-plugin-sdk" }
 bookclerk-resolve = { path = "../crates/bookclerk-resolve" }
 bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
+bookclerk-tags = { path = "../crates/bookclerk-tags" }
 bookclerk-config = { path = "../crates/bookclerk-config" }
 bookclerk-plugin-source-libro = { path = "../crates/bookclerk-plugins/optional/source-libro" }
+bookclerk-audible-catalog = { path = "../crates/bookclerk-audible-catalog" }
 bookclerk-plugin-source-graphicaudio = { path = "../crates/bookclerk-plugins/optional/source-graphicaudio" }
 # plan_authz drives the scan and acquire planners over an in-memory library.
 bookclerk-library = { path = "../crates/bookclerk-library" }
 bookclerk-plugin-database-sqlite = { path = "../crates/bookclerk-plugins/platform/database-sqlite", features = ["host-helpers"] }
 bookclerk-storefront = { path = "../crates/bookclerk-storefront" }
+# s3_event reads S3 notification messages (no `s3` feature: the parser has
+# no AWS client).
+bookclerk-storage = { path = "../crates/bookclerk-storage" }
 # window_policy drives the desktop window's custom-scheme policy.
 bookclerk-window-policy = { path = "../crates/bookclerk-window-policy" }
 http = "1"
+# The storage_reply oracle reads per-key outcomes straight from the message.
+capnp = "0.27"
 # Independent re-signing oracle for cover_token.
 base64 = "0.23"
 hmac = "0.13"
@@ -136,8 +144,43 @@ doc = false
 bench = false
 
 [[bin]]
+name = "metadata_file_record"
+path = "fuzz_targets/metadata_file_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "event_read"
 path = "fuzz_targets/event_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "storage_reply"
+path = "fuzz_targets/storage_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "socket_request"
+path = "fuzz_targets/socket_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "socket_broker"
+path = "fuzz_targets/socket_broker.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "socket_route"
+path = "fuzz_targets/socket_route.rs"
 test = false
 doc = false
 bench = false
@@ -227,6 +270,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "tags_read"
+path = "fuzz_targets/tags_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tags_wire"
+path = "fuzz_targets/tags_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "branch_request"
 path = "fuzz_targets/branch_request.rs"
 test = false
@@ -234,22 +291,50 @@ doc = false
 bench = false
 
 [[bin]]
-name = "client_authorization"
-path = "fuzz_targets/client_authorization.rs"
+name = "clerk_authorization"
+path = "fuzz_targets/clerk_authorization.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "client_authorize"
-path = "fuzz_targets/client_authorize.rs"
+name = "clerk_authorize"
+path = "fuzz_targets/clerk_authorize.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "client_token_request"
-path = "fuzz_targets/client_token_request.rs"
+name = "clerk_token_request"
+path = "fuzz_targets/clerk_token_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clerk_token_answer"
+path = "fuzz_targets/clerk_token_answer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "copy_range"
+path = "fuzz_targets/copy_range.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "copy_answer"
+path = "fuzz_targets/copy_answer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clerk_socket_frame"
+path = "fuzz_targets/clerk_socket_frame.rs"
 test = false
 doc = false
 bench = false
@@ -257,6 +342,20 @@ bench = false
 [[bin]]
 name = "members_books_request"
 path = "fuzz_targets/members_books_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "patron_scope_request"
+path = "fuzz_targets/patron_scope_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "work_split_request"
+path = "fuzz_targets/work_split_request.rs"
 test = false
 doc = false
 bench = false
@@ -283,6 +382,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "destination_id"
+path = "fuzz_targets/destination_id.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "instance_config"
+path = "fuzz_targets/instance_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "cache_settings"
 path = "fuzz_targets/cache_settings.rs"
 test = false
@@ -292,6 +405,13 @@ bench = false
 [[bin]]
 name = "libro_catalog"
 path = "fuzz_targets/libro_catalog.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audible_catalog"
+path = "fuzz_targets/audible_catalog.rs"
 test = false
 doc = false
 bench = false
@@ -313,6 +433,13 @@ bench = false
 [[bin]]
 name = "window_policy"
 path = "fuzz_targets/window_policy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "s3_event"
+path = "fuzz_targets/s3_event.rs"
 test = false
 doc = false
 bench = false

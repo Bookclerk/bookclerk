@@ -18,7 +18,7 @@
  *   read-only per branch in Settings → Branches, with a bulk remove for
  *   titles from a branch that stopped sharing or left.
  * - An Owner of the library may instead let an **empty** install join as a
- *   **shared branch** (code name: an owner node): it shares the library's database
+ *   **shared branch** (code name: a shared node): it shares the library's database
  *   and keys and replaces whatever the install held. The choice is made on
  *   the consent page, needs a fresh second factor, and is bound to the
  *   code; the keys travel daemon to daemon, sealed to the joining node,
@@ -26,6 +26,7 @@
  */
 
 import { ApiError, type ConfigNodeView } from "@/lib/api";
+import type { ClerkCardView } from "@/lib/clerk";
 
 /** What a library says about itself, read by this install's daemon. */
 export interface LibraryInfoView {
@@ -72,11 +73,11 @@ export interface BranchLinkView {
   /** "Keep copies of other members' books" (off by default): also write their books to this server's own outputs. */
   keep_member_copies?: boolean;
   /**
-   * "Use this computer to download" (on by default). Off makes this server
-   * a window of the library: it runs none of its work and shows the books
-   * the library holds for this server's person instead.
+   * "Keep copies on this computer" (on by default): take the library's
+   * copies of this server's person's books into its own storage. The
+   * branch takes the library's work and shows its books either way.
    */
-  download?: boolean;
+  keep_copies?: boolean;
   /** The most jobs this server runs for the library at once; `null` is an equal share of the machine. */
   max_jobs?: number | null;
   /** Jobs the library may have running here now (its share of the machine); absent while its link is not running. */
@@ -335,7 +336,7 @@ export class JoinApiError extends ApiError {
  * @param init - Method and optional JSON body.
  * @returns The parsed body.
  */
-async function request<T>(
+export async function request<T>(
   path: string,
   init: { method?: string; body?: unknown } = {},
 ): Promise<T> {
@@ -662,19 +663,18 @@ export function connectionsAddedLine(library: string, report: ConnectionsAdded):
 }
 
 /**
- * Settings → Library: "Use this computer to download" for one library this
- * server is a branch of (the operator or an Owner). Off makes this server a
- * window of that library: its plugins stop here and held jobs go back at
- * once. The two book-sharing settings are sent as they are, since the
- * route takes them on every change; the others are left as they are.
+ * Settings → Library: "Keep copies on this computer" for one library this
+ * server is a branch of (the operator or an Owner). The two book-sharing
+ * settings are sent as they are, since the route takes them on every
+ * change; the others are left as they are.
  *
  * @param link - The library's link as last read.
- * @param download - The new setting.
+ * @param keepCopies - The new setting.
  * @returns The link with the stored settings.
  */
-export function setLinkDownload(
+export function setLinkKeepCopies(
   link: Pick<BranchLinkView, "cluster_id" | "share_books" | "include_branches">,
-  download: boolean,
+  keepCopies: boolean,
 ): Promise<{ cluster: BranchLinkView }> {
   return request("/api/config/join/sharing", {
     method: "POST",
@@ -682,37 +682,14 @@ export function setLinkDownload(
       cluster_id: link.cluster_id,
       share_books: link.share_books ?? true,
       include_branches: link.include_branches ?? true,
-      download,
+      keep_copies: keepCopies,
     },
   });
 }
 
-/**
- * After a join from the desktop window: makes this computer a window of the
- * library it just joined, by turning "Use this computer to download" off.
- * The library's plugins wait for approval before they run here, so nothing
- * downloads in between.
- *
- * @param link - The link the join recorded.
- * @returns True when downloading is off; false when the setting could not be
- *   stored (the link stays a downloading branch until it is changed in
- *   Settings → Library).
- */
-export async function makeWindowOf(
-  link: Pick<BranchLinkView, "cluster_id" | "share_books" | "include_branches" | "download">,
-): Promise<boolean> {
-  if (link.download === false) return true;
-  try {
-    await setLinkDownload(link, false);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** One edition in the window view, and the library that holds it. */
 export interface WindowEditionView {
-  /** The library (cluster id) that holds it for this server's person. */
+  /** The library (cluster id) that holds it. */
   cluster_id: string;
   /** The library's origin. */
   owner_origin: string;
@@ -738,9 +715,14 @@ export interface WindowEditionView {
   series_index?: string | null;
   /** Length in minutes, when known. */
   length_minutes?: number | null;
+  /**
+   * True when this server's person holds it there through a store account
+   * of their own; false for a book only other people there hold.
+   */
+  yours: boolean;
 }
 
-/** One work in the window view: every edition its libraries hold for the person. */
+/** One work in the window view: every edition its libraries hold. */
 export interface WindowEntryView {
   /** Stable key for the entry. */
   key: string;
@@ -752,20 +734,47 @@ export interface WindowEntryView {
 
 /** `GET /api/config/join/window`. */
 export interface WindowBooks {
-  /** The libraries this server is a window of. */
+  /** The libraries this server is an active branch of. */
   clusters: BranchLinkView[];
-  /** Their books for this server's person, by title. */
+  /** The libraries this server holds an active library card for. */
+  cards: ClerkCardView[];
+  /** Their books, every one they list for a member, by title. */
   books: WindowEntryView[];
 }
 
 /**
- * The window view (the operator or an Owner): the books every library this
- * server is a window of holds for its person, merged by work.
+ * Books in other libraries (the operator or an Owner): the books of every
+ * library this server is a branch of or holds a library card for, merged
+ * by work, each edition marked where it is this server's person's.
  *
  * @returns The libraries and their books.
  */
 export function fetchWindowBooks(): Promise<WindowBooks> {
   return request("/api/config/join/window");
+}
+
+/**
+ * The hosts of the libraries a window view reads, each once: the libraries
+ * this server is a branch of, then those it holds a card for.
+ *
+ * @param view - The window view.
+ * @returns For example `["books.example.com", "other.example"]`.
+ */
+export function windowLibraries(view: Pick<WindowBooks, "clusters" | "cards">): string[] {
+  const hosts: string[] = [];
+  for (const origin of [
+    ...view.clusters.map((link) => link.owner_origin),
+    ...(view.cards ?? []).map((card) => card.origin),
+  ]) {
+    let host = origin;
+    try {
+      host = new URL(origin).host || origin;
+    } catch {
+      // keep the origin as given
+    }
+    if (!hosts.includes(host)) hosts.push(host);
+  }
+  return hosts;
 }
 
 /**
@@ -787,6 +796,34 @@ export function filterWindowBooks(books: WindowEntryView[], q: string): WindowEn
       ),
     ),
   );
+}
+
+/**
+ * True when any edition of the entry is this server's person's own.
+ *
+ * @param entry - A window entry.
+ * @returns Whether to mark it Yours.
+ */
+export function windowEntryIsYours(entry: WindowEntryView): boolean {
+  return entry.editions.some((edition) => edition.yours);
+}
+
+/**
+ * The entries to show: those matching the Library search, and with
+ * `onlyYours` only the person's own.
+ *
+ * @param books - The merged window entries.
+ * @param q - The Library search text.
+ * @param onlyYours - Keep only entries with an edition of the person's.
+ * @returns The entries to show, in their order.
+ */
+export function shownWindowBooks(
+  books: WindowEntryView[],
+  q: string,
+  onlyYours: boolean,
+): WindowEntryView[] {
+  const found = filterWindowBooks(books, q);
+  return onlyYours ? found.filter(windowEntryIsYours) : found;
 }
 
 /**
@@ -901,12 +938,12 @@ export function fetchBranchConsent(search: string): Promise<BranchConsentView> {
   return request(`/api/auth/branch-consent?${query}`);
 }
 
-/** `GET /api/auth/client-consent`: what a clerk's consent page shows. */
-export interface ClientConsentView {
+/** `GET /api/auth/clerk-consent`: what a clerk's consent page shows. */
+export interface ClerkConsentView {
   /** This library's name, as the consent question shows it. */
   library_name: string;
   /** The name the clerk gave itself. */
-  client_name: string;
+  clerk_name: string;
   /** Where the browser goes back to (the clerk). */
   redirect_origin: string;
   /** The signed-in user the clerk would sign in as. */
@@ -919,9 +956,9 @@ export interface ClientConsentView {
  * @param search - The authorize request (query string).
  * @returns The consent view.
  */
-export function fetchClientConsent(search: string): Promise<ClientConsentView> {
+export function fetchClerkConsent(search: string): Promise<ClerkConsentView> {
   const query = search.startsWith("?") ? search.slice(1) : search;
-  return request(`/api/auth/client-consent?${query}`);
+  return request(`/api/auth/clerk-consent?${query}`);
 }
 
 /**
@@ -931,11 +968,11 @@ export function fetchClientConsent(search: string): Promise<ClientConsentView> {
  * @param approve - True to give the clerk a library card.
  * @returns Where to send the browser.
  */
-export function answerClientConsent(
+export function answerClerkConsent(
   search: string,
   approve: boolean,
 ): Promise<{ redirect: string }> {
-  return request("/api/auth/client-consent", {
+  return request("/api/auth/clerk-consent", {
     method: "POST",
     body: { ...authorizeParams(search), approve },
   });
@@ -1014,28 +1051,28 @@ export function beginSharedBranchStepUp(): Promise<{
   return request("/api/auth/branch-consent/step-up", { method: "POST", body: {} });
 }
 
-/** `GET /api/config/shared-branches`: the owner nodes for Settings → Shared branches. */
+/** `GET /api/config/shared-branches`: the shared nodes for Settings → Shared branches. */
 export interface SharedBranchesResponse {
   /** This server's node id. */
   node_id: string;
-  /** The owner nodes the caller may see, shaped like `listConfigNodes`'s. */
+  /** The shared nodes the caller may see, shaped like `listConfigNodes`'s. */
   nodes: ConfigNodeView[];
 }
 
 /**
- * Lists the owner nodes (this server and its shared branches) for Settings → Shared branches:
+ * Lists the shared nodes (this server and its shared branches) for Settings → Shared branches:
  * every one for the operator or an Owner, who may remove any of them;
  * another user only the ones they own. Unlike `listConfigNodes`, an Owner
  * sees shared branches owned by nobody or by other Owners.
  *
- * @returns This server's node id and the owner nodes.
+ * @returns This server's node id and the shared nodes.
  */
 export function listSharedBranches(): Promise<SharedBranchesResponse> {
   return request("/api/config/shared-branches");
 }
 
 /**
- * Removes an owner node (a shared branch) that no longer runs; Settings → Shared branches
+ * Removes a shared node (a shared branch) that no longer runs; Settings → Shared branches
  * lists them from `listSharedBranches`.
  *
  * @param nodeId - The node to remove.
@@ -1285,14 +1322,14 @@ export function rememberApproveReturn(location: string): void {
 /**
  * Takes the remembered consent page address once, if it is one.
  *
- * @returns `/join/approve?…` or `/client/approve?…` (with or without a
+ * @returns `/join/approve?…` or `/clerk/approve?…` (with or without a
  *   slash before the query, as {@link joinPage} accepts both), or `null`.
  */
 export function takeApproveReturn(): string | null {
   try {
     const value = sessionStorage.getItem(APPROVE_RETURN);
     sessionStorage.removeItem(APPROVE_RETURN);
-    return value && /^\/(?:join|client)\/approve\/?\?/.test(value) ? value : null;
+    return value && /^\/(?:join|clerk)\/approve\/?\?/.test(value) ? value : null;
   } catch {
     return null;
   }
@@ -1324,14 +1361,14 @@ export function dismissWelcome(): void {
 }
 
 /**
- * Only the owner nodes (`kind = owner`): the shared branches of this library.
+ * Only the shared nodes (`kind = shared`): the shared branches of this library.
  *
  * @param nodes - Every node the caller sees.
  * @returns The ones that share this library's database, this server first.
  */
 export function sharedBranchNodes(nodes: ConfigNodeView[]): ConfigNodeView[] {
   return nodes
-    .filter((node) => node.kind === "owner")
+    .filter((node) => node.kind === "shared")
     .sort(
       (a, b) => Number(b.this_node) - Number(a.this_node) || a.node_id.localeCompare(b.node_id),
     );

@@ -1,6 +1,6 @@
-//! Jobs run by a Host node over the node API (H-4 design, sections 3 and 5).
+//! Jobs run by a Branch node over the node API (H-4 design, sections 3 and 5).
 //!
-//! A Host pulls work through the owner node holding its socket. Every call
+//! A Host pulls work through the shared node holding its socket. Every call
 //! here maps one work frame onto the claim and fence machinery the local
 //! workers use, as a [`Claimant::Remote`]:
 //!
@@ -24,7 +24,7 @@
 //! The lease owner written on a Host's job is [`remote_lease_owner`], so a
 //! fence the Host presents is the job id plus the lease generation, and no
 //! other node can present it. Nothing here keeps per-connection state: a
-//! Host that reconnects (to this or another owner node) presents its fences
+//! Host that reconnects (to this or another shared node) presents its fences
 //! again and each one is checked against the database, so a fence that
 //! expired and was reclaimed while the Host was away is lost. The secrets
 //! handed under each fence are recorded in `job_secret_handoffs` for the
@@ -121,7 +121,7 @@ impl std::fmt::Debug for JobSecret {
 }
 
 /// What a Host's claim settles on: the routing and lease settings of the
-/// owner node serving it.
+/// shared node serving it.
 #[derive(Debug, Clone, Copy)]
 pub struct RemoteClaimSettings {
     /// Lease length; permits are taken for the same time.
@@ -341,7 +341,7 @@ pub async fn claim_remote_job(
                 .fail_job(
                     &fence,
                     SECRETS_UNAVAILABLE,
-                    "the job's secrets could not be unsealed for a host node",
+                    "the job's secrets could not be unsealed for a branch node",
                 )
                 .await;
             let _ = release_permits(store, &permits).await;
@@ -919,7 +919,7 @@ pub async fn live_remote_job(
 
 /// Overwrites the sealed value of `secret_ref` with `record` in one host
 /// batch, guarded on `fence` owning the running generation, the secret
-/// having been handed under it, and `node_id` being an owner node or a host
+/// having been handed under it, and `node_id` being a shared node or a host
 /// node with an unrevoked credential.
 ///
 /// Only an existing row is updated: a secret deleted since the handoff (its
@@ -989,7 +989,7 @@ async fn store_guarded_write_back(
                         AND EXISTS (
                             SELECT 1 FROM nodes
                              WHERE nodes.node_id = ?
-                               AND (nodes.kind = 'owner' OR EXISTS (
+                               AND (nodes.kind = 'shared' OR EXISTS (
                                    SELECT 1 FROM node_credentials
                                     WHERE node_credentials.node_id = nodes.node_id
                                       AND node_credentials.revoked_at IS NULL

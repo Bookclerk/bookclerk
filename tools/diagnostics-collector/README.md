@@ -14,12 +14,15 @@ fallback).
 | Method | Path | Who | Auth |
 |--------|------|-----|------|
 | `POST` | `/submit` | Bookclerk clients | none (validated + secret heuristics) |
+| `POST` | `/checkin` | Bookclerk clients that share usage | none (strict body, daily cap; see [Share usage](../../docs/server/diagnostics.md#share-usage)) |
 | `GET` | `/report?since=<ms>&after=<name>[&unfiled=1]` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `POST` | `/triage` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `POST` | `/issues/attach` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `GET` | `/health` | probes | none |
 | `GET` | `/robots.txt` | crawlers | none (disallows everything, all content signals `no`) |
 | `GET` | `/`, `/dash`, `/reports`, `/reports/<id>`, `/issues` | organization members | GitHub sign-in (`/auth/github`), session cookie |
+| `POST` | `/issues/link`, `/reports/triage`, `/signatures/mute` | organization members | session cookie and a same-origin `Origin` |
+| `POST` | `/admin/*` (including `/admin/close-issue`) | organization owners | session cookie and a same-origin `Origin` |
 
 The member dashboard is on only when the automation App's secrets are set;
 see [Member dashboard](../../docs/server/diagnostics.md#member-dashboard). Its code

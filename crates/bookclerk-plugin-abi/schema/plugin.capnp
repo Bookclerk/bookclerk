@@ -42,6 +42,13 @@ const maxScalarBytes :UInt32 = 262144;
 const maxStreamWindowBytes :UInt32 = 1048576;
 # Maximum objects in one `Destination.list` page.
 const maxListPage :UInt32 = 256;
+# Maximum keys or key pairs in one `Destination.moveMany`, `deleteMany` or
+# `headMany` call, and maximum outcomes in one reply.
+const maxBatchKeys :UInt32 = 256;
+# Maximum changes in one `Destination.changes` page.
+const maxChangesPage :UInt32 = 256;
+# Maximum bytes of a `Destination.changes` cursor.
+const maxChangesCursorBytes :UInt32 = 4096;
 # Maximum job / event checkpoint payload size (bytes).
 const maxCheckpointBytes :UInt32 = 65536;
 # Maximum titles, and separately removed product ids, in one `ScanPage`.
@@ -72,8 +79,38 @@ const maxCoverBytes :UInt32 = 10485760;
 # either direction (a condition the host sends, a header the server sent).
 # The host ignores a longer header the fetcher returns.
 const maxCoverHeaderBytes :UInt32 = 1024;
+# Largest metadata file `MetadataFiles.parse` reads and `MetadataFiles.render`
+# returns. The host skips a larger sidecar before any plugin sees it.
+const maxMetadataFileBytes :UInt32 = 262144;
+# Longest description a `MetadataFileRecord` carries, in UTF-8 bytes.
+const maxMetadataFileDescriptionBytes :UInt32 = 65536;
+# Longest other text value in a `MetadataFileRecord` (a title, a name, a
+# genre, a chapter title), in UTF-8 bytes.
+const maxMetadataFileTextBytes :UInt32 = 1024;
+# Most entries in each list of a `MetadataFileRecord` other than chapters
+# (credits, genres, tags, identifiers, series).
+const maxMetadataFileListEntries :UInt32 = 256;
+# Most chapters in a `MetadataFileRecord`.
+const maxMetadataFileChapters :UInt32 = 2000;
+# Most entries in `MetadataFileRenderParams.audioFiles`.
+const maxMetadataAudioFiles :UInt32 = 4096;
 # Longest `KvNamespace` key in UTF-8 bytes.
 const maxKvKeyBytes :UInt32 = 512;
+# Largest WebSocket message, text or binary, that `Sockets.send` accepts or
+# `SocketHandler.message` delivers.
+const maxSocketFrameBytes :UInt32 = 262144;
+# Largest per-socket attachment the host keeps for a sleeping guest.
+const maxSocketAttachmentBytes :UInt32 = 2048;
+# Most host-brokered sockets one plugin instance may hold open at once.
+const maxSocketsPerInstance :UInt32 = 8;
+# Most heartbeat pairs one `Sockets.connect` may declare.
+const maxSocketAutoResponses :UInt32 = 4;
+# Largest heartbeat request or response frame, in bytes.
+const maxSocketAutoResponseBytes :UInt32 = 256;
+# Longest `SocketConnectRequest.url`, in bytes.
+const maxSocketUrlBytes :UInt32 = 2048;
+# Most request headers, and separately subprotocols, on one `Sockets.connect`.
+const maxSocketHeaders :UInt32 = 16;
 # Largest `KvNamespace` metadata JSON text in bytes.
 const maxKvMetadataBytes :UInt32 = 1024;
 # Plugin `databaseMigrations` is a startup-time scalar (not a stream). Count is
@@ -100,6 +137,18 @@ const featureScalarLimits :Text = "rpc.scalarLimits";
 const featureStreams :Text = "rpc.streams";
 # Guest implements server-side `Destination.copy` (`storage.copy`).
 const featureStorageCopy :Text = "storage.copy";
+# Guest implements `Destination.move` (`storage.move`).
+const featureStorageMove :Text = "storage.move";
+# Guest implements `Destination.moveMany` (`storage.moveMany`).
+const featureStorageMoveMany :Text = "storage.moveMany";
+# Guest implements `Destination.deleteMany` (`storage.deleteMany`).
+const featureStorageDeleteMany :Text = "storage.deleteMany";
+# Guest implements `Destination.headMany` (`storage.headMany`).
+const featureStorageHeadMany :Text = "storage.headMany";
+# Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` (`storage.conditionalWrite`).
+const featureStorageConditionalWrite :Text = "storage.conditionalWrite";
+# Guest implements `Destination.changes` (`storage.changes`).
+const featureStorageChanges :Text = "storage.changes";
 
 # Guest-advertised caps for `rpc.scalarLimits`; never above the file constants.
 struct ScalarLimits {
@@ -136,6 +185,14 @@ struct ObjectMetadata {
   etag @3 :Text;
   # Raw SHA-256 digest (32 bytes) or empty when unknown.
   sha256 @4 :Data;
+  # Last modification time, UTC unix milliseconds; zero when unknown.
+  modifiedAtMs @5 :UInt64;
+  # Backend object version id (versioned buckets); empty when none.
+  versionId @6 :Text;
+  # Opaque change signature: an unchanged value means the object has not
+  # changed. Backend-defined (a local file's inode, size, mtime and ctime;
+  # an S3 ETag and version id). Empty when the backend has none.
+  signature @7 :Text;
 }
 
 # Compact object entry in a list page.
@@ -144,6 +201,17 @@ struct ObjectInfo {
   key @0 :Text;
   # Object size in bytes.
   size @1 :UInt64;
+  # Backend entity tag; empty when unsupported or not requested
+  # (`ListOptions.withSignatures`).
+  etag @2 :Text;
+  # Last modification time, UTC unix milliseconds; zero when unknown or not
+  # requested.
+  modifiedAtMs @3 :UInt64;
+  # Backend object version id; empty when none or not requested.
+  versionId @4 :Text;
+  # Opaque change signature, as `ObjectMetadata.signature`; empty when
+  # unsupported or not requested.
+  signature @5 :Text;
 }
 
 # Paging options for `Destination.list`.
@@ -154,6 +222,13 @@ struct ListOptions {
   cursor @1 :Text;
   # Requested page size; clamped to `maxListPage`. `0` means guest default.
   limit @2 :UInt32;
+  # Hint: fill `etag`, `modifiedAtMs`, `versionId` and `signature` on each
+  # entry. `ListPage.signaturesIncluded` says whether the guest did.
+  withSignatures @3 :Bool;
+  # Hint: only objects modified at or after this time (UTC unix
+  # milliseconds); zero lists everything. `ListPage.modifiedSinceApplied`
+  # says whether the guest filtered; when it did not, the page is unfiltered.
+  modifiedSinceMs @4 :UInt64;
 }
 
 # One page of `Destination.list` results.
@@ -162,6 +237,12 @@ struct ListPage {
   objects @0 :List(ObjectInfo);
   # Cursor for the next page; empty when exhausted.
   nextCursor @1 :Text;
+  # True when every entry carries the signature fields the backend has
+  # (`ListOptions.withSignatures` honoured).
+  signaturesIncluded @2 :Bool;
+  # True when the guest left out objects modified before
+  # `ListOptions.modifiedSinceMs`. False means the page is unfiltered.
+  modifiedSinceApplied @3 :Bool;
 }
 
 # Half-open byte window `[offset, offset + length)`.
@@ -190,6 +271,13 @@ struct WriteOptions {
   commitToken @3 :Text;
   # When true, `put` stages remotely and does not publish until `commit`.
   stageOnly @4 :Bool;
+  # Conditional write (`storage.conditionalWrite`): publish only while the
+  # stored object's `etag` equals this value, else fail with `conflict`.
+  # Empty means unconditional. A staged put checks it at `commit`.
+  ifMatch @5 :Text;
+  # Conditional write (`storage.conditionalWrite`): publish only when no
+  # object exists at the key, else fail with `conflict`.
+  ifNoneMatch @6 :Bool;
 }
 
 # Summary of a stored (or committed) object.
@@ -202,12 +290,159 @@ struct PutResult {
   etag @2 :Text;
   # Raw SHA-256 digest of the stored bytes; empty when not computed.
   sha256 @3 :Data;
+  # Modification time of the stored object, UTC unix milliseconds; zero when
+  # unknown.
+  modifiedAtMs @4 :UInt64;
+  # Version id of the stored object; empty when none.
+  versionId @5 :Text;
+  # Change signature of the stored object (`ObjectMetadata.signature`), so
+  # the host can recognise its own write in a later listing; empty when none.
+  signature @6 :Text;
 }
 
 # Summary of a server-side copy.
 struct CopyResult {
   # Bytes copied.
   bytesCopied @0 :UInt64;
+}
+
+# Options for `Destination.move` and `Destination.moveMany`. Fields are only
+# ever appended.
+struct MoveOptions {
+  # Fail with `conflict` instead of replacing an object at the target key.
+  noOverwrite @0 :Bool;
+  # `move` only: move only while the source's `etag` equals this value,
+  # else fail with `conflict`. Empty skips the check.
+  ifSourceMatch @1 :Text;
+}
+
+# Summary of `Destination.move`.
+struct MoveResult {
+  # True when the backend moved atomically (a rename): no reader saw the
+  # object at both keys or at neither.
+  atomic @0 :Bool;
+  # True when the source was already gone and the target present, as when
+  # a move is repeated after a restart. The move counts as done.
+  alreadyMoved @1 :Bool;
+}
+
+# One source and target key.
+struct KeyPair {
+  # Source object key (or source prefix).
+  from @0 :Text;
+  # Target object key (or target prefix).
+  to @1 :Text;
+}
+
+# What `Destination.moveMany` moves.
+struct MoveManyTarget {
+  union {
+    # Explicit moves, at most `maxBatchKeys`. Each is independent.
+    pairs @0 :List(KeyPair);
+    # Every object under `prefix.from` moves under `prefix.to`, keeping the
+    # rest of its key. Paged through `MoveManyRequest.cursor`.
+    prefix @1 :KeyPair;
+  }
+}
+
+# Argument of `Destination.moveMany`. Fields are only ever appended.
+struct MoveManyRequest {
+  # Explicit pairs or a prefix.
+  target @0 :MoveManyTarget;
+  # Prefix form: `MoveManyPage.nextCursor` from the previous call; empty
+  # starts. Ignored for `pairs`.
+  cursor @1 :Text;
+  # Prefix form: objects to move in this call, clamped to `maxBatchKeys`;
+  # zero means guest default.
+  limit @2 :UInt32;
+  # Overwrite rule applied to every move (`ifSourceMatch` is ignored).
+  options @3 :MoveOptions;
+}
+
+# Outcome for one key of a batch call.
+struct KeyOutcome {
+  # The key this outcome is for (the source key for moves).
+  key @0 :Text;
+  # Failure for this key; an empty `code` means it succeeded.
+  error @1 :PluginError;
+}
+
+# One page of `Destination.moveMany` progress.
+struct MoveManyPage {
+  # Outcomes in request order. A prefix move done in one step (a folder
+  # rename) may report a single outcome keyed by the source prefix.
+  results @0 :List(KeyOutcome);
+  # Prefix form: cursor for the next call; empty when every object moved.
+  nextCursor @1 :Text;
+  # True when every move in this page was atomic.
+  atomic @2 :Bool;
+  # Objects moved in this page (a folder rename counts what it carried
+  # when known, else the outcomes).
+  objectsMoved @3 :UInt64;
+}
+
+# Result of `Destination.deleteMany`.
+struct DeleteManyResult {
+  # One outcome per requested key, in request order. A missing key succeeds.
+  results @0 :List(KeyOutcome);
+}
+
+# Result of `Destination.headMany`.
+struct HeadManyResult {
+  # One probe per requested key, in request order.
+  objects @0 :List(HeadOk);
+}
+
+# Argument of `Destination.changes`. Fields are only ever appended.
+struct ChangesRequest {
+  # `ChangesPage.cursor` from the previous call. Empty asks for the current
+  # position: the page carries a cursor and no changes.
+  cursor @0 :Text;
+  # Requested changes per page, clamped to `maxChangesPage`; zero means
+  # guest default.
+  limit @1 :UInt32;
+}
+
+# What happened to an object in a change feed. Unknown codes are kept and
+# treated as `changed`.
+enum ObjectChangeKind {
+  # Something changed; probe the key to learn what.
+  changed @0;
+  # The object was created or rewritten.
+  upserted @1;
+  # The object was removed.
+  removed @2;
+}
+
+# One entry of a change feed.
+struct ObjectChange {
+  # Object key, relative to the destination root.
+  key @0 :Text;
+  # What happened to it.
+  kind @1 :ObjectChangeKind;
+  # Listing fields after the change when the feed carries them (signature
+  # fields may be empty); empty for `removed`.
+  info @2 :ObjectInfo;
+}
+
+# One page of `Destination.changes`.
+struct ChangesPage {
+  # Changes since the request's cursor, oldest first. A key may repeat.
+  changes @0 :List(ObjectChange);
+  # Cursor for the next call; never empty.
+  cursor @1 :Text;
+  # True when more changes are ready now; call again with `cursor`.
+  more @2 :Bool;
+  # False when the feed may have missed changes since the request's cursor
+  # (an overflowed watcher, expired queue retention, a restart): the host
+  # backs it with a full listing. True means these are all the changes.
+  complete @3 :Bool;
+  # True when this running guest produces the feed itself (a filesystem
+  # watcher) and stopping it would lose changes, so the host keeps it awake
+  # while `complete` stays true. Durable feeds (a notification queue) leave
+  # it false. The host honours it only from the first-party storage plugins
+  # it starts on demand.
+  liveWatch @4 :Bool;
 }
 
 # Guest identity and negotiation surface returned by `describe()`.
@@ -335,6 +570,9 @@ struct Bindings {
   # Named `[[kv_namespaces]]` bindings: one host-served durable namespace per
   # binding, scoped to this plugin. Empty when the manifest declares none.
   kv @8 :List(NamedKv);
+  # `SOCKETS`: host-brokered outbound WebSockets that stay open while the
+  # guest sleeps; null unless `[sockets]` is declared and granted.
+  sockets @9 :Sockets;
 }
 
 # Exported entrypoints returned by `PluginWorker.open`. One capability per
@@ -365,6 +603,10 @@ struct Entrypoints {
   metadata @10 :MetadataProvider;
   # `covers` entrypoint.
   covers @11 :CoverFetcher;
+  # `[sockets]` handler: messages and closes on host-brokered sockets.
+  socketHandler @12 :SocketHandler;
+  # `metadataFiles` entrypoint.
+  metadataFiles @13 :MetadataFiles;
 }
 
 # Result union of `PluginWorker.open`.
@@ -708,6 +950,57 @@ struct CopyReply {
   }
 }
 
+# Result union of `Destination.move`.
+struct MoveReply {
+  union {
+    # Success: how the move was done.
+    ok @0 :MoveResult;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Result union of `Destination.moveMany`.
+struct MoveManyReply {
+  union {
+    # Success: per-key outcomes and the continuation.
+    ok @0 :MoveManyPage;
+    # Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Result union of `Destination.deleteMany`.
+struct DeleteManyReply {
+  union {
+    # Success: per-key outcomes.
+    ok @0 :DeleteManyResult;
+    # Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Result union of `Destination.headMany`.
+struct HeadManyReply {
+  union {
+    # Success: one probe per key.
+    ok @0 :HeadManyResult;
+    # Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Result union of `Destination.changes`.
+struct ChangesReply {
+  union {
+    # Success: one page of changes.
+    ok @0 :ChangesPage;
+    # Typed failure; `invalid_cursor` means the cursor expired and the host
+    # starts over with a full listing.
+    err @1 :PluginError;
+  }
+}
+
 # Result union of `methods without a success payload`.
 struct EmptyReply {
   union {
@@ -865,6 +1158,31 @@ interface Destination {
       key :Text,  # Object key that was staged.
       commitToken :Text  # Token from `WriteOptions.commitToken`.
   ) -> (result :EmptyReply);
+  # Move one object (requires `storage.move`). Repeating a finished move
+  # succeeds with `alreadyMoved`.
+  move @8 (
+      from :Text,  # Source object key.
+      to :Text,  # Target object key.
+      options :MoveOptions  # Overwrite and source preconditions.
+  ) -> (result :MoveReply);
+  # Move a set of objects or a whole prefix (requires `storage.moveMany`).
+  # Paged and safe to repeat.
+  moveMany @9 (
+      request :MoveManyRequest  # Pairs or prefix, cursor, and options.
+  ) -> (result :MoveManyReply);
+  # Remove up to `maxBatchKeys` objects (requires `storage.deleteMany`).
+  deleteMany @10 (
+      keys :List(Text)  # Object keys to remove.
+  ) -> (result :DeleteManyReply);
+  # Probe up to `maxBatchKeys` objects (requires `storage.headMany`).
+  headMany @11 (
+      keys :List(Text)  # Object keys to probe.
+  ) -> (result :HeadManyReply);
+  # Keys changed since a cursor (requires `storage.changes`). A hint for
+  # what to read; a scheduled listing stays the backstop.
+  changes @12 (
+      request :ChangesRequest  # Cursor and page size.
+  ) -> (result :ChangesReply);
 }
 
 # Read-only byte source for job inputs (not a storefront).
@@ -1009,6 +1327,51 @@ struct NamedKv {
   namespace @1 :Text;
   # Host-served namespace.
   kv @2 :KvNamespace;
+}
+
+# Host-brokered outbound WebSockets, granted through `Bindings.sockets`.
+#
+# The guest asks for a socket; a broker the host runs for the plugin
+# instance dials it under the plugin's network grant and keeps it open while
+# the guest sleeps, in the manner of hibernatable Workers WebSockets. Each
+# incoming message wakes the guest and arrives on
+# `Entrypoints.socketHandler`. Heartbeat pairs declared at connect are
+# answered by the broker without waking the guest.
+interface Sockets {
+  # Open a socket; it is owned by the plugin instance, not this invocation.
+  connect @0 (
+      request :SocketConnectRequest  # Target, subprotocols, headers, heartbeats.
+  ) -> (result :SocketConnectReply);
+  # Send one message on an open socket.
+  send @1 (
+      socket :Text,  # Socket id from `connect` or `list`.
+      frame :SocketFrame  # Message, at most `maxSocketFrameBytes`.
+  ) -> (result :EmptyReply);
+  # Close a socket; closing an unknown or closed socket is not an error.
+  close @2 (
+      socket :Text,  # Socket id.
+      code :UInt16,  # WebSocket close code; zero sends 1000.
+      reason :Text  # Close reason, at most 123 UTF-8 bytes.
+  ) -> (result :EmptyReply);
+  # Replace the attachment the host keeps for a socket.
+  setAttachment @3 (
+      socket :Text,  # Socket id.
+      attachment :Data  # Opaque bytes, at most `maxSocketAttachmentBytes`.
+  ) -> (result :EmptyReply);
+  # The instance's open sockets, for a guest that just woke.
+  list @4 () -> (result :SocketListReply);
+}
+
+# Guest handler for host-brokered sockets (`Entrypoints.socketHandler`).
+interface SocketHandler {
+  # One message arrived on an open socket.
+  message @0 (
+      event :SocketMessage  # Socket, frame, and attachment.
+  ) -> (result :SocketMessageReply);
+  # A socket closed, by the remote side, the network, or the host.
+  closed @1 (
+      event :SocketClosed  # Socket, close code, and attachment.
+  ) -> (result :EmptyReply);
 }
 
 # Storefront content source (not byte Source). Every method takes and
@@ -1158,6 +1521,27 @@ interface CoverFetcher {
   ) -> (result :CoverImagesReply);
 }
 
+# `metadataFiles` entrypoint: reads and writes metadata files that sit next
+# to an edition's media (sidecars such as `metadata.json`, OPF, NFO or CUE),
+# one dialect per format. The plugin only converts bytes: the host reads the
+# file, chooses every path and writes the result, so a dialect plugin needs
+# no network or file grants. The manifest's `[metadata_files]` table names
+# each dialect, the file names it reads and the fields it carries, so the
+# host routes a file to a sleeping plugin without starting it.
+interface MetadataFiles {
+  # Liveness / readiness probe.
+  health @0 () -> (result :HealthReply);
+  # What one metadata file says about its edition.
+  parse @1 (
+      params :MetadataFileParseParams  # Dialect, file name and bytes.
+  ) -> (result :MetadataFileParseReply);
+  # The bytes of a metadata file with the given fields set to the record's
+  # values and everything else kept from the existing file.
+  render @2 (
+      params :MetadataFileRenderParams  # Dialect, record, fields and existing bytes.
+  ) -> (result :MetadataFileRenderReply);
+}
+
 # Marks an enum whose wire strings (where an enum travels as `Text`, e.g.
 # `PluginError.code`) are the snake_case form of the enumerant names
 # (`payloadTooLarge` -> "payload_too_large").
@@ -1237,6 +1621,8 @@ enum Entrypoint {
   metadata @6;
   # Cover fetcher: `fetchCovers` (`CoverFetcher`).
   covers @7;
+  # Metadata file dialects: `parse` and `render` (`MetadataFiles`).
+  metadataFiles @8;
 }
 
 # One declared event consumer: a `[[events.consumers]]` row the default
@@ -1274,6 +1660,9 @@ struct PluginCapabilities {
   # (`scheduled(controller)` trigger, `[triggers] crons`), normalized to
   # single spaces.
   crons @8 :List(Text);
+  # True when the guest declared `[sockets]`: it receives the host-brokered
+  # `Sockets` binding and may export a `SocketHandler` for pushed messages.
+  sockets @9 :Bool;
 }
 
 # Catalog behaviours a storefront declares in `describe()`. Catalog search
@@ -1285,6 +1674,14 @@ struct CatalogCapabilities {
   # store to fill description, narrators, runtime and genres on lean result
   # rows from any store that carry an ISBN.
   detailByIsbn @0 :Bool;
+  # True when `purchaseHint` / `purchaseHints` price a query by its exact
+  # ISBN (`lookup = isbn`): the answer is the store's listing of that ISBN
+  # or not found, never a title match. The host then prices a card at this
+  # store by the ISBNs of the card's recording before searching by title.
+  priceByIsbn @1 :Bool;
+  # True when `purchaseHint` / `purchaseHints` price a query by its exact
+  # ASIN (`lookup = asin`), as `priceByIsbn` does for ISBNs.
+  priceByAsin @2 :Bool;
 }
 
 # Portal Accounts connect mode for storefronts.
@@ -2060,6 +2457,27 @@ struct PurchaseHintParams {
   region @5 :Text;
   # When true, guests should include live price fields when available.
   withPrice @6 :Bool;
+  # How the host asks the store to find the title. `unspecified` (an older
+  # host) leaves the guest free to use any field, as before.
+  lookup @7 :PriceLookup;
+}
+
+# How a purchase-hint query names the title to price.
+enum PriceLookup {
+  # Any field may be used, strongest first (older hosts).
+  unspecified @0;
+  # `productId` names the store's own product; answer for it alone.
+  product @1;
+  # `isbn` names the edition; answer for that exact ISBN or not found.
+  # Sent only to a store that declared `CatalogCapabilities.priceByIsbn`.
+  isbn @2;
+  # `asin` names the edition; answer for that exact ASIN or not found.
+  # Sent only to a store that declared `CatalogCapabilities.priceByAsin`.
+  asin @3;
+  # Search by `title` and `authors`, and return every priced listing the
+  # search matched in `PurchaseHintResult.records`, so the host can place
+  # each one in the library model and keep only the recording it asked for.
+  title @4;
 }
 
 # Params of `ContentSource.listDeals`.
@@ -2221,6 +2639,20 @@ struct PurchaseHintResult {
   # False when the guest could not resolve the title (`hint` is empty).
   found @0 :Bool;
   # Purchase hint when `found`.
+  hint @1 :PurchaseHint;
+  # Every priced listing a title search matched (`lookup = title`), each
+  # with its full catalog record, so the host can tell recordings apart by
+  # identifiers, credits and kinds rather than by title. Empty for other
+  # lookups and for guests that do not return records; `hint` then stays
+  # the answer.
+  records @2 :List(PricedRecord);
+}
+
+# One priced listing returned by a title search.
+struct PricedRecord {
+  # The listing's catalog record: identifiers, credits, kinds, language.
+  record @0 :CatalogHit;
+  # Its purchase link and prices, as `PurchaseHint` carries them.
   hint @1 :PurchaseHint;
 }
 
@@ -2823,6 +3255,285 @@ struct CoverImagesReply {
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }
+}
+
+# A field of a `MetadataFileRecord`. Dialects declare in the manifest which
+# fields their format carries; a parsed record lists the ones its file
+# states, and a render request lists the ones to write.
+enum MetadataField {
+  # `MetadataFileRecord.title`.
+  title @0;
+  # `MetadataFileRecord.subtitle`.
+  subtitle @1;
+  # `MetadataFileRecord.description`.
+  description @2;
+  # `MetadataFileRecord.publisher`.
+  publisher @3;
+  # `MetadataFileRecord.publishedAt`.
+  publishedAt @4;
+  # `MetadataFileRecord.language`.
+  language @5;
+  # `MetadataFileRecord.genres`.
+  genres @6;
+  # `MetadataFileRecord.tags`.
+  tags @7;
+  # `MetadataFileRecord.abridgement`.
+  abridgement @8;
+  # `MetadataFileRecord.expressionKind`.
+  expressionKind @9;
+  # `MetadataFileRecord.identifiers`.
+  identifiers @10;
+  # `MetadataFileRecord.credits` in the roles `creditRoles` names.
+  credits @11;
+  # `MetadataFileRecord.seriesEntries`.
+  series @12;
+  # `MetadataFileRecord.chapters`.
+  chapters @13;
+  # `MetadataFileRecord.durationMs`.
+  duration @14;
+}
+
+# What one metadata file says about the edition it sits beside. A field the
+# file does not state is left out of `present` and means "unknown", never
+# "cleared"; a field in `present` with an empty value means the file states
+# that it is empty. The host checks every value against the `maxMetadataFile*`
+# caps and refuses a record that states a field its dialect does not carry.
+struct MetadataFileRecord {
+  # Fields the file states, each at most once; at most the fields the
+  # dialect declares.
+  present @0 :List(MetadataField);
+  # Primary title.
+  title @1 :Text $optional;
+  # Subtitle when distinct from `title`.
+  subtitle @2 :Text $optional;
+  # Long description / blurb; at most `maxMetadataFileDescriptionBytes`.
+  description @3 :Text $optional;
+  # Publisher name.
+  publisher @4 :Text $optional;
+  # Publication date as `YYYY`, `YYYY-MM` or `YYYY-MM-DD`.
+  publishedAt @5 :Text $optional;
+  # Content language as the file prints it (a code or a name).
+  language @6 :Text $optional;
+  # Genre labels in file order.
+  genres @7 :List(Text);
+  # Free tags in file order.
+  tags @8 :List(Text);
+  # Whether the edition is abridged; `unknown` when the file does not say.
+  abridgement @9 :Abridgement;
+  # How the work is realised; `unspecified` when the file does not say.
+  expressionKind @10 :ExpressionKind;
+  # External identifiers the file carries.
+  identifiers @11 :List(Identifier);
+  # Credited contributors in billing order, only in the roles `creditRoles`
+  # names.
+  credits @12 :List(Credit);
+  # Credit roles the file states, each at most once. A role listed here
+  # with no credit means the file states nobody in that role; a role left
+  # out is unknown. Empty unless `present` holds `credits`.
+  creditRoles @13 :List(CreditRole);
+  # Series the work belongs to.
+  seriesEntries @14 :List(SeriesEntry);
+  # Chapter layout in pre-order (see `MetadataChapter`); at most
+  # `maxMetadataFileChapters`, starts never decreasing.
+  chapters @15 :List(MetadataChapter);
+  # Running time in milliseconds.
+  durationMs @16 :UInt64 $optional;
+}
+
+# Params of `MetadataFiles.parse`.
+struct MetadataFileParseParams {
+  # Dialect id from the manifest's `[[metadata_files.dialects]]` that the
+  # host routed the file to.
+  dialect @0 :Text;
+  # The file's name without any folder (`metadata.json`, `Book.opf`).
+  fileName @1 :Text;
+  # The whole file; at most `maxMetadataFileBytes`.
+  bytes @2 :Data;
+}
+
+# Success payload of `MetadataFiles.parse`.
+struct MetadataFileParsed {
+  # What the file says.
+  record @0 :MetadataFileRecord;
+}
+
+# Result union of `MetadataFiles.parse`. A file the dialect cannot read is
+# `invalid_params`, so the host records it as unreadable and moves on.
+struct MetadataFileParseReply {
+  union {
+    # Success: the parsed record.
+    ok @0 :MetadataFileParsed;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# One audio file of the edition a sidecar describes, for formats that name
+# their audio (a CUE sheet's `FILE` lines).
+struct MetadataAudioFile {
+  # The file's name without any folder, as it sits next to the sidecar.
+  name @0 :Text;
+  # Running time in milliseconds; 0 when the host does not know it.
+  durationMs @1 :UInt64;
+}
+
+# Params of `MetadataFiles.render`.
+struct MetadataFileRenderParams {
+  # Dialect id from the manifest; one that declares `writes = true`.
+  dialect @0 :Text;
+  # Values to write. Only the fields in `fields` are read from it.
+  record @1 :MetadataFileRecord;
+  # Fields to set, each at most once and all declared by the dialect. A
+  # listed field with an empty value removes it from the file.
+  fields @2 :List(MetadataField);
+  # The file as it is now; empty when the host is creating it. Everything
+  # the dialect does not change (unknown keys, comments, other fields) is
+  # kept. At most `maxMetadataFileBytes`.
+  existing @3 :Data;
+  # The edition's audio files in playback order, at most
+  # `maxMetadataAudioFiles`; empty when the host has none or does not know
+  # them. Chapter starts in `record` count from the start of the first file.
+  audioFiles @4 :List(MetadataAudioFile);
+}
+
+# Success payload of `MetadataFiles.render`.
+struct MetadataFileRendered {
+  # The new file; at most `maxMetadataFileBytes`. Empty when the dialect has
+  # nothing left to write; the host decides whether to remove the file.
+  bytes @0 :Data;
+}
+
+# Result union of `MetadataFiles.render`.
+struct MetadataFileRenderReply {
+  union {
+    # Success: the new file.
+    ok @0 :MetadataFileRendered;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# One WebSocket message.
+struct SocketFrame {
+  union {
+    # Text message, UTF-8.
+    text @0 :Text;
+    # Binary message.
+    binary @1 :Data;
+  }
+}
+
+# One request header on `Sockets.connect`.
+struct SocketHeader {
+  # Header name; the broker refuses hop-by-hop and WebSocket handshake names.
+  name @0 :Text;
+  # Header value. May carry a credential: the host never logs it.
+  value @1 :Text;
+}
+
+# A heartbeat the broker answers itself: when `request` arrives byte for byte,
+# it sends `response` and does not wake the guest.
+struct SocketAutoResponse {
+  # Frame to match, at most `maxSocketAutoResponseBytes`.
+  request @0 :SocketFrame;
+  # Frame to send back, at most `maxSocketAutoResponseBytes`.
+  response @1 :SocketFrame;
+}
+
+# Arguments of `Sockets.connect`.
+struct SocketConnectRequest {
+  # `wss://` or `ws://` URL, at most `maxSocketUrlBytes`. The host must be on
+  # the plugin's network grant.
+  url @0 :Text;
+  # Requested subprotocols, at most `maxSocketHeaders`.
+  protocols @1 :List(Text);
+  # Extra request headers, at most `maxSocketHeaders`.
+  headers @2 :List(SocketHeader);
+  # Heartbeats the broker answers, at most `maxSocketAutoResponses`.
+  autoResponses @3 :List(SocketAutoResponse);
+  # Initial attachment, at most `maxSocketAttachmentBytes`.
+  attachment @4 :Data;
+}
+
+# One open host-brokered socket.
+struct SocketInfo {
+  # Host-minted socket id, stable for the socket's life.
+  socket @0 :Text;
+  # URL the socket was opened to, without credentials.
+  url @1 :Text;
+  # Subprotocol the server chose; empty when none.
+  protocol @2 :Text $optional;
+  # Current attachment.
+  attachment @3 :Data;
+}
+
+# Result union of `Sockets.connect`.
+struct SocketConnectReply {
+  union {
+    # Success: the handshake finished and the socket is open.
+    ok @0 :SocketInfo;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Success payload of `Sockets.list`.
+struct SocketList {
+  # Open sockets, oldest first.
+  sockets @0 :List(SocketInfo);
+}
+
+# Result union of `Sockets.list`.
+struct SocketListReply {
+  union {
+    # Success: the open sockets.
+    ok @0 :SocketList;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Reply of `SocketHandler.message`.
+struct SocketMessageReply {
+  union {
+    # Success: what the guest asks of the host after the message.
+    ok @0 :SocketMessageOk;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# What a guest asks of the host after handling one pushed message.
+struct SocketMessageOk {
+  # True asks the host to call `Integration.pollEvents` now, while the
+  # guest is awake, instead of at the next scheduled poll: the message
+  # announced something the poll hands over (a new user). The host ignores
+  # it for a plugin whose host schedules no poll.
+  pollEvents @0 :Bool;
+}
+
+# Argument of `SocketHandler.message`.
+struct SocketMessage {
+  # Socket the message arrived on.
+  socket @0 :Text;
+  # The message.
+  frame @1 :SocketFrame;
+  # The socket's attachment when the message arrived.
+  attachment @2 :Data;
+}
+
+# Argument of `SocketHandler.closed`.
+struct SocketClosed {
+  # Socket that closed; its id is not reused.
+  socket @0 :Text;
+  # WebSocket close code; 1006 when the connection dropped without one.
+  code @1 :UInt16;
+  # Close reason the peer sent; empty when none.
+  reason @2 :Text $optional;
+  # True when the close handshake completed.
+  clean @3 :Bool;
+  # The socket's last attachment.
+  attachment @4 :Data;
 }
 
 # --- rust-generated: end ---

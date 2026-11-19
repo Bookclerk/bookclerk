@@ -33,7 +33,7 @@ use bookclerk_library::{
 };
 use bookclerk_source::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, ContentSource,
-    PurchaseHintOpts, SourceError, SourceRegistry,
+    PriceLookup, PurchaseHintOpts, SourceError, SourceRegistry,
 };
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -635,6 +635,7 @@ async fn price_candidates(
                 isbn: c.isbn.clone(),
                 region: region.to_string(),
                 with_price: true,
+                lookup: PriceLookup::Unspecified,
             }
         })
         .collect();
@@ -749,26 +750,8 @@ async fn fetch_one_store(
         };
     }
     let deal_key = call_key(&id, "deals", &[]);
-    let keep = |p: &PooledCandidate| {
-        !(exclude_series_sets
-            && id.eq_ignore_ascii_case("graphicaudio")
-            && crate::candidates::looks_like_series_set(&p.candidate.title))
-    };
-    if let Some(answer) = cached_or_call(library, &store, &deal_key, || source.list_deals(32)).await
-    {
-        complete &= answer.complete;
-        let hits = answer.candidates;
-        answered += usize::from(!hits.is_empty());
-        out.extend(hits.into_iter().filter(|p| keep(p)));
-    }
-    calls += 1;
-    let started = std::time::Instant::now();
-    for seed in seeds {
-        if calls >= budget || started.elapsed() >= STORE_FETCH_DEADLINE {
-            break;
-        }
-        let s = &seed.seed;
-        let key = call_key(
+    let seed_key = |s: &bookclerk_source::ExpandSeed| {
+        call_key(
             &id,
             "expand",
             &[
@@ -783,9 +766,44 @@ async fn fetch_one_store(
                 s.isbn.as_deref().unwrap_or(""),
                 &s.region,
             ],
-        );
-        let answer =
-            cached_or_call(library, &store, &key, || source.expand_candidates(s, 24)).await;
+        )
+    };
+    let starter_key = |genre: &str| call_key(&id, "starter", &[genre, region]);
+    // Every call the budget can reach, in the order they are made: their
+    // cached answers are read together up front instead of one by one.
+    let planned: Vec<String> = std::iter::once(deal_key.clone())
+        .chain(seeds.iter().map(|seed| seed_key(&seed.seed)))
+        .chain(starter_genres.iter().map(|genre| starter_key(genre)))
+        .take(budget)
+        .collect();
+    let mut cache = AnswerCache::read(library, &id, &planned).await;
+    let keep = |p: &PooledCandidate| {
+        !(exclude_series_sets
+            && id.eq_ignore_ascii_case("graphicaudio")
+            && crate::candidates::looks_like_series_set(&p.candidate.title))
+    };
+    if let Some(answer) = cached_or_call(library, &store, &mut cache, &deal_key, || {
+        source.list_deals(32)
+    })
+    .await
+    {
+        complete &= answer.complete;
+        let hits = answer.candidates;
+        answered += usize::from(!hits.is_empty());
+        out.extend(hits.into_iter().filter(|p| keep(p)));
+    }
+    calls += 1;
+    let started = std::time::Instant::now();
+    for seed in seeds {
+        if calls >= budget || started.elapsed() >= STORE_FETCH_DEADLINE {
+            break;
+        }
+        let s = &seed.seed;
+        let key = seed_key(s);
+        let answer = cached_or_call(library, &store, &mut cache, &key, || {
+            source.expand_candidates(s, 24)
+        })
+        .await;
         calls += 1;
         let Some(answer) = answer else { continue };
         complete &= answer.complete;
@@ -800,7 +818,7 @@ async fn fetch_one_store(
         if calls >= budget || started.elapsed() >= STORE_FETCH_DEADLINE {
             break;
         }
-        let key = call_key(&id, "starter", &[genre, region]);
+        let key = starter_key(genre);
         let search = CatalogSearchOpts {
             query: genre.clone(),
             region: region.to_string(),
@@ -810,7 +828,10 @@ async fn fetch_one_store(
             field: Some(CatalogSearchField::Genre),
             language: None,
         };
-        let answer = cached_or_call(library, &store, &key, || source.search_catalog(&search)).await;
+        let answer = cached_or_call(library, &store, &mut cache, &key, || {
+            source.search_catalog(&search)
+        })
+        .await;
         calls += 1;
         let Some(answer) = answer else { continue };
         complete &= answer.complete;
@@ -882,6 +903,7 @@ struct StoreRef<'a> {
 async fn cached_or_call<F, Fut>(
     library: &LibraryStore,
     store: &StoreRef<'_>,
+    cache: &mut AnswerCache,
     key: &str,
     call: F,
 ) -> Option<StoreAnswer>
@@ -890,23 +912,13 @@ where
     Fut: std::future::Future<Output = bookclerk_source::Result<Vec<CatalogHit>>>,
 {
     let id = store.id;
-    match library
-        .get_discover_store_call(key, STORE_CALL_MAX_AGE)
-        .await
-    {
-        Ok(Some(hits)) => match pooled(library, id, &hits).await {
-            Ok(Some(found)) => {
-                return Some(StoreAnswer {
-                    candidates: found,
-                    complete: true,
-                })
-            }
-            // A listing the answer named is gone; ask the store again.
-            Ok(None) => {}
-            Err(err) => tracing::debug!(store = %id, error = %err, "discover pool read failed"),
-        },
-        Ok(None) => {}
-        Err(err) => tracing::debug!(store = %id, error = %err, "discover store cache read failed"),
+    // A listing the answer named is gone when this is `None`; ask the
+    // store again.
+    if let Some(found) = cache.answer(id, key) {
+        return Some(StoreAnswer {
+            candidates: found,
+            complete: true,
+        });
     }
     let hits = match tokio::time::timeout(STORE_CALL_TIMEOUT, call()).await {
         Ok(Ok(hits)) => hits,
@@ -951,16 +963,25 @@ where
     // An answer none of whose titles could be stored is not cached, like an
     // empty one, and neither is one with titles the resolver could not place
     // this time, so the store is asked again next time.
-    if !call_hits.is_empty() && recorded.unresolved == 0 {
+    let cacheable = !call_hits.is_empty() && recorded.unresolved == 0;
+    if cacheable {
         if let Err(err) = library.put_discover_store_call(key, id, &call_hits).await {
             tracing::debug!(store = %id, error = %err, "discover store cache write failed");
         }
     }
-    match pooled(library, id, &call_hits).await {
-        Ok(found) => Some(StoreAnswer {
-            candidates: found.unwrap_or_default(),
-            complete: recorded.unresolved == 0,
-        }),
+    match cache.pool(library, &call_hits, Reread::All).await {
+        Ok(()) => {
+            let found = candidates_from(id, &call_hits, &cache.listings);
+            // Later calls of this fetch with the same key reuse the answer,
+            // as they would read it back from the cache.
+            if cacheable {
+                cache.calls.insert(key.to_string(), call_hits);
+            }
+            Some(StoreAnswer {
+                candidates: found.unwrap_or_default(),
+                complete: recorded.unresolved == 0,
+            })
+        }
         Err(err) => {
             tracing::warn!(store = %id, error = %err, "discover pool read failed");
             None
@@ -968,33 +989,102 @@ where
     }
 }
 
+/// Which listings [`AnswerCache::pool`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reread {
+    /// Only listings not read yet.
+    Missing,
+    /// Every listing named, replacing what was read before.
+    All,
+}
+
+/// The cached answers of one store's fetch and the pool listings they
+/// name, read together before the calls are made.
+#[derive(Default)]
+struct AnswerCache {
+    /// Fresh cached answers by call key, plus answers made during this
+    /// fetch that were cached.
+    calls: HashMap<String, Vec<StoreCallHit>>,
+    /// Pool listings by id, for every answer in [`Self::calls`] and every
+    /// fresh answer read so far.
+    listings: HashMap<String, bookclerk_library::CatalogListingRecord>,
+}
+
+impl AnswerCache {
+    /// Reads the cached answers of `keys` and the listings they name, in a
+    /// few chunked reads. A failed read leaves the cache empty, so each
+    /// call goes to the store, as a failed single read did.
+    async fn read(library: &LibraryStore, store: &str, keys: &[String]) -> Self {
+        let mut cache = Self::default();
+        match library
+            .get_discover_store_calls(keys, STORE_CALL_MAX_AGE)
+            .await
+        {
+            Ok(calls) => cache.calls = calls,
+            Err(err) => {
+                tracing::debug!(store = %store, error = %err, "discover store cache read failed");
+                return cache;
+            }
+        }
+        let hits: Vec<StoreCallHit> = cache.calls.values().flatten().cloned().collect();
+        if let Err(err) = cache.pool(library, &hits, Reread::Missing).await {
+            tracing::debug!(store = %store, error = %err, "discover pool read failed");
+            return Self::default();
+        }
+        cache
+    }
+
+    /// Reads the pool listings of `hits`: those not read yet, or all of
+    /// them after a call just recorded them, so later answers naming one
+    /// show it as the call left it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the library read error.
+    async fn pool(
+        &mut self,
+        library: &LibraryStore,
+        hits: &[StoreCallHit],
+        reread: Reread,
+    ) -> bookclerk_library::Result<()> {
+        let missing: Vec<String> = hits
+            .iter()
+            .filter(|h| reread == Reread::All || !self.listings.contains_key(&h.listing_id))
+            .map(|h| h.listing_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        for listing in library.catalog_listings(&missing).await? {
+            self.listings.insert(listing.id.clone(), listing);
+        }
+        Ok(())
+    }
+
+    /// The candidates of `key`'s cached answer, or `None` when there is
+    /// none or a listing it names is no longer in the pool.
+    fn answer(&self, source: &str, key: &str) -> Option<Vec<PooledCandidate>> {
+        candidates_from(source, self.calls.get(key)?, &self.listings)
+    }
+}
+
 /// The candidates a store answer's listings read as, in the answer's order.
 ///
 /// # Returns
 ///
-/// `None` when a listing the answer named is no longer in the pool.
-///
-/// # Errors
-///
-/// Returns the library read error.
-async fn pooled(
-    library: &LibraryStore,
+/// `None` when a listing the answer named is not in `listings` (no longer
+/// in the pool).
+fn candidates_from(
     source: &str,
     hits: &[StoreCallHit],
-) -> bookclerk_library::Result<Option<Vec<PooledCandidate>>> {
-    let ids: Vec<String> = hits.iter().map(|h| h.listing_id.clone()).collect();
-    let by_id: HashMap<String, bookclerk_library::CatalogListingRecord> = library
-        .catalog_listings(&ids)
-        .await?
-        .into_iter()
-        .map(|l| (l.id.clone(), l))
-        .collect();
+    listings: &HashMap<String, bookclerk_library::CatalogListingRecord>,
+) -> Option<Vec<PooledCandidate>> {
     let now = Utc::now();
     let mut out = Vec::with_capacity(hits.len());
     for hit in hits {
-        let Some(listing) = by_id.get(&hit.listing_id) else {
-            return Ok(None);
-        };
+        let listing = listings.get(&hit.listing_id)?;
         let mut candidate = candidate_from_listing(source, listing, now);
         candidate.origin.clone_from(&hit.origin);
         candidate.store_rank = hit.rank_hint;
@@ -1003,7 +1093,7 @@ async fn pooled(
             candidate,
         });
     }
-    Ok(Some(out))
+    Some(out)
 }
 
 /// SHA-256 hex over the store, call kind and query parts (NUL-separated).
@@ -2085,7 +2175,9 @@ mod tests {
                 rank_hint: None,
             })
             .collect();
-        pooled(library, store, &hits).await.unwrap().unwrap()
+        let mut cache = AnswerCache::default();
+        cache.pool(library, &hits, Reread::All).await.unwrap();
+        candidates_from(store, &hits, &cache.listings).unwrap()
     }
 
     /// Prices answered once are stored on the listings for every later

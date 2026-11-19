@@ -1,7 +1,8 @@
-//! SQL page for `GET /api/library/books`.
+//! SQL pages of `books` rows, for readers that walk titles (Discover's
+//! metadata enrichment, for one) until `books` is retired.
 //!
 //! Filtering, case-insensitive title order, and `LIMIT`/`OFFSET` run in the
-//! database. The handler hydrates only the page. `total` is `COUNT(*)` of the
+//! database. The caller hydrates only the page. `total` is `COUNT(*)` of the
 //! same `WHERE`, not the length of a fully loaded catalog.
 
 use bookclerk_plugin_abi::{
@@ -766,11 +767,7 @@ fn filter_values(
 /// statement later with the reason.
 fn statement_payload_bytes(sql: &str, values: &[DbValue]) -> usize {
     values.iter().fold(sql.len(), |total, value| {
-        total.saturating_add(
-            bookclerk_plugin_abi::encoded_db_value_bytes(value)
-                .map(|bytes| bytes.len())
-                .unwrap_or(0),
-        )
+        total.saturating_add(bookclerk_plugin_abi::encoded_db_value_len(value).unwrap_or(0))
     })
 }
 

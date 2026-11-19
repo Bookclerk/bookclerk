@@ -56,6 +56,9 @@ pub const INSTANCE_SECRETS_AAD_DOMAIN: &[u8] = b"bookclerk-node.v1 instance-secr
 /// Domain tag that starts the associated data of an upload token.
 pub const UPLOAD_TOKEN_AAD_DOMAIN: &[u8] = b"bookclerk-node.v1 upload-token";
 
+/// Domain of the associated data of a sealed copy token.
+pub const COPY_TOKEN_AAD_DOMAIN: &[u8] = b"bookclerk-node.v1 copy-token";
+
 /// Bytes a sealed box adds to its plaintext (ephemeral key and tag).
 pub const SEALED_BOX_OVERHEAD: usize = PUBLIC_KEY_LEN + 16;
 
@@ -524,6 +527,60 @@ pub fn open_upload_token(
     Ok(SecretValue::new(std::mem::take(&mut *plaintext)))
 }
 
+/// Associated data of the token for copy `copy_id`, granted to `node_id`.
+#[must_use]
+pub fn copy_token_aad(node_id: &str, copy_id: &str) -> Vec<u8> {
+    let mut out = COPY_TOKEN_AAD_DOMAIN.to_vec();
+    for field in [node_id.as_bytes(), copy_id.as_bytes()] {
+        out.extend_from_slice(&u32::try_from(field.len()).unwrap_or(u32::MAX).to_be_bytes());
+        out.extend_from_slice(field);
+    }
+    out
+}
+
+/// Seals a copy token for `node_id`'s box key `recipient`, bound to the
+/// node and the copy, as base64url text for a `copy.granted` frame. The
+/// token is a bearer credential for the download endpoint, so it never
+/// travels as frame text.
+///
+/// # Errors
+///
+/// Returns [`SealError`] when the recipient key is invalid.
+pub fn seal_copy_token(
+    recipient: &[u8],
+    ephemeral_secret: &[u8; PUBLIC_KEY_LEN],
+    node_id: &str,
+    copy_id: &str,
+    token: &[u8],
+) -> Result<String, SealError> {
+    let sealed = seal(
+        recipient,
+        ephemeral_secret,
+        &copy_token_aad(node_id, copy_id),
+        token,
+    )?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sealed))
+}
+
+/// Opens a token made by [`seal_copy_token`] with the node's box secret.
+///
+/// # Errors
+///
+/// Returns [`SealError::Open`] when it was not sealed to this node for
+/// this copy.
+pub fn open_copy_token(
+    recipient_secret: &[u8; PUBLIC_KEY_LEN],
+    node_id: &str,
+    copy_id: &str,
+    sealed: &str,
+) -> Result<SecretValue, SealError> {
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(sealed.as_bytes())
+        .map_err(|_| SealError::Open)?;
+    let mut plaintext = open(recipient_secret, &copy_token_aad(node_id, copy_id), &raw)?;
+    Ok(SecretValue::new(std::mem::take(&mut *plaintext)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,6 +606,37 @@ mod tests {
                 Err(SealError::Open)
             );
         }
+    }
+
+    #[test]
+    fn copy_tokens_open_only_for_their_node_and_copy() {
+        let secret = [7u8; 32];
+        let sealed = seal_copy_token(&box_public_key(&secret), &[8; 32], "n", "c", b"tok").unwrap();
+        assert!(!sealed.contains("tok"));
+        assert_eq!(
+            open_copy_token(&secret, "n", "c", &sealed)
+                .unwrap()
+                .expose(),
+            b"tok"
+        );
+        for (node, copy) in [("m", "c"), ("n", "d"), ("nc", "")] {
+            assert_eq!(
+                open_copy_token(&secret, node, copy, &sealed),
+                Err(SealError::Open)
+            );
+        }
+        assert_eq!(
+            open_copy_token(&secret, "n", "c", "not base64!"),
+            Err(SealError::Open)
+        );
+        // An upload token's binding never opens as a copy token.
+        let upload =
+            seal_upload_token(&box_public_key(&secret), &[8; 32], "n", "j", 3, "c", b"tok")
+                .unwrap();
+        assert_eq!(
+            open_copy_token(&secret, "n", "c", &upload),
+            Err(SealError::Open)
+        );
     }
 
     #[test]

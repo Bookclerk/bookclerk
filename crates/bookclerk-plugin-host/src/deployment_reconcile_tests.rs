@@ -2201,3 +2201,260 @@ async fn live_event_only_integration_sleeps_when_idle_and_wakes_on_delivery() {
     DeploymentRuntime::retire_instance(&runtime, instance_id).await;
     assert!(proxy.is_retired());
 }
+
+/// Stages the real first-party `local` destination guest as a host-stamped
+/// platform tree under `files`, returning its key and manifest.
+fn stage_platform_local_tree(
+    files: &Path,
+) -> (PluginKey, bookclerk_plugin_manifest::PluginManifest) {
+    let key = PluginKey::platform("bookclerk-plugin-destination-local", "local").unwrap();
+    let root = files.join("plugins").join(key.fs_id());
+    std::fs::create_dir_all(&root).unwrap();
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/bookclerk-plugins/platform/destination-local/plugin.toml");
+    let text = std::fs::read_to_string(source)
+        .unwrap()
+        .replace("logo = \"assets/logo.svg\"\n", "")
+        .replace("./bookclerk-plugin-destination-local", "./guest");
+    std::fs::write(root.join("plugin.toml"), &text).unwrap();
+    place_guest_binary(
+        &workspace_binary("bookclerk-plugin-destination-local"),
+        &root.join("guest"),
+    );
+    let manifest = bookclerk_plugin_manifest::parse(&text).unwrap();
+    bookclerk_plugin_catalog::stamp_platform_receipt(
+        &root,
+        files,
+        "bookclerk-plugin-destination-local",
+        &manifest,
+        "0.1.0",
+    )
+    .expect("stamp");
+    (key, manifest)
+}
+
+/// Waits until `proxy` has stopped its guest.
+async fn wait_for_sleep(proxy: &dyn crate::OnDemandStatus) {
+    for _ in 0..100 {
+        if !proxy.is_awake() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("idle storage guest did not sleep");
+}
+
+#[tokio::test]
+async fn the_local_destination_sleeps_when_idle_and_wakes_on_its_next_call() {
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path();
+    std::fs::write(files.join("config.toml"), "").unwrap();
+    let mut config =
+        Config::load(Some(files.to_path_buf()), Some(files.join("config.toml"))).unwrap();
+    config.plugins.isolation = Isolation::Off;
+    let store = file_store(&files.join("library.db")).await;
+    let session = bookclerk_library::control_plane::bootstrap_control_plane(
+        &store,
+        files,
+        &files.join("cache"),
+        None,
+        &bookclerk_config::Config::default(),
+    )
+    .await
+    .unwrap();
+    let (key, manifest) = stage_platform_local_tree(files);
+    let actor = ConfigActor::Bootstrap;
+    let instance = create_plugin_instance(&store, &actor, key.canonical(), "")
+        .await
+        .unwrap();
+    import_instance_config_if_absent(
+        &store,
+        &actor,
+        &instance.id,
+        &manifest.settings_schema(),
+        &PluginInstanceConfigV1::empty(),
+        "import-local-on-demand",
+    )
+    .await
+    .unwrap();
+    let deployment = ensure_plugin_deployment(
+        &store,
+        &actor,
+        &instance.id,
+        &session.node.node_id,
+        DesiredState::Present,
+    )
+    .await
+    .unwrap();
+    let mut runtime = live_runtime(&store, &config);
+    runtime.set_on_demand_idle_timeout(std::time::Duration::from_millis(300));
+    reconcile_local_deployments(
+        &store,
+        &config,
+        &session.node.node_id,
+        &AuthorizedLocalPackages::default(),
+        &runtime,
+    )
+    .await
+    .unwrap();
+    let obs = load_observation(&store, &deployment.deployment_id, &session.node.node_id)
+        .await
+        .unwrap()
+        .expect("observation");
+    assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
+    let proxy = runtime
+        .on_demand(instance.id.as_str())
+        .expect("the local destination runs on demand");
+    let deployed = runtime.destinations.read().await.destinations();
+    assert_eq!(deployed.len(), 1);
+    assert_eq!(deployed[0].id.as_str(), instance.id.as_str());
+    assert_eq!(
+        deployed[0].key_style,
+        bookclerk_config::DestinationKeyStyle::Filesystem
+    );
+    let local = std::sync::Arc::clone(&deployed[0].backend);
+    local
+        .put(
+            "Author/Book/book.m4b",
+            bytes::Bytes::from_static(b"audio"),
+            bookclerk_storage::ObjectMeta::default(),
+        )
+        .await
+        .expect("put through the first guest");
+    // Moves are atomic renames only where the output folder sits on a
+    // local disk; a network or FUSE temp dir takes the cautious path.
+    let local_disk = bookclerk_storage::fs_kind::classify(files).is_local();
+    exercise_intent_operations(local.as_ref(), local_disk).await;
+
+    wait_for_sleep(proxy.as_ref()).await;
+    assert_eq!(proxy.wakes(), 0);
+    // Identity answers without a guest.
+    assert!(!local.instance_id().is_empty());
+    assert_eq!(proxy.wakes(), 0);
+    assert_eq!(
+        local.get("Author/Book/book.m4b").await.expect("get wakes"),
+        "audio"
+    );
+    assert_eq!(proxy.wakes(), 1, "the read started a fresh guest");
+
+    wait_for_sleep(proxy.as_ref()).await;
+    let handle = runtime
+        .destinations
+        .read()
+        .await
+        .require_plugin_session(instance.id.as_str(), crate::OPERATOR_ACCOUNT)
+        .expect("session handle");
+    let held = handle.lend().await.expect("lend wakes the guest");
+    assert!(held.session.guest_running());
+    assert_eq!(proxy.wakes(), 2);
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    assert!(proxy.is_awake(), "a lent session keeps the guest awake");
+    drop(held);
+    wait_for_sleep(proxy.as_ref()).await;
+
+    runtime.retire_plugin_instance(instance.id.as_str()).await;
+    assert!(proxy.is_retired());
+    let err = local
+        .exists("Author/Book/book.m4b")
+        .await
+        .expect_err("a retired destination refuses calls");
+    assert!(err.to_string().contains("was stopped"), "{err}");
+}
+
+/// Drives every intent operation through the real local guest, which does
+/// all of them natively, so the host forwards each one. Its `watch`
+/// setting is off, so the change feed answers that it cannot vouch for
+/// itself. `local_disk` says whether the output folder is on a local disk,
+/// where moves are atomic renames.
+async fn exercise_intent_operations(
+    local: &dyn bookclerk_storage::StorageBackend,
+    local_disk: bool,
+) {
+    use bookclerk_storage::{ListRequest, MoveOptions, WriteCondition};
+    assert_eq!(
+        local.capabilities(),
+        bookclerk_storage::StorageCapabilities {
+            changes: true,
+            ..bookclerk_storage::LocalFsBackend::CAPABILITIES
+        }
+    );
+    let put = |key: &'static str| async move {
+        local
+            .put(
+                key,
+                bytes::Bytes::from_static(b"x"),
+                bookclerk_storage::ObjectMeta::default(),
+            )
+            .await
+            .expect("put");
+    };
+    put("Intent/a.m4b").await;
+    put("Intent/b.m4b").await;
+    let options = MoveOptions::default();
+    let moved = local
+        .move_object("Intent/a.m4b", "Moved/a.m4b", &options)
+        .await
+        .expect("move");
+    assert_eq!(
+        moved.atomic, local_disk,
+        "a move on a local disk is a rename"
+    );
+    let results = local
+        .move_many(
+            &[("Intent/b.m4b".to_string(), "Moved/b.m4b".to_string())],
+            &options,
+        )
+        .await
+        .expect("move many");
+    assert!(results[0].error.is_none());
+    let page = local
+        .move_prefix("Moved/", "Final/", None, 10, &options)
+        .await
+        .expect("move prefix");
+    assert!(page.objects_moved >= 2, "{}", page.objects_moved);
+    let probes = local
+        .head_many(&["Final/a.m4b".to_string(), "Moved/a.m4b".to_string()])
+        .await
+        .expect("head many");
+    assert!(probes[0].is_some() && probes[1].is_none());
+    let listed = local
+        .list_hinted(&ListRequest {
+            prefix: "Final/".into(),
+            limit: 10,
+            with_signatures: true,
+            ..ListRequest::default()
+        })
+        .await
+        .expect("hinted list");
+    assert!(listed.page.objects.len() >= 2);
+    assert!(listed.signatures_included);
+    assert!(listed.page.objects.iter().all(|o| o.signature.is_some()));
+    let body = Box::pin(std::io::Cursor::new(b"y".to_vec()));
+    let written = local
+        .put_stream_conditional(
+            "Final/a.m4b",
+            body,
+            bookclerk_storage::ObjectMeta::default(),
+            &WriteCondition::IfNoneMatch,
+        )
+        .await;
+    assert!(matches!(
+        written,
+        Err(bookclerk_storage::StorageError::Conflict(_))
+    ));
+    let deleted = local
+        .delete_many(&["Final/a.m4b".to_string(), "Final/b.m4b".to_string()])
+        .await
+        .expect("delete many");
+    assert!(deleted.iter().all(|r| r.error.is_none()));
+    let feed = local
+        .changes(None, 10)
+        .await
+        .expect("changes")
+        .expect("the guest declares a feed");
+    assert!(
+        !feed.complete && !feed.live_watch && feed.changes.is_empty(),
+        "{feed:?}"
+    );
+}

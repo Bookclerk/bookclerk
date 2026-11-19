@@ -116,32 +116,103 @@ this branch's books** is off, no member's book while **List my members'
 books** is off, and nothing of a member who opted out. Your branch doesn't
 download anything extra for this.
 
-## See your books without downloading them
+## See the books of the libraries you joined
 
-A server can show the books you have in each library you joined without
-keeping copies. Open **Settings → Library** and turn off **Use this
-computer to download** for that library. Your server is then a window of
-it:
+**Library** shows **Books in other libraries**: every book in each
+library your server joined, as you would see it on that library's own
+Library page, merged into one list.
 
-- It runs none of that library's work, and anything in progress is handed
-  back.
-- **Library** shows **Your books in other libraries**: the books each
-  library holds for you, merged into one list. The same book in two
-  libraries shows once, with both libraries named.
+- Books on your own store accounts there are marked **Yours**, and
+  **Only yours** shows just those.
+- The same book in two libraries shows once, with both libraries named.
 - The search box on **Library** narrows this list too.
-- The list is refreshed when your server connects, every 30 minutes, and
-  when you change the setting. If a refresh fails, the last list stays
-  with a **Try again** button.
+- The list is refreshed when your server connects and every 30 minutes.
+  If a refresh fails, the last list stays with a **Try again** button.
 
-Turn the setting back on to download again. The list for that library is
-then cleared, even while the library can't be reached.
-
-The desktop app starts this way: a library you join from it has the
-setting off from the start, so the computer is a window of that library
-until you turn downloading on.
+**Settings → Library** also has **Keep copies on this computer** for each
+library, on by default. With it on, when your server downloads one of
+your books and the library already has that book from the same store,
+your server copies the library's files instead of downloading from the
+store again. The copy is then converted and named by your own settings,
+like any other download. With it off, your server always downloads from
+the store. Your server runs the library's work and shows its books either
+way.
 
 > [!NOTE]
-> Asking a library to send you one of these books isn't possible yet.
+> If the library got its copy from a different store than yours, your
+> server downloads the book from your store and keeps whichever of the
+> two is the better recording. If the library keeps the book as several
+> audio files, your server downloads the book from your store.
+
+## Sign in with a library card
+
+To see a library's books without joining it as a branch, sign in to it
+with a library card. Your server is then a clerk of that library: it shows
+the library's books, yours marked, and never takes its work.
+
+1. Open **Settings → Library → Library cards** and choose **Sign in with a
+   library card**.
+2. Enter the library's address, the one you open it with in a browser,
+   and choose **Continue**.
+3. If the library uses its own certificate, check that the fingerprint
+   matches the one on the library's **Settings → Branches** page, and tick
+   **It matches**.
+4. Name this computer. The library shows the name when it asks you to
+   approve the card.
+5. Choose **Sign in to** *library*, sign in on the library with your
+   account there, and approve the card.
+
+The library sends you back to your server, which says **Signed in to**
+*library*. Within a minute, **Library** shows that library's books under
+**Books in other libraries**, yours marked, beside the books of any library
+your server is a branch of.
+
+To stop, choose **Sign out** beside the library in the same list. Your
+server forgets the card and the books, and asks the library to end the
+card too. If the library can't be reached, end it later from your session
+list on the library. If the library ends the card first, the list says so
+and offers **Remove**; sign in again to get a new card.
+
+While the card is signed in and the library is connected, your server
+can also use the library's copies of your books. When it downloads one of
+your books, it first asks the library for its copy and uses it the way a
+branch does with **Keep copies on this computer** on: a copy from the
+same store is used instead of downloading from the store again, and a
+copy from another store is used only when it is better than your own
+download. If no library answers with a usable copy, your server
+downloads from the store as usual. A card has no setting to turn this off.
+
+A server that is already a branch of a library shows your books there
+through that link, so it can't also hold a card for it.
+
+## Core and local branches
+
+Every install is a library of its own, with its own database, people and
+operator. What sets installs apart is whether other computers can reach
+them:
+
+- A **core branch** has an address that other installs can connect to
+  (its `public_origin`, see [Configuration](../server/configuration.md)).
+  Other branches can join it.
+- A **local branch** has no such address, such as a laptop or a computer
+  at home. It connects out to the core branches it joins and never waits
+  for anyone to connect to it.
+
+When one install joins another, the relationship has a name too:
+
+| Relationship | What it is |
+| --- | --- |
+| Local branch | A local branch contributing to a core branch. |
+| Remote branch | A core branch contributing to another core branch. |
+| Shared branch | Two installs sharing one database, so one library runs on more than one machine. See [Shared branches](#shared-branches). |
+
+You can only join a core branch. A local branch and a remote branch work
+the same way and follow the same rules; the only difference is whether the
+branch that joins can be reached itself. A branch that gets an address
+later becomes a remote branch without joining again.
+
+A **clerk** is not a branch: it only shows a person their books (see
+[Sign in with a library card](#sign-in-with-a-library-card)).
 
 ## Leave a library
 
@@ -152,7 +223,7 @@ The library's operator or an Owner can also remove a branch from
 
 ## Shared branches
 
-A branch can also share the library's own database instead of keeping one
-of its own. It is then an extra copy of the library itself, so the library
-runs on more than one machine. Setting one up is an operator task; see
+A branch can also share another install's database instead of keeping one
+of its own. It is then an extra copy of that library, so the
+library runs on more than one machine. Setting one up is an operator task; see
 [Shared branches](../server/cluster-hosts.md#shared-branches).

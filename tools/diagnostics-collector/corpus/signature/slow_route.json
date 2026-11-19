@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "report_id": "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4",
+  "received_at_unix_ms": 1763000000000,
+  "install_key": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "payload": {
+    "trigger": "slow_burst",
+    "version": "0.9.0",
+    "os": "linux",
+    "deployment": "demo",
+    "events": [
+      { "ts_unix_ms": 1763000000000, "level": "TRACE", "target": "h2::codec", "message": "frame", "fields": [] },
+      { "ts_unix_ms": 1763000000001, "level": "TRACE", "target": "h2::codec", "message": "frame", "fields": [] },
+      { "ts_unix_ms": 1763000000002, "level": "DEBUG", "target": "h2::codec", "message": "frame", "fields": [] },
+      { "ts_unix_ms": 1763000000003, "level": "TRACE", "target": "h2::codec", "message": "frame", "fields": [] },
+      { "ts_unix_ms": 1763000000004, "level": "TRACE", "target": "h2::codec", "message": "frame", "fields": [] },
+      {
+        "ts_unix_ms": 1763000002900,
+        "level": "WARN",
+        "target": "bookclerk::slow",
+        "message": "slow response",
+        "fields": [["method", "GET"], ["route", "/api/library/works/{id}"], ["status", "200"], ["latency_ms", "2896"]]
+      },
+      {
+        "ts_unix_ms": 1763000002950,
+        "level": "WARN",
+        "target": "bookclerk::slow",
+        "message": "slow response",
+        "fields": [["route", "/api/library/works/{id}"], ["latency_ms", 3100]]
+      }
+    ]
+  }
+}

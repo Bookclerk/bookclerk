@@ -11,7 +11,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { validateManifest, type Manifest, type SettingToml } from "./validate.js";
+import {
+  validateManifest,
+  type Manifest,
+  type SettingColumnToml,
+  type SettingToml,
+} from "./validate.js";
 
 /** Default output filename next to `plugin.toml`. */
 export const TYPES_OUTPUT_FILE = "bookclerk-configuration.d.ts";
@@ -24,6 +29,7 @@ const RESERVED_BINDINGS: ReadonlySet<string> = new Set([
   "WORK_FS",
   "KV",
   "OAUTH",
+  "SOCKETS",
 ]);
 
 /** One property of the generated `Env` interface. */
@@ -68,15 +74,39 @@ function varType(value: unknown): string {
  *   unless a default or `required` guarantees a value.
  */
 function settingType(spec: SettingToml): string {
-  const base =
-    spec.type === "bool"
-      ? "boolean"
-      : spec.type === "integer"
-        ? "number"
-        : spec.type === "enum"
-          ? (spec.values ?? []).map((v) => JSON.stringify(v.id)).join(" | ") || "string"
-          : "string";
+  const base = spec.type === "table" ? rowType(spec.columns ?? []) : scalarType(spec);
   return spec.default !== undefined || spec.required ? base : `${base} | undefined`;
+}
+
+/**
+ * Renders the TypeScript type of one scalar setting or table column.
+ *
+ * @param spec - Setting or column declaration.
+ * @returns Literal union for enums, otherwise `boolean`, `number` or `string`.
+ */
+function scalarType(spec: Pick<SettingToml, "type" | "values">): string {
+  return spec.type === "bool"
+    ? "boolean"
+    : spec.type === "integer"
+      ? "number"
+      : spec.type === "enum"
+        ? (spec.values ?? []).map((v) => JSON.stringify(v.id)).join(" | ") || "string"
+        : "string";
+}
+
+/**
+ * Renders the TypeScript type of a `table` setting's rows.
+ *
+ * @param columns - The table's columns.
+ * @returns An array of row objects; a column is optional unless a default or
+ *   `required` guarantees the host delivers it.
+ */
+function rowType(columns: SettingColumnToml[]): string {
+  const fields = columns.map((column) => {
+    const optional = column.default !== undefined || column.required ? "" : "?";
+    return `${propertyKey(column.key)}${optional}: ${scalarType(column)}`;
+  });
+  return `Array<{ ${fields.join("; ")} }>`;
 }
 
 /**
@@ -148,6 +178,13 @@ export function envPropertiesFor(m: Manifest): EnvProperty[] {
       doc: `\`[[kv_namespaces]]\` durable KV namespace \`${namespace}\` (Workers \`KVNamespace\`-shaped).`,
     });
   }
+  if (m.sockets) {
+    props.push({
+      name: m.sockets.binding || "SOCKETS",
+      type: "SocketsBinding",
+      doc: "`[sockets]` host-brokered WebSockets; messages reach `webSocketMessage` / `webSocketClose`.",
+    });
+  }
   if (m.oauth) {
     props.push({
       name: m.oauth.binding ?? "OAUTH",
@@ -209,6 +246,7 @@ export function renderEnvTypes(m: Manifest): string {
       "EventPublisherBinding",
       "KvNamespaceBinding",
       "QueueBinding",
+      "SocketsBinding",
       "StorageBinding",
     ].filter((t) => used.has(t)),
   ];

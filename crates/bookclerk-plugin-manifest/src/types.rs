@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Every entrypoint in declaration order (mirrors the Cap'n Proto enum).
-pub const ALL_ENTRYPOINTS: [Entrypoint; 8] = [
+pub const ALL_ENTRYPOINTS: [Entrypoint; 9] = [
     Entrypoint::Storefront,
     Entrypoint::Storage,
     Entrypoint::DatabaseAdapter,
@@ -23,6 +23,7 @@ pub const ALL_ENTRYPOINTS: [Entrypoint; 8] = [
     Entrypoint::Oidc,
     Entrypoint::Metadata,
     Entrypoint::Covers,
+    Entrypoint::MetadataFiles,
 ];
 
 /// Entrypoints the host loads into their own registry (sources,
@@ -52,7 +53,8 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
         | Entrypoint::Cli
         | Entrypoint::Oidc
         | Entrypoint::Metadata
-        | Entrypoint::Covers => PluginFamily::Integration,
+        | Entrypoint::Covers
+        | Entrypoint::MetadataFiles => PluginFamily::Integration,
     }
 }
 
@@ -68,7 +70,7 @@ pub enum PluginFamily {
     /// Storefront / library source (`Storefront` entrypoint).
     Source,
     /// Event consumer, job runner, remote library, CLI, OIDC bridge,
-    /// metadata provider, or cover fetcher.
+    /// metadata provider, cover fetcher, or metadata file dialects.
     Integration,
     /// Destination / output backend (`Storage` entrypoint).
     Output,
@@ -200,6 +202,75 @@ impl MediaManifest {
             fetches: self.fetches.clone(),
         }
     }
+}
+
+/// `[metadata_files]`: the metadata file dialects a `metadataFiles` plugin
+/// implements. Required for that entrypoint and forbidden without it.
+///
+/// The host routes a file to a dialect from this table alone, so a
+/// sleeping plugin is started only when a file it reads turns up.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetadataFilesManifest {
+    /// One row per dialect (`[[metadata_files.dialects]]`); never empty.
+    #[serde(default)]
+    pub dialects: Vec<MetadataFileDialectManifest>,
+}
+
+/// One `[[metadata_files.dialects]]` row: a file format the plugin reads,
+/// and writes when `writes` is true.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetadataFileDialectManifest {
+    /// Dialect id (`[a-z][a-z0-9_]{0,63}`), unique within the plugin; the
+    /// host passes it back in `parse` and `render`.
+    pub id: String,
+    /// Name shown in settings and on a book's files list.
+    pub name: String,
+    /// Exact file names the dialect reads (`metadata.json`), compared
+    /// without ASCII case. An exact name wins over a suffix.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_names: Vec<String>,
+    /// File name endings the dialect reads (`.opf`, `.metadata.json`),
+    /// compared without ASCII case. Each starts with `.`; the longest match
+    /// wins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suffixes: Vec<String>,
+    /// Fields the format carries (wire names such as `title`,
+    /// `publishedAt`); never empty.
+    #[serde(default)]
+    pub fields: Vec<bookclerk_plugin_abi::MetadataField>,
+    /// Credit roles the format carries; required exactly when `fields`
+    /// names `credits`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credit_roles: Vec<bookclerk_plugin_abi::CreditRole>,
+    /// Whether the dialect also writes files (`render`). Read-only formats,
+    /// such as a store's catalog JSON, leave it false.
+    #[serde(default)]
+    pub writes: bool,
+}
+
+impl MetadataFileDialectManifest {
+    /// The row as the host's record checks take it.
+    ///
+    /// # Returns
+    ///
+    /// The dialect's id, fields, credit roles and write flag.
+    #[must_use]
+    pub fn to_dialect(&self) -> bookclerk_plugin_abi::MetadataFileDialect {
+        bookclerk_plugin_abi::MetadataFileDialect {
+            id: self.id.clone(),
+            fields: self.fields.clone(),
+            credit_roles: self.credit_roles.clone(),
+            writes: self.writes,
+        }
+    }
+}
+
+/// Whether `name` is printable ASCII naming one file with no folder.
+fn is_ascii_file_name(name: &str) -> bool {
+    name.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
+        && bookclerk_plugin_abi::metadata_files::is_plain_file_name(name)
 }
 
 /// Network mode declared in `[capabilities.network]`.
@@ -349,6 +420,11 @@ pub struct BindingCapabilities {
     /// With native outbound, this upgrades jail network need to
     /// [`JailNetworkNeed::Listen`].
     pub oauth: bool,
+    /// Guest may open host-brokered WebSockets (`[sockets]`): the
+    /// `Sockets` binding plus the `SocketHandler` entrypoint that receives
+    /// pushed messages while the process sleeps. Every target must also pass
+    /// the `[capabilities.network]` grant.
+    pub sockets: bool,
     /// Named plugin-owned database bindings (`[[databases]] binding = "DB"`).
     pub databases: Vec<String>,
 }
@@ -505,6 +581,8 @@ pub const DEFAULT_SECRETS_BINDING: &str = "SECRETS";
 pub const DEFAULT_WORK_FS_BINDING: &str = "WORK_FS";
 /// Default `binding` for `[oauth]`.
 pub const DEFAULT_OAUTH_BINDING: &str = "OAUTH";
+/// Default `binding` for `[sockets]`.
+pub const DEFAULT_SOCKETS_BINDING: &str = "SOCKETS";
 /// Default `binding` for `[[kv_namespaces]]`.
 pub const DEFAULT_KV_BINDING: &str = "KV";
 /// Default `binding` for `[[events.producers]]`.
@@ -1073,6 +1151,15 @@ pub struct PluginManifest {
     /// OAuth callback tunnel binding (`[oauth]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth: Option<NamedBinding>,
+    /// Host-brokered WebSocket binding (`[sockets]`, default `SOCKETS`).
+    ///
+    /// The host holds each socket the guest opens, answers declared
+    /// heartbeats itself, and wakes the guest's `SocketHandler` only when a
+    /// real message arrives, so the guest process may sleep in between. Needs
+    /// `[capabilities.network] mode = "outbound"`; every URL must also pass
+    /// the network grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sockets: Option<NamedBinding>,
     /// How the store accounts this storefront connects may be shared
     /// between Bookclerk instances (`credentials`); see
     /// [`CredentialSharing`] and [`Self::credential_sharing`]. Only a
@@ -1085,6 +1172,11 @@ pub struct PluginManifest {
     /// [`MediaManifest`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaManifest>,
+    /// Metadata file dialects (`[metadata_files]`): required for plugins
+    /// that export the `metadataFiles` entrypoint and forbidden for every
+    /// other plugin; see [`MetadataFilesManifest`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_files: Option<MetadataFilesManifest>,
     /// Declared network capability (consent has no Wrangler analogue).
     pub capabilities: CapabilitiesManifest,
     /// Optional CLI schema advertised to `bookclerk plugins <id>` (from
@@ -1350,6 +1442,7 @@ impl PluginManifest {
             plugin_kv: !self.kv_namespaces.is_empty(),
             work_fs: self.work_fs.is_some(),
             oauth: self.oauth.is_some(),
+            sockets: self.sockets.is_some(),
             databases: self.databases.iter().map(|d| d.binding.clone()).collect(),
         }
     }
@@ -1434,7 +1527,7 @@ impl PluginManifest {
     /// A plugin joins the `Source` / `Output` / `Database` families through
     /// the matching named entrypoint and the `Integration` family through
     /// event consumers, queue consumers, crons, `RemoteLibrary`, `Cli`,
-    /// `Oidc`, `Metadata`, or `Covers`.
+    /// `Oidc`, `Metadata`, `Covers`, or `MetadataFiles`.
     ///
     /// Job triggers make a plugin an integration only when it has no
     /// `storefront`, `storage` or `databaseAdapter` entrypoint. Beside one of
@@ -1463,6 +1556,7 @@ impl PluginManifest {
                         || self.has_entrypoint(Entrypoint::Oidc)
                         || self.has_entrypoint(Entrypoint::Metadata)
                         || self.has_entrypoint(Entrypoint::Covers)
+                        || self.has_entrypoint(Entrypoint::MetadataFiles)
                         || (self.has_entrypoint(Entrypoint::Cli) && !self.has_registry_entrypoint())
                 }
             };
@@ -1538,6 +1632,7 @@ impl PluginManifest {
             bindings: self.binding_names(),
             queue_consumers: self.queue_consumer_names(),
             queue_producers: self.queue_producer_names(),
+            sockets: self.sockets.is_some(),
         }
     }
 
@@ -1546,7 +1641,7 @@ impl PluginManifest {
     /// # Returns
     ///
     /// `CONFIG` (when `[vars]` is present), the resolved `[secrets]`,
-    /// `[work_fs]`, `[oauth]` names, every `[[kv_namespaces]]` binding,
+    /// `[work_fs]`, `[oauth]`, `[sockets]` names, every `[[kv_namespaces]]` binding,
     /// every distinct `[[events.producers]]` binding, and every
     /// `[[queues.producers]]` binding, in that order.
     #[must_use]
@@ -1563,6 +1658,9 @@ impl PluginManifest {
         }
         if let Some(b) = &self.oauth {
             names.push(b.name_or(DEFAULT_OAUTH_BINDING).to_string());
+        }
+        if let Some(b) = &self.sockets {
+            names.push(b.name_or(DEFAULT_SOCKETS_BINDING).to_string());
         }
         for kv in &self.kv_namespaces {
             names.push(kv.name_or(DEFAULT_KV_BINDING).to_string());
@@ -1747,6 +1845,123 @@ impl PluginManifest {
             .map_err(|err| Error::message(format!("plugin.toml: `[media]`: {err}")))
     }
 
+    /// Checks the `[metadata_files]` table against the plugin's entrypoints.
+    ///
+    /// The same rules, with the same messages, run in the TypeScript and
+    /// Python author tools (`manifest-cases.json`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Message`] when a `metadataFiles` plugin has no
+    /// dialects or another plugin has the table, or when a dialect has a bad
+    /// or repeated id, no name, no file names or suffixes, a malformed or
+    /// repeated name or suffix, no fields, a repeated field or credit role,
+    /// or credit roles without `credits` (or `credits` without roles).
+    fn validate_metadata_files(&self) -> Result<()> {
+        let exported = self.has_entrypoint(Entrypoint::MetadataFiles);
+        let Some(table) = &self.metadata_files else {
+            if exported {
+                return Err(Error::message(
+                    "plugin.toml: `[metadata_files]` is required for a plugin with the \
+                     `metadataFiles` entrypoint (declare at least one dialect)",
+                ));
+            }
+            return Ok(());
+        };
+        if !exported {
+            return Err(Error::message(
+                "plugin.toml: `[metadata_files]` needs the `metadataFiles` entrypoint",
+            ));
+        }
+        if table.dialects.is_empty() {
+            return Err(Error::message(
+                "plugin.toml: `[metadata_files].dialects` is empty",
+            ));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        let mut claimed = std::collections::BTreeSet::new();
+        for (i, dialect) in table.dialects.iter().enumerate() {
+            let row = format!("plugin.toml: metadata_files.dialects[{i}]");
+            if !bookclerk_plugin_abi::metadata_files::is_dialect_id(&dialect.id) {
+                return Err(Error::message(format!(
+                    "{row}.id `{}` is not an identifier ([a-z][a-z0-9_]{{0,63}})",
+                    dialect.id
+                )));
+            }
+            if !ids.insert(dialect.id.as_str()) {
+                return Err(Error::message(format!(
+                    "plugin.toml: metadata_files dialect id `{}` is declared twice",
+                    dialect.id
+                )));
+            }
+            if dialect.name.trim().is_empty() {
+                return Err(Error::message(format!("{row}.name is required")));
+            }
+            if dialect.file_names.is_empty() && dialect.suffixes.is_empty() {
+                return Err(Error::message(format!(
+                    "{row} declares no `file_names` or `suffixes`"
+                )));
+            }
+            for name in &dialect.file_names {
+                if !is_ascii_file_name(name) {
+                    return Err(Error::message(format!(
+                        "{row}.file_names entry `{name}` is not a plain ASCII file name"
+                    )));
+                }
+            }
+            for suffix in &dialect.suffixes {
+                if suffix.len() < 2 || !suffix.starts_with('.') || !is_ascii_file_name(suffix) {
+                    return Err(Error::message(format!(
+                        "{row}.suffixes entry `{suffix}` must start with `.` and be a plain \
+                         ASCII file name"
+                    )));
+                }
+            }
+            for name in dialect.file_names.iter().chain(&dialect.suffixes) {
+                if !claimed.insert(name.to_ascii_lowercase()) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: metadata_files `{name}` is claimed twice"
+                    )));
+                }
+            }
+            if dialect.fields.is_empty() {
+                return Err(Error::message(format!("{row}.fields is empty")));
+            }
+            let mut fields = std::collections::BTreeSet::new();
+            for field in &dialect.fields {
+                if !fields.insert(field.wire_name()) {
+                    return Err(Error::message(format!(
+                        "{row}.fields names `{}` twice",
+                        field.wire_name()
+                    )));
+                }
+            }
+            let mut roles = std::collections::BTreeSet::new();
+            for role in &dialect.credit_roles {
+                if !roles.insert(role.wire_name()) {
+                    return Err(Error::message(format!(
+                        "{row}.credit_roles names `{}` twice",
+                        role.wire_name()
+                    )));
+                }
+            }
+            let credits = dialect
+                .fields
+                .contains(&bookclerk_plugin_abi::MetadataField::Credits);
+            if credits && dialect.credit_roles.is_empty() {
+                return Err(Error::message(format!(
+                    "{row}.credit_roles is empty but `fields` names `credits`"
+                )));
+            }
+            if !credits && !dialect.credit_roles.is_empty() {
+                return Err(Error::message(format!(
+                    "{row}.credit_roles needs `credits` in `fields`"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Checks id grammar, `api_version`, logo, runtime-specific required
     /// fields, and network domain rules (native forbid / workerd outbound
     /// require / IDNA).
@@ -1775,6 +1990,7 @@ impl PluginManifest {
             let _ = crate::validate_logo(logo)?;
         }
         self.validate_media()?;
+        self.validate_metadata_files()?;
         if self.credentials.is_some() && !self.has_entrypoint(Entrypoint::Storefront) {
             return Err(Error::message(
                 "plugin.toml: `credentials` needs the `storefront` entrypoint (only storefronts connect store accounts)",
@@ -1832,6 +2048,12 @@ impl PluginManifest {
                     self.declares_python(),
                 )?;
             }
+        }
+        if self.sockets.is_some() && self.capabilities.network.mode != NetworkMode::Outbound {
+            return Err(Error::message(
+                "plugin.toml: [sockets] needs capabilities.network.mode = \"outbound\" \
+                 (every socket URL must pass the network grant)",
+            ));
         }
         if self.runtime == PluginRuntimeKind::Native
             && !self.capabilities.network.domains.is_empty()
@@ -1952,6 +2174,9 @@ impl PluginManifest {
             if let Some(b) = &self.oauth {
                 named.push(("oauth", b.name_or(DEFAULT_OAUTH_BINDING), 0));
             }
+            if let Some(b) = &self.sockets {
+                named.push(("sockets", b.name_or(DEFAULT_SOCKETS_BINDING), 0));
+            }
             for (index, b) in self.kv_namespaces.iter().enumerate() {
                 named.push(("kv_namespaces", b.name_or(DEFAULT_KV_BINDING), index));
             }
@@ -1992,6 +2217,22 @@ impl PluginManifest {
                     return Err(Error::message(format!(
                         "plugin.toml: [{table}][{index}] binding collides with another binding"
                     )));
+                }
+            }
+            // Producers may share one publisher binding, but `env.SOCKETS`
+            // is its own property and cannot take a publisher's name, nor
+            // `EVENTS`, which the SDKs' generated `Env` always carries when
+            // the plugin publishes.
+            if let Some(b) = &self.sockets {
+                let name = b.name_or(DEFAULT_SOCKETS_BINDING);
+                let producers = &self.events.producers;
+                if !producers.is_empty()
+                    && (name == DEFAULT_EVENTS_BINDING
+                        || producers.iter().any(|p| p.binding_name() == name))
+                {
+                    return Err(Error::message(
+                        "plugin.toml: [sockets][0] binding collides with another binding",
+                    ));
                 }
             }
         }
@@ -2247,6 +2488,7 @@ mod tests {
                 PluginFamily::Source,
                 PluginFamily::Output,
                 PluginFamily::Database,
+                PluginFamily::Integration,
                 PluginFamily::Integration,
                 PluginFamily::Integration,
                 PluginFamily::Integration,
@@ -2993,6 +3235,64 @@ mode = "outbound"
         let many = manifest(&["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9"])
             .expect_err("over max bindings");
         assert!(many.to_string().contains("max is"), "{many}");
+    }
+
+    #[test]
+    fn sockets_need_outbound_network() {
+        let denied = PluginManifest::parse(&native("[sockets]\n")).expect_err("deny mode");
+        assert!(denied.to_string().contains("[sockets]"), "{denied}");
+
+        let outbound = |extra: &str| {
+            format!(
+                r#"
+api_version = 3
+id = "echo"
+runtime = "native"
+command = "./echo"
+entrypoints = ["remoteLibrary"]
+[capabilities.network]
+mode = "outbound"
+{extra}
+"#
+            )
+        };
+        let m = PluginManifest::parse(&outbound("[sockets]\n")).expect("outbound sockets");
+        assert!(m.bindings().sockets);
+        assert!(m
+            .binding_names()
+            .contains(&DEFAULT_SOCKETS_BINDING.to_string()));
+        let renamed = PluginManifest::parse(&outbound("[sockets]\nbinding = \"PUSH\"\n"))
+            .expect("renamed binding");
+        assert!(renamed.binding_names().contains(&"PUSH".to_string()));
+        let bad = PluginManifest::parse(&outbound("[sockets]\nbinding = \"push\"\n"))
+            .expect_err("lowercase binding");
+        assert!(bad.to_string().contains("[sockets]"), "{bad}");
+        let publisher = PluginManifest::parse(&outbound(
+            "[sockets]\nbinding = \"EVENTS\"\n[[events.producers]]\ntype = \"echo_done\"\n",
+        ))
+        .expect_err("sockets named after the event publisher");
+        assert!(
+            publisher
+                .to_string()
+                .contains("[sockets][0] binding collides"),
+            "{publisher}"
+        );
+        let renamed_publisher = PluginManifest::parse(&outbound(
+            "[sockets]\nbinding = \"EVENTS\"\n[[events.producers]]\ntype = \"echo_done\"\nbinding = \"CUSTOM\"\n",
+        ))
+        .expect_err("sockets named EVENTS beside a renamed publisher");
+        assert!(
+            renamed_publisher
+                .to_string()
+                .contains("[sockets][0] binding collides"),
+            "{renamed_publisher}"
+        );
+        assert!(
+            !PluginManifest::parse(&native(""))
+                .unwrap()
+                .bindings()
+                .sockets
+        );
     }
 
     #[test]

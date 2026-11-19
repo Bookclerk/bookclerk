@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
 from unittest import mock
 
@@ -16,8 +17,10 @@ from bookclerk_plugin_sdk.workerd import (
     EventMessage,
     JobController,
     MetadataEntrypoint,
+    MetadataFilesEntrypoint,
     PluginError,
     ScheduledController,
+    StorageEntrypoint,
     StorefrontEntrypoint,
     cli_args,
     decode_extensible_config,
@@ -263,6 +266,35 @@ class PurchaseHintsDefaultTests(unittest.IsolatedAsyncioTestCase):
             out = await store.purchaseHints({"queries": [{"title": "late"}]})
         self.assertEqual(out, [None])
 
+    async def test_a_few_lookups_overlap_and_a_failure_fails_the_batch(self) -> None:
+        running = 0
+        peak = 0
+
+        class Store(StorefrontEntrypoint):
+            async def purchaseHint(self, params):
+                nonlocal running, peak
+                running += 1
+                peak = max(peak, running)
+                await asyncio.sleep(0.01)
+                running -= 1
+                return {"productId": params["productId"]} if params.get("productId") else None
+
+        queries = [{"productId": f"p{n}"} if n % 3 else {"title": f"t{n}"} for n in range(10)]
+        out = await Store.__new__(Store).purchaseHints({"queries": queries})
+        self.assertEqual(
+            [h["productId"] if h else None for h in out],
+            [q.get("productId") for q in queries],
+        )
+        self.assertEqual(peak, workerd_module.PURCHASE_HINTS_CONCURRENCY)
+
+        class Limited(StorefrontEntrypoint):
+            async def purchaseHint(self, params):
+                raise PluginError("rate_limited", "slow down")
+
+        with self.assertRaises(PluginError) as ctx:
+            await Limited.__new__(Limited).purchaseHints({"queries": queries})
+        self.assertEqual(ctx.exception.code, "rate_limited")
+
 
 class NamedEntrypointTests(unittest.IsolatedAsyncioTestCase):
     async def test_cli_invoke_allowlisted(self) -> None:
@@ -287,6 +319,49 @@ class NamedEntrypointTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PluginError) as ctx:
             await Cli().bookclerkInvoke({}, "not_a_method")
         self.assertEqual(ctx.exception.code, "unsupported")
+
+
+class StorageOperationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_intent_operations_dispatch_and_default_to_unsupported(self) -> None:
+        """A storage guest answers only the intent operations it overrides."""
+
+        class Storage(StorageEntrypoint):
+            async def deleteMany(self, keys):
+                return [{"key": k} for k in keys]
+
+        storage = Storage()
+        self.assertEqual(
+            await storage.bookclerkInvoke({}, "deleteMany", ["a", "b"]),
+            [{"key": "a"}, {"key": "b"}],
+        )
+        calls = {
+            "move": ("a", "b", {}),
+            "moveMany": ({"target": {"kind": "pairs", "value": []}},),
+            "headMany": (["a"],),
+            "changes": ({"cursor": ""},),
+        }
+        for method, args in calls.items():
+            with self.assertRaises(PluginError) as ctx:
+                await storage.bookclerkInvoke({}, method, *args)
+            self.assertEqual(ctx.exception.code, "unsupported", method)
+
+    def test_change_records_round_trip_without_info_and_with_new_kinds(self) -> None:
+        """A change may omit `info`, and a kind newer than this SDK reads as `changed`."""
+        from bookclerk_plugin_sdk import _wire
+
+        codec = _wire._object_change_codec
+        removed = _wire._decode_message(
+            codec, _wire._encode_message(codec, {"key": "a/2", "kind": "removed"})
+        )
+        self.assertEqual((removed["key"], removed["kind"]), ("a/2", "removed"))
+
+        def write_future(s, _v, _caps) -> None:
+            s.set_text(0, "k")
+            s.set_u16(0, 3)
+
+        future_codec = _wire._Codec(codec.data_words, codec.pointer_count, write_future, codec.read)
+        future = _wire._decode_message(codec, _wire._encode_message(future_codec, {}))
+        self.assertEqual((future["key"], future["kind"]), ("k", "changed"))
 
 
 class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
@@ -371,6 +446,59 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
 
         images = await Covers().bookclerkInvoke({}, "fetchCovers", {"urls": ["https://a/"]}, "sink")
         self.assertEqual(images, [{"url": "https://a/", "stored": False, "error": "'sink'"}])
+
+    async def test_metadata_files_defaults_and_dispatch(self) -> None:
+        """MetadataFilesEntrypoint reports healthy, refuses parse/render, and dispatches overrides."""
+        files = MetadataFilesEntrypoint()
+        self.assertEqual(await files.health(), {"ok": True, "detail": ""})
+        for method, params in (
+            ("parse", {"dialect": "opf", "fileName": "a.opf", "bytes": b""}),
+            (
+                "render",
+                {"dialect": "opf", "record": {"present": []}, "fields": [], "existing": b""},
+            ),
+        ):
+            with self.assertRaises(PluginError) as ctx:
+                await getattr(files, method)(params)
+            self.assertEqual(ctx.exception.code, "unsupported")
+
+        class Files(MetadataFilesEntrypoint):
+            async def parse(self, params: dict) -> dict:
+                return {"present": ["title"], "title": params["bytes"].decode()}
+
+            async def render(self, params: dict) -> str:
+                return params["record"]["title"]
+
+        record = await Files().bookclerkInvoke(
+            {}, "parse", {"dialect": "txt", "fileName": "desc.txt", "bytes": b"Hi"}
+        )
+        self.assertEqual(record, {"present": ["title"], "title": "Hi"})
+        rendered = await Files().bookclerkInvoke(
+            {}, "render", {"dialect": "txt", "record": {"title": "Hi"}, "fields": ["title"]}
+        )
+        self.assertEqual(rendered, "Hi")
+
+        class JsParams:
+            """Stands in for a JsProxy whose ``to_py()`` nests a ``memoryview``."""
+
+            def to_py(self) -> dict:
+                return {
+                    "dialect": "txt",
+                    "fileName": "desc.txt",
+                    "bytes": memoryview(b"Nested"),
+                    "list": [memoryview(b"x")],
+                }
+
+        class Echo(MetadataFilesEntrypoint):
+            async def parse(self, params: dict) -> dict:
+                self.seen = params
+                return {"present": ["title"], "title": params["bytes"].decode()}
+
+        echo = Echo()
+        record = await echo.bookclerkInvoke({}, "parse", JsParams())
+        self.assertEqual(record, {"present": ["title"], "title": "Nested"})
+        self.assertEqual(echo.seen["list"], [b"x"])
+        self.assertIsInstance(echo.seen["bytes"], bytes)
 
     async def test_execute_streamed_unsupported_by_default(self) -> None:
         """A session that advertises no streamed budget keeps the default, which is unsupported."""
@@ -588,6 +716,185 @@ class QueueDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("put", "cursor", {"expirationTtl": 60, "metadata": {"page": 7}}), stub.calls)
         self.assertIn(("list", {"prefix": "cur", "limit": 10}), stub.calls)
         self.assertIn(("get", "cursor", "arrayBuffer"), stub.calls)
+
+    async def test_socket_handlers_receive_host_web_sockets(self) -> None:
+        from bookclerk_plugin_sdk.workerd import HostWebSocket, SocketsBinding
+
+        class _SocketsStub:
+            def __init__(self) -> None:
+                self.calls: list = []
+
+            async def call(self, op, body):
+                self.calls.append((op, body))
+                if op == "connect":
+                    return {
+                        "ok": {
+                            "socket": "g1_a",
+                            "url": body["url"],
+                            "protocol": "chat",
+                            "attachment": body["attachment"],
+                        }
+                    }
+                if op == "list":
+                    return {"ok": {"sockets": [{"socket": "g1_a", "url": "wss://abs.example/"}]}}
+                if op == "send" and body["frame"] == {"text": "boom"}:
+                    return {"err": {"code": "not_found", "message": "socket closed"}}
+                return {"ok": {}}
+
+        stub = _SocketsStub()
+        seen: list = []
+
+        class Default(BookclerkEntrypoint):
+            async def scheduled(self, controller) -> None:
+                sockets = self.env.SOCKETS
+                assert isinstance(sockets, SocketsBinding)
+                ws = await sockets.connect(
+                    "wss://abs.example/socket.io/",
+                    protocols=["chat"],
+                    headers={"Authorization": "Bearer t"},
+                    auto_responses=[("2", "3"), (b"\x01", b"\x02")],
+                    attachment={"user": "u1"},
+                )
+                seen.append((ws.id, ws.url, ws.protocol, ws.deserialize_attachment()))
+                seen.append([s.id for s in await sockets.get_web_sockets()])
+
+            async def web_socket_message(self, ws: HostWebSocket, message) -> None:
+                seen.append(("message", ws.id, message, ws.deserialize_attachment()))
+                await ws.send(b"\x00\xff")
+                await ws.serialize_attachment({"n": 2})
+                seen.append(ws.deserialize_attachment())
+                try:
+                    await ws.send("boom")
+                except PluginError as err:
+                    seen.append(err.code)
+
+            async def web_socket_close(self, ws, code, reason, was_clean) -> None:
+                seen.append(("close", ws.id, code, reason, was_clean))
+                await ws.close(1000, "bye")
+
+        context = {"sockets": [{"name": "SOCKETS", "sockets": stub}]}
+        await Default().bookclerkScheduled(context, {"cron": "* * * * *"})
+        await Default().bookclerkSocketMessage(
+            context,
+            {"socket": "g1_a", "frame": {"kind": "text", "value": "42"}, "attachment": b"7"},
+        )
+        await Default().bookclerkSocketMessage(
+            context, {"socket": "g1_a", "frame": {"kind": "binary", "value": b"\x01"}}
+        )
+        await Default().bookclerkSocketClosed(
+            context, {"socket": "g1_a", "code": 1006, "reason": "", "clean": False}
+        )
+        self.assertEqual(
+            seen[:3],
+            [
+                ("g1_a", "wss://abs.example/socket.io/", "chat", {"user": "u1"}),
+                ["g1_a"],
+                ("message", "g1_a", "42", 7),
+            ],
+        )
+        self.assertEqual(seen[3:5], [{"n": 2}, "not_found"])
+        self.assertEqual(seen[5], ("message", "g1_a", b"\x01", None))
+        self.assertEqual(seen[-1], ("close", "g1_a", 1006, "", False))
+        connect = stub.calls[0]
+        self.assertEqual(connect[0], "connect")
+        self.assertEqual(
+            connect[1],
+            {
+                "url": "wss://abs.example/socket.io/",
+                "protocols": ["chat"],
+                "headers": [{"name": "Authorization", "value": "Bearer t"}],
+                "autoResponses": [
+                    {"request": {"text": "2"}, "response": {"text": "3"}},
+                    {"request": {"binary": "AQ=="}, "response": {"binary": "Ag=="}},
+                ],
+                "attachment": "eyJ1c2VyIjoidTEifQ==",
+            },
+        )
+        self.assertIn(("send", {"socket": "g1_a", "frame": {"binary": "AP8="}}), stub.calls)
+        self.assertIn(("attachment", {"socket": "g1_a", "attachment": "eyJuIjoyfQ=="}), stub.calls)
+        self.assertEqual(
+            stub.calls[-1], ("close", {"socket": "g1_a", "code": 1000, "reason": "bye"})
+        )
+
+    async def test_a_socket_message_can_ask_for_a_poll(self) -> None:
+        class Asks(BookclerkEntrypoint):
+            async def web_socket_message(self, ws, message):
+                if message == "user":
+                    return {"poll_events": True}
+                if message == "camel":
+                    return {"pollEvents": True}
+                if message == "truthy":
+                    return {"poll_events": 1}
+                return None
+
+        wire = lambda text: {"socket": "g1_a", "frame": {"kind": "text", "value": text}}  # noqa: E731
+        self.assertEqual(
+            await Asks().bookclerkSocketMessage({}, wire("user")), {"pollEvents": True}
+        )
+        self.assertEqual(
+            await Asks().bookclerkSocketMessage({}, wire("camel")), {"pollEvents": True}
+        )
+        self.assertEqual(
+            await Asks().bookclerkSocketMessage({}, wire("truthy")), {"pollEvents": False}
+        )
+        self.assertEqual(await Asks().bookclerkSocketMessage({}, wire("42")), {"pollEvents": False})
+
+    async def test_socket_dispatch_without_handlers_or_grant(self) -> None:
+        class Bare(BookclerkEntrypoint):
+            pass
+
+        with self.assertRaises(PluginError) as raised:
+            await Bare().bookclerkSocketMessage({}, {"socket": "g1_a"})
+        self.assertEqual(raised.exception.code, "unsupported")
+        self.assertIsNone(await Bare().bookclerkSocketClosed({}, {"socket": "g1_a"}))
+
+        class Camel(BookclerkEntrypoint):
+            async def webSocketMessage(self, ws, message) -> None:  # noqa: N802
+                await ws.send(message)
+
+        with self.assertRaises(PluginError) as raised:
+            await Camel().bookclerkSocketMessage(
+                {}, {"socket": "g1_a", "frame": {"kind": "text", "value": "x"}}
+            )
+        self.assertEqual(raised.exception.code, "unavailable")
+
+        class _BrokenStub:
+            async def call(self, op, body):
+                raise RuntimeError("channel closed")
+
+        with self.assertRaises(PluginError) as raised:
+            await Camel().bookclerkSocketMessage(
+                {"sockets": [{"name": "SOCKETS", "sockets": _BrokenStub()}]},
+                {"socket": "g1_a", "frame": {"kind": "text", "value": "x"}},
+            )
+        self.assertEqual(raised.exception.code, "unavailable")
+
+    def test_socket_attachment_and_frame_limits(self) -> None:
+        from bookclerk_plugin_sdk.workerd import (
+            MAX_SOCKET_ATTACHMENT_BYTES,
+            MAX_SOCKET_FRAME_BYTES,
+            decode_socket_attachment,
+            encode_socket_attachment,
+            socket_message_data,
+        )
+
+        self.assertEqual(encode_socket_attachment(None), b"")
+        self.assertIsNone(decode_socket_attachment(b""))
+        self.assertEqual(decode_socket_attachment(b"not json"), "not json")
+        with self.assertRaises(PluginError) as raised:
+            encode_socket_attachment("x" * MAX_SOCKET_ATTACHMENT_BYTES)
+        self.assertEqual(raised.exception.code, "payload_too_large")
+        with self.assertRaises(PluginError) as raised:
+            encode_socket_attachment({1, 2})
+        self.assertEqual(raised.exception.code, "invalid_params")
+        with self.assertRaises(PluginError) as raised:
+            workerd_module._route_frame("x" * (MAX_SOCKET_FRAME_BYTES + 1))
+        self.assertEqual(raised.exception.code, "payload_too_large")
+        with self.assertRaises(PluginError) as raised:
+            workerd_module._route_frame(7)  # type: ignore[arg-type]
+        self.assertEqual(raised.exception.code, "invalid_params")
+        self.assertEqual(socket_message_data(None), "")
+        self.assertEqual(socket_message_data({"kind": "binary", "value": [1, 2]}), b"\x01\x02")
 
     async def test_queue_handler_exception_retries_undecided(self) -> None:
         from bookclerk_plugin_sdk.workerd import QueueBatch

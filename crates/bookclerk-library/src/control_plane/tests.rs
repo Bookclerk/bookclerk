@@ -1265,6 +1265,7 @@ fn instance_schema() -> bookclerk_plugin_abi::SettingsSchema {
         default: Some(serde_json::json!("web")),
         required: false,
         description: None,
+        columns: Vec::new(),
     }])
 }
 

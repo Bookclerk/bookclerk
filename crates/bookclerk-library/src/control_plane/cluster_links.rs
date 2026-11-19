@@ -1,4 +1,4 @@
-//! On a host node: the owner clusters this install enrolled into, and the
+//! On a branch node: the owner clusters this install enrolled into, and the
 //! node keys it enrolled with (H-4 design, sections 2 and 8).
 //!
 //! Joining a cluster generates an Ed25519 signing seed and an X25519 box
@@ -159,11 +159,11 @@ pub struct ClusterLink {
     /// lookups from that library are answered with the members' books
     /// (except those of members who opted out) as well as the owner's.
     pub list_members_books: bool,
-    /// "Use this computer to download" (on by default). Off makes this
-    /// install a window of that library: the link claims no jobs, runs none
-    /// of its plugins, and reads the books the library holds for this
-    /// install's person instead (`control_plane::window_books`).
-    pub download: bool,
+    /// "Keep copies on this computer" (on by default): whether the branch
+    /// takes the library's copies of its person's books into its own
+    /// storage. The branch takes the library's work and reads its books
+    /// (`control_plane::window_books`) whether or not this is on.
+    pub keep_copies: bool,
     /// The local user who joined the library through this link, when one
     /// could be named: the only person who may add store connections to
     /// that library, or withdraw them from it, through this link.
@@ -264,7 +264,7 @@ impl<'de> Deserialize<'de> for CapacityBody {
 /// # Errors
 ///
 /// Returns the deserializer's error for anything but an object `T` reads.
-pub(super) fn from_object<'de, D, T>(
+pub(crate) fn from_object<'de, D, T>(
     deserializer: D,
     expecting: &'static str,
 ) -> std::result::Result<T, D::Error>
@@ -391,12 +391,11 @@ pub struct SharingBody {
     /// or `null` keeps the stored setting.
     #[schema(example = false)]
     keep_member_copies: Option<bool>,
-    /// "Use this computer to download": off makes this install a window of
-    /// the library (it runs none of the library's work and shows the books
-    /// the library holds for its person instead). Absent or `null` keeps
-    /// the stored setting.
+    /// "Keep copies on this computer": take the library's copies of this
+    /// install's person's books into its own storage. Absent or `null`
+    /// keeps the stored setting.
     #[schema(example = true)]
-    download: Option<bool>,
+    keep_copies: Option<bool>,
 }
 
 /// [`SharingBody`]'s fields as JSON carries them; read only from a JSON
@@ -421,7 +420,7 @@ struct SharingFields {
     keep_member_copies: Option<bool>,
     /// See [`SharingBody`].
     #[serde(default)]
-    download: Option<bool>,
+    keep_copies: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for SharingBody {
@@ -440,7 +439,7 @@ impl<'de> Deserialize<'de> for SharingBody {
             list_members_books: fields.list_members_books,
             work_for_members: fields.work_for_members,
             keep_member_copies: fields.keep_member_copies,
-            download: fields.download,
+            keep_copies: fields.keep_copies,
         })
     }
 }
@@ -467,7 +466,7 @@ impl SharingBody {
                 list_members_books: self.list_members_books,
                 work_for_members: self.work_for_members,
                 keep_member_copies: self.keep_member_copies,
-                download: self.download,
+                keep_copies: self.keep_copies,
             },
         }
     }
@@ -527,7 +526,7 @@ impl From<cluster_links::Model> for ClusterLink {
             keep_member_copies: row.keep_member_copies != 0,
             max_jobs: LinkJobCap::from_column(row.max_jobs),
             list_members_books: row.list_members_books != 0,
-            download: row.download != 0,
+            keep_copies: row.keep_copies != 0,
             person_user_id: row.person_user_id,
         }
     }
@@ -628,7 +627,7 @@ pub async fn record_cluster_link(
         keep_member_copies: Set(0),
         max_jobs: Set(None),
         list_members_books: Set(1),
-        download: Set(1),
+        keep_copies: Set(1),
         // Bound by the join afterwards with [`set_cluster_link_person`]. A
         // re-enrollment unbinds it too (the conflict update below), so a
         // join that cannot name its person leaves the link usable by
@@ -906,45 +905,37 @@ pub async fn set_cluster_link_listing(
     Ok(updated == 1)
 }
 
-/// Sets the link's "Use this computer to download" setting.
+/// Sets the link's "Keep copies on this computer" setting.
 ///
 /// # Arguments
 ///
 /// * `owner_cluster_id` - The library the link joined.
-/// * `download` - The new setting; `false` makes this install a window of
-///   that library.
+/// * `keep_copies` - The new setting: whether the branch takes the
+///   library's copies of its person's books.
 ///
 /// # Returns
 ///
 /// Whether the link exists (`false` when there is no such link); setting
 /// the value it already has still returns `true`.
 ///
-/// Turning downloading on also clears the window's copy of the library's
-/// list here, rather than leaving it to the window reader: the reader may
-/// not run before the setting is turned off again, and the old list would
-/// then show as the window's current one.
-///
 /// # Errors
 ///
 /// Returns the write error.
-pub async fn set_cluster_link_download(
+pub async fn set_cluster_link_keep_copies(
     store: &LibraryStore,
     owner_cluster_id: &str,
-    download: bool,
+    keep_copies: bool,
 ) -> Result<bool> {
-    let value = i64::from(download);
+    let value = i64::from(keep_copies);
     let update = cluster_links::Entity::update_many()
-        .col_expr(cluster_links::Column::Download, Expr::value(value))
+        .col_expr(cluster_links::Column::KeepCopies, Expr::value(value))
         .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id));
     let probe = cluster_links::Entity::find()
         .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
-        .filter(cluster_links::Column::Download.ne(value));
+        .filter(cluster_links::Column::KeepCopies.ne(value));
     let updated = store
         .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
         .await?;
-    if download {
-        crate::control_plane::window_books::clear_window_books(store, owner_cluster_id).await?;
-    }
     if updated == 0 {
         return Ok(load_cluster_link(store, owner_cluster_id).await?.is_some());
     }
@@ -1041,10 +1032,8 @@ pub struct ClusterLinkSettings {
     pub work_for_members: Option<bool>,
     /// "Keep copies of other members' books"; `None` keeps the stored value.
     pub keep_member_copies: Option<bool>,
-    /// "Use this computer to download"; `None` keeps the stored value.
-    /// Turning it on also clears the window's copy of the library's list
-    /// ([`set_cluster_link_download`]).
-    pub download: Option<bool>,
+    /// "Keep copies on this computer"; `None` keeps the stored value.
+    pub keep_copies: Option<bool>,
 }
 
 /// Sets a link's sharing, listing and work settings in one statement, so a
@@ -1081,7 +1070,7 @@ pub async fn set_cluster_link_settings(
             cluster_links::Column::KeepMemberCopies,
             settings.keep_member_copies,
         ),
-        (cluster_links::Column::Download, settings.download),
+        (cluster_links::Column::KeepCopies, settings.keep_copies),
     ];
     let mut update = cluster_links::Entity::update_many()
         .col_expr(
@@ -1108,11 +1097,6 @@ pub async fn set_cluster_link_settings(
     let updated = store
         .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
         .await?;
-    if settings.download == Some(true) {
-        // As in `set_cluster_link_download`: the window reader may not run
-        // before downloading is turned off again.
-        crate::control_plane::window_books::clear_window_books(store, owner_cluster_id).await?;
-    }
     Ok(updated == 1)
 }
 

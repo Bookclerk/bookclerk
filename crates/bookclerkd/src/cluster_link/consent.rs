@@ -39,11 +39,11 @@
 //!   to claim ([`bookclerk_node_proto::ClaimScope`]);
 //! - an operator's revoke is recorded and holds: a platform plugin is not
 //!   approved automatically again until the operator approves it;
-//! - while the link's "Use this computer to download" setting is off (a
-//!   window of that library), nothing the owner deployed is recorded,
-//!   fetched or configured: every deployment is reported as `error` with
-//!   [`WINDOW_MODE_DETAIL`], nothing is claimable, and turning the setting
-//!   off gives back held jobs at once, like a revoke.
+//! - a link that is gone or cannot be read claims nothing (fail closed).
+//!
+//! The link's "Keep copies on this computer" setting does not change any
+//! of this: a branch takes its library's work whether or not it keeps
+//! copies of its person's books.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -165,11 +165,6 @@ impl RetryBackoff {
     }
 }
 
-/// Observation detail of every deployment on a link whose "Use this
-/// computer to download" setting is off.
-pub const WINDOW_MODE_DETAIL: &str =
-    "this computer does not download for this library (window mode)";
-
 /// Keeps one link's catalog and consented plugin set current.
 pub struct LinkSupervisor {
     /// This host's own database.
@@ -195,7 +190,6 @@ impl LinkSupervisor {
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut stale = true;
         let mut backoff = RetryBackoff::default();
-        let mut window = self.window_mode().await;
         loop {
             if stale && self.handle.is_connected() && backoff.due(Instant::now()) {
                 let outcome = self.refresh().await;
@@ -229,19 +223,11 @@ impl LinkSupervisor {
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 },
                 Ok(()) = consent_changes.changed() => {
-                    if self.window_changed(&mut window).await {
-                        stale = true;
-                        backoff.reset();
-                    }
                     if let Some(outcome) = self.reevaluate().await {
                         stale = backoff.record(outcome, Instant::now());
                     }
                 }
                 _ = poll.tick() => {
-                    if self.window_changed(&mut window).await {
-                        stale = true;
-                        backoff.reset();
-                    }
                     if let Some(outcome) = self.reevaluate().await {
                         stale = backoff.record(outcome, Instant::now());
                     }
@@ -253,38 +239,16 @@ impl LinkSupervisor {
         }
     }
 
-    /// Whether the link is in window mode ("Use this computer to download"
-    /// off, or the link gone); `None` when the link could not be read.
-    async fn window_mode(&self) -> Option<bool> {
+    /// Whether the link is still recorded here. A link that is gone, or
+    /// that cannot be read, claims nothing.
+    async fn link_present(&self) -> bool {
         match load_cluster_link(&self.library, self.cluster_id()).await {
-            Ok(link) => Some(link.is_none_or(|link| !link.download)),
+            Ok(link) => link.is_some(),
             Err(err) => {
                 tracing::warn!(cluster_id = self.cluster_id(), error = %err, "cluster link unreadable");
-                None
+                false
             }
         }
-    }
-
-    /// Re-reads the link's window mode into `known`; answers true when it
-    /// changed, so the caller refreshes. Entering window mode withdraws
-    /// every claimable plugin at once (held jobs are given back), before
-    /// the refresh reports it.
-    async fn window_changed(&self, known: &mut Option<bool>) -> bool {
-        let Some(now) = self.window_mode().await else {
-            return false;
-        };
-        if *known == Some(now) {
-            return false;
-        }
-        *known = Some(now);
-        if now {
-            tracing::info!(
-                cluster_id = self.cluster_id(),
-                "this computer no longer downloads for the library; withdrawing its plugins"
-            );
-            self.handle.set_consented_plugins(BTreeSet::new());
-        }
-        true
     }
 
     /// The link's owner cluster id.
@@ -316,10 +280,8 @@ impl LinkSupervisor {
     /// consent is fetched, one that loses it is dropped. Answers the
     /// outcome of the refresh a change ran, if one did.
     async fn reevaluate(&self) -> Option<Refreshed> {
-        if self.window_mode().await != Some(false) {
-            // A window (or an unreadable link) claims nothing, and the
-            // consent rows don't matter until it downloads again; the
-            // window-mode refresh already reported every deployment.
+        if !self.link_present().await {
+            // A gone or unreadable link claims nothing.
             self.handle.set_consented_plugins(BTreeSet::new());
             return None;
         }
@@ -388,14 +350,10 @@ impl LinkSupervisor {
             );
             return Refreshed::Unfinished;
         };
-        match self.window_mode().await {
-            Some(true) => return self.refresh_window(connection, &items).await,
-            Some(false) => {}
-            None => {
-                // Fail closed: nothing claimable on an unreadable link.
-                self.handle.set_consented_plugins(BTreeSet::new());
-                return Refreshed::Unfinished;
-            }
+        if !self.link_present().await {
+            // Fail closed: nothing claimable on a gone or unreadable link.
+            self.handle.set_consented_plugins(BTreeSet::new());
+            return Refreshed::Unfinished;
         }
         let mut entries = BTreeMap::new();
         let mut outcome = Refreshed::Settled;
@@ -422,10 +380,9 @@ impl LinkSupervisor {
         if self.reconcile(&mut entries).await {
             outcome = Refreshed::Unfinished;
         }
-        if self.window_mode().await != Some(false) {
-            // Downloads were turned off (or the link became unreadable)
-            // while this refresh ran: publish no claims; the loop sees the
-            // change and refreshes as a window.
+        if !self.link_present().await {
+            // The link went (or became unreadable) while this refresh ran:
+            // publish no claims.
             self.handle.set_consented_plugins(BTreeSet::new());
             return Refreshed::Unfinished;
         }
@@ -448,44 +405,6 @@ impl LinkSupervisor {
                 // keep a stale or missing observation until an unrelated
                 // wake.
                 outcome = Refreshed::Unfinished;
-            }
-        }
-        outcome
-    }
-
-    /// [`Self::refresh`] in window mode: every deployment becomes an entry
-    /// with [`WINDOW_MODE_DETAIL`] as its problem, without recording the
-    /// request, fetching the archive or reading the instance's
-    /// configuration, so nothing is claimable; each is reported to the
-    /// owner as `error`.
-    async fn refresh_window(&self, connection: u64, items: &[RemoteDeployment]) -> Refreshed {
-        let entries: BTreeMap<String, RemoteInstanceEntry> = items
-            .iter()
-            .map(|item| {
-                (
-                    item.instance_id.clone(),
-                    RemoteInstanceEntry {
-                        instance_id: item.instance_id.clone(),
-                        plugin_key: item.plugin_key.clone(),
-                        default_instance: item.default_instance,
-                        consent: RemoteConsentState::Pending,
-                        root: None,
-                        version: None,
-                        config: None,
-                        problem: Some(WINDOW_MODE_DETAIL.into()),
-                    },
-                )
-            })
-            .collect();
-        self.catalog.replace(entries.clone());
-        self.publish();
-        self.handle.deployments_refreshed(connection);
-        let mut outcome = Refreshed::Settled;
-        for item in items {
-            if let Some(entry) = entries.get(&item.instance_id) {
-                if !self.observe(item, entry).await {
-                    outcome = Refreshed::Unfinished;
-                }
             }
         }
         outcome

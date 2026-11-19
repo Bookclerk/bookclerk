@@ -15,8 +15,9 @@ An **integration** is an outbound plugin. It can:
 
 There is no plugin `kind = "integration"`. An integration plugin exports
 `remoteLibrary`, declares `[[events.consumers]]`, or both, and may
-declare `oidc` and `cli`. A metadata provider (`metadata`) and a cover
-fetcher (`covers`) also show in the integration family. See [Plugins](../plugins/README.md).
+declare `oidc` and `cli`. A metadata provider (`metadata`), a cover
+fetcher (`covers`) and a metadata file reader (`metadataFiles`) also show
+in the integration family. See [Plugins](../plugins/README.md).
 
 Third-party integrations install as external plugins; see
 [Turning on a third-party integration](#turning-on-a-third-party-integration).
@@ -37,8 +38,8 @@ plugin keeps its own HTTP client inside its package.
 
 ## Audiobookshelf
 
-The first-party integration is **Audiobookshelf**. It loads two ways: an
-in-process `register()` for `cargo run`, and the plugin package in
+The first-party integration is **Audiobookshelf**. It is a TypeScript
+plugin that runs in `workerd`, in
 `crates/bookclerk-plugins/optional/integration-audiobookshelf/`.
 
 The plugin does Audiobookshelf work only: scans, listening sync, sign-in
@@ -53,30 +54,44 @@ It runs on a host when its deployment there is `present`.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| `base_url` | none | Required: the Audiobookshelf address, granted to the plugin as its network endpoint |
+| `base_url` | none | Required: the Audiobookshelf address. `https://`, or `http://` on a loopback address only |
 | `api_key` | none | A secret, sealed in `encrypted_secrets` |
 | `library_id` | none | Optional |
 | `watch_users` | `true` | Watch Audiobookshelf users for claim tickets |
 | `notify_scan_on_acquire` | `true` | Ask Audiobookshelf to scan after an acquire |
 | `allow_credential_login` | `true` | Let people sign back in with Audiobookshelf credentials |
 
-1. Set the address:
+1. Approve the plugin in **Settings → Plugins**. It asks to reach any
+   public website, because it can't know your server's address in
+   advance. It only ever calls the `base_url` you set.
+2. If your server is on a private or loopback address (your home
+   network, a Docker network, or the same machine), add it to the
+   plugin's consent: its host name or IP address as a fetch host, and
+   its address range as a CIDR (for example `192.168.1.20/32`). You can
+   also take "Any public website" out and keep only your server. See
+   [Capabilities and consent](../plugins/capabilities.md).
+3. Set the address:
 
    ```sh
-   bookclerk plugins config set audiobookshelf base_url http://audiobookshelf:80
+   bookclerk plugins config set audiobookshelf base_url https://abs.example.com
    ```
 
-2. Enter the API key (read from stdin):
+4. Enter the API key (read from stdin):
 
    ```sh
    bookclerk plugins config set audiobookshelf api_key --secret
    ```
 
-3. Deploy it:
+5. Deploy it:
 
    ```sh
    bookclerk plugins deploy audiobookshelf
    ```
+
+> [!NOTE]
+> Plain `http://` is refused except on a loopback address, so the API key
+> and sign-in passwords never cross a network unencrypted. Put a server
+> on your network behind HTTPS.
 
 The one setting that stays in `config.toml` is the public address, used
 as the sign-in issuer and in shareable invite links:
@@ -89,13 +104,65 @@ as the sign-in issuer and in shareable invite links:
 ### What it does
 
 - Reports health through `integrations status` and `integrations test`.
-- On `book_acquired`, can ask Audiobookshelf to scan the library.
+- On `book_acquired`, asks Audiobookshelf to scan the library
+  `library_id` names, when `notify_scan_on_acquire` is on. A scan request
+  that fails is retried.
 - Can watch Audiobookshelf users with `pollEvents`, so the host can mint
-  claim tickets.
+  claim tickets. See [Watching users](#watching-users).
 - Lets people sign back in with Audiobookshelf credentials
   (`oidc.authenticateUser`), when allowed.
 - Can sync listening progress (`supports_listening_sync`) into the shared
   `listening_progress` table. Discover uses it when it is there.
+- Reads and writes Audiobookshelf's sidecar files for a book: its
+  `metadata.json`, the plain-text `.nfo`, `desc.txt` and `reader.txt`
+  (the `metadataFiles` entrypoint). Bookclerk hands it one file at a
+  time and checks every answer; these calls need no network access. The
+  [plugin README](../../crates/bookclerk-plugins/optional/integration-audiobookshelf/README.md#sidecar-files)
+  lists what each format carries.
+
+> [!NOTE]
+> Bookclerk does not look for sidecar files yet. The metadata file sync
+> work will start using the plugin to read and write them on storage.
+
+### Watching users
+
+With `watch_users` on, the host asks the plugin for new Audiobookshelf
+users on a schedule and mints a claim ticket for each one:
+
+1. The first time the plugin starts, it records the users the server
+   already has. Those users never get a ticket.
+2. On each poll, the plugin lists the server's users and reports the ones
+   it has not reported before.
+3. The host polls every 5 minutes while the plugin sleeps between calls,
+   or every 30 seconds when it stays running.
+
+The plugin also listens to Audiobookshelf's live updates, so a new user
+usually gets a ticket within seconds instead of at the next poll:
+
+1. When it starts, and on each poll, the plugin opens Audiobookshelf's
+   Socket.io channel if it is closed, signing in with the API key. The
+   host holds the connection while the plugin sleeps and answers the
+   server's keep-alive pings itself.
+2. Each other message wakes the plugin. When Audiobookshelf announces a
+   new user (`user_added`), the plugin asks the host to poll now.
+3. If the channel closes (the server restarts or refuses the key), the
+   next poll opens it again. Polling keeps working the whole time.
+
+The live channel needs the `sockets` permission; without it the plugin
+only polls.
+
+The plugin keeps the users it has reported in its `LISTENING_STATE`
+database, as a hash of each user id. So a user created while the plugin
+slept is still reported by the next poll. If recording a new user fails,
+the next poll reports that user again and the host mints a second
+ticket. A poll reply lost on its way to the host is not retried, so a
+user the plugin had already recorded gets no ticket.
+
+> [!NOTE]
+> Without the `LISTENING_STATE` database grant, the plugin cannot keep
+> that list across a sleep, so it stays running and remembers reported
+> users in memory. A daemon restart then records the server's users
+> again, and a user created while the daemon was down gets no ticket.
 
 ### Listening sync
 
@@ -134,6 +201,11 @@ like when it last sent it, in its own `LISTENING_STATE` database:
 - It forgets a person who has not been synced for seven days.
 - Until you approve that database in the plugin's consent, every sync
   sends all progress, as before.
+- One sync makes at most about 1,000 requests to Audiobookshelf. On a
+  large server a sync can stop there. Every sync starts again from the
+  first person, so later people may still be missed.
+  With the database approved, a later sync skips progress it already sent
+  and so may reach more of the rest.
 
 API coverage notes:
 [`crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md`](../../crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md).
@@ -153,7 +225,7 @@ change your library on their own.
 
 Bookclerk asks every deployed metadata provider, in turn, when it:
 
-- matches non-Audible books to an Audible ASIN during a scan
+- matches held editions without an ASIN to an Audible ASIN during a scan
   (`library.enrich_from_audible`), looking each Audible catalog
   candidate up by ASIN;
 - fills in title details in Discover;
@@ -360,7 +432,7 @@ it was last swept:
 
 ```text
 node-7f3a9c (this node) live target=- labels=-
-  owner node, owner -
+  shared node, owner -
   cpu 8.0 cores (budget 6.4, reserved 1.6, busy 0.4) | memory …
   cache 700M of 1.0G, swept 12 min ago
 ```
@@ -374,6 +446,51 @@ bookclerk config set cache.budget_bytes 2147483648   # 2 GiB on every node
 bookclerk config set cache.unviewed_days 30
 bookclerk nodes set --cache-budget 268435456         # 256 MiB on this node
 bookclerk nodes set --cluster-cache-budget           # back to the cluster's
+```
+
+## Metadata files
+
+The optional `metadata_files` plugin reads and writes the metadata files
+that tools without a plugin of their own keep next to a book's audio:
+
+- **OPF** (`*.opf`, such as Calibre's `metadata.opf`): title,
+  description, publisher, date, language, genres, ISBN and ASIN,
+  contributors by role, and one series. Bookclerk can write it: a change
+  rewrites only the elements of the fields it sets and leaves the rest of
+  the file as it was.
+- **Kodi `album.nfo`**: title, description, publisher, date, genres and
+  authors, as Kodi and Jellyfin read them. Bookclerk can write it the same
+  way.
+- **CUE sheets** (`*.cue`): title, date, genres, authors and the track
+  list as chapters. Bookclerk can update a sheet that exists. The plugin
+  can also create a sheet from the book's audio files, placing each
+  chapter in the file it starts in, but only once Bookclerk passes it
+  those files, which it does not do yet. When a book has several files,
+  Bookclerk writes their chapters but does not read them back from the
+  sheet.
+- **Libation's catalog record** (`<book name>.metadata.json`): the
+  Audible product Libation saves at download. It is read-only, because it
+  is the store's record rather than the library's.
+
+Formats that belong to a tool with its own plugin, such as
+Audiobookshelf's `metadata.json`, live in that tool's plugin (see
+[What it does](#what-it-does)).
+
+It has no network or file access. Bookclerk hands it one file at a time
+and checks every answer, so a damaged or hostile file can at most be
+reported as unreadable.
+
+> [!NOTE]
+> Bookclerk does not look for these files yet. The plugin can be
+> installed and deployed now, and the metadata file sync work will start
+> using it to read files on storage.
+
+To turn it on, install it as
+[Installing plugins](plugins.md#installing-plugins) describes, then deploy
+it. There is no network access to approve:
+
+```sh
+bookclerk plugins deploy metadata_files
 ```
 
 ## Claim tickets and Accounts

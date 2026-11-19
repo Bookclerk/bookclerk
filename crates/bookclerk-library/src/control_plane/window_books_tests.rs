@@ -1,26 +1,28 @@
-//! Window mode: the library answers a trusted branch with the books on its
-//! owner's accounts only, page by page within the frame budget; the window
-//! stores each library's pages, drops what a complete read no longer names,
-//! and merges every window link's books by local work and identifier.
+//! Books in other libraries: the library answers a trusted branch with its
+//! books, the owner's marked, page by page within the frame budget; the
+//! reading install stores each library's pages, drops what a complete read
+//! no longer names, and merges every link's books by local work and
+//! identifier.
 
 use bookclerk_node_proto::{
     window_page_problem, Availability, CatalogMetadata, LookupEdition, LookupFormat,
-    LookupIdentifier, LookupScheme, WindowWork, MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS,
-    MAX_WINDOW_WORKS,
+    LookupIdentifier, LookupScheme, WindowCopy, WindowCursor, WindowEdition, WindowWork,
+    MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS, MAX_WINDOW_WORKS,
 };
 use sea_orm::{ActiveModelTrait, ActiveValue::Set};
 
 use super::*;
 use crate::control_plane::{
-    record_cluster_link, set_cluster_link_download, ClusterLinkKeys, NewClusterLink,
+    leave_cluster_link, record_cluster_link, set_cluster_link_keep_copies, ClusterLinkKeys,
+    NewClusterLink,
 };
 use crate::entities::node_credentials;
 use crate::master_key::master_key_test_lock_async;
 use crate::models::{AcquireStatus, UserRole};
 use crate::store::NewBook;
 
-const PLUGIN: &str = "path:file:///tmp/store#audible";
-const BRANCH: &str = "window-w";
+pub(crate) const PLUGIN: &str = "path:file:///tmp/store#audible";
+pub(crate) const BRANCH: &str = "window-w";
 
 async fn store_in(dir: &std::path::Path) -> LibraryStore {
     let db = bookclerk_plugin_database_sqlite::open(&dir.join("library.db"))
@@ -31,7 +33,7 @@ async fn store_in(dir: &std::path::Path) -> LibraryStore {
     LibraryStore::from_connection(db)
 }
 
-async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) {
+pub(crate) async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) {
     let now = Utc::now().to_rfc3339();
     nodes::ActiveModel {
         node_id: Set(node_id.into()),
@@ -44,7 +46,7 @@ async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) {
         compatible: Set(1),
         target: Set(String::new()),
         labels_json: Set("[]".into()),
-        kind: Set("host".into()),
+        kind: Set("branch".into()),
         owner_user_id: Set(Some(owner)),
         ..Default::default()
     }
@@ -65,7 +67,7 @@ async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) {
     .unwrap();
 }
 
-fn book(account: &str, asin: &str) -> NewBook {
+pub(crate) fn book(account: &str, asin: &str) -> NewBook {
     NewBook {
         uuid: None,
         product_id: asin.into(),
@@ -94,7 +96,12 @@ fn book(account: &str, asin: &str) -> NewBook {
 
 /// Connects `account` for `user` and records `asins` on it; answers the
 /// work id of each.
-async fn hold(store: &LibraryStore, user: i64, account: &str, asins: &[String]) -> Vec<String> {
+pub(crate) async fn hold(
+    store: &LibraryStore,
+    user: i64,
+    account: &str,
+    asins: &[String],
+) -> Vec<String> {
     store
         .upsert_account(PLUGIN, account, "us", None, true, "audible")
         .await
@@ -118,14 +125,14 @@ async fn hold(store: &LibraryStore, user: i64, account: &str, asins: &[String]) 
 /// Every page of `node`'s window books, checked against the frame rules
 /// and budget as it goes.
 async fn read_all(store: &LibraryStore, node: &str) -> Vec<WindowWork> {
-    let mut after = 0;
+    let mut after = WindowCursor::start();
     let mut works = Vec::new();
     for _ in 0..1000 {
-        let (page, next) = window_books_page(store, node, after)
+        let (page, next) = window_books_page(store, node, &after)
             .await
             .unwrap()
             .expect("a trusted branch is answered");
-        assert_eq!(window_page_problem(after, &page, next), None);
+        assert_eq!(window_page_problem(&after, &page, next.as_ref()), None);
         assert!(serde_json::to_vec(&page).unwrap().len() <= MAX_FRAME_BYTES / 2);
         works.extend(page);
         match next {
@@ -137,7 +144,7 @@ async fn read_all(store: &LibraryStore, node: &str) -> Vec<WindowWork> {
 }
 
 #[tokio::test]
-async fn the_library_lists_only_its_persons_books_to_a_trusted_branch() {
+async fn the_library_lists_every_book_to_a_trusted_branch_marking_its_persons() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let store = store_in(dir.path()).await;
@@ -171,22 +178,106 @@ async fn the_library_lists_only_its_persons_books_to_a_trusted_branch() {
         .await
         .unwrap();
 
-    assert_eq!(window_books_page(&store, BRANCH, 0).await.unwrap(), None);
+    assert_eq!(
+        window_books_page(&store, BRANCH, &WindowCursor::start())
+            .await
+            .unwrap(),
+        None
+    );
     add_branch(&store, BRANCH, riley).await;
 
     let listed = read_all(&store, BRANCH).await;
-    assert_eq!(listed.len(), 1, "only Riley's book: {listed:?}");
-    assert_eq!(listed[0].work, works[0]);
-    assert_eq!(listed[0].editions[0].product_id, "B0RILEY001");
-    assert_eq!(listed[0].editions[0].availability, Availability::Owned);
-    assert_eq!(listed[0].editions.len(), 1, "one entry per edition");
+    assert_eq!(listed.len(), 2, "every book of the library: {listed:?}");
+    let riley_work = listed
+        .iter()
+        .find(|w| w.work == works[0])
+        .expect("Riley's book is listed");
+    assert_eq!(riley_work.editions.len(), 1, "one entry per edition");
+    let riley_book = &riley_work.editions[0];
+    assert_eq!(riley_book.edition.product_id, "B0RILEY001");
+    assert_eq!(riley_book.edition.availability, Availability::Owned);
+    assert!(riley_book.yours, "on Riley's own accounts");
     assert_eq!(
-        listed[0].editions[0].formats,
+        riley_book.edition.formats,
         vec![LookupFormat::Audio, LookupFormat::Pdf]
     );
-    assert!(listed[0].identifiers.iter().any(|id| {
+    assert!(riley_work.identifiers.iter().any(|id| {
         id.scheme == LookupScheme::Asin && id.value == "B0RILEY001" && id.marketplace == "us"
     }));
+    let sam_book = listed
+        .iter()
+        .flat_map(|w| &w.editions)
+        .find(|e| e.edition.product_id == "B0SAM00001")
+        .expect("Sam's book is listed too");
+    assert!(!sam_book.yours, "only Sam's account holds it");
+}
+
+/// A clerk's library card reads the same page for its person, with no
+/// branch node involved: every book, the person's marked.
+#[tokio::test]
+async fn a_persons_page_lists_every_book_marking_that_persons() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    let sam = store
+        .create_user(UserRole::Member, Some("Sam"), None)
+        .await
+        .unwrap()
+        .id;
+    let nobody = store
+        .create_user(UserRole::Member, Some("Nobody"), None)
+        .await
+        .unwrap()
+        .id;
+    let works = hold(&store, riley, "riley-acct", &["B0RILEY001".into()]).await;
+    hold(&store, sam, "sam-acct", &["B0SAM00001".into()]).await;
+    store
+        .set_acquire_status(
+            "B0RILEY001",
+            "riley-acct",
+            AcquireStatus::Acquired,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let (page, next) = person_books_page(&store, riley, &WindowCursor::start())
+        .await
+        .unwrap();
+    assert_eq!(
+        window_page_problem(&WindowCursor::start(), &page, next.as_ref()),
+        None
+    );
+    assert_eq!(next, None);
+    let yours = |page: &[WindowWork]| -> Vec<(String, bool)> {
+        let mut books: Vec<(String, bool)> = page
+            .iter()
+            .flat_map(|w| &w.editions)
+            .map(|e| (e.edition.product_id.clone(), e.yours))
+            .collect();
+        books.sort();
+        books
+    };
+    assert_eq!(
+        yours(&page),
+        vec![("B0RILEY001".into(), true), ("B0SAM00001".into(), false)]
+    );
+    assert!(page.iter().any(|w| w.work == works[0]));
+    let (page, next) = person_books_page(&store, nobody, &WindowCursor::start())
+        .await
+        .unwrap();
+    assert_eq!(next, None);
+    assert_eq!(
+        yours(&page),
+        vec![("B0RILEY001".into(), false), ("B0SAM00001".into(), false)],
+        "a person with no store accounts sees every book, none theirs"
+    );
 }
 
 /// More books than one read takes are paged out with a cursor that moves
@@ -231,13 +322,13 @@ async fn many_books_page_out_within_every_profiles_limits() {
         let listed = read_all(&store, BRANCH).await;
         let mut products: Vec<&str> = listed
             .iter()
-            .flat_map(|w| w.editions.iter().map(|e| e.product_id.as_str()))
+            .flat_map(|w| w.editions.iter().map(|e| e.edition.product_id.as_str()))
             .collect();
         products.sort_unstable();
         products.dedup();
         assert_eq!(products.len(), BOOKS, "{name}");
 
-        // The same store as a window: every page stored, merged and kept by
+        // The same store as a reading branch: every page stored, merged and kept by
         // a complete read, all within the profile's limits.
         crate::entities::cluster_links::ActiveModel {
             owner_cluster_id: Set("lib".into()),
@@ -252,14 +343,14 @@ async fn many_books_page_out_within_every_profiles_limits() {
             list_members_books: Set(1),
             work_for_members: Set(0),
             keep_member_copies: Set(0),
-            download: Set(0),
+            keep_copies: Set(0),
             person_user_id: Set(None),
             max_jobs: Set(None),
         }
         .insert(store.db())
         .await
         .unwrap();
-        // A second link, which downloads: listing the links pages too.
+        // A second link: listing the links pages too.
         crate::entities::cluster_links::ActiveModel {
             owner_cluster_id: Set("other".into()),
             owner_origin: Set("https://other.example".into()),
@@ -273,7 +364,7 @@ async fn many_books_page_out_within_every_profiles_limits() {
             list_members_books: Set(1),
             work_for_members: Set(0),
             keep_member_copies: Set(0),
-            download: Set(1),
+            keep_copies: Set(1),
             person_user_id: Set(None),
             max_jobs: Set(None),
         }
@@ -372,6 +463,15 @@ fn edition(asin: &str, title: &str) -> LookupEdition {
     }
 }
 
+/// `edition` as a page lists it for its person: theirs.
+fn yours(edition: LookupEdition) -> WindowEdition {
+    WindowEdition {
+        edition,
+        yours: true,
+        copy: None,
+    }
+}
+
 fn asin(value: &str) -> LookupIdentifier {
     LookupIdentifier {
         scheme: LookupScheme::Asin,
@@ -380,7 +480,7 @@ fn asin(value: &str) -> LookupIdentifier {
     }
 }
 
-async fn link(store: &LibraryStore, cluster: &str, download: bool) {
+async fn link(store: &LibraryStore, cluster: &str) {
     record_cluster_link(
         store,
         &NewClusterLink {
@@ -393,9 +493,6 @@ async fn link(store: &LibraryStore, cluster: &str, download: bool) {
     )
     .await
     .unwrap();
-    assert!(set_cluster_link_download(store, cluster, download)
-        .await
-        .unwrap());
 }
 
 #[tokio::test]
@@ -410,10 +507,14 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
         .id;
     // The window's own library knows one of the works.
     let local = hold(&store, me, "my-acct", &["B0SHARED01".into()]).await;
-    link(&store, "alpha", false).await;
-    link(&store, "beta", false).await;
-    link(&store, "gamma", true).await;
-    assert!(!set_cluster_link_download(&store, "nowhere", false)
+    link(&store, "alpha").await;
+    link(&store, "beta").await;
+    link(&store, "gamma").await;
+    // Keeping copies off changes nothing about the view.
+    assert!(set_cluster_link_keep_copies(&store, "gamma", false)
+        .await
+        .unwrap());
+    assert!(!set_cluster_link_keep_copies(&store, "nowhere", false)
         .await
         .unwrap());
 
@@ -422,12 +523,12 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
         WindowWork {
             work: "a-1".into(),
             identifiers: vec![asin("B0SHARED01")],
-            editions: vec![edition("B0SHARED01", "Shared")],
+            editions: vec![yours(edition("B0SHARED01", "Shared"))],
         },
         WindowWork {
             work: "a-2".into(),
             identifiers: vec![asin("B0ALPHA001")],
-            editions: vec![edition("B0ALPHA001", "Alpha only")],
+            editions: vec![yours(edition("B0ALPHA001", "Alpha only"))],
         },
     ];
     assert_eq!(
@@ -441,18 +542,18 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
         WindowWork {
             work: "b-9".into(),
             identifiers: vec![asin("B0SHARED01"), asin("B0BETAED01")],
-            editions: vec![edition("B0BETAED01", "Shared (beta edition)")],
+            editions: vec![yours(edition("B0BETAED01", "Shared (beta edition)"))],
         },
         WindowWork {
             work: "book-4".into(),
             identifiers: Vec::new(),
-            editions: vec![edition("B0NOIDS001", "No identifiers")],
+            editions: vec![yours(edition("B0NOIDS001", "No identifiers"))],
         },
     ];
     record_window_page(&store, "beta", &first, &beta)
         .await
         .unwrap();
-    // A link that downloads is not part of the view.
+    // Every active link is part of the view, keeping copies or not.
     record_window_page(
         &store,
         "gamma",
@@ -460,7 +561,7 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
         &[WindowWork {
             work: "g".into(),
             identifiers: Vec::new(),
-            editions: vec![edition("B0GAMMA001", "Gamma")],
+            editions: vec![yours(edition("B0GAMMA001", "Gamma"))],
         }],
     )
     .await
@@ -468,8 +569,11 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
 
     let view = window_view(&store).await.unwrap();
     let titles: Vec<&str> = view.iter().map(WindowEntry::title).collect();
-    assert_eq!(titles, vec!["Alpha only", "No identifiers", "Shared"]);
-    let shared = &view[2];
+    assert_eq!(
+        titles,
+        vec!["Alpha only", "Gamma", "No identifiers", "Shared"]
+    );
+    let shared = &view[3];
     assert_eq!(shared.work_id.as_deref(), Some(local[0].as_str()));
     assert_eq!(shared.key, format!("work:{}", local[0]));
     let libraries: Vec<&str> = shared
@@ -497,14 +601,18 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
         .iter()
         .map(|e| e.title().to_string())
         .collect();
-    assert_eq!(titles, vec!["No identifiers", "Shared"]);
+    assert_eq!(titles, vec!["Gamma", "No identifiers", "Shared"]);
 
-    // Turning download back on hides beta and drops its rows.
-    set_cluster_link_download(&store, "beta", true)
+    // Leaving beta hides its books; the daemon then drops its rows.
+    leave_cluster_link(&store, "beta", None).await.unwrap();
+    let titles: Vec<String> = window_view(&store)
         .await
-        .unwrap();
-    assert_eq!(window_view(&store).await.unwrap().len(), 1);
-    assert_eq!(clear_window_books(&store, "beta").await.unwrap(), 0);
+        .unwrap()
+        .iter()
+        .map(|e| e.title().to_string())
+        .collect();
+    assert_eq!(titles, vec!["Gamma", "Shared"]);
+    assert_eq!(clear_window_books(&store, "beta").await.unwrap(), 2);
 }
 
 /// Two accounts holding one edition with their books on different pages of
@@ -515,14 +623,14 @@ async fn one_edition_on_two_pages_of_a_read_keeps_every_format() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let store = store_in(dir.path()).await;
-    link(&store, "alpha", false).await;
+    link(&store, "alpha").await;
     let held = |formats: Vec<LookupFormat>| {
         let mut copy = edition("B0TWICE001", "Twice");
         copy.formats = formats;
         vec![WindowWork {
             work: "w-1".into(),
             identifiers: vec![asin("B0TWICE001")],
-            editions: vec![copy],
+            editions: vec![yours(copy)],
         }]
     };
     let formats = |view: Vec<WindowEntry>| -> Vec<LookupFormat> {
@@ -561,9 +669,280 @@ async fn one_edition_on_two_pages_of_a_read_keeps_every_format() {
     );
 }
 
+/// The page states the copy the library holds of an edition: the probe of
+/// its acquired primary audio file, the media type its name implies when
+/// it was never probed, and nothing for an edition that is not acquired or
+/// whose file has no row. The version changes when the file is rewritten.
+#[tokio::test]
+async fn a_page_states_the_copy_the_library_holds() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    let asins: Vec<String> = [
+        "B0PROBED01",
+        "B0UNPROBED",
+        "B0UNKNOWN1",
+        "B0NOROW001",
+        "B0NOTYET01",
+    ]
+    .map(String::from)
+    .to_vec();
+    hold(&store, riley, "riley-acct", &asins).await;
+    let acquire = |asin: &'static str, key: &'static str, recorded: bool| {
+        let store = store.clone();
+        async move {
+            store
+                .set_acquire_status(asin, "riley-acct", AcquireStatus::Acquired, Some(key), None)
+                .await
+                .unwrap();
+            let book = store.get_book(asin, "riley-acct").await.unwrap().unwrap();
+            let owner = store.file_owner_of_book(&book.uuid).await.unwrap().unwrap();
+            if recorded {
+                assert!(store
+                    .record_edition_file("local", key, &owner, FileRole::Audio)
+                    .await
+                    .unwrap());
+            }
+            owner
+        }
+    };
+    let probed = acquire("B0PROBED01", "A/Probed/Probed.m4b", true).await;
+    assert!(store
+        .set_edition_file_probe(
+            "local",
+            "A/Probed/Probed.m4b",
+            &probed,
+            &crate::FileProbe {
+                content_type: "audio/flac".into(),
+                bitrate_kbps: Some(900),
+                lossless: true,
+                source_store: Some("libro".into()),
+            },
+        )
+        .await
+        .unwrap());
+    // The same file on a second destination, never probed: the probed row
+    // is the one described.
+    assert!(store
+        .record_edition_file("a-first", "A/Probed/Probed.m4b", &probed, FileRole::Audio)
+        .await
+        .unwrap());
+    acquire("B0UNPROBED", "A/Unprobed/Unprobed.mp3", true).await;
+    acquire("B0UNKNOWN1", "A/Unknown/Unknown.ogg", true).await;
+    acquire("B0NOROW001", "A/NoRow/NoRow.m4b", false).await;
+
+    let copies = |works: Vec<WindowWork>| -> BTreeMap<String, Option<WindowCopy>> {
+        works
+            .into_iter()
+            .flat_map(|work| work.editions)
+            .map(|held| (held.edition.product_id, held.copy))
+            .collect()
+    };
+    let (works, next) = person_books_page(&store, riley, &WindowCursor::start())
+        .await
+        .unwrap();
+    assert_eq!(next, None);
+    assert_eq!(
+        window_page_problem(&WindowCursor::start(), &works, None),
+        None
+    );
+    let first = copies(works);
+    let version = |asin: &str| first[asin].as_ref().map(|copy| copy.version.clone());
+    assert_eq!(
+        first["B0PROBED01"],
+        Some(WindowCopy {
+            source_store: Some("libro".into()),
+            content_type: "audio/flac".into(),
+            bitrate_kbps: Some(900),
+            lossless: true,
+            version: version("B0PROBED01").unwrap(),
+        })
+    );
+    assert_eq!(
+        first["B0UNPROBED"],
+        Some(WindowCopy {
+            source_store: None,
+            content_type: "audio/mpeg".into(),
+            bitrate_kbps: None,
+            lossless: false,
+            version: version("B0UNPROBED").unwrap(),
+        })
+    );
+    assert_ne!(version("B0PROBED01"), version("B0UNPROBED"));
+    for none in ["B0UNKNOWN1", "B0NOROW001", "B0NOTYET01"] {
+        assert_eq!(first[none], None, "{none}");
+    }
+
+    // Read again: the same file is the same version. Written again by an
+    // upload (a new writer and digest, the probe not yet taken): a new one.
+    let (works, _) = person_books_page(&store, riley, &WindowCursor::start())
+        .await
+        .unwrap();
+    assert_eq!(copies(works), first);
+    {
+        use crate::entities::edition_files;
+        use sea_orm::sea_query::Expr;
+        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+        let none: Option<String> = None;
+        edition_files::Entity::update_many()
+            .col_expr(edition_files::Column::Writer, Expr::value("upload-2"))
+            .col_expr(edition_files::Column::Sha256, Expr::value("ab12"))
+            .col_expr(edition_files::Column::ProbedAt, Expr::value(none.clone()))
+            .col_expr(
+                edition_files::Column::ContentType,
+                Expr::value(none.clone()),
+            )
+            .col_expr(
+                edition_files::Column::BitrateKbps,
+                Expr::value(Option::<i32>::None),
+            )
+            .col_expr(edition_files::Column::SourceStore, Expr::value(none))
+            .col_expr(edition_files::Column::Lossless, Expr::value(0))
+            .filter(edition_files::Column::StorageKey.eq("A/Probed/Probed.m4b"))
+            .exec(store.db())
+            .await
+            .unwrap();
+    }
+    let (works, _) = person_books_page(&store, riley, &WindowCursor::start())
+        .await
+        .unwrap();
+    let after = copies(works);
+    let replaced = after["B0PROBED01"].clone().expect("still held");
+    assert_ne!(Some(replaced.version.clone()), version("B0PROBED01"));
+    assert_eq!(
+        (
+            replaced.content_type.as_str(),
+            replaced.bitrate_kbps,
+            replaced.lossless
+        ),
+        ("audio/mp4", None, false),
+        "the new file was not probed yet"
+    );
+}
+
+/// The window keeps the copy a library states for an edition: a later
+/// page of the same read that states none does not drop it, and the next
+/// read's word replaces it.
+#[tokio::test]
+async fn the_window_keeps_the_copy_a_library_states() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    link(&store, "alpha").await;
+    let copy = WindowCopy {
+        source_store: Some("audible".into()),
+        content_type: "audio/mp4".into(),
+        bitrate_kbps: Some(125),
+        lossless: false,
+        version: "v1".into(),
+    };
+    let held = |copy: Option<WindowCopy>| {
+        vec![WindowWork {
+            work: "w-1".into(),
+            identifiers: vec![asin("B0COPY0001")],
+            editions: vec![WindowEdition {
+                copy,
+                ..yours(edition("B0COPY0001", "Copied"))
+            }],
+        }]
+    };
+    let stated = |view: Vec<WindowEntry>| -> Vec<Option<WindowCopy>> {
+        view.into_iter()
+            .flat_map(|entry| entry.editions)
+            .map(|held| held.copy)
+            .collect()
+    };
+    let read = window_read_stamp();
+    record_window_page(&store, "alpha", &read, &held(Some(copy.clone())))
+        .await
+        .unwrap();
+    record_window_page(&store, "alpha", &read, &held(None))
+        .await
+        .unwrap();
+    finish_window_read(&store, "alpha", &read).await.unwrap();
+    assert_eq!(stated(window_view(&store).await.unwrap()), vec![Some(copy)]);
+
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let next = window_read_stamp();
+    record_window_page(&store, "alpha", &next, &held(None))
+        .await
+        .unwrap();
+    finish_window_read(&store, "alpha", &next).await.unwrap();
+    assert_eq!(stated(window_view(&store).await.unwrap()), vec![None]);
+}
+
 /// A work's overflow groups (`<work>-x<n>`) are stored under the work's own
 /// grouping key, so the window shows one entry even with no identifier to
 /// join them.
+/// Whether an edition is the person's survives the store: it stays theirs
+/// when any copy in a read is, and a later read where no copy is theirs
+/// any more drops the mark. A row stored before the library sent the mark
+/// reads as not theirs.
+#[tokio::test]
+async fn whether_a_book_is_yours_is_kept_per_read() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    link(&store, "alpha").await;
+    let page = |asin_value: &str, mine: bool| {
+        vec![WindowWork {
+            work: format!("w-{asin_value}"),
+            identifiers: vec![asin(asin_value)],
+            editions: vec![WindowEdition {
+                edition: edition(asin_value, asin_value),
+                yours: mine,
+                copy: None,
+            }],
+        }]
+    };
+    let marks = |view: Vec<WindowEntry>| -> Vec<(String, bool)> {
+        view.into_iter()
+            .flat_map(|entry| entry.editions)
+            .map(|held| (held.edition.product_id, held.yours))
+            .collect()
+    };
+
+    let read = window_read_stamp();
+    for (asin_value, mine) in [
+        ("B0MINE0001", false),
+        ("B0MINE0001", true),
+        ("B0MINE0001", false),
+        ("B0OTHER001", false),
+    ] {
+        record_window_page(&store, "alpha", &read, &page(asin_value, mine))
+            .await
+            .unwrap();
+    }
+    finish_window_read(&store, "alpha", &read).await.unwrap();
+    assert_eq!(
+        marks(window_view(&store).await.unwrap()),
+        vec![("B0MINE0001".into(), true), ("B0OTHER001".into(), false)]
+    );
+
+    let later = window_read_stamp();
+    for asin_value in ["B0MINE0001", "B0OTHER001"] {
+        record_window_page(&store, "alpha", &later, &page(asin_value, false))
+            .await
+            .unwrap();
+    }
+    finish_window_read(&store, "alpha", &later).await.unwrap();
+    assert_eq!(
+        marks(window_view(&store).await.unwrap()),
+        vec![("B0MINE0001".into(), false), ("B0OTHER001".into(), false)]
+    );
+
+    let before: StoredBook = serde_json::from_str(
+        r#"{"identifiers":[],"edition":{"store":"audible","product_id":"B0OLD00001","availability":"owned","metadata":{"title":"Old"}}}"#,
+    )
+    .unwrap();
+    assert!(!before.yours);
+}
+
 #[tokio::test]
 async fn a_works_overflow_group_joins_the_work_without_identifiers() {
     assert_eq!(grouping_key("0b1e-4c2a-x2"), "0b1e-4c2a");
@@ -576,18 +955,18 @@ async fn a_works_overflow_group_joins_the_work_without_identifiers() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let store = store_in(dir.path()).await;
-    link(&store, "alpha", false).await;
+    link(&store, "alpha").await;
     let read = window_read_stamp();
     let page = vec![
         WindowWork {
             work: "book-7".into(),
             identifiers: Vec::new(),
-            editions: vec![edition("B0OVERFL01", "Overflowing")],
+            editions: vec![yours(edition("B0OVERFL01", "Overflowing"))],
         },
         WindowWork {
             work: overflow_key("book-7", 1),
             identifiers: Vec::new(),
-            editions: vec![edition("B0OVERFL02", "Overflowing")],
+            editions: vec![yours(edition("B0OVERFL02", "Overflowing"))],
         },
     ];
     record_window_page(&store, "alpha", &read, &page)
@@ -625,7 +1004,7 @@ async fn a_product_in_several_marketplaces_is_read_under_every_profile() {
         let listed = read_all(&store, BRANCH).await;
         let mut markets: Vec<&str> = listed
             .iter()
-            .flat_map(|w| w.editions.iter())
+            .flat_map(|w| w.editions.iter().map(|e| &e.edition))
             .filter(|e| e.product_id == "B0MULTI001")
             .map(|e| e.marketplace.as_str())
             .collect();
@@ -686,7 +1065,7 @@ async fn an_edition_wider_than_a_cell_is_kept_whole_under_every_profile() {
             list_members_books: Set(1),
             work_for_members: Set(0),
             keep_member_copies: Set(0),
-            download: Set(0),
+            keep_copies: Set(0),
             person_user_id: Set(None),
             max_jobs: Set(None),
         }
@@ -700,7 +1079,7 @@ async fn an_edition_wider_than_a_cell_is_kept_whole_under_every_profile() {
         let work = WindowWork {
             work: "w1".into(),
             identifiers: vec![asin("B0WIDE0001")],
-            editions: vec![wide.clone()],
+            editions: vec![yours(wide.clone())],
         };
         let first = window_read_stamp();
         record_window_page(&store, "lib", &first, std::slice::from_ref(&work))
@@ -733,7 +1112,7 @@ async fn an_edition_wider_than_a_cell_is_kept_whole_under_every_profile() {
         short.metadata.title = "Short".into();
         let later = window_read_stamp();
         let work = WindowWork {
-            editions: vec![short.clone()],
+            editions: vec![yours(short.clone())],
             ..work
         };
         record_window_page(&store, "lib", &later, &[work])
@@ -777,6 +1156,8 @@ fn json_is_cut_on_character_boundaries_and_joined_in_order() {
     let stored = serde_json::to_string(&StoredBook {
         identifiers: vec![],
         edition: edition("B0X", "Title"),
+        yours: false,
+        copy: None,
     })
     .unwrap();
     let (a, b) = stored.split_at(10);
@@ -802,7 +1183,7 @@ async fn an_isbn_alone_does_not_place_a_window_book() {
     let mut local = book("my-acct", "B0LOCAL001");
     local.isbn = Some("9780306406157".into());
     store.upsert_book(&local).await.unwrap();
-    link(&store, "alpha", false).await;
+    link(&store, "alpha").await;
     let isbn = LookupIdentifier {
         scheme: LookupScheme::Isbn,
         value: "9780306406157".into(),
@@ -817,7 +1198,7 @@ async fn an_isbn_alone_does_not_place_a_window_book() {
         &[WindowWork {
             work: "remote".into(),
             identifiers: vec![isbn],
-            editions: vec![edition("B0REMOTE01", "Remote")],
+            editions: vec![yours(edition("B0REMOTE01", "Remote"))],
         }],
     )
     .await
@@ -840,6 +1221,9 @@ struct TextCapped {
     /// Most binds one read may carry (0: no limit), the way a plugin
     /// refuses a statement past its `maxBinds`.
     max_binds: usize,
+    /// Most bytes one text cell of a reply may carry, once set (0 until
+    /// then), the way a plugin refuses a cell past its `maxCellBytes`.
+    max_cell: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[async_trait::async_trait]
@@ -860,6 +1244,26 @@ impl sea_orm::ProxyDatabaseTrait for TextCapped {
             ));
         }
         let rows = self.inner.query(statement).await?;
+        let max_cell = self.max_cell.load(std::sync::atomic::Ordering::SeqCst);
+        let widest = rows
+            .iter()
+            .flat_map(|row| row.values.values())
+            .map(|value| match value {
+                sea_orm::Value::String(Some(text)) => text.len(),
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0);
+        if max_cell > 0 && widest > max_cell {
+            return Err(sea_orm::DbErr::Custom(
+                bookclerk_plugin_abi::LimitExceeded::new(
+                    "maxCellBytes",
+                    u64::try_from(max_cell).unwrap(),
+                    u64::try_from(widest).unwrap(),
+                )
+                .to_message(),
+            ));
+        }
         let used: usize = rows
             .iter()
             .flat_map(|row| row.values.values())
@@ -906,31 +1310,17 @@ impl sea_orm::ProxyDatabaseTrait for TextCapped {
     }
 }
 
-/// A book whose metadata together is wider than one database reply (each
-/// field fits a cell) does not stop the window: the page is read again a
-/// book at a time, that book is left out, and the books around it are
-/// listed. (The book is stored before the cap applies, since the host's
+/// A title whose listing metadata together is wider than one database
+/// reply (each field fits a cell) does not stop the window: the page's
+/// titles are read again one at a time, that title is left out, and the
+/// titles around it are listed. (The book is stored before the cap applies, since the host's
 /// own write reads a book back whole.)
 #[tokio::test]
-async fn a_book_wider_than_one_reply_is_left_out_of_the_window() {
+async fn a_title_wider_than_one_reply_is_left_out_of_the_window() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
-    let conn = rusqlite::Connection::open(dir.path().join("library.db")).unwrap();
-    let cap = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let engine = TextCapped {
-        inner: bookclerk_plugin_database_sqlite::sqlite::SqliteProxy::new(conn).unwrap(),
-        cap: std::sync::Arc::clone(&cap),
-        max_binds: 0,
-    };
-    let db = sea_orm::Database::connect_proxy(
-        sea_orm::DbBackend::Sqlite,
-        std::sync::Arc::new(Box::new(engine)),
-    )
-    .await
-    .unwrap();
-    crate::apply_host_schema(&db).await.unwrap();
-    crate::configure_master_key(dir.path()).unwrap();
-    let store = LibraryStore::from_connection(db);
+    let (store, caps) = capped_store(dir.path()).await;
+    let cap = caps.reply;
     let riley = store
         .create_user(UserRole::Member, Some("Riley"), None)
         .await
@@ -948,34 +1338,236 @@ async fn a_book_wider_than_one_reply_is_left_out_of_the_window() {
     add_branch(&store, BRANCH, riley).await;
     cap.store(4096, std::sync::atomic::Ordering::SeqCst);
 
-    let listed: Vec<String> = read_all(&store, BRANCH)
+    // Pages follow holding ids, which are random: compare as sets.
+    let mut listed: Vec<String> = read_all(&store, BRANCH)
         .await
         .into_iter()
         .flat_map(|work| work.editions)
-        .map(|edition| edition.product_id)
+        .map(|edition| edition.edition.product_id)
         .collect();
+    listed.sort();
     assert_eq!(listed, vec!["B0NARROW01", "B0NARROW02"]);
 
-    // One book per read (the Minimum profile's `maxResultRows`): the page
-    // that only skips the wide book still moves the cursor past it.
-    let mut after = 0;
+    // One holding per read (the Minimum profile's `maxResultRows`): the
+    // page that only skips the wide title still moves the cursor past it.
+    let mut after = WindowCursor::start();
     let mut listed = Vec::new();
     loop {
-        let (page, next) = window_books_page_by(&store, BRANCH, after, 1)
+        let (page, next) = window_books_page_by(&store, BRANCH, &after, 1)
             .await
             .unwrap()
             .unwrap();
         listed.extend(
             page.into_iter()
                 .flat_map(|work| work.editions)
-                .map(|edition| edition.product_id),
+                .map(|edition| edition.edition.product_id),
         );
         match next {
             Some(next) => after = next,
             None => break,
         }
     }
+    listed.sort();
     assert_eq!(listed, vec!["B0NARROW01", "B0NARROW02"]);
+}
+
+/// The caps of a [`capped_store`], set once its fixture is stored.
+pub(crate) struct Caps {
+    /// Most bytes of text one reply may carry (0: no cap).
+    pub(crate) reply: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Most bytes one text cell may carry (0: no cap).
+    pub(crate) cell: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// A library over [`TextCapped`] with no caps yet, and the caps to set once
+/// the fixture is stored.
+pub(crate) async fn capped_store(dir: &std::path::Path) -> (LibraryStore, Caps) {
+    let conn = rusqlite::Connection::open(dir.join("library.db")).unwrap();
+    let caps = Caps {
+        reply: std::sync::Arc::default(),
+        cell: std::sync::Arc::default(),
+    };
+    let engine = TextCapped {
+        inner: bookclerk_plugin_database_sqlite::sqlite::SqliteProxy::new(conn).unwrap(),
+        cap: std::sync::Arc::clone(&caps.reply),
+        max_binds: 0,
+        max_cell: std::sync::Arc::clone(&caps.cell),
+    };
+    let db = sea_orm::Database::connect_proxy(
+        sea_orm::DbBackend::Sqlite,
+        std::sync::Arc::new(Box::new(engine)),
+    )
+    .await
+    .unwrap();
+    crate::apply_host_schema(&db).await.unwrap();
+    crate::configure_master_key(dir).unwrap();
+    (LibraryStore::from_connection(db), caps)
+}
+
+/// Runs `sql` on the library as is, for a fixture the host's writes would
+/// not produce.
+pub(crate) async fn raw(store: &LibraryStore, sql: &str) {
+    use sea_orm::ConnectionTrait;
+    store.db().execute_unprepared(sql).await.unwrap();
+}
+
+/// Listing text that fits one listing at a time but not a chunk of them
+/// is read a listing at a time: every title is listed with its language.
+#[tokio::test]
+async fn listing_text_wider_than_one_reply_together_is_read_per_listing() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, caps) = capped_store(dir.path()).await;
+    let cap = caps.reply;
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    hold(
+        &store,
+        riley,
+        "riley-acct",
+        &["B0LANG0001".into(), "B0LANG0002".into()],
+    )
+    .await;
+    add_branch(&store, BRANCH, riley).await;
+    let language = "l".repeat(2500);
+    raw(
+        &store,
+        &format!("UPDATE store_listings SET language = '{language}'"),
+    )
+    .await;
+    cap.store(4096, std::sync::atomic::Ordering::SeqCst);
+
+    let titles = listed_titles(
+        &store,
+        titles_within_bytes(&store, find_holdings().all(store.db()).await.unwrap())
+            .await
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(titles.len(), 2);
+    assert!(titles
+        .iter()
+        .all(|t| t.language.as_deref() == Some(language.as_str())));
+}
+
+/// Another account's legacy book row for the same product, too wide to
+/// read, does not keep this person's title out of the window.
+#[tokio::test]
+async fn another_accounts_wide_book_row_does_not_hide_a_title() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, caps) = capped_store(dir.path()).await;
+    let cap = caps.reply;
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    let sam = store
+        .create_user(UserRole::Member, Some("Sam"), None)
+        .await
+        .unwrap()
+        .id;
+    hold(&store, riley, "riley-acct", &["B0SHARED01".into()]).await;
+    hold(&store, sam, "sam-acct", &["B0SHARED01".into()]).await;
+    add_branch(&store, BRANCH, riley).await;
+    let wide = "W".repeat(5000);
+    raw(
+        &store,
+        &format!("UPDATE books SET title = '{wide}' WHERE account_id = 'sam-acct'"),
+    )
+    .await;
+    cap.store(4096, std::sync::atomic::Ordering::SeqCst);
+
+    let listed: Vec<String> = read_all(&store, BRANCH)
+        .await
+        .into_iter()
+        .flat_map(|work| work.editions)
+        .map(|edition| edition.edition.product_id)
+        .collect();
+    assert_eq!(listed, vec!["B0SHARED01"]);
+}
+
+/// A listing cell wider than the plugin's `maxCellBytes` (stored before a
+/// smaller cap) leaves that title out of the window; the page and the
+/// titles around it are still listed.
+#[tokio::test]
+async fn a_listing_cell_wider_than_the_cell_cap_leaves_only_its_title_out() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, caps) = capped_store(dir.path()).await;
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    hold(
+        &store,
+        riley,
+        "riley-acct",
+        &["B0CELL0001".into(), "B0CELL0002".into()],
+    )
+    .await;
+    add_branch(&store, BRANCH, riley).await;
+    let wide = "l".repeat(2000);
+    raw(
+        &store,
+        &format!("UPDATE store_listings SET language = '{wide}' WHERE product_id = 'B0CELL0002'"),
+    )
+    .await;
+    caps.cell.store(1024, std::sync::atomic::Ordering::SeqCst);
+
+    let listed: Vec<String> = read_all(&store, BRANCH)
+        .await
+        .into_iter()
+        .flat_map(|work| work.editions)
+        .map(|edition| edition.edition.product_id)
+        .collect();
+    assert_eq!(listed, vec!["B0CELL0001"]);
+}
+
+/// A holdings read refused for its bytes is read again with fewer rows per
+/// read, and every title is still listed once.
+#[tokio::test]
+async fn a_holdings_read_wider_than_one_reply_reads_fewer_rows() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, caps) = capped_store(dir.path()).await;
+    let cap = caps.reply;
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    let asins: Vec<String> = (0..60).map(|n| format!("B0MANY{n:04}")).collect();
+    hold(&store, riley, "riley-acct", &asins).await;
+    add_branch(&store, BRANCH, riley).await;
+    let one_read: usize = find_holdings()
+        .all(store.db())
+        .await
+        .unwrap()
+        .iter()
+        .map(|h| {
+            h.id.len()
+                + h.listing_id.len()
+                + h.plugin_key.as_ref().map_or(0, String::len)
+                + h.account_id.as_ref().map_or(0, String::len)
+        })
+        .sum();
+    cap.store(one_read / 3, std::sync::atomic::Ordering::SeqCst);
+
+    let mut listed: Vec<String> = read_all(&store, BRANCH)
+        .await
+        .into_iter()
+        .flat_map(|work| work.editions)
+        .map(|edition| edition.edition.product_id)
+        .collect();
+    listed.sort();
+    assert_eq!(listed, asins);
 }
 
 /// A page repeating many editions stored earlier in the same read reads
@@ -991,6 +1583,7 @@ async fn many_editions_repeated_in_one_read_stay_within_the_bind_limit() {
         inner: bookclerk_plugin_database_sqlite::sqlite::SqliteProxy::new(conn).unwrap(),
         cap: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         max_binds: 32,
+        max_cell: std::sync::Arc::default(),
     };
     let db = sea_orm::Database::connect_proxy(
         sea_orm::DbBackend::Sqlite,
@@ -1004,14 +1597,14 @@ async fn many_editions_repeated_in_one_read_stay_within_the_bind_limit() {
     caps.max_binds = 32;
     caps.max_result_rows = 500;
     let store = LibraryStore::from_connection(db).with_db_capabilities(caps);
-    link(&store, "alpha", false).await;
+    link(&store, "alpha").await;
     let works: Vec<WindowWork> = (0..40)
         .map(|n| {
             let id = format!("B0REPEAT{n:02}");
             WindowWork {
                 work: format!("w-{n}"),
                 identifiers: vec![asin(&id)],
-                editions: vec![edition(&id, &format!("Book {n}"))],
+                editions: vec![yours(edition(&id, &format!("Book {n}")))],
             }
         })
         .collect();
@@ -1047,15 +1640,17 @@ async fn a_title_a_scan_dropped_is_not_listed() {
     .await;
     add_branch(&store, BRANCH, riley).await;
     let listed = |works: Vec<WindowWork>| -> Vec<String> {
-        works
+        let mut products: Vec<String> = works
             .into_iter()
             .flat_map(|work| work.editions)
-            .map(|edition| edition.product_id)
-            .collect()
+            .map(|edition| edition.edition.product_id)
+            .collect();
+        products.sort();
+        products
     };
     assert_eq!(
         listed(read_all(&store, BRANCH).await),
-        vec!["B0KEPT0001", "B0GONE0001"]
+        vec!["B0GONE0001", "B0KEPT0001"]
     );
 
     store

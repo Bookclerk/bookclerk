@@ -49,7 +49,7 @@ test_results = "rust/junit.xml"
 root = "."
 paths = ["crates/", "fuzz/", "examples/"]
 suffixes = [".rs"]
-floor = 80
+floor = 82
 workspace_check = "rust_test"
 
 [areas.site]
@@ -74,7 +74,7 @@ test_results = "collector/junit.xml"
 root = "tools/diagnostics-collector"
 paths = ["tools/diagnostics-collector/"]
 suffixes = [".ts"]
-floor = 93
+floor = 94
 
 [areas.python-sdk]
 report = "python-sdk/lcov.info"
@@ -82,7 +82,7 @@ test_results = "python-sdk/junit.xml"
 root = "."
 paths = ["packages/plugin-sdk-python/src/"]
 suffixes = [".py"]
-floor = 83
+floor = 84
 
 [areas.workerd-guests]
 report = "workerd-guests/lcov.info"

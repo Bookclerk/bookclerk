@@ -202,9 +202,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_claim_tickets_identity ON claim_tickets(identity_id)",
     ),
     // A user's sessions. `kind` is `browser` for a cookie session and
-    // `client` for a client sign-in (a library card a clerk holds
-    // and sends as `Authorization: Bookclerk-Client`). A token only works in
-    // the place its kind belongs, so a client token is never a cookie.
+    // `client` for a clerk sign-in (a library card a clerk holds
+    // and sends as `Authorization: Bookclerk-Clerk`). A token only works in
+    // the place its kind belongs, so a library card is never a cookie.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS portal_sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,7 +216,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         device_type TEXT,
         client_label TEXT,
         last_used_at TEXT,
-        kind TEXT NOT NULL DEFAULT 'browser' CHECK (kind IN ('browser', 'client')),
+        kind TEXT NOT NULL DEFAULT 'browser' CHECK (kind IN ('browser', 'clerk')),
         FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE CASCADE
     )",
     ),
@@ -277,6 +277,29 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     )",
     ),
+    // A Member's own patron scope (`crate::patron_scope`). No row means
+    // the Member follows the library's default scope document.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS patron_scopes (
+        user_id INTEGER PRIMARY KEY,
+        scope_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    )",
+    ),
+    // The include and exclude values of a patron scope as rows, keyed by
+    // the content id of the value set (`crate::WorkScope::key_set_id`), so
+    // the Library filter joins them with a fixed number of binds whatever
+    // the rule count. Rows are written once per value set and never change.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS patron_scope_keys (
+        scope_hash TEXT NOT NULL,
+        effect TEXT NOT NULL CHECK (effect IN ('include', 'exclude')),
+        facet TEXT NOT NULL,
+        key TEXT NOT NULL,
+        PRIMARY KEY (scope_hash, effect, facet, key)
+    )",
+    ),
     // Where a store account travelled with its person: `sent` to a branch
     // (`peer = node:<node_id>`) or `received` from a library this install
     // joined (`peer = link:<cluster_id>`). Read to disconnect an account
@@ -313,7 +336,12 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_works_match ON works(match_key)"),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_works_parent ON works(parent_work_id)"),
+    // `id` second, so a walk over top-level works (`parent_work_id IS NULL`
+    // in id order, a page at a time) reads the index in order instead of
+    // sorting every top-level work for each page.
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_works_parent ON works(parent_work_id, id)",
+    ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_works_title ON works(title)"),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS work_identifiers (
@@ -351,7 +379,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         duration_minutes INTEGER,
         cover_url TEXT,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        enrich_source TEXT,
+        enrich_confidence REAL,
+        enrich_updated_at TEXT
     )",
     ),
     MigrationOp::Schema(
@@ -433,6 +464,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         narrators TEXT,
         series TEXT,
         series_index TEXT,
+        series_product_id TEXT,
         description TEXT,
         publisher TEXT,
         published_at TEXT,
@@ -471,6 +503,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     // An Administrator's decision the resolver obeys: pin a listing to an
     // edition, or keep the work matcher away from a work it split.
+    // `revision` is new with every write of the row, so the events a pin
+    // publishes are told apart from an earlier pin to the same edition.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS resolution_overrides (
         subject_kind TEXT NOT NULL CHECK (subject_kind IN ('listing', 'work')),
@@ -479,6 +513,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         target_id TEXT,
         created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
         created_at TEXT NOT NULL,
+        revision TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (subject_kind, subject_id)
     )",
     ),
@@ -1114,7 +1149,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         scratch_bytes INTEGER,
         target TEXT NOT NULL DEFAULT '',
         labels_json TEXT NOT NULL DEFAULT '[]',
-        kind TEXT NOT NULL DEFAULT 'owner' CHECK (kind IN ('owner', 'host')),
+        kind TEXT NOT NULL DEFAULT 'shared' CHECK (kind IN ('shared', 'branch')),
         owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
         share_books INTEGER CHECK (share_books IN (0, 1)),
         include_branches INTEGER CHECK (include_branches IN (0, 1)),
@@ -1465,7 +1500,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         keep_member_copies INTEGER NOT NULL DEFAULT 0 CHECK (keep_member_copies IN (0, 1)),
         max_jobs INTEGER CHECK (max_jobs IS NULL OR (max_jobs >= 0 AND max_jobs <= 16)),
         list_members_books INTEGER NOT NULL DEFAULT 1 CHECK (list_members_books IN (0, 1)),
-        download INTEGER NOT NULL DEFAULT 1 CHECK (download IN (0, 1)),
+        keep_copies INTEGER NOT NULL DEFAULT 1 CHECK (keep_copies IN (0, 1)),
         person_user_id INTEGER
     )",
     ),
@@ -1491,7 +1526,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         PRIMARY KEY (owner_cluster_id, plugin_key)
     )",
     ),
-    // H-4 step 9: one title's streamed upload from a host node. Only the
+    // H-4 step 9: one title's streamed upload from a branch node. Only the
     // token's hash is stored; nothing of the files is.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS node_upload_sessions (
@@ -1501,7 +1536,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         job_id TEXT NOT NULL,
         lease_generation INTEGER NOT NULL,
         receiving_node_id TEXT NOT NULL,
-        book_uuid TEXT NOT NULL,
+        holding_id TEXT NOT NULL,
         primary_key TEXT NOT NULL,
         manifest_json TEXT NOT NULL,
         received_json TEXT NOT NULL DEFAULT '[]',
@@ -1514,15 +1549,40 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_node_upload_sessions_job ON node_upload_sessions(job_id)",
     ),
+    // A reader's leave to download the copy this library holds of one
+    // edition (`copy.grant`). Only the token's hash is stored. The holder
+    // is the asking branch node or a clerk's library card; every download
+    // re-checks it, the person and the edition, so a row only bounds the
+    // token's life and pins the files it was granted for.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS copy_grants (
+        copy_id TEXT PRIMARY KEY NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        holder_kind TEXT NOT NULL CHECK (holder_kind IN ('node', 'card')),
+        holder_id TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        edition_id TEXT NOT NULL,
+        serving_node_id TEXT NOT NULL,
+        destination TEXT NOT NULL,
+        files_digest TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_copy_grants_expires ON copy_grants(expires_at)",
+    ),
     // Every file key an acquire or a host upload wrote, per output
     // destination, and the edition it belongs to (`owner_kind = 'edition'`),
     // so an upload is never granted another edition's file in a folder
     // titles share. A title a branch shares here is a node holding, so its
     // keys are its edition's too. `writer` is the host upload id that
     // claimed the key last (a branch's catalog upload included), or
-    // `acquire` for an acquire run on the node itself. `role` says what the file is; audio quality
-    // (`lossless`, `bitrate_kbps`) decides whether a later copy of the same
-    // edition replaces it.
+    // `acquire` for an acquire run on the node itself. `role` says what the file is. The probe
+    // result (`content_type`, `bitrate_kbps`, `lossless`, set at
+    // `probed_at`) and the storefront the copy came from (`source_store`)
+    // decide whether a later copy of the same edition replaces it, and tell
+    // a branch what the library's copy is before it asks for it.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS edition_files (
         destination TEXT NOT NULL,
@@ -1532,6 +1592,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         role TEXT NOT NULL CHECK (role IN ('audio', 'part', 'chapter', 'pdf', 'cover', 'sidecar', 'transcript', 'epub')),
         lossless INTEGER NOT NULL DEFAULT 0,
         bitrate_kbps INTEGER,
+        content_type TEXT,
+        source_store TEXT,
+        probed_at TEXT,
         sha256 TEXT,
         writer TEXT NOT NULL,
         written_at TEXT NOT NULL,
@@ -1546,19 +1609,24 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     // Each edition's acquire state (docs/adr/library-data-model.md): files
     // belong to editions, so one acquire serves every title of the edition.
-    // `title_uuid` is the library title (`books.uuid`) whose write set the
-    // row. Once acquired, only that title's writes change the row (or any
-    // title's, after that one leaves the library), never a sibling title's
-    // queued, downloading or failed attempt. An edition with no row is not
-    // acquired.
+    // `holding_id` is the account holding (`holdings.id`) whose title's
+    // write set the row. Once acquired, only that holding's writes change
+    // the row (or any holding's, after that one is gone), never a sibling
+    // holding's queued, downloading or failed attempt. An edition with no
+    // row is not acquired. The `pdf_*` columns hold the edition's companion
+    // PDF the same way, with `pdf_holding_id` the holding whose write set
+    // them.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS edition_acquisitions (
         edition_id TEXT PRIMARY KEY NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
         status TEXT NOT NULL CHECK (status IN ('not_acquired', 'queued', 'downloading', 'acquired', 'error')),
         storage_key TEXT,
         error_message TEXT,
-        title_uuid TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        holding_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        pdf_status TEXT NOT NULL DEFAULT 'not_acquired' CHECK (pdf_status IN ('not_acquired', 'queued', 'downloading', 'acquired', 'error')),
+        pdf_storage_key TEXT,
+        pdf_holding_id TEXT
     )",
     ),
     // The library's page index (docs/adr/library-data-model.md, decision 8
@@ -1569,6 +1637,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // read the model, and a refresh never overwrites one that read later.
     // `media_kinds` is the sorted, comma-joined set of the work's edition
     // media kinds; `acquire_status` the furthest state any edition reached.
+    // `sort_series`, `length_minutes` and `purchased_at` are sort keys:
+    // series then position (works with no series last), the longest held
+    // edition's runtime (0 when unknown) and the newest purchase time
+    // (empty when no store reported one). `facets_ready` is 1 once every
+    // `library_work_facets` row of this refresh is written: a patron scope
+    // admits only such rows, so a half-written refresh hides the work
+    // rather than slipping it past an exclude rule.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS library_work_rows (
         work_id TEXT PRIMARY KEY NOT NULL REFERENCES works(id) ON DELETE CASCADE,
@@ -1585,7 +1660,11 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         edition_count INTEGER NOT NULL,
         holding_count INTEGER NOT NULL,
         added_at TEXT NOT NULL,
-        refreshed_at TEXT NOT NULL
+        sort_series TEXT NOT NULL,
+        length_minutes INTEGER NOT NULL,
+        purchased_at TEXT NOT NULL,
+        refreshed_at TEXT NOT NULL,
+        facets_ready INTEGER NOT NULL DEFAULT 0
     )",
     ),
     MigrationOp::Schema(
@@ -1596,6 +1675,47 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_library_work_rows_added ON library_work_rows(added_at, work_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_library_work_rows_series ON library_work_rows(sort_series, sort_title, work_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_library_work_rows_purchased ON library_work_rows(purchased_at, work_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_library_work_rows_length ON library_work_rows(length_minutes, work_id)",
+    ),
+    // The page index's filter values: one row per value a held top-level
+    // work has under a facet (author, narrator, series, genre, publisher,
+    // source). `key` is the lower-cased value the filter matches; `value`
+    // is how it is shown. Written with the work's `library_work_rows` row
+    // and fenced by its `refreshed_at`; an unheld work has none.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS library_work_facets (
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        facet TEXT NOT NULL CHECK (facet IN ('author', 'narrator', 'series', 'genre', 'publisher', 'source')),
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (work_id, facet, key)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_library_work_facets_key ON library_work_facets(facet, key, work_id)",
+    ),
+    // One user's tags on a work, one row per tag, written with
+    // `user_title_state.tags` so the library can filter by a tag. `tag_key`
+    // is the lower-cased tag.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS user_work_tags (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        tag_key TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        PRIMARY KEY (user_id, tag_key, work_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_user_work_tags_work ON user_work_tags(work_id)",
     ),
     // Finished page index builds by layout: a layout with no row has never
     // been built on this library, so the heartbeat queues a rebuild.
@@ -1661,15 +1781,35 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         created_at TEXT NOT NULL
     )",
     ),
-    // On a window (a link with "Use this computer to download" off): the
-    // books each library holds for this install's person, one row per
-    // edition (`control_plane::window_books`). `work_ref` is the library's
+    // On a clerk: the libraries this install holds a library card for
+    // (`control_plane::clerk_links`). The card itself is sealed in
+    // `encrypted_secrets` (`kind = clerk_card`); `state` turns
+    // `signed_out` once the library ends the card.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS clerk_links (
+        library_cluster_id TEXT PRIMARY KEY NOT NULL,
+        origin TEXT NOT NULL,
+        spki_pin TEXT,
+        library_name TEXT NOT NULL,
+        remote_user_id INTEGER NOT NULL,
+        display_name TEXT,
+        clerk_name TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('active', 'signed_out')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    ),
+    // On a branch (each active link) or a clerk (each library card): the
+    // books of each library, one row per edition (`control_plane::window_books`),
+    // keyed by the library's cluster id. Rows are dropped by code when the
+    // link or card goes, not by a foreign key, since either kind of link
+    // can own them. `work_ref` is the library's
     // own grouping key, `local_work_id` the work of this library the
     // identifiers reach (if any); `seen_at` is the stamp of the read that
     // last named the row, and a finished read drops rows it did not name.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS window_books (
-        owner_cluster_id TEXT NOT NULL REFERENCES cluster_links(owner_cluster_id) ON DELETE CASCADE,
+        owner_cluster_id TEXT NOT NULL,
         store TEXT NOT NULL,
         marketplace TEXT NOT NULL,
         product_id TEXT NOT NULL,
@@ -1690,7 +1830,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // and pieces no row names are dropped when a read finishes.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS window_book_parts (
-        owner_cluster_id TEXT NOT NULL REFERENCES cluster_links(owner_cluster_id) ON DELETE CASCADE,
+        owner_cluster_id TEXT NOT NULL,
         store TEXT NOT NULL,
         marketplace TEXT NOT NULL,
         product_id TEXT NOT NULL,

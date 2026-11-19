@@ -10,7 +10,8 @@ use bookclerk_library::control_plane::{
     load_deployment_for_node, load_instance_config, load_observation, load_plugin_instance,
     parse_setting_text, replace_instance_config, replace_plugin_deployment, require_plugin_schema,
     seal_instance_secret, set_secret_ref, set_setting, ConfigActor, DeploymentReplace,
-    InstanceConfigReplace, PluginInstance, PluginInstanceConfigV1, PluginInstanceId, SettingValue,
+    InstanceConfigReplace, PluginInstance, PluginInstanceConfigV1, PluginInstanceId, SettingCell,
+    SettingValue,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
@@ -262,11 +263,18 @@ pub enum PluginConfigCommand {
         instance: String,
         /// Setting key from the plugin's `[[settings]]`.
         key: String,
-        /// Value text (`true`/`false`, a number, or a string).
+        /// Value text: `true`/`false`, a number, or a string. A `table`
+        /// setting takes a JSON array of row objects, or one row with its
+        /// cells in column order separated by `|` (an empty cell takes the
+        /// column default; `\|` is a literal bar).
         value: Option<String>,
         /// Seal a secret read from stdin.
         #[arg(long)]
         secret: bool,
+        /// For a `table` setting, add the given rows after the current ones
+        /// instead of replacing them.
+        #[arg(long, conflicts_with = "secret")]
+        append: bool,
     },
     /// Unset one setting so the schema default applies, or drop a secret.
     Unset {
@@ -274,6 +282,10 @@ pub enum PluginConfigCommand {
         instance: String,
         /// Setting key.
         key: String,
+        /// For a `table` setting, remove only this row (counted from 1, as
+        /// `config get` lists them) and keep the others.
+        #[arg(long, value_name = "N")]
+        row: Option<usize>,
     },
 }
 
@@ -1374,6 +1386,15 @@ async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<Str
         }
         probed = true;
     }
+    if session.has_entrypoint(Entrypoint::MetadataFiles) {
+        let health = session
+            .metadata_files(|files| async move { files.health().await })
+            .await?;
+        if !health.ok {
+            anyhow::bail!("metadataFiles health failed: {}", health.detail);
+        }
+        probed = true;
+    }
     if session.has_entrypoint(Entrypoint::DatabaseAdapter) {
         probe_database(&session, config, &plugin).await?;
         probed = true;
@@ -2213,7 +2234,7 @@ async fn run_plugin_config(
                 .body
                 .settings
                 .iter()
-                .map(|(key, value)| (key.clone(), setting_value_json(value)))
+                .map(|(key, value)| (key.clone(), SettingValue::to_json(value)))
                 .collect();
             let effective = pinned.schema.effective_config(&stored);
             // Which declared `secret` keys have a sealed value. Holds key
@@ -2265,6 +2286,7 @@ async fn run_plugin_config(
             key,
             value,
             secret,
+            append,
         } => {
             let instance = resolve_instance(store, &instance).await?;
             let pinned = require_plugin_schema(store, &instance.plugin_key).await?;
@@ -2290,7 +2312,15 @@ async fn run_plugin_config(
                 set_secret_ref(&mut body, &key);
             } else {
                 let text = value.ok_or_else(|| anyhow::anyhow!("a value is required"))?;
-                let parsed = parse_setting_text(&pinned.schema, &key, &text)?;
+                let mut parsed = parse_setting_text(&pinned.schema, &key, &text)?;
+                if append {
+                    let SettingValue::Rows(added) = parsed else {
+                        anyhow::bail!("--append takes a `table` setting; `{key}` is not one");
+                    };
+                    let mut rows = current_rows(&pinned.schema, &body, &key)?;
+                    rows.extend(added);
+                    parsed = SettingValue::Rows(rows);
+                }
                 set_setting(&mut body, &key, Some(parsed));
             }
             // Commit the document first so a conflict or a validation error
@@ -2323,13 +2353,25 @@ async fn run_plugin_config(
                 },
             )
         }
-        PluginConfigCommand::Unset { instance, key } => {
+        PluginConfigCommand::Unset { instance, key, row } => {
             let instance = resolve_instance(store, &instance).await?;
             let pinned = require_plugin_schema(store, &instance.plugin_key).await?;
             let document = load_instance_config(store, &instance.id).await?;
             let mut body = document.body.clone();
-            set_setting(&mut body, &key, None);
-            body.secret_refs.retain(|r| r.key != key);
+            if let Some(row) = row {
+                let mut rows = current_rows(&pinned.schema, &body, &key)?;
+                if row == 0 || row > rows.len() {
+                    anyhow::bail!(
+                        "setting `{key}` has {} rows; there is no row {row}",
+                        rows.len()
+                    );
+                }
+                rows.remove(row - 1);
+                set_setting(&mut body, &key, Some(SettingValue::Rows(rows)));
+            } else {
+                set_setting(&mut body, &key, None);
+                body.secret_refs.retain(|r| r.key != key);
+            }
             let revision =
                 replace_document(store, &instance, &pinned.schema, document.revision, &body)
                     .await?;
@@ -2348,6 +2390,34 @@ async fn run_plugin_config(
                 },
             )
         }
+    }
+}
+
+/// Rows a `table` setting holds now: the stored rows, else the declared
+/// default, else none.
+///
+/// # Errors
+///
+/// Returns an error when `key` is not a declared table setting.
+fn current_rows(
+    schema: &bookclerk_plugin_abi::SettingsSchema,
+    body: &PluginInstanceConfigV1,
+    key: &str,
+) -> anyhow::Result<Vec<std::collections::BTreeMap<String, SettingCell>>> {
+    let spec = schema
+        .get(key)
+        .filter(|spec| spec.kind == bookclerk_plugin_abi::SettingKind::Table)
+        .ok_or_else(|| anyhow::anyhow!("setting `{key}` is not a `table` setting"))?;
+    if let Some(SettingValue::Rows(rows)) = body.settings.get(key) {
+        return Ok(rows.clone());
+    }
+    match spec
+        .default
+        .clone()
+        .map(serde_json::from_value::<SettingValue>)
+    {
+        Some(Ok(SettingValue::Rows(rows))) => Ok(rows),
+        _ => Ok(Vec::new()),
     }
 }
 
@@ -2375,15 +2445,6 @@ async fn replace_document(
         InstanceConfigReplace::Conflict { current_revision } => anyhow::bail!(
             "instance document changed concurrently (revision {current_revision}); retry"
         ),
-    }
-}
-
-/// JSON form of a stored setting value.
-fn setting_value_json(value: &SettingValue) -> serde_json::Value {
-    match value {
-        SettingValue::Bool(flag) => serde_json::Value::Bool(*flag),
-        SettingValue::Number(number) => serde_json::Value::Number(number.clone()),
-        SettingValue::String(text) => serde_json::Value::String(text.clone()),
     }
 }
 

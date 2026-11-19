@@ -38,6 +38,8 @@ const {
   DatabaseAdapterEntrypoint,
   MetadataEntrypoint,
   CoverEntrypoint,
+  MAX_BATCH_KEYS,
+  MetadataFilesEntrypoint,
   PluginError,
   StorageEntrypoint,
   StorefrontEntrypoint,
@@ -58,9 +60,59 @@ const enc = new TextEncoder();
 
 // --- Author isolate stand-ins --------------------------------------------
 
-const calls = { event: 0, queue: 0, queueSends: [], storefront: [], scheduled: [] };
+const calls = { event: 0, queue: 0, queueSends: [], storefront: [], scheduled: [], sockets: [] };
 
 class Plugin extends BookclerkEntrypoint {
+  async webSocketMessage(ws, message) {
+    const seen = ws.deserializeAttachment();
+    calls.sockets.push({ kind: "message", id: ws.id, message, seen });
+    if (message === "subscribe") {
+      // Woken by a message: open a second socket and remember progress.
+      const opened = await this.env.SOCKETS.connect("wss://abs.example/socket.io/", {
+        protocols: ["chat"],
+        headers: { Authorization: "Bearer t" },
+        autoResponses: [{ request: "2", response: "3" }],
+        attachment: { room: "lib" },
+      });
+      calls.sockets.push({
+        kind: "opened",
+        id: opened.id,
+        url: opened.url,
+        protocol: opened.protocol,
+        attachment: opened.deserializeAttachment(),
+      });
+      await ws.send(new Uint8Array([1, 2, 3]));
+      await ws.serializeAttachment({ count: (seen?.count ?? 0) + 1 });
+      calls.sockets.push({ kind: "after", attachment: ws.deserializeAttachment() });
+      const open = await this.env.SOCKETS.getWebSockets();
+      calls.sockets.push({ kind: "listed", ids: open.map((socket) => socket.id) });
+      calls.sockets.push({
+        kind: "tooBig",
+        code: await ws.serializeAttachment("x".repeat(3000)).catch((err) => err.code),
+      });
+      calls.sockets.push({
+        kind: "gone",
+        code: await this.env.SOCKETS.getWebSockets()
+          .then(() => "ok")
+          .catch((err) => err.code),
+      });
+      await ws.close(4000, "done");
+    }
+    if (message === "boom") throw new Error("handler failed");
+    if (message === "user_added") return { pollEvents: true };
+  }
+
+  async webSocketClose(ws, code, reason, wasClean) {
+    calls.sockets.push({
+      kind: "close",
+      id: ws.id,
+      code,
+      reason,
+      wasClean,
+      seen: ws.deserializeAttachment(),
+    });
+  }
+
   async scheduled(controller) {
     calls.scheduled.push(controller);
     if (controller.cron === "0 0 * * *") throw new Error("nightly failed");
@@ -137,6 +189,22 @@ class Storefront extends StorefrontEntrypoint {
     ];
   }
   async purchaseHint(params) {
+    if (params.lookup === "title") {
+      // A title search answers with every priced listing it matched.
+      return {
+        hint: { productId: "narrated", title: "Known" },
+        records: [
+          {
+            record: { productId: "narrated", title: "Known", expressionKind: "narration" },
+            hint: { productId: "narrated", priceLabel: "$10" },
+          },
+          {
+            record: { productId: "cast", title: "Known", expressionKind: "dramatisation" },
+            hint: { productId: "cast", priceLabel: "$20" },
+          },
+        ],
+      };
+    }
     return params.productId === "known" ? { productId: "known", title: "Known" } : null;
   }
   async catalogDetail(params) {
@@ -179,6 +247,49 @@ class Storage extends StorageEntrypoint {
   }
   async abortStage() {
     throw PluginError.fromWire("not_found", "no such stage");
+  }
+  async move(from, to, options) {
+    calls.move = { from, to, options };
+    return { atomic: true, alreadyMoved: from === "gone" };
+  }
+  async moveMany(request) {
+    calls.moveMany = request;
+    if (request.target.kind === "prefix") {
+      return { results: [{ key: "a/1" }], nextCursor: "page2" };
+    }
+    return {
+      results: request.target.value.map((p) =>
+        p.from === "taken"
+          ? { key: p.from, error: { code: "conflict", message: "exists" } }
+          : { key: p.from },
+      ),
+      atomic: true,
+      objectsMoved: 1,
+    };
+  }
+  async deleteMany(keys) {
+    return keys.map((key) =>
+      key === "bad"
+        ? { key, error: { code: "not_found", message: "nope" } }
+        : key === "blank"
+          ? { key, error: { code: "", message: "refused" } }
+          : { key },
+    );
+  }
+  async headMany(keys) {
+    return keys.map((key) => (key === "present" ? { key, size: 3, versionId: "v1" } : null));
+  }
+  async changes(request) {
+    calls.changes = request;
+    return {
+      changes: [
+        { key: "a/1", kind: "upserted", info: { key: "a/1", size: 3, etag: "e1" } },
+        { key: "a/2", kind: "removed" },
+      ],
+      cursor: "c2",
+      more: false,
+      complete: true,
+    };
   }
 }
 
@@ -267,6 +378,14 @@ class Covers extends CoverEntrypoint {
   async fetchCovers(params, sink) {
     // The wire envelope is not a valid return value.
     if (params.urls[0] === "https://wrapped.example/") return { images: [] };
+    // A granted sink cannot carry preconditions, so it refuses them.
+    if (params.urls[0] === "https://conditional.example/") {
+      const body = new Blob([new Uint8Array(1)]).stream();
+      for (const options of [{ ifNoneMatch: true }, { ifMatch: "e1" }]) {
+        await assert.rejects(sink.put("0", body, options), (err) => err.code === "unsupported");
+      }
+      return [{ url: params.urls[0], stored: false, error: "refused" }];
+    }
     const images = [];
     for (const [i, url] of params.urls.entries()) {
       if (url.endsWith("/missing.jpg")) {
@@ -281,6 +400,25 @@ class Covers extends CoverEntrypoint {
       images.push({ url, stored: true, contentType: "image/jpeg" });
     }
     return images;
+  }
+}
+
+class MetadataFiles extends MetadataFilesEntrypoint {
+  async parse(params) {
+    const text = new TextDecoder().decode(params.bytes);
+    // Not a record: no `present` list.
+    if (text === "bare") return { title: "x" };
+    return {
+      present: ["title", "credits"],
+      title: `${params.dialect}:${params.fileName}:${text}`,
+      credits: [{ name: "Ada", role: "narrator" }],
+      creditRoles: ["narrator"],
+    };
+  }
+  async render(params) {
+    if (params.dialect === "bytes") return new TextEncoder().encode("raw");
+    if (params.dialect === "number") return 7;
+    return `${params.fields.join(",")}=${params.record.title ?? ""}|${params.existing.length}`;
   }
 }
 
@@ -439,6 +577,30 @@ const granted = {
       this.puts = [...(this.puts ?? []), { key: u.searchParams.get("key"), bytes }];
       return Response.json({ key: u.searchParams.get("key"), bytesWritten: bytes.length });
     }
+    if (u.pathname.startsWith("/sockets/")) {
+      const body = JSON.parse(init.body);
+      (this.sockets ??= []).push({ path: u.pathname, auth: init.headers?.Authorization, body });
+      switch (u.pathname) {
+        case "/sockets/connect":
+          return Response.json({
+            socket: "g1_s2",
+            url: body.url,
+            protocol: body.protocols[0],
+            attachment: body.attachment,
+          });
+        case "/sockets/list":
+          if (this.socketsGone) {
+            return Response.json(
+              { error: { code: "unavailable", message: "broker restarting" } },
+              { status: 503 },
+            );
+          }
+          this.socketsGone = true;
+          return Response.json({ sockets: [{ socket: "g1_s1", url: "wss://a/", attachment: "" }] });
+        default:
+          return Response.json({});
+      }
+    }
     if (u.pathname.startsWith("/kv/")) {
       const body = JSON.parse(init.body);
       const store = (this.kv ??= new Map());
@@ -540,6 +702,7 @@ const env = {
   PLUGIN_CLI: new Cli({}, {}),
   PLUGIN_METADATA: new Metadata({}, {}),
   PLUGIN_COVERS: new Covers({}, {}),
+  PLUGIN_METADATA_FILES: new MetadataFiles({}, {}),
   GRANTED: granted,
   BRIDGE_TOKEN: "t",
 };
@@ -553,6 +716,7 @@ const contextJson = JSON.stringify(
     queues: { NOTIFY: "qtok" },
     kv: { KV: "ktok" },
     databases: { DB: "dtok" },
+    sockets: { SOCKETS: "socktok" },
   }),
 );
 
@@ -634,6 +798,42 @@ function decodeReply(reply, resultsCodec, caps) {
   );
   assert.equal(found.value.found, true);
   assert.equal(found.value.hint.productId, "known");
+  assert.deepEqual(found.value.records, [], "a bare hint carries no records");
+  const searched = decodeReply(
+    await invoke("ContentSource", "purchaseHint", W.ContentSourcePurchaseHintParamsCodec, {
+      params: { title: "Known", lookup: "title" },
+    }),
+    W.ContentSourcePurchaseHintResultsCodec,
+  );
+  assert.equal(searched.value.found, true);
+  assert.equal(searched.value.hint.productId, "narrated");
+  assert.deepEqual(
+    searched.value.records.map((priced) => [
+      priced.record.productId,
+      priced.record.expressionKind,
+      priced.hint.priceLabel,
+    ]),
+    [
+      ["narrated", "narration", "$10"],
+      ["cast", "dramatisation", "$20"],
+    ],
+  );
+  const batch = decodeReply(
+    await invoke("ContentSource", "purchaseHints", W.ContentSourcePurchaseHintsParamsCodec, {
+      params: {
+        queries: [{ productId: "known" }, { title: "Known", lookup: "title" }, { productId: "x" }],
+      },
+    }),
+    W.ContentSourcePurchaseHintsResultsCodec,
+  );
+  assert.deepEqual(
+    batch.value.results.map((result) => [result.found, result.records.length]),
+    [
+      [true, 0],
+      [true, 2],
+      [false, 0],
+    ],
+  );
   const detail = decodeReply(
     await invoke("ContentSource", "catalogDetail", W.ContentSourceCatalogDetailParamsCodec, {
       params: { productId: "known" },
@@ -727,17 +927,34 @@ function decodeReply(reply, resultsCodec, caps) {
   );
   assert.deepEqual(
     calls.list,
-    { prefix: undefined, cursor: undefined, limit: undefined },
+    {
+      prefix: undefined,
+      cursor: undefined,
+      limit: undefined,
+      withSignatures: undefined,
+      modifiedSinceMs: undefined,
+    },
     "zero values → omitted",
   );
   assert.deepEqual(page, {
     kind: "ok",
-    value: { objects: [{ key: "a/1", size: 3 }], nextCursor: "next" },
+    value: {
+      objects: [{ key: "a/1", size: 3, etag: "", modifiedAtMs: 0, versionId: "", signature: "" }],
+      nextCursor: "next",
+      signaturesIncluded: false,
+      modifiedSinceApplied: false,
+    },
   });
   await invoke("Destination", "list", W.DestinationListParamsCodec, {
-    options: { prefix: "a/", cursor: "c", limit: 5 },
+    options: { prefix: "a/", cursor: "c", limit: 5, withSignatures: true, modifiedSinceMs: 1234 },
   });
-  assert.deepEqual(calls.list, { prefix: "a/", cursor: "c", limit: 5 });
+  assert.deepEqual(calls.list, {
+    prefix: "a/",
+    cursor: "c",
+    limit: 5,
+    withSignatures: true,
+    modifiedSinceMs: 1234,
+  });
 }
 
 {
@@ -772,6 +989,160 @@ function decodeReply(reply, resultsCodec, caps) {
     kind: "err",
     value: { code: "not_found", message: "no such stage", details: "" },
   });
+}
+
+{
+  const opts = { noOverwrite: false, ifSourceMatch: "" };
+  const move = decodeReply(
+    await invoke("Destination", "move", W.DestinationMoveParamsCodec, {
+      from: "a",
+      to: "b",
+      options: { noOverwrite: true, ifSourceMatch: "e1" },
+    }),
+    W.DestinationMoveResultsCodec,
+  );
+  assert.deepEqual(move, { kind: "ok", value: { atomic: true, alreadyMoved: false } });
+  assert.deepEqual(calls.move, {
+    from: "a",
+    to: "b",
+    options: { noOverwrite: true, ifSourceMatch: "e1" },
+  });
+  await invoke("Destination", "move", W.DestinationMoveParamsCodec, {
+    from: "a",
+    to: "b",
+    options: opts,
+  });
+  assert.deepEqual(
+    calls.move.options,
+    { noOverwrite: undefined, ifSourceMatch: undefined },
+    "zero values → omitted",
+  );
+
+  const pairs = decodeReply(
+    await invoke("Destination", "moveMany", W.DestinationMoveManyParamsCodec, {
+      request: {
+        target: {
+          kind: "pairs",
+          value: [
+            { from: "x", to: "y" },
+            { from: "taken", to: "z" },
+          ],
+        },
+        cursor: "",
+        limit: 0,
+        options: opts,
+      },
+    }),
+    W.DestinationMoveManyResultsCodec,
+  );
+  assert.equal(pairs.kind, "ok");
+  assert.equal(pairs.value.atomic, true);
+  assert.equal(pairs.value.objectsMoved, 1);
+  assert.equal(pairs.value.nextCursor, "");
+  assert.deepEqual(
+    pairs.value.results.map((r) => [r.key, r.error.code]),
+    [
+      ["x", ""],
+      ["taken", "conflict"],
+    ],
+  );
+  const prefix = decodeReply(
+    await invoke("Destination", "moveMany", W.DestinationMoveManyParamsCodec, {
+      request: {
+        target: { kind: "prefix", value: { from: "a/", to: "b/" } },
+        cursor: "page1",
+        limit: 10,
+        options: opts,
+      },
+    }),
+    W.DestinationMoveManyResultsCodec,
+  );
+  assert.equal(calls.moveMany.cursor, "page1");
+  assert.equal(calls.moveMany.limit, 10);
+  assert.equal(prefix.value.nextCursor, "page2");
+  assert.equal(prefix.value.atomic, false);
+  const tooMany = decodeReply(
+    await invoke("Destination", "moveMany", W.DestinationMoveManyParamsCodec, {
+      request: {
+        target: {
+          kind: "pairs",
+          value: Array.from({ length: MAX_BATCH_KEYS + 1 }, (_, i) => ({
+            from: `f${i}`,
+            to: `t${i}`,
+          })),
+        },
+        cursor: "",
+        limit: 0,
+        options: opts,
+      },
+    }),
+    W.DestinationMoveManyResultsCodec,
+  );
+  assert.equal(tooMany.kind, "err");
+  assert.equal(tooMany.value.code, "payload_too_large");
+
+  const del = decodeReply(
+    await invoke("Destination", "deleteMany", W.DestinationDeleteManyParamsCodec, {
+      keys: ["ok", "bad", "blank"],
+    }),
+    W.DestinationDeleteManyResultsCodec,
+  );
+  assert.deepEqual(
+    del.value.results.map((r) => [r.key, r.error.code, r.error.message]),
+    [
+      ["ok", "", ""],
+      ["bad", "not_found", "nope"],
+      // A failure with an empty code must never read as success.
+      ["blank", "internal", "refused"],
+    ],
+  );
+  const empty = decodeReply(
+    await invoke("Destination", "deleteMany", W.DestinationDeleteManyParamsCodec, { keys: [] }),
+    W.DestinationDeleteManyResultsCodec,
+  );
+  assert.equal(empty.kind, "err");
+  assert.equal(empty.value.code, "invalid_params");
+
+  const heads = decodeReply(
+    await invoke("Destination", "headMany", W.DestinationHeadManyParamsCodec, {
+      keys: ["present", "absent"],
+    }),
+    W.DestinationHeadManyResultsCodec,
+  );
+  assert.equal(heads.value.objects.length, 2);
+  assert.equal(heads.value.objects[0].found, true);
+  assert.equal(heads.value.objects[0].meta.versionId, "v1");
+  assert.equal(heads.value.objects[1].found, false);
+
+  const feed = decodeReply(
+    await invoke("Destination", "changes", W.DestinationChangesParamsCodec, {
+      request: { cursor: "", limit: 0 },
+    }),
+    W.DestinationChangesResultsCodec,
+  );
+  assert.deepEqual(calls.changes, { cursor: undefined, limit: undefined });
+  assert.equal(feed.value.cursor, "c2");
+  assert.equal(feed.value.complete, true);
+  assert.deepEqual(
+    feed.value.changes.map((c) => [c.key, c.kind, c.info.etag]),
+    [
+      ["a/1", "upserted", "e1"],
+      ["a/2", "removed", ""],
+    ],
+  );
+
+  // A change kind newer than this SDK reads as `changed`, not as an error.
+  const futureKind = {
+    dataWords: 1,
+    pointerCount: 2,
+    write(st) {
+      st.setText(0, "k");
+      st.setUint16(0, 3);
+    },
+  };
+  const future = W.decodeMessage(W.ObjectChangeCodec, W.encodeMessage(futureKind, {}));
+  assert.equal(future.kind, "changed");
+  assert.equal(future.key, "k");
 }
 
 // --- EventConsumer: one author call per batch -----------------------------
@@ -897,6 +1268,116 @@ function decodeReply(reply, resultsCodec, caps) {
   );
   assert.equal(failed.kind, "err");
   assert.match(String(failed.value.message), /nightly failed/);
+}
+
+// --- SocketHandler: messages and closes reach webSocketMessage / webSocketClose --
+
+{
+  const attachment = enc.encode(JSON.stringify({ count: 4 }));
+  const ok = decodeReply(
+    await invoke("SocketHandler", "message", W.SocketHandlerMessageParamsCodec, {
+      event: { socket: "g1_s1", frame: { kind: "text", value: "subscribe" }, attachment },
+    }),
+    W.SocketHandlerMessageResultsCodec,
+  );
+  assert.equal(ok.kind, "ok", JSON.stringify(ok));
+  const [message, opened, after, listed, tooBig, gone] = calls.sockets;
+  assert.deepEqual(message, {
+    kind: "message",
+    id: "g1_s1",
+    message: "subscribe",
+    seen: { count: 4 },
+  });
+  assert.deepEqual(opened, {
+    kind: "opened",
+    id: "g1_s2",
+    url: "wss://abs.example/socket.io/",
+    protocol: "chat",
+    attachment: { room: "lib" },
+  });
+  assert.deepEqual(after, { kind: "after", attachment: { count: 5 } });
+  assert.deepEqual(listed, { kind: "listed", ids: ["g1_s1"] });
+  assert.deepEqual(tooBig, { kind: "tooBig", code: "payload_too_large" });
+  assert.deepEqual(gone, { kind: "gone", code: "unavailable" }, "a host failure keeps its code");
+
+  const sent = granted.sockets;
+  assert.ok(
+    sent.every((r) => r.auth === "Bearer socktok"),
+    "every call carries the sockets grant",
+  );
+  assert.deepEqual(
+    sent.map((r) => r.path),
+    [
+      "/sockets/connect",
+      "/sockets/send",
+      "/sockets/attachment",
+      "/sockets/list",
+      "/sockets/list",
+      "/sockets/close",
+    ],
+  );
+  assert.deepEqual(sent[0].body.headers, [{ name: "Authorization", value: "Bearer t" }]);
+  assert.deepEqual(sent[0].body.autoResponses, [
+    { request: { text: "2" }, response: { text: "3" } },
+  ]);
+  assert.deepEqual(sent[1].body, { socket: "g1_s1", frame: { binary: "AQID" } });
+  assert.deepEqual(JSON.parse(atob(sent[2].body.attachment)), { count: 5 });
+  assert.deepEqual(sent[5].body, { socket: "g1_s1", code: 4000, reason: "done" });
+
+  calls.sockets.length = 0;
+  const binary = decodeReply(
+    await invoke("SocketHandler", "message", W.SocketHandlerMessageParamsCodec, {
+      event: { socket: "g1_s1", frame: { kind: "binary", value: new Uint8Array([9, 8]) } },
+    }),
+    W.SocketHandlerMessageResultsCodec,
+  );
+  assert.equal(binary.kind, "ok");
+  assert.deepEqual(binary.value, { pollEvents: false }, "a handler returning nothing asks nothing");
+  assert.ok(calls.sockets[0].message instanceof ArrayBuffer, "binary arrives as an ArrayBuffer");
+  assert.deepEqual([...new Uint8Array(calls.sockets[0].message)], [9, 8]);
+  assert.equal(calls.sockets[0].seen, null, "no attachment reads as null");
+
+  const asks = decodeReply(
+    await invoke("SocketHandler", "message", W.SocketHandlerMessageParamsCodec, {
+      event: { socket: "g1_s1", frame: { kind: "text", value: "user_added" } },
+    }),
+    W.SocketHandlerMessageResultsCodec,
+  );
+  assert.deepEqual(asks, { kind: "ok", value: { pollEvents: true } }, "the ask reaches the host");
+
+  const failed = decodeReply(
+    await invoke("SocketHandler", "message", W.SocketHandlerMessageParamsCodec, {
+      event: { socket: "g1_s1", frame: { kind: "text", value: "boom" } },
+    }),
+    W.SocketHandlerMessageResultsCodec,
+  );
+  assert.equal(failed.kind, "err");
+  assert.match(String(failed.value.message), /handler failed/);
+
+  calls.sockets.length = 0;
+  const closed = decodeReply(
+    await invoke("SocketHandler", "closed", W.SocketHandlerClosedParamsCodec, {
+      event: {
+        socket: "g1_s1",
+        code: 1006,
+        reason: "the socket broker stopped",
+        clean: false,
+        attachment,
+      },
+    }),
+    W.SocketHandlerClosedResultsCodec,
+  );
+  assert.equal(closed.kind, "ok");
+  assert.deepEqual(calls.sockets, [
+    {
+      kind: "close",
+      id: "g1_s1",
+      code: 1006,
+      reason: "the socket broker stopped",
+      wasClean: false,
+      seen: { count: 4 },
+    },
+  ]);
 }
 
 // --- QueueConsumer: one author call per batch; env.<QUEUE> sends via GRANTED --
@@ -1370,6 +1851,57 @@ const jobParams = (commandType) => ({
   assert.equal(missing.value.found, false);
 }
 
+// --- MetadataFiles --------------------------------------------------------
+
+{
+  const health = decodeReply(
+    await invoke("MetadataFiles", "health", W.MetadataFilesHealthParamsCodec, {}),
+    W.MetadataFilesHealthResultsCodec,
+  );
+  assert.deepEqual(health, { kind: "ok", value: { ok: true, detail: "" } });
+
+  const parsed = decodeReply(
+    await invoke("MetadataFiles", "parse", W.MetadataFilesParseParamsCodec, {
+      params: { dialect: "txt", fileName: "desc.txt", bytes: new TextEncoder().encode("hi") },
+    }),
+    W.MetadataFilesParseResultsCodec,
+  );
+  assert.equal(parsed.kind, "ok");
+  assert.deepEqual(parsed.value.record.present, ["title", "credits"]);
+  assert.equal(parsed.value.record.title, "txt:desc.txt:hi");
+  assert.deepEqual(parsed.value.record.creditRoles, ["narrator"]);
+
+  const bare = decodeReply(
+    await invoke("MetadataFiles", "parse", W.MetadataFilesParseParamsCodec, {
+      params: { dialect: "txt", fileName: "desc.txt", bytes: new TextEncoder().encode("bare") },
+    }),
+    W.MetadataFilesParseResultsCodec,
+  );
+  assert.equal(bare.kind, "err", "a return without `present` is not a record");
+  assert.equal(bare.value.code, "internal");
+
+  const render = async (dialect) =>
+    decodeReply(
+      await invoke("MetadataFiles", "render", W.MetadataFilesRenderParamsCodec, {
+        params: {
+          dialect,
+          record: { present: ["title"], title: "Dune" },
+          fields: ["title"],
+          existing: new TextEncoder().encode("old"),
+        },
+      }),
+      W.MetadataFilesRenderResultsCodec,
+    );
+  const text = await render("txt");
+  assert.equal(text.kind, "ok");
+  assert.equal(new TextDecoder().decode(text.value.bytes), "title=Dune|3", "a string is UTF-8");
+  const bytes = await render("bytes");
+  assert.equal(new TextDecoder().decode(bytes.value.bytes), "raw");
+  const number = await render("number");
+  assert.equal(number.kind, "err", "only bytes or a string render");
+  assert.equal(number.value.code, "internal");
+}
+
 // --- CoverFetcher --------------------------------------------------------
 
 {
@@ -1431,6 +1963,25 @@ const jobParams = (commandType) => ({
   assert.equal(wrapped.kind, "err");
   assert.equal(wrapped.value.code, "internal");
   assert.match(wrapped.value.message, /CoverImage\[\]/);
+
+  granted.requests.length = 0;
+  const conditional = decodeReply(
+    await invoke(
+      "CoverFetcher",
+      "fetchCovers",
+      W.CoverFetcherFetchCoversParamsCodec,
+      { params: { urls: ["https://conditional.example/"], maxBytes: 1 }, sink: "sink" },
+      { caps: [{ kind: "destination", token: "tok-sink" }] },
+    ),
+    W.CoverFetcherFetchCoversResultsCodec,
+  );
+  assert.equal(conditional.kind, "ok");
+  assert.equal(conditional.value.images[0].error, "refused");
+  assert.equal(
+    granted.requests.filter((r) => r.path === "/put").length,
+    0,
+    "a conditional write never reaches the granted channel",
+  );
 
   const noSink = decodeReply(
     await invoke("CoverFetcher", "fetchCovers", W.CoverFetcherFetchCoversParamsCodec, {

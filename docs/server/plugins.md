@@ -63,7 +63,7 @@ version answers to.
   nodes that see that path (shared storage) can materialize it; the others
   record an `error` observation.
 
-A host node of another cluster fetches an owner's `https:` artifact only
+A branch node of another cluster fetches an owner's `https:` artifact only
 when both are true:
 
 - its host operator approved that exact URL, archive digest and payload
@@ -267,9 +267,10 @@ existing `plugin-grants.json` approval carried onto it.
 
 ### Plugins that sleep when idle
 
-Some plugins only answer triggers and lookups: events, queue messages,
-cron fires, metadata lookups and cover fetches. The reconciler starts one
-of these once, checks its health, and then lets it sleep:
+Integration plugins work through calls: events, queue messages, cron
+fires, metadata lookups, cover fetches, sign-ins and remote-library work
+such as scans. The reconciler starts one of these once, checks its health,
+and then lets it sleep:
 
 1. After 60 seconds with no call in flight, the host stops the guest
    process. The deployment stays healthy and keeps its subscriptions,
@@ -283,6 +284,16 @@ of these once, checks its health, and then lets it sleep:
 While a plugin sleeps, its health reads "asleep; starts on its next call"
 without waking it.
 
+A remote library such as Audiobookshelf sleeps the same way once every
+plugin database it declares is granted, since that is where it remembers
+what it already reported; without them it stays running. The host asks it
+for new users every 5 minutes, and that poll wakes it, so a new user can
+wait up to 5 minutes for a claim ticket. See
+[Watching users](integrations.md#watching-users). A sign-in provider
+(`oidc`) starts on the next sign-in. The host keeps its sign-in client
+list after the first answer, so a config sync does not wake it; a failed
+read is asked again on the next sync.
+
 Storefronts sleep the same way, after 5 minutes without a call, because
 their work comes in bursts: a scan pages through a library and an acquire
 fetches several parts. A sign-in, scan, fetch, catalog search or Discover
@@ -291,11 +302,37 @@ the library and does not wake it. Credentials a guest refreshes are
 written back as they change, so a guest started later begins from the
 stored ones.
 
+Storage plugins (destinations), built-in or not, sleep after 5 minutes
+without a call. Any storage call, such as an acquire writing a book, a listing or
+a playback read, starts the guest again. A write holds the guest until it
+has committed, and an open read stream holds it until the reader is done,
+so a long download or an hour of playback never loses its guest midway.
+The destination's name and instance id stay known while it sleeps, so
+checks that only need to know which destination is which do not wake it.
+
 > [!NOTE]
-> Storage destinations, remote libraries such as Audiobookshelf, sign-in
-> providers (`oidc`), plugins that belong to more than one family, and
-> Python plugins stay running for now. Python guests take several seconds
-> to start.
+> A plugin that belongs to more than one family, such as a storage plugin
+> that also consumes events, stays running for now.
+
+A Python plugin's first start takes several seconds while Python loads and
+the plugin imports its modules. The host keeps a snapshot of the plugin
+taken right after those imports, one per installed plugin version, and
+later starts begin from it instead. On one CPU that takes a start from
+about 5 seconds to about 1 second, so Python plugins sleep like the
+others: the first call after a sleep waits about a second longer than it
+would for a plugin written in JavaScript or Rust.
+
+1. The first start of a new plugin version runs normally and saves the
+   snapshot.
+2. Once that start answered, the host stores the snapshot in
+   `plugin-state/<PluginKey fs-id>/snapshot/`, about 45 MB per plugin
+   version, and removes the one for the previous version.
+3. Later starts load it. If a stored snapshot fails to start, the guest
+   starts normally and saves a fresh one.
+
+The snapshot is taken before the plugin receives its settings or
+secrets, so it holds only code. The plugin can read its own snapshot but
+never write the stored copy.
 
 ### How a node hears about a change
 
@@ -542,12 +579,12 @@ node, typically a node's own `local` output.
 - It deploys only on that node. A deployment to any other node, and any
   placement, are refused.
 - It adds to the cluster's outputs on that node, rather than replacing
-  them. Acquires a host node uploads reach every destination deployed on
-  the owner node that received them, node-local ones included.
+  them. Acquires a branch node uploads reach every destination deployed on
+  the shared node that received them, node-local ones included.
 
-### Running on host nodes
+### Running on branch nodes
 
-A host node (a separate install that joined the cluster, see
+A branch node (a separate install that joined the cluster, see
 [Libraries and branches](cluster-hosts.md)) runs an owner's plugin only
 after **its own** operator approves it. The narrowing is the same as on
 any host (see
@@ -599,6 +636,7 @@ $FILES_DIR/
   plugin-state/<PluginKey fs-id>/data
   plugin-state/<PluginKey fs-id>/tmp
   plugin-state/<PluginKey fs-id>/session-<nonce>/  # host-owned; native-behind only
+  plugin-state/<PluginKey fs-id>/snapshot/<key>/  # host-owned; Python start-up snapshot
   plugin-state/link-<32 hex>/<PluginKey fs-id>/      # on a branch: one subtree per library it joined
   plugin-grants.json             # consent for host-local trees (installed versions carry their own)
   install-ledger.json            # trust anchor for host-local installs only

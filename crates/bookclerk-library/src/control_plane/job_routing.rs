@@ -23,7 +23,7 @@
 //! moved on as well).
 //!
 //! Before either, the claim filters candidates through the trust predicate
-//! ([`super::trust`]): a Host node only claims jobs whose secrets it is
+//! ([`super::trust`]): a Branch node only claims jobs whose secrets it is
 //! trusted with, and [`super::handoff_routed_job`] repeats that check before
 //! the job's secrets would be handed over.
 //!
@@ -429,7 +429,7 @@ async fn deployed_somewhere(store: &LibraryStore, instance: &PluginInstanceId) -
 /// True when a node trusted with every job has a running deployment of
 /// `instance`.
 ///
-/// Instance-pinned jobs reach only such nodes: an owner node, or a Host
+/// Instance-pinned jobs reach only such nodes: a shared node, or a Host
 /// whose owner is privileged ([`super::trust::job_trusted`]). A deployment
 /// whose node has no `nodes` row is this install's own and counts as
 /// trusted. An unparsable id is deployed nowhere.
@@ -590,7 +590,7 @@ pub(super) async fn pinned_plugin_key(
 /// follows), and the trailing `/` keeps one generation's prefix from
 /// matching another's (`g1/` is not a prefix of `g10/`). A worker that has
 /// to find the claim's permits again by name, such as a Host renewing
-/// through another owner node, matches on this prefix, so a still-live
+/// through another shared node, matches on this prefix, so a still-live
 /// permit left over from an earlier claim of the same job is never taken
 /// for the current one.
 pub fn job_permit_holder_prefix(owner: &str, job_id: &str, generation: i64) -> String {

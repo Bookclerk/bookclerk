@@ -1436,6 +1436,11 @@ impl LibraryStore {
             .exec(txn)
             .await
             .map_err(LibraryError::Orm)?;
+        crate::entities::user_work_tags::Entity::delete_many()
+            .filter(crate::entities::user_work_tags::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
 
         portal_identities::Entity::delete_many()
             .filter(portal_identities::Column::UserId.eq(id))
@@ -2410,15 +2415,15 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Creates a client sign-in session: a token a clerk presents
-    /// as `Authorization: Bookclerk-Client`, never as a cookie.
+    /// Creates a clerk sign-in session: a token a clerk presents
+    /// as `Authorization: Bookclerk-Clerk`, never as a cookie.
     ///
     /// # Arguments
     ///
     /// * `token_hash` - SHA-256 hex of the token (the token is never stored).
     /// * `identity_id` - The user's portal identity.
     /// * `expires_at` - First expiry; each use moves it forward
-    ///   ([`Self::get_client_session_identity`]).
+    ///   ([`Self::get_clerk_session_identity`]).
     /// * `label` - The name the clerk gave itself, shown in the
     ///   user's session list.
     ///
@@ -2429,7 +2434,7 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the insert fails.
-    pub async fn insert_client_session(
+    pub async fn insert_clerk_session(
         &self,
         token_hash: &str,
         identity_id: i64,
@@ -2445,28 +2450,26 @@ impl LibraryStore {
             created_at: Set(now.clone()),
             last_used_at: Set(Some(now.clone())),
             user_agent: Set(None),
-            device_type: Set(Some(String::from("client"))),
+            device_type: Set(Some(String::from("clerk"))),
             client_label: Set(Some(label.to_string())),
-            kind: Set(crate::models::PortalSessionKind::Client
-                .as_str()
-                .to_string()),
+            kind: Set(crate::models::PortalSessionKind::Clerk.as_str().to_string()),
         };
         let row = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
         Self::set_last_seen_for_identity_on(&self.db, identity_id, &now).await?;
         Ok(row.id)
     }
 
-    /// Deletes a client sign-in session by token hash (the client signing
+    /// Deletes a clerk sign-in session by token hash (the clerk signing
     /// itself out). A browser session with that hash is left alone.
     ///
     /// # Errors
     ///
     /// Returns an error when the delete fails.
-    pub async fn delete_client_session(&self, token_hash: &str) -> Result<bool> {
+    pub async fn delete_clerk_session(&self, token_hash: &str) -> Result<bool> {
         let result = portal_sessions::Entity::delete_many()
             .filter(portal_sessions::Column::TokenHash.eq(token_hash))
             .filter(
-                portal_sessions::Column::Kind.eq(crate::models::PortalSessionKind::Client.as_str()),
+                portal_sessions::Column::Kind.eq(crate::models::PortalSessionKind::Clerk.as_str()),
             )
             .exec(&self.db)
             .await
@@ -2583,7 +2586,7 @@ impl LibraryStore {
     /// Refreshes `portal_sessions.last_used_at` and `users.last_seen_at` at most
     /// once per minute so administrator presence can tell active from idle
     /// without a write on every request. `last_seen_at` is kept after logout.
-    /// A client sign-in's token is not a browser session and resolves to
+    /// A library card is not a browser session and resolves to
     /// nothing here.
     ///
     /// # Errors
@@ -2597,7 +2600,7 @@ impl LibraryStore {
             .await
     }
 
-    /// Resolve a valid client sign-in session to its identity.
+    /// Resolve a valid clerk sign-in session to its identity.
     ///
     /// Like [`Self::get_portal_session_identity`], but only for a `client`
     /// session, and each touch (at most once a minute) also moves its expiry
@@ -2607,17 +2610,61 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn get_client_session_identity(
+    pub async fn get_clerk_session_identity(
         &self,
         token_hash: &str,
         idle: chrono::Duration,
     ) -> Result<Option<crate::models::PortalIdentity>> {
         self.session_identity(
             token_hash,
-            crate::models::PortalSessionKind::Client,
+            crate::models::PortalSessionKind::Clerk,
             Some(idle),
         )
         .await
+    }
+
+    /// The person a library card is signed in as right now, read without
+    /// touching the session: a `clerk` session with that token hash that
+    /// has not expired, whose identity names a user who exists and is not
+    /// disabled.
+    ///
+    /// A copy download asks this on every request
+    /// ([`crate::control_plane::authorize_copy`]); it does not keep the
+    /// card signed in, which only the card's own use does
+    /// ([`Self::get_clerk_session_identity`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `token_hash` - SHA-256 hex of the card's token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read fails.
+    pub async fn clerk_session_person(&self, token_hash: &str) -> Result<Option<i64>> {
+        let Some(session) = portal_sessions::Entity::find()
+            .filter(portal_sessions::Column::TokenHash.eq(token_hash))
+            .filter(
+                portal_sessions::Column::Kind.eq(crate::models::PortalSessionKind::Clerk.as_str()),
+            )
+            .filter(portal_sessions::Column::ExpiresAt.gt(now_str()))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        let Some(user_id) = self
+            .get_portal_identity_by_id(session.identity_id)
+            .await?
+            .and_then(|identity| identity.user_id)
+        else {
+            return Ok(None);
+        };
+        Ok(self
+            .get_user(user_id)
+            .await?
+            .filter(|user| !matches!(user.status, crate::models::UserStatus::Disabled))
+            .map(|_| user_id))
     }
 
     /// Resolves a live session of one kind, touching it at most once a
@@ -4316,6 +4363,7 @@ impl LibraryStore {
         let books: Vec<&NewBook> = titles.iter().map(|title| &title.book).collect();
         let records = self.upsert_book_rows(&books).await?;
         let mut listings = Vec::with_capacity(titles.len());
+        let mut details = Vec::with_capacity(titles.len());
         for (title, record) in titles.iter().zip(&records) {
             let listing = match &title.listing {
                 Some(listing) => {
@@ -4342,9 +4390,11 @@ impl LibraryStore {
                     holding_from_book(&title.book),
                     WorkEnrichment::of_book(record),
                 ));
+                details.push(crate::ListingDetail::of_book(record));
             }
         }
-        self.record_listing_page(&listings).await;
+        self.record_listing_page_with_details(&listings, &details)
+            .await;
         Ok(records)
     }
 
@@ -4373,8 +4423,17 @@ impl LibraryStore {
         };
         let result = match linked {
             Ok(plan) => {
-                self.fill_work_from_book(&plan.listing.edition_id, &WorkEnrichment::of_book(record))
-                    .await
+                let detail = crate::ListingDetail::of_book(record);
+                match self.record_listing_detail(&plan.listing.id, &detail).await {
+                    Ok(()) => {
+                        self.fill_work_from_book(
+                            &plan.listing.edition_id,
+                            &WorkEnrichment::of_book(record),
+                        )
+                        .await
+                    }
+                    Err(err) => Err(err),
+                }
             }
             Err(err) => Err(err),
         };
@@ -4815,6 +4874,11 @@ impl LibraryStore {
 
     /// Updates companion PDF acquire status and optional storage key.
     ///
+    /// The status is recorded on the title row and, when the title is linked
+    /// to an edition, on that edition's `edition_acquisitions` row too. An
+    /// edition whose PDF another existing title already acquired keeps that
+    /// title's PDF state.
+    ///
     /// # Arguments
     ///
     /// * `title_id` - Product id / ASIN / ISBN used as the title key.
@@ -4837,11 +4901,23 @@ impl LibraryStore {
         pdf_storage_key: Option<&str>,
     ) -> Result<()> {
         let model = self.resolve_book(title_id, account_id).await?;
+        let title = self.title_holding_of_book(&model.uuid).await?;
         let mut am: books::ActiveModel = model.into();
         am.pdf_status = Set(status.as_str().to_string());
         am.pdf_storage_key = Set(pdf_storage_key.map(str::to_string));
         am.updated_at = Set(now_str());
         self.update_book_bumped(am).await?;
+        // The edition's PDF state, which outlives `books` (book model step 6).
+        if let Some(title) = title {
+            event_outbox::update_edition_pdf_on(
+                &self.db,
+                &title.edition_id,
+                &title.holding_id,
+                status,
+                pdf_storage_key,
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -4981,18 +5057,18 @@ impl LibraryStore {
         error_message: Option<&str>,
     ) -> Result<()> {
         let model = self.resolve_book(title_id, account_id).await?;
-        let edition = self.edition_of_book(&model.uuid).await?;
+        let title = self.title_holding_of_book(&model.uuid).await?;
         if let Some(atomic) = &self.atomic {
             let event = event_outbox::acquire_status_event(
                 &model,
-                edition.as_deref(),
+                title.as_ref().map(|t| t.edition_id.as_str()),
                 status,
                 storage_key,
             )?;
             return atomic
                 .set_acquire_status(
                     &model.uuid,
-                    edition.as_deref(),
+                    title.as_ref(),
                     status,
                     storage_key,
                     error_message,
@@ -5008,7 +5084,7 @@ impl LibraryStore {
         match event_outbox::set_acquire_status_on(
             &txn,
             model,
-            edition.as_deref(),
+            title.as_ref(),
             status,
             storage_key,
             error_message,
@@ -5974,6 +6050,8 @@ impl LibraryStore {
                     let mut entry = GlobalQueueEntry {
                         work_key: row.work_key,
                         work_id: row.work_id,
+                        edition_id: row.edition_id,
+                        expression_id: None,
                         title: row.title,
                         authors: row.authors,
                         asin: row.asin,
@@ -6064,6 +6142,9 @@ impl LibraryStore {
                         // Prefer the newest metadata.
                         entry.work_key = row.work_key;
                         entry.title = row.title;
+                        if row.edition_id.is_some() {
+                            entry.edition_id = row.edition_id;
+                        }
                         if row.authors.is_some() {
                             entry.authors = row.authors;
                         }
@@ -6108,6 +6189,16 @@ impl LibraryStore {
             }
         }
         let mut out: Vec<_> = by_key.into_values().collect();
+        let editions: std::collections::BTreeSet<String> =
+            out.iter().filter_map(|e| e.edition_id.clone()).collect();
+        let placement_of = self.placements_of_editions(editions).await?;
+        for entry in &mut out {
+            entry.expression_id = entry
+                .edition_id
+                .as_ref()
+                .and_then(|edition| placement_of.get(edition))
+                .map(|placement| placement.expression_id.clone());
+        }
         out.sort_by(|a, b| {
             b.wish_count
                 .cmp(&a.wish_count)
@@ -7822,9 +7913,11 @@ impl LibraryStore {
         req: bookclerk_plugin_abi::ExecuteRequest,
         max_result_rows: u32,
     ) -> Result<bookclerk_plugin_abi::ExecuteReply> {
-        let type_env = crate::migrations::host_sql_type_env();
-        let envelope = bookclerk_db_exec::stamp_adapter_execute(req.clone(), &type_env)
-            .map_err(LibraryError::from_db_err)?;
+        let envelope = bookclerk_db_exec::stamp_adapter_execute_with(
+            req.clone(),
+            crate::migrations::host_stamp_catalog(),
+        )
+        .map_err(LibraryError::from_db_err)?;
         if let Some(exec) = &self.typed_exec {
             return exec.execute_typed(envelope).await.map_err(|err| {
                 let message = err.to_string();
@@ -7839,8 +7932,11 @@ impl LibraryStore {
     }
 }
 
+pub(crate) mod acquire_title;
+pub(crate) mod acquired_keys;
 pub(crate) mod catalog_listings;
 pub(crate) mod discover;
+pub(crate) mod edition_enrichment;
 pub(crate) mod edition_files;
 pub(crate) mod event_outbox;
 pub(crate) mod holdings;
@@ -7848,6 +7944,7 @@ pub(crate) mod library_index;
 pub(crate) mod library_model;
 pub(crate) mod listening;
 pub(crate) mod listing_reads;
+pub(crate) mod overrides;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
 pub(crate) mod request_queue;
@@ -7857,13 +7954,22 @@ pub(crate) mod search_feed;
 pub(crate) mod storage_scan;
 pub(crate) mod taste_titles;
 pub(crate) mod user_title_state;
+pub(crate) mod work_batch;
 pub(crate) mod work_detail;
+pub(crate) mod work_search;
+pub(crate) mod work_split;
 pub(crate) mod write_batches;
+pub use acquire_title::{AcquireTitle, AcquireTitlePage};
 pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
     StoredFeed,
 };
-pub use edition_files::{EditionAcquisition, EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
+pub use edition_enrichment::{
+    EditionAsin, EditionEnrichment, EnrichCandidate, EnrichCandidatePage,
+};
+pub use edition_files::{
+    EditionAcquisition, EditionFile, FileOwner, FileProbe, FileRole, TitleHolding, ACQUIRE_WRITER,
+};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};
 pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};
@@ -7873,7 +7979,7 @@ pub(crate) mod job_queue;
 mod book_lookup;
 mod books_page;
 mod lock_retry;
-pub use book_lookup::{AcquiredBookKey, ACQUIRED_KEYS_MAX_PAGE};
+pub use acquired_keys::{AcquiredTitleKey, AcquiredTitleKeyPage, ACQUIRED_KEYS_MAX_PAGE};
 pub use books_page::{BookPage, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT};
 
 #[cfg(test)]

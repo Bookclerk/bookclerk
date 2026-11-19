@@ -9,7 +9,7 @@ The default export is a module-level ``Default`` class extending
 :class:`BookclerkEntrypoint` with optional ``event(batch)`` / ``job(job)``
 triggers. Named entrypoints from ``plugin.toml`` ``entrypoints`` are module-level
 classes named after the wire name (``Storefront``, ``Storage``, ``RemoteLibrary``,
-``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``, ``Covers``) extending the matching ``*Entrypoint``
+``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``, ``Covers``, ``MetadataFiles``) extending the matching ``*Entrypoint``
 base. The launcher's adapter isolate reaches them only through the
 ``bookclerk*`` dispatch methods; authors neither call nor override those.
 
@@ -21,6 +21,8 @@ Outside the isolate (authoring / unit tests), lightweight stubs stand in for
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import inspect
 import json
 import time
@@ -78,14 +80,25 @@ except ImportError:  # authoring / unit tests outside the isolate
 # ``schema/plugin.capnp`` — re-exported here for guest convenience.
 from ._abi import (  # noqa: E402  (re-export)
     FEATURE_SCALAR_LIMITS,
+    FEATURE_STORAGE_CHANGES,
+    FEATURE_STORAGE_CONDITIONAL_WRITE,
     FEATURE_STORAGE_COPY,
+    FEATURE_STORAGE_DELETE_MANY,
+    FEATURE_STORAGE_HEAD_MANY,
+    FEATURE_STORAGE_MOVE,
+    FEATURE_STORAGE_MOVE_MANY,
     FEATURE_STREAMS,
+    MAX_BATCH_KEYS,
+    MAX_CHANGES_CURSOR_BYTES,
+    MAX_CHANGES_PAGE,
     MAX_CHECKPOINT_BYTES,
     MAX_LIST_PAGE,
     MAX_PLUGIN_MIGRATION_OPS,
     MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
     MAX_PLUGIN_MIGRATION_TOTAL_OPS,
     MAX_SCALAR_BYTES,
+    MAX_SOCKET_ATTACHMENT_BYTES,
+    MAX_SOCKET_FRAME_BYTES,
     MAX_STREAM_WINDOW_BYTES,
     PLUGIN_ERROR_CODES,
     PRODUCT_API_VERSION,
@@ -93,14 +106,25 @@ from ._abi import (  # noqa: E402  (re-export)
 
 __all__ = [
     "FEATURE_SCALAR_LIMITS",
+    "FEATURE_STORAGE_CHANGES",
+    "FEATURE_STORAGE_CONDITIONAL_WRITE",
     "FEATURE_STORAGE_COPY",
+    "FEATURE_STORAGE_DELETE_MANY",
+    "FEATURE_STORAGE_HEAD_MANY",
+    "FEATURE_STORAGE_MOVE",
+    "FEATURE_STORAGE_MOVE_MANY",
     "FEATURE_STREAMS",
+    "MAX_BATCH_KEYS",
+    "MAX_CHANGES_CURSOR_BYTES",
+    "MAX_CHANGES_PAGE",
     "MAX_CHECKPOINT_BYTES",
     "MAX_LIST_PAGE",
     "MAX_PLUGIN_MIGRATION_OPS",
     "MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES",
     "MAX_PLUGIN_MIGRATION_TOTAL_OPS",
     "MAX_SCALAR_BYTES",
+    "MAX_SOCKET_ATTACHMENT_BYTES",
+    "MAX_SOCKET_FRAME_BYTES",
     "MAX_STREAM_WINDOW_BYTES",
     "PRODUCT_API_VERSION",
     "AdapterDatabaseSession",
@@ -110,9 +134,11 @@ __all__ = [
     "EventBatch",
     "EventMessage",
     "GuestDatabase",
+    "HostWebSocket",
     "JobController",
     "KvNamespace",
     "CoverEntrypoint",
+    "MetadataFilesEntrypoint",
     "MetadataEntrypoint",
     "NamedEntrypoint",
     "OidcEntrypoint",
@@ -122,10 +148,13 @@ __all__ = [
     "QueueMessage",
     "RemoteLibraryEntrypoint",
     "ScheduledController",
+    "SocketsBinding",
     "StorageEntrypoint",
     "StorefrontEntrypoint",
     "cli_args",
     "decode_extensible_config",
+    "decode_socket_attachment",
+    "encode_socket_attachment",
     "event_batch_results",
     "granted_databases",
     "job_outcome_for",
@@ -133,9 +162,11 @@ __all__ = [
     "json_payload",
     "py",
     "queue_batch_results",
+    "socket_message_data",
     "transport_database",
     "transport_kv",
     "transport_queue",
+    "transport_sockets",
 ]
 
 
@@ -165,11 +196,34 @@ def js(value: Any) -> Any:
     return JSON.parse(json.dumps(value))
 
 
+def _plain_bytes(value: Any) -> Any:
+    """Replace ``memoryview`` values with ``bytes`` at every nesting depth.
+
+    Pyodide's ``to_py()`` turns a ``Uint8Array`` into a ``memoryview``, also
+    inside converted objects and arrays, so a ``Data`` field such as
+    ``MetadataFileParseParams["bytes"]`` would otherwise reach a handler as a
+    ``memoryview`` rather than the declared ``bytes``.
+
+    Args:
+        value: A value ``to_py()`` returned.
+
+    Returns:
+        The same value with every ``memoryview`` copied into ``bytes``.
+    """
+    if isinstance(value, memoryview):
+        return bytes(value)
+    if isinstance(value, dict):
+        return {key: _plain_bytes(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain_bytes(item) for item in value]
+    return value
+
+
 def py(value: Any) -> Any:
     """Convert a JS value delivered over Workers RPC into plain Python.
 
     ``JsProxy`` objects are converted with ``to_py()`` (``Uint8Array`` →
-    ``bytes``); Python values pass through unchanged.
+    ``bytes`` at any depth); Python values pass through unchanged.
 
     Args:
         value: A JsProxy or Python value.
@@ -181,10 +235,7 @@ def py(value: Any) -> Any:
         return value
     to_py = getattr(value, "to_py", None)
     if callable(to_py):
-        converted = to_py()
-        if isinstance(converted, memoryview):
-            return bytes(converted)
-        return converted
+        return _plain_bytes(to_py())
     if isinstance(value, (bytearray, memoryview)):
         return bytes(value)
     return value
@@ -508,6 +559,9 @@ def _invocation_env(raw_env: Any, context: Any) -> _EnvView:
             if not isinstance(name, str) or not name or namespace is None:
                 continue
             granted[name] = transport_kv(namespace)
+    sockets = _sockets_stub(ctx)
+    if sockets is not None:
+        granted[sockets[0]] = transport_sockets(sockets[1])
     return _EnvView(raw_env, granted)
 
 
@@ -1053,6 +1107,310 @@ def transport_kv(stub: Any) -> KvNamespace:
 
 
 # ---------------------------------------------------------------------------
+# ``[sockets]``: host-brokered WebSockets shaped like hibernatable Workers sockets
+# ---------------------------------------------------------------------------
+
+
+def _b64(data: bytes) -> str:
+    """Standard base64 text of ``data``."""
+    return base64.b64encode(data).decode("ascii")
+
+
+def _from_b64(text: Any) -> bytes:
+    """Decode standard base64; anything that is not a non-empty string is empty."""
+    if not isinstance(text, str) or not text:
+        return b""
+    return base64.b64decode(text)
+
+
+def _route_frame(data: str | bytes | bytearray | memoryview) -> dict[str, str]:
+    """Route JSON form of one socket message, checked against ``MAX_SOCKET_FRAME_BYTES``.
+
+    Args:
+        data: ``str`` for a text message, bytes-like for a binary one.
+
+    Returns:
+        ``{"text": ...}`` or ``{"binary": <base64>}``.
+
+    Raises:
+        PluginError: ``invalid_params`` for another type, ``payload_too_large``
+            for a message over ``MAX_SOCKET_FRAME_BYTES`` bytes.
+    """
+    if isinstance(data, str):
+        size = _utf8_len(data)
+        raw: bytes | None = None
+    elif isinstance(data, (bytes, bytearray, memoryview)):
+        raw = bytes(data)
+        size = len(raw)
+    else:
+        raise PluginError.from_wire("invalid_params", "a socket message must be str or bytes")
+    if size > MAX_SOCKET_FRAME_BYTES:
+        raise PluginError.from_wire(
+            "payload_too_large",
+            f"socket message of {size} bytes exceeds {MAX_SOCKET_FRAME_BYTES}",
+        )
+    return {"binary": _b64(raw)} if raw is not None else {"text": data}  # type: ignore[dict-item]
+
+
+def encode_socket_attachment(value: Any) -> bytes:
+    """Encode a socket attachment as the host stores it: UTF-8 JSON.
+
+    Args:
+        value: JSON-serializable value; ``None`` stores no bytes.
+
+    Returns:
+        At most ``MAX_SOCKET_ATTACHMENT_BYTES`` bytes.
+
+    Raises:
+        PluginError: ``invalid_params`` when JSON cannot encode the value,
+            ``payload_too_large`` when it does not fit.
+    """
+    if value is None:
+        return b""
+    try:
+        text = json.dumps(value, separators=(",", ":"))
+    except (TypeError, ValueError) as err:
+        raise PluginError.from_wire(
+            "invalid_params", f"socket attachment is not JSON: {err}"
+        ) from err
+    data = text.encode("utf-8")
+    if len(data) > MAX_SOCKET_ATTACHMENT_BYTES:
+        raise PluginError.from_wire(
+            "payload_too_large",
+            f"socket attachment of {len(data)} bytes exceeds {MAX_SOCKET_ATTACHMENT_BYTES}",
+        )
+    return data
+
+
+def decode_socket_attachment(data: bytes) -> Any:
+    """Decode stored socket attachment bytes.
+
+    Args:
+        data: Bytes the host kept.
+
+    Returns:
+        The JSON value, ``None`` when empty, or the text itself when the bytes
+        are not JSON (an attachment another SDK stored).
+    """
+    if not data:
+        return None
+    text = data.decode("utf-8", errors="replace")
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def socket_message_asks_poll(returned: Any) -> bool:
+    """Whether a ``web_socket_message`` return value asks the host to poll now.
+
+    Args:
+        returned: What the handler returned: ``None``, or a mapping with
+            ``poll_events`` / ``pollEvents``.
+
+    Returns:
+        ``True`` only for an explicit ``True`` under either key.
+    """
+    if not isinstance(returned, dict):
+        return False
+    return returned.get("poll_events") is True or returned.get("pollEvents") is True
+
+
+def socket_message_data(frame: Any) -> str | bytes:
+    """The message a handler receives for one wire frame.
+
+    Args:
+        frame: Decoded wire ``SocketFrame`` (``{"kind", "value"}``).
+
+    Returns:
+        ``str`` for a text frame, ``bytes`` for a binary one.
+    """
+    frame = py(frame)
+    if _get(frame, "kind") == "binary":
+        return _bytes(_get(frame, "value"))
+    value = _get(frame, "value")
+    return value if isinstance(value, str) else ""
+
+
+async def _socket_call(stub: Any, op: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Make one ``POST /sockets/<op>`` call through the adapter's grant.
+
+    Args:
+        stub: The adapter's ``SocketsTransport`` stub, or ``None`` when not granted.
+        op: ``connect``, ``send``, ``close``, ``attachment`` or ``list``.
+        body: That operation's JSON fields (bytes already base64).
+
+    Returns:
+        The reply body.
+
+    Raises:
+        PluginError: ``unavailable`` without a grant, otherwise the host's code.
+    """
+    if stub is None:
+        raise PluginError.from_wire("unavailable", "SOCKETS is not granted to this invocation")
+    try:
+        raw = await stub.call(op, js(body))
+    except PluginError:
+        raise
+    except Exception as err:  # noqa: BLE001 - an RPC failure has no type of its own
+        raise PluginError.from_wire("unavailable", f"sockets {op}: {err}") from err
+    reply = py(raw) or {}
+    err = _get(reply, "err")
+    if err is not None:
+        raise PluginError.from_wire(
+            str(_get(err, "code", "") or "internal"), str(_get(err, "message", "") or "")
+        )
+    ok = _get(reply, "ok")
+    return dict(ok) if isinstance(ok, dict) else {}
+
+
+class HostWebSocket:
+    """One host-held WebSocket, shaped like a hibernatable Workers ``WebSocket``.
+
+    The broker owns the connection; this handle only names it, so it stays
+    valid across invocations and the guest may sleep between messages.
+
+    Attributes:
+        id: Socket id the host assigned (``connect`` / ``get_web_sockets``).
+        url: URL the socket dialed, without credentials.
+        protocol: Subprotocol the server chose, or an empty string.
+    """
+
+    def __init__(self, stub: Any, fields: Any) -> None:
+        fields = py(fields) or {}
+        self.id = str(_get(fields, "socket", "") or "")
+        url = _get(fields, "url", "")
+        self.url = url if isinstance(url, str) else ""
+        protocol = _get(fields, "protocol", "")
+        self.protocol = protocol if isinstance(protocol, str) else ""
+        self._stub = stub
+        attachment = _get(fields, "attachment")
+        self._attachment = (
+            attachment
+            if isinstance(attachment, bytes)
+            else _from_b64(attachment)
+            if isinstance(attachment, str)
+            else _bytes(attachment)
+        )
+
+    async def send(self, message: str | bytes) -> None:
+        """Send one message.
+
+        Args:
+            message: ``str`` (text frame) or bytes (binary frame), at most
+                ``MAX_SOCKET_FRAME_BYTES`` bytes.
+        """
+        await _socket_call(self._stub, "send", {"socket": self.id, "frame": _route_frame(message)})
+
+    async def close(self, code: int = 0, reason: str = "") -> None:
+        """Close the socket.
+
+        Args:
+            code: Close code; ``0`` sends 1000.
+            reason: Close reason, at most 123 UTF-8 bytes.
+        """
+        await _socket_call(
+            self._stub,
+            "close",
+            {"socket": self.id, "code": max(0, int(code or 0)), "reason": str(reason or "")},
+        )
+
+    async def serialize_attachment(self, value: Any) -> None:
+        """Store a JSON value with the socket, handed back with every message.
+
+        Args:
+            value: JSON-serializable value of at most
+                ``MAX_SOCKET_ATTACHMENT_BYTES`` encoded bytes; ``None`` clears it.
+        """
+        data = encode_socket_attachment(value)
+        await _socket_call(self._stub, "attachment", {"socket": self.id, "attachment": _b64(data)})
+        self._attachment = data
+
+    def deserialize_attachment(self) -> Any:
+        """The stored attachment value, or ``None`` when none is set."""
+        return decode_socket_attachment(self._attachment)
+
+
+class SocketsBinding:
+    """``[sockets]`` binding (``env.SOCKETS``): dial host-held WebSockets.
+
+    Every URL must pass the plugin's network grant. Messages arrive on the
+    default entrypoint's ``web_socket_message(ws, message)``, closes on
+    ``web_socket_close(ws, code, reason, was_clean)``.
+    """
+
+    def __init__(self, stub: Any) -> None:
+        self._stub = stub
+
+    async def connect(
+        self,
+        url: str,
+        *,
+        protocols: list[str] | None = None,
+        headers: dict[str, str] | list[tuple[str, str]] | None = None,
+        auto_responses: list[tuple[str | bytes, str | bytes]] | None = None,
+        attachment: Any = None,
+    ) -> HostWebSocket:
+        """Open one socket the host holds.
+
+        Args:
+            url: ``wss://`` or ``ws://`` URL on the network grant.
+            protocols: Requested subprotocols.
+            headers: Extra request headers (values may be credentials).
+            auto_responses: ``(request, response)`` heartbeat pairs the host
+                answers without waking the guest.
+            attachment: Initial JSON attachment.
+
+        Returns:
+            The socket handle.
+        """
+        pairs = list(headers.items()) if isinstance(headers, dict) else list(headers or [])
+        body = {
+            "url": str(url or ""),
+            "protocols": [str(p) for p in (protocols or [])],
+            "headers": [{"name": str(n), "value": str(v)} for n, v in pairs],
+            "autoResponses": [
+                {"request": _route_frame(req), "response": _route_frame(resp)}
+                for req, resp in (auto_responses or [])
+            ],
+            "attachment": _b64(encode_socket_attachment(attachment)),
+        }
+        return HostWebSocket(self._stub, await _socket_call(self._stub, "connect", body))
+
+    async def get_web_sockets(self) -> list[HostWebSocket]:
+        """The plugin's open sockets, oldest first."""
+        reply = await _socket_call(self._stub, "list", {})
+        sockets = reply.get("sockets")
+        return (
+            [HostWebSocket(self._stub, info) for info in (sockets or [])]
+            if isinstance(sockets, list)
+            else []
+        )
+
+
+def transport_sockets(stub: Any) -> SocketsBinding:
+    """Wrap the adapter's granted sockets stub as a :class:`SocketsBinding`.
+
+    Args:
+        stub: ``SocketsTransport``-shaped JS stub from the granted context.
+
+    Returns:
+        The author-facing binding.
+    """
+    return SocketsBinding(stub)
+
+
+def _sockets_stub(context: Any) -> tuple[str, Any] | None:
+    """The granted ``[sockets]`` entry of a context, as ``(name, stub)``."""
+    for entry in _get(context, "sockets") or []:
+        name = _get(entry, "name")
+        stub = _get(entry, "sockets")
+        if isinstance(name, str) and name and stub is not None:
+            return name, stub
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Job trigger: ``job(controller)`` shaped like Workers ``scheduled(controller)``
 # ---------------------------------------------------------------------------
 
@@ -1338,6 +1696,63 @@ class BookclerkEntrypoint(WorkerEntrypoint):
         _apply_invocation_env(self, context)
         await _await_maybe(handler(ScheduledController.from_wire(wire_controller)))
 
+    def _socket_handle(self, context: Any, wire: Any) -> HostWebSocket:
+        """The :class:`HostWebSocket` a socket event names."""
+        entry = _sockets_stub(context)
+        return HostWebSocket(
+            entry[1] if entry else None,
+            {"socket": _get(wire, "socket", ""), "attachment": _get(wire, "attachment")},
+        )
+
+    async def bookclerkSocketMessage(self, context: Any = None, wire: Any = None) -> Any:
+        """Adapter dispatch: one host-held socket message to ``web_socket_message(ws, message)``.
+
+        Text arrives as ``str``, binary as ``bytes``. The handler may return
+        ``{"poll_events": True}`` (or ``pollEvents``) when the message announced
+        something ``poll_events`` hands over, such as a new user; the host then
+        polls now instead of at its next scheduled poll.
+
+        Returns:
+            The wire ``SocketMessageOk``: ``{"pollEvents": bool}``.
+
+        Raises:
+            PluginError: ``unsupported`` when the author defines no handler.
+        """
+        handler = getattr(self, "web_socket_message", None) or getattr(
+            self, "webSocketMessage", None
+        )
+        if not callable(handler):
+            raise _unsupported("webSocketMessage")
+        _apply_invocation_env(self, context)
+        wire = py(wire) or {}
+        asked = py(
+            await _await_maybe(
+                handler(
+                    self._socket_handle(context, wire), socket_message_data(_get(wire, "frame"))
+                )
+            )
+        )
+        return js({"pollEvents": socket_message_asks_poll(asked)})
+
+    async def bookclerkSocketClosed(self, context: Any = None, wire: Any = None) -> None:
+        """Adapter dispatch: a host-held socket closed, to ``web_socket_close(ws, code, reason, was_clean)``.
+
+        Without a handler the close is acknowledged and ignored.
+        """
+        handler = getattr(self, "web_socket_close", None) or getattr(self, "webSocketClose", None)
+        if not callable(handler):
+            return
+        _apply_invocation_env(self, context)
+        wire = py(wire) or {}
+        await _await_maybe(
+            handler(
+                self._socket_handle(context, wire),
+                int(_get(wire, "code", 0) or 0),
+                str(_get(wire, "reason", "") or ""),
+                _get(wire, "clean") is True,
+            )
+        )
+
     async def bookclerkJob(self, context=None, invocation=None, granted=None):
         """Adapter dispatch: run one durable job through ``job(controller)``.
 
@@ -1419,6 +1834,12 @@ before answering with what it has. Well under the host's 10 s batch
 deadline, so even a slow last lookup lands before it and a store without a
 bulk endpoint still returns the titles it priced."""
 
+PURCHASE_HINTS_CONCURRENCY = 4
+"""How many one-title lookups the default ``purchaseHints`` keeps in flight
+at once. A store without a bulk endpoint answers a page of cards in about a
+quarter of the time one lookup after another takes, while staying a polite
+handful of requests rather than a burst."""
+
 STOREFRONT_METHODS: tuple[str, ...] = (
     "login",
     "scan",
@@ -1483,14 +1904,23 @@ class StorefrontEntrypoint(NamedEntrypoint):
         raise _unsupported("expandCandidates")
 
     async def purchaseHint(self, _params: abi.PurchaseHintParams):
-        """Purchase link / price hint (``PurchaseHintParams`` → ``PurchaseHint``)."""
+        """Purchase link / price hint (``PurchaseHintParams`` → ``PurchaseHint``).
+
+        ``params["lookup"]`` says how the host names the title (``"product"``,
+        ``"isbn"``, ``"asin"``, ``"title"`` or ``"unspecified"``). For a
+        ``"title"`` lookup, return ``{"hint": ..., "records": [...]}`` with
+        every priced listing the search matched (each ``{"record":
+        CatalogHit, "hint": PurchaseHint}``) so the host can keep the
+        recording it asked for; a bare ``PurchaseHint`` or ``None`` also works.
+        """
         raise _unsupported("purchaseHint")
 
     async def purchaseHints(self, params: abi.PurchaseHintsParams):
         """Purchase links / price hints for several titles at once.
 
-        Asks :meth:`purchaseHint` for each query, those that already name a
-        product id first (one lookup each) and title searches after, and
+        Asks :meth:`purchaseHint` for each query,
+        :data:`PURCHASE_HINTS_CONCURRENCY` at a time, those that already name
+        a product id first (one lookup each) and title searches after, and
         starts nothing once :data:`PURCHASE_HINTS_BUDGET_SECONDS` has passed,
         so the host's batch gets what the store managed instead of nothing.
         A store whose catalog prices many products per request overrides
@@ -1511,10 +1941,25 @@ class StorefrontEntrypoint(NamedEntrypoint):
             range(len(queries)),
             key=lambda i: not (queries[i].get("productId") or "").strip(),
         )
-        for i in order:
-            if time.monotonic() - started >= PURCHASE_HINTS_BUDGET_SECONDS:
-                break
-            out[i] = await self.purchaseHint(queries[i])
+        pending = iter(order)
+
+        async def lane() -> None:
+            # Each lane takes the next query in order until the budget runs out.
+            for i in pending:
+                if time.monotonic() - started >= PURCHASE_HINTS_BUDGET_SECONDS:
+                    return
+                out[i] = await self.purchaseHint(queries[i])
+
+        lanes = [
+            asyncio.ensure_future(lane())
+            for _ in range(min(PURCHASE_HINTS_CONCURRENCY, len(order)))
+        ]
+        try:
+            # The first failure (a rate limit included) fails the batch.
+            await asyncio.gather(*lanes)
+        finally:
+            for task in lanes:
+                task.cancel()
         return out
 
     async def listDeals(self, _params: abi.ListDealsParams):
@@ -1551,6 +1996,11 @@ STORAGE_METHODS: tuple[str, ...] = (
     "delete",
     "commit",
     "abortStage",
+    "move",
+    "moveMany",
+    "deleteMany",
+    "headMany",
+    "changes",
 )
 """RPC surface of the ``storage`` entrypoint."""
 
@@ -1591,6 +2041,48 @@ class StorageEntrypoint(NamedEntrypoint):
     async def abortStage(self, _key: str, _commit_token: str):
         """Discard a staged object."""
         raise _unsupported("abortStage")
+
+    async def move(self, _from_key: str, _to_key: str, _options: Any = None):
+        """Move one object (declare ``storage.move``).
+
+        ``options`` may carry ``noOverwrite`` and ``ifSourceMatch``. Returns
+        ``{"atomic": bool, "alreadyMoved": bool}``; ``alreadyMoved`` reports a
+        retried move whose source is gone and whose target exists.
+        """
+        raise _unsupported("move")
+
+    async def moveMany(self, _request: Any):
+        """Move explicit pairs or one page of a prefix (declare ``storage.moveMany``).
+
+        ``request["target"]`` is ``{"kind": "pairs", "value": [...]}`` (at
+        most ``MAX_BATCH_KEYS``) or ``{"kind": "prefix", "value": {...}}``,
+        paged through ``cursor``. Returns ``{"results", "nextCursor",
+        "atomic", "objectsMoved"}``, one result per pair in order.
+        """
+        raise _unsupported("moveMany")
+
+    async def deleteMany(self, _keys: list[str]):
+        """Delete up to ``MAX_BATCH_KEYS`` objects (declare ``storage.deleteMany``).
+
+        Returns one ``{"key", "error"?}`` outcome per key, in order; a
+        missing object counts as deleted.
+        """
+        raise _unsupported("deleteMany")
+
+    async def headMany(self, _keys: list[str]):
+        """Metadata for up to ``MAX_BATCH_KEYS`` objects (declare ``storage.headMany``).
+
+        Returns one entry per key, in order: object metadata or ``None``.
+        """
+        raise _unsupported("headMany")
+
+    async def changes(self, _request: Any):
+        """One page of the change feed after a cursor (declare ``storage.changes``).
+
+        Returns ``{"changes", "cursor", "more", "complete"}``; ``complete``
+        is false when changes may have been missed and the host must relist.
+        """
+        raise _unsupported("changes")
 
 
 REMOTE_LIBRARY_METHODS: tuple[str, ...] = (
@@ -1823,6 +2315,38 @@ class CoverEntrypoint(NamedEntrypoint):
     async def fetchCovers(self, _params: abi.CoverFetchParams, _sink: Any) -> list[abi.CoverImage]:
         """Fetch each URL into ``_sink`` under its index (list of ``CoverImage``)."""
         raise _unsupported("fetchCovers")
+
+
+class MetadataFilesEntrypoint(NamedEntrypoint):
+    """``metadataFiles`` entrypoint: reads and writes metadata files for the host.
+
+    The host reads every file, chooses every path and writes every result, so
+    the entrypoint only converts bytes. Each dialect is a
+    ``[[metadata_files.dialects]]`` row in ``plugin.toml``; ``params["dialect"]``
+    names the row.
+    """
+
+    bookclerk_methods = ("health", "parse", "render")
+
+    async def health(self) -> abi.HealthOk:
+        """Liveness / readiness probe (``HealthOk``)."""
+        return {"ok": True, "detail": ""}
+
+    async def parse(self, _params: abi.MetadataFileParseParams) -> abi.MetadataFileRecord:
+        """What one file says (``MetadataFileRecord``).
+
+        List every field the file states in ``present``, including ones it
+        states as empty. Raise ``invalid_params`` for a file the dialect cannot
+        read.
+        """
+        raise _unsupported("parse")
+
+    async def render(self, _params: abi.MetadataFileRenderParams) -> bytes | str:
+        """The new file: ``existing`` with ``fields`` set from ``record``.
+
+        Everything else in the file is kept; a ``str`` is written as UTF-8.
+        """
+        raise _unsupported("render")
 
 
 # ---------------------------------------------------------------------------

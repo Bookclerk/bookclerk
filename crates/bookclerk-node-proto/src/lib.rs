@@ -1,4 +1,4 @@
-//! Wire protocol between a Bookclerk host node and its owner cluster.
+//! Wire protocol between a Bookclerk branch node and its owner cluster.
 //!
 //! A host connects to `GET /api/node/v1/connect` with the WebSocket
 //! subprotocol [`SUBPROTOCOL`] and proves itself with the Ed25519 key it
@@ -60,25 +60,28 @@
 //! [`Body::RequestsClaim`] and reports with [`Body::RequestFinish`]; the
 //! book itself travels up through the catalog sync.
 //!
-//! A window (a branch whose link takes no work) reads the books the
-//! library holds for its person with [`Body::WindowBooks`], page by page
-//! ([`Body::WindowPage`], [`WindowWork`]), and merges them by identifier
-//! with the other libraries it joined.
+//! A window (a branch whose link takes no work) reads the library's books
+//! with [`Body::WindowBooks`], page by page ([`Body::WindowPage`],
+//! [`WindowWork`], each edition a [`WindowEdition`] marked when it is the
+//! branch owner's), and merges them by identifier with the other libraries
+//! it joined.
 //!
 //! A host that leaves sends [`Body::NodeLeaving`]; the owner revokes the
 //! node at once. Joining with a sign-in instead of a link is the OAuth
 //! code + PKCE flow of the built-in client [`BRANCH_CLIENT_ID`] ([`OwnerInfo`],
 //! [`OAuthEnrollRequest`]). An Owner of the library may instead let the
-//! install join as a shared branch (an owner node, [`ConnectionType::SharedBranch`]): its
+//! install join as a shared branch (a shared node, [`ConnectionType::SharedBranch`]): its
 //! redeem answer carries a [`SharedBranchBootstrap`] sealed to the node's box key.
 //! A branch's redeem answer may carry the signing-in user's own store
 //! accounts as an [`AccountBundle`] sealed the same way, when the user
 //! chose to bring them.
 //!
 //! An install can also sign in to a library as a person rather than join
-//! it as a node: a client ([`CLIENT_CLIENT_ID`], [`ClientTokenAnswer`]),
-//! whose session token travels as `Authorization: Bookclerk-Client`
-//! ([`parse_client_authorization`]).
+//! it as a node: a clerk ([`CLERK_CLIENT_ID`], [`ClerkTokenAnswer`]),
+//! whose session token travels as `Authorization: Bookclerk-Clerk`
+//! ([`parse_clerk_authorization`]). With it the clerk holds the clerk
+//! socket at [`CLERK_CONNECT_PATH`] ([`ClerkFrame`], [`LibraryFrame`]):
+//! changed topics and pages of the library's books, never work.
 //!
 //! This crate is pure: no I/O, no clock, no randomness. The daemon (owner)
 //! and the host client share it so both sides sign and check the same
@@ -86,7 +89,9 @@
 
 mod accounts;
 mod catalog;
-mod client;
+mod clerk;
+mod clerk_socket;
+mod copies;
 mod frames;
 mod join;
 mod keys;
@@ -111,23 +116,36 @@ pub use catalog::{
     MAX_CATALOG_BATCH_TITLES, MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_TITLE_BYTES,
     MAX_CATALOG_WANTED, MAX_MARKETPLACE_BYTES,
 };
-pub use client::{
-    client_exchange_matches, client_request_problem, is_client_name, is_client_token,
-    is_s256_challenge, parse_client_authorization, parse_client_query, parse_client_token_request,
-    ClientAuthorizeParams, ClientTokenAnswer, ClientTokenRequest, ClientUser, StoredClientCode,
-    CLIENT_AUTH_SCHEME, CLIENT_CLIENT_ID, CLIENT_CODE_TTL_SECS, CLIENT_IDLE_DAYS, CLIENT_SCOPE,
-    CLIENT_TOKEN_LEN, CLIENT_TOKEN_PATH, MAX_CLIENT_NAME_BYTES, MAX_CLIENT_STATE_BYTES,
+pub use clerk::{
+    clerk_exchange_matches, clerk_request_problem, is_clerk_name, is_clerk_token,
+    is_s256_challenge, parse_clerk_authorization, parse_clerk_query, parse_clerk_token_answer,
+    parse_clerk_token_request, ClerkAuthorizeParams, ClerkTokenAnswer, ClerkTokenRequest,
+    ClerkUser, StoredClerkCode, CLERK_AUTH_SCHEME, CLERK_CALLBACK_PATH, CLERK_CLIENT_ID,
+    CLERK_CODE_TTL_SECS, CLERK_IDLE_DAYS, CLERK_SCOPE, CLERK_TOKEN_LEN, CLERK_TOKEN_PATH,
+    MAX_CLERK_ANSWER_BYTES, MAX_CLERK_DISPLAY_NAME_BYTES, MAX_CLERK_NAME_BYTES,
+    MAX_CLERK_STATE_BYTES,
+};
+pub use clerk_socket::{
+    is_topic_name, parse_clerk_frame, parse_library_frame, ClerkCopy, ClerkFrame, ClerkSocketError,
+    ClerkTopic, CopyToken, LibraryFrame, CLERK_CONNECT_PATH, CLERK_SOCKET_VERSION,
+    CLERK_SUBPROTOCOL, MAX_CLERK_FRAME_BYTES, MAX_CLERK_TOPICS, MAX_CLERK_TOPIC_BYTES,
+};
+pub use copies::{
+    copy_answer_head_end, copy_grant_problem, copy_granted_problem, is_copy_id, parse_copy_answer,
+    parse_copy_range, CopyAnswer, CopyFile, CopyGrantedFrame, CopyRange, CopyRole, COPIES_PATH,
+    COPY_AUTH_SCHEME, MAX_COPY_ANSWER_HEAD_BYTES, MAX_COPY_FILES, MAX_COPY_FILE_BYTES,
+    MAX_COPY_NAME_BYTES, MAX_COPY_TOKEN_SECS,
 };
 pub use ed25519_dalek::SigningKey;
 pub use frames::{
     is_destination_id, is_storage_key, scan_pass_end_problem, scan_removed_problem, AcquireTarget,
     Body, ClaimFilter, ClaimScope, FileCopy, Frame, FrameError, HeldFence, JobStatusEntry,
     KeeperOutcome, LibraryId, PlanDestination, RemoteArtifact, RemoteDeployment, RemoteVersion,
-    ScanImport, ScanToken, UploadAnswer, UploadCommitRequest, UploadFile, WorkJob, ITEM_JOB,
-    MAX_DESTINATION_ID_BYTES, MAX_LIBRARY_ID_BYTES, MAX_SCAN_BATCH_ROWS, MAX_SCAN_PRODUCT_ID_BYTES,
-    MAX_SCAN_REMOVED_IDS, MAX_SCAN_ROW_BYTES, MAX_SCAN_SYNC_TOKEN_BYTES, MAX_SCAN_TOKENS,
-    MAX_STATUS_JOBS, MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_BYTES,
-    MAX_UPLOAD_KEY_BYTES,
+    ScanImport, ScanToken, TargetTitle, UploadAnswer, UploadCommitRequest, UploadFile, UploadProbe,
+    WorkJob, ITEM_JOB, MAX_DESTINATION_ID_BYTES, MAX_LIBRARY_ID_BYTES, MAX_PROBE_BITRATE_KBPS,
+    MAX_SCAN_BATCH_ROWS, MAX_SCAN_PRODUCT_ID_BYTES, MAX_SCAN_REMOVED_IDS, MAX_SCAN_ROW_BYTES,
+    MAX_SCAN_SYNC_TOKEN_BYTES, MAX_SCAN_TOKENS, MAX_STATUS_JOBS, MAX_UPLOAD_COPIES,
+    MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_KEY_BYTES,
 };
 pub use join::{
     is_branch_name, is_branch_redirect_uri, is_library_name, pkce_challenge, OAuthEnrollAnswer,
@@ -149,10 +167,11 @@ pub use requests::{
     MAX_CLAIMED_REQUESTS, MAX_REQUEST_JOB_BYTES,
 };
 pub use sealed::{
-    instance_secrets_aad, open, open_instance_secrets, open_secret_update, open_secrets,
-    open_upload_token, seal, seal_instance_secrets, seal_secret_update, seal_secrets,
-    seal_upload_token, secret_update_aad, secrets_aad, upload_token_aad, SealError, SecretEntry,
-    SecretRef, SecretValue, INSTANCE_SECRETS_AAD_DOMAIN, SEALED_BOX_INFO, SEALED_BOX_OVERHEAD,
+    copy_token_aad, instance_secrets_aad, open, open_copy_token, open_instance_secrets,
+    open_secret_update, open_secrets, open_upload_token, seal, seal_copy_token,
+    seal_instance_secrets, seal_secret_update, seal_secrets, seal_upload_token, secret_update_aad,
+    secrets_aad, upload_token_aad, SealError, SecretEntry, SecretRef, SecretValue,
+    COPY_TOKEN_AAD_DOMAIN, INSTANCE_SECRETS_AAD_DOMAIN, SEALED_BOX_INFO, SEALED_BOX_OVERHEAD,
     SECRETS_AAD_DOMAIN, SECRET_UPDATE_AAD_DOMAIN, UPLOAD_TOKEN_AAD_DOMAIN,
 };
 pub use shared_branch::{
@@ -167,7 +186,10 @@ pub use signature::{
     verify_auth, ArtifactRequest, AuthContext, AuthError, ARTIFACT_AUTH_SCHEME, ARTIFACT_DOMAIN,
     ARTIFACT_REQUEST_MAX_SKEW_SECS, AUTH_DOMAIN, NONCE_LEN,
 };
-pub use window::{window_page_problem, WindowWork, MAX_WINDOW_WORKS};
+pub use window::{
+    window_page_problem, WindowCopy, WindowCursor, WindowEdition, WindowWork,
+    MAX_COPY_CONTENT_TYPE_BYTES, MAX_COPY_VERSION_BYTES, MAX_WINDOW_WORKS,
+};
 
 /// Path prefix of the owner's artifact endpoint: `GET
 /// /api/node/v1/artifacts/<archive_sha256>` with a signed `Authorization`

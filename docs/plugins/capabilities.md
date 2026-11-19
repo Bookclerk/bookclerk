@@ -52,7 +52,8 @@ tcp = [{ host = "api.example.com", ports = [443] }]
   including a public name that resolves to one. It is a fetch grant
   only; a TCP `host` can't be `*`. Consent screens show it as "Any public
   website". Use it only when the hosts can't be known in advance, as for
-  cover art.
+  cover art or a self-hosted server such as Audiobookshelf. A server on a
+  private address still needs the operator to add its host and CIDR.
 - The operator may add extra fetch hosts, TCP targets and CIDRs. The
   guest's `describe()` can't.
 - The default address-space policy is the public Internet only. Loopback,
@@ -204,6 +205,16 @@ browser-facing TCP listener and forwards connections over IPC (see
 Native guests with `oauth` also receive jail listen rights for that
 tunnel.
 
+### Pushed sockets
+
+`[sockets]` (with outbound network) asks for the host-brokered WebSocket
+binding described in [Pushed sockets](abi.md#pushed-sockets-sockets). It
+grants no new reach: every socket URL must also pass the network rules
+above (a `domains` entry for its host, or a `tcp` entry for its host and
+port, plus the address-space rules), and the broker owns the handshake
+headers, so a plugin can't use a socket to reach a host its grant doesn't
+cover. The consent token is `sockets`.
+
 ### What a manifest can't ask for
 
 > [!IMPORTANT]
@@ -217,7 +228,7 @@ host-managed `plugin-state/<PluginKey fs-id>/data` and
 `plugin-state/<PluginKey fs-id>/tmp`.
 
 Consent is keyed by `entrypoints`, the granted bindings (`[vars]`,
-`[secrets]`, `[work_fs]`, `[oauth]`, `[[kv_namespaces]]`,
+`[secrets]`, `[work_fs]`, `[oauth]`, `[sockets]`, `[[kv_namespaces]]`,
 `[[databases]]`), every `[[events.producers]]` type and every
 `[triggers] crons` schedule (`cron:<schedule>`). There is no separate
 method list.

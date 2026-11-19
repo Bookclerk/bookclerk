@@ -233,9 +233,9 @@ async fn an_owner_with_a_fresh_second_factor_lets_a_shared_branch_join_with_a_se
     assert!(!sealed.contains("pg-secret"));
     assert!(!enrolled.to_string().contains("pg-secret"));
 
-    // The library records an owner node, not a branch, with no socket key.
+    // The library records a shared node, not a branch, with no socket key.
     let node = load_node(&store, &node_id).await.unwrap();
-    assert_eq!(node.kind, NodeKind::Owner);
+    assert_eq!(node.kind, NodeKind::Shared);
     assert_eq!(node.owner_user_id, Some(owner));
     assert!(load_node_credential(&store, &node_id)
         .await
@@ -355,7 +355,7 @@ async fn a_code_is_bound_to_the_connection_type_chosen_at_consent() {
     let node = load_node(&store, enrolled["node_id"].as_str().unwrap())
         .await
         .unwrap();
-    assert_eq!(node.kind, NodeKind::Host);
+    assert_eq!(node.kind, NodeKind::Branch);
     refused(
         call(
             &app,
@@ -395,7 +395,7 @@ async fn a_spent_branch_code_never_redeems_as_a_shared_branch() {
 
     // As if a first branch redeem failed after the owner recorded its link
     // and spent the code.
-    let (link_id, secret) = authorized_enrollment_link(&code, &v, NodeKind::Host);
+    let (link_id, secret) = authorized_enrollment_link(&code, &v, NodeKind::Branch);
     record_authorized_enrollment_link(&store, &link_id, &secret, owner, "Spare NAS", false)
         .await
         .unwrap();
@@ -413,7 +413,7 @@ async fn a_spent_branch_code_never_redeems_as_a_shared_branch() {
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert!(body.get("bootstrap").is_none());
 
-    // The same exchange as a branch still redeems, as a host node.
+    // The same exchange as a branch still redeems, as a branch node.
     let (status, _, enrolled) = call(
         &app,
         "POST",
@@ -425,7 +425,7 @@ async fn a_spent_branch_code_never_redeems_as_a_shared_branch() {
     let node = load_node(&store, enrolled["node_id"].as_str().unwrap())
         .await
         .unwrap();
-    assert_eq!(node.kind, NodeKind::Host);
+    assert_eq!(node.kind, NodeKind::Branch);
 }
 
 #[tokio::test]

@@ -1,8 +1,7 @@
 //! [`Integration`] adapter over an external plugin process.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bookclerk_config::Config;
@@ -15,7 +14,6 @@ use bookclerk_plugin_sdk::{
     MetadataLookupParams, MetadataRecord, MetadataSearchParams, ScanLibraryParams,
     PRODUCT_API_VERSION,
 };
-use tracing::warn;
 
 use crate::discover::DiscoveredPlugin;
 use crate::rpc_session::{PluginSession, SessionServices, HOST_SHARED_ACCOUNT};
@@ -44,10 +42,9 @@ pub struct ExternalIntegration {
     queue_subscriptions: Vec<QueueSubscription>,
     /// `[triggers] crons` schedules from `plugin.toml`.
     cron_schedules: Vec<bookclerk_plugin_manifest::CronSchedule>,
-    /// Cancels the host-side `event_poll` loop from [`Self::start`].
-    poll_cancel: Arc<AtomicBool>,
-    /// Bumped on each [`Self::start`]/[`Self::stop`] so a superseded poll loop exits.
-    poll_epoch: Arc<AtomicU64>,
+    /// Generation of the host-side new-user poll from [`Self::start`]; each
+    /// start and stop ends the loop before it.
+    user_poll: crate::user_poll::PollGeneration,
     /// Deployment instance id. `None` until the reconciler binds one.
     plugin_instance_id: Option<String>,
 }
@@ -92,12 +89,6 @@ impl ExternalIntegration {
         }
         let opened_config = prepared.bindings.config.clone();
         let opened_secrets = prepared.bindings.secrets.clone();
-        // The Audiobookshelf server lives in the instance document; the jail
-        // network grant for it rides the deployed-endpoint channel.
-        let mut services = services;
-        if let Some(endpoint) = deployed_endpoint_for(plugin, &prepared.granted_config) {
-            services.deployed_endpoint = Some(endpoint);
-        }
         let session = Arc::new(
             PluginSession::spawn_with(
                 plugin,
@@ -169,8 +160,7 @@ impl ExternalIntegration {
             event_subscriptions,
             queue_subscriptions,
             cron_schedules,
-            poll_cancel: Arc::new(AtomicBool::new(false)),
-            poll_epoch: Arc::new(AtomicU64::new(0)),
+            user_poll: crate::user_poll::PollGeneration::default(),
             plugin_instance_id: None,
         })
     }
@@ -233,6 +223,16 @@ impl ExternalIntegration {
                 .await?;
             health_result(ok)?;
         }
+        if self
+            .session
+            .has_entrypoint(crate::Entrypoint::MetadataFiles)
+        {
+            let ok = self
+                .session
+                .metadata_files(|files| async move { files.health().await })
+                .await?;
+            health_result(ok)?;
+        }
         Ok(())
     }
 
@@ -287,6 +287,100 @@ fn combine_health(reports: Vec<bookclerk_plugin_sdk::HealthOk>) -> (bool, Option
     (ok, (!details.is_empty()).then(|| details.join("; ")))
 }
 
+/// Asks a guest's `remoteLibrary` for the users it has queued since the
+/// last poll.
+///
+/// A user with an empty `provider` is returned as is; the poll loop fills
+/// in the plugin alias.
+///
+/// # Errors
+///
+/// Returns the guest's `poll_events` failure, or a missing entrypoint.
+async fn poll_session_users(
+    session: &PluginSession,
+) -> bookclerk_integrations::Result<Vec<ExternalUser>> {
+    let users = session
+        .remote_library(|stub| async move { stub.poll_events().await })
+        .await?;
+    Ok(users
+        .into_iter()
+        .map(|user| ExternalUser {
+            provider: user.provider,
+            external_user_id: user.external_user_id,
+            display_name: user.display_name,
+            access_token: None,
+        })
+        .collect())
+}
+
+impl ExternalIntegration {
+    /// Asks this integration's resident poll loop, when one runs, to poll
+    /// the guest's new users now.
+    pub(crate) fn poll_users_now(&self) {
+        self.user_poll.poll_now();
+    }
+
+    /// Asks the guest for the users it has queued since the last poll.
+    ///
+    /// # Returns
+    ///
+    /// No users when the guest exports no `remoteLibrary`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the guest's `poll_events` failure.
+    pub(crate) async fn poll_external_users(
+        &self,
+    ) -> bookclerk_integrations::Result<Vec<ExternalUser>> {
+        if !self
+            .session
+            .has_entrypoint(crate::Entrypoint::RemoteLibrary)
+        {
+            return Ok(Vec::new());
+        }
+        poll_session_users(&self.session).await
+    }
+
+    /// The guest's relying-party templates from its `oidcClients` RPC.
+    ///
+    /// Unlike [`Integration::provided_oidc_clients`], a failed RPC is an
+    /// error here rather than an empty list, so a caller that caches the
+    /// answer can tell a failure from a guest that offers no clients.
+    ///
+    /// # Returns
+    ///
+    /// No clients when the guest exports no `oidc` entrypoint: client
+    /// registration must match credential login.
+    ///
+    /// # Errors
+    ///
+    /// Returns the guest's `oidcClients` failure.
+    pub(crate) async fn fetch_oidc_clients(
+        &self,
+    ) -> bookclerk_integrations::Result<Vec<ProvidedOidcClient>> {
+        if !self.session.has_entrypoint(crate::Entrypoint::Oidc) {
+            return Ok(Vec::new());
+        }
+        let clients = self.session.oidc_clients().await?;
+        Ok(clients
+            .into_iter()
+            .map(|t| {
+                let display_name = t.display_name_or_id().to_string();
+                let default_scopes = t.scopes_or_default();
+                ProvidedOidcClient {
+                    client_id: t.client_id,
+                    display_name,
+                    callback_path: t.callback_path,
+                    public_client: t.public_client,
+                    default_scopes,
+                    issue_refresh_token: t.issue_refresh_token,
+                    origin_config_key: t.origin_config_key,
+                }
+            })
+            .collect())
+    }
+}
+
 #[async_trait]
 impl Integration for ExternalIntegration {
     fn id(&self) -> &str {
@@ -314,61 +408,30 @@ impl Integration for ExternalIntegration {
                 .int_call(|stub| async move { stub.start().await })
                 .await;
         }
-        // Host polls `event_poll` and kicks off core workflows (e.g. claim tickets).
-        // The plugin remains oblivious to what the host does with the signal.
+        // The host polls `poll_events` and hands each user to the daemon's
+        // hook (claim tickets); the plugin does not know what the host does
+        // with them. Under an on-demand proxy the proxy owns this poll and
+        // passes no hook here, so a woken guest starts no loop of its own.
         if remote_library {
             if let Some(on_user) = ctx.on_external_user {
-                let epoch = self.poll_epoch.fetch_add(1, Ordering::SeqCst) + 1;
-                self.poll_cancel.store(false, Ordering::SeqCst);
-                let session = self.session.clone();
-                let plugin_id = self.id().to_string();
-                let cancel = self.poll_cancel.clone();
-                let epoch_flag = self.poll_epoch.clone();
-                tokio::spawn(async move {
-                    loop {
-                        if cancel.load(Ordering::SeqCst)
-                            || epoch_flag.load(Ordering::SeqCst) != epoch
-                        {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_secs(30)).await;
-                        if cancel.load(Ordering::SeqCst)
-                            || epoch_flag.load(Ordering::SeqCst) != epoch
-                        {
-                            break;
-                        }
-                        match session
-                            .remote_library(|stub| async move { stub.poll_events().await })
-                            .await
-                        {
-                            Ok(users) => {
-                                for user in users {
-                                    on_user(ExternalUser {
-                                        provider: if user.provider.is_empty() {
-                                            plugin_id.clone()
-                                        } else {
-                                            user.provider
-                                        },
-                                        external_user_id: user.external_user_id,
-                                        display_name: user.display_name,
-                                        access_token: None,
-                                    });
-                                }
-                            }
-                            Err(err) => {
-                                warn!(id = %plugin_id, %err, "integration event_poll failed");
-                            }
-                        }
-                    }
-                });
+                let session = Arc::clone(&self.session);
+                crate::user_poll::spawn(
+                    &self.user_poll,
+                    crate::user_poll::RESIDENT_USER_POLL_INTERVAL,
+                    self.id().to_string(),
+                    on_user,
+                    move || {
+                        let session = Arc::clone(&session);
+                        async move { Some(poll_session_users(&session).await) }
+                    },
+                );
             }
         }
         Ok(())
     }
 
     async fn stop(&self) -> bookclerk_integrations::Result<()> {
-        self.poll_epoch.fetch_add(1, Ordering::SeqCst);
-        self.poll_cancel.store(true, Ordering::SeqCst);
+        self.user_poll.end();
         if self
             .session
             .has_entrypoint(crate::Entrypoint::RemoteLibrary)
@@ -486,6 +549,16 @@ impl Integration for ExternalIntegration {
                     .await?,
             );
         }
+        if self
+            .session
+            .has_entrypoint(crate::Entrypoint::MetadataFiles)
+        {
+            reports.push(
+                self.session
+                    .metadata_files(|files| async move { files.health().await })
+                    .await?,
+            );
+        }
         let (ok, detail) = combine_health(reports);
         Ok(IntegrationHealth {
             id: self.id().to_string(),
@@ -543,11 +616,18 @@ impl Integration for ExternalIntegration {
     }
 
     async fn diagnose(&self) -> bookclerk_integrations::Result<Vec<String>> {
-        let lines = self
-            .int_call(|stub| async move { stub.diagnose().await })
-            .await?;
-        if !lines.is_empty() {
-            return Ok(lines);
+        // Only a remote library answers `diagnose`; a plugin with just
+        // metadata, covers or metadata files falls through to health.
+        if self
+            .session
+            .has_entrypoint(crate::Entrypoint::RemoteLibrary)
+        {
+            let lines = self
+                .int_call(|stub| async move { stub.diagnose().await })
+                .await?;
+            if !lines.is_empty() {
+                return Ok(lines);
+            }
         }
         let h = self.health().await?;
         Ok(vec![format!(
@@ -647,28 +727,8 @@ impl Integration for ExternalIntegration {
     async fn provided_oidc_clients(
         &self,
     ) -> bookclerk_integrations::Result<Vec<ProvidedOidcClient>> {
-        // Client registration must match credential login: only guests that
-        // negotiated the `oidc` entrypoint may materialize IdP relying parties.
-        if !self.session.has_entrypoint(crate::Entrypoint::Oidc) {
-            return Ok(Vec::new());
-        }
-        match self.session.oidc_clients().await {
-            Ok(clients) => Ok(clients
-                .into_iter()
-                .map(|t| {
-                    let display_name = t.display_name_or_id().to_string();
-                    let default_scopes = t.scopes_or_default();
-                    ProvidedOidcClient {
-                        client_id: t.client_id,
-                        display_name,
-                        callback_path: t.callback_path,
-                        public_client: t.public_client,
-                        default_scopes,
-                        issue_refresh_token: t.issue_refresh_token,
-                        origin_config_key: t.origin_config_key,
-                    }
-                })
-                .collect()),
+        match self.fetch_oidc_clients().await {
+            Ok(clients) => Ok(clients),
             Err(err) => {
                 tracing::debug!(
                     plugin = %self.session.id(),
@@ -694,35 +754,9 @@ fn brand_from_abi(brand: Option<&bookclerk_plugin_sdk::Brand>) -> Option<Brand> 
     })
 }
 
-/// The host-implied endpoint grant for an integration spawn.
-///
-/// `Some(endpoint)` only for the verified first-party Audiobookshelf package
-/// ([`crate::is_first_party_audiobookshelf`]): its `base_url` becomes the
-/// jail's outbound TCP grant. Any other plugin, an alias twin included,
-/// gets `None` and reaches the network only through its own
-/// `[capabilities.network]` consent.
-fn deployed_endpoint_for(
-    plugin: &DiscoveredPlugin,
-    granted_config: &serde_json::Value,
-) -> Option<Option<String>> {
-    if !crate::is_first_party_audiobookshelf(plugin) {
-        return None;
-    }
-    Some(
-        granted_config
-            .get("base_url")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|url| !url.is_empty())
-            .map(str::to_string),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bookclerk_plugin_catalog::{PluginKey, PluginProvenance};
-    use bookclerk_plugin_manifest::PluginManifest;
 
     #[test]
     fn combine_health_requires_every_report_ok() {
@@ -752,79 +786,5 @@ mod tests {
         assert!(err.to_string().contains("catalog down"), "{err}");
         let err = health_result(health(false, "")).expect_err("not ok");
         assert!(err.to_string().contains("health failed"), "{err}");
-    }
-
-    const ABS_TOML: &str = r#"
-api_version = 3
-id = "audiobookshelf"
-version = "0.1.0"
-runtime = "native"
-command = "./guest"
-entrypoints = ["remoteLibrary"]
-
-[capabilities.network]
-mode = "outbound"
-
-[vars]
-"#;
-
-    fn discovered(root: &std::path::Path) -> DiscoveredPlugin {
-        std::fs::create_dir_all(root).unwrap();
-        std::fs::write(root.join("plugin.toml"), ABS_TOML).unwrap();
-        let command = root.join("guest");
-        std::fs::write(&command, b"#!/bin/sh\n").unwrap();
-        let manifest = PluginManifest::parse(ABS_TOML).unwrap();
-        DiscoveredPlugin::try_new(manifest, root.to_path_buf(), command, None)
-            .expect("test plugin tree must evaluate")
-    }
-
-    fn verified_first_party(root: &std::path::Path) -> DiscoveredPlugin {
-        let mut plugin = discovered(root);
-        let key = PluginKey::platform(
-            "bookclerk-plugin-integration-audiobookshelf",
-            "audiobookshelf",
-        )
-        .unwrap();
-        plugin.identity.plugin_key = key.clone();
-        plugin.identity.artifact.plugin_key = key;
-        plugin.identity.provenance = PluginProvenance::VerifiedStaged;
-        plugin
-    }
-
-    /// Defense in depth: the document endpoint is a host-implied TCP grant,
-    /// so only the verified first-party PluginKey may carry it. An alias twin
-    /// (same manifest id, different key) gets nothing from the document.
-    #[test]
-    fn document_endpoint_is_granted_by_plugin_key_not_alias() {
-        let a = tempfile::tempdir().unwrap();
-        let b = tempfile::tempdir().unwrap();
-        let real = verified_first_party(a.path());
-        let twin = discovered(b.path());
-        assert_eq!(real.alias(), twin.alias());
-        assert_ne!(real.plugin_key(), twin.plugin_key());
-        let document = serde_json::json!({ "base_url": " http://127.0.0.1:13378 " });
-
-        assert_eq!(
-            deployed_endpoint_for(&real, &document),
-            Some(Some("http://127.0.0.1:13378".to_string()))
-        );
-        assert_eq!(
-            deployed_endpoint_for(&real, &serde_json::json!({ "base_url": "" })),
-            Some(None),
-            "a first-party instance with no server grants nothing"
-        );
-        assert_eq!(
-            deployed_endpoint_for(&twin, &document),
-            None,
-            "an alias twin must not inherit the document endpoint grant"
-        );
-
-        let mut modified = verified_first_party(b.path());
-        modified.identity.provenance = PluginProvenance::Modified;
-        assert_eq!(
-            deployed_endpoint_for(&modified, &document),
-            None,
-            "a tampered first-party tree is not verified"
-        );
     }
 }

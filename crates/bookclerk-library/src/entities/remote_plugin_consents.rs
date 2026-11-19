@@ -1,4 +1,4 @@
-//! SeaORM entity for `remote_plugin_consents`: on a host node, this
+//! SeaORM entity for `remote_plugin_consents`: on a branch node, this
 //! install's operator consent for each owner plugin an owner cluster wants
 //! to run here (written by `control_plane::remote_consents`).
 

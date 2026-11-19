@@ -68,27 +68,27 @@ use crate::plugin_capnp::{
     event_read_request, event_result as event_result_capnp, execute_stream_reply, get_reply,
     guest_database as guest_database_capnp, handle_reply, head_reply, health_reply, job_invocation,
     job_outcome, job_runner as job_runner_capnp, kv_namespace as kv_namespace_capnp, list_reply,
-    metadata_provider as metadata_provider_capnp, object_metadata, oidc as oidc_capnp,
-    oidc_client_template, oidc_clients_reply, open_reply, plugin_cli as plugin_cli_capnp,
-    plugin_describe, plugin_error, plugin_migration, plugin_migration_op, plugin_migrations_ok,
-    plugin_migrations_reply, plugin_worker, progress_sink, pull_reply, put_reply,
-    queue_consumer as queue_consumer_capnp, queue_producer as queue_producer_capnp,
-    remote_library as remote_library_capnp, scheduled_handler as scheduled_handler_capnp,
-    source as source_capnp, write_options,
+    metadata_files as metadata_files_capnp, metadata_provider as metadata_provider_capnp,
+    object_metadata, oidc as oidc_capnp, oidc_client_template, oidc_clients_reply, open_reply,
+    plugin_cli as plugin_cli_capnp, plugin_describe, plugin_error, plugin_migration,
+    plugin_migration_op, plugin_migrations_ok, plugin_migrations_reply, plugin_worker,
+    progress_sink, pull_reply, put_reply, queue_consumer as queue_consumer_capnp,
+    queue_producer as queue_producer_capnp, remote_library as remote_library_capnp,
+    scheduled_handler as scheduled_handler_capnp, source as source_capnp, write_options,
 };
 #[cfg(feature = "host")]
 use crate::plugin_host_capnp::host_adapter_database_session as host_adapter_database_session_capnp;
 use crate::roles::{
     AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
     CoverFetcher, Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
-    JobController, JobRunner, KvNamespace, MetadataProvider, NamedKvBinding, NamedQueueBinding,
-    NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer,
-    ReadResult, RemoteLibrary, ScheduledHandler, Source,
+    JobController, JobRunner, KvNamespace, MetadataFiles, MetadataProvider, NamedKvBinding,
+    NamedQueueBinding, NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer,
+    QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler, Source,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, HealthOk, JobCheckpoint, JobInvocation, JobOutcome,
-    ListOptions, ListPage, ObjectInfo, ObjectMetadata, OidcClientTemplate, PluginDescribe,
-    PutResult, WriteOptions, MAX_CHECKPOINT_BYTES,
+    ListOptions, ListPage, ObjectMetadata, OidcClientTemplate, PluginDescribe, PutResult,
+    WriteOptions, MAX_CHECKPOINT_BYTES,
 };
 use crate::{
     capnp_u32_len, require_plugin_migration_registration, AuthenticateUserParams,
@@ -108,6 +108,23 @@ pub(super) fn from_capnp(err: impl std::fmt::Display) -> PluginError {
 
 pub(super) fn text_of(r: capnp::text::Reader<'_>) -> String {
     r.to_string().unwrap_or_default()
+}
+
+/// Reads a text field that must decode exactly, unlike [`text_of`].
+///
+/// Used where losing the value would change meaning: keys, cursors and
+/// preconditions. A text field that is lossily read as empty could turn a
+/// conditional write into an unconditional one, or a partial page into a
+/// finished one.
+///
+/// # Errors
+///
+/// Returns `unavailable` when the pointer is not text and `invalid_params`
+/// when the bytes are not UTF-8.
+pub(crate) fn strict_text(r: capnp::Result<capnp::text::Reader<'_>>) -> Result<String> {
+    r.map_err(from_capnp)?
+        .to_string()
+        .map_err(|_| PluginError::invalid_params("a text field is not valid UTF-8"))
 }
 
 pub(super) fn read_extensible_config(
@@ -151,8 +168,14 @@ pub(super) fn read_error_details(text: &str) -> Option<serde_json::Map<String, s
     }
 }
 
-fn read_write_options(o: write_options::Reader<'_>) -> WriteOptions {
-    WriteOptions {
+/// Decodes [`WriteOptions`]; hints read leniently, preconditions strictly.
+///
+/// # Errors
+///
+/// Returns [`PluginError`] when `ifMatch` cannot be read, so a precondition
+/// is never silently dropped.
+fn read_write_options(o: write_options::Reader<'_>) -> Result<WriteOptions> {
+    Ok(WriteOptions {
         content_type: {
             let t = o.get_content_type().ok().map(text_of).unwrap_or_default();
             if t.is_empty() {
@@ -187,7 +210,49 @@ fn read_write_options(o: write_options::Reader<'_>) -> WriteOptions {
             }
         },
         stage_only: o.get_stage_only(),
+        if_match: non_empty(strict_text(o.get_if_match())?),
+        if_none_match: o.get_if_none_match(),
+    })
+}
+
+/// `Some(text)` unless `text` is empty (the wire's "absent").
+pub(super) fn non_empty(text: String) -> Option<String> {
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
     }
+}
+
+/// `Some(n)` unless `n` is zero (the wire's "absent").
+pub(super) fn non_zero(n: u64) -> Option<u64> {
+    if n == 0 {
+        None
+    } else {
+        Some(n)
+    }
+}
+
+/// Decodes a [`PutResult`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns [`PluginError`] when a text or data field cannot be read.
+fn read_put_result(r: crate::plugin_capnp::put_result::Reader<'_>) -> Result<PutResult> {
+    let sha = r.get_sha256().map_err(from_capnp)?;
+    Ok(PutResult {
+        key: text_of(r.get_key().map_err(from_capnp)?),
+        bytes_written: r.get_bytes_written(),
+        etag: non_empty(text_of(r.get_etag().map_err(from_capnp)?)),
+        sha256: if sha.is_empty() {
+            None
+        } else {
+            Some(sha.to_vec())
+        },
+        modified_at_ms: non_zero(r.get_modified_at_ms()),
+        version_id: non_empty(text_of(r.get_version_id().map_err(from_capnp)?)),
+        signature: non_empty(text_of(r.get_signature().map_err(from_capnp)?)),
+    })
 }
 
 fn fill_write_options(mut o: write_options::Builder<'_>, options: &WriteOptions) {
@@ -204,6 +269,10 @@ fn fill_write_options(mut o: write_options::Builder<'_>, options: &WriteOptions)
         o.set_commit_token(token);
     }
     o.set_stage_only(options.stage_only);
+    if let Some(tag) = &options.if_match {
+        o.set_if_match(tag);
+    }
+    o.set_if_none_match(options.if_none_match);
 }
 
 fn fill_put_result(mut out: crate::plugin_capnp::put_result::Builder<'_>, put: &PutResult) {
@@ -214,6 +283,13 @@ fn fill_put_result(mut out: crate::plugin_capnp::put_result::Builder<'_>, put: &
     }
     if let Some(sum) = &put.sha256 {
         out.set_sha256(sum);
+    }
+    out.set_modified_at_ms(put.modified_at_ms.unwrap_or(0));
+    if let Some(v) = &put.version_id {
+        out.set_version_id(v);
+    }
+    if let Some(sig) = &put.signature {
+        out.set_signature(sig);
     }
 }
 
@@ -229,7 +305,7 @@ pub(super) fn read_error(r: plugin_error::Reader<'_>) -> PluginError {
     err
 }
 
-fn fill_metadata(mut b: object_metadata::Builder<'_>, meta: &ObjectMetadata) {
+pub(crate) fn fill_metadata(mut b: object_metadata::Builder<'_>, meta: &ObjectMetadata) {
     b.set_key(&meta.key);
     b.set_size(meta.size);
     if let Some(ct) = &meta.content_type {
@@ -241,6 +317,13 @@ fn fill_metadata(mut b: object_metadata::Builder<'_>, meta: &ObjectMetadata) {
     if let Some(sum) = &meta.sha256 {
         b.set_sha256(sum);
     }
+    b.set_modified_at_ms(meta.modified_at_ms.unwrap_or(0));
+    if let Some(v) = &meta.version_id {
+        b.set_version_id(v);
+    }
+    if let Some(sig) = &meta.signature {
+        b.set_signature(sig);
+    }
 }
 
 /// Decode object metadata from a Cap'n Proto reader.
@@ -248,7 +331,7 @@ fn fill_metadata(mut b: object_metadata::Builder<'_>, meta: &ObjectMetadata) {
 /// # Errors
 ///
 /// Returns [`PluginError`] when a text or data field cannot be read.
-fn read_metadata(r: object_metadata::Reader<'_>) -> Result<ObjectMetadata> {
+pub(crate) fn read_metadata(r: object_metadata::Reader<'_>) -> Result<ObjectMetadata> {
     Ok(ObjectMetadata {
         key: text_of(r.get_key().map_err(from_capnp)?),
         size: r.get_size(),
@@ -276,6 +359,9 @@ fn read_metadata(r: object_metadata::Reader<'_>) -> Result<ObjectMetadata> {
                 Some(d.to_vec())
             }
         },
+        modified_at_ms: non_zero(r.get_modified_at_ms()),
+        version_id: non_empty(text_of(r.get_version_id().map_err(from_capnp)?)),
+        signature: non_empty(text_of(r.get_signature().map_err(from_capnp)?)),
     })
 }
 
@@ -883,7 +969,7 @@ fn read_execute_stream_reply(
 ///
 /// Returns [`PluginError`] when the page exceeds `max` or a nested object
 /// cannot be read.
-fn decode_list_page(
+pub(crate) fn decode_list_page(
     page: crate::plugin_capnp::list_page::Reader<'_>,
     max: u32,
 ) -> Result<ListPage> {
@@ -896,20 +982,39 @@ fn decode_list_page(
     }
     let mut objects = Vec::with_capacity(list.len() as usize);
     for item in list.iter() {
-        objects.push(ObjectInfo {
-            key: text_of(item.get_key().map_err(from_capnp)?),
-            size: item.get_size(),
-        });
+        objects.push(crate::storage_ops::read_object_info(item)?);
     }
     let cursor = text_of(page.get_next_cursor().map_err(from_capnp)?);
     Ok(ListPage {
         objects,
-        next_cursor: if cursor.is_empty() {
-            None
-        } else {
-            Some(cursor)
-        },
+        next_cursor: non_empty(cursor),
+        signatures_included: page.get_signatures_included(),
+        modified_since_applied: page.get_modified_since_applied(),
     })
+}
+
+/// Encodes a [`ListPage`].
+///
+/// # Errors
+///
+/// Returns `payload_too_large` when the object list cannot be encoded.
+pub(crate) fn fill_list_page(
+    mut out: crate::plugin_capnp::list_page::Builder<'_>,
+    page: &ListPage,
+) -> Result<()> {
+    if let Some(c) = &page.next_cursor {
+        out.set_next_cursor(c);
+    }
+    out.set_signatures_included(page.signatures_included);
+    out.set_modified_since_applied(page.modified_since_applied);
+    let mut list = out.init_objects(capnp_u32_len(page.objects.len(), "list page")?);
+    for (i, obj) in page.objects.iter().enumerate() {
+        crate::storage_ops::fill_object_info(
+            list.reborrow().get(capnp_u32_len(i, "list page")?),
+            obj,
+        );
+    }
+    Ok(())
 }
 
 /// Cap'n Proto server wrapping a [`Destination`] trait object.
@@ -969,20 +1074,15 @@ impl dest_iface::Server for DestinationServer {
                     }
                 },
                 limit: o.get_limit(),
+                with_signatures: o.get_with_signatures(),
+                modified_since_ms: non_zero(o.get_modified_since_ms()),
             }
         };
         let result = results.get().init_result();
         match self.inner.list(options).await {
             Ok(page) => {
-                let mut out = result.init_ok();
-                if let Some(c) = &page.next_cursor {
-                    out.set_next_cursor(c);
-                }
-                let mut list = out.init_objects(page.objects.len() as u32);
-                for (i, obj) in page.objects.iter().enumerate() {
-                    let mut item = list.reborrow().get(i as u32);
-                    item.set_key(&obj.key);
-                    item.set_size(obj.size);
+                if let Err(err) = fill_list_page(result.init_ok(), &page) {
+                    return Err(capnp::Error::failed(err.to_string()));
                 }
             }
             Err(err) => write_error(result.init_err(), &err),
@@ -1030,11 +1130,17 @@ impl dest_iface::Server for DestinationServer {
         let p = params.get()?;
         let key = p.get_key().ok().map(text_of).unwrap_or_default();
         let body = p.get_body().ok();
-        let options = p
+        let options = match p
             .get_options()
-            .ok()
-            .map(read_write_options)
-            .unwrap_or_default();
+            .map_err(from_capnp)
+            .and_then(read_write_options)
+        {
+            Ok(options) => options,
+            Err(err) => {
+                write_error(results.get().init_result().init_err(), &err);
+                return Ok(());
+            }
+        };
         let result = results.get().init_result();
         let Some(body) = body else {
             write_error(
@@ -1114,6 +1220,151 @@ impl dest_iface::Server for DestinationServer {
         }
         Ok(())
     }
+
+    async fn move_(
+        self: Rc<Self>,
+        params: dest_iface::MoveParams,
+        mut results: dest_iface::MoveResults,
+    ) -> capnp::Result<()> {
+        let p = params.get()?;
+        let decoded = (|| -> Result<_> {
+            Ok((
+                strict_text(p.get_from())?,
+                strict_text(p.get_to())?,
+                crate::storage_ops::read_move_options(p.get_options().map_err(from_capnp)?)?,
+            ))
+        })();
+        let result = results.get().init_result();
+        let outcome = match decoded {
+            Ok((from, to, options)) => self.inner.move_object(&from, &to, options).await,
+            Err(err) => Err(err),
+        };
+        match outcome {
+            Ok(moved) => crate::storage_ops::fill_move_result(result.init_ok(), moved),
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
+    async fn move_many(
+        self: Rc<Self>,
+        params: dest_iface::MoveManyParams,
+        mut results: dest_iface::MoveManyResults,
+    ) -> capnp::Result<()> {
+        let request = crate::storage_ops::read_move_many_request(params.get()?.get_request()?);
+        let result = results.get().init_result();
+        let outcome = match request {
+            Ok(request) => self.inner.move_many(request).await,
+            Err(err) => Err(err),
+        };
+        match outcome {
+            Ok(page) => {
+                if let Err(err) = crate::storage_ops::fill_move_many_page(result.init_ok(), &page) {
+                    return Err(capnp::Error::failed(err.to_string()));
+                }
+            }
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
+    async fn delete_many(
+        self: Rc<Self>,
+        params: dest_iface::DeleteManyParams,
+        mut results: dest_iface::DeleteManyResults,
+    ) -> capnp::Result<()> {
+        let keys = read_key_list("deleteMany", params.get()?.get_keys()?);
+        let result = results.get().init_result();
+        let outcome = match keys {
+            Ok(keys) => self.inner.delete_many(keys).await,
+            Err(err) => Err(err),
+        };
+        match outcome {
+            Ok(outcomes) => {
+                if let Err(err) =
+                    crate::storage_ops::fill_delete_many_result(result.init_ok(), &outcomes)
+                {
+                    return Err(capnp::Error::failed(err.to_string()));
+                }
+            }
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
+    async fn head_many(
+        self: Rc<Self>,
+        params: dest_iface::HeadManyParams,
+        mut results: dest_iface::HeadManyResults,
+    ) -> capnp::Result<()> {
+        let keys = read_key_list("headMany", params.get()?.get_keys()?);
+        let result = results.get().init_result();
+        let outcome = match keys {
+            Ok(keys) => self.inner.head_many(keys).await,
+            Err(err) => Err(err),
+        };
+        match outcome {
+            Ok(objects) => {
+                if let Err(err) =
+                    crate::storage_ops::fill_head_many_result(result.init_ok(), &objects)
+                {
+                    return Err(capnp::Error::failed(err.to_string()));
+                }
+            }
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
+    async fn changes(
+        self: Rc<Self>,
+        params: dest_iface::ChangesParams,
+        mut results: dest_iface::ChangesResults,
+    ) -> capnp::Result<()> {
+        let request = crate::storage_ops::read_changes_request(params.get()?.get_request()?);
+        let result = results.get().init_result();
+        let outcome = match request {
+            Ok(request) => self.inner.changes(request).await,
+            Err(err) => Err(err),
+        };
+        match outcome {
+            Ok(page) => {
+                if let Err(err) = crate::storage_ops::fill_changes_page(result.init_ok(), &page) {
+                    return Err(capnp::Error::failed(err.to_string()));
+                }
+            }
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+}
+
+/// Reads a batch call's key list, bounded by [`crate::MAX_BATCH_KEYS`].
+///
+/// # Errors
+///
+/// Returns `invalid_params` for an empty list, `payload_too_large` above the
+/// cap, or [`PluginError`] when an entry cannot be read.
+fn read_key_list(what: &str, list: capnp::text_list::Reader<'_>) -> Result<Vec<String>> {
+    crate::storage_ops::require_batch_len(what, list.len() as usize)?;
+    let mut keys = Vec::with_capacity(list.len() as usize);
+    for key in list.iter() {
+        keys.push(strict_text(key)?);
+    }
+    Ok(keys)
+}
+
+/// Writes a batch call's key list.
+///
+/// # Errors
+///
+/// Returns `payload_too_large` when the list cannot be encoded.
+fn fill_key_list(builder: capnp::text_list::Builder<'_>, keys: &[String]) -> Result<()> {
+    let mut list = builder;
+    for (i, key) in keys.iter().enumerate() {
+        list.set(capnp_u32_len(i, "key list")?, key);
+    }
+    Ok(())
 }
 
 /// Host-side [`Destination`] over a capnp destination stub.
@@ -1175,6 +1426,8 @@ impl Destination for DestinationClient {
                 o.set_cursor(c);
             }
             o.set_limit(options.limit);
+            o.set_with_signatures(options.with_signatures);
+            o.set_modified_since_ms(options.modified_since_ms.unwrap_or(0));
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -1239,29 +1492,7 @@ impl Destination for DestinationClient {
             .get_result()
             .map_err(from_capnp)?;
         match result.which().map_err(from_capnp)? {
-            put_reply::Ok(r) => {
-                let r = r.map_err(from_capnp)?;
-                Ok(PutResult {
-                    key: text_of(r.get_key().map_err(from_capnp)?),
-                    bytes_written: r.get_bytes_written(),
-                    etag: {
-                        let t = text_of(r.get_etag().map_err(from_capnp)?);
-                        if t.is_empty() {
-                            None
-                        } else {
-                            Some(t)
-                        }
-                    },
-                    sha256: {
-                        let d = r.get_sha256().map_err(from_capnp)?;
-                        if d.is_empty() {
-                            None
-                        } else {
-                            Some(d.to_vec())
-                        }
-                    },
-                })
-            }
+            put_reply::Ok(r) => read_put_result(r.map_err(from_capnp)?),
             put_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
         }
     }
@@ -1310,29 +1541,7 @@ impl Destination for DestinationClient {
             .get_result()
             .map_err(from_capnp)?;
         match result.which().map_err(from_capnp)? {
-            put_reply::Ok(r) => {
-                let r = r.map_err(from_capnp)?;
-                Ok(PutResult {
-                    key: text_of(r.get_key().map_err(from_capnp)?),
-                    bytes_written: r.get_bytes_written(),
-                    etag: {
-                        let t = text_of(r.get_etag().map_err(from_capnp)?);
-                        if t.is_empty() {
-                            None
-                        } else {
-                            Some(t)
-                        }
-                    },
-                    sha256: {
-                        let d = r.get_sha256().map_err(from_capnp)?;
-                        if d.is_empty() {
-                            None
-                        } else {
-                            Some(d.to_vec())
-                        }
-                    },
-                })
-            }
+            put_reply::Ok(r) => read_put_result(r.map_err(from_capnp)?),
             put_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
         }
     }
@@ -1351,6 +1560,128 @@ impl Destination for DestinationClient {
             empty_reply::Ok(()) => Ok(()),
             empty_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
         }
+    }
+
+    async fn move_object(
+        &self,
+        from: &str,
+        to: &str,
+        options: crate::MoveOptions,
+    ) -> Result<crate::MoveResult> {
+        let mut req = self.client.move_request();
+        req.get().set_from(from);
+        req.get().set_to(to);
+        crate::storage_ops::fill_move_options(
+            req.get().get_options().map_err(from_capnp)?,
+            &options,
+        );
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        match result.which().map_err(from_capnp)? {
+            crate::plugin_capnp::move_reply::Ok(r) => {
+                Ok(crate::storage_ops::read_move_result(r.map_err(from_capnp)?))
+            }
+            crate::plugin_capnp::move_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
+        }
+    }
+
+    async fn move_many(&self, request: crate::MoveManyRequest) -> Result<crate::MoveManyPage> {
+        if let crate::MoveManyTarget::Pairs(pairs) = &request.target {
+            crate::storage_ops::require_batch_len("moveMany", pairs.len())?;
+        }
+        let mut req = self.client.move_many_request();
+        crate::storage_ops::fill_move_many_request(req.get().init_request(), &request)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        let page = match result.which().map_err(from_capnp)? {
+            crate::plugin_capnp::move_many_reply::Ok(r) => {
+                crate::storage_ops::read_move_many_page(r.map_err(from_capnp)?)?
+            }
+            crate::plugin_capnp::move_many_reply::Err(err) => {
+                return Err(read_error(err.map_err(from_capnp)?))
+            }
+        };
+        crate::storage_ops::validate_move_many_page(&request, &page)?;
+        Ok(page)
+    }
+
+    async fn delete_many(&self, keys: Vec<String>) -> Result<Vec<crate::KeyOutcome>> {
+        crate::storage_ops::require_batch_len("deleteMany", keys.len())?;
+        let mut req = self.client.delete_many_request();
+        fill_key_list(
+            req.get().init_keys(capnp_u32_len(keys.len(), "key list")?),
+            &keys,
+        )?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        let outcomes = match result.which().map_err(from_capnp)? {
+            crate::plugin_capnp::delete_many_reply::Ok(r) => {
+                crate::storage_ops::read_delete_many_result(r.map_err(from_capnp)?)?
+            }
+            crate::plugin_capnp::delete_many_reply::Err(err) => {
+                return Err(read_error(err.map_err(from_capnp)?))
+            }
+        };
+        crate::storage_ops::validate_key_outcomes("deleteMany", &keys, &outcomes)?;
+        Ok(outcomes)
+    }
+
+    async fn head_many(&self, keys: Vec<String>) -> Result<Vec<Option<ObjectMetadata>>> {
+        crate::storage_ops::require_batch_len("headMany", keys.len())?;
+        let mut req = self.client.head_many_request();
+        fill_key_list(
+            req.get().init_keys(capnp_u32_len(keys.len(), "key list")?),
+            &keys,
+        )?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        let objects = match result.which().map_err(from_capnp)? {
+            crate::plugin_capnp::head_many_reply::Ok(r) => {
+                crate::storage_ops::read_head_many_result(r.map_err(from_capnp)?)?
+            }
+            crate::plugin_capnp::head_many_reply::Err(err) => {
+                return Err(read_error(err.map_err(from_capnp)?))
+            }
+        };
+        crate::storage_ops::validate_head_many(&keys, &objects)?;
+        Ok(objects)
+    }
+
+    async fn changes(&self, request: crate::ChangesRequest) -> Result<crate::ChangesPage> {
+        let mut req = self.client.changes_request();
+        crate::storage_ops::fill_changes_request(req.get().init_request(), &request);
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        let page = match result.which().map_err(from_capnp)? {
+            crate::plugin_capnp::changes_reply::Ok(r) => {
+                crate::storage_ops::read_changes_page(r.map_err(from_capnp)?)?
+            }
+            crate::plugin_capnp::changes_reply::Err(err) => {
+                return Err(read_error(err.map_err(from_capnp)?))
+            }
+        };
+        crate::storage_ops::validate_changes_page(request.cursor.as_deref(), &page)?;
+        Ok(page)
     }
 }
 
@@ -1640,6 +1971,11 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
             });
         }
     }
+    let sockets: Option<Box<dyn crate::Sockets>> = if b.has_sockets() {
+        Some(Box::new(SocketsClient::new(b.get_sockets()?)))
+    } else {
+        None
+    };
     Ok(Bindings {
         config,
         secrets,
@@ -1650,6 +1986,7 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
         storage,
         queues,
         kv,
+        sockets,
     })
 }
 
@@ -1716,6 +2053,16 @@ fn fill_entrypoints(mut b: entrypoints::Builder<'_>, eps: Entrypoints, window: u
         b.set_covers(capnp_rpc::new_client(CoverFetcherServer {
             inner: Arc::from(x),
             window,
+        }));
+    }
+    if let Some(x) = eps.socket_handler {
+        b.set_socket_handler(capnp_rpc::new_client(sockets_glue::SocketHandlerServer {
+            inner: Arc::from(x),
+        }));
+    }
+    if let Some(x) = eps.metadata_files {
+        b.set_metadata_files(capnp_rpc::new_client(MetadataFilesServer {
+            inner: Arc::from(x),
         }));
     }
 }
@@ -2396,14 +2743,7 @@ impl content_source_capnp::Server for ContentSourceServer {
         mut results: content_source_capnp::PurchaseHintResults,
     ) -> capnp::Result<()> {
         let params = read_purchase_hint_params(params.get()?.get_params()?)?;
-        let outcome = self
-            .inner
-            .purchase_hint(params)
-            .await
-            .map(|hint| PurchaseHintResult {
-                found: hint.is_some(),
-                hint: hint.unwrap_or_default(),
-            });
+        let outcome = self.inner.purchase_hint_result(params).await;
         write_purchase_hint_reply(results.get().init_result(), &outcome)
     }
 
@@ -2415,17 +2755,9 @@ impl content_source_capnp::Server for ContentSourceServer {
         let params = read_purchase_hints_params(params.get()?.get_params()?)?;
         let outcome = self
             .inner
-            .purchase_hints(params)
+            .purchase_hints_results(params)
             .await
-            .map(|hints| PurchaseHintsResult {
-                results: hints
-                    .into_iter()
-                    .map(|hint| PurchaseHintResult {
-                        found: hint.is_some(),
-                        hint: hint.unwrap_or_default(),
-                    })
-                    .collect(),
-            });
+            .map(|results| PurchaseHintsResult { results });
         write_purchase_hints_reply(results.get().init_result(), &outcome)
     }
 
@@ -2643,6 +2975,45 @@ impl metadata_provider_capnp::Server for MetadataProviderServer {
         let params = read_metadata_chapters_params(params.get()?.get_params()?)?;
         let outcome = self.inner.chapters(params).await;
         write_metadata_chapters_reply(results.get().init_result(), &outcome)
+    }
+}
+
+/// Serves a guest's [`MetadataFiles`] as the Cap'n Proto `MetadataFiles`.
+struct MetadataFilesServer {
+    /// The guest implementation every method forwards to.
+    inner: Arc<dyn MetadataFiles>,
+}
+
+impl metadata_files_capnp::Server for MetadataFilesServer {
+    async fn health(
+        self: Rc<Self>,
+        _params: metadata_files_capnp::HealthParams,
+        mut results: metadata_files_capnp::HealthResults,
+    ) -> capnp::Result<()> {
+        write_health_reply(results.get().init_result(), self.inner.health().await);
+        Ok(())
+    }
+
+    async fn parse(
+        self: Rc<Self>,
+        params: metadata_files_capnp::ParseParams,
+        mut results: metadata_files_capnp::ParseResults,
+    ) -> capnp::Result<()> {
+        let params =
+            crate::generated::read_metadata_file_parse_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.parse(params).await;
+        crate::generated::write_metadata_file_parse_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn render(
+        self: Rc<Self>,
+        params: metadata_files_capnp::RenderParams,
+        mut results: metadata_files_capnp::RenderResults,
+    ) -> capnp::Result<()> {
+        let params =
+            crate::generated::read_metadata_file_render_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.render(params).await;
+        crate::generated::write_metadata_file_render_reply(results.get().init_result(), &outcome)
     }
 }
 
@@ -3536,6 +3907,8 @@ pub struct HostBindings {
     pub queues: Vec<(String, String, Arc<dyn QueueProducer>)>,
     /// Named `[[kv_namespaces]]` namespaces as `(binding, namespace, kv)`.
     pub kv: Vec<(String, String, Arc<dyn KvNamespace>)>,
+    /// `SOCKETS` broker link; `None` unless `[sockets]` is granted.
+    pub sockets: Option<Arc<dyn crate::Sockets>>,
 }
 
 impl HostBindings {
@@ -3550,6 +3923,7 @@ impl HostBindings {
             storage: None,
             queues: Vec::new(),
             kv: Vec::new(),
+            sockets: None,
         }
     }
 }
@@ -3588,6 +3962,10 @@ pub struct OpenedEntrypoints {
     pub metadata: Option<MetadataProviderClient>,
     /// `covers` entrypoint.
     pub covers: Option<CoverFetcherClient>,
+    /// `[sockets]` handler.
+    pub socket_handler: Option<SocketHandlerClient>,
+    /// `metadataFiles` entrypoint.
+    pub metadata_files: Option<MetadataFilesClient>,
 }
 
 /// Host bootstrap client for a plugin vat.
@@ -3721,6 +4099,12 @@ impl PluginClient {
                     entry.set_kv(capnp_rpc::new_client(KvNamespaceServer { inner: kv }));
                 }
             }
+            if let Some(sockets) = bindings.sockets {
+                b.reborrow()
+                    .set_sockets(capnp_rpc::new_client(sockets_glue::SocketsServer {
+                        inner: sockets,
+                    }));
+            }
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -3824,6 +4208,16 @@ impl PluginClient {
             },
             covers: if eps.has_covers() {
                 Some(CoverFetcherClient::new(eps.get_covers()?, self.window))
+            } else {
+                None
+            },
+            socket_handler: if eps.has_socket_handler() {
+                Some(SocketHandlerClient::new(eps.get_socket_handler()?))
+            } else {
+                None
+            },
+            metadata_files: if eps.has_metadata_files() {
+                Some(MetadataFilesClient::new(eps.get_metadata_files()?))
             } else {
                 None
             },
@@ -3968,28 +4362,36 @@ impl ContentSource for ContentSourceClient {
             .map(|ok| ok.hits)
     }
     async fn purchase_hint(&self, params: PurchaseHintParams) -> Result<Option<PurchaseHint>> {
+        let result = self.purchase_hint_result(params).await?;
+        Ok(result.found.then_some(result.hint))
+    }
+    async fn purchase_hint_result(&self, params: PurchaseHintParams) -> Result<PurchaseHintResult> {
         let mut req = self.client.purchase_hint_request();
         write_purchase_hint_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_purchase_hint_reply(reply_result!(reply))
-            .map_err(from_capnp)?
-            .map(|ok| ok.found.then_some(ok.hint))
+        read_purchase_hint_reply(reply_result!(reply)).map_err(from_capnp)?
     }
     async fn purchase_hints(
         &self,
         params: PurchaseHintsParams,
     ) -> Result<Vec<Option<PurchaseHint>>> {
+        Ok(self
+            .purchase_hints_results(params)
+            .await?
+            .into_iter()
+            .map(|r| r.found.then_some(r.hint))
+            .collect())
+    }
+    async fn purchase_hints_results(
+        &self,
+        params: PurchaseHintsParams,
+    ) -> Result<Vec<PurchaseHintResult>> {
         let mut req = self.client.purchase_hints_request();
         write_purchase_hints_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
         read_purchase_hints_reply(reply_result!(reply))
             .map_err(from_capnp)?
-            .map(|ok| {
-                ok.results
-                    .into_iter()
-                    .map(|r| r.found.then_some(r.hint))
-                    .collect()
-            })
+            .map(|ok| ok.results)
     }
     async fn list_deals(&self, params: ListDealsParams) -> Result<Vec<CatalogHit>> {
         let mut req = self.client.list_deals_request();
@@ -4132,6 +4534,83 @@ impl MetadataProvider for MetadataProviderClient {
         write_metadata_chapters_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
         read_metadata_chapters_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+}
+
+/// Cap'n Proto client for [`MetadataFiles`].
+///
+/// The client checks each request before it leaves
+/// ([`crate::check_parse_params`], [`crate::check_render_params`]) and each
+/// reply before the caller sees it: a parsed record must pass
+/// [`crate::validate_metadata_file_record`] and rendered bytes
+/// [`crate::check_rendered`]. A reply that fails is an `internal` error, so
+/// a misbehaving dialect never hands the host a record outside the caps.
+/// Checks against the dialect's manifest declaration are the caller's
+/// ([`crate::check_record_against_dialect`]), since only it knows the
+/// manifest.
+#[derive(Clone)]
+pub struct MetadataFilesClient {
+    /// The guest's `MetadataFiles` capability.
+    client: metadata_files_capnp::Client,
+}
+
+impl MetadataFilesClient {
+    /// Wraps a `MetadataFiles` capability client (any transport that yields
+    /// one, including the bookclerk-workerd `/invoke` hook).
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - The guest's `MetadataFiles` capability.
+    ///
+    /// # Returns
+    ///
+    /// The typed client.
+    #[must_use]
+    pub fn new(client: metadata_files_capnp::Client) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl MetadataFiles for MetadataFilesClient {
+    async fn health(&self) -> Result<HealthOk> {
+        let req = self.client.health_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_health_reply(reply_result!(reply))
+    }
+
+    async fn parse(
+        &self,
+        params: crate::MetadataFileParseParams,
+    ) -> Result<crate::MetadataFileParsed> {
+        crate::check_parse_params(&params)
+            .map_err(|err| PluginError::invalid_params(err.to_string()))?;
+        let mut req = self.client.parse_request();
+        crate::generated::write_metadata_file_parse_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let parsed = crate::generated::read_metadata_file_parse_reply(reply_result!(reply))
+            .map_err(from_capnp)??;
+        crate::validate_metadata_file_record(&parsed.record)
+            .map_err(|err| PluginError::internal(format!("parse {}: {err}", params.dialect)))?;
+        Ok(parsed)
+    }
+
+    async fn render(
+        &self,
+        params: crate::MetadataFileRenderParams,
+    ) -> Result<crate::MetadataFileRendered> {
+        crate::check_render_params(&params)
+            .map_err(|err| PluginError::invalid_params(err.to_string()))?;
+        let mut req = self.client.render_request();
+        crate::generated::write_metadata_file_render_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let rendered = crate::generated::read_metadata_file_render_reply(reply_result!(reply))
+            .map_err(from_capnp)??;
+        crate::check_rendered(&rendered)
+            .map_err(|err| PluginError::internal(format!("render {}: {err}", params.dialect)))?;
+        Ok(rendered)
     }
 }
 
@@ -5258,6 +5737,13 @@ where
     )
 }
 
+#[path = "rpc_sockets.rs"]
+mod sockets_glue;
+pub use sockets_glue::{
+    connect_socket_broker, roundtrip_socket_message, serve_socket_broker, SocketCodec,
+    SocketHandlerClient, SocketWireMessage, SocketsClient,
+};
+
 #[cfg(test)]
 #[allow(clippy::missing_panics_doc, clippy::missing_errors_doc)]
 mod tests {
@@ -5288,6 +5774,8 @@ mod tests {
             id: "store".into(),
             catalog: crate::CatalogCapabilities {
                 detail_by_isbn: true,
+                price_by_isbn: true,
+                price_by_asin: false,
             },
             ..PluginDescribe::default()
         };
@@ -5304,6 +5792,8 @@ mod tests {
         )
         .expect("decode describe");
         assert!(back.catalog.detail_by_isbn);
+        assert!(back.catalog.price_by_isbn);
+        assert!(!back.catalog.price_by_asin);
         assert_eq!(back, declared);
 
         // A guest that never sets the struct declares nothing.
@@ -5345,9 +5835,10 @@ mod tests {
                     .map(|i| ObjectInfo {
                         key: format!("k{i}"),
                         size: 1,
+                        ..Default::default()
                     })
                     .collect(),
-                next_cursor: None,
+                ..ListPage::default()
             })
         }
 
@@ -5452,6 +5943,7 @@ mod tests {
                         Entrypoint::Oidc,
                         Entrypoint::Metadata,
                         Entrypoint::Covers,
+                        Entrypoint::MetadataFiles,
                     ],
                     ..PluginCapabilities::default()
                 },
@@ -5468,6 +5960,7 @@ mod tests {
                 oidc: Some(Box::new(TestOidc)),
                 metadata: Some(Box::new(TestMetadata)),
                 covers: Some(Box::new(TestCovers)),
+                metadata_files: Some(Box::new(TestFiles)),
                 ..Entrypoints::default()
             })
         }
@@ -6077,6 +6570,145 @@ mod tests {
                 assert_eq!(err.code, PluginErrorCode::RateLimited, "{err}");
             })
             .await;
+    }
+
+    /// Answers a title lookup with two priced records, anything else with
+    /// a bare hint.
+    struct TitleStore;
+
+    #[async_trait::async_trait(?Send)]
+    impl ContentSource for TitleStore {
+        async fn purchase_hint_result(
+            &self,
+            params: PurchaseHintParams,
+        ) -> Result<PurchaseHintResult> {
+            let priced = |id: &str| crate::PricedRecord {
+                record: CatalogHit {
+                    product_id: id.into(),
+                    ..CatalogHit::default()
+                },
+                hint: PurchaseHint {
+                    product_id: id.into(),
+                    ..PurchaseHint::default()
+                },
+            };
+            let hint = PurchaseHint {
+                product_id: "pick".into(),
+                ..PurchaseHint::default()
+            };
+            Ok(PurchaseHintResult {
+                found: true,
+                hint,
+                records: if params.lookup == crate::PriceLookup::Title {
+                    vec![priced("narrated"), priced("cast")]
+                } else {
+                    Vec::new()
+                },
+            })
+        }
+
+        async fn purchase_hints_results(
+            &self,
+            params: PurchaseHintsParams,
+        ) -> Result<Vec<PurchaseHintResult>> {
+            let mut out = Vec::new();
+            for query in params.queries {
+                out.push(self.purchase_hint_result(query).await?);
+            }
+            Ok(out)
+        }
+    }
+
+    /// Title-search records cross the wire for one query and for a batch,
+    /// and the bare-hint methods still answer with the store's pick.
+    #[tokio::test(flavor = "current_thread")]
+    async fn purchase_hint_records_round_trip_over_capnp() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let client = ContentSourceClient {
+                    client: capnp_rpc::new_client(ContentSourceServer {
+                        inner: Arc::new(TitleStore),
+                    }),
+                };
+                let by_title = PurchaseHintParams {
+                    title: Some("Known".into()),
+                    lookup: crate::PriceLookup::Title,
+                    ..PurchaseHintParams::default()
+                };
+                let one = client
+                    .purchase_hint_result(by_title.clone())
+                    .await
+                    .expect("one");
+                let ids: Vec<String> = one
+                    .records
+                    .iter()
+                    .map(|priced| priced.record.product_id.clone())
+                    .collect();
+                assert_eq!(ids, vec!["narrated".to_string(), "cast".to_string()]);
+                assert_eq!(one.hint.product_id, "pick");
+
+                let batch = client
+                    .purchase_hints_results(PurchaseHintsParams {
+                        queries: vec![PurchaseHintParams::default(), by_title.clone()],
+                    })
+                    .await
+                    .expect("batch");
+                let counts: Vec<usize> = batch.iter().map(|r| r.records.len()).collect();
+                assert_eq!(counts, vec![0, 2]);
+
+                let bare = client.purchase_hint(by_title).await.expect("bare");
+                assert_eq!(bare.map(|h| h.product_id).as_deref(), Some("pick"));
+            })
+            .await;
+    }
+
+    /// Answers after a short wait, counting how many lookups run at once.
+    struct SlowStore {
+        /// Lookups running right now.
+        running: std::cell::Cell<usize>,
+        /// Most lookups seen running at once.
+        peak: std::cell::Cell<usize>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl ContentSource for SlowStore {
+        async fn purchase_hint(&self, params: PurchaseHintParams) -> Result<Option<PurchaseHint>> {
+            self.running.set(self.running.get() + 1);
+            self.peak.set(self.peak.get().max(self.running.get()));
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            self.running.set(self.running.get() - 1);
+            Ok(params.product_id.map(|product_id| PurchaseHint {
+                product_id,
+                ..PurchaseHint::default()
+            }))
+        }
+    }
+
+    /// The default batch runs a handful of one-title lookups at once and
+    /// still answers each query in its own place.
+    #[tokio::test(flavor = "current_thread")]
+    async fn default_purchase_hints_overlaps_lookups_in_order() {
+        let store = SlowStore {
+            running: std::cell::Cell::new(0),
+            peak: std::cell::Cell::new(0),
+        };
+        let queries: Vec<PurchaseHintParams> = (0..10)
+            .map(|n| PurchaseHintParams {
+                product_id: (n % 3 != 0).then(|| format!("p{n}")),
+                ..PurchaseHintParams::default()
+            })
+            .collect();
+        let hints = store
+            .purchase_hints(PurchaseHintsParams { queries })
+            .await
+            .expect("a batch");
+        let ids: Vec<Option<String>> = hints.into_iter().map(|h| h.map(|h| h.product_id)).collect();
+        let want: Vec<Option<String>> = (0..10)
+            .map(|n| (n % 3 != 0).then(|| format!("p{n}")))
+            .collect();
+        assert_eq!(ids, want);
+        assert_eq!(store.peak.get(), crate::PURCHASE_HINTS_CONCURRENCY);
     }
 
     /// Host `EVENTS` binding for the read round trip: records each request
@@ -7305,6 +7937,129 @@ mod tests {
         assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
     }
 
+    /// Dialect plugin that echoes the file name as the title, and answers
+    /// `bad` with a record the host must refuse.
+    struct TestFiles;
+
+    #[async_trait::async_trait(?Send)]
+    impl MetadataFiles for TestFiles {
+        async fn parse(
+            &self,
+            params: crate::MetadataFileParseParams,
+        ) -> Result<crate::MetadataFileParsed> {
+            let title = if params.dialect == "bad" {
+                "two\nlines".to_string()
+            } else {
+                format!("{}:{}", params.file_name, params.bytes.len())
+            };
+            Ok(crate::MetadataFileParsed {
+                record: crate::MetadataFileRecord {
+                    present: vec![crate::MetadataField::Title],
+                    title: Some(title),
+                    ..crate::MetadataFileRecord::default()
+                },
+            })
+        }
+
+        async fn render(
+            &self,
+            params: crate::MetadataFileRenderParams,
+        ) -> Result<crate::MetadataFileRendered> {
+            if params.dialect == "bad" {
+                return Ok(crate::MetadataFileRendered {
+                    bytes: vec![
+                        b' ';
+                        usize::try_from(crate::MAX_METADATA_FILE_BYTES).expect("cap") + 1
+                    ],
+                });
+            }
+            let mut bytes = params.existing;
+            bytes.extend_from_slice(params.record.title.unwrap_or_default().as_bytes());
+            Ok(crate::MetadataFileRendered { bytes })
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn metadata_files_roundtrip_and_checks() {
+        let client = MetadataFilesClient::new(capnp_rpc::new_client(MetadataFilesServer {
+            inner: Arc::new(TestFiles),
+        }));
+        assert!(client.health().await.expect("health").ok);
+        let parse = |dialect: &str, file_name: &str| crate::MetadataFileParseParams {
+            dialect: dialect.into(),
+            file_name: file_name.into(),
+            bytes: b"{}".to_vec(),
+        };
+        let parsed = client
+            .parse(parse("abs_metadata_json", "metadata.json"))
+            .await
+            .expect("parse");
+        assert_eq!(parsed.record.title.as_deref(), Some("metadata.json:2"));
+        let err = client
+            .parse(parse("bad", "metadata.json"))
+            .await
+            .expect_err("a record outside the rules");
+        assert_eq!(err.code, crate::PluginErrorCode::Internal);
+        let err = client
+            .parse(parse("abs_metadata_json", "../metadata.json"))
+            .await
+            .expect_err("a path is not a file name");
+        assert_eq!(err.code, crate::PluginErrorCode::InvalidParams);
+
+        let render = |dialect: &str| crate::MetadataFileRenderParams {
+            dialect: dialect.into(),
+            record: crate::MetadataFileRecord {
+                present: vec![crate::MetadataField::Title],
+                title: Some("Dune".into()),
+                ..crate::MetadataFileRecord::default()
+            },
+            fields: vec![crate::MetadataField::Title],
+            existing: b"old:".to_vec(),
+            audio_files: vec![crate::MetadataAudioFile {
+                name: "book.m4b".into(),
+                duration_ms: 1_000,
+            }],
+        };
+        let rendered = client.render(render("opf")).await.expect("render");
+        assert_eq!(rendered.bytes, b"old:Dune");
+        let err = client
+            .render(render("bad"))
+            .await
+            .expect_err("a file over the cap");
+        assert_eq!(err.code, crate::PluginErrorCode::Internal);
+        let mut twice = render("opf");
+        twice.fields.push(crate::MetadataField::Title);
+        let err = client.render(twice).await.expect_err("a field twice");
+        assert_eq!(err.code, crate::PluginErrorCode::InvalidParams);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn metadata_files_defaults_are_unsupported() {
+        struct Bare;
+        impl MetadataFiles for Bare {}
+        let client = MetadataFilesClient::new(capnp_rpc::new_client(MetadataFilesServer {
+            inner: Arc::new(Bare),
+        }));
+        assert!(client.health().await.expect("health").ok);
+        let err = client
+            .parse(crate::MetadataFileParseParams {
+                dialect: "opf".into(),
+                file_name: "a.opf".into(),
+                bytes: Vec::new(),
+            })
+            .await
+            .expect_err("parse");
+        assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
+        let err = client
+            .render(crate::MetadataFileRenderParams {
+                dialect: "opf".into(),
+                ..crate::MetadataFileRenderParams::default()
+            })
+            .await
+            .expect_err("render");
+        assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
+    }
+
     /// Cover fetcher that stores each URL's own text as its body, except
     /// URLs containing `missing`, which fail.
     struct TestCovers;
@@ -7366,6 +8121,16 @@ mod tests {
                 let opened = open_default(&client).await;
                 let covers = opened.covers.expect("covers exported");
                 assert!(covers.health().await.expect("health").ok);
+                let files = opened.metadata_files.expect("metadataFiles exported");
+                let parsed = files
+                    .parse(crate::MetadataFileParseParams {
+                        dialect: "opf".into(),
+                        file_name: "book.opf".into(),
+                        bytes: b"<package/>".to_vec(),
+                    })
+                    .await
+                    .expect("parse over the plugin connection");
+                assert_eq!(parsed.record.title.as_deref(), Some("book.opf:10"));
 
                 let sink = Arc::new(MemDest {
                     store: Mutex::new(HashMap::new()),
@@ -8046,6 +8811,7 @@ mod tests {
                             storage: None,
                             queues: Vec::new(),
                             kv: Vec::new(),
+                            sockets: None,
                         },
                     )
                     .await

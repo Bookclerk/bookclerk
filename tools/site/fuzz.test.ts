@@ -26,7 +26,13 @@ import {
 import type { GeneratedManifest, GeneratedReference } from "./generated.ts";
 import { highlight } from "./highlight.ts";
 import { datedPages, formatDate, MAX_DOC_KEY_LENGTH, pageDate } from "./last-updated.ts";
-import { MAX_DOCUMENT_BYTES, MAX_SITEMAP_ENTRIES, readSitemap, readSnapshot } from "./indexnow.ts";
+import {
+  MAX_DOCUMENT_BYTES,
+  MAX_SITEMAP_ENTRIES,
+  previousSnapshotRun,
+  readSitemap,
+  readSnapshot,
+} from "./indexnow.ts";
 import { renderDoc, SEARCH_INDEX, timeHtml } from "./render.ts";
 import { docsTarget, pickEncoding, sitePageLocation } from "./worker.ts";
 import type { Encoding } from "./worker.ts";
@@ -1967,5 +1973,108 @@ test("readSnapshot agrees with the oracle on mutated inputs", () => {
       SNAPSHOT_FRAGMENTS,
     );
     checkSnapshot(json, `FUZZ_SEED=${SEED} iteration ${i}`);
+  }
+});
+
+/** Fragments artifact-listing mutations splice in: its keys, values near the accepted ones and JSON syntax. */
+const ARTIFACT_FRAGMENTS = [
+  '"artifacts"',
+  '"name"',
+  '"expired"',
+  '"workflow_run"',
+  '"id"',
+  '"head_branch"',
+  '"indexnow-snapshot"',
+  '"main"',
+  '"__proto__"',
+  "false",
+  "true",
+  "null",
+  "0",
+  "-1",
+  "1.5",
+  "1e3",
+  "9007199254740993",
+  "[]",
+  "{}",
+  ",",
+  ":",
+];
+
+/**
+ * Picks the snapshot run apart from indexnow.ts, walking own properties
+ * through their descriptors.
+ *
+ * @param json - The listing.
+ * @param branch - The branch the run must be on.
+ * @returns The run id as decimal digits, or null.
+ */
+function oracleSnapshotRun(json: string, branch: string): string | null {
+  if (json.length > MAX_DOCUMENT_BYTES) return null;
+  let document: unknown;
+  try {
+    document = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  const isObject = (v: unknown): v is object =>
+    typeof v === "object" && v !== null && !(v instanceof Array);
+  const own = (v: object, key: string): unknown => Object.getOwnPropertyDescriptor(v, key)?.value;
+  if (!isObject(document)) return null;
+  const artifacts = own(document, "artifacts");
+  if (!(artifacts instanceof Array)) return null;
+  for (let i = 0; i < artifacts.length; i++) {
+    const artifact: unknown = artifacts[i];
+    if (!isObject(artifact)) continue;
+    if (own(artifact, "name") !== "indexnow-snapshot" || own(artifact, "expired") !== false)
+      continue;
+    const run = own(artifact, "workflow_run");
+    if (!isObject(run) || own(run, "head_branch") !== branch) continue;
+    const id = own(run, "id");
+    if (typeof id !== "number" || id % 1 !== 0 || id < 1 || id > 9007199254740991) continue;
+    return id.toFixed(0);
+  }
+  return null;
+}
+
+/**
+ * Checks one previousSnapshotRun call against the oracle, on two branches.
+ *
+ * @param json - The listing.
+ * @param context - What to print on failure.
+ */
+function checkSnapshotRun(json: string, context: string): void {
+  for (const branch of ["main", "feature"]) {
+    const got = previousSnapshotRun(json, branch);
+    assert.equal(
+      got,
+      oracleSnapshotRun(json, branch),
+      `${context} (${branch}): ${JSON.stringify(json)}`,
+    );
+    if (got !== null) assert.match(got, /^[1-9][0-9]*$/);
+  }
+}
+
+test("previousSnapshotRun agrees with the oracle on its seed corpus", () => {
+  const seeds = corpus("indexnow_artifacts");
+  assert.ok(seeds.length >= 10);
+  const picked = seeds.map((seed) => {
+    checkSnapshotRun(seed, "seed");
+    return previousSnapshotRun(seed, "main");
+  });
+  assert.deepEqual(picked, ["44382403592", null, "8", "7", null, "12", "5", null, null, null]);
+});
+
+test("previousSnapshotRun agrees with the oracle on mutated inputs", () => {
+  const seeds = corpus("indexnow_artifacts");
+  const rand = prng(SEED ^ 0xa7);
+  for (let i = 0; i < ITERATIONS; i++) {
+    const json = mutate(
+      seeds[Math.floor(rand() * seeds.length)] ?? "",
+      seeds,
+      rand,
+      ARTIFACT_FRAGMENTS,
+    );
+    checkSnapshotRun(json, `FUZZ_SEED=${SEED} iteration ${i}`);
   }
 });

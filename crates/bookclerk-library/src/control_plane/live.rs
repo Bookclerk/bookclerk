@@ -1,6 +1,6 @@
 //! Change revisions for the SPA's live socket (H-4 step 10).
 //!
-//! Every owner node shares the library database, so a change made on any
+//! Every shared node shares the library database, so a change made on any
 //! of them (a job finishing elsewhere, a scan's rows, a heartbeat, a
 //! configuration write) shows up here. Each topic has one counter row in
 //! `live_topic_revisions`, and every write to the table behind a topic
@@ -420,7 +420,7 @@ impl LibraryStore {
         }
         write.sql = crate::proxy_insert_returning_identity(
             &write.sql,
-            &crate::migrations::host_sql_type_env(),
+            crate::migrations::host_sql_type_env_ref(),
         )
         .ok_or_else(|| {
             LibraryError::Other(anyhow::anyhow!(
@@ -462,8 +462,8 @@ impl LibraryStore {
     /// Whether `statement` fits the negotiated limits as a store read sends
     /// it: alone in a request shaped as the database proxy builds one (a
     /// `proxy-query-<uuid>` operation id), authorized as the proxy authorizes
-    /// it (request hash stamped), so `maxRequestBytes` is measured on the
-    /// bytes that go out.
+    /// it (a request hash of the digest's length stamped), so
+    /// `maxRequestBytes` is measured on the bytes that go out.
     pub(crate) fn admits_read(&self, statement: &TypedDbStatement) -> bool {
         let mut req = bookclerk_plugin_abi::ExecuteRequest {
             operation_id: format!("proxy-query-{}", uuid::Uuid::nil()),
@@ -471,9 +471,9 @@ impl LibraryStore {
             statements: vec![statement.clone()],
             deadline_unix_ms: 0,
         };
-        // The proxy's own authorization: kinds, the stamped hash, then the
-        // negotiated limits over the request as sent.
-        crate::sql_plan::authorize_typed_request(&mut req, self.db_capabilities()).is_ok()
+        // The proxy's own authorization: kinds, a stand-in for the hash it
+        // stamps, then the negotiated limits over the request as sent.
+        crate::sql_plan::admit_typed_request(&mut req, self.db_capabilities()).is_ok()
     }
 
     /// Bumps `topic` after a write too large for a host batch, which ran

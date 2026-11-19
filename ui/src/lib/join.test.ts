@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConfigNodeView } from "./api";
 import {
   answerBranchConsent,
-  answerClientConsent,
+  answerClerkConsent,
   rememberApproveReturn,
   takeApproveReturn,
   sharedBranchNodes,
@@ -23,9 +23,10 @@ import {
   looksLikeBranchInvite,
   parseJoinCallback,
   windowEntryFormats,
-  setLinkDownload,
-  makeWindowOf,
+  setLinkKeepCopies,
   filterWindowBooks,
+  shownWindowBooks,
+  windowEntryIsYours,
   windowEntryLibraries,
   setMembersListing,
   setBranchSharing,
@@ -47,12 +48,18 @@ describe("join pages", () => {
   });
 
   it("include a clerk's consent page", () => {
-    expect(isAppPath("/client/approve")).toBe(true);
-    expect(joinPage("/client/approve/")).toBe("client-approve");
-    expect(isConsentPage("client-approve")).toBe(true);
+    expect(isAppPath("/clerk/approve")).toBe(true);
+    expect(joinPage("/clerk/approve/")).toBe("clerk-approve");
+    expect(isConsentPage("clerk-approve")).toBe(true);
     expect(isConsentPage("approve")).toBe(true);
     expect(isConsentPage("callback")).toBe(false);
     expect(isConsentPage(null)).toBe(false);
+  });
+
+  it("include this install's library card callback", () => {
+    expect(isAppPath("/clerk/callback")).toBe(true);
+    expect(joinPage("/clerk/callback/")).toBe("clerk-callback");
+    expect(isConsentPage("clerk-callback")).toBe(false);
   });
 });
 
@@ -66,44 +73,44 @@ describe("approve return", () => {
       setItem: (key: string, value: string) => void store.set(key, value),
       removeItem: (key: string) => void store.delete(key),
     });
-    rememberApproveReturn("/client/approve?client_id=bookclerk-client");
-    expect(takeApproveReturn()).toBe("/client/approve?client_id=bookclerk-client");
+    rememberApproveReturn("/clerk/approve?client_id=bookclerk-clerk");
+    expect(takeApproveReturn()).toBe("/clerk/approve?client_id=bookclerk-clerk");
     expect(takeApproveReturn()).toBeNull();
     rememberApproveReturn("/join/approve?client_id=bookclerk-branch");
     expect(takeApproveReturn()).toBe("/join/approve?client_id=bookclerk-branch");
-    rememberApproveReturn("/client/approve/?client_id=bookclerk-client");
-    expect(takeApproveReturn()).toBe("/client/approve/?client_id=bookclerk-client");
-    rememberApproveReturn("/client/approver?client_id=bookclerk-client");
+    rememberApproveReturn("/clerk/approve/?client_id=bookclerk-clerk");
+    expect(takeApproveReturn()).toBe("/clerk/approve/?client_id=bookclerk-clerk");
+    rememberApproveReturn("/clerk/approver?client_id=bookclerk-clerk");
     expect(takeApproveReturn()).toBeNull();
     rememberApproveReturn("/settings?x=1");
     expect(takeApproveReturn()).toBeNull();
   });
 });
 
-describe("answerClientConsent", () => {
+describe("answerClerkConsent", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("sends the authorize request with the answer", async () => {
     const fetchMock = vi.fn(
       async (_url: string, _init: RequestInit) =>
-        new Response(JSON.stringify({ redirect: "http://localhost:41923/client/callback" }), {
+        new Response(JSON.stringify({ redirect: "http://localhost:41923/clerk/callback" }), {
           status: 200,
         }),
     );
     vi.stubGlobal("fetch", fetchMock);
     const search =
-      "?client_id=bookclerk-client&response_type=code&scope=library%3Amember" +
-      "&redirect_uri=http%3A%2F%2Flocalhost%3A41923%2Fclient%2Fcallback" +
-      "&code_challenge=abc&code_challenge_method=S256&state=s1&client_name=Laptop";
-    await answerClientConsent(search, true);
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/auth/client-consent");
+      "?client_id=bookclerk-clerk&response_type=code&scope=library%3Amember" +
+      "&redirect_uri=http%3A%2F%2Flocalhost%3A41923%2Fclerk%2Fcallback" +
+      "&code_challenge=abc&code_challenge_method=S256&state=s1&clerk_name=Laptop";
+    await answerClerkConsent(search, true);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/auth/clerk-consent");
     const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
     expect(body).toMatchObject({
-      client_id: "bookclerk-client",
-      client_name: "Laptop",
+      client_id: "bookclerk-clerk",
+      clerk_name: "Laptop",
       approve: true,
     });
-    await answerClientConsent(search, false);
+    await answerClerkConsent(search, false);
     const denied = JSON.parse(String(fetchMock.mock.calls[1][1].body));
     expect(denied.approve).toBe(false);
   });
@@ -379,11 +386,11 @@ describe("isSharedBranchJoined", () => {
 });
 
 describe("sharedBranchNodes", () => {
-  it("lists owner nodes only, this server first", () => {
-    const node = (node_id: string, kind: "owner" | "host", this_node = false) =>
+  it("lists shared nodes only, this server first", () => {
+    const node = (node_id: string, kind: "shared" | "branch", this_node = false) =>
       ({ node_id, kind, this_node }) as ConfigNodeView;
     expect(
-      sharedBranchNodes([node("b", "owner"), node("h", "host"), node("a", "owner", true)]).map(
+      sharedBranchNodes([node("b", "shared"), node("h", "branch"), node("a", "shared", true)]).map(
         (n) => n.node_id,
       ),
     ).toEqual(["a", "b"]);
@@ -451,6 +458,7 @@ describe("window view helpers", () => {
     product_id: "B0X",
     formats,
     title: "T",
+    yours: false,
   });
 
   it("names each library once, by host, in order", () => {
@@ -495,6 +503,23 @@ describe("window view helpers", () => {
     expect(filterWindowBooks(books, "HERBERT")).toEqual([dune]);
     expect(filterWindowBooks(books, " classics ")).toEqual([emma]);
     expect(filterWindowBooks(books, "nothing")).toEqual([]);
+  });
+
+  it("marks and keeps the person's own books", () => {
+    const theirs = {
+      key: "work:1",
+      editions: [
+        edition("https://a.example", "audible", []),
+        { ...edition("https://b.example", "libro", []), yours: true },
+      ],
+    };
+    const others = { key: "work:2", editions: [edition("https://a.example", "audible", [])] };
+    const books = [theirs, others];
+    expect(windowEntryIsYours(theirs)).toBe(true);
+    expect(windowEntryIsYours(others)).toBe(false);
+    expect(shownWindowBooks(books, "", false)).toEqual(books);
+    expect(shownWindowBooks(books, "", true)).toEqual([theirs]);
+    expect(shownWindowBooks(books, "nothing", true)).toEqual([]);
   });
 });
 
@@ -565,57 +590,25 @@ describe("setMembersListing", () => {
   });
 });
 
-describe("setLinkDownload", () => {
+describe("setLinkKeepCopies", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("sends the download setting with the link's current sharing settings", async () => {
+  it("sends the keep copies setting with the link's current sharing settings", async () => {
     const fetchMock = vi.fn(
       async (_url: string, _init: RequestInit) =>
         new Response(JSON.stringify({ cluster: { cluster_id: "c1" } }), { status: 200 }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    await setLinkDownload({ cluster_id: "c1", share_books: false, include_branches: true }, false);
+    await setLinkKeepCopies(
+      { cluster_id: "c1", share_books: false, include_branches: true },
+      false,
+    );
     const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
     expect(body).toEqual({
       cluster_id: "c1",
       share_books: false,
       include_branches: true,
-      download: false,
+      keep_copies: false,
     });
-  });
-});
-
-describe("makeWindowOf", () => {
-  afterEach(() => vi.unstubAllGlobals());
-
-  it("turns downloading off for the joined link", async () => {
-    const fetchMock = vi.fn(
-      async (_url: string, _init: RequestInit) =>
-        new Response(JSON.stringify({ cluster: { cluster_id: "c1" } }), { status: 200 }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    expect(await makeWindowOf({ cluster_id: "c1", share_books: true, download: true })).toBe(true);
-    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
-    expect(body).toEqual({
-      cluster_id: "c1",
-      share_books: true,
-      include_branches: true,
-      download: false,
-    });
-  });
-
-  it("sends nothing when the link is already a window", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-    expect(await makeWindowOf({ cluster_id: "c1", download: false })).toBe(true);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("answers false when the setting could not be stored", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 500 })),
-    );
-    expect(await makeWindowOf({ cluster_id: "c1" })).toBe(false);
   });
 });

@@ -5,7 +5,7 @@
 //! `describe()` advertises typed [`PluginCapabilities`], then
 //! `open(invocation, bindings)` returns the exported [`Entrypoints`]
 //! (`storefront`, `storage`, `databaseAdapter`, `remoteLibrary`, `cli`,
-//! `oidc`, `metadata`, `covers`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
+//! `oidc`, `metadata`, `covers`, `metadataFiles`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
 //! [`Bindings`] carry `CONFIG` / `SECRETS`, the `EVENTS` publisher, and named
 //! `[[databases]]` sessions — the Workers `env` idiom.
 //!
@@ -46,6 +46,7 @@
 //!
 //! | Module | Contents |
 //! | --- | --- |
+//! | [`metadata_files`] | Checks on `metadataFiles` requests and the records dialects return |
 //! | [`methods`] | Capability / consent method name constants (`login`, `event`, …) |
 //! | Crate-root DTOs | [`PluginDescribe`], health, CLI, destination objects |
 //! | [`kind`] | Kind-specific DTOs (source / integration / output) |
@@ -85,6 +86,7 @@ pub mod json_bytes;
 pub mod kind;
 mod limits;
 pub mod media;
+pub mod metadata_files;
 pub mod methods;
 pub mod package_version;
 mod plugin_migration;
@@ -94,11 +96,13 @@ mod rpc_types;
 pub mod scan_page;
 mod sdk_wire;
 pub mod settings_schema;
+pub mod sockets;
 pub mod sql_desugar;
 mod sql_overflow;
 mod sql_proof;
 mod sql_text;
 pub mod sql_types;
+mod storage_ops;
 
 /// Generated Cap'n Proto RPC interfaces (`schema/plugin.capnp`).
 ///
@@ -233,8 +237,9 @@ pub use db_rpc::{
     canonical_execute_request_hash, decode_db_capabilities_reply_bytes, decode_db_value_bytes,
     decode_execute_request_bytes, decode_execute_result_reply_bytes,
     decode_execute_stream_frame_bytes, encoded_db_capabilities_reply_bytes, encoded_db_value_bytes,
-    encoded_execute_reply_bytes, encoded_execute_request_bytes, encoded_execute_result_reply_bytes,
-    encoded_execute_stream_frame_bytes, encoded_statement_result_bytes,
+    encoded_db_value_len, encoded_execute_reply_bytes, encoded_execute_request_bytes,
+    encoded_execute_result_reply_bytes, encoded_execute_stream_frame_bytes,
+    encoded_statement_result_bytes,
 };
 pub use db_stream::{
     decode_execute_stream, encode_execute_stream, encode_execute_stream_error, ExecuteStream,
@@ -242,39 +247,55 @@ pub use db_stream::{
     STREAM_FRAME_TARGET_BYTES,
 };
 pub use features::{
-    negotiate_rpc_features, RpcFeature, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY,
-    FEATURE_STREAMS,
+    negotiate_rpc_features, RpcFeature, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_CHANGES,
+    FEATURE_STORAGE_CONDITIONAL_WRITE, FEATURE_STORAGE_COPY, FEATURE_STORAGE_DELETE_MANY,
+    FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE, FEATURE_STORAGE_MOVE_MANY, FEATURE_STREAMS,
+    STORAGE_OPERATION_FEATURES,
 };
 pub use jobs::{read_all, stream_copy_keys, StreamCopyHandler, StreamCopySpec};
 pub use limits::{
     cover_sink_slot, ScalarLimits, MAX_COVER_BYTES, MAX_COVER_HEADER_BYTES, MAX_COVER_URLS,
     MAX_CRON_BYTES, MAX_EVENT_CURSOR_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES,
-    MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
+    MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_METADATA_AUDIO_FILES,
+    MAX_METADATA_FILE_BYTES, MAX_METADATA_FILE_CHAPTERS, MAX_METADATA_FILE_DESCRIPTION_BYTES,
+    MAX_METADATA_FILE_LIST_ENTRIES, MAX_METADATA_FILE_TEXT_BYTES, MAX_PLUGIN_MIGRATION_OPS,
     MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS,
     MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
-    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    MAX_SOCKETS_PER_INSTANCE, MAX_SOCKET_ATTACHMENT_BYTES, MAX_SOCKET_AUTO_RESPONSES,
+    MAX_SOCKET_AUTO_RESPONSE_BYTES, MAX_SOCKET_FRAME_BYTES, MAX_SOCKET_HEADERS,
+    MAX_SOCKET_URL_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 pub use media::{
     check_record_kinds, decode_plain_fetch_bytes, encode_plain_fetch_bytes, media_support_is_empty,
     same_media_support, validate_media_support, validate_plain_fetch, FetchError, MediaError,
 };
+pub use metadata_files::{
+    check_parse_params, check_record_against_dialect, check_render_against_dialect,
+    check_render_params, check_rendered, decode_metadata_file_record_bytes,
+    encode_metadata_file_record_bytes, validate_metadata_file_record, MetadataFileDialect,
+    MetadataFileError,
+};
 pub use roles::{
-    AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
-    CoverFetcher, Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
-    JobController, JobRunner, KvNamespace, MetadataProvider, NamedKvBinding, NamedQueueBinding,
-    NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer,
-    ReadResult, RemoteLibrary, ScheduledHandler, Source, PURCHASE_HINTS_BUDGET,
+    hint_result, purchase_hint_results_one_by_one, AdapterDatabaseSession, BindingValues, Bindings,
+    ByteRange, Cancellation, ContentSource, CoverFetcher, Database, Destination, Entrypoints,
+    EventConsumer, EventPublisher, GuestDatabase, JobController, JobRunner, KvNamespace,
+    MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding, NeverCancel, Oidc,
+    PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary,
+    ScheduledHandler, SocketHandler, Sockets, Source, PURCHASE_HINTS_BUDGET,
+    PURCHASE_HINTS_CONCURRENCY,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
 pub use rpc::{
-    byte_source_from_async_read, connect_plugin, pull_byte_source_to_writer,
-    roundtrip_event_read_message, serve_plugin, serve_plugin_stdio, ContentSourceClient,
-    CoverFetcherClient, DatabaseClient, DestinationClient, DestinationServer, EventConsumerClient,
-    EventPublisherClient, EventReadCodec, EventReadMessage, HostBindings, JobRunnerClient,
-    KvNamespaceClient, MetadataProviderClient, OidcClient, OpenedEntrypoints, PluginCliClient,
+    byte_source_from_async_read, connect_plugin, connect_socket_broker, pull_byte_source_to_writer,
+    roundtrip_event_read_message, roundtrip_socket_message, serve_plugin, serve_plugin_stdio,
+    serve_socket_broker, ContentSourceClient, CoverFetcherClient, DatabaseClient,
+    DestinationClient, DestinationServer, EventConsumerClient, EventPublisherClient,
+    EventReadCodec, EventReadMessage, HostBindings, JobRunnerClient, KvNamespaceClient,
+    MetadataFilesClient, MetadataProviderClient, OidcClient, OpenedEntrypoints, PluginCliClient,
     PluginClient, PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient,
-    ScheduledHandlerClient, SourceClient, SourceServer,
+    ScheduledHandlerClient, SocketCodec, SocketHandlerClient, SocketWireMessage, SocketsClient,
+    SourceClient, SourceServer,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,
@@ -288,7 +309,15 @@ pub use scan_page::{
 };
 pub use settings_schema::{
     is_valid_setting_key, EffectiveConfig, SettingKind, SettingSpec, SettingValueSpec,
-    SettingsSchema, MAX_SETTINGS, MAX_SETTING_STRING_BYTES, SETTINGS_SCHEMA_VERSION,
+    SettingsSchema, MAX_SETTINGS, MAX_SETTING_STRING_BYTES, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS,
+    SETTINGS_SCHEMA_VERSION,
+};
+pub use storage_ops::{
+    decode_storage_reply_bytes, encode_storage_reply_bytes, require_batch_len,
+    validate_changes_page, validate_head_many, validate_key_outcomes, validate_move_many_page,
+    ChangesPage, ChangesRequest, KeyOutcome, KeyPair, MoveManyPage, MoveManyRequest,
+    MoveManyTarget, MoveOptions, MoveResult, ObjectChange, ObjectChangeKind, StorageReply,
+    StorageReplyKind, MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES, MAX_CHANGES_PAGE,
 };
 
 /// Embedded JSON Schema for install `plugin.toml` files (shared with language

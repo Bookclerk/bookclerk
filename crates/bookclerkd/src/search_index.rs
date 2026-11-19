@@ -1,19 +1,17 @@
-//! This node's full-text search index, kept current by library events.
+//! This node's full-text works search index, kept current by library events.
 //!
-//! `GET /api/library/books?q=` reads a Tantivy index under the node's own
-//! `search_index/`, so every daemon keeps its own copy. Two pieces keep it
-//! current without a CLI run:
+//! `GET /api/library/works?q=` and `bookclerk library search` read the works
+//! index under the node's own `search_index_works/`, so every daemon keeps
+//! its own copy. Two pieces keep it current without a CLI run:
 //!
 //! - **Event consumer.** Each node registers its own consumer,
 //!   `host:search-index:<node id>`, on the durable outbox for the library
 //!   model's events ([`INDEX_EVENT_TYPES`]). Because the id names the node,
 //!   every node receives every event (unlike Discover's cluster-wide
-//!   consumer). An edition event refreshes the titles of each listing that
-//!   sells the edition, a holding event the titles of its listing, and
-//!   `book_acquired` its one title. A refresh deletes the listing's
-//!   documents and re-adds the titles that still sell it, so
-//!   `holding_removed` (same `listingId` payload as `holding_added`) drops
-//!   a title that is gone.
+//!   consumer). An edition event refreshes the edition's work, and a
+//!   holding event the work of its listing. A refresh deletes the work's
+//!   document and adds it back while the work is held, so
+//!   `holding_removed` drops a work nobody holds any more.
 //! - **Rebuild job.** When the index has no finished rebuild of the current
 //!   layout (a new node, a deleted directory, an older layout), the
 //!   heartbeat queues a `search_index_rebuild` job pinned to this node
@@ -32,7 +30,7 @@ use bookclerk_library::{
     DomainEventRecord, EnqueueJobSpec, EventCatalogSubscription, EventDeliveryRecord, JobKind,
     JobPayload, JobTrigger, LibraryStore,
 };
-use bookclerk_search::{SearchEngine, SearchError};
+use bookclerk_search::{SearchError, WorkSearchIndex};
 use chrono::Utc;
 use serde::Deserialize;
 use tracing::{debug, warn};
@@ -51,12 +49,11 @@ const CONSUMER_PREFIX: &str = "host:search-index:";
 /// Every one is a host event type
 /// ([`bookclerk_plugin_manifest::HOST_EVENT_TYPES`]), which no plugin may
 /// produce, so the payloads come from the host.
-pub const INDEX_EVENT_TYPES: [&str; 5] = [
+pub const INDEX_EVENT_TYPES: [&str; 4] = [
     "edition_linked",
     "edition_updated",
     "holding_added",
     "holding_removed",
-    "book_acquired",
 ];
 
 /// How long a delivery waits before it is tried again when the index is
@@ -147,8 +144,6 @@ enum Change {
     Edition(String),
     /// One listing's holders (`holding_added`, `holding_removed`).
     Listing(String),
-    /// One library title (`book_acquired`).
-    Title(String),
 }
 
 /// The edition events' payload.
@@ -165,14 +160,6 @@ struct EditionPayload {
 struct HoldingPayload {
     /// The listing whose holders changed.
     listing_id: String,
-}
-
-/// The part of `book_acquired` the consumer reads.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AcquiredPayload {
-    /// The acquired title's `books.uuid`.
-    title_id: String,
 }
 
 /// Parses an event into the change it describes.
@@ -194,9 +181,6 @@ fn parse_change(event: &DomainEventRecord) -> Result<Change, String> {
                 .map(|p| Change::Listing(p.listing_id))
                 .map_err(bad)
         }
-        "book_acquired" => serde_json::from_str::<AcquiredPayload>(&event.payload)
-            .map(|p| Change::Title(p.title_id))
-            .map_err(bad),
         other => Err(format!("not a search index event: {other}")),
     }
 }
@@ -212,29 +196,25 @@ fn parse_change(event: &DomainEventRecord) -> Result<Change, String> {
 /// Returns [`SearchError::Busy`] when another writer holds the index, or
 /// the library or index error.
 async fn apply_change(
-    engine: &SearchEngine,
+    works: &WorkSearchIndex,
     library: &LibraryStore,
     change: &Change,
 ) -> bookclerk_search::Result<usize> {
-    match change {
-        Change::Edition(edition_id) => {
-            let listings = library.listing_refs_of_edition(edition_id).await?;
-            engine.refresh_listings(library, &listings).await
-        }
-        Change::Listing(listing_id) => match library.listing_ref_by_id(listing_id).await? {
-            Some(listing) => engine.refresh_listings(library, &[listing]).await,
-            None => {
-                // The listing is gone, so its term is unknown and its
-                // documents cannot be found: rebuild instead.
-                engine.mark_incomplete()?;
-                Ok(0)
+    let work = match change {
+        Change::Edition(edition_id) => library.work_of_edition(edition_id).await?,
+        Change::Listing(listing_id) => {
+            let work = library.work_of_listing(listing_id).await?;
+            if work.is_none() {
+                // The listing is gone, so the work it belonged to is
+                // unknown: rebuild instead.
+                works.mark_incomplete()?;
             }
-        },
-        Change::Title(uuid) => {
-            engine
-                .refresh_titles(library, std::slice::from_ref(uuid))
-                .await
+            work
         }
+    };
+    match work {
+        Some(work) => works.refresh_works(library, &[work]).await,
+        None => Ok(0),
     }
 }
 
@@ -267,8 +247,8 @@ pub async fn run_search_delivery(
     let gate = write_gate(&dir);
     let outcome = match gate.try_lock() {
         Err(_) => Err(SearchError::Busy),
-        Ok(_gate) => match SearchEngine::open(&dir) {
-            Ok(engine) => apply_change(&engine, library, &change).await,
+        Ok(_gate) => match WorkSearchIndex::open(&dir) {
+            Ok(works) => apply_change(&works, library, &change).await,
             Err(err) => Err(err),
         },
     };
@@ -340,7 +320,7 @@ fn rebuild_payload(node_id: &str) -> JobPayload {
 /// * `node_id` - This node.
 pub(crate) async fn queue_rebuild_if_missing(state: &AppState, node_id: &str) {
     let dir = state.config.read().await.paths().search_index_dir.clone();
-    if SearchEngine::is_complete(&dir) {
+    if WorkSearchIndex::is_complete(&dir) {
         return;
     }
     let library = state.library_snapshot().await;
@@ -404,9 +384,8 @@ pub(crate) async fn run_search_index_rebuild(
     let dir = state.config.read().await.paths().search_index_dir.clone();
     let gate = write_gate(&dir);
     let _held = gate.lock().await;
-    let engine = SearchEngine::open(&dir)?;
-    let indexed = engine.rebuild(&library).await?;
-    Ok(format!("search index rebuilt: {indexed} title(s)"))
+    let works = WorkSearchIndex::open(&dir)?.rebuild(&library).await?;
+    Ok(format!("search index rebuilt: {works} work(s)"))
 }
 
 #[cfg(test)]
@@ -453,9 +432,9 @@ mod tests {
                 Ok(Change::Listing("l".into()))
             );
         }
-        assert_eq!(
-            parse_change(&event("book_acquired", r#"{"titleId":"t","pathKeys":[]}"#)),
-            Ok(Change::Title("t".into()))
+        assert!(
+            parse_change(&event("book_acquired", r#"{"titleId":"t","pathKeys":[]}"#)).is_err(),
+            "an acquire changes nothing the index holds"
         );
         assert!(parse_change(&event("edition_linked", "{}")).is_err());
         assert!(parse_change(&event("wishlist_changed", "{}")).is_err());
@@ -552,13 +531,27 @@ mod tests {
 
         assert!(deliver_all(&state, &library, node).await >= 1);
         let dir = state.config.read().await.paths().search_index_dir.clone();
-        let hits = SearchEngine::open(&dir)
-            .expect("open")
-            .search("evented", 10)
-            .expect("search");
-        assert_eq!(hits.len(), 1);
+        let works_dir = dir.clone();
         // Events alone do not make a rebuilt index.
-        assert!(!SearchEngine::is_complete(&dir));
+        assert!(!WorkSearchIndex::is_complete(&works_dir));
+        let works = WorkSearchIndex::open(&works_dir).expect("open works");
+        assert_eq!(
+            works.match_ids("evented", 0, 10).expect("search").ids.len(),
+            1
+        );
+
+        // A holding event for a listing that is gone asks for a rebuild.
+        let gone = event(
+            "holding_removed",
+            r#"{"listingId":"gone","holder":"x","holdingId":"h"}"#,
+        );
+        works.rebuild(&library).await.expect("works rebuild");
+        assert!(WorkSearchIndex::is_complete(&works_dir));
+        let written = apply_change(&works, &library, &parse_change(&gone).expect("parse"))
+            .await
+            .expect("apply");
+        assert_eq!(written, 0);
+        assert!(!WorkSearchIndex::is_complete(&works_dir));
     }
 
     #[tokio::test]
@@ -723,16 +716,22 @@ mod tests {
         let summary = run_search_index_rebuild(&state, &job.payload, None)
             .await
             .expect("rebuild");
-        assert_eq!(summary, "search index rebuilt: 1 title(s)");
+        assert_eq!(summary, "search index rebuilt: 1 work(s)");
         let dir = state.config.read().await.paths().search_index_dir.clone();
-        assert!(SearchEngine::is_complete(&dir));
+        let works_dir = dir.clone();
+        assert!(WorkSearchIndex::is_complete(&works_dir));
+        let works = WorkSearchIndex::open(&works_dir).expect("open works");
         assert_eq!(
-            SearchEngine::open(&dir)
-                .expect("open")
-                .search("rebuilt", 10)
-                .expect("search")
-                .len(),
+            works.match_ids("rebuilt", 0, 10).expect("search").ids.len(),
             1
         );
+
+        // A complete index queues nothing, and a rebuild asked for anyway
+        // runs.
+        queue_rebuild_if_missing(&state, &node).await;
+        let summary = run_search_index_rebuild(&state, &job.payload, None)
+            .await
+            .expect("rebuild again");
+        assert_eq!(summary, "search index rebuilt: 1 work(s)");
     }
 }

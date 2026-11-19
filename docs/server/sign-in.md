@@ -158,7 +158,7 @@ than the OS hint alone:
 | Sign-in link | Tray **Copy sign-in link** or `bookclerk login`: a loopback `?code=` URL, valid 180 seconds by default; the tray then removes that URL if it is still on the clipboard |
 | Operator cookie | `bookclerk_operator_session` (`Path=/`), also used by elevated Owners |
 | Portal cookie | `bookclerk_portal_session` (`Path=/`), the session of a first-party user |
-| Library card | A clerk's session, sent as `Authorization: Bookclerk-Client <token>`, never as a cookie (see [Library cards](#library-cards)) |
+| Library card | A clerk's session, sent as `Authorization: Bookclerk-Clerk <token>`, never as a cookie (see [Library cards](#library-cards)) |
 | Config | `[daemon.auth]` |
 | Preferences | Stored in the database (`user_preferences`), not `config.toml` |
 
@@ -169,28 +169,28 @@ as a branch. It signs in as the person and holds a **library card**: a
 session token in the person's session list, not a node.
 
 > [!NOTE]
-> A clerk is another Bookclerk install that a
-> person uses to reach a library. The protocol and the code call it a
-> *client*: the OAuth client `bookclerk-client`, the
-> `Authorization: Bookclerk-Client` scheme, the `/api/client/` routes and
-> the `client` session kind.
+> A clerk is another Bookclerk install that a person uses to reach a
+> library. The API and the code use the same word: the built-in OAuth
+> client `bookclerk-clerk`, the `Authorization: Bookclerk-Clerk` scheme,
+> the `/api/clerk/` routes and the `clerk` session kind. Only OAuth's own
+> parameter names, such as `client_id`, keep their standard spelling.
 
 1. The clerk sends the browser to the library's `/oidc/authorize`
-   with the built-in public client `bookclerk-client`, the scope
+   with the built-in public client `bookclerk-clerk`, the scope
    `library:member`, an S256 code challenge, a `state`, a loopback or
-   `https://` redirect URI, and a `client_name`.
-2. The library sends the request to `/client/approve`, which signs the
+   `https://` redirect URI, and a `clerk_name`.
+2. The library sends the request to `/clerk/approve`, which signs the
    person in and asks "Give *name* a library card for *library*?", where *name* is the name the clerk gave itself.
    Approving needs an active user and the node API transport policy (TLS,
    except on loopback). It does not need "Let new branches join".
 3. The library sends the browser back with a single-use code that lives
    60 seconds.
 4. The clerk redeems the code with its verifier at
-   `POST /api/client/v1/token` and gets
+   `POST /api/clerk/v1/token` and gets
    `{ token, cluster_id, user, idle_secs }`. The token is shown once; the
    library keeps only its hash. Any failed redeem spends the code.
 
-The clerk then sends `Authorization: Bookclerk-Client <token>`:
+The clerk then sends `Authorization: Bookclerk-Clerk <token>`:
 
 - It works only on the routes any library session may use: the library,
   Discover, the wishlist, the request queue, preferences, the person's
@@ -199,7 +199,7 @@ The clerk then sends `Authorization: Bookclerk-Client <token>`:
   role.
 - It needs TLS, except on loopback, like the node API. Otherwise the
   route answers `403 transport_insecure`, or `403
-  client_sign_in_unavailable` where this daemon doesn't serve remote
+  clerk_sign_in_unavailable` where this daemon doesn't serve remote
   installs.
 - It is never a cookie, and a browser's session token is never a library
   card.
@@ -212,8 +212,138 @@ The clerk then sends `Authorization: Bookclerk-Client <token>`:
   beside that browser session, including a sign-in through an integration
   such as Audiobookshelf.
 
-`bookclerk-client` codes are never redeemed at `/oidc/token`, and
-`bookclerk-client` can't be registered as a client.
+`bookclerk-clerk` codes are never redeemed at `/oidc/token`, and
+`bookclerk-clerk` can't be registered as a client.
+
+### The clerk socket
+
+With its library card, a clerk keeps one WebSocket open to the library at
+`GET /api/clerk/v1/connect`, so it hears about changes instead of polling.
+It shows the library's books to the person, and is not a branch link: the
+library never sends work on it.
+
+1. The clerk connects with `Authorization: Bookclerk-Clerk <token>` and
+   the subprotocol `bookclerk-clerk.v1`, over TLS except on loopback.
+2. The library answers `hello` with the topics the card hears about
+   (`library` and `discover`), then `changed` whenever one of them moves.
+3. The clerk asks for the library's books a page at a time with
+   `{"v":1,"type":"books","after":""}`. The library answers `books.page`
+   with up to 100 works, each with its identifiers and the library's
+   editions of it, and the cursor for the next page (none on the last
+   page). The pages list every book on the library's store accounts, as
+   its own Library page lists them for a member. Each edition is
+   `{"edition": {...}, "yours": true}` when it is on a store account
+   linked to the card's person; `yours` is left out otherwise.
+   An edition whose audio the library already holds also carries `copy`:
+   `content_type` (a media type such as `audio/mp4`), `bitrate_kbps` and
+   `source_store` (the store the file came from) when the library has
+   probed the file, `lossless` when true, and `version`, a short opaque
+   string that changes when the library's file does. `copy` is left out
+   for an edition the library has not downloaded.
+   A cursor is an opaque string of up to 64 letters, digits and `-`. The
+   clerk sends it back unchanged as the next `after`.
+   A frame it cannot read gets `error` with code `invalid`.
+4. The clerk asks for the library's copy of an edition with
+   `{"v":1,"type":"copy.grant","store":"…","marketplace":"…","product_id":"…"}`,
+   naming the edition by a store listing from a page (`marketplace` is
+   left out for a store without marketplaces). The library answers
+   `copy.granted` with the same listing, a `copy_id`, a `token`,
+   `expires_in_secs` (one hour), `copy` (as on a page) and `files`: each
+   file's `name`, `role` and `size`, the primary audio first. The clerk
+   downloads file `n` of that list with
+   `GET /api/copies/v1/{copy_id}/files/{n}` and
+   `Authorization: Bookclerk-Copy <token>`; one `Range` is honoured, so a
+   broken download resumes. An edition the person may not take, or one
+   the library holds no copy of, gets `error` with code `not_found`; the
+   two are not told apart. `unavailable` means try again later.
+
+Answers come in the order the frames were asked.
+
+A clerk asks for a copy when one of its own acquires wants that edition,
+and takes it when the library downloaded it from the same store, or when
+it is better than the clerk's own download from another store (see
+[When a branch takes the copy](cluster-hosts.md#when-a-branch-takes-the-copy),
+which a clerk follows too). The clerk keeps the token only while the
+acquire runs and keeps it out of its own logs.
+
+The copy token is good only while the card is: the library checks on every
+download that the card is still signed in and its user is not disabled,
+that the person may still see the edition and that the files are the ones
+it listed. Once the card is signed out, every new download request is
+refused; a file already being sent is not cut off. See
+[Taking a copy from the library](cluster-hosts.md#taking-a-copy-from-the-library)
+for the download route's answers.
+
+> [!NOTE]
+> The token is frame text on this socket, where a branch's is sealed to
+> its key: a clerk has no key of its own, and the socket is the card's own
+> connection, which is TLS except on loopback. Treat it like the card. The library stores only its hash
+> and keeps it out of its logs.
+
+The library checks the card again every 30 seconds, and before every page
+and every copy it grants,
+and closes the socket with code 4401 once the card is signed out, revoked,
+expired, its user disabled, or its person must enroll a second factor (a
+new socket then gets 403 `mfa_enrollment_required`). A socket the clerk
+leaves silent for 60 seconds is closed, as is one that has not taken a
+frame within 10 seconds, and a library serves at most 512 clerk sockets at
+once (more get 503 `clerk_sockets_busy`).
+
+### Signing in with a library card
+
+On the clerk, the operator or an Owner signs this install in to a
+library. The daemon, never the browser, talks to the library:
+
+1. `POST /api/config/clerk/inspect` `{ address }` reads the library's
+   `GET /api/node/v1/info` under the node API transport policy. A
+   self-signed library's fingerprint comes back to confirm.
+2. `POST /api/config/clerk/start` `{ address, fingerprint?, clerk_name? }`
+   reads the library again, checks the confirmed fingerprint, and answers
+   the authorize URL to open. The name defaults to this machine's name.
+   The verifier and `state` stay in the daemon's memory for 10 minutes;
+   a restart forgets them. The redirect comes back to this install's
+   `/clerk/callback`.
+3. `POST /api/config/clerk/callback` `{ code, state }` redeems the code
+   with the verifier, checks the answer is for the library that was
+   inspected, and seals the card into the database (`encrypted_secrets`,
+   kind `clerk_card`). A sign-in is used once, whatever the outcome.
+
+Then the daemon keeps the library's clerk socket open with the card:
+
+- It reads every page of the library's books on each connection, whenever
+  the library sends `changed` for `library`, and every 30 minutes. Once the
+  last page is in, it drops the books the read no longer named. A read cut
+  short drops nothing.
+- The books show in **Books in other libraries**
+  (`GET /api/config/join/window`, which lists the libraries in `cards`),
+  merged with the books of any library this install is a branch of. Each
+  edition there carries `yours`, and the person's own are marked **Yours**.
+- A lost connection is dialed again after 5 seconds, doubling up to 5
+  minutes.
+- When the library ends the card (close 4401, or 401 on connecting), the
+  card and its books are dropped here, and the library stays listed as
+  `signed_out` so the person can sign in again.
+
+`GET /api/config/clerk` lists the cards. `POST /api/config/clerk/sign-out`
+`{ cluster_id }` ends the card at the library (`POST /api/auth/logout`
+with the card) when it can be reached, then drops the card, its books
+and the library from the list. The answer's `library_signed_out` says
+whether the library ended its session too; when it is `false`, the
+person can revoke the session from their session list there.
+
+An install that is already an active branch of a library reads
+that library's books through its link, so a card for it is refused
+(409 `already_joined`). These routes are for the operator or an Owner.
+
+In the web app this is Settings → Library → **Library cards**: **Sign in
+with a library card** reads the library, asks for the fingerprint and the
+name, and sends the browser to the library's sign-in page. The library
+sends it back to `/clerk/callback`, which posts the `code` and `state` to
+`POST /api/config/clerk/callback` and removes them from the address bar.
+Only a request that got no answer offers **Try again**; any answer ends
+the pending sign-in. Each card in the list has **Sign out** (**Remove** once
+the library ended it). See
+[Sign in with a library card](../guide/branches.md#sign-in-with-a-library-card).
 
 ## API endpoints
 
@@ -232,7 +362,8 @@ The clerk then sends `Authorization: Bookclerk-Client <token>`:
 | Second-factor policy | `GET`/`PUT /api/auth/mfa-policy` `{ require_second_factor }` (Owner or operator) |
 | Preferences | `GET`/`PATCH /api/preferences`: `default_view`, `disabled_shelves`, `theme` (subject `user:{id}`, `portal:{identity_id}` or `operator`) |
 | Portal | `/api/portal/*` (Accounts, invite claims) |
-| Library cards | `GET`/`POST /api/auth/client-consent` (the consent page, any signed-in user), `POST /api/client/v1/token` (the clerk redeems its code) |
+| Library cards | `GET`/`POST /api/auth/clerk-consent` (the consent page, any signed-in user), `POST /api/clerk/v1/token` (the clerk redeems its code), `GET /api/clerk/v1/connect` (the clerk socket) |
+| Library cards (clerk side) | `GET /api/config/clerk`, `POST /api/config/clerk/inspect`, `/start`, `/callback`, `/sign-out` (operator or Owner) |
 
 `GET /api/auth/me` returns
 `{ authenticated, role, default_view, can_acquire, elevated, impersonating?, portal?, user?, second_factor? }`:
@@ -265,7 +396,8 @@ The web app keeps the address bar in step with the screen:
 | `/accounts` | Accounts |
 | `/settings` | Settings |
 | `/invite` | Claim an invite (`?ticket=`) |
-| `/client/approve` | Give a clerk a library card (see [Library cards](#library-cards)) |
+| `/clerk/approve` | Give a clerk a library card (see [Library cards](#library-cards)) |
+| `/clerk/callback` | Finish this install's library card sign-in (see [Signing in with a library card](#signing-in-with-a-library-card)) |
 
 `bookclerkd` serves `index.html` for these paths, so a hard refresh on
 `/library` loads the app instead of a 404. Assets still come from
@@ -449,7 +581,9 @@ join, and the fingerprint a joining operator checks.
 - Branch invites come from **Add a branch** in User Management (and each
   user's own menu), and are shown once.
 - On a fresh install, the operator first sees a welcome screen: **Start a
-  new library** or **Join a library**.
+  new library** or **Join a library**. In the desktop app it opens on
+  **Sign in to your library** with a library card instead. An install
+  that holds a library card is no longer fresh.
 
 See [Libraries and branches](cluster-hosts.md).
 

@@ -1,4 +1,4 @@
-//! Grant algebra for owner plugins on a host node (H-4 design, section 5;
+//! Grant algebra for owner plugins on a branch node (H-4 design, section 5;
 //! step 8).
 //!
 //! An owner cluster deploys a plugin to a host with the grant the

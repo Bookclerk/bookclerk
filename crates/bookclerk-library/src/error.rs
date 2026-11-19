@@ -14,6 +14,10 @@ pub enum EntityKind {
     Book,
     /// A work of the library data model.
     Work,
+    /// An edition of the library data model.
+    Edition,
+    /// A store listing of the library data model (`store_listings`).
+    Listing,
     /// A title request (wishlist entry).
     TitleRequest,
     /// A user.
@@ -40,6 +44,10 @@ pub enum EntityKind {
     ClusterLink,
     /// The node keys a linked library published.
     ClusterNodeKeys,
+    /// A library this install holds a library card for, as a clerk.
+    ClerkLink,
+    /// The sealed library card of a clerk link.
+    ClerkCard,
     /// A configuration document, by namespace.
     Configuration,
     /// A plugin instance.
@@ -72,10 +80,12 @@ pub enum EntityKind {
 
 impl EntityKind {
     /// Every kind, in declaration order.
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 34] = [
         Self::Account,
         Self::Book,
         Self::Work,
+        Self::Edition,
+        Self::Listing,
         Self::TitleRequest,
         Self::User,
         Self::PortalIdentity,
@@ -89,6 +99,8 @@ impl EntityKind {
         Self::ClusterIdentity,
         Self::ClusterLink,
         Self::ClusterNodeKeys,
+        Self::ClerkLink,
+        Self::ClerkCard,
         Self::Configuration,
         Self::PluginInstance,
         Self::PluginDeployment,
@@ -112,6 +124,8 @@ impl EntityKind {
             Self::Account => "account",
             Self::Book => "book",
             Self::Work => "work",
+            Self::Edition => "edition",
+            Self::Listing => "listing",
             Self::TitleRequest => "title request",
             Self::User => "user",
             Self::PortalIdentity => "portal identity",
@@ -125,6 +139,8 @@ impl EntityKind {
             Self::ClusterIdentity => "cluster identity",
             Self::ClusterLink => "library link",
             Self::ClusterNodeKeys => "node keys of library",
+            Self::ClerkLink => "library card",
+            Self::ClerkCard => "sealed library card",
             Self::Configuration => "configuration",
             Self::PluginInstance => "plugin instance",
             Self::PluginDeployment => "plugin deployment",

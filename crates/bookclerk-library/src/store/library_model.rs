@@ -807,6 +807,17 @@ pub fn listing_from_book(
     resolve::Listing::from_draft(&draft)
 }
 
+/// Where the data model places one edition: the recording or text it is
+/// an edition of, and that expression's work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EditionPlacement {
+    /// `expressions.id`: two editions with the same expression are the same
+    /// recording (or text), sold under different products.
+    pub(crate) expression_id: String,
+    /// `works.id` of that expression.
+    pub(crate) work_id: String,
+}
+
 /// A title someone asks about (a wish, a catalog card): what the resolver
 /// needs to say which work it belongs to.
 #[derive(Debug, Clone, Default)]
@@ -1416,6 +1427,16 @@ impl LibraryStore {
         Ok(None)
     }
 
+    /// [`Self::record_listing_page_with_details`] with no store text, as
+    /// the page tests drive it.
+    #[cfg(test)]
+    pub(crate) async fn record_listing_page(
+        &self,
+        items: &[(resolve::Listing, resolve::HoldingDraft, WorkEnrichment)],
+    ) {
+        self.record_listing_page_with_details(items, &[]).await;
+    }
+
     /// Resolves a page of listings, each with its holding and the fields
     /// its library title offers its work, logging a listing that fails
     /// rather than returning it (see [`LibraryStore::record_listing`]).
@@ -1427,9 +1448,16 @@ impl LibraryStore {
     /// goes through [`Self::record_listing`], which reads its own snapshot
     /// and writes under the usual guards. Settling the unchanged listings
     /// first is the same as scanning them first, which a scan is free to do.
-    pub(crate) async fn record_listing_page(
+    ///
+    /// Each resolved listing's store text is filled from `details` (same
+    /// order as `items`; a missing entry writes none). A settled listing
+    /// whose stored text already says the same costs no write; the rest
+    /// are written together once the page is resolved, and a failed write
+    /// is logged.
+    pub(crate) async fn record_listing_page_with_details(
         &self,
         items: &[(resolve::Listing, resolve::HoldingDraft, WorkEnrichment)],
+        details: &[crate::ListingDetail],
     ) {
         let Some((_, first, _)) = items.first() else {
             return;
@@ -1450,7 +1478,9 @@ impl LibraryStore {
             std::collections::HashSet::new();
         let mut written_editions: std::collections::HashSet<String> =
             std::collections::HashSet::new();
-        for (listing, holding, fill) in items {
+        let mut text_writes: Vec<(String, crate::ListingDetail)> = Vec::new();
+        for (index, (listing, holding, fill)) in items.iter().enumerate() {
+            let detail = details.get(index);
             let settled = match &pool {
                 Some(_)
                     if written_keys.contains(&listing.key)
@@ -1470,6 +1500,12 @@ impl LibraryStore {
             };
             let result = match settled {
                 Ok(Some(plan)) => {
+                    if let Some(detail) = detail {
+                        let stored = pool.as_ref().and_then(|p| p.stored_listing(&listing.key));
+                        if stored.is_none_or(|row| detail.changes(row)) {
+                            text_writes.push((plan.listing.id.clone(), detail.clone()));
+                        }
+                    }
                     let edition_id = &plan.listing.edition_id;
                     let known = pool.as_ref().and_then(|p| p.work_of_edition(edition_id));
                     if known.is_some_and(|work| !fill.fills(work)) {
@@ -1483,6 +1519,9 @@ impl LibraryStore {
                     match self.record_listing(listing, holding).await {
                         Ok(plan) => {
                             written_editions.insert(plan.listing.edition_id.clone());
+                            if let Some(detail) = detail {
+                                text_writes.push((plan.listing.id.clone(), detail.clone()));
+                            }
                             self.fill_work_from_book(&plan.listing.edition_id, fill)
                                 .await
                         }
@@ -1498,6 +1537,15 @@ impl LibraryStore {
                     "library title stored but not resolved into the library model; the next scan retries"
                 );
             }
+        }
+        if text_writes.is_empty() {
+            return;
+        }
+        if let Err(err) = self.record_listing_details(&text_writes).await {
+            tracing::warn!(
+                error = %err,
+                "store text of a page of listings not written; the next scan retries"
+            );
         }
     }
 
@@ -2172,18 +2220,37 @@ impl LibraryStore {
         &self,
         edition_ids: BTreeSet<String>,
     ) -> Result<std::collections::BTreeMap<String, String>> {
+        Ok(self
+            .placements_of_editions(edition_ids)
+            .await?
+            .into_iter()
+            .map(|(edition, placement)| (edition, placement.work_id))
+            .collect())
+    }
+
+    /// Each edition's expression and work.
+    ///
+    /// An edition whose expression row is missing is left out, as it is
+    /// from [`Self::works_of_editions`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub(crate) async fn placements_of_editions(
+        &self,
+        edition_ids: BTreeSet<String>,
+    ) -> Result<std::collections::BTreeMap<String, EditionPlacement>> {
         use std::collections::BTreeMap;
         let edition_ids: Vec<String> = edition_ids.into_iter().collect();
+        // Unique-key lookups through the row-capped helper, so each chunk
+        // also fits the adapter's result-row limit.
         let mut expression_of = BTreeMap::new();
-        for chunk in edition_ids.chunks(self.lookup_chunk()) {
-            for e in editions::Entity::find()
-                .filter(editions::Column::Id.is_in(chunk.iter().cloned()))
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                expression_of.insert(e.id, e.expression_id);
-            }
+        for e in find_chunked::<editions::Entity, _>(self, &edition_ids, |part| {
+            editions::Entity::find().filter(editions::Column::Id.is_in(part.iter().cloned()))
+        })
+        .await?
+        {
+            expression_of.insert(e.id, e.expression_id);
         }
         let expression_ids: Vec<String> = expression_of
             .values()
@@ -2192,20 +2259,24 @@ impl LibraryStore {
             .into_iter()
             .collect();
         let mut work_of_expression = BTreeMap::new();
-        for chunk in expression_ids.chunks(self.lookup_chunk()) {
-            for x in expressions::Entity::find()
-                .filter(expressions::Column::Id.is_in(chunk.iter().cloned()))
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                work_of_expression.insert(x.id, x.work_id);
-            }
+        for x in find_chunked::<expressions::Entity, _>(self, &expression_ids, |part| {
+            expressions::Entity::find().filter(expressions::Column::Id.is_in(part.iter().cloned()))
+        })
+        .await?
+        {
+            work_of_expression.insert(x.id, x.work_id);
         }
         Ok(expression_of
             .into_iter()
-            .filter_map(|(edition, expression)| {
-                Some((edition, work_of_expression.get(&expression)?.clone()))
+            .filter_map(|(edition, expression_id)| {
+                let work_id = work_of_expression.get(&expression_id)?.clone();
+                Some((
+                    edition,
+                    EditionPlacement {
+                        expression_id,
+                        work_id,
+                    },
+                ))
             })
             .collect())
     }
@@ -2949,6 +3020,92 @@ mod store_tests {
         let minted = again.new_edition.expect("a new edition");
         assert_ne!(minted.id, first.listing.edition_id);
         assert_eq!(Uuid::parse_str(&minted.id).unwrap().get_version_num(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_probe_is_stored_on_the_owners_file_row_only() {
+        use crate::{FileOwner, FileProbe, FileRole};
+        let store = self::store().await;
+        let owner = FileOwner::Edition("an-edition".into());
+        assert!(store
+            .record_edition_file("local", "A/T.m4b", &owner, FileRole::Audio)
+            .await
+            .unwrap());
+        assert_eq!(
+            store.edition_file_probe("local", "A/T.m4b").await.unwrap(),
+            None
+        );
+        let probe = FileProbe {
+            content_type: "audio/mp4".into(),
+            bitrate_kbps: Some(125),
+            lossless: false,
+            source_store: Some("audible".into()),
+        };
+        // Another edition's probe of the same key describes nothing.
+        let other = FileOwner::Edition("another-edition".into());
+        assert!(!store
+            .set_edition_file_probe("local", "A/T.m4b", &other, &probe)
+            .await
+            .unwrap());
+        assert!(!store
+            .set_edition_file_probe("local", "A/Missing.m4b", &owner, &probe)
+            .await
+            .unwrap());
+        assert_eq!(
+            store.edition_file_probe("local", "A/T.m4b").await.unwrap(),
+            None
+        );
+        assert!(store
+            .set_edition_file_probe("local", "A/T.m4b", &owner, &probe)
+            .await
+            .unwrap());
+        assert_eq!(
+            store.edition_file_probe("local", "A/T.m4b").await.unwrap(),
+            Some(probe.clone())
+        );
+        // A later probe replaces the earlier one.
+        let lossless = FileProbe {
+            content_type: "audio/flac".into(),
+            bitrate_kbps: None,
+            lossless: true,
+            source_store: None,
+        };
+        assert!(store
+            .set_edition_file_probe("local", "A/T.m4b", &owner, &lossless)
+            .await
+            .unwrap());
+        assert_eq!(
+            store.edition_file_probe("local", "A/T.m4b").await.unwrap(),
+            Some(lossless)
+        );
+        // A malformed probe is refused before any write.
+        for bad in [
+            FileProbe {
+                content_type: String::new(),
+                ..probe.clone()
+            },
+            FileProbe {
+                content_type: "audio/mp4\n".into(),
+                ..probe.clone()
+            },
+            FileProbe {
+                bitrate_kbps: Some(0),
+                ..probe.clone()
+            },
+            FileProbe {
+                bitrate_kbps: Some(FileProbe::MAX_BITRATE_KBPS + 1),
+                ..probe.clone()
+            },
+            FileProbe {
+                source_store: Some("Audible Store".into()),
+                ..probe.clone()
+            },
+        ] {
+            assert!(store
+                .set_edition_file_probe("local", "A/T.m4b", &owner, &bad)
+                .await
+                .is_err());
+        }
     }
 
     #[tokio::test]
@@ -3960,6 +4117,7 @@ mod store_tests {
             target_id: Set(Some("edition-that-was-removed".into())),
             created_by_user_id: Set(None),
             created_at: Set(now_str()),
+            revision: Set(String::new()),
         }
         .insert(&store.db)
         .await
@@ -4142,6 +4300,7 @@ mod store_tests {
             target_id: Set(Some(plans[1].listing.edition_id.clone())),
             created_by_user_id: Set(None),
             created_at: Set(now_str()),
+            revision: Set(String::new()),
         }
         .insert(&store.db)
         .await
@@ -4159,6 +4318,7 @@ mod store_tests {
             target_id: Set(None),
             created_by_user_id: Set(None),
             created_at: Set(now_str()),
+            revision: Set(String::new()),
         }
         .insert(&store.db)
         .await

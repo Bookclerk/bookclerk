@@ -182,6 +182,83 @@ impl WriteBatches {
     }
 }
 
+/// [`WriteBatches`] that also remembers, for each batch, the positions of
+/// the statements whose affected-row counts the caller reads back (one row
+/// write's `UPDATE` among its group), so many rows' writes can share
+/// batches and still be counted one by one.
+pub(crate) struct CountedBatches {
+    /// The batches being cut.
+    inner: WriteBatches,
+    /// Statements in the open batch, as `inner` holds them.
+    open_len: usize,
+    /// Positions in the open batch of the statements to count.
+    open_counted: Vec<usize>,
+    /// Closed batches, with the positions to count in each.
+    done: Vec<(Vec<TypedDbStatement>, Vec<usize>)>,
+}
+
+impl CountedBatches {
+    /// Wraps `inner`, which must have no trailer and hold no statements.
+    pub(crate) fn new(inner: WriteBatches) -> Self {
+        Self {
+            inner,
+            open_len: 0,
+            open_counted: Vec::new(),
+            done: Vec::new(),
+        }
+    }
+
+    /// Records a batch `inner` closed, before the statements that closed it
+    /// join the next one.
+    fn closed(&mut self, batch: Option<Vec<TypedDbStatement>>) {
+        if let Some(batch) = batch {
+            self.done
+                .push((batch, std::mem::take(&mut self.open_counted)));
+            self.open_len = 0;
+        }
+    }
+
+    /// Adds statements that must land in one batch, counting the one at
+    /// `counted` (its position in `group`).
+    ///
+    /// # Errors
+    ///
+    /// As [`WriteBatches::push_group`].
+    pub(crate) fn push_group(
+        &mut self,
+        group: Vec<TypedDbStatement>,
+        counted: usize,
+    ) -> Result<()> {
+        let len = group.len();
+        let closed = self.inner.push_group(group)?;
+        self.closed(closed);
+        self.open_counted.push(self.open_len + counted);
+        self.open_len += len;
+        Ok(())
+    }
+
+    /// Adds one statement that is not counted.
+    ///
+    /// # Errors
+    ///
+    /// As [`WriteBatches::push`].
+    pub(crate) fn push(&mut self, stmt: TypedDbStatement) -> Result<()> {
+        let closed = self.inner.push(stmt)?;
+        self.closed(closed);
+        self.open_len += 1;
+        Ok(())
+    }
+
+    /// Every batch, in order, with the positions of its counted statements.
+    pub(crate) fn finish(mut self) -> Vec<(Vec<TypedDbStatement>, Vec<usize>)> {
+        let last = self.inner.finish();
+        let counted = std::mem::take(&mut self.open_counted);
+        let mut done = self.done;
+        done.extend(last.map(|batch| (batch, counted)));
+        done
+    }
+}
+
 /// Operation-id prefix used while sizing. It is at least as long as every
 /// real batch prefix (`discover-candidates-`, `listening-progress-`,
 /// `scanned-books-`), so a sized request is never smaller than the one sent.

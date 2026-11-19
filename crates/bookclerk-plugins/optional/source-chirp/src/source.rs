@@ -5,8 +5,8 @@
 
 use bookclerk_storefront::records::{self, CreditRole};
 use bookclerk_storefront::{
-    CatalogHit, CatalogSearchField, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts,
-    SourcePurchaseHint,
+    CatalogHit, CatalogSearchField, CatalogSearchOpts, ExpandSeed, PricedAnswer, PricedListing,
+    PurchaseHintOpts, SourcePurchaseHint,
 };
 
 use crate::client::{CatalogAudiobook, ChirpClient, DEFAULT_GRAPHQL_URL};
@@ -14,7 +14,7 @@ use crate::client::{CatalogAudiobook, ChirpClient, DEFAULT_GRAPHQL_URL};
 /// Describe / config id for this store (`chirp`).
 pub const ID: &str = "chirp";
 
-/// How long [`ChirpSource::purchase_hints`] keeps starting title lookups for
+/// How long [`ChirpSource::purchase_answers`] keeps starting title lookups for
 /// titles without a Chirp product id. Well under the host's 10 s batch
 /// deadline, so the pricing query for every resolved title lands in time.
 pub const RESOLVE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
@@ -37,6 +37,34 @@ impl Default for ChirpSource {
 
 /// Most audiobooks priced by one aliased GraphQL query.
 const PRICE_BATCH_IDS: usize = 50;
+
+/// Most listings one title search answers as records.
+pub const TITLE_RECORDS: usize = 10;
+
+/// What one query found, before pricing.
+#[derive(Debug, Default)]
+struct Found {
+    /// The store's pick for the query.
+    hint: Option<SourcePurchaseHint>,
+    /// Every listing a title search found, best first; empty when the
+    /// query named its product.
+    records: Vec<CatalogHit>,
+}
+
+/// An unpriced hint linking `record`'s storefront page.
+fn listing_hint(record: &CatalogHit) -> SourcePurchaseHint {
+    SourcePurchaseHint {
+        product_id: record.product_id.clone(),
+        title: Some(record.title.clone()).filter(|t| !t.is_empty()),
+        url: record.url.clone().or_else(|| {
+            Some(format!(
+                "https://www.chirpbooks.com/audiobooks/{}",
+                record.product_id
+            ))
+        }),
+        ..Default::default()
+    }
+}
 
 impl ChirpSource {
     /// Returns a Chirp source aimed at the production GraphQL endpoint.
@@ -266,110 +294,213 @@ impl ChirpSource {
 
     /// Resolves the storefront price and link for a title; `None` when not sold.
     ///
+    /// The bare-hint form of [`Self::purchase_answer`].
+    ///
     /// # Errors
     ///
-    /// Returns an error when a storefront request or its parse fails and the
-    /// method cannot fall back. Failed lookups are soft, so `Ok(None)` can also
-    /// mean the store could not be reached, not only that the title is not sold.
+    /// As [`Self::purchase_answer`].
     pub async fn purchase_hint(
         &self,
         opts: &PurchaseHintOpts,
     ) -> bookclerk_storefront::Result<Option<SourcePurchaseHint>> {
-        let client = ChirpClient::new(&self.graphql_url);
-        let mut hint = if let Some(pid) = opts
+        self.purchase_answer(opts).await.map(|answer| answer.hint)
+    }
+
+    /// Resolves a title's Chirp product and price, with every listing a
+    /// title search found.
+    ///
+    /// A known Chirp product id is priced as it is. Otherwise the title and
+    /// author go to the store's typeahead search, and up to
+    /// `TITLE_RECORDS` audiobooks come back as priced records (credits,
+    /// series, publisher, length and language) for the host to place. The
+    /// store's pick is the first one whose title matches, as before records
+    /// existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bookclerk_storefront::SourceError::RateLimited`] when Chirp
+    /// asks to slow down. Other failed lookups are soft, so an empty answer
+    /// can also mean the store could not be reached, not only that the
+    /// title is not sold.
+    pub async fn purchase_answer(
+        &self,
+        opts: &PurchaseHintOpts,
+    ) -> bookclerk_storefront::Result<PricedAnswer> {
+        let found = self.find_listings(opts).await?;
+        Ok(self
+            .price_found(vec![found], std::slice::from_ref(opts))
+            .await?
+            .into_iter()
+            .next()
+            .unwrap_or_default())
+    }
+
+    /// Finds the query's product, unpriced: its known product id, else what
+    /// a typeahead search for its title and author returns.
+    ///
+    /// # Errors
+    ///
+    /// Only Chirp's "slow down"; any other failed search finds nothing.
+    async fn find_listings(&self, opts: &PurchaseHintOpts) -> bookclerk_storefront::Result<Found> {
+        if let Some(pid) = opts
             .product_id
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            Some(SourcePurchaseHint {
-                product_id: pid.to_string(),
-                title: opts.title.clone(),
-                url: Some(format!("https://www.chirpbooks.com/audiobooks/{pid}")),
-                ..Default::default()
-            })
-        } else {
-            let title = opts.title.as_deref().unwrap_or("").trim();
-            if title.is_empty() {
-                None
-            } else {
-                let q = match opts
-                    .authors
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                {
-                    Some(a) => format!("{title} {a}"),
-                    None => title.to_string(),
-                };
-                let tip = match client.typeahead(&q).await {
-                    Ok(tip) => tip,
-                    // The store's "slow down" stops the lookup and reaches
-                    // the host, which pauses the store.
-                    Err(crate::error::ChirpError::RateLimited(wait)) => {
-                        return Err(bookclerk_storefront::SourceError::RateLimited(wait));
-                    }
-                    Err(err) => {
-                        tracing::debug!(error = %err, "chirp typeahead failed");
-                        crate::client::TypeaheadCatalog::default()
-                    }
-                };
-                tip.audiobooks
-                    .into_iter()
-                    .find(|hit| {
-                        chirp_purchase_title_matches(
-                            title,
-                            hit.display_title.as_deref().unwrap_or(""),
-                        )
-                    })
-                    .map(|hit| {
-                        let url = hit
-                            .url
-                            .map(|u| {
-                                if u.starts_with("http") {
-                                    u
-                                } else {
-                                    format!("https://www.chirpbooks.com{u}")
-                                }
-                            })
-                            .or_else(|| {
-                                Some(format!("https://www.chirpbooks.com/audiobooks/{}", hit.id))
-                            });
-                        SourcePurchaseHint {
-                            product_id: hit.id,
-                            title: hit.display_title.or_else(|| opts.title.clone()),
-                            url,
-                            ..Default::default()
-                        }
-                    })
+            return Ok(Found {
+                hint: Some(SourcePurchaseHint {
+                    product_id: pid.to_string(),
+                    title: opts.title.clone(),
+                    url: Some(format!("https://www.chirpbooks.com/audiobooks/{pid}")),
+                    ..Default::default()
+                }),
+                records: Vec::new(),
+            });
+        }
+        let title = opts.title.as_deref().unwrap_or("").trim();
+        if title.is_empty() {
+            return Ok(Found::default());
+        }
+        let q = match opts
+            .authors
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(a) => format!("{title} {a}"),
+            None => title.to_string(),
+        };
+        let tip = match ChirpClient::new(&self.graphql_url).typeahead(&q).await {
+            Ok(tip) => tip,
+            // The store's "slow down" stops the lookup and reaches the host,
+            // which pauses the store.
+            Err(crate::error::ChirpError::RateLimited(wait)) => {
+                return Err(bookclerk_storefront::SourceError::RateLimited(wait));
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, "chirp typeahead failed");
+                crate::client::TypeaheadCatalog::default()
             }
         };
+        let mut records: Vec<CatalogHit> = Vec::new();
+        let mut hint = None;
+        for book in &tip.audiobooks {
+            if records.len() >= TITLE_RECORDS {
+                break;
+            }
+            if book.id.trim().is_empty() || records.iter().any(|r| r.product_id == book.id) {
+                continue;
+            }
+            let record = catalog_hit(book, String::from("purchase search"));
+            if hint.is_none()
+                && chirp_purchase_title_matches(title, book.display_title.as_deref().unwrap_or(""))
+            {
+                hint = Some(listing_hint(&record));
+            }
+            records.push(record);
+        }
+        Ok(Found { hint, records })
+    }
 
-        if opts.with_price {
-            if let Some(ref mut h) = hint {
-                match client.audiobook_pricing(&h.product_id).await {
-                    Ok(Some(pricing)) => apply_chirp_pricing(h, &pricing),
-                    Ok(None) => {}
-                    // The store's own "slow down" reaches the host; other
-                    // failures leave the card unpriced.
+    /// Prices what each query found in aliased GraphQL queries of
+    /// [`PRICE_BATCH_IDS`], and pairs every record with its own priced hint.
+    ///
+    /// # Errors
+    ///
+    /// [`bookclerk_storefront::SourceError::RateLimited`] when Chirp asks to
+    /// slow down; any other failed query leaves the rest unpriced.
+    async fn price_found(
+        &self,
+        found: Vec<Found>,
+        opts: &[PurchaseHintOpts],
+    ) -> bookclerk_storefront::Result<Vec<PricedAnswer>> {
+        let mut ids: Vec<String> = Vec::new();
+        for (found, query) in found.iter().zip(opts) {
+            if !query.with_price {
+                continue;
+            }
+            let named = found
+                .hint
+                .iter()
+                .map(|h| &h.product_id)
+                .chain(found.records.iter().map(|r| &r.product_id));
+            for id in named {
+                if !ids.contains(id) {
+                    ids.push(id.clone());
+                }
+            }
+        }
+        let mut prices = std::collections::HashMap::new();
+        if !ids.is_empty() {
+            let client = ChirpClient::new(&self.graphql_url);
+            for chunk in ids.chunks(PRICE_BATCH_IDS) {
+                match client.audiobook_pricings(chunk).await {
+                    Ok(found) => prices.extend(found),
                     Err(crate::error::ChirpError::RateLimited(wait)) => {
                         return Err(bookclerk_storefront::SourceError::RateLimited(wait));
                     }
                     Err(err) => {
-                        tracing::debug!(error = %err, "chirp pricing failed");
+                        tracing::debug!(error = %err, "chirp batch pricing failed");
+                        break;
                     }
                 }
             }
         }
-        Ok(hint)
+        Ok(found
+            .into_iter()
+            .zip(opts)
+            .map(|(found, query)| {
+                let priced = |mut hint: SourcePurchaseHint| {
+                    if query.with_price {
+                        if let Some(pricing) = prices.get(&hint.product_id) {
+                            apply_chirp_pricing(&mut hint, pricing);
+                        }
+                    }
+                    hint
+                };
+                PricedAnswer {
+                    hint: found.hint.map(&priced),
+                    records: found
+                        .records
+                        .into_iter()
+                        .map(|record| PricedListing {
+                            hint: priced(listing_hint(&record)),
+                            record,
+                        })
+                        .collect(),
+                }
+            })
+            .collect())
     }
 
     /// Resolves purchase hints for several titles, pricing them in one
     /// aliased GraphQL request instead of one per card.
     ///
+    /// The bare-hint form of [`Self::purchase_answers`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::purchase_answers`].
+    pub async fn purchase_hints(
+        &self,
+        opts: &[PurchaseHintOpts],
+    ) -> bookclerk_storefront::Result<Vec<Option<SourcePurchaseHint>>> {
+        Ok(self
+            .purchase_answers(opts)
+            .await?
+            .into_iter()
+            .map(|answer| answer.hint)
+            .collect())
+    }
+
+    /// Resolves several titles with each title search's records, pricing
+    /// every product found in one aliased GraphQL request per
+    /// `PRICE_BATCH_IDS` (50) instead of one per card.
+    ///
     /// Titles whose Chirp product id is known resolve first, without a
     /// search; the rest are looked up by title until the 5 s `RESOLVE_BUDGET` runs
-    /// out, and a title not tried by then answers `None`, which the host
+    /// out, and a title not tried by then answers nothing, which the host
     /// does not take as an answer.
     ///
     /// # Errors
@@ -377,23 +508,23 @@ impl ChirpSource {
     /// Returns [`bookclerk_storefront::SourceError::RateLimited`] when Chirp
     /// asks to slow down, during a title lookup or the pricing query; other
     /// failures leave the cards unpriced.
-    pub async fn purchase_hints(
+    pub async fn purchase_answers(
         &self,
         opts: &[PurchaseHintOpts],
-    ) -> bookclerk_storefront::Result<Vec<Option<SourcePurchaseHint>>> {
-        self.purchase_hints_within(opts, RESOLVE_BUDGET).await
+    ) -> bookclerk_storefront::Result<Vec<PricedAnswer>> {
+        self.purchase_answers_within(opts, RESOLVE_BUDGET).await
     }
 
-    /// [`Self::purchase_hints`] with a chosen title-lookup budget.
+    /// [`Self::purchase_answers`] with a chosen title-lookup budget.
     ///
     /// # Errors
     ///
-    /// As [`Self::purchase_hints`].
-    async fn purchase_hints_within(
+    /// As [`Self::purchase_answers`].
+    async fn purchase_answers_within(
         &self,
         opts: &[PurchaseHintOpts],
         budget: std::time::Duration,
-    ) -> bookclerk_storefront::Result<Vec<Option<SourcePurchaseHint>>> {
+    ) -> bookclerk_storefront::Result<Vec<PricedAnswer>> {
         let deadline = tokio::time::Instant::now() + budget;
         let known = |q: &PurchaseHintOpts| {
             q.product_id
@@ -401,59 +532,27 @@ impl ChirpSource {
                 .map(str::trim)
                 .is_some_and(|s| !s.is_empty())
         };
-        let mut hints: Vec<Option<SourcePurchaseHint>> = vec![None; opts.len()];
+        let mut found: Vec<Found> = std::iter::repeat_with(Found::default)
+            .take(opts.len())
+            .collect();
         // Known products first, so a slow lookup never costs them a price.
         let mut order: Vec<usize> = (0..opts.len()).collect();
         order.sort_by_key(|&i| !known(&opts[i]));
         for i in order {
-            let unpriced = PurchaseHintOpts {
-                with_price: false,
-                ..opts[i].clone()
-            };
             if known(&opts[i]) {
-                hints[i] = self.purchase_hint(&unpriced).await?;
+                found[i] = self.find_listings(&opts[i]).await?;
                 continue;
             }
             if tokio::time::Instant::now() >= deadline {
                 break;
             }
-            match tokio::time::timeout_at(deadline, self.purchase_hint(&unpriced)).await {
-                Ok(resolved) => hints[i] = resolved?,
+            match tokio::time::timeout_at(deadline, self.find_listings(&opts[i])).await {
+                Ok(listings) => found[i] = listings?,
                 // Out of lookup time: the rest stay untried.
                 Err(_) => break,
             }
         }
-        let ids: Vec<String> = hints
-            .iter()
-            .zip(opts)
-            .filter(|(hint, query)| query.with_price && hint.is_some())
-            .filter_map(|(hint, _)| hint.as_ref().map(|h| h.product_id.clone()))
-            .collect();
-        if ids.is_empty() {
-            return Ok(hints);
-        }
-        let client = ChirpClient::new(&self.graphql_url);
-        let mut prices = std::collections::HashMap::new();
-        for chunk in ids.chunks(PRICE_BATCH_IDS) {
-            match client.audiobook_pricings(chunk).await {
-                Ok(found) => prices.extend(found),
-                Err(crate::error::ChirpError::RateLimited(wait)) => {
-                    return Err(bookclerk_storefront::SourceError::RateLimited(wait));
-                }
-                Err(err) => {
-                    tracing::debug!(error = %err, "chirp batch pricing failed");
-                    break;
-                }
-            }
-        }
-        for (hint, query) in hints.iter_mut().zip(opts) {
-            if let (true, Some(h)) = (query.with_price, hint.as_mut()) {
-                if let Some(pricing) = prices.get(&h.product_id) {
-                    apply_chirp_pricing(h, pricing);
-                }
-            }
-        }
-        Ok(hints)
+        self.price_found(found, opts).await
     }
 
     /// Lists up to `limit` titles on the storefront's current deals shelf.
@@ -777,12 +876,13 @@ mod tests {
             region: "us".into(),
             ..PurchaseHintOpts::default()
         };
-        let hints = source
-            .purchase_hints_within(&[by_title, known], std::time::Duration::ZERO)
+        let answers = source
+            .purchase_answers_within(&[by_title, known], std::time::Duration::ZERO)
             .await
             .unwrap();
-        assert!(hints[0].is_none());
-        assert_eq!(hints[1].as_ref().unwrap().product_id, "42");
+        assert!(answers[0].hint.is_none());
+        assert!(answers[0].records.is_empty());
+        assert_eq!(answers[1].hint.as_ref().unwrap().product_id, "42");
     }
 
     #[tokio::test]

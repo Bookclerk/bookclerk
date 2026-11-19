@@ -1,0 +1,42 @@
+api_version = 3
+id = "table_settings"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+
+[capabilities.network]
+mode = "deny"
+
+[vars]
+
+[[settings]]
+key = "mappings"
+label = "Library mappings"
+type = "table"
+default = [{ library = "main", prefix = "" }, { library = "kids", prefix = "kids/", watch = false }]
+description = "One row per mapped library."
+
+[[settings.columns]]
+key = "library"
+label = "Library"
+type = "string"
+required = true
+
+[[settings.columns]]
+key = "prefix"
+label = "Storage key prefix"
+type = "string"
+
+[[settings.columns]]
+key = "watch"
+type = "bool"
+default = true
+
+[[settings.columns]]
+key = "mode"
+type = "enum"
+values = [{ id = "read" }, { id = "write", label = "Write" }]

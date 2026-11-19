@@ -1,0 +1,1 @@
+{"__proto__":{"artifacts":[{"name":"indexnow-snapshot","expired":false,"workflow_run":{"id":1,"head_branch":"main"}}]},"artifacts":[{"__proto__":{"name":"indexnow-snapshot"},"expired":false,"workflow_run":{"id":2,"head_branch":"main"}},{"name":"indexnow-snapshot","expired":false,"workflow_run":{"__proto__":{"head_branch":"main"},"id":3}}]}

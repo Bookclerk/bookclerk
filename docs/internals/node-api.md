@@ -19,6 +19,13 @@ operator-auth layers, and every request first passes the transport policy.
 | `GET artifacts/{sha256}` | An owner plugin archive, for a request signed `Authorization: Bookclerk-Node <node_id> <issued_at> <sig>` |
 | `PUT uploads/{id}/files/{n}`, `POST uploads/{id}/commit` | Uploads (see [Uploads](../server/cluster-hosts.md#uploads)) |
 
+One route sits beside the node API, under `/api/copies/v1/`, with the same
+transport policy and its own bearer token:
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/copies/v1/{copy_id}/files/{n}` | One file of a copy the library granted, for `Authorization: Bookclerk-Copy <token>`. A branch gets the token from `copy.grant` on the node socket, a clerk from `copy.grant` on [the clerk socket](../server/sign-in.md#the-clerk-socket) (see [Taking a copy from the library](../server/cluster-hosts.md#taking-a-copy-from-the-library)) |
+
 **Handshake.** `hello {node_id, incarnation, software_version, resume}` →
 `challenge {nonce, cluster_id}` → `auth {sig}` (Ed25519 over the cluster,
 node, incarnation, nonce and the owner's canonical origin, so a signature
@@ -45,8 +52,8 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `scan.results` | `scan.accepted {batch, upserted}` |
 | `scan.removed {account_id, batch, product_ids}` (at most 500 ids, after the job's rows) | `scan.accepted {batch, upserted}` (holdings removed), `lost`, or `error` `refused` |
 | `scan.pass_end {account_id, sync_token, complete, full}` (one per account, last) | `scan.accepted {batch: 0, upserted}` (holdings a complete full pass pruned), `lost`, or `error` `refused` |
-| `acquire.plan` | `acquire.targets {targets, destinations}` |
-| `upload.grant` | `upload.granted {upload_id, sealed_token, expires_in_secs}` |
+| `acquire.plan` | `acquire.targets {targets, destinations}`: each target is `{holding_id, plugin_key, account_id, title, library_id?, parent?, parent_library_id?}`, where `title` and `parent` are store listings `{product_id, source, marketplace, title, content_kind, is_abridged, asin?, isbn?, subtitle?, authors?, narrators?, series?, series_index?, series_product_id?, publisher?, categories?, length_minutes?, purchased_at?, published_at?}` (dates in RFC 3339) |
+| `upload.grant` (each file of the manifest may carry `probe {bitrate_kbps, lossless, source_store}`, as may `catalog.upload`'s) | `upload.granted {upload_id, sealed_token, expires_in_secs}` |
 | `catalog.begin {share_books, include_branches}` | `catalog.session {fence, cursor, ancestry, destinations, wanted, members_books}`; `members_books` (absent reads as false) is the library's "Acquire all of this branch's members' books": the branch then also sends the members' books it lists (see [Acquiring all of a branch's members' books](../server/cluster-hosts.md#acquiring-all-of-a-branchs-members-books)) |
 | `catalog.sync {fence, batch, cursor, done, titles}` | `catalog.accepted {batch, upserted, skipped, wanted}`, or `lost` |
 | `catalog.upload {fence, store, product_id, files}` | `upload.granted` (then the upload routes above, job id `catalog`) |
@@ -54,7 +61,8 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `catalog.found {answers, missing}` | `ok`, or `error` `invalid` / `refused` (see [Shared catalog](../server/cluster-hosts.md#shared-catalog)) |
 | `requests.claim` | `requests.claimed {requests}`: up to 16 interlibrary requests `{job, generation, work, store, marketplace, product_id}` leased to this branch for 5 minutes, or `error` `refused` |
 | `requests.finish {job, generation, outcome}` | `ok`, `lost` when the lease moved on, or `error` `invalid` for a malformed job id or generation; `outcome` is `accepted`, `not_listed` or `failed` (see [Requesting a book from a branch](../server/cluster-hosts.md#requesting-a-book-from-a-branch)) |
-| `window.books {after}` | `window.page {works, next?}`: up to 100 works `{work, identifiers, editions}` the library holds for the node's owner, or `error` `refused` / `invalid` (see [Window mode](../server/cluster-hosts.md#window-mode)) |
+| `window.books {after}` | `window.page {works, next?}`: up to 100 works `{work, identifiers, editions}` of the library's books, or `error` `refused` / `invalid` (see [Books in other libraries](../server/cluster-hosts.md#books-in-other-libraries)). Each edition is `{edition, yours?, copy?}`; `copy` `{source_store?, content_type, bitrate_kbps?, lossless?, version}` describes the audio file the library holds of it (a lowercase `type/subtype` media type of at most 64 bytes, 1 to 20000 kbit/s, and a version of 1 to 64 letters, digits and `-` that changes when the file does) and is absent when it holds none. `after` and `next` are opaque cursor strings: empty or absent for the first page, otherwise up to 64 letters, digits and `-`. Each `next` sorts after the `after` it answers. |
+| `copy.grant {store, marketplace?, product_id}` | `copy.granted {copy_id, sealed_token, expires_in_secs, copy, files}`: the copy the library holds of that listing's edition, for the node's owner. `copy` is the same object a `window.page` edition carries. `files` lists 1 to 1000 files `{name, role, size, content_type?, probe?}` with distinct names, the primary audio (`role` `audio`) first and exactly once; the other roles are `part`, `chapter`, `pdf`, `cover`, `sidecar`, `transcript` and `epub`. A file's place in the list is its `{n}` in the download route. The token is sealed to the node's box key and lives `expires_in_secs` (one hour). Otherwise `error` `refused` (not a branch this library trusts), `not_found` (the person may not take the edition, or the library holds no copy of it; one code for both), `invalid`, or `unavailable` (the library can't read its storage right now). |
 | `node.leaving` | `accepted`, then close 4403 (the node is revoked) |
 | `scan.request {account, plugin_instance_id}` | `scan.planned {created, duplicates, queue_full}`, or `error` `forbidden` / `invalid` |
 | `job.status {job_ids}` (at most 64) | `job.statuses {jobs}`: only jobs this node may claim |
@@ -70,7 +78,8 @@ The owner also sends `wake` frames (deployment, install, placement,
 configuration and revocation changes, `catalog.asked` when catalog
 questions wait for a branch, and `requests.queued` when interlibrary
 requests do), which the host acks. Secrets are
-never frame text: job secrets, instance secrets and upload tokens are sealed
+never frame text: job secrets, instance secrets, upload tokens and copy
+tokens are sealed
 to the node's box key and bound to the node and the job or instance they
 belong to; a write-back is sealed to the owner's box key. A host job's
 storefront guest that renews an account's tokens mid-job hands them back
@@ -106,7 +115,7 @@ topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
   session is re-checked every 30 s, and a signed-out user's socket closes
   with 4401.
 - Changes are found by reading revisions from the shared database every
-  2 s (so a change made on any owner node, or by `bookclerk clusters
+  2 s (so a change made on any shared node, or by `bookclerk clusters
   join|leave`, is seen) and by in-process notices for immediate updates.
   Each topic has one counter row in `live_topic_revisions`, and every
   write to a topic's tables adds one to it in the same atomic batch as

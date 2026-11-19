@@ -864,6 +864,8 @@ pub struct LiveDeploymentRuntime {
     on_demand_idle: std::time::Duration,
     /// Idle time after which an on-demand storefront's guest is stopped.
     storefront_idle: std::time::Duration,
+    /// Idle time after which an on-demand storage guest is stopped.
+    storage_idle: std::time::Duration,
 }
 
 impl LiveDeploymentRuntime {
@@ -889,6 +891,7 @@ impl LiveDeploymentRuntime {
             reconcile_lock: tokio::sync::Mutex::new(()),
             on_demand_idle: crate::TRIGGER_IDLE_TIMEOUT,
             storefront_idle: crate::STOREFRONT_IDLE_TIMEOUT,
+            storage_idle: crate::STORAGE_IDLE_TIMEOUT,
         }
     }
 
@@ -897,6 +900,7 @@ impl LiveDeploymentRuntime {
     pub(crate) fn set_on_demand_idle_timeout(&mut self, idle: std::time::Duration) {
         self.on_demand_idle = idle;
         self.storefront_idle = idle;
+        self.storage_idle = idle;
     }
 
     /// The on-demand proxy registered for `plugin_instance_id`, if this
@@ -1400,6 +1404,14 @@ async fn spawn_integration(
 ) -> SpawnHealth {
     let allow_credential_login =
         crate::host_control_plane::allow_credential_login(&prepared.granted_config);
+    // The instance's socket broker belongs to the deployment, so every guest
+    // it starts (and each on-demand wake) shares the sockets. It reaches the
+    // network the deployed guest would.
+    let mut services = services;
+    if plugin.manifest.sockets.is_some() {
+        services.sockets = Some(crate::SocketBroker::new(plugin.clone(), config.clone()));
+    }
+    let broker = services.sockets.clone();
     let starter = crate::activates_on_demand(&plugin.manifest).then(|| ExternalStarter {
         plugin: plugin.clone(),
         config: config.clone(),
@@ -1428,6 +1440,11 @@ async fn spawn_integration(
         }
     };
     integration.bind_plugin_instance(&request.plugin_instance_id);
+    // A remote library without its database grant keeps its memory in the
+    // process, so it stays resident.
+    let starter = starter.filter(|_| {
+        crate::on_demand::state_survives_sleep(&plugin.manifest, integration.session().grant())
+    });
     let root = request.plugin_root.clone();
     let opened_config = integration.opened_config().clone();
     let opened_secrets = integration.opened_secrets().clone();
@@ -1450,7 +1467,7 @@ async fn spawn_integration(
                     );
                 }
             }
-            // A trigger-driven plugin is registered behind a proxy that
+            // A plugin that may sleep is registered behind a proxy that
             // keeps its place in the registry while the guest sleeps.
             let (registered, process): (
                 Arc<dyn bookclerk_integrations::Integration>,
@@ -1464,13 +1481,22 @@ async fn spawn_integration(
                         Box::new(starter),
                         shared,
                         runtime.on_demand_idle,
+                        crate::ON_DEMAND_USER_POLL_INTERVAL,
                     );
+                    if let Some(broker) = &broker {
+                        let sink: Arc<dyn crate::SocketSink> = proxy.clone();
+                        broker.set_sink(Arc::downgrade(&sink));
+                    }
                     (proxy.clone(), GuestProcess::OnDemand(proxy))
                 }
-                None => (
-                    Arc::new(integration),
-                    GuestProcess::Resident(resident_session),
-                ),
+                None => {
+                    let integration = Arc::new(integration);
+                    if let Some(broker) = &broker {
+                        let sink: Arc<dyn crate::SocketSink> = integration.clone();
+                        broker.set_sink(Arc::downgrade(&sink));
+                    }
+                    (integration, GuestProcess::Resident(resident_session))
+                }
             };
             if let Err(err) = registered.start(context.clone()).await {
                 for previous in retired {
@@ -1594,6 +1620,42 @@ impl crate::activation::GuestStarter<dyn crate::on_demand_source::AwakeSource> f
     }
 }
 
+/// Starts a fresh storage guest when an on-demand storage proxy wakes.
+struct StorageStarter {
+    /// Discovered plugin the deployment spawned.
+    plugin: crate::DiscoveredPlugin,
+    /// Host config at the deployment spawn; a config reload respawns the
+    /// deployment, replacing this starter.
+    config: Config,
+    /// Library store whose outbox the guest's session publishes through.
+    store: LibraryStore,
+    /// Resolved `open` bindings for the instance's applied revision.
+    prepared: crate::PreparedOpen,
+}
+
+#[async_trait]
+impl crate::activation::GuestStarter<dyn crate::on_demand_storage::AwakeStorage>
+    for StorageStarter
+{
+    async fn start_guest(
+        &self,
+    ) -> std::result::Result<Arc<dyn crate::on_demand_storage::AwakeStorage>, String> {
+        let spawned = crate::host::spawn_deployed_storage(
+            &self.plugin,
+            &self.config,
+            Some(&self.store),
+            self.prepared.clone(),
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+        let parts = spawned.on_demand_parts();
+        Ok(Arc::new(crate::on_demand_storage::StorageGuest {
+            session: parts.session,
+            backend: parts.backend,
+        }))
+    }
+}
+
 /// Spawns a storage session with the deployment's resolved bindings.
 async fn spawn_storage(
     runtime: &LiveDeploymentRuntime,
@@ -1605,6 +1667,12 @@ async fn spawn_storage(
 ) -> SpawnHealth {
     let tracked_config = prepared.bindings.config.clone();
     let tracked_secrets = prepared.bindings.secrets.clone();
+    let starter = crate::storage_activates_on_demand(&plugin.manifest).then(|| StorageStarter {
+        plugin: plugin.clone(),
+        config: config.clone(),
+        store: store.clone(),
+        prepared: prepared.clone(),
+    });
     let spawned =
         match crate::host::spawn_deployed_storage(plugin, config, Some(store), prepared).await {
             Ok(spawned) => spawned,
@@ -1614,6 +1682,43 @@ async fn spawn_storage(
                 };
             }
         };
+    // A storage-only guest sleeps behind a proxy that keeps its place in
+    // the registry; a guest that also has another family stays resident.
+    if let Some(starter) = starter {
+        let parts = spawned.on_demand_parts();
+        let proxy = crate::OnDemandStorage::wrap(
+            Arc::new(crate::on_demand_storage::StorageGuest {
+                session: Arc::clone(&parts.session),
+                backend: parts.backend,
+            }),
+            &request.plugin_instance_id,
+            Box::new(starter),
+            runtime.storage_idle,
+        );
+        let published = runtime.destinations.write().await.publish_on_demand(
+            &request.plugin_instance_id,
+            &parts.session,
+            Arc::clone(&proxy),
+            parts.key_style,
+            parts.settings,
+        );
+        if let Err(detail) = published {
+            crate::OnDemandStatus::retire(proxy.as_ref()).await;
+            return SpawnHealth::SpawnFailed { detail };
+        }
+        runtime
+            .remember(
+                &request.plugin_instance_id,
+                TrackedGuest {
+                    process: GuestProcess::OnDemand(proxy),
+                    root: request.plugin_root.clone(),
+                    config: tracked_config,
+                    secrets: tracked_secrets,
+                },
+            )
+            .await;
+        return SpawnHealth::Healthy;
+    }
     let session = {
         let mut registry = runtime.destinations.write().await;
         match registry.publish_spawned(&request.plugin_instance_id, spawned) {

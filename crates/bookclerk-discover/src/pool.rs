@@ -58,23 +58,7 @@ pub(crate) fn catalog_listing(
     };
     CatalogListing {
         draft,
-        detail: ListingDetail {
-            subtitle: hit.subtitle.clone(),
-            authors: hit.authors(),
-            narrators: hit.narrators(),
-            series: hit.series(),
-            series_index: hit.series_index(),
-            description: hit.description.clone(),
-            publisher: hit.publisher.clone(),
-            published_at: hit.published_at.clone(),
-            length_minutes: hit.length_minutes,
-            language: hit.language.clone(),
-            cover_url: hit.cover_url.clone(),
-            url: hit.url.clone(),
-            rating_overall: hit.rating_overall,
-            rating_count: hit.rating_count,
-            is_abridged: hit.is_abridged,
-        },
+        detail: ListingDetail::of_catalog_hit(&hit),
         offers: if offer.is_empty() {
             Vec::new()
         } else {
@@ -135,6 +119,7 @@ pub(crate) fn candidate_from_listing(
         is_abridged: detail.is_abridged,
         store_rank: None,
         work_id: listing.work_id.clone(),
+        expression_id: listing.expression_id.clone(),
     }
 }
 
@@ -170,6 +155,7 @@ mod tests {
             product_id: "9780441172719".into(),
             edition_id: "e1".into(),
             work_id: Some("w1".into()),
+            expression_id: Some("x1".into()),
             title: "Dune".into(),
             categories: Some("Science Fiction".into()),
             detail: ListingDetail {

@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use bookclerk_config::{
-    resolve_replacement_characters, AudioQuality, ChapterJsonMode, Config, DestinationNaming,
-    FileTimestampMode, LameConfig, NamingProfile, OutputBackendKind, OutputConfig, OutputFormat,
+    resolve_replacement_characters, AudioQuality, ChapterJsonMode, Config, DestinationKeyStyle,
+    DestinationNaming, FileTimestampMode, LameConfig, NamingProfile, OutputConfig, OutputFormat,
     PathLimits, PathSanitizationMode, ReplacementRule, ResolvedNamingTemplates,
 };
 use serde::{Deserialize, Serialize};
@@ -160,7 +160,7 @@ impl From<&Config> for DownloadOptions {
     fn from(cfg: &Config) -> Self {
         Self::for_destination(
             cfg,
-            OutputBackendKind::Local,
+            DestinationKeyStyle::Filesystem,
             &DestinationNaming::default(),
             "",
         )
@@ -177,17 +177,17 @@ impl DownloadOptions {
     /// Build acquire options stamped for one output destination.
     ///
     /// Packaging knobs come from global `[output]`; naming templates prefer
-    /// the destination's own overrides, which the `local` / `s3` plugin
-    /// declares as `[[settings]]` and the host reads from the deployed
+    /// the destination's own overrides, which a storage plugin may
+    /// declare as `[[settings]]` and the host reads from the deployed
     /// instance document. `prefix` is that document's key prefix.
     #[must_use]
     pub fn for_destination(
         cfg: &Config,
-        kind: OutputBackendKind,
+        key_style: DestinationKeyStyle,
         naming: &DestinationNaming,
         prefix: &str,
     ) -> Self {
-        let storage_is_s3 = matches!(kind, OutputBackendKind::S3);
+        let storage_is_s3 = key_style.is_object_store();
         let mut opts = Self::from(&cfg.output);
         opts.save_podcasts_to_parent_folder = cfg.library.save_podcasts_to_parent_folder;
         opts.naming_profile = naming.effective_profile(&cfg.output);
@@ -299,10 +299,18 @@ mod tests {
             ..Default::default()
         };
 
-        let local =
-            DownloadOptions::for_destination(&cfg, OutputBackendKind::Local, &local_naming, "");
-        let s3 =
-            DownloadOptions::for_destination(&cfg, OutputBackendKind::S3, &s3_naming, "library");
+        let local = DownloadOptions::for_destination(
+            &cfg,
+            DestinationKeyStyle::Filesystem,
+            &local_naming,
+            "",
+        );
+        let s3 = DownloadOptions::for_destination(
+            &cfg,
+            DestinationKeyStyle::ObjectStore,
+            &s3_naming,
+            "library",
+        );
 
         assert_eq!(local.naming_profile, NamingProfile::Classic);
         assert_eq!(local.folder_template.as_deref(), Some("<global folder>"));

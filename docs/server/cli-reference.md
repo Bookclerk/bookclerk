@@ -38,6 +38,7 @@ These options work with every command. Some commands have their own option of th
 - [`bookclerk events`](#bookclerk-events): Durable domain-event outbox and deliveries
 - [`bookclerk clusters`](#bookclerk-clusters): Owner clusters this install hosts for, and consent to their plugins
 - [`bookclerk nodes`](#bookclerk-nodes): Cluster nodes: liveness, capacity, budgets, and placement labels
+- [`bookclerk users`](#bookclerk-users): The library's people: patron scopes
 - [`bookclerk queues`](#bookclerk-queues): Plugin-owned queues on the outbox: counters, consumers, messages
 - [`bookclerk login`](#bookclerk-login): Print a loopback operator sign-in URL (requires a running daemon)
 - [`bookclerk diagnostics`](#bookclerk-diagnostics): Diagnostics ring buffer and opt-in upload
@@ -61,7 +62,7 @@ Commands:
 - [`bookclerk library acquire`](#bookclerk-library-acquire): Download + decrypt + store titles: queues one acquire job per title id (or one for every pending title) for a bookclerkd node to run, and waits for them. `--dry-run` only prints planned keys, here
 - [`bookclerk library set-status`](#bookclerk-library-set-status): Match storage files to library rows and update acquire status
 - [`bookclerk library get-license`](#bookclerk-library-get-license): Fetch a content license for an ASIN
-- [`bookclerk library search`](#bookclerk-library-search): Search the library index
+- [`bookclerk library search`](#bookclerk-library-search): Search the library's works by title, people, series or store id
 - [`bookclerk library export`](#bookclerk-library-export): Export library rows as CSV / JSON / XLSX (alias of `export library`)
 - [`bookclerk library list`](#bookclerk-library-list): List books in the local library DB
 - [`bookclerk library convert`](#bookclerk-library-convert): Convert acquired m4b/m4a to mp3
@@ -212,7 +213,7 @@ Options:
 
 ### `bookclerk library search`
 
-Search the library index
+Search the library's works by title, people, series or store id
 
 ```text
 bookclerk library search [OPTIONS] <QUERY>
@@ -225,8 +226,8 @@ Arguments:
 Options:
 
 - `-n, --limit <LIMIT>`: Max results (0 = all) (default `10`)
-- `-b, --bare`: Print ASINs only
-- `--rebuild-index`: Rebuild the search index before querying
+- `-b, --bare`: Print work ids only
+- `--rebuild-index`: Rebuild the works search index before querying
 - `--filter <FILTER>`: Run a saved quick filter by name
 
 ### `bookclerk library export`
@@ -824,11 +825,12 @@ Arguments:
 
 - `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id
 - `<KEY>`: Setting key from the plugin's `[[settings]]`
-- `[VALUE]`: Value text (`true`/`false`, a number, or a string)
+- `[VALUE]`: Value text: `true`/`false`, a number, or a string. A `table` setting takes a JSON array of row objects, or one row with its cells in column order separated by `|` (an empty cell takes the column default; `\|` is a literal bar)
 
 Options:
 
 - `--secret`: Seal a secret read from stdin
+- `--append`: For a `table` setting, add the given rows after the current ones instead of replacing them
 
 #### `bookclerk plugins config unset`
 
@@ -842,6 +844,10 @@ Arguments:
 
 - `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id
 - `<KEY>`: Setting key
+
+Options:
+
+- `--row <N>`: For a `table` setting, remove only this row (counted from 1, as `config get` lists them) and keep the others
 
 ### `bookclerk plugins approve`
 
@@ -1669,9 +1675,9 @@ Commands:
 - [`bookclerk nodes set`](#bookclerk-nodes-set): Set a node's scheduling budget or drain it. Applies at that node's next heartbeat
 - [`bookclerk nodes label`](#bookclerk-nodes-label): Add or remove placement labels on a node (`nas`, `zone=eu`)
 - [`bookclerk nodes owner`](#bookclerk-nodes-owner): Assign a node to the user who administers it, or clear its owner. The owner (any active user) may then change the node's budgets, drain switch, and name. Work the node is trusted with still follows the owner's role
-- [`bookclerk nodes invite`](#bookclerk-nodes-invite): Mint a single-use link that enrolls one host node for a user. The link (with its secret in the URL fragment) is printed once
+- [`bookclerk nodes invite`](#bookclerk-nodes-invite): Mint a single-use link that enrolls one branch node for a user. The link (with its secret in the URL fragment) is printed once
 - [`bookclerk nodes invites`](#bookclerk-nodes-invites): List or revoke enrollment links
-- [`bookclerk nodes revoke`](#bookclerk-nodes-revoke): Revoke an enrolled host node's credential. Its connection closes and it receives no more work
+- [`bookclerk nodes revoke`](#bookclerk-nodes-revoke): Revoke an enrolled branch node's credential. Its connection closes and it receives no more work
 
 ### `bookclerk nodes list`
 
@@ -1740,7 +1746,7 @@ Options:
 
 ### `bookclerk nodes invite`
 
-Mint a single-use link that enrolls one host node for a user. The link (with its secret in the URL fragment) is printed once
+Mint a single-use link that enrolls one branch node for a user. The link (with its secret in the URL fragment) is printed once
 
 ```text
 bookclerk nodes invite [OPTIONS] --user <USER>
@@ -1748,7 +1754,7 @@ bookclerk nodes invite [OPTIONS] --user <USER>
 
 Options:
 
-- `--user <USER>`: Login name or user id of the user who will own the host node (required)
+- `--user <USER>`: Login name or user id of the user who will own the branch node (required)
 - `--ttl <TTL>`: How long the link stays valid (`30m`, `24h`, `7d`; 5m to 7d) (default `24h`)
 - `--label <LABEL>`: Label shown in `nodes invites list` (default ``)
 
@@ -1787,7 +1793,7 @@ Arguments:
 
 ### `bookclerk nodes revoke`
 
-Revoke an enrolled host node's credential. Its connection closes and it receives no more work
+Revoke an enrolled branch node's credential. Its connection closes and it receives no more work
 
 ```text
 bookclerk nodes revoke [OPTIONS] <NODE>
@@ -1795,7 +1801,67 @@ bookclerk nodes revoke [OPTIONS] <NODE>
 
 Arguments:
 
-- `<NODE>`: Host node id
+- `<NODE>`: Branch node id
+
+## `bookclerk users`
+
+The library's people: patron scopes
+
+```text
+bookclerk users [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk users scope`](#bookclerk-users-scope): Read or set which part of the library a patron sees
+
+### `bookclerk users scope`
+
+Read or set which part of the library a patron sees
+
+```text
+bookclerk users scope [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk users scope get`](#bookclerk-users-scope-get): Print a patron's scope, or the library's default
+- [`bookclerk users scope set`](#bookclerk-users-scope-set): Replace a patron's scope, or the library's default. With no `--include` or `--exclude`, the scope hides nothing
+
+#### `bookclerk users scope get`
+
+Print a patron's scope, or the library's default
+
+```text
+bookclerk users scope get [OPTIONS] [USER]
+```
+
+Arguments:
+
+- `[USER]`: Login name or user id
+
+Options:
+
+- `--default`: The library's default scope, which patrons without their own follow
+
+#### `bookclerk users scope set`
+
+Replace a patron's scope, or the library's default. With no `--include` or `--exclude`, the scope hides nothing
+
+```text
+bookclerk users scope set [OPTIONS] [USER]
+```
+
+Arguments:
+
+- `[USER]`: Login name or user id
+
+Options:
+
+- `--default`: Set the library's default scope instead of one patron's
+- `--include <FIELD=VALUE>`: Show only books with this value (`genre=Kids`); fields are genre, series, author and narrator. Repeatable: a book needs one
+- `--exclude <FIELD=VALUE>`: Hide books with this value, whatever `--include` says. Repeatable
+- `--follow-default`: Drop the patron's own scope so they follow the library's default
 
 ## `bookclerk queues`
 
@@ -1850,6 +1916,7 @@ Commands:
 
 - [`bookclerk diagnostics show`](#bookclerk-diagnostics-show): Print recent diagnostics ring-buffer events
 - [`bookclerk diagnostics upload`](#bookclerk-diagnostics-upload): Upload the current diagnostics ring (requires share_reports + collector URL)
+- [`bookclerk diagnostics reset-id`](#bookclerk-diagnostics-reset-id): Replace this install's random usage ID (diagnostics.share_usage) with a new one
 
 ### `bookclerk diagnostics show`
 
@@ -1874,6 +1941,16 @@ bookclerk diagnostics upload [OPTIONS]
 Options:
 
 - `--trigger <TRIGGER>`: Trigger label recorded with the report (default `cli_manual`)
+
+### `bookclerk diagnostics reset-id`
+
+Replace this install's random usage ID (diagnostics.share_usage) with a new one.
+
+The next check-in then counts as a new install. Restart the daemon so its reports carry the new ID.
+
+```text
+bookclerk diagnostics reset-id [OPTIONS]
+```
 
 ## `bookclerk version`
 

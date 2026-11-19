@@ -1,9 +1,9 @@
-//! Streamed uploads from a Host node (H-4 design, section 6; decision 4).
+//! Streamed uploads from a Branch node (H-4 design, section 6; decision 4).
 //!
 //! An acquire a Host runs returns its files to the owner as streams: the
 //! Host asks for an upload of one title ([`grant_upload`]), streams each
 //! declared file to the owner's upload endpoint, and commits the title
-//! ([`commit_upload`]). The owner node streams every file straight on to
+//! ([`commit_upload`]). The shared node streams every file straight on to
 //! its output destinations; nothing is staged on the owner, and this
 //! module stores only the upload's bookkeeping (`node_upload_sessions`).
 //!
@@ -49,12 +49,12 @@ use super::semaphore::release_permits;
 use super::trust::{
     accounts_named, accounts_owned_by, node_may_claim_job, node_trust, Claimant, NodeTrust,
 };
-use crate::entities::{books, node_upload_sessions};
+use crate::entities::{books, edition_acquisitions, node_upload_sessions};
 use crate::error::{LibraryError, Result};
-use crate::models::{is_downloadable, AcquireStatus, BookRecord, JobRecord};
+use crate::models::{is_downloadable, AcquireStatus, JobRecord};
 use crate::models::{JobKind, JobState};
 use crate::store::event_outbox::{book_acquired_spec, prepare_publish_domain_event};
-use crate::store::{EditionFile, FileOwner, FileRole, LibraryStore};
+use crate::store::{AcquireTitle, EditionFile, FileOwner, FileProbe, FileRole, LibraryStore};
 
 /// How long a granted upload's token is accepted past its latest
 /// extension (the grant, an accepted file, or a renewal of the job's
@@ -72,7 +72,7 @@ const STATE_ABORTED: &str = "aborted";
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Manifest {
-    /// The receiving owner node's destination ids when the upload was
+    /// The receiving shared node's destination ids when the upload was
     /// granted, the primary first.
     #[serde(default)]
     destinations: Vec<String>,
@@ -99,7 +99,7 @@ pub const UPLOAD_NAME_WILDCARD: char = '\u{1}';
 /// where a part or chapter number goes.
 pub const UPLOAD_NUMBER_WILDCARD: char = '\u{2}';
 
-/// One output destination of the receiving owner node an upload is
+/// One output destination of the receiving shared node an upload is
 /// granted for, with where the title may be written there.
 ///
 /// The owner computes the scope itself, from its own library row of the
@@ -226,9 +226,11 @@ fn pattern_matches(pattern: &[char], text: &[char]) -> bool {
 /// What a Host asks to upload for one title.
 #[derive(Debug, Clone, Copy)]
 pub struct UploadGrantRequest<'a> {
-    /// Library id of the title. Empty for the job's closing upload, which
-    /// carries no files and only completes the job.
-    pub book_uuid: &'a str,
+    /// The title's holding (`holdings.id`): an account holding for a job
+    /// upload, the node holding for a branch's catalog upload. Empty for the
+    /// job's closing upload, which carries no files and only completes the
+    /// job.
+    pub holding_id: &'a str,
     /// Storage key of the title's primary audio file on the primary
     /// destination (one of `files`' copies there).
     pub primary_key: &'a str,
@@ -237,7 +239,7 @@ pub struct UploadGrantRequest<'a> {
     pub pdf_key: Option<&'a str>,
     /// Every file, in upload order.
     pub files: &'a [UploadFile],
-    /// The receiving owner node's output destinations, the primary first,
+    /// The receiving shared node's output destinations, the primary first,
     /// each with the title's key scope there. Each must receive at least
     /// one file and every copy must name one of them and lie in its scope,
     /// so each destination is written only under the title's own keys (a
@@ -294,16 +296,17 @@ impl std::fmt::Debug for UploadGrant {
 pub struct UploadSession {
     /// Upload id.
     pub upload_id: String,
-    /// Host node it was granted to.
+    /// Branch node it was granted to.
     pub node_id: String,
     /// Acquire job.
     pub job_id: String,
     /// Lease generation it is bound to.
     pub generation: i64,
-    /// Owner node that receives the files.
+    /// Shared node that receives the files.
     pub receiving_node_id: String,
-    /// Library id of the title (empty for the job's closing upload).
-    pub book_uuid: String,
+    /// The title's holding (`holdings.id`; empty for the job's closing
+    /// upload).
+    pub holding_id: String,
     /// Storage key of the primary audio file.
     pub primary_key: String,
     /// Storage key of the companion PDF, when uploaded.
@@ -378,21 +381,6 @@ fn mint_token() -> Zeroizing<String> {
     Zeroizing::new(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes.as_slice()))
 }
 
-/// True when `book` is one of the titles `title` names.
-#[must_use]
-pub fn names_book(title: &str, book: &BookRecord) -> bool {
-    title.eq_ignore_ascii_case(&book.uuid)
-        || title.eq_ignore_ascii_case(&book.product_id)
-        || book
-            .isbn
-            .as_deref()
-            .is_some_and(|isbn| title.eq_ignore_ascii_case(isbn))
-        || book
-            .asin
-            .as_deref()
-            .is_some_and(|asin| title.eq_ignore_ascii_case(asin))
-}
-
 /// The store accounts (`(plugin_key, account_id)`) the job's account
 /// selector names, resolved as the claim path and the executor resolve it
 /// ([`accounts_named`]: the account id or its label, ignoring ASCII case);
@@ -411,12 +399,20 @@ async fn job_accounts(
     }
 }
 
-/// The owner's library rows the acquire `job` run by `node_id` covers: of
-/// the job's plugins ([`job_plugin_keys`]), of the accounts its account
-/// selector names (`job_accounts`, so a job naming its account by label
-/// or in another case covers that account's titles) and its title when it
-/// names them, and, for a Host trusted only with its owner's accounts, one
-/// of that user's. `None` when the node is trusted with nothing.
+/// The titles the acquire `job` run by `node_id` covers, read from the
+/// account holdings as a local acquire reads them: of the job's plugins
+/// ([`job_plugin_keys`]), of the accounts its account selector names
+/// (`job_accounts`, so a job naming its account by label or in another
+/// case covers that account's titles) and its title when it names one
+/// ([`LibraryStore::acquire_titles_named`], matched as the executor
+/// matches it), and, for a Host trusted only with its owner's accounts,
+/// one of that user's. Only titles with a flat `books` row count while
+/// `books` exists (book model step 6), as for a local acquire. `None` when
+/// the node is trusted with nothing.
+///
+/// Without a title the holdings are read in keyset pages
+/// ([`LibraryStore::acquire_titles_page`]), so no read loads the whole
+/// library at once.
 ///
 /// # Errors
 ///
@@ -425,7 +421,7 @@ pub async fn job_titles(
     store: &LibraryStore,
     node_id: &str,
     job: &JobRecord,
-) -> Result<Option<Vec<BookRecord>>> {
+) -> Result<Option<Vec<AcquireTitle>>> {
     let owned = match node_trust(store, node_id, Claimant::Remote).await? {
         NodeTrust::All => None,
         NodeTrust::OwnedBy(user_id) | NodeTrust::AllOfOwner(user_id) => {
@@ -435,48 +431,58 @@ pub async fn job_titles(
     };
     let keys = job_plugin_keys(store, job).await?.unwrap_or_default();
     let accounts = job_accounts(store, job).await?;
-    let title = job.payload.title.as_deref().filter(|t| !t.is_empty());
-    // Read one account's rows when the selector names a single account
-    // id; otherwise read them all and keep the named accounts' below.
-    let account_ids: BTreeSet<&str> = accounts
-        .iter()
-        .flatten()
-        .map(|(_, account_id)| account_id.as_str())
-        .collect();
-    let only = match (&accounts, account_ids.len()) {
-        (Some(_), 0) => return Ok(Some(Vec::new())),
-        (Some(_), 1) => account_ids.first().copied(),
-        _ => None,
+    if accounts.as_ref().is_some_and(BTreeSet::is_empty) {
+        return Ok(Some(Vec::new()));
+    }
+    let selector = job.payload.account.as_deref().filter(|a| !a.is_empty());
+    let wanted = |title: &AcquireTitle| {
+        let account = (title.plugin_key.clone(), title.account_id.clone());
+        title.book_uuid.is_some()
+            && keys.contains(&title.plugin_key)
+            && accounts
+                .as_ref()
+                .is_none_or(|accounts| accounts.contains(&account))
+            && owned.as_ref().is_none_or(|owned| owned.contains(&account))
     };
-    let mut books = store.list_books(only).await?;
-    books.retain(|book| {
-        keys.contains(&book.plugin_key)
-            && accounts.as_ref().is_none_or(|accounts| {
-                accounts.contains(&(book.plugin_key.clone(), book.account_id.clone()))
-            })
-            && title.is_none_or(|title| names_book(title, book))
-            && owned.as_ref().is_none_or(|owned| {
-                owned.contains(&(book.plugin_key.clone(), book.account_id.clone()))
-            })
-    });
-    Ok(Some(books))
+    let mut titles = Vec::new();
+    match job.payload.title.as_deref().filter(|t| !t.is_empty()) {
+        Some(named) => {
+            titles = store.acquire_titles_named(selector, named).await?;
+            titles.retain(|title| wanted(title));
+        }
+        None => {
+            let mut after = None;
+            loop {
+                let page = store
+                    .acquire_titles_page(selector, after.as_deref(), 64)
+                    .await?;
+                titles.extend(page.titles.into_iter().filter(|title| wanted(title)));
+                match page.next {
+                    Some(next) => after = Some(next),
+                    None => break,
+                }
+            }
+        }
+    }
+    Ok(Some(titles))
 }
 
 /// True when the acquire `job` still has a title whose audio is not
-/// acquired (an episode counts only with `download_episodes`).
+/// acquired on its edition (an episode counts only with
+/// `download_episodes`).
 async fn job_titles_remaining(
     store: &LibraryStore,
     node_id: &str,
     job: &JobRecord,
     download_episodes: bool,
 ) -> Result<bool> {
-    let Some(books) = job_titles(store, node_id, job).await? else {
+    let Some(titles) = job_titles(store, node_id, job).await? else {
         return Ok(true);
     };
-    Ok(books.iter().any(|book| {
-        is_downloadable(&book.content_kind)
-            && (download_episodes || book.content_kind != "episode")
-            && book.acquire_status != AcquireStatus::Acquired
+    Ok(titles.iter().any(|title| {
+        is_downloadable(title.content_kind)
+            && (download_episodes || title.content_kind != "episode")
+            && title.status != AcquireStatus::Acquired
     }))
 }
 
@@ -486,7 +492,7 @@ async fn job_titles_remaining(
 /// every destination written, and the primary (and PDF) among the primary
 /// destination's copies. A closing upload (no title) declares none.
 pub(super) fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
-    if req.book_uuid.is_empty() {
+    if req.holding_id.is_empty() {
         return (!req.files.is_empty() || req.pdf_key.is_some()).then_some("invalid_manifest");
     }
     if req.files.is_empty() || req.files.len() > MAX_UPLOAD_FILES {
@@ -533,37 +539,50 @@ pub(super) fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static 
     None
 }
 
-/// Key probes per read of [`claims_another_books_key`]: each binds once on
+/// Key probes per read of [`claims_another_titles_key`]: each binds once on
 /// both key columns, well under the smallest guest bind cap.
 const KEY_PROBES_PER_READ: usize = 32;
 
+/// The title a job upload writes for ([`claims_another_titles_key`]): the
+/// edition whose keys it may hold, and the account holding it writes as.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct OwnTitle<'a> {
+    /// The holding's edition.
+    pub edition_id: &'a str,
+    /// The account holding (`holdings.id`).
+    pub holding_id: &'a str,
+}
+
 /// True when a copy of `files` would land on a file another library title
-/// already has: its recorded audio or PDF key, or a sidecar of that audio
-/// (the same file stem with any further extension, such as its cover,
-/// `.cue` or chapter JSON). Every copy is checked, on every destination:
-/// these columns do not say which destination they were written on (rows
-/// that predate their `edition_files` record are known only here), so a match
-/// on any destination is refused, failing closed. The destination-scoped
-/// record of every file an edition wrote is checked by `claim_upload_keys`.
+/// already has: an edition's recorded audio or PDF key
+/// (`edition_acquisitions`), or a sidecar of that audio (the same file
+/// stem with any further extension, such as its cover, `.cue` or chapter
+/// JSON). Every copy is checked, on every destination: these columns do
+/// not say which destination they were written on (rows that predate their
+/// `edition_files` record are known only here), so a match on any
+/// destination is refused, failing closed. The destination-scoped record
+/// of every file an edition wrote is checked by `claim_upload_keys`.
 ///
-/// `siblings` are the titles whose keys are the uploader's own (a job
-/// upload passes its title alone; another account's row of the same
-/// edition shares its files but is not this node's to replace).
+/// `own` is the title whose keys are the uploader's own: its edition's
+/// audio or PDF key counts as its own only while that holding is the one
+/// that acquired it (another account's holding of the same edition shares
+/// its files but is not this node's to replace). A catalog upload passes
+/// `None`: every recorded key is another title's.
 ///
-/// Only the other titles' keys that could match are read, so the read
-/// stays small (and under the guest's result-row cap) however many titles
-/// are acquired: a key that matches a copy exactly or as its sidecar starts
-/// with the copy's name up to its first `.` and that `.` (a `LIKE` prefix;
-/// `%` or `_` in it, or SQLite's case folding, only widen it, and storage
-/// keys carry no `\`), or equals a copy without one. The exact rules then
-/// run on what was read.
+/// Only the keys that could match are read, so the read stays small (and
+/// under the guest's result-row cap) however many titles are acquired: a
+/// key that matches a copy exactly or as its sidecar starts with the
+/// copy's name up to its first `.` and that `.` (a `LIKE` prefix; `%` or
+/// `_` in it, or SQLite's case folding, only widen it, and storage keys
+/// carry no `\`), or equals a copy without one. The exact rules then run
+/// on what was read.
 ///
 /// # Errors
 ///
 /// Returns an error when a read fails.
-pub(super) async fn claims_another_books_key(
+pub(super) async fn claims_another_titles_key(
     store: &LibraryStore,
-    siblings: &BTreeSet<String>,
+    own: Option<OwnTitle<'_>>,
     files: &[UploadFile],
 ) -> Result<bool> {
     let copies: BTreeSet<&str> = files
@@ -585,15 +604,18 @@ pub(super) async fn claims_another_books_key(
         .into_iter()
         .map(|prefix| {
             sea_orm::Condition::any()
-                .add(books::Column::StorageKey.like(prefix.as_str()))
-                .add(books::Column::PdfStorageKey.like(prefix.as_str()))
+                .add(edition_acquisitions::Column::StorageKey.like(prefix.as_str()))
+                .add(edition_acquisitions::Column::PdfStorageKey.like(prefix.as_str()))
         })
         .chain(whole.into_iter().map(|key| {
             sea_orm::Condition::any()
-                .add(books::Column::StorageKey.eq(key))
-                .add(books::Column::PdfStorageKey.eq(key))
+                .add(edition_acquisitions::Column::StorageKey.eq(key))
+                .add(edition_acquisitions::Column::PdfStorageKey.eq(key))
         }))
         .collect();
+    let mine = |edition: &str, holding: Option<&str>| {
+        own.is_some_and(|own| own.edition_id == edition && holding == Some(own.holding_id))
+    };
     let mut exact = BTreeSet::new();
     let mut stems = BTreeSet::new();
     for chunk in probes.chunks(KEY_PROBES_PER_READ) {
@@ -601,18 +623,26 @@ pub(super) async fn claims_another_books_key(
             .iter()
             .cloned()
             .fold(sea_orm::Condition::any(), |all, probe| all.add(probe));
-        let others = books::Entity::find()
+        let others = edition_acquisitions::Entity::find()
             .select_only()
-            .column(books::Column::StorageKey)
-            .column(books::Column::PdfStorageKey)
-            .filter(books::Column::Uuid.is_not_in(siblings.iter().cloned()))
+            .column(edition_acquisitions::Column::EditionId)
+            .column(edition_acquisitions::Column::StorageKey)
+            .column(edition_acquisitions::Column::HoldingId)
+            .column(edition_acquisitions::Column::PdfStorageKey)
+            .column(edition_acquisitions::Column::PdfHoldingId)
             .filter(any)
-            .into_model::<BookStorageKeys>()
+            .into_model::<AcquiredKeys>()
             .all(store.db())
             .await
             .map_err(LibraryError::Orm)?;
         for row in others {
-            for key in row.storage_key.into_iter().chain(row.pdf_storage_key) {
+            let audio = row
+                .storage_key
+                .filter(|_| !mine(&row.edition_id, Some(&row.holding_id)));
+            let pdf = row
+                .pdf_storage_key
+                .filter(|_| !mine(&row.edition_id, row.pdf_holding_id.as_deref()));
+            for key in audio.into_iter().chain(pdf) {
                 if let Some(stem) = file_stem_key(&key) {
                     stems.insert(stem.to_string());
                 }
@@ -625,13 +655,20 @@ pub(super) async fn claims_another_books_key(
         .any(|key| exact.contains(*key) || sidecar_stems(key).any(|stem| stems.contains(stem))))
 }
 
-/// A book's audio and PDF storage keys, read by column name (#854).
+/// An edition's acquired audio and PDF keys and the holdings that wrote
+/// them, read by column name (#854).
 #[derive(Debug, sea_orm::FromQueryResult)]
-struct BookStorageKeys {
-    /// `books.storage_key`: the audio object's key, when stored.
+struct AcquiredKeys {
+    /// `edition_acquisitions.edition_id`.
+    edition_id: String,
+    /// The audio object's key, when stored.
     storage_key: Option<String>,
-    /// `books.pdf_storage_key`: the companion PDF's key, when stored.
+    /// The holding whose acquire wrote the audio.
+    holding_id: String,
+    /// The companion PDF's key, when stored.
     pdf_storage_key: Option<String>,
+    /// The holding whose acquire wrote the PDF.
+    pdf_holding_id: Option<String>,
 }
 
 /// How many times [`claim_upload_keys`] claims one key whose record keeps
@@ -651,9 +688,9 @@ struct ClaimedKey<'a> {
 /// The upload a grant claims keys for ([`claim_upload_keys`]).
 #[derive(Clone, Copy)]
 struct UploadClaim<'a> {
-    /// The library title of a job upload, or the node holding of a catalog
-    /// upload.
-    book_uuid: &'a str,
+    /// The account holding of a job upload, or the node holding of a
+    /// catalog upload.
+    holding_id: &'a str,
     /// The edition the claimed keys are recorded under.
     owner: &'a FileOwner,
     /// Whether this is a branch's catalog upload rather than a job's.
@@ -664,15 +701,15 @@ struct UploadClaim<'a> {
     upload_id: &'a str,
 }
 
-/// Claims every copy of `files` of the upload's title (`book_uuid`) for its
+/// Claims every copy of `files` of the upload's title (`holding_id`) for its
 /// `owner` with `upload_id` as its writer
 /// ([`LibraryStore::claim_edition_file`]); answers false as soon as one is
 /// a key another edition holds on that destination (one its acquire wrote,
 /// or another edition's upload claimed), so a folder several titles share
 /// never lets one overwrite another's chapter, part or sidecar files.
 /// `primary` is the upload's primary audio key, which gives each file its
-/// role ([`FileRole::for_key`]). `book_uuid` is the library title of a
-/// job upload, or the node holding of a catalog upload (`catalog`); a Host
+/// role ([`FileRole::for_key`]). `holding_id` is the account holding of
+/// a job upload, or the node holding of a catalog upload (`catalog`); a Host
 /// job's upload of a book may take over keys a catalog upload wrote, as an
 /// acquire on this node would.
 ///
@@ -690,7 +727,7 @@ async fn claim_upload_keys<'a>(
     claimed: &mut Vec<ClaimedKey<'a>>,
 ) -> Result<bool> {
     let UploadClaim {
-        book_uuid,
+        holding_id,
         owner,
         catalog,
         primary,
@@ -724,7 +761,7 @@ async fn claim_upload_keys<'a>(
                     role,
                     Some(file.sha256.as_str()),
                     prior.as_ref(),
-                    book_uuid,
+                    holding_id,
                     catalog,
                 )
                 .await?
@@ -742,6 +779,54 @@ async fn claim_upload_keys<'a>(
         return Ok(false);
     }
     Ok(true)
+}
+
+/// Stores the probes a committed upload stated for its audio files on the
+/// rows it wrote ([`LibraryStore::set_uploaded_file_probe`]), so the
+/// library knows what copy it holds without reading the files back.
+///
+/// Done once the upload is committed, when every file has arrived whole:
+/// an open or aborted upload's rows stay unprobed. A file with no probe or
+/// no media type, a copy that is not audio, and a key a later write has
+/// since claimed are left alone. The manifest was checked at the grant, so
+/// a probe the store would still refuse is skipped, not an error: the
+/// commit has already happened and does not depend on it.
+///
+/// # Errors
+///
+/// Returns an error when a read or write fails.
+async fn store_committed_probes(store: &LibraryStore, upload_id: &str) -> Result<()> {
+    let Some(session) = load_upload(store, upload_id).await? else {
+        return Ok(());
+    };
+    for file in &session.files {
+        let (Some(stated), Some(content_type)) = (&file.probe, &file.content_type) else {
+            continue;
+        };
+        let probe = FileProbe {
+            content_type: content_type.clone(),
+            bitrate_kbps: stated.bitrate_kbps,
+            lossless: stated.lossless,
+            source_store: stated.source_store.clone(),
+        };
+        if !probe.is_well_formed() {
+            continue;
+        }
+        for copy in &file.copies {
+            match FileRole::for_key(&copy.key, Some(&session.primary_key)) {
+                FileRole::Audio | FileRole::Part | FileRole::Chapter => {}
+                FileRole::Pdf
+                | FileRole::Cover
+                | FileRole::Sidecar
+                | FileRole::Transcript
+                | FileRole::Epub => continue,
+            }
+            store
+                .set_uploaded_file_probe(&copy.destination, &copy.key, upload_id, &probe)
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// Gives back every key in `claimed` that `upload_id` still holds, newest
@@ -802,7 +887,7 @@ pub(super) async fn upload_holds_its_keys(
     store: &LibraryStore,
     session: &UploadSession,
 ) -> Result<bool> {
-    if session.book_uuid.is_empty() {
+    if session.holding_id.is_empty() {
         return Ok(true);
     }
     Ok(store.count_edition_files_by(&session.upload_id).await? == granted_key_count(session))
@@ -861,7 +946,7 @@ fn sidecar_stems(key: &str) -> impl Iterator<Item = &str> {
 /// its owner's accounts is one of that user's; and the manifest is well
 /// formed, every key inside the title's own scope on its destination
 /// ([`UploadDestination`]) and none another title's: neither another
-/// title's recorded audio, PDF or audio sidecar (`claims_another_books_key`)
+/// title's recorded audio, PDF or audio sidecar (`claims_another_titles_key`)
 /// nor any key recorded for another title on that destination
 /// (`claim_upload_keys`, which then claims every key for this upload). An
 /// earlier open upload of the same title by the same job is aborted: the
@@ -895,40 +980,46 @@ pub async fn grant_upload(
     if job.kind != JobKind::Acquire {
         return Ok(UploadGrant::Refused("not_an_acquire"));
     }
-    if !req.book_uuid.is_empty() {
-        let Some(book) = store.get_book_by_uuid(req.book_uuid).await? else {
-            return Ok(UploadGrant::Refused("unknown_book"));
+    if !req.holding_id.is_empty() {
+        let Some(title) = store.acquire_title_of_holding(req.holding_id).await? else {
+            return Ok(UploadGrant::Refused("unknown_title"));
         };
+        let account = (title.plugin_key.clone(), title.account_id.clone());
         let keys = job_plugin_keys(store, &job).await?.unwrap_or_default();
         // The selector is resolved as `job_titles` resolves it, so every
         // title the plan offered can be granted.
-        let account_ok = job_accounts(store, &job).await?.is_none_or(|accounts| {
-            accounts.contains(&(book.plugin_key.clone(), book.account_id.clone()))
-        });
-        let title_ok = job
-            .payload
-            .title
-            .as_deref()
-            .filter(|t| !t.is_empty())
-            .is_none_or(|title| names_book(title, &book));
-        if !keys.contains(&book.plugin_key) || !account_ok || !title_ok {
-            return Ok(UploadGrant::Refused("book_not_in_job"));
+        let account_ok = job_accounts(store, &job)
+            .await?
+            .is_none_or(|accounts| accounts.contains(&account));
+        // The job's title selector, matched as the executor matches it.
+        let title_ok = match job.payload.title.as_deref().filter(|t| !t.is_empty()) {
+            None => true,
+            Some(selector) => store
+                .acquire_titles_named(None, selector)
+                .await?
+                .iter()
+                .any(|named| named.holding_id == title.holding_id),
+        };
+        if !keys.contains(&title.plugin_key) || !account_ok || !title_ok {
+            return Ok(UploadGrant::Refused("title_not_in_job"));
         }
         match node_trust(store, node_id, Claimant::Remote).await? {
             NodeTrust::All => {}
             NodeTrust::OwnedBy(user_id) | NodeTrust::AllOfOwner(user_id) => {
-                let owned = accounts_owned_by(store, user_id).await?;
-                if !owned.contains(&(book.plugin_key.clone(), book.account_id.clone())) {
+                if !accounts_owned_by(store, user_id).await?.contains(&account) {
                     return Ok(UploadGrant::Refused("not_your_account"));
                 }
             }
             NodeTrust::Nothing => return Ok(UploadGrant::Lost),
         }
-        // Only the title's own keys: another account's row of the same
-        // edition holds files this node's owner may not replace.
-        let own = BTreeSet::from([book.uuid.clone()]);
-        if claims_another_books_key(store, &own, req.files).await? {
-            return Ok(UploadGrant::Refused("key_of_another_book"));
+        // Only the title's own keys: the edition's files another account's
+        // holding acquired are not this node's to replace.
+        let own = OwnTitle {
+            edition_id: &title.edition_id,
+            holding_id: &title.holding_id,
+        };
+        if claims_another_titles_key(store, Some(own), req.files).await? {
+            return Ok(UploadGrant::Refused("key_of_another_title"));
         }
     }
     open_upload_session(
@@ -964,18 +1055,13 @@ pub(super) async fn open_upload_session(
         return Ok(UploadGrant::Refused(reason));
     }
     let catalog = job_id == bookclerk_node_proto::CATALOG_ITEM;
-    // A book's keys are its edition's, and so are a node holding's.
-    // Resolved before the row goes in, so a catalog upload records the
-    // edition whose keys it claims.
-    let owner = if req.book_uuid.is_empty() {
+    // A holding's keys are its edition's, an account holding's or a node
+    // holding's alike. Resolved before the row goes in, so a catalog upload
+    // records the edition whose keys it claims.
+    let owner = if req.holding_id.is_empty() {
         None
     } else {
-        let owner = if catalog {
-            store.file_owner_of_holding(req.book_uuid).await?
-        } else {
-            store.file_owner_of_book(req.book_uuid).await?
-        };
-        let Some(owner) = owner else {
+        let Some(owner) = store.file_owner_of_holding(req.holding_id).await? else {
             return Ok(UploadGrant::Refused("unresolved_title"));
         };
         Some(owner)
@@ -985,7 +1071,7 @@ pub(super) async fn open_upload_session(
         (Some(FileOwner::Edition(_)) | None, _) => None,
     };
     let manifest = serde_json::to_string(&Manifest {
-        destinations: if req.book_uuid.is_empty() {
+        destinations: if req.holding_id.is_empty() {
             Vec::new()
         } else {
             req.destinations.iter().map(|d| d.id.clone()).collect()
@@ -1012,7 +1098,7 @@ pub(super) async fn open_upload_session(
         job_id: Set(job_id.to_string()),
         lease_generation: Set(generation),
         receiving_node_id: Set(receiving_node_id.to_string()),
-        book_uuid: Set(req.book_uuid.to_string()),
+        holding_id: Set(req.holding_id.to_string()),
         primary_key: Set(req.primary_key.to_string()),
         manifest_json: Set(manifest),
         received_json: Set("[]".into()),
@@ -1030,7 +1116,7 @@ pub(super) async fn open_upload_session(
         match claim_upload_keys(
             store,
             &UploadClaim {
-                book_uuid: req.book_uuid,
+                holding_id: req.holding_id,
                 owner,
                 catalog,
                 primary: req.primary_key,
@@ -1044,7 +1130,7 @@ pub(super) async fn open_upload_session(
             Ok(true) => {}
             Ok(false) => {
                 undo_grant(store, &upload_id, &claimed).await;
-                return Ok(UploadGrant::Refused("key_of_another_book"));
+                return Ok(UploadGrant::Refused("key_of_another_title"));
             }
             Err(err) => {
                 undo_grant(store, &upload_id, &claimed).await;
@@ -1067,7 +1153,7 @@ pub(super) async fn open_upload_session(
     let ours = (created.as_str(), upload_id.as_str());
     let superseded = match abort_matching(store, job_id, |row| {
         (!catalog || row.node_id == node_id)
-            && row.book_uuid == req.book_uuid
+            && row.holding_id == req.holding_id
             && (row.created_at.as_str(), row.upload_id.as_str()) < ours
     })
     .await
@@ -1078,7 +1164,7 @@ pub(super) async fn open_upload_session(
             return Err(err);
         }
     };
-    match newer_grant_open(store, node_id, job_id, req.book_uuid, ours).await {
+    match newer_grant_open(store, node_id, job_id, req.holding_id, ours).await {
         Ok(false) => {}
         Ok(true) => {
             undo_grant(store, &upload_id, &claimed).await;
@@ -1096,7 +1182,7 @@ pub(super) async fn open_upload_session(
         match claim_upload_keys(
             store,
             &UploadClaim {
-                book_uuid: req.book_uuid,
+                holding_id: req.holding_id,
                 owner,
                 catalog,
                 primary: req.primary_key,
@@ -1111,7 +1197,7 @@ pub(super) async fn open_upload_session(
             Ok(false) => {
                 tracing::warn!(upload_id = %upload_id, superseded = superseded.len(), "a key was taken by another title while an upload was granted; the superseded uploads' files stay");
                 undo_grant(store, &upload_id, &claimed).await;
-                return Ok(UploadGrant::Refused("key_of_another_book"));
+                return Ok(UploadGrant::Refused("key_of_another_title"));
             }
             Err(err) => {
                 undo_grant(store, &upload_id, &claimed).await;
@@ -1124,7 +1210,7 @@ pub(super) async fn open_upload_session(
         job_id,
         fence = generation,
         upload_id = %upload_id,
-        book_uuid = req.book_uuid,
+        holding_id = req.holding_id,
         files = req.files.len(),
         "granted a host upload"
     );
@@ -1136,7 +1222,7 @@ pub(super) async fn open_upload_session(
     })
 }
 
-/// True when an open upload of `book_uuid` in `job_id` was granted after
+/// True when an open upload of `holding_id` in `job_id` was granted after
 /// the one created at `ours` (`(created_at, upload_id)`, compared as
 /// [`grant_upload`] orders grants): that newer grant supersedes it.
 ///
@@ -1152,12 +1238,12 @@ async fn newer_grant_open(
     store: &LibraryStore,
     node_id: &str,
     job_id: &str,
-    book_uuid: &str,
+    holding_id: &str,
     ours: (&str, &str),
 ) -> Result<bool> {
     let mut query = node_upload_sessions::Entity::find()
         .filter(node_upload_sessions::Column::JobId.eq(job_id))
-        .filter(node_upload_sessions::Column::BookUuid.eq(book_uuid))
+        .filter(node_upload_sessions::Column::HoldingId.eq(holding_id))
         .filter(node_upload_sessions::Column::State.eq(STATE_OPEN));
     if job_id == bookclerk_node_proto::CATALOG_ITEM {
         query = query.filter(node_upload_sessions::Column::NodeId.eq(node_id));
@@ -1182,7 +1268,7 @@ fn session_from_model(row: node_upload_sessions::Model) -> Result<UploadSession>
         job_id: row.job_id,
         generation: row.lease_generation,
         receiving_node_id: row.receiving_node_id,
-        book_uuid: row.book_uuid,
+        holding_id: row.holding_id,
         primary_key: row.primary_key,
         pdf_key: manifest.pdf_key,
         destinations: manifest.destinations,
@@ -1477,27 +1563,27 @@ async fn already_committed(
 /// account unlinked, after the preflight leaves the library untouched
 /// (credential revocation is gated separately).
 ///
-/// The node is an owner node, or its owning user is active and either
-/// privileged (`owner`, `administrator`) or, for a title (`book`), a
-/// `host` or `member` still linked to the title's store account. The
-/// closing upload (`book` is `None`) carries no title, so an active user
-/// of a known role suffices there.
+/// The node is a shared node, or its owning user is active and either
+/// privileged (`owner`, `administrator`) or, for a title (`account`, its
+/// `(plugin_key, account_id)`), a `host` or `member` still linked to the
+/// title's store account. The closing upload (`account` is `None`) carries
+/// no title, so an active user of a known role suffices there.
 pub(super) fn commit_trust_gate(
     node_id: &str,
-    book: Option<&books::Model>,
+    account: Option<(&str, &str)>,
 ) -> (String, Vec<bookclerk_plugin_abi::DbValue>) {
-    let (account_sql, mut account_binds) = match book {
-        Some(book) => (
+    let (account_sql, mut account_binds) = match account {
+        Some((plugin_key, account_id)) => (
             "EXISTS (SELECT 1 FROM account_links \
                WHERE account_links.plugin_key = ? AND account_links.account_id = ? \
                  AND account_links.identity_id IN (SELECT portal_identities.id \
                    FROM portal_identities WHERE portal_identities.user_id = users.id))",
-            vec![text(&book.plugin_key), text(&book.account_id)],
+            vec![text(plugin_key), text(account_id)],
         ),
         None => ("1 = 1", Vec::new()),
     };
     let sql = format!(
-        "EXISTS (SELECT 1 FROM nodes WHERE nodes.node_id = ? AND (nodes.kind = 'owner' \
+        "EXISTS (SELECT 1 FROM nodes WHERE nodes.node_id = ? AND (nodes.kind = 'shared' \
            OR EXISTS (SELECT 1 FROM users WHERE users.id = nodes.owner_user_id \
              AND users.status = 'active' \
              AND (users.role IN ('owner', 'administrator') \
@@ -1538,6 +1624,25 @@ pub async fn commit_upload(
     finish: Option<UploadFinish<'_>>,
     limits: JobClaimLimits,
 ) -> Result<UploadCommit> {
+    let outcome = commit_upload_checked(store, upload_id, finish, limits).await?;
+    if matches!(outcome, UploadCommit::Committed { .. }) {
+        store_committed_probes(store, upload_id).await?;
+    }
+    Ok(outcome)
+}
+
+/// [`commit_upload`] without the probes: every check, and the batch that
+/// commits the title.
+///
+/// # Errors
+///
+/// As [`commit_upload`].
+async fn commit_upload_checked(
+    store: &LibraryStore,
+    upload_id: &str,
+    finish: Option<UploadFinish<'_>>,
+    limits: JobClaimLimits,
+) -> Result<UploadCommit> {
     let Some(session) = load_upload(store, upload_id).await? else {
         return Ok(UploadCommit::Refused("unknown_upload"));
     };
@@ -1573,7 +1678,7 @@ pub async fn commit_upload(
         return Ok(UploadCommit::Refused("key_taken"));
     }
     // The owner decides the job's success itself.
-    match (session.book_uuid.is_empty(), finish) {
+    match (session.holding_id.is_empty(), finish) {
         (false, Some(_)) => return Ok(UploadCommit::Refused("not_a_closing_upload")),
         (true, None) => return Ok(UploadCommit::Refused("closing_upload_must_finish")),
         (true, Some(_)) if job.cancel_requested => {
@@ -1589,29 +1694,36 @@ pub async fn commit_upload(
         }
         (false, None) => {}
     }
-    let model = if session.book_uuid.is_empty() {
+    let title = if session.holding_id.is_empty() {
         None
     } else {
-        let Some(model) = books::Entity::find()
-            .filter(books::Column::Uuid.eq(&session.book_uuid))
+        let Some(title) = store.acquire_title_of_holding(&session.holding_id).await? else {
+            return Ok(UploadCommit::Refused("unknown_title"));
+        };
+        Some(title)
+    };
+    // The flat row the title still has while `books` exists (book model
+    // step 6): written alongside the edition, and what `book_acquired`
+    // names.
+    let model = match title.as_ref().and_then(|t| t.book_uuid.as_deref()) {
+        Some(uuid) => books::Entity::find()
+            .filter(books::Column::Uuid.eq(uuid))
             .one(store.db())
             .await
-            .map_err(LibraryError::Orm)?
-        else {
-            return Ok(UploadCommit::Refused("unknown_book"));
-        };
-        Some(model)
-    };
-    // The title's edition takes the files too (`edition_acquisitions`).
-    let edition = match &model {
-        Some(model) => store.edition_of_book(&model.uuid).await?,
+            .map_err(LibraryError::Orm)?,
         None => None,
     };
+    let edition = title.as_ref().map(|t| t.edition_id.clone());
     let now = stamp(Utc::now());
     let gate_sql = "EXISTS (SELECT 1 FROM node_upload_sessions \
                      WHERE upload_id = ? AND state = 'committed' AND committed_at = ?)";
     let gate = || vec![text(upload_id), text(&now)];
-    let (trust_sql, trust_binds) = commit_trust_gate(&session.node_id, model.as_ref());
+    let (trust_sql, trust_binds) = commit_trust_gate(
+        &session.node_id,
+        title
+            .as_ref()
+            .map(|t| (t.plugin_key.as_str(), t.account_id.as_str())),
+    );
     // The lease must not have run out (compared as the reclaim and the
     // job-secret handoff compare it), not only still name this fence.
     let lease_now = Utc::now().to_rfc3339();
@@ -1631,7 +1743,7 @@ pub async fn commit_upload(
     // of them). Gated in the same
     // statement, so a key taken between the check above and the batch is
     // never recorded as this title's. The closing upload holds none.
-    let keys_sql = if session.book_uuid.is_empty() {
+    let keys_sql = if session.holding_id.is_empty() {
         "1 = 1"
     } else {
         binds.extend([
@@ -1654,113 +1766,156 @@ pub async fn commit_upload(
         ),
         binds,
     )];
-    if let Some(model) = &model {
-        let mut binds = vec![
-            text(&session.primary_key),
-            text(&now),
-            text(&session.book_uuid),
-        ];
-        binds.extend(gate());
-        statements.push(exec(
-            &format!(
-                "UPDATE books SET acquire_status = 'acquired', storage_key = ?, \
-                   error_message = NULL, updated_at = ? \
-                  WHERE uuid = ? AND {gate_sql}"
-            ),
-            binds,
-        ));
-        if let Some(pdf_key) = session.pdf_key.as_deref() {
-            let mut binds = vec![text(pdf_key), text(&now), text(&session.book_uuid)];
+    if let Some(title) = &title {
+        if let Some(model) = &model {
+            let mut binds = vec![text(&session.primary_key), text(&now), text(&model.uuid)];
             binds.extend(gate());
             statements.push(exec(
                 &format!(
-                    "UPDATE books SET pdf_status = 'acquired', pdf_storage_key = ?, \
-                       updated_at = ? \
+                    "UPDATE books SET acquire_status = 'acquired', storage_key = ?, \
+                       error_message = NULL, updated_at = ? \
                       WHERE uuid = ? AND {gate_sql}"
                 ),
                 binds,
             ));
+            if let Some(pdf_key) = session.pdf_key.as_deref() {
+                let mut binds = vec![text(pdf_key), text(&now), text(&model.uuid)];
+                binds.extend(gate());
+                statements.push(exec(
+                    &format!(
+                        "UPDATE books SET pdf_status = 'acquired', pdf_storage_key = ?, \
+                           updated_at = ? \
+                          WHERE uuid = ? AND {gate_sql}"
+                    ),
+                    binds,
+                ));
+            }
         }
-        if let Some(edition) = edition.as_deref() {
+        {
+            let edition = title.edition_id.as_str();
+            let holding = title.holding_id.as_str();
             let mut binds = vec![
                 text(edition),
                 text(&session.primary_key),
-                text(&session.book_uuid),
+                text(holding),
                 text(&now),
+                text(edition),
+                text(holding),
                 text(edition),
             ];
             binds.extend(gate());
             statements.push(exec(
                 &format!(
                     "INSERT OR IGNORE INTO edition_acquisitions (\
-                        edition_id, status, storage_key, error_message, title_uuid, updated_at\
+                        edition_id, status, storage_key, error_message, holding_id, updated_at\
                      ) SELECT ?, 'acquired', ?, NULL, ?, ? \
-                     WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?) AND {gate_sql}"
+                     WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?) \
+                       AND EXISTS (SELECT 1 FROM holdings WHERE id = ? \
+                         AND listing_id IN (SELECT id FROM store_listings WHERE edition_id = ?)) \
+                       AND {gate_sql}"
                 ),
                 binds,
             ));
             let mut binds = vec![
                 text(&session.primary_key),
-                text(&session.book_uuid),
+                text(holding),
                 text(&now),
                 text(edition),
-                text(&session.book_uuid),
+                text(holding),
+                text(holding),
+                text(edition),
             ];
             binds.extend(gate());
-            // Another live title that acquired this edition keeps it, as in
+            // Another live holding that acquired this edition keeps it, and
+            // the uploading holding must still hold the edition, as in
             // `plan_set_acquire_status`.
             statements.push(exec(
                 &format!(
                     "UPDATE edition_acquisitions SET status = 'acquired', storage_key = ?, \
-                       error_message = NULL, title_uuid = ?, updated_at = ? \
+                       error_message = NULL, holding_id = ?, updated_at = ? \
                       WHERE edition_id = ? \
-                        AND (status != 'acquired' OR title_uuid = ? \
-                             OR NOT EXISTS (SELECT 1 FROM books \
-                                            WHERE uuid = edition_acquisitions.title_uuid)) \
+                        AND (status != 'acquired' OR holding_id = ? \
+                             OR NOT EXISTS (SELECT 1 FROM holdings \
+                                            WHERE id = edition_acquisitions.holding_id)) \
+                        AND EXISTS (SELECT 1 FROM holdings WHERE id = ? \
+                          AND listing_id IN (SELECT id FROM store_listings WHERE edition_id = ?)) \
                         AND {gate_sql}"
                 ),
                 binds,
             ));
+            // The companion PDF, under the same rule for the holding that
+            // acquired it (`update_edition_pdf_on`); the row exists by now
+            // whenever the holding holds the edition.
+            if let Some(pdf_key) = session.pdf_key.as_deref() {
+                let mut binds = vec![
+                    text(pdf_key),
+                    text(holding),
+                    text(&now),
+                    text(edition),
+                    text(holding),
+                    text(holding),
+                    text(edition),
+                ];
+                binds.extend(gate());
+                statements.push(exec(
+                    &format!(
+                        "UPDATE edition_acquisitions SET pdf_status = 'acquired', \
+                           pdf_storage_key = ?, pdf_holding_id = ?, updated_at = ? \
+                          WHERE edition_id = ? \
+                            AND (pdf_status != 'acquired' OR pdf_holding_id IS NULL \
+                                 OR pdf_holding_id = ? \
+                                 OR NOT EXISTS (SELECT 1 FROM holdings \
+                                                WHERE id = edition_acquisitions.pdf_holding_id)) \
+                            AND EXISTS (SELECT 1 FROM holdings WHERE id = ? \
+                              AND listing_id IN (SELECT id FROM store_listings WHERE edition_id = ?)) \
+                            AND {gate_sql}"
+                    ),
+                    binds,
+                ));
+            }
         }
-        let event = prepare_publish_domain_event(book_acquired_spec(
-            model,
-            Some(&session.primary_key),
-            edition.as_deref(),
-        ))?;
-        let mut binds = vec![
-            text(&event.id),
-            text(&event.event_type),
-            batch::int(event.schema_version.max(1)),
-            text(&now),
-            text(&event.account_id),
-            text(&event.source),
-            text(&event.correlation_id),
-            text(&event.causation_id),
-            text(&event.dedup_key),
-            text(&event.payload),
-            text(&event.ordering_key),
-            text(&now),
-            text(&event.account_id),
-            text(&event.source),
-            text(&event.event_type),
-            text(&event.dedup_key),
-        ];
-        binds.extend(gate());
-        statements.push(exec(
-            &format!(
-                "INSERT INTO domain_events (\
-                    id, event_type, schema_version, occurred_at, account_id, source, \
-                    correlation_id, causation_id, dedup_key, payload, ordering_key, \
-                    dispatch_state, created_at, wake_pending\
-                 ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 1 \
-                 WHERE NOT EXISTS (\
-                    SELECT 1 FROM domain_events \
-                    WHERE queue_name = 'core.events' AND account_id = ? AND source = ? \
-                      AND event_type = ? AND dedup_key = ?\
-                 ) AND {gate_sql}"
-            ),
-            binds,
-        ));
+        // `book_acquired` names the flat row while `books` exists.
+        if let Some(model) = &model {
+            let event = prepare_publish_domain_event(book_acquired_spec(
+                model,
+                Some(&session.primary_key),
+                edition.as_deref(),
+            ))?;
+            let mut binds = vec![
+                text(&event.id),
+                text(&event.event_type),
+                batch::int(event.schema_version.max(1)),
+                text(&now),
+                text(&event.account_id),
+                text(&event.source),
+                text(&event.correlation_id),
+                text(&event.causation_id),
+                text(&event.dedup_key),
+                text(&event.payload),
+                text(&event.ordering_key),
+                text(&now),
+                text(&event.account_id),
+                text(&event.source),
+                text(&event.event_type),
+                text(&event.dedup_key),
+            ];
+            binds.extend(gate());
+            statements.push(exec(
+                &format!(
+                    "INSERT INTO domain_events (\
+                        id, event_type, schema_version, occurred_at, account_id, source, \
+                        correlation_id, causation_id, dedup_key, payload, ordering_key, \
+                        dispatch_state, created_at, wake_pending\
+                     ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 1 \
+                     WHERE NOT EXISTS (\
+                        SELECT 1 FROM domain_events \
+                        WHERE queue_name = 'core.events' AND account_id = ? AND source = ? \
+                          AND event_type = ? AND dedup_key = ?\
+                     ) AND {gate_sql}"
+                ),
+                binds,
+            ));
+        }
     }
     let job_index = finish.map(|finish| {
         let mut binds = vec![
@@ -1785,7 +1940,7 @@ pub async fn commit_upload(
     });
     // Last, so no index above moves: each bump fires only when its rows
     // took this commit's stamp.
-    if model.is_some() {
+    if title.is_some() {
         statements.push(super::bump_if_stamped(super::LiveTopic::Library, &now)?);
     }
     if job_index.is_some() {
@@ -1823,7 +1978,7 @@ pub async fn commit_upload(
         job_id = %session.job_id,
         fence = session.generation,
         upload_id,
-        book_uuid = %session.book_uuid,
+        holding_id = %session.holding_id,
         job_completed,
         "committed a host upload"
     );

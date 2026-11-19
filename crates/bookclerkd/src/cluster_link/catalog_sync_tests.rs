@@ -289,7 +289,31 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
         .unwrap();
     let b_out = tempfile::tempdir().unwrap();
     crate::node_api::uploads::set_test_destination(b_files.path(), b_out.path());
-    own_book(&b, b_out.path(), "libro", "b-store-acct", "b1").await;
+    let b1_key = own_book(&b, b_out.path(), "libro", "b-store-acct", "b1").await;
+    // B probed b1 when it stored it; the values travel with the upload.
+    let b1_probe = bookclerk_library::FileProbe {
+        content_type: "audio/mp4".into(),
+        bitrate_kbps: Some(64),
+        lossless: false,
+        source_store: Some("libro".into()),
+    };
+    {
+        let plugin = "path:file:///tmp/libro";
+        let b1 = b
+            .scope(plugin, "libro")
+            .upsert_book(&new_book(plugin, "libro", "b-store-acct", "b1"))
+            .await
+            .unwrap();
+        let owner = b.file_owner_of_book(&b1.uuid).await.unwrap().unwrap();
+        assert!(b
+            .record_edition_file("local", &b1_key, &owner, bookclerk_library::FileRole::Audio)
+            .await
+            .unwrap());
+        assert!(b
+            .set_edition_file_probe("local", &b1_key, &owner, &b1_probe)
+            .await
+            .unwrap());
+    }
     // A title B holds that A also holds for Riley: it came from A.
     own_book(&b, b_out.path(), "test", "riley-acct", "echo1").await;
     a.scope(super::super::tests::PLUGIN, "test")
@@ -411,6 +435,15 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
             std::fs::read(a_out.path().join(key)).unwrap(),
             std::fs::read(b_out.path().join(key)).unwrap()
         );
+    }
+    // B's probe of b1 is on A's row for it; c1, which B never probed, and
+    // the cover have none.
+    assert_eq!(
+        a.edition_file_probe("local", &b1_key).await.unwrap(),
+        Some(b1_probe)
+    );
+    for key in ["Author/c1/c1.m4b", "Author/b1/b1.jpg"] {
+        assert_eq!(a.edition_file_probe("local", key).await.unwrap(), None);
     }
     // Upload reuse: every file went through the upload endpoint under the
     // catalog item (C's to B, B's two to A), and nothing was staged under
@@ -692,22 +725,83 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
     assert_eq!((report.sent, report.upserted), (2, 2));
 
     // A new pass from the start ("Include books from my own branches"
-    // turned off) cannot list b1's folder: b2 still goes, b1 stays shared.
+    // turned off) cannot list the first title's folder: the other still
+    // goes, and the first stays shared.
+    let first = listed[0].clone();
     set_cluster_link_sharing(&b, &b_link.owner_cluster_id, true, false)
         .await
         .unwrap();
-    *fail.lock().unwrap() = Some("Author/b1/".into());
+    *fail.lock().unwrap() = Some(format!("Author/{first}/"));
     let report = b_sync.sync_once().await.unwrap();
     assert_eq!(report.sent, 1);
     for product in ["b1", "b2"] {
         assert!(shares(&a, product).await, "{product}");
     }
-    // The pass did not end and its cursor stayed before b1 (the first
-    // title): the next pass tries it again and ends, after which nothing
-    // is resent.
+    // The pass did not end and its cursor stayed before the first title:
+    // the next pass tries it again and ends, after which nothing is
+    // resent.
     *fail.lock().unwrap() = None;
     let report = b_sync.sync_once().await.unwrap();
-    assert_eq!(report.sent, 2, "the pass resumed before b1");
-    assert!(shares(&a, "b1").await);
+    assert_eq!(report.sent, 2, "the pass resumed before {first}");
+    assert!(shares(&a, &first).await);
     assert_eq!(b_sync.sync_once().await.unwrap().sent, 0);
+}
+
+/// A store account's key of title `product_id` held by `holding_id`.
+fn own_key(holding_id: &str, account_id: &str, product_id: &str) -> super::AcquiredTitleKey {
+    super::AcquiredTitleKey {
+        holding_id: holding_id.to_owned(),
+        edition_id: "edition-1".to_owned(),
+        source: "audible".to_owned(),
+        plugin_key: "audible".to_owned(),
+        account_id: account_id.to_owned(),
+        marketplace: "us".to_owned(),
+        product_id: product_id.to_owned(),
+        updated_at: chrono::DateTime::UNIX_EPOCH,
+    }
+}
+
+/// Two accounts hold one title: the first holding represents it, but a
+/// later sibling's newer request moves the entry past the cursor.
+#[test]
+fn a_later_siblings_newer_change_moves_the_titles_entry() {
+    let reference = super::CatalogRef {
+        store: super::store_id("audible"),
+        product_id: "B000TEST01".to_owned(),
+    };
+    let cursor = chrono::DateTime::parse_from_rfc3339("2026-11-01T00:00:00Z")
+        .map(|at| at.with_timezone(&chrono::Utc))
+        .unwrap();
+    let asked = cursor + chrono::Duration::days(1);
+    let mut out = Vec::new();
+    let mut own = std::collections::BTreeMap::new();
+    let first = own_key("holding-a", "owner", "B000TEST01");
+    assert!(super::push_own(
+        &mut out,
+        &mut own,
+        reference.clone(),
+        first,
+        cursor - chrono::Duration::days(1),
+    ));
+    let sibling = own_key("holding-b", "member", "B000TEST01");
+    assert!(!super::push_own(
+        &mut out,
+        &mut own,
+        reference.clone(),
+        sibling,
+        asked,
+    ));
+    // An older sibling never moves the entry back.
+    let older = own_key("holding-c", "other", "B000TEST01");
+    assert!(!super::push_own(
+        &mut out, &mut own, reference, older, cursor
+    ));
+    assert_eq!(out.len(), 1);
+    let entry = &out[0];
+    assert_eq!(entry.order, super::own_order(asked, "holding-a"));
+    assert!(entry.order.as_str() > super::own_order(cursor, "").as_str());
+    match &entry.source {
+        super::Source::Own(key) => assert_eq!(key.holding_id, "holding-a"),
+        super::Source::Branch(_) => panic!("an own title became a branch entry"),
+    }
 }

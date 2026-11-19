@@ -16,12 +16,17 @@ var PRODUCT_API_VERSION = 3;
 var MAX_SCALAR_BYTES = 262144;
 var MAX_STREAM_WINDOW_BYTES = 1048576;
 var MAX_LIST_PAGE = 256;
+var MAX_BATCH_KEYS = 256;
+var MAX_CHANGES_PAGE = 256;
+var MAX_CHANGES_CURSOR_BYTES = 4096;
 var MAX_CHECKPOINT_BYTES = 65536;
 var MAX_SCAN_PAGE_BOOKS = 500;
 var MAX_SCAN_CURSOR_BYTES = 4096;
 var MAX_EVENT_PAYLOAD_BYTES = 65536;
 var MAX_KV_VALUE_BYTES = 1048576;
 var MAX_KV_KEY_BYTES = 512;
+var MAX_SOCKET_FRAME_BYTES = 262144;
+var MAX_SOCKET_ATTACHMENT_BYTES = 2048;
 var MAX_KV_METADATA_BYTES = 1024;
 var MAX_PLUGIN_MIGRATION_OPS = 256;
 var MAX_PLUGIN_MIGRATION_TOTAL_OPS = 2048;
@@ -29,6 +34,13 @@ var MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES = 262144;
 var FEATURE_SCALAR_LIMITS = "rpc.scalarLimits";
 var FEATURE_STREAMS = "rpc.streams";
 var FEATURE_STORAGE_COPY = "storage.copy";
+var FEATURE_STORAGE_MOVE = "storage.move";
+var FEATURE_STORAGE_MOVE_MANY = "storage.moveMany";
+var FEATURE_STORAGE_DELETE_MANY = "storage.deleteMany";
+var FEATURE_STORAGE_HEAD_MANY = "storage.headMany";
+var FEATURE_STORAGE_CONDITIONAL_WRITE = "storage.conditionalWrite";
+var FEATURE_STORAGE_CHANGES = "storage.changes";
+var OBJECT_CHANGE_KINDS = ["changed", "upserted", "removed"];
 var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited"];
 var CLI_ARG_KINDS = ["string", "bool", "int", "path"];
 var WORK_KINDS = ["unspecified", "book", "podcast"];
@@ -40,7 +52,9 @@ var CREDIT_LEVELS = ["roleDefault", "work", "expression", "edition"];
 var FETCHED_FILE_ROLES = ["unspecified", "part", "whole", "cover"];
 var CATALOG_SORTS = ["relevance", "popularity", "rating", "title", "author"];
 var CATALOG_FIELDS = ["any", "author", "narrator", "series", "genre"];
+var PRICE_LOOKUPS = ["unspecified", "product", "isbn", "asin", "title"];
 var ABRIDGEMENTS = ["unknown", "unabridged", "abridged"];
+var METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration"];
 var DB_TYPES = ["unspecified", "bool", "int64", "float64", "text", "bytes"];
 var DB_STATEMENT_KINDS = ["execute", "select", "returning"];
 var DB_RESULT_SELECTIONS = ["discard", "affectedRows", "rows"];
@@ -874,6 +888,9 @@ function fromOrd(table, ordinal, enumName) {
   }
   return v;
 }
+function fromOrdOr(table, ordinal, fallback) {
+  return table[ordinal] ?? fallback;
+}
 function unknownUnion(struct, member) {
   return new Error(`unknown ${struct} union member: ${String(member)}`);
 }
@@ -897,8 +914,8 @@ var PluginErrorCodec = {
   }
 };
 var ObjectMetadataCodec = {
-  dataWords: 1,
-  pointerCount: 4,
+  dataWords: 2,
+  pointerCount: 6,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.key ?? "");
@@ -906,6 +923,9 @@ var ObjectMetadataCodec = {
     s.setText(1, v.contentType ?? "");
     s.setText(2, v.etag ?? "");
     s.setData(3, v.sha256 ?? EMPTY_BYTES);
+    s.setUint64(1, BigInt(v.modifiedAtMs ?? 0));
+    s.setText(4, v.versionId ?? "");
+    s.setText(5, v.signature ?? "");
   },
   read(s, caps) {
     void caps;
@@ -914,73 +934,95 @@ var ObjectMetadataCodec = {
       size: Number(s.getUint64(0)),
       contentType: s.getText(1),
       etag: s.getText(2),
-      sha256: s.getData(3)
+      sha256: s.getData(3),
+      modifiedAtMs: Number(s.getUint64(1)),
+      versionId: s.getText(4),
+      signature: s.getText(5)
     };
   }
 };
 var ObjectInfoCodec = {
-  dataWords: 1,
-  pointerCount: 1,
+  dataWords: 2,
+  pointerCount: 4,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.key ?? "");
     s.setUint64(0, BigInt(v.size ?? 0));
+    s.setText(1, v.etag ?? "");
+    s.setUint64(1, BigInt(v.modifiedAtMs ?? 0));
+    s.setText(2, v.versionId ?? "");
+    s.setText(3, v.signature ?? "");
   },
   read(s, caps) {
     void caps;
     return {
       key: s.getText(0),
-      size: Number(s.getUint64(0))
+      size: Number(s.getUint64(0)),
+      etag: s.getText(1),
+      modifiedAtMs: Number(s.getUint64(1)),
+      versionId: s.getText(2),
+      signature: s.getText(3)
     };
   }
 };
 var ListOptionsCodec = {
-  dataWords: 1,
+  dataWords: 2,
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.prefix ?? "");
     s.setText(1, v.cursor ?? "");
     s.setUint32(0, v.limit ?? 0);
+    s.setBool(32, v.withSignatures ?? false);
+    s.setUint64(1, BigInt(v.modifiedSinceMs ?? 0));
   },
   read(s, caps) {
     void caps;
     return {
       prefix: s.getText(0),
       cursor: s.getText(1),
-      limit: s.getUint32(0)
+      limit: s.getUint32(0),
+      withSignatures: s.getBool(32),
+      modifiedSinceMs: Number(s.getUint64(1))
     };
   }
 };
 var ListPageCodec = {
-  dataWords: 0,
+  dataWords: 1,
   pointerCount: 2,
   write(s, v, caps) {
     {
       const list = v.objects ?? [];
-      const items = s.initStructList(0, list.length, 1, 1);
+      const items = s.initStructList(0, list.length, 2, 4);
       for (let i = 0; i < items.length; i++) {
         ObjectInfoCodec.write(items[i], list[i], caps);
       }
     }
     s.setText(1, v.nextCursor ?? "");
+    s.setBool(0, v.signaturesIncluded ?? false);
+    s.setBool(1, v.modifiedSinceApplied ?? false);
   },
   read(s, caps) {
     return {
-      objects: s.getStructList(0, 1, 1).map((item) => ObjectInfoCodec.read(item, caps)),
-      nextCursor: s.getText(1)
+      objects: s.getStructList(0, 2, 4).map((item) => ObjectInfoCodec.read(item, caps)),
+      nextCursor: s.getText(1),
+      signaturesIncluded: s.getBool(0),
+      modifiedSinceApplied: s.getBool(1)
     };
   }
 };
 var PutResultCodec = {
-  dataWords: 1,
-  pointerCount: 3,
+  dataWords: 2,
+  pointerCount: 5,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.key ?? "");
     s.setUint64(0, BigInt(v.bytesWritten ?? 0));
     s.setText(1, v.etag ?? "");
     s.setData(2, v.sha256 ?? EMPTY_BYTES);
+    s.setUint64(1, BigInt(v.modifiedAtMs ?? 0));
+    s.setText(3, v.versionId ?? "");
+    s.setText(4, v.signature ?? "");
   },
   read(s, caps) {
     void caps;
@@ -988,7 +1030,10 @@ var PutResultCodec = {
       key: s.getText(0),
       bytesWritten: Number(s.getUint64(0)),
       etag: s.getText(1),
-      sha256: s.getData(2)
+      sha256: s.getData(2),
+      modifiedAtMs: Number(s.getUint64(1)),
+      versionId: s.getText(3),
+      signature: s.getText(4)
     };
   }
 };
@@ -1003,6 +1048,249 @@ var CopyResultCodec = {
     void caps;
     return {
       bytesCopied: Number(s.getUint64(0))
+    };
+  }
+};
+var MoveOptionsCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.noOverwrite ?? false);
+    s.setText(0, v.ifSourceMatch ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      noOverwrite: s.getBool(0),
+      ifSourceMatch: s.getText(0)
+    };
+  }
+};
+var MoveResultCodec = {
+  dataWords: 1,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.atomic ?? false);
+    s.setBool(1, v.alreadyMoved ?? false);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      atomic: s.getBool(0),
+      alreadyMoved: s.getBool(1)
+    };
+  }
+};
+var KeyPairCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.from ?? "");
+    s.setText(1, v.to ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      from: s.getText(0),
+      to: s.getText(1)
+    };
+  }
+};
+var MoveManyTargetCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "pairs":
+        s.setUint16(0, 0);
+        {
+          const list = v.value ?? [];
+          const items = s.initStructList(0, list.length, 0, 2);
+          for (let i = 0; i < items.length; i++) {
+            KeyPairCodec.write(items[i], list[i], caps);
+          }
+        }
+        break;
+      case "prefix":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          KeyPairCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MoveManyTarget", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "pairs", value: s.getStructList(0, 0, 2).map((item) => KeyPairCodec.read(item, caps)) };
+      case 1:
+        return { kind: "prefix", value: KeyPairCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("MoveManyTarget", disc);
+    }
+  }
+};
+var MoveManyRequestCodec = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    if (v.target != null) {
+      MoveManyTargetCodec.write(s.initStruct(0, 1, 1), v.target, caps);
+    }
+    s.setText(1, v.cursor ?? "");
+    s.setUint32(0, v.limit ?? 0);
+    if (v.options != null) {
+      MoveOptionsCodec.write(s.initStruct(2, 1, 1), v.options, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      target: MoveManyTargetCodec.read(s.getStruct(0, 1, 1), caps),
+      cursor: s.getText(1),
+      limit: s.getUint32(0),
+      options: MoveOptionsCodec.read(s.getStruct(2, 1, 1), caps)
+    };
+  }
+};
+var KeyOutcomeCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    s.setText(0, v.key ?? "");
+    if (v.error != null) {
+      PluginErrorCodec.write(s.initStruct(1, 0, 3), v.error, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      key: s.getText(0),
+      error: PluginErrorCodec.read(s.getStruct(1, 0, 3), caps)
+    };
+  }
+};
+var MoveManyPageCodec = {
+  dataWords: 2,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.results ?? [];
+      const items = s.initStructList(0, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        KeyOutcomeCodec.write(items[i], list[i], caps);
+      }
+    }
+    s.setText(1, v.nextCursor ?? "");
+    s.setBool(0, v.atomic ?? false);
+    s.setUint64(1, BigInt(v.objectsMoved ?? 0));
+  },
+  read(s, caps) {
+    return {
+      results: s.getStructList(0, 0, 2).map((item) => KeyOutcomeCodec.read(item, caps)),
+      nextCursor: s.getText(1),
+      atomic: s.getBool(0),
+      objectsMoved: Number(s.getUint64(1))
+    };
+  }
+};
+var DeleteManyResultCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.results ?? [];
+      const items = s.initStructList(0, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        KeyOutcomeCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      results: s.getStructList(0, 0, 2).map((item) => KeyOutcomeCodec.read(item, caps))
+    };
+  }
+};
+var HeadManyResultCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.objects ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        HeadOkCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      objects: s.getStructList(0, 1, 1).map((item) => HeadOkCodec.read(item, caps))
+    };
+  }
+};
+var ChangesRequestCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.cursor ?? "");
+    s.setUint32(0, v.limit ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      cursor: s.getText(0),
+      limit: s.getUint32(0)
+    };
+  }
+};
+var ObjectChangeCodec = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    s.setText(0, v.key ?? "");
+    s.setUint16(0, ord(OBJECT_CHANGE_KINDS, v.kind ?? OBJECT_CHANGE_KINDS[0], "ObjectChangeKind"));
+    if (v.info != null) {
+      ObjectInfoCodec.write(s.initStruct(1, 2, 4), v.info, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      key: s.getText(0),
+      kind: fromOrdOr(OBJECT_CHANGE_KINDS, s.getUint16(0), "changed"),
+      info: ObjectInfoCodec.read(s.getStruct(1, 2, 4), caps)
+    };
+  }
+};
+var ChangesPageCodec = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.changes ?? [];
+      const items = s.initStructList(0, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        ObjectChangeCodec.write(items[i], list[i], caps);
+      }
+    }
+    s.setText(1, v.cursor ?? "");
+    s.setBool(0, v.more ?? false);
+    s.setBool(1, v.complete ?? false);
+    s.setBool(2, v.liveWatch ?? false);
+  },
+  read(s, caps) {
+    return {
+      changes: s.getStructList(0, 1, 2).map((item) => ObjectChangeCodec.read(item, caps)),
+      cursor: s.getText(1),
+      more: s.getBool(0),
+      complete: s.getBool(1),
+      liveWatch: s.getBool(2)
     };
   }
 };
@@ -1558,13 +1846,13 @@ var HeadOkCodec = {
   write(s, v, caps) {
     s.setBool(0, v.found ?? false);
     if (v.meta != null) {
-      ObjectMetadataCodec.write(s.initStruct(0, 1, 4), v.meta, caps);
+      ObjectMetadataCodec.write(s.initStruct(0, 2, 6), v.meta, caps);
     }
   },
   read(s, caps) {
     return {
       found: s.getBool(0),
-      meta: ObjectMetadataCodec.read(s.getStruct(0, 1, 4), caps)
+      meta: ObjectMetadataCodec.read(s.getStruct(0, 2, 6), caps)
     };
   }
 };
@@ -1609,7 +1897,7 @@ var ListReplyCodec = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          ListPageCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          ListPageCodec.write(s.initStruct(0, 1, 2), v.value, caps);
         }
         break;
       case "err":
@@ -1626,7 +1914,7 @@ var ListReplyCodec = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: ListPageCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "ok", value: ListPageCodec.read(s.getStruct(0, 1, 2), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -1642,7 +1930,7 @@ var PutReplyCodec = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          PutResultCodec.write(s.initStruct(0, 1, 3), v.value, caps);
+          PutResultCodec.write(s.initStruct(0, 2, 5), v.value, caps);
         }
         break;
       case "err":
@@ -1659,7 +1947,7 @@ var PutReplyCodec = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: PutResultCodec.read(s.getStruct(0, 1, 3), caps) };
+        return { kind: "ok", value: PutResultCodec.read(s.getStruct(0, 2, 5), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -1697,6 +1985,171 @@ var CopyReplyCodec = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CopyReply", disc);
+    }
+  }
+};
+var MoveReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          MoveResultCodec.write(s.initStruct(0, 1, 0), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MoveReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: MoveResultCodec.read(s.getStruct(0, 1, 0), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("MoveReply", disc);
+    }
+  }
+};
+var MoveManyReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          MoveManyPageCodec.write(s.initStruct(0, 2, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MoveManyReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: MoveManyPageCodec.read(s.getStruct(0, 2, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("MoveManyReply", disc);
+    }
+  }
+};
+var DeleteManyReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          DeleteManyResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("DeleteManyReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: DeleteManyResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("DeleteManyReply", disc);
+    }
+  }
+};
+var HeadManyReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          HeadManyResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("HeadManyReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: HeadManyResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("HeadManyReply", disc);
+    }
+  }
+};
+var ChangesReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          ChangesPageCodec.write(s.initStruct(0, 1, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("ChangesReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: ChangesPageCodec.read(s.getStruct(0, 1, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("ChangesReply", disc);
     }
   }
 };
@@ -3015,12 +3468,14 @@ var PurchaseHintParamsCodec = {
     }
     s.setText(5, v.region ?? "");
     s.setBool(0, v.withPrice ?? false);
+    s.setUint16(1, ord(PRICE_LOOKUPS, v.lookup ?? PRICE_LOOKUPS[0], "PriceLookup"));
   },
   read(s, caps) {
     void caps;
     const out = {
       region: s.getText(5),
-      withPrice: s.getBool(0)
+      withPrice: s.getBool(0),
+      lookup: fromOrd(PRICE_LOOKUPS, s.getUint16(1), "PriceLookup")
     };
     const productIdValue = s.getText(0);
     if (!(productIdValue === "")) {
@@ -3449,17 +3904,43 @@ var PurchaseHintCodec = {
 };
 var PurchaseHintResultCodec = {
   dataWords: 1,
-  pointerCount: 1,
+  pointerCount: 2,
   write(s, v, caps) {
     s.setBool(0, v.found ?? false);
     if (v.hint != null) {
       PurchaseHintCodec.write(s.initStruct(0, 3, 7), v.hint, caps);
     }
+    {
+      const list = v.records ?? [];
+      const items = s.initStructList(1, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        PricedRecordCodec.write(items[i], list[i], caps);
+      }
+    }
   },
   read(s, caps) {
     return {
       found: s.getBool(0),
-      hint: PurchaseHintCodec.read(s.getStruct(0, 3, 7), caps)
+      hint: PurchaseHintCodec.read(s.getStruct(0, 3, 7), caps),
+      records: s.getStructList(1, 0, 2).map((item) => PricedRecordCodec.read(item, caps))
+    };
+  }
+};
+var PricedRecordCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    if (v.record != null) {
+      CatalogHitCodec.write(s.initStruct(0, 6, 17), v.record, caps);
+    }
+    if (v.hint != null) {
+      PurchaseHintCodec.write(s.initStruct(1, 3, 7), v.hint, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      record: CatalogHitCodec.read(s.getStruct(0, 6, 17), caps),
+      hint: PurchaseHintCodec.read(s.getStruct(1, 3, 7), caps)
     };
   }
 };
@@ -3471,7 +3952,7 @@ var PurchaseHintReplyCodec = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          PurchaseHintResultCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+          PurchaseHintResultCodec.write(s.initStruct(0, 1, 2), v.value, caps);
         }
         break;
       case "err":
@@ -3488,7 +3969,7 @@ var PurchaseHintReplyCodec = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: PurchaseHintResultCodec.read(s.getStruct(0, 1, 1), caps) };
+        return { kind: "ok", value: PurchaseHintResultCodec.read(s.getStruct(0, 1, 2), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -3520,7 +4001,7 @@ var PurchaseHintsResultCodec = {
   write(s, v, caps) {
     {
       const list = v.results ?? [];
-      const items = s.initStructList(0, list.length, 1, 1);
+      const items = s.initStructList(0, list.length, 1, 2);
       for (let i = 0; i < items.length; i++) {
         PurchaseHintResultCodec.write(items[i], list[i], caps);
       }
@@ -3528,7 +4009,7 @@ var PurchaseHintsResultCodec = {
   },
   read(s, caps) {
     return {
-      results: s.getStructList(0, 1, 1).map((item) => PurchaseHintResultCodec.read(item, caps))
+      results: s.getStructList(0, 1, 2).map((item) => PurchaseHintResultCodec.read(item, caps))
     };
   }
 };
@@ -4556,6 +5037,390 @@ var CoverImagesReplyCodec = {
       default:
         throw unknownUnion("CoverImagesReply", disc);
     }
+  }
+};
+var MetadataFileRecordCodec = {
+  dataWords: 2,
+  pointerCount: 14,
+  write(s, v, caps) {
+    s.setUint16List(0, (v.present ?? []).map((v2) => ord(METADATA_FIELDS, v2, "MetadataField")));
+    if (v.title !== void 0) {
+      s.setText(1, v.title ?? "");
+    }
+    if (v.subtitle !== void 0) {
+      s.setText(2, v.subtitle ?? "");
+    }
+    if (v.description !== void 0) {
+      s.setText(3, v.description ?? "");
+    }
+    if (v.publisher !== void 0) {
+      s.setText(4, v.publisher ?? "");
+    }
+    if (v.publishedAt !== void 0) {
+      s.setText(5, v.publishedAt ?? "");
+    }
+    if (v.language !== void 0) {
+      s.setText(6, v.language ?? "");
+    }
+    s.setTextList(7, v.genres ?? []);
+    s.setTextList(8, v.tags ?? []);
+    s.setUint16(0, ord(ABRIDGEMENTS, v.abridgement ?? ABRIDGEMENTS[0], "Abridgement"));
+    s.setUint16(1, ord(EXPRESSION_KINDS, v.expressionKind ?? EXPRESSION_KINDS[0], "ExpressionKind"));
+    {
+      const list = v.identifiers ?? [];
+      const items = s.initStructList(9, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        IdentifierCodec.write(items[i], list[i], caps);
+      }
+    }
+    {
+      const list = v.credits ?? [];
+      const items = s.initStructList(10, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        CreditCodec.write(items[i], list[i], caps);
+      }
+    }
+    s.setUint16List(11, (v.creditRoles ?? []).map((v2) => ord(CREDIT_ROLES, v2, "CreditRole")));
+    {
+      const list = v.seriesEntries ?? [];
+      const items = s.initStructList(12, list.length, 0, 3);
+      for (let i = 0; i < items.length; i++) {
+        SeriesEntryCodec.write(items[i], list[i], caps);
+      }
+    }
+    {
+      const list = v.chapters ?? [];
+      const items = s.initStructList(13, list.length, 3, 1);
+      for (let i = 0; i < items.length; i++) {
+        MetadataChapterCodec.write(items[i], list[i], caps);
+      }
+    }
+    if (v.durationMs !== void 0) {
+      s.setUint64(1, BigInt(v.durationMs ?? 0));
+    }
+  },
+  read(s, caps) {
+    const out = {
+      present: s.getUint16List(0).map((v) => fromOrd(METADATA_FIELDS, v, "MetadataField")),
+      genres: s.getTextList(7),
+      tags: s.getTextList(8),
+      abridgement: fromOrd(ABRIDGEMENTS, s.getUint16(0), "Abridgement"),
+      expressionKind: fromOrd(EXPRESSION_KINDS, s.getUint16(1), "ExpressionKind"),
+      identifiers: s.getStructList(9, 1, 2).map((item) => IdentifierCodec.read(item, caps)),
+      credits: s.getStructList(10, 1, 1).map((item) => CreditCodec.read(item, caps)),
+      creditRoles: s.getUint16List(11).map((v) => fromOrd(CREDIT_ROLES, v, "CreditRole")),
+      seriesEntries: s.getStructList(12, 0, 3).map((item) => SeriesEntryCodec.read(item, caps)),
+      chapters: s.getStructList(13, 3, 1).map((item) => MetadataChapterCodec.read(item, caps))
+    };
+    const titleValue = s.getText(1);
+    if (!(titleValue === "")) {
+      out.title = titleValue;
+    }
+    const subtitleValue = s.getText(2);
+    if (!(subtitleValue === "")) {
+      out.subtitle = subtitleValue;
+    }
+    const descriptionValue = s.getText(3);
+    if (!(descriptionValue === "")) {
+      out.description = descriptionValue;
+    }
+    const publisherValue = s.getText(4);
+    if (!(publisherValue === "")) {
+      out.publisher = publisherValue;
+    }
+    const publishedAtValue = s.getText(5);
+    if (!(publishedAtValue === "")) {
+      out.publishedAt = publishedAtValue;
+    }
+    const languageValue = s.getText(6);
+    if (!(languageValue === "")) {
+      out.language = languageValue;
+    }
+    const durationMsValue = Number(s.getUint64(1));
+    if (!(durationMsValue === 0)) {
+      out.durationMs = durationMsValue;
+    }
+    return out;
+  }
+};
+var MetadataFileParseParamsCodec = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.dialect ?? "");
+    s.setText(1, v.fileName ?? "");
+    s.setData(2, v.bytes ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      dialect: s.getText(0),
+      fileName: s.getText(1),
+      bytes: s.getData(2)
+    };
+  }
+};
+var MetadataFileParsedCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.record != null) {
+      MetadataFileRecordCodec.write(s.initStruct(0, 2, 14), v.record, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      record: MetadataFileRecordCodec.read(s.getStruct(0, 2, 14), caps)
+    };
+  }
+};
+var MetadataFileParseReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          MetadataFileParsedCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MetadataFileParseReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: MetadataFileParsedCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("MetadataFileParseReply", disc);
+    }
+  }
+};
+var MetadataAudioFileCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.name ?? "");
+    s.setUint64(0, BigInt(v.durationMs ?? 0));
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      name: s.getText(0),
+      durationMs: Number(s.getUint64(0))
+    };
+  }
+};
+var MetadataFileRenderParamsCodec = {
+  dataWords: 0,
+  pointerCount: 5,
+  write(s, v, caps) {
+    s.setText(0, v.dialect ?? "");
+    if (v.record != null) {
+      MetadataFileRecordCodec.write(s.initStruct(1, 2, 14), v.record, caps);
+    }
+    s.setUint16List(2, (v.fields ?? []).map((v2) => ord(METADATA_FIELDS, v2, "MetadataField")));
+    s.setData(3, v.existing ?? EMPTY_BYTES);
+    {
+      const list = v.audioFiles ?? [];
+      const items = s.initStructList(4, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        MetadataAudioFileCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      dialect: s.getText(0),
+      record: MetadataFileRecordCodec.read(s.getStruct(1, 2, 14), caps),
+      fields: s.getUint16List(2).map((v) => fromOrd(METADATA_FIELDS, v, "MetadataField")),
+      existing: s.getData(3),
+      audioFiles: s.getStructList(4, 1, 1).map((item) => MetadataAudioFileCodec.read(item, caps))
+    };
+  }
+};
+var MetadataFileRenderedCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setData(0, v.bytes ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      bytes: s.getData(0)
+    };
+  }
+};
+var MetadataFileRenderReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          MetadataFileRenderedCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MetadataFileRenderReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: MetadataFileRenderedCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("MetadataFileRenderReply", disc);
+    }
+  }
+};
+var SocketFrameCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    switch (v.kind) {
+      case "text":
+        s.setUint16(0, 0);
+        s.setText(0, v.value ?? "");
+        break;
+      case "binary":
+        s.setUint16(0, 1);
+        s.setData(0, v.value ?? EMPTY_BYTES);
+        break;
+      default:
+        throw unknownUnion("SocketFrame", v.kind);
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "text", value: s.getText(0) };
+      case 1:
+        return { kind: "binary", value: s.getData(0) };
+      default:
+        throw unknownUnion("SocketFrame", disc);
+    }
+  }
+};
+var SocketMessageReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          SocketMessageOkCodec.write(s.initStruct(0, 1, 0), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("SocketMessageReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: SocketMessageOkCodec.read(s.getStruct(0, 1, 0), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("SocketMessageReply", disc);
+    }
+  }
+};
+var SocketMessageOkCodec = {
+  dataWords: 1,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.pollEvents ?? false);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      pollEvents: s.getBool(0)
+    };
+  }
+};
+var SocketMessageCodec = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    s.setText(0, v.socket ?? "");
+    if (v.frame != null) {
+      SocketFrameCodec.write(s.initStruct(1, 1, 1), v.frame, caps);
+    }
+    s.setData(2, v.attachment ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    return {
+      socket: s.getText(0),
+      frame: SocketFrameCodec.read(s.getStruct(1, 1, 1), caps),
+      attachment: s.getData(2)
+    };
+  }
+};
+var SocketClosedCodec = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.socket ?? "");
+    s.setUint16(0, v.code ?? 0);
+    if (v.reason !== void 0) {
+      s.setText(1, v.reason ?? "");
+    }
+    s.setBool(16, v.clean ?? false);
+    s.setData(2, v.attachment ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    void caps;
+    const out = {
+      socket: s.getText(0),
+      code: s.getUint16(0),
+      clean: s.getBool(16),
+      attachment: s.getData(2)
+    };
+    const reasonValue = s.getText(1);
+    if (!(reasonValue === "")) {
+      out.reason = reasonValue;
+    }
+    return out;
   }
 };
 var DbValueCodec = {
@@ -5696,12 +6561,12 @@ var DestinationListParamsCodec = {
   pointerCount: 1,
   write(s, v, caps) {
     if (v.options != null) {
-      ListOptionsCodec.write(s.initStruct(0, 1, 2), v.options, caps);
+      ListOptionsCodec.write(s.initStruct(0, 2, 2), v.options, caps);
     }
   },
   read(s, caps) {
     return {
-      options: ListOptionsCodec.read(s.getStruct(0, 1, 2), caps)
+      options: ListOptionsCodec.read(s.getStruct(0, 2, 2), caps)
     };
   }
 };
@@ -5837,6 +6702,150 @@ var DestinationAbortStageResultsCodec = {
     };
   }
 };
+var DestinationMoveParamsCodec = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    s.setText(0, v.from ?? "");
+    s.setText(1, v.to ?? "");
+    if (v.options != null) {
+      MoveOptionsCodec.write(s.initStruct(2, 1, 1), v.options, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      from: s.getText(0),
+      to: s.getText(1),
+      options: MoveOptionsCodec.read(s.getStruct(2, 1, 1), caps)
+    };
+  }
+};
+var DestinationMoveResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MoveReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MoveReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var DestinationMoveManyParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      MoveManyRequestCodec.write(s.initStruct(0, 1, 3), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: MoveManyRequestCodec.read(s.getStruct(0, 1, 3), caps)
+    };
+  }
+};
+var DestinationMoveManyResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MoveManyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MoveManyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var DestinationDeleteManyParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.keys ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      keys: s.getTextList(0)
+    };
+  }
+};
+var DestinationDeleteManyResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      DeleteManyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: DeleteManyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var DestinationHeadManyParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.keys ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      keys: s.getTextList(0)
+    };
+  }
+};
+var DestinationHeadManyResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      HeadManyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: HeadManyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var DestinationChangesParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      ChangesRequestCodec.write(s.initStruct(0, 1, 1), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: ChangesRequestCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var DestinationChangesResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      ChangesReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: ChangesReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var JobRunnerJobParamsCodec = {
   dataWords: 0,
   pointerCount: 1,
@@ -5946,6 +6955,62 @@ var QueueConsumerQueueResultsCodec = {
   read(s, caps) {
     return {
       result: QueueBatchReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var SocketHandlerMessageParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.event != null) {
+      SocketMessageCodec.write(s.initStruct(0, 0, 3), v.event, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      event: SocketMessageCodec.read(s.getStruct(0, 0, 3), caps)
+    };
+  }
+};
+var SocketHandlerMessageResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      SocketMessageReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: SocketMessageReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var SocketHandlerClosedParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.event != null) {
+      SocketClosedCodec.write(s.initStruct(0, 1, 3), v.event, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      event: SocketClosedCodec.read(s.getStruct(0, 1, 3), caps)
+    };
+  }
+};
+var SocketHandlerClosedResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps)
     };
   }
 };
@@ -6850,6 +7915,90 @@ var CoverFetcherFetchCoversResultsCodec = {
   read(s, caps) {
     return {
       result: CoverImagesReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var MetadataFilesHealthParamsCodec = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  }
+};
+var MetadataFilesHealthResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      HealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: HealthReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var MetadataFilesParseParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      MetadataFileParseParamsCodec.write(s.initStruct(0, 0, 3), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: MetadataFileParseParamsCodec.read(s.getStruct(0, 0, 3), caps)
+    };
+  }
+};
+var MetadataFilesParseResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MetadataFileParseReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MetadataFileParseReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var MetadataFilesRenderParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      MetadataFileRenderParamsCodec.write(s.initStruct(0, 0, 5), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: MetadataFileRenderParamsCodec.read(s.getStruct(0, 0, 5), caps)
+    };
+  }
+};
+var MetadataFilesRenderResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MetadataFileRenderReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MetadataFileRenderReplyCodec.read(s.getStruct(0, 1, 1), caps)
     };
   }
 };
@@ -8849,6 +9998,18 @@ function withoutParams(stub, method, params, results, ok) {
   });
 }
 var asList = (value) => Array.isArray(value) ? value : [];
+function hintResult(value) {
+  if (value != null && typeof value === "object" && "records" in value) {
+    const answer = value;
+    return {
+      found: answer.hint != null,
+      // The wire leaves `hint` unset when not found.
+      hint: answer.hint ?? void 0,
+      records: Array.isArray(answer.records) ? answer.records : []
+    };
+  }
+  return { found: value != null, hint: value ?? void 0, records: [] };
+}
 var okHits = (value) => okValue({ hits: asList(value) });
 var okRecords = (value) => {
   if (!Array.isArray(value)) {
@@ -8861,6 +10022,21 @@ var okCoverImages = (value) => {
     throw PluginError.fromWire("internal", "cover fetcher must return a CoverImage[]");
   }
   return okValue({ images: value });
+};
+var okFileRecord = (value) => {
+  if (value === null || typeof value !== "object" || !Array.isArray(value.present)) {
+    throw PluginError.fromWire("internal", "metadata file dialect must return a MetadataFileRecord");
+  }
+  return okValue({ record: value });
+};
+var okFileBytes = (value) => {
+  if (typeof value === "string") {
+    return okValue({ bytes: new TextEncoder().encode(value) });
+  }
+  if (!(value instanceof Uint8Array)) {
+    throw PluginError.fromWire("internal", "metadata file dialect must render a Uint8Array or string");
+  }
+  return okValue({ bytes: value });
 };
 var okLines = (value) => okValue({ lines: asList(value).map((l) => String(l)) });
 var okHealth = (value) => {
@@ -8969,8 +10145,48 @@ function listOptions(options) {
   return {
     prefix: options?.prefix || void 0,
     cursor: options?.cursor || void 0,
-    limit: options?.limit || void 0
+    limit: options?.limit || void 0,
+    withSignatures: options?.withSignatures || void 0,
+    modifiedSinceMs: options?.modifiedSinceMs || void 0
   };
+}
+function moveOptions(options) {
+  return {
+    noOverwrite: options?.noOverwrite || void 0,
+    ifSourceMatch: options?.ifSourceMatch || void 0
+  };
+}
+function moveManyRequest(request) {
+  const target = request?.target ?? { kind: "pairs", value: [] };
+  if (target.kind === "pairs" && target.value.length > MAX_BATCH_KEYS) {
+    throw new PluginError("payload_too_large", `moveMany of ${target.value.length} pairs`);
+  }
+  return {
+    target,
+    cursor: request?.cursor || void 0,
+    limit: request?.limit || void 0,
+    options: moveOptions(request?.options)
+  };
+}
+function batchKeys(keys) {
+  const list = keys ?? [];
+  if (list.length === 0) {
+    throw new PluginError("invalid_params", "a batch call needs at least one key");
+  }
+  if (list.length > MAX_BATCH_KEYS) {
+    throw new PluginError("payload_too_large", `batch of ${list.length} keys`);
+  }
+  return list.map(String);
+}
+function wireOutcomes(outcomes) {
+  return outcomes.map((o) => ({
+    key: String(o.key ?? ""),
+    error: {
+      code: o.error ? String(o.error.code ?? "") || "internal" : "",
+      message: o.error ? String(o.error.message ?? "") : "",
+      details: ""
+    }
+  }));
 }
 function sessionCall(method) {
   return (s, p, cx) => {
@@ -9004,12 +10220,9 @@ var METHODS = {
     loginComplete: withParams("storefront", "loginComplete", ContentSourceLoginCompleteParamsCodec, ContentSourceLoginCompleteResultsCodec, okPass),
     searchCatalog: withParams("storefront", "searchCatalog", ContentSourceSearchCatalogParamsCodec, ContentSourceSearchCatalogResultsCodec, okHits),
     expandCandidates: withParams("storefront", "expandCandidates", ContentSourceExpandCandidatesParamsCodec, ContentSourceExpandCandidatesResultsCodec, okHits),
-    purchaseHint: withParams("storefront", "purchaseHint", ContentSourcePurchaseHintParamsCodec, ContentSourcePurchaseHintResultsCodec, (value) => okValue({ found: value != null, hint: value ?? void 0 })),
+    purchaseHint: withParams("storefront", "purchaseHint", ContentSourcePurchaseHintParamsCodec, ContentSourcePurchaseHintResultsCodec, (value) => okValue(hintResult(value))),
     purchaseHints: withParams("storefront", "purchaseHints", ContentSourcePurchaseHintsParamsCodec, ContentSourcePurchaseHintsResultsCodec, (value) => okValue({
-      results: asList(value).map((hint) => ({
-        found: hint != null,
-        hint: hint ?? void 0
-      }))
+      results: asList(value).map(hintResult)
     })),
     listDeals: withParams("storefront", "listDeals", ContentSourceListDealsParamsCodec, ContentSourceListDealsResultsCodec, okHits),
     health: withoutParams("storefront", "health", ContentSourceHealthParamsCodec, ContentSourceHealthResultsCodec, okHealth),
@@ -9071,6 +10284,63 @@ var METHODS = {
         String(p.commitToken ?? "")
       ]),
       ok: okEmpty
+    }),
+    move: spec({
+      params: DestinationMoveParamsCodec,
+      results: DestinationMoveResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "move", [
+        String(p.from ?? ""),
+        String(p.to ?? ""),
+        moveOptions(p.options)
+      ]),
+      ok: okPass
+    }),
+    moveMany: spec({
+      params: DestinationMoveManyParamsCodec,
+      results: DestinationMoveManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "moveMany", [moveManyRequest(p.request)]),
+      ok: (value) => {
+        const page = value ?? { results: [] };
+        return okValue({
+          results: wireOutcomes(asList(page.results)),
+          nextCursor: page.nextCursor ?? "",
+          atomic: page.atomic ?? false,
+          objectsMoved: page.objectsMoved ?? 0
+        });
+      }
+    }),
+    deleteMany: spec({
+      params: DestinationDeleteManyParamsCodec,
+      results: DestinationDeleteManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "deleteMany", [batchKeys(p.keys)]),
+      ok: (value) => okValue({ results: wireOutcomes(asList(value)) })
+    }),
+    headMany: spec({
+      params: DestinationHeadManyParamsCodec,
+      results: DestinationHeadManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "headMany", [batchKeys(p.keys)]),
+      ok: (value) => okValue({
+        objects: asList(value).map((meta) => ({
+          found: meta != null,
+          meta: meta ?? void 0
+        }))
+      })
+    }),
+    changes: spec({
+      params: DestinationChangesParamsCodec,
+      results: DestinationChangesResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "changes", [
+        {
+          cursor: p.request?.cursor || void 0,
+          limit: p.request?.limit || void 0
+        }
+      ]),
+      ok: okPass
     })
   },
   RemoteLibrary: {
@@ -9111,6 +10381,24 @@ var METHODS = {
       results: ScheduledHandlerScheduledResultsCodec,
       stub: "author",
       call: (s, p, cx) => s.bookclerkScheduled(cx.host.bindContext(cx.ctx), p.controller ?? {}),
+      ok: okEmpty
+    })
+  },
+  SocketHandler: {
+    message: spec({
+      params: SocketHandlerMessageParamsCodec,
+      results: SocketHandlerMessageResultsCodec,
+      stub: "author",
+      call: (s, p, cx) => s.bookclerkSocketMessage(cx.host.bindContext(cx.ctx), p.event ?? {}),
+      ok: (value) => okValue({
+        pollEvents: value?.pollEvents === true
+      })
+    }),
+    closed: spec({
+      params: SocketHandlerClosedParamsCodec,
+      results: SocketHandlerClosedResultsCodec,
+      stub: "author",
+      call: (s, p, cx) => s.bookclerkSocketClosed(cx.host.bindContext(cx.ctx), p.event ?? {}),
       ok: okEmpty
     })
   },
@@ -9160,6 +10448,11 @@ var METHODS = {
       },
       ok: okCoverImages
     })
+  },
+  MetadataFiles: {
+    health: withoutParams("metadataFiles", "health", MetadataFilesHealthParamsCodec, MetadataFilesHealthResultsCodec, okHealth),
+    parse: withParams("metadataFiles", "parse", MetadataFilesParseParamsCodec, MetadataFilesParseResultsCodec, okFileRecord),
+    render: withParams("metadataFiles", "render", MetadataFilesRenderParamsCodec, MetadataFilesRenderResultsCodec, okFileBytes)
   },
   Database: {
     openSession: spec({
@@ -9402,6 +10695,151 @@ function migrationTooLarge(message) {
   return err;
 }
 
+// dist/sockets.js
+function toBase64(bytes) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++)
+    bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+function fromBase64(text) {
+  if (typeof text !== "string" || text === "")
+    return new Uint8Array();
+  const bin = atob(text);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++)
+    out[i] = bin.charCodeAt(i);
+  return out;
+}
+function sendBytes(data) {
+  if (typeof data === "string")
+    return null;
+  if (data instanceof ArrayBuffer)
+    return new Uint8Array(data);
+  if (ArrayBuffer.isView(data))
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  throw PluginError.fromWire("invalid_params", "a socket message must be a string or bytes");
+}
+function routeFrame(data) {
+  const bytes = sendBytes(data);
+  const size = bytes ? bytes.byteLength : new TextEncoder().encode(data).byteLength;
+  if (size > MAX_SOCKET_FRAME_BYTES) {
+    throw PluginError.fromWire("payload_too_large", `socket message of ${size} bytes exceeds ${MAX_SOCKET_FRAME_BYTES}`);
+  }
+  return bytes ? { binary: toBase64(bytes) } : { text: data };
+}
+function socketMessageData(frame2) {
+  if (frame2 && frame2.kind === "binary") {
+    const bytes = frame2.value instanceof Uint8Array ? frame2.value : new Uint8Array();
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  }
+  return frame2 && typeof frame2.value === "string" ? frame2.value : "";
+}
+function encodeAttachment(value) {
+  if (value === null || value === void 0)
+    return new Uint8Array();
+  let text;
+  try {
+    text = JSON.stringify(value);
+  } catch (err) {
+    throw PluginError.fromWire("invalid_params", `socket attachment is not JSON: ${String(err)}`);
+  }
+  if (text === void 0) {
+    throw PluginError.fromWire("invalid_params", "socket attachment is not JSON");
+  }
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.byteLength > MAX_SOCKET_ATTACHMENT_BYTES) {
+    throw PluginError.fromWire("payload_too_large", `socket attachment of ${bytes.byteLength} bytes exceeds ${MAX_SOCKET_ATTACHMENT_BYTES}`);
+  }
+  return bytes;
+}
+function decodeAttachment(bytes) {
+  if (bytes.byteLength === 0)
+    return null;
+  const text = new TextDecoder().decode(bytes);
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+async function call(transport, op, body) {
+  if (!transport) {
+    throw PluginError.fromWire("unavailable", "SOCKETS is not granted to this invocation");
+  }
+  const reply = await transport.call(op, body);
+  if ("err" in reply) {
+    throw PluginError.fromWire(reply.err.code || "internal", reply.err.message || "");
+  }
+  return reply.ok ?? {};
+}
+var HostSocket = class {
+  id;
+  url;
+  protocol;
+  #transport;
+  #attachment;
+  /**
+   * @param transport - The adapter's grant.
+   * @param fields - Socket id, URL, subprotocol and attachment.
+   */
+  constructor(transport, fields) {
+    this.id = String(fields.socket ?? "");
+    this.url = typeof fields.url === "string" ? fields.url : "";
+    this.protocol = typeof fields.protocol === "string" ? fields.protocol : "";
+    this.#transport = transport;
+    this.#attachment = fields.attachment instanceof Uint8Array ? fields.attachment : fromBase64(fields.attachment);
+  }
+  async send(message) {
+    await call(this.#transport, "send", { socket: this.id, frame: routeFrame(message) });
+  }
+  async close(code, reason) {
+    await call(this.#transport, "close", {
+      socket: this.id,
+      code: Math.max(0, Math.floor(Number(code ?? 0) || 0)),
+      reason: String(reason ?? "")
+    });
+  }
+  async serializeAttachment(value) {
+    const bytes = encodeAttachment(value);
+    await call(this.#transport, "attachment", { socket: this.id, attachment: toBase64(bytes) });
+    this.#attachment = bytes;
+  }
+  deserializeAttachment() {
+    return decodeAttachment(this.#attachment);
+  }
+};
+function hostWebSocketOf(transport, fields) {
+  return new HostSocket(transport, fields);
+}
+function connectBody(url, options) {
+  const headers = options?.headers;
+  const pairs = Array.isArray(headers) ? headers : Object.entries(headers ?? {});
+  return {
+    url: String(url ?? ""),
+    protocols: (options?.protocols ?? []).map(String),
+    headers: pairs.map(([name, value]) => ({ name: String(name), value: String(value) })),
+    autoResponses: (options?.autoResponses ?? []).map((pair) => ({
+      request: routeFrame(pair.request),
+      response: routeFrame(pair.response)
+    })),
+    attachment: toBase64(encodeAttachment(options?.attachment))
+  };
+}
+function socketsBinding(transport) {
+  return Object.freeze({
+    async connect(url, options) {
+      const info = await call(transport, "connect", connectBody(url, options));
+      return new HostSocket(transport, info);
+    },
+    async getWebSockets() {
+      const reply = await call(transport, "list", {});
+      const sockets = Array.isArray(reply.sockets) ? reply.sockets : [];
+      return sockets.map((info) => new HostSocket(transport, info));
+    }
+  });
+}
+
 // dist/plugin.js
 function unsupported(method) {
   return PluginError.fromWire("unsupported", `${method} not implemented`);
@@ -9496,6 +10934,55 @@ var Destination = class extends RpcTarget {
    */
   abortStage(_key, _commitToken) {
     return Promise.reject(unsupported("abortStage"));
+  }
+  /**
+   * Move one object (declare `storage.move`). Repeating a finished move
+   * resolves with `alreadyMoved`.
+   *
+   * @param _from - Source key.
+   * @param _to - Target key.
+   * @param _options - Overwrite and source preconditions.
+   * @returns How the move was done.
+   */
+  move(_from, _to, _options) {
+    return Promise.reject(unsupported("move"));
+  }
+  /**
+   * Move a set of objects or a whole prefix, one page per call (declare
+   * `storage.moveMany`). Safe to repeat.
+   *
+   * @param _request - Pairs or prefix, cursor, and options.
+   * @returns Per-key outcomes and the continuation.
+   */
+  moveMany(_request) {
+    return Promise.reject(unsupported("moveMany"));
+  }
+  /**
+   * Remove up to `MAX_BATCH_KEYS` objects (declare `storage.deleteMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One outcome per key, in order; a missing key succeeds.
+   */
+  deleteMany(_keys) {
+    return Promise.reject(unsupported("deleteMany"));
+  }
+  /**
+   * Probe up to `MAX_BATCH_KEYS` objects (declare `storage.headMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One entry per key, in order; `null` when missing.
+   */
+  headMany(_keys) {
+    return Promise.reject(unsupported("headMany"));
+  }
+  /**
+   * Keys changed since a cursor (declare `storage.changes`).
+   *
+   * @param _request - Cursor and page size.
+   * @returns One page of changes.
+   */
+  changes(_request) {
+    return Promise.reject(unsupported("changes"));
   }
 };
 var Source = class extends RpcTarget {
@@ -9704,6 +11191,9 @@ function invocationEnv(rawEnv, context) {
         merged[entry.name] = entry.kv;
       }
     }
+    const sockets = socketsTransportOf(context);
+    if (sockets)
+      merged[sockets.name] = socketsBinding(sockets.sockets);
   }
   return Object.freeze(merged);
 }
@@ -9717,6 +11207,10 @@ function transportDatabase(entry) {
     ...readLimits ? { limits: readLimits } : {},
     ...streamed ? { executeStreamed: streamed } : {}
   });
+}
+function socketsTransportOf(context) {
+  const list = context && Array.isArray(context.sockets) ? context.sockets : [];
+  return list.find((entry) => entry && typeof entry.name === "string" && entry.name !== "" && entry.sockets);
 }
 function applyInvocationEnv(instance, context) {
   const target = instance;
@@ -10270,6 +11764,45 @@ var BookclerkEntrypoint = class extends WorkerEntrypoint {
     await this.scheduled(scheduledControllerOf(wire));
   }
   /**
+   * Adapter dispatch for `SocketHandler.message`.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wire - Wire `SocketMessage`.
+   * @returns What the handler asks of the host (`pollEvents`).
+   * @internal
+   */
+  async bookclerkSocketMessage(context, wire) {
+    if (typeof this.webSocketMessage !== "function") {
+      throw unsupported("webSocketMessage");
+    }
+    applyInvocationEnv(this, context);
+    const ws = hostWebSocketOf(socketsTransportOf(context)?.sockets, {
+      socket: wire?.socket,
+      attachment: wire?.attachment
+    });
+    const asked = await this.webSocketMessage(ws, socketMessageData(wire?.frame));
+    return { pollEvents: asked?.pollEvents === true };
+  }
+  /**
+   * Adapter dispatch for `SocketHandler.closed`. Without a
+   * `webSocketClose` handler the close is acknowledged and ignored.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wire - Wire `SocketClosed`.
+   * @returns Resolves when the author's handler completes.
+   * @internal
+   */
+  async bookclerkSocketClosed(context, wire) {
+    if (typeof this.webSocketClose !== "function")
+      return;
+    applyInvocationEnv(this, context);
+    const ws = hostWebSocketOf(socketsTransportOf(context)?.sockets, {
+      socket: wire?.socket,
+      attachment: wire?.attachment
+    });
+    await this.webSocketClose(ws, Number(wire?.code ?? 0) || 0, String(wire?.reason ?? ""), wire?.clean === true);
+  }
+  /**
    * Adapter dispatch for the `job(controller)` trigger.
    *
    * @param context - Granted bindings for this invocation.
@@ -10350,6 +11883,7 @@ var NamedEntrypoint = class extends WorkerEntrypoint {
   }
 };
 var PURCHASE_HINTS_BUDGET_MS = 4e3;
+var PURCHASE_HINTS_CONCURRENCY = 4;
 var STOREFRONT_METHODS = Object.freeze([
   "login",
   "scan",
@@ -10452,8 +11986,16 @@ var StorefrontEntrypoint = class extends NamedEntrypoint {
   /**
    * Purchase link / price hint; `null` when the title is unknown.
    *
-   * @param _params - Title identifiers.
-   * @returns Hint or `null`.
+   * `params.lookup` says how the host names the title: `"isbn"` or
+   * `"asin"` (sent only when `describe().catalog` declares `priceByIsbn` /
+   * `priceByAsin`) want that exact edition or `null`, never a title match;
+   * `"product"` names the store's own product; `"title"` asks for a search
+   * by title and authors, answered best with a {@link PurchaseHintAnswer}
+   * listing every priced result; `"unspecified"` (older hosts) leaves the
+   * choice to the store.
+   *
+   * @param _params - Title identifiers and how to look the title up.
+   * @returns Hint, an answer with title-search records, or `null`.
    */
   purchaseHint(_params) {
     return Promise.reject(unsupported("purchaseHint"));
@@ -10461,24 +12003,37 @@ var StorefrontEntrypoint = class extends NamedEntrypoint {
   /**
    * Purchase links / price hints for several titles in one call, one
    * answer per query in order. The default asks {@link purchaseHint} for
-   * each query, those with a product id first, and stops starting lookups
-   * after {@link PURCHASE_HINTS_BUDGET_MS}; a store whose catalog prices
+   * each query, {@link PURCHASE_HINTS_CONCURRENCY} at a time, those with a
+   * product id first, and stops starting lookups after
+   * {@link PURCHASE_HINTS_BUDGET_MS}; a store whose catalog prices
    * many products per request overrides this to make one request. Reject with a
    * `rate_limited` {@link PluginError} (its `details.retryAfterMs` says how
    * long) when the store asks to slow down, so the host leaves it alone.
    *
    * @param params - The titles to price, in order.
-   * @returns One hint or `null` per query.
+   * @returns One hint, answer with records, or `null` per query.
    */
   async purchaseHints(params) {
     const started = Date.now();
     const out = params.queries.map(() => null);
     const order = params.queries.map((query, i) => ({ i, direct: Boolean(query.productId?.trim()) })).sort((a, b) => Number(b.direct) - Number(a.direct)).map((entry) => entry.i);
-    for (const i of order) {
-      if (Date.now() - started >= PURCHASE_HINTS_BUDGET_MS)
-        break;
-      out[i] = await this.purchaseHint(params.queries[i]);
-    }
+    let next = 0;
+    let failed = false;
+    const lane = async () => {
+      while (next < order.length && !failed) {
+        if (Date.now() - started >= PURCHASE_HINTS_BUDGET_MS)
+          return;
+        const i = order[next++];
+        try {
+          out[i] = await this.purchaseHint(params.queries[i]);
+        } catch (err) {
+          failed = true;
+          throw err;
+        }
+      }
+    };
+    const lanes = Math.min(PURCHASE_HINTS_CONCURRENCY, order.length);
+    await Promise.all(Array.from({ length: lanes }, lane));
     return out;
   }
   /**
@@ -10536,7 +12091,12 @@ var STORAGE_METHODS = Object.freeze([
   "copy",
   "delete",
   "commit",
-  "abortStage"
+  "abortStage",
+  "move",
+  "moveMany",
+  "deleteMany",
+  "headMany",
+  "changes"
 ]);
 var StorageEntrypoint = class extends NamedEntrypoint {
   static bookclerkMethods = STORAGE_METHODS;
@@ -10617,6 +12177,55 @@ var StorageEntrypoint = class extends NamedEntrypoint {
    */
   abortStage(_key, _commitToken) {
     return Promise.reject(unsupported("abortStage"));
+  }
+  /**
+   * Move one object (declare `storage.move`). Repeating a finished move
+   * resolves with `alreadyMoved`.
+   *
+   * @param _from - Source key.
+   * @param _to - Target key.
+   * @param _options - Overwrite and source preconditions.
+   * @returns How the move was done.
+   */
+  move(_from, _to, _options) {
+    return Promise.reject(unsupported("move"));
+  }
+  /**
+   * Move a set of objects or a whole prefix, one page per call (declare
+   * `storage.moveMany`). Safe to repeat.
+   *
+   * @param _request - Pairs or prefix, cursor, and options.
+   * @returns Per-key outcomes and the continuation.
+   */
+  moveMany(_request) {
+    return Promise.reject(unsupported("moveMany"));
+  }
+  /**
+   * Remove up to `MAX_BATCH_KEYS` objects (declare `storage.deleteMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One outcome per key, in order; a missing key succeeds.
+   */
+  deleteMany(_keys) {
+    return Promise.reject(unsupported("deleteMany"));
+  }
+  /**
+   * Probe up to `MAX_BATCH_KEYS` objects (declare `storage.headMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One entry per key, in order; `null` when missing.
+   */
+  headMany(_keys) {
+    return Promise.reject(unsupported("headMany"));
+  }
+  /**
+   * Keys changed since a cursor (declare `storage.changes`).
+   *
+   * @param _request - Cursor and page size.
+   * @returns One page of changes.
+   */
+  changes(_request) {
+    return Promise.reject(unsupported("changes"));
   }
 };
 var REMOTE_LIBRARY_METHODS = Object.freeze([
@@ -10882,6 +12491,40 @@ var CoverEntrypoint = class extends NamedEntrypoint {
     return Promise.reject(unsupported("fetchCovers"));
   }
 };
+var MetadataFilesEntrypoint = class extends NamedEntrypoint {
+  static bookclerkMethods = Object.freeze(["health", "parse", "render"]);
+  /**
+   * Reports whether the dialects can answer.
+   *
+   * @returns Health flag plus detail.
+   */
+  health() {
+    return Promise.resolve({ ok: true, detail: "" });
+  }
+  /**
+   * What one file says about its edition. List every field the file states
+   * in `present`, including ones it states as empty; leave out fields it
+   * does not mention. Throw `invalid_params` for a file the dialect cannot
+   * read.
+   *
+   * @param _params - Dialect id, file name and the whole file.
+   * @returns The parsed record.
+   */
+  parse(_params) {
+    return Promise.reject(unsupported("parse"));
+  }
+  /**
+   * The new file: `params.existing` with each field in `params.fields` set to
+   * the record's value (removed when the value is empty), everything else
+   * kept as it was. `existing` is empty when the host creates the file.
+   *
+   * @param _params - Dialect id, values, fields to set and the current file.
+   * @returns The new file's bytes; a string is written as UTF-8.
+   */
+  render(_params) {
+    return Promise.reject(unsupported("render"));
+  }
+};
 var ENTRYPOINT_BINDINGS = Object.freeze({
   storefront: "PLUGIN_STOREFRONT",
   storage: "PLUGIN_STORAGE",
@@ -10890,7 +12533,8 @@ var ENTRYPOINT_BINDINGS = Object.freeze({
   cli: "PLUGIN_CLI",
   oidc: "PLUGIN_OIDC",
   metadata: "PLUGIN_METADATA",
-  covers: "PLUGIN_COVERS"
+  covers: "PLUGIN_COVERS",
+  metadataFiles: "PLUGIN_METADATA_FILES"
 });
 var ENTRYPOINT_CLASSES = Object.freeze({
   storefront: "Storefront",
@@ -10900,7 +12544,8 @@ var ENTRYPOINT_CLASSES = Object.freeze({
   cli: "Cli",
   oidc: "Oidc",
   metadata: "Metadata",
-  covers: "Covers"
+  covers: "Covers",
+  metadataFiles: "MetadataFiles"
 });
 function exactLengthBody(body, expected) {
   if (body == null || expected == null || !Number.isFinite(expected)) {
@@ -10974,6 +12619,9 @@ var GrantedDestination = class extends Destination {
     this.#signal = signal;
   }
   async put(key, body, options) {
+    if (options?.ifMatch || options?.ifNoneMatch) {
+      throw PluginError.fromWire("unsupported", "conditional writes are not supported on granted destinations");
+    }
     const headers = { ...this.#auth };
     if (options?.contentType)
       headers["content-type"] = options.contentType;
@@ -11330,6 +12978,52 @@ var GrantedKv = class extends RpcTarget {
     };
   }
 };
+var GrantedSockets = class extends RpcTarget {
+  /** Granted reverse channel that serves `POST /sockets/<op>`. */
+  #granted;
+  /** `Authorization` header carrying the sockets-only grant token. */
+  #auth;
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the sockets grant.
+   */
+  constructor(granted, auth) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+  /**
+   * Makes one `POST /sockets/<op>` call on the granted channel.
+   *
+   * @param op - Operation, the path segment after `/sockets/`.
+   * @param body - That operation's JSON fields, bytes already base64.
+   * @returns `{ ok }` with the route's reply body, or `{ err }` with the
+   *   host's code (`unavailable` when the channel cannot be reached,
+   *   `internal` for a reply that is not JSON); never throws.
+   */
+  async call(op, body) {
+    let resp;
+    try {
+      resp = await this.#granted.fetch(`http://granted/sockets/${op}`, {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/json" },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      return { err: { code: "unavailable", message: `sockets ${op}: ${errorMessage(err)}` } };
+    }
+    const value = await resp.json().catch(() => null);
+    if (value && value.error) {
+      return {
+        err: { code: value.error.code || "internal", message: value.error.message || "" }
+      };
+    }
+    if (!resp.ok || !value || typeof value !== "object") {
+      return { err: { code: "internal", message: `sockets ${op} HTTP ${resp.status}` } };
+    }
+    return { ok: value };
+  }
+};
 var GrantedDatabase = class extends RpcTarget {
   #granted;
   #auth;
@@ -11589,7 +13283,8 @@ var TRIGGER_FAMILIES = Object.freeze({
   eventConsumer: "eventConsumer",
   queueConsumer: "queueConsumer",
   scheduledHandler: "scheduledHandler",
-  jobRunner: "jobRunner"
+  jobRunner: "jobRunner",
+  socketHandler: "socketHandler"
 });
 function scheduledControllerOf(wire) {
   const w = wire && typeof wire === "object" ? wire : {};
@@ -11625,6 +13320,9 @@ function allowedEntrypointFamilies(capabilities, requested) {
         out.push(name);
     } else if (name === TRIGGER_FAMILIES.jobRunner) {
       if (jobs.length > 0 || exportsStorage)
+        out.push(name);
+    } else if (name === TRIGGER_FAMILIES.socketHandler) {
+      if (capabilities.sockets === true)
         out.push(name);
     } else if (name in ENTRYPOINT_BINDINGS && entrypoints.includes(name)) {
       out.push(name);
@@ -11677,7 +13375,7 @@ function createInvocationAdapter() {
      */
     #bindContext(ctx) {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, databases, queues, kv, ...rest } = source;
+      const { eventsToken, databases, queues, kv, sockets, ...rest } = source;
       const bound = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
@@ -11720,6 +13418,19 @@ function createInvocationAdapter() {
         }
         if (named2.length > 0)
           bound.kv = named2;
+      }
+      if (sockets && typeof sockets === "object" && !Array.isArray(sockets) && granted) {
+        const named2 = [];
+        for (const [name, token] of Object.entries(sockets)) {
+          if (!name || typeof token !== "string" || !token)
+            continue;
+          named2.push({
+            name,
+            sockets: new GrantedSockets(granted, { Authorization: `Bearer ${token}` })
+          });
+        }
+        if (named2.length > 0)
+          bound.sockets = named2.slice(0, 1);
       }
       return bound;
     }
@@ -12261,7 +13972,13 @@ export {
   EventMessage,
   ExecuteStreamDecoder,
   FEATURE_SCALAR_LIMITS,
+  FEATURE_STORAGE_CHANGES,
+  FEATURE_STORAGE_CONDITIONAL_WRITE,
   FEATURE_STORAGE_COPY,
+  FEATURE_STORAGE_DELETE_MANY,
+  FEATURE_STORAGE_HEAD_MANY,
+  FEATURE_STORAGE_MOVE,
+  FEATURE_STORAGE_MOVE_MANY,
   FEATURE_STREAMS,
   GUEST_READ_ONLY_REPLAY_PAYLOAD,
   GUEST_RECEIPT_CLAIM_LOST,
@@ -12271,6 +13988,9 @@ export {
   GUEST_REPLAY_PAYLOAD_MAX_BYTES,
   InvokeError,
   JobController,
+  MAX_BATCH_KEYS,
+  MAX_CHANGES_CURSOR_BYTES,
+  MAX_CHANGES_PAGE,
   MAX_CHECKPOINT_BYTES,
   MAX_EVENT_PAYLOAD_BYTES,
   MAX_LIST_PAGE,
@@ -12281,6 +14001,7 @@ export {
   MAX_STREAM_WINDOW_BYTES,
   MAX_WRITE_KEY_BYTES,
   MetadataEntrypoint,
+  MetadataFilesEntrypoint,
   NamedEntrypoint,
   OidcEntrypoint,
   PRODUCT_API_VERSION,

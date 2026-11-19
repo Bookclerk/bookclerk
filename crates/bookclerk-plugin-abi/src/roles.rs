@@ -10,10 +10,12 @@ use crate::generated::{
     CliSchema, CoverFetchParams, CoverImage, DatabaseAdapterConfig, ExpandCandidatesParams,
     ExternalUser, FetchTitleParams, Invocation, ListDealsParams, ListeningProgress,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MetadataChapters,
-    MetadataChaptersParams, MetadataLookupParams, MetadataRecord, MetadataSearchParams, PlainFetch,
-    PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintsParams,
-    RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams,
-    SourceAccount,
+    MetadataChaptersParams, MetadataFileParseParams, MetadataFileParsed, MetadataFileRenderParams,
+    MetadataFileRendered, MetadataLookupParams, MetadataRecord, MetadataSearchParams, PlainFetch,
+    PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintResult,
+    PurchaseHintsParams, RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams,
+    SearchCatalogParams, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo,
+    SocketMessage, SocketMessageOk, SourceAccount,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
@@ -26,6 +28,172 @@ use crate::{PluginError, Result};
 /// host's 10 s batch deadline, so even a slow last lookup lands before it
 /// and a store without a bulk endpoint still returns the titles it priced.
 pub const PURCHASE_HINTS_BUDGET: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// How many one-title lookups the default [`ContentSource::purchase_hints`]
+/// keeps in flight at once. A store without a bulk endpoint answers a page
+/// of cards in about a quarter of the time one lookup after another takes,
+/// while staying a polite handful of requests rather than a burst.
+pub const PURCHASE_HINTS_CONCURRENCY: usize = 4;
+
+/// The default [`ContentSource::purchase_hints`]: asks
+/// [`ContentSource::purchase_hint`] for each query,
+/// [`PURCHASE_HINTS_CONCURRENCY`] at a time, those naming a product id
+/// first, and starts no lookup once `budget` has passed (those answer
+/// `None`).
+///
+/// # Errors
+///
+/// The first lookup error, which fails the whole batch.
+async fn purchase_hints_one_by_one<S: ContentSource + ?Sized>(
+    source: &S,
+    params: PurchaseHintsParams,
+    budget: std::time::Duration,
+) -> Result<Vec<Option<PurchaseHint>>> {
+    each_query_within(params, budget, |query| source.purchase_hint(query)).await
+}
+
+/// [`ContentSource::purchase_hints_results`] for a store without a bulk
+/// endpoint: asks [`ContentSource::purchase_hint_result`] for each query,
+/// with the same order, concurrency and [`PURCHASE_HINTS_BUDGET`] as the
+/// default [`ContentSource::purchase_hints`]. A query not started within
+/// the budget answers an empty result (`found = false`, no records).
+///
+/// A guest that overrides [`ContentSource::purchase_hint_result`] to
+/// return title-search records, but has no bulk endpoint, calls this from
+/// its `purchase_hints_results` so batches carry the records too.
+///
+/// # Arguments
+///
+/// * `source` - The store answering.
+/// * `params` - The batch's queries.
+///
+/// # Returns
+///
+/// One result per query, in order.
+///
+/// # Errors
+///
+/// The first lookup error, which fails the whole batch.
+pub async fn purchase_hint_results_one_by_one<S: ContentSource + ?Sized>(
+    source: &S,
+    params: PurchaseHintsParams,
+) -> Result<Vec<PurchaseHintResult>> {
+    each_query_within(params, PURCHASE_HINTS_BUDGET, |query| {
+        source.purchase_hint_result(query)
+    })
+    .await
+}
+
+/// Runs `lookup` for each query, [`PURCHASE_HINTS_CONCURRENCY`] at a time,
+/// queries naming a product id first, and starts none once `budget` has
+/// passed; those answer `T::default()`.
+///
+/// # Errors
+///
+/// The first lookup error, which fails the whole batch.
+async fn each_query_within<T, F, Fut>(
+    params: PurchaseHintsParams,
+    budget: std::time::Duration,
+    lookup: F,
+) -> Result<Vec<T>>
+where
+    T: Default,
+    F: Fn(PurchaseHintParams) -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    use futures::stream::{StreamExt, TryStreamExt};
+
+    let started = std::time::Instant::now();
+    let mut out: Vec<T> = std::iter::repeat_with(T::default)
+        .take(params.queries.len())
+        .collect();
+    // Queries that already name a product id are one lookup each; title
+    // searches come after, and nothing starts past the budget.
+    let mut order: Vec<usize> = (0..params.queries.len()).collect();
+    order.sort_by_key(|&i| {
+        params.queries[i]
+            .product_id
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+    });
+    let queries = &params.queries;
+    let lookup = &lookup;
+    let answers: Vec<(usize, T)> = futures::stream::iter(order)
+        .map(|i| async move {
+            // Checked as each lookup is about to start, not when it was
+            // queued, so a slow store stops taking on new titles.
+            if started.elapsed() >= budget {
+                return Ok((i, T::default()));
+            }
+            Ok::<_, PluginError>((i, lookup(queries[i].clone()).await?))
+        })
+        .buffer_unordered(PURCHASE_HINTS_CONCURRENCY)
+        .try_collect()
+        .await?;
+    for (i, answer) in answers {
+        out[i] = answer;
+    }
+    Ok(out)
+}
+
+/// A bare hint as a [`PurchaseHintResult`] with no records.
+///
+/// # Arguments
+///
+/// * `hint` - The store's answer; `None` when it did not find the title.
+#[must_use]
+pub fn hint_result(hint: Option<PurchaseHint>) -> PurchaseHintResult {
+    PurchaseHintResult {
+        found: hint.is_some(),
+        hint: hint.unwrap_or_default(),
+        records: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod purchase_hints_tests {
+    use super::*;
+
+    /// Answers every lookup from its product id.
+    struct EchoStore;
+
+    #[async_trait::async_trait(?Send)]
+    impl ContentSource for EchoStore {
+        async fn purchase_hint(&self, params: PurchaseHintParams) -> Result<Option<PurchaseHint>> {
+            Ok(params.product_id.map(|product_id| PurchaseHint {
+                product_id,
+                ..PurchaseHint::default()
+            }))
+        }
+    }
+
+    /// Within the budget each query is looked up; past it no lookup starts
+    /// and every query answers `None`.
+    ///
+    /// # Panics
+    ///
+    /// When a batch fails or a lookup ran on the wrong side of the budget.
+    #[tokio::test(flavor = "current_thread")]
+    async fn nothing_starts_past_the_budget() {
+        let params = PurchaseHintsParams {
+            queries: vec![PurchaseHintParams {
+                product_id: Some("p".into()),
+                ..PurchaseHintParams::default()
+            }],
+        };
+        let within =
+            purchase_hints_one_by_one(&EchoStore, params.clone(), std::time::Duration::MAX)
+                .await
+                .expect("a batch");
+        assert_eq!(within[0].as_ref().map(|h| h.product_id.as_str()), Some("p"));
+        let past = purchase_hints_one_by_one(&EchoStore, params, std::time::Duration::ZERO)
+            .await
+            .expect("a batch");
+        assert_eq!(past.len(), 1);
+        assert!(past[0].is_none());
+    }
+}
 
 /// Inclusive byte range for a streamed read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +253,40 @@ pub trait Destination {
     /// Abort a destination-side staged object.
     async fn abort_stage(&self, _key: &str, _commit_token: &str) -> Result<()> {
         Err(PluginError::unsupported("abortStage"))
+    }
+
+    /// Move one object (`storage.move`). Repeating a finished move succeeds
+    /// with [`crate::MoveResult::already_moved`].
+    async fn move_object(
+        &self,
+        _from: &str,
+        _to: &str,
+        _options: crate::MoveOptions,
+    ) -> Result<crate::MoveResult> {
+        Err(PluginError::unsupported("move"))
+    }
+
+    /// Move a set of objects or a whole prefix (`storage.moveMany`), one
+    /// page per call. Safe to repeat.
+    async fn move_many(&self, _request: crate::MoveManyRequest) -> Result<crate::MoveManyPage> {
+        Err(PluginError::unsupported("moveMany"))
+    }
+
+    /// Remove up to [`crate::MAX_BATCH_KEYS`] objects (`storage.deleteMany`),
+    /// one outcome per key in order. A missing key succeeds.
+    async fn delete_many(&self, _keys: Vec<String>) -> Result<Vec<crate::KeyOutcome>> {
+        Err(PluginError::unsupported("deleteMany"))
+    }
+
+    /// Probe up to [`crate::MAX_BATCH_KEYS`] objects (`storage.headMany`),
+    /// one entry per key in order; `None` when the key is missing.
+    async fn head_many(&self, _keys: Vec<String>) -> Result<Vec<Option<ObjectMetadata>>> {
+        Err(PluginError::unsupported("headMany"))
+    }
+
+    /// Keys changed since a cursor (`storage.changes`).
+    async fn changes(&self, _request: crate::ChangesRequest) -> Result<crate::ChangesPage> {
+        Err(PluginError::unsupported("changes"))
     }
 }
 
@@ -246,6 +448,45 @@ pub struct NamedKvBinding {
     pub kv: Box<dyn KvNamespace>,
 }
 
+/// Host-brokered outbound WebSockets granted on [`Bindings::sockets`].
+///
+/// A broker the host runs for the plugin instance holds each socket, so a
+/// socket outlives the invocation that opened it and stays open while the
+/// guest sleeps. Messages arrive on [`Entrypoints::socket_handler`].
+#[async_trait::async_trait(?Send)]
+pub trait Sockets {
+    /// Opens a socket to `request.url`, which must be on the plugin's
+    /// network grant, and returns it once the handshake finished.
+    async fn connect(&self, request: SocketConnectRequest) -> Result<SocketInfo>;
+    /// Sends one message on an open socket.
+    async fn send(&self, socket: String, frame: SocketFrame) -> Result<()>;
+    /// Closes a socket; closing an unknown or closed socket is not an error.
+    /// A zero `code` sends 1000.
+    async fn close(&self, socket: String, code: u16, reason: String) -> Result<()>;
+    /// Replaces the attachment the host keeps for a socket.
+    async fn set_attachment(&self, socket: String, attachment: Vec<u8>) -> Result<()>;
+    /// The instance's open sockets, oldest first.
+    async fn list(&self) -> Result<Vec<SocketInfo>>;
+}
+
+/// `[sockets]` handler: what arrives on host-brokered sockets.
+#[async_trait::async_trait(?Send)]
+pub trait SocketHandler {
+    /// One message arrived on an open socket.
+    ///
+    /// The reply may ask the host to poll the plugin's events now
+    /// ([`SocketMessageOk::poll_events`]), when the message announced
+    /// something the poll hands over.
+    async fn message(&self, _event: SocketMessage) -> Result<SocketMessageOk> {
+        Err(PluginError::unsupported("message"))
+    }
+
+    /// A socket closed. The default ignores it.
+    async fn closed(&self, _event: SocketClosed) -> Result<()> {
+        Ok(())
+    }
+}
+
 /// One granted `[[queues.producers]]` binding on [`Bindings::queues`].
 pub struct NamedQueueBinding {
     /// Binding name on `env` (`[[queues.producers]] binding`).
@@ -313,37 +554,48 @@ pub trait ContentSource {
     /// Purchase links / price hints for several titles in one call, one
     /// answer per query in order.
     ///
-    /// The default asks [`Self::purchase_hint`] for each query in turn,
-    /// queries that already name a product id first (one lookup each) and
-    /// title searches after, and stops at the first error. It stops
-    /// starting lookups once [`PURCHASE_HINTS_BUDGET`] has passed and
-    /// answers `None` for the rest, so the host's batch gets what the store
-    /// managed instead of nothing. A guest whose backend prices many
-    /// products per request overrides this to make one request. A
-    /// `rate_limited` error applies to the whole batch.
+    /// The default asks [`Self::purchase_hint`] for each query,
+    /// [`PURCHASE_HINTS_CONCURRENCY`] at a time, queries that already name
+    /// a product id first (one lookup each) and title searches after, and
+    /// stops at the first error. It starts no lookup once
+    /// [`PURCHASE_HINTS_BUDGET`] has passed and answers `None` for the rest,
+    /// so the host's batch gets what the store managed instead of nothing.
+    /// A guest whose backend prices many products per request overrides
+    /// this to make one request. A `rate_limited` error applies to the
+    /// whole batch.
     async fn purchase_hints(
         &self,
         params: PurchaseHintsParams,
     ) -> Result<Vec<Option<PurchaseHint>>> {
-        let started = std::time::Instant::now();
-        let mut out: Vec<Option<PurchaseHint>> = vec![None; params.queries.len()];
-        // Queries that already name a product id are one lookup each; title
-        // searches come after, and nothing starts past the budget.
-        let mut order: Vec<usize> = (0..params.queries.len()).collect();
-        order.sort_by_key(|&i| {
-            params.queries[i]
-                .product_id
-                .as_deref()
-                .map(str::trim)
-                .is_none_or(str::is_empty)
-        });
-        for i in order {
-            if started.elapsed() >= PURCHASE_HINTS_BUDGET {
-                break;
-            }
-            out[i] = self.purchase_hint(params.queries[i].clone()).await?;
-        }
-        Ok(out)
+        purchase_hints_one_by_one(self, params, PURCHASE_HINTS_BUDGET).await
+    }
+
+    /// [`Self::purchase_hint`] with the priced records a title search
+    /// matched (`PurchaseHintResult.records`), for a host that asked with
+    /// `lookup = title`.
+    ///
+    /// The default wraps [`Self::purchase_hint`] and returns no records, so
+    /// the host falls back to the bare hint. A guest that can tell its
+    /// search results apart (identifiers, credits, kinds) overrides this
+    /// and [`Self::purchase_hints_results`].
+    async fn purchase_hint_result(&self, params: PurchaseHintParams) -> Result<PurchaseHintResult> {
+        Ok(hint_result(self.purchase_hint(params).await?))
+    }
+
+    /// [`Self::purchase_hints`] with each query's priced records, as
+    /// [`Self::purchase_hint_result`] gives them for one query.
+    ///
+    /// The default wraps [`Self::purchase_hints`] and returns no records.
+    async fn purchase_hints_results(
+        &self,
+        params: PurchaseHintsParams,
+    ) -> Result<Vec<PurchaseHintResult>> {
+        Ok(self
+            .purchase_hints(params)
+            .await?
+            .into_iter()
+            .map(hint_result)
+            .collect())
     }
 
     /// Current storefront deals.
@@ -503,6 +755,36 @@ pub trait CoverFetcher {
         _sink: Box<dyn Destination>,
     ) -> Result<Vec<CoverImage>> {
         Err(PluginError::unsupported("fetchCovers"))
+    }
+}
+
+/// `metadataFiles` entrypoint: converts metadata files (sidecars) next to an
+/// edition's media to and from [`crate::MetadataFileRecord`]s.
+///
+/// The plugin only converts bytes; the host reads and writes every file and
+/// checks every record it returns (see [`crate::metadata_files`]). Methods a
+/// plugin does not serve keep the default, which returns typed
+/// `unsupported`.
+#[async_trait::async_trait(?Send)]
+pub trait MetadataFiles {
+    /// Liveness / readiness probe.
+    async fn health(&self) -> Result<crate::rpc_types::HealthOk> {
+        Ok(crate::rpc_types::HealthOk {
+            ok: true,
+            detail: String::new(),
+        })
+    }
+
+    /// What the file in `params.bytes` says, read as `params.dialect`. A file
+    /// the dialect cannot read is an `invalid_params` error.
+    async fn parse(&self, _params: MetadataFileParseParams) -> Result<MetadataFileParsed> {
+        Err(PluginError::unsupported("parse"))
+    }
+
+    /// `params.existing` with the fields in `params.fields` set to the
+    /// record's values, everything else kept.
+    async fn render(&self, _params: MetadataFileRenderParams) -> Result<MetadataFileRendered> {
+        Err(PluginError::unsupported("render"))
     }
 }
 
@@ -729,6 +1011,9 @@ pub struct Bindings {
     pub queues: Vec<NamedQueueBinding>,
     /// Named `[[kv_namespaces]]` bindings; empty when none is granted.
     pub kv: Vec<NamedKvBinding>,
+    /// `SOCKETS`: host-brokered WebSockets; `None` unless `[sockets]` is
+    /// granted.
+    pub sockets: Option<Box<dyn Sockets>>,
 }
 
 impl Bindings {
@@ -746,6 +1031,7 @@ impl Bindings {
             storage: None,
             queues: Vec::new(),
             kv: Vec::new(),
+            sockets: None,
         }
     }
 
@@ -812,6 +1098,10 @@ pub struct Entrypoints {
     pub metadata: Option<Box<dyn MetadataProvider>>,
     /// `covers` entrypoint.
     pub covers: Option<Box<dyn CoverFetcher>>,
+    /// `[sockets]` handler.
+    pub socket_handler: Option<Box<dyn SocketHandler>>,
+    /// `metadataFiles` entrypoint.
+    pub metadata_files: Option<Box<dyn MetadataFiles>>,
 }
 
 /// Root `PluginWorker` capability (`describe` / `open` / `shutdown`).

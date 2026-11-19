@@ -14,6 +14,7 @@
  */
 
 import type {
+  ObjectChangeKind,
   PluginErrorCode,
   Entrypoint,
   PortalAuthMode,
@@ -27,7 +28,9 @@ import type {
   FetchedFileRole,
   CatalogSort,
   CatalogField,
+  PriceLookup,
   Abridgement,
+  MetadataField,
   DbType,
   DbStatementKind,
   DbResultSelection,
@@ -37,6 +40,7 @@ import type {
 } from "./abi.js";
 
 export type {
+  ObjectChangeKind,
   PluginErrorCode,
   Entrypoint,
   PortalAuthMode,
@@ -50,7 +54,9 @@ export type {
   FetchedFileRole,
   CatalogSort,
   CatalogField,
+  PriceLookup,
   Abridgement,
+  MetadataField,
   DbType,
   DbStatementKind,
   DbResultSelection,
@@ -98,6 +104,16 @@ export interface ObjectMetadata {
   etag: string;
   /** Raw SHA-256 digest (32 bytes) or empty when unknown. */
   sha256: Uint8Array;
+  /** Last modification time, UTC unix milliseconds; zero when unknown. */
+  modifiedAtMs: number;
+  /** Backend object version id (versioned buckets); empty when none. */
+  versionId: string;
+  /**
+   * Opaque change signature: an unchanged value means the object has not
+   * changed. Backend-defined (a local file's inode, size, mtime and ctime;
+   * an S3 ETag and version id). Empty when the backend has none.
+   */
+  signature: string;
 }
 
 /** Compact object entry in a list page. */
@@ -106,6 +122,23 @@ export interface ObjectInfo {
   key: string;
   /** Object size in bytes. */
   size: number;
+  /**
+   * Backend entity tag; empty when unsupported or not requested
+   * (`ListOptions.withSignatures`).
+   */
+  etag: string;
+  /**
+   * Last modification time, UTC unix milliseconds; zero when unknown or not
+   * requested.
+   */
+  modifiedAtMs: number;
+  /** Backend object version id; empty when none or not requested. */
+  versionId: string;
+  /**
+   * Opaque change signature, as `ObjectMetadata.signature`; empty when
+   * unsupported or not requested.
+   */
+  signature: string;
 }
 
 /** Paging options for `Destination.list`. */
@@ -116,6 +149,17 @@ export interface ListOptions {
   cursor: string;
   /** Requested page size; clamped to `maxListPage`. `0` means guest default. */
   limit: number;
+  /**
+   * Hint: fill `etag`, `modifiedAtMs`, `versionId` and `signature` on each
+   * entry. `ListPage.signaturesIncluded` says whether the guest did.
+   */
+  withSignatures: boolean;
+  /**
+   * Hint: only objects modified at or after this time (UTC unix
+   * milliseconds); zero lists everything. `ListPage.modifiedSinceApplied`
+   * says whether the guest filtered; when it did not, the page is unfiltered.
+   */
+  modifiedSinceMs: number;
 }
 
 /** One page of `Destination.list` results. */
@@ -124,6 +168,16 @@ export interface ListPage {
   objects: ObjectInfo[];
   /** Cursor for the next page; empty when exhausted. */
   nextCursor: string;
+  /**
+   * True when every entry carries the signature fields the backend has
+   * (`ListOptions.withSignatures` honoured).
+   */
+  signaturesIncluded: boolean;
+  /**
+   * True when the guest left out objects modified before
+   * `ListOptions.modifiedSinceMs`. False means the page is unfiltered.
+   */
+  modifiedSinceApplied: boolean;
 }
 
 /** Half-open byte window `[offset, offset + length)`. */
@@ -152,6 +206,17 @@ export interface WriteOptions {
   commitToken: string;
   /** When true, `put` stages remotely and does not publish until `commit`. */
   stageOnly: boolean;
+  /**
+   * Conditional write (`storage.conditionalWrite`): publish only while the
+   * stored object's `etag` equals this value, else fail with `conflict`.
+   * Empty means unconditional. A staged put checks it at `commit`.
+   */
+  ifMatch: string;
+  /**
+   * Conditional write (`storage.conditionalWrite`): publish only when no
+   * object exists at the key, else fail with `conflict`.
+   */
+  ifNoneMatch: boolean;
 }
 
 /** Summary of a stored (or committed) object. */
@@ -164,12 +229,172 @@ export interface PutResult {
   etag: string;
   /** Raw SHA-256 digest of the stored bytes; empty when not computed. */
   sha256: Uint8Array;
+  /**
+   * Modification time of the stored object, UTC unix milliseconds; zero when
+   * unknown.
+   */
+  modifiedAtMs: number;
+  /** Version id of the stored object; empty when none. */
+  versionId: string;
+  /**
+   * Change signature of the stored object (`ObjectMetadata.signature`), so
+   * the host can recognise its own write in a later listing; empty when none.
+   */
+  signature: string;
 }
 
 /** Summary of a server-side copy. */
 export interface CopyResult {
   /** Bytes copied. */
   bytesCopied: number;
+}
+
+/**
+ * Options for `Destination.move` and `Destination.moveMany`. Fields are only
+ * ever appended.
+ */
+export interface MoveOptions {
+  /** Fail with `conflict` instead of replacing an object at the target key. */
+  noOverwrite: boolean;
+  /**
+   * `move` only: move only while the source's `etag` equals this value,
+   * else fail with `conflict`. Empty skips the check.
+   */
+  ifSourceMatch: string;
+}
+
+/** Summary of `Destination.move`. */
+export interface MoveResult {
+  /**
+   * True when the backend moved atomically (a rename): no reader saw the
+   * object at both keys or at neither.
+   */
+  atomic: boolean;
+  /**
+   * True when the source was already gone and the target present, as when
+   * a move is repeated after a restart. The move counts as done.
+   */
+  alreadyMoved: boolean;
+}
+
+/** One source and target key. */
+export interface KeyPair {
+  /** Source object key (or source prefix). */
+  from: string;
+  /** Target object key (or target prefix). */
+  to: string;
+}
+
+/** What `Destination.moveMany` moves. */
+export type MoveManyTarget =
+  | { kind: "pairs"; value: KeyPair[] } // Explicit moves, at most `maxBatchKeys`. Each is independent.
+  | { kind: "prefix"; value: KeyPair }; // Every object under `prefix.from` moves under `prefix.to`, keeping the rest of its key. Paged through `MoveManyRequest.cursor`.
+
+/** Argument of `Destination.moveMany`. Fields are only ever appended. */
+export interface MoveManyRequest {
+  /** Explicit pairs or a prefix. */
+  target: MoveManyTarget;
+  /**
+   * Prefix form: `MoveManyPage.nextCursor` from the previous call; empty
+   * starts. Ignored for `pairs`.
+   */
+  cursor: string;
+  /**
+   * Prefix form: objects to move in this call, clamped to `maxBatchKeys`;
+   * zero means guest default.
+   */
+  limit: number;
+  /** Overwrite rule applied to every move (`ifSourceMatch` is ignored). */
+  options: MoveOptions;
+}
+
+/** Outcome for one key of a batch call. */
+export interface KeyOutcome {
+  /** The key this outcome is for (the source key for moves). */
+  key: string;
+  /** Failure for this key; an empty `code` means it succeeded. */
+  error: PluginError;
+}
+
+/** One page of `Destination.moveMany` progress. */
+export interface MoveManyPage {
+  /**
+   * Outcomes in request order. A prefix move done in one step (a folder
+   * rename) may report a single outcome keyed by the source prefix.
+   */
+  results: KeyOutcome[];
+  /** Prefix form: cursor for the next call; empty when every object moved. */
+  nextCursor: string;
+  /** True when every move in this page was atomic. */
+  atomic: boolean;
+  /**
+   * Objects moved in this page (a folder rename counts what it carried
+   * when known, else the outcomes).
+   */
+  objectsMoved: number;
+}
+
+/** Result of `Destination.deleteMany`. */
+export interface DeleteManyResult {
+  /** One outcome per requested key, in request order. A missing key succeeds. */
+  results: KeyOutcome[];
+}
+
+/** Result of `Destination.headMany`. */
+export interface HeadManyResult {
+  /** One probe per requested key, in request order. */
+  objects: HeadOk[];
+}
+
+/** Argument of `Destination.changes`. Fields are only ever appended. */
+export interface ChangesRequest {
+  /**
+   * `ChangesPage.cursor` from the previous call. Empty asks for the current
+   * position: the page carries a cursor and no changes.
+   */
+  cursor: string;
+  /**
+   * Requested changes per page, clamped to `maxChangesPage`; zero means
+   * guest default.
+   */
+  limit: number;
+}
+
+/** One entry of a change feed. */
+export interface ObjectChange {
+  /** Object key, relative to the destination root. */
+  key: string;
+  /** What happened to it. */
+  kind: ObjectChangeKind;
+  /**
+   * Listing fields after the change when the feed carries them (signature
+   * fields may be empty); empty for `removed`.
+   */
+  info: ObjectInfo;
+}
+
+/** One page of `Destination.changes`. */
+export interface ChangesPage {
+  /** Changes since the request's cursor, oldest first. A key may repeat. */
+  changes: ObjectChange[];
+  /** Cursor for the next call; never empty. */
+  cursor: string;
+  /** True when more changes are ready now; call again with `cursor`. */
+  more: boolean;
+  /**
+   * False when the feed may have missed changes since the request's cursor
+   * (an overflowed watcher, expired queue retention, a restart): the host
+   * backs it with a full listing. True means these are all the changes.
+   */
+  complete: boolean;
+  /**
+   * True when this running guest produces the feed itself (a filesystem
+   * watcher) and stopping it would lose changes, so the host keeps it awake
+   * while `complete` stays true. Durable feeds (a notification queue) leave
+   * it false. The host honours it only from the first-party storage plugins
+   * it starts on demand.
+   */
+  liveWatch: boolean;
 }
 
 /** Guest identity and negotiation surface returned by `describe()`. */
@@ -323,6 +548,12 @@ export interface Bindings {
    * binding, scoped to this plugin. Empty when the manifest declares none.
    */
   kv: NamedKv[];
+  /**
+   * `SOCKETS`: host-brokered outbound WebSockets that stay open while the
+   * guest sleeps; null unless `[sockets]` is declared and granted.
+   * Null when the guest does not export this capability.
+   */
+  sockets?: Sockets | null;
 }
 
 /**
@@ -391,6 +622,16 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   covers?: CoverFetcher | null;
+  /**
+   * `[sockets]` handler: messages and closes on host-brokered sockets.
+   * Null when the guest does not export this capability.
+   */
+  socketHandler?: SocketHandler | null;
+  /**
+   * `metadataFiles` entrypoint.
+   * Null when the guest does not export this capability.
+   */
+  metadataFiles?: MetadataFiles | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -723,6 +964,31 @@ export type CopyReply =
   | { kind: "ok"; value: CopyResult } // Success: copy summary.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
+/** Result union of `Destination.move`. */
+export type MoveReply =
+  | { kind: "ok"; value: MoveResult } // Success: how the move was done.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Result union of `Destination.moveMany`. */
+export type MoveManyReply =
+  | { kind: "ok"; value: MoveManyPage } // Success: per-key outcomes and the continuation.
+  | { kind: "err"; value: PluginError }; // Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+
+/** Result union of `Destination.deleteMany`. */
+export type DeleteManyReply =
+  | { kind: "ok"; value: DeleteManyResult } // Success: per-key outcomes.
+  | { kind: "err"; value: PluginError }; // Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+
+/** Result union of `Destination.headMany`. */
+export type HeadManyReply =
+  | { kind: "ok"; value: HeadManyResult } // Success: one probe per key.
+  | { kind: "err"; value: PluginError }; // Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+
+/** Result union of `Destination.changes`. */
+export type ChangesReply =
+  | { kind: "ok"; value: ChangesPage } // Success: one page of changes.
+  | { kind: "err"; value: PluginError }; // Typed failure; `invalid_cursor` means the cursor expired and the host starts over with a full listing.
+
 /** Result union of `methods without a success payload`. */
 export type EmptyReply =
   | { kind: "ok" } // Success: no payload.
@@ -874,6 +1140,46 @@ export interface Destination {
    * @returns {@link EmptyReply}
    */
   abortStage(key: string, commitToken: string): Promise<EmptyReply>;
+  /**
+   * Move one object (requires `storage.move`). Repeating a finished move
+   * succeeds with `alreadyMoved`.
+   *
+   * @param from - Source object key.
+   * @param to - Target object key.
+   * @param options - Overwrite and source preconditions.
+   * @returns {@link MoveReply}
+   */
+  move(from: string, to: string, options: MoveOptions): Promise<MoveReply>;
+  /**
+   * Move a set of objects or a whole prefix (requires `storage.moveMany`).
+   * Paged and safe to repeat.
+   *
+   * @param request - Pairs or prefix, cursor, and options.
+   * @returns {@link MoveManyReply}
+   */
+  moveMany(request: MoveManyRequest): Promise<MoveManyReply>;
+  /**
+   * Remove up to `maxBatchKeys` objects (requires `storage.deleteMany`).
+   *
+   * @param keys - Object keys to remove.
+   * @returns {@link DeleteManyReply}
+   */
+  deleteMany(keys: string[]): Promise<DeleteManyReply>;
+  /**
+   * Probe up to `maxBatchKeys` objects (requires `storage.headMany`).
+   *
+   * @param keys - Object keys to probe.
+   * @returns {@link HeadManyReply}
+   */
+  headMany(keys: string[]): Promise<HeadManyReply>;
+  /**
+   * Keys changed since a cursor (requires `storage.changes`). A hint for
+   * what to read; a scheduled listing stays the backstop.
+   *
+   * @param request - Cursor and page size.
+   * @returns {@link ChangesReply}
+   */
+  changes(request: ChangesRequest): Promise<ChangesReply>;
 }
 
 /** Read-only byte source for job inputs (not a storefront). */
@@ -1087,6 +1393,75 @@ export interface NamedKv {
    * Null when the guest does not export this capability.
    */
   kv?: KvNamespace | null;
+}
+
+/**
+ * Host-brokered outbound WebSockets, granted through `Bindings.sockets`.
+ *
+ * The guest asks for a socket; a broker the host runs for the plugin
+ * instance dials it under the plugin's network grant and keeps it open while
+ * the guest sleeps, in the manner of hibernatable Workers WebSockets. Each
+ * incoming message wakes the guest and arrives on
+ * `Entrypoints.socketHandler`. Heartbeat pairs declared at connect are
+ * answered by the broker without waking the guest.
+ */
+export interface Sockets {
+  /**
+   * Open a socket; it is owned by the plugin instance, not this invocation.
+   *
+   * @param request - Target, subprotocols, headers, heartbeats.
+   * @returns {@link SocketConnectReply}
+   */
+  connect(request: SocketConnectRequest): Promise<SocketConnectReply>;
+  /**
+   * Send one message on an open socket.
+   *
+   * @param socket - Socket id from `connect` or `list`.
+   * @param frame - Message, at most `maxSocketFrameBytes`.
+   * @returns {@link EmptyReply}
+   */
+  send(socket: string, frame: SocketFrame): Promise<EmptyReply>;
+  /**
+   * Close a socket; closing an unknown or closed socket is not an error.
+   *
+   * @param socket - Socket id.
+   * @param code - WebSocket close code; zero sends 1000.
+   * @param reason - Close reason, at most 123 UTF-8 bytes.
+   * @returns {@link EmptyReply}
+   */
+  close(socket: string, code: number, reason: string): Promise<EmptyReply>;
+  /**
+   * Replace the attachment the host keeps for a socket.
+   *
+   * @param socket - Socket id.
+   * @param attachment - Opaque bytes, at most `maxSocketAttachmentBytes`.
+   * @returns {@link EmptyReply}
+   */
+  setAttachment(socket: string, attachment: Uint8Array): Promise<EmptyReply>;
+  /**
+   * The instance's open sockets, for a guest that just woke.
+   *
+   * @returns {@link SocketListReply}
+   */
+  list(): Promise<SocketListReply>;
+}
+
+/** Guest handler for host-brokered sockets (`Entrypoints.socketHandler`). */
+export interface SocketHandler {
+  /**
+   * One message arrived on an open socket.
+   *
+   * @param event - Socket, frame, and attachment.
+   * @returns {@link SocketMessageReply}
+   */
+  message(event: SocketMessage): Promise<SocketMessageReply>;
+  /**
+   * A socket closed, by the remote side, the network, or the host.
+   *
+   * @param event - Socket, close code, and attachment.
+   * @returns {@link EmptyReply}
+   */
+  closed(event: SocketClosed): Promise<EmptyReply>;
 }
 
 /**
@@ -1356,6 +1731,39 @@ export interface CoverFetcher {
 }
 
 /**
+ * `metadataFiles` entrypoint: reads and writes metadata files that sit next
+ * to an edition's media (sidecars such as `metadata.json`, OPF, NFO or CUE),
+ * one dialect per format. The plugin only converts bytes: the host reads the
+ * file, chooses every path and writes the result, so a dialect plugin needs
+ * no network or file grants. The manifest's `[metadata_files]` table names
+ * each dialect, the file names it reads and the fields it carries, so the
+ * host routes a file to a sleeping plugin without starting it.
+ */
+export interface MetadataFiles {
+  /**
+   * Liveness / readiness probe.
+   *
+   * @returns {@link HealthReply}
+   */
+  health(): Promise<HealthReply>;
+  /**
+   * What one metadata file says about its edition.
+   *
+   * @param params - Dialect, file name and bytes.
+   * @returns {@link MetadataFileParseReply}
+   */
+  parse(params: MetadataFileParseParams): Promise<MetadataFileParseReply>;
+  /**
+   * The bytes of a metadata file with the given fields set to the record's
+   * values and everything else kept from the existing file.
+   *
+   * @param params - Dialect, record, fields and existing bytes.
+   * @returns {@link MetadataFileRenderReply}
+   */
+  render(params: MetadataFileRenderParams): Promise<MetadataFileRenderReply>;
+}
+
+/**
  * One declared event consumer: a `[[events.consumers]]` row the default
  * entrypoint's `event(batch)` handler accepts.
  */
@@ -1398,6 +1806,11 @@ export interface PluginCapabilities {
    * single spaces.
    */
   crons: string[];
+  /**
+   * True when the guest declared `[sockets]`: it receives the host-brokered
+   * `Sockets` binding and may export a `SocketHandler` for pushed messages.
+   */
+  sockets: boolean;
 }
 
 /**
@@ -1413,6 +1826,18 @@ export interface CatalogCapabilities {
    * rows from any store that carry an ISBN.
    */
   detailByIsbn: boolean;
+  /**
+   * True when `purchaseHint` / `purchaseHints` price a query by its exact
+   * ISBN (`lookup = isbn`): the answer is the store's listing of that ISBN
+   * or not found, never a title match. The host then prices a card at this
+   * store by the ISBNs of the card's recording before searching by title.
+   */
+  priceByIsbn: boolean;
+  /**
+   * True when `purchaseHint` / `purchaseHints` price a query by its exact
+   * ASIN (`lookup = asin`), as `priceByIsbn` does for ISBNs.
+   */
+  priceByAsin: boolean;
 }
 
 /**
@@ -2193,6 +2618,11 @@ export interface PurchaseHintParams {
   region: string;
   /** When true, guests should include live price fields when available. */
   withPrice: boolean;
+  /**
+   * How the host asks the store to find the title. `unspecified` (an older
+   * host) leaves the guest free to use any field, as before.
+   */
+  lookup: PriceLookup;
 }
 
 /** Params of `ContentSource.listDeals`. */
@@ -2422,6 +2852,22 @@ export interface PurchaseHintResult {
   /** False when the guest could not resolve the title (`hint` is empty). */
   found: boolean;
   /** Purchase hint when `found`. */
+  hint: PurchaseHint;
+  /**
+   * Every priced listing a title search matched (`lookup = title`), each
+   * with its full catalog record, so the host can tell recordings apart by
+   * identifiers, credits and kinds rather than by title. Empty for other
+   * lookups and for guests that do not return records; `hint` then stays
+   * the answer.
+   */
+  records: PricedRecord[];
+}
+
+/** One priced listing returned by a title search. */
+export interface PricedRecord {
+  /** The listing's catalog record: identifiers, credits, kinds, language. */
+  record: CatalogHit;
+  /** Its purchase link and prices, as `PurchaseHint` carries them. */
   hint: PurchaseHint;
 }
 
@@ -3118,6 +3564,276 @@ export interface CoverImages {
 export type CoverImagesReply =
   | { kind: "ok"; value: CoverImages } // Success: one entry per requested URL.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/**
+ * What one metadata file says about the edition it sits beside. A field the
+ * file does not state is left out of `present` and means "unknown", never
+ * "cleared"; a field in `present` with an empty value means the file states
+ * that it is empty. The host checks every value against the `maxMetadataFile*`
+ * caps and refuses a record that states a field its dialect does not carry.
+ */
+export interface MetadataFileRecord {
+  /**
+   * Fields the file states, each at most once; at most the fields the
+   * dialect declares.
+   */
+  present: MetadataField[];
+  /**
+   * Primary title.
+   * Omitted when absent (wire zero value).
+   */
+  title?: string;
+  /**
+   * Subtitle when distinct from `title`.
+   * Omitted when absent (wire zero value).
+   */
+  subtitle?: string;
+  /**
+   * Long description / blurb; at most `maxMetadataFileDescriptionBytes`.
+   * Omitted when absent (wire zero value).
+   */
+  description?: string;
+  /**
+   * Publisher name.
+   * Omitted when absent (wire zero value).
+   */
+  publisher?: string;
+  /**
+   * Publication date as `YYYY`, `YYYY-MM` or `YYYY-MM-DD`.
+   * Omitted when absent (wire zero value).
+   */
+  publishedAt?: string;
+  /**
+   * Content language as the file prints it (a code or a name).
+   * Omitted when absent (wire zero value).
+   */
+  language?: string;
+  /** Genre labels in file order. */
+  genres: string[];
+  /** Free tags in file order. */
+  tags: string[];
+  /** Whether the edition is abridged; `unknown` when the file does not say. */
+  abridgement: Abridgement;
+  /** How the work is realised; `unspecified` when the file does not say. */
+  expressionKind: ExpressionKind;
+  /** External identifiers the file carries. */
+  identifiers: Identifier[];
+  /**
+   * Credited contributors in billing order, only in the roles `creditRoles`
+   * names.
+   */
+  credits: Credit[];
+  /**
+   * Credit roles the file states, each at most once. A role listed here
+   * with no credit means the file states nobody in that role; a role left
+   * out is unknown. Empty unless `present` holds `credits`.
+   */
+  creditRoles: CreditRole[];
+  /** Series the work belongs to. */
+  seriesEntries: SeriesEntry[];
+  /**
+   * Chapter layout in pre-order (see `MetadataChapter`); at most
+   * `maxMetadataFileChapters`, starts never decreasing.
+   */
+  chapters: MetadataChapter[];
+  /**
+   * Running time in milliseconds.
+   * Omitted when absent (wire zero value).
+   */
+  durationMs?: number;
+}
+
+/** Params of `MetadataFiles.parse`. */
+export interface MetadataFileParseParams {
+  /**
+   * Dialect id from the manifest's `[[metadata_files.dialects]]` that the
+   * host routed the file to.
+   */
+  dialect: string;
+  /** The file's name without any folder (`metadata.json`, `Book.opf`). */
+  fileName: string;
+  /** The whole file; at most `maxMetadataFileBytes`. */
+  bytes: Uint8Array;
+}
+
+/** Success payload of `MetadataFiles.parse`. */
+export interface MetadataFileParsed {
+  /** What the file says. */
+  record: MetadataFileRecord;
+}
+
+/**
+ * Result union of `MetadataFiles.parse`. A file the dialect cannot read is
+ * `invalid_params`, so the host records it as unreadable and moves on.
+ */
+export type MetadataFileParseReply =
+  | { kind: "ok"; value: MetadataFileParsed } // Success: the parsed record.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/**
+ * One audio file of the edition a sidecar describes, for formats that name
+ * their audio (a CUE sheet's `FILE` lines).
+ */
+export interface MetadataAudioFile {
+  /** The file's name without any folder, as it sits next to the sidecar. */
+  name: string;
+  /** Running time in milliseconds; 0 when the host does not know it. */
+  durationMs: number;
+}
+
+/** Params of `MetadataFiles.render`. */
+export interface MetadataFileRenderParams {
+  /** Dialect id from the manifest; one that declares `writes = true`. */
+  dialect: string;
+  /** Values to write. Only the fields in `fields` are read from it. */
+  record: MetadataFileRecord;
+  /**
+   * Fields to set, each at most once and all declared by the dialect. A
+   * listed field with an empty value removes it from the file.
+   */
+  fields: MetadataField[];
+  /**
+   * The file as it is now; empty when the host is creating it. Everything
+   * the dialect does not change (unknown keys, comments, other fields) is
+   * kept. At most `maxMetadataFileBytes`.
+   */
+  existing: Uint8Array;
+  /**
+   * The edition's audio files in playback order, at most
+   * `maxMetadataAudioFiles`; empty when the host has none or does not know
+   * them. Chapter starts in `record` count from the start of the first file.
+   */
+  audioFiles: MetadataAudioFile[];
+}
+
+/** Success payload of `MetadataFiles.render`. */
+export interface MetadataFileRendered {
+  /**
+   * The new file; at most `maxMetadataFileBytes`. Empty when the dialect has
+   * nothing left to write; the host decides whether to remove the file.
+   */
+  bytes: Uint8Array;
+}
+
+/** Result union of `MetadataFiles.render`. */
+export type MetadataFileRenderReply =
+  | { kind: "ok"; value: MetadataFileRendered } // Success: the new file.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** One WebSocket message. */
+export type SocketFrame =
+  | { kind: "text"; value: string } // Text message, UTF-8.
+  | { kind: "binary"; value: Uint8Array }; // Binary message.
+
+/** One request header on `Sockets.connect`. */
+export interface SocketHeader {
+  /** Header name; the broker refuses hop-by-hop and WebSocket handshake names. */
+  name: string;
+  /** Header value. May carry a credential: the host never logs it. */
+  value: string;
+}
+
+/**
+ * A heartbeat the broker answers itself: when `request` arrives byte for byte,
+ * it sends `response` and does not wake the guest.
+ */
+export interface SocketAutoResponse {
+  /** Frame to match, at most `maxSocketAutoResponseBytes`. */
+  request: SocketFrame;
+  /** Frame to send back, at most `maxSocketAutoResponseBytes`. */
+  response: SocketFrame;
+}
+
+/** Arguments of `Sockets.connect`. */
+export interface SocketConnectRequest {
+  /**
+   * `wss://` or `ws://` URL, at most `maxSocketUrlBytes`. The host must be on
+   * the plugin's network grant.
+   */
+  url: string;
+  /** Requested subprotocols, at most `maxSocketHeaders`. */
+  protocols: string[];
+  /** Extra request headers, at most `maxSocketHeaders`. */
+  headers: SocketHeader[];
+  /** Heartbeats the broker answers, at most `maxSocketAutoResponses`. */
+  autoResponses: SocketAutoResponse[];
+  /** Initial attachment, at most `maxSocketAttachmentBytes`. */
+  attachment: Uint8Array;
+}
+
+/** One open host-brokered socket. */
+export interface SocketInfo {
+  /** Host-minted socket id, stable for the socket's life. */
+  socket: string;
+  /** URL the socket was opened to, without credentials. */
+  url: string;
+  /**
+   * Subprotocol the server chose; empty when none.
+   * Omitted when absent (wire zero value).
+   */
+  protocol?: string;
+  /** Current attachment. */
+  attachment: Uint8Array;
+}
+
+/** Result union of `Sockets.connect`. */
+export type SocketConnectReply =
+  | { kind: "ok"; value: SocketInfo } // Success: the handshake finished and the socket is open.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Success payload of `Sockets.list`. */
+export interface SocketList {
+  /** Open sockets, oldest first. */
+  sockets: SocketInfo[];
+}
+
+/** Result union of `Sockets.list`. */
+export type SocketListReply =
+  | { kind: "ok"; value: SocketList } // Success: the open sockets.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Reply of `SocketHandler.message`. */
+export type SocketMessageReply =
+  | { kind: "ok"; value: SocketMessageOk } // Success: what the guest asks of the host after the message.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** What a guest asks of the host after handling one pushed message. */
+export interface SocketMessageOk {
+  /**
+   * True asks the host to call `Integration.pollEvents` now, while the
+   * guest is awake, instead of at the next scheduled poll: the message
+   * announced something the poll hands over (a new user). The host ignores
+   * it for a plugin whose host schedules no poll.
+   */
+  pollEvents: boolean;
+}
+
+/** Argument of `SocketHandler.message`. */
+export interface SocketMessage {
+  /** Socket the message arrived on. */
+  socket: string;
+  /** The message. */
+  frame: SocketFrame;
+  /** The socket's attachment when the message arrived. */
+  attachment: Uint8Array;
+}
+
+/** Argument of `SocketHandler.closed`. */
+export interface SocketClosed {
+  /** Socket that closed; its id is not reused. */
+  socket: string;
+  /** WebSocket close code; 1006 when the connection dropped without one. */
+  code: number;
+  /**
+   * Close reason the peer sent; empty when none.
+   * Omitted when absent (wire zero value).
+   */
+  reason?: string;
+  /** True when the close handshake completed. */
+  clean: boolean;
+  /** The socket's last attachment. */
+  attachment: Uint8Array;
+}
 
 /** One typed SQL cell or bind parameter. */
 export type DbValue =

@@ -602,6 +602,38 @@ pub fn encoded_db_value_bytes(v: &DbValue) -> Result<Vec<u8>> {
     encode_single_segment(|message| write_db_value(message.init_root(), v))
 }
 
+/// Length in bytes of [`encoded_db_value_bytes`]'s output, worked out from
+/// the value instead of encoding it.
+///
+/// A bind's payload size is checked against `maxPayloadBytes` for every
+/// statement, so this runs once per bind. Encoding each value allocated
+/// and zeroed a fresh 8 KiB first segment; the layout is fixed, so the
+/// size follows from the value alone: the one-segment table (8 bytes), the
+/// root pointer (one word), the `DbValue` struct (its data and pointer
+/// words), and for TEXT the bytes plus their NUL terminator, or for BLOB
+/// the bytes, each rounded up to whole words.
+///
+/// # Errors
+///
+/// Returns [`PluginError::invalid_params`] when a [`DbValue::Text`] contains
+/// U+0000, as [`encoded_db_value_bytes`] does.
+pub fn encoded_db_value_len(v: &DbValue) -> Result<usize> {
+    require_portable_value(v)?;
+    /// Bytes per Cap'n word.
+    const WORD: usize = 8;
+    let size = <db_value_capnp::Builder<'_> as capnp::traits::HasStructSize>::STRUCT_SIZE;
+    let struct_words = usize::from(size.data).saturating_add(usize::from(size.pointers));
+    let blob_words = match v {
+        DbValue::Text(text) => text.len().saturating_add(1).div_ceil(WORD),
+        DbValue::Bytes(bytes) => bytes.len().div_ceil(WORD),
+        DbValue::Null(_) | DbValue::Boolean(_) | DbValue::Int64(_) | DbValue::Float64(_) => 0,
+    };
+    let words = 1usize
+        .saturating_add(struct_words)
+        .saturating_add(blob_words);
+    Ok(WORD.saturating_add(words.saturating_mul(WORD)))
+}
+
 /// Encodes a standalone Cap'n `ExecuteRequest` message (unpacked stream).
 ///
 /// # Errors

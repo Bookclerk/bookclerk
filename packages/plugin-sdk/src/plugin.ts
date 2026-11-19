@@ -57,6 +57,8 @@ import type {
   QueueBinding,
   QueueSendBatchEntry,
   QueueSendOptions,
+  HostWebSocket,
+  SocketMessageData,
 } from "./env.js";
 import { PluginError, parseLimitExceeded } from "./errors.js";
 import { ExecuteStreamFrameCodec, encodeMessage } from "./generated-wire.js";
@@ -68,7 +70,17 @@ import {
   type InvokeOutcome,
 } from "./invoke.js";
 import { requirePluginMigrationRegistration } from "./plugin-migrations.js";
+import {
+  hostWebSocketOf,
+  socketMessageData,
+  socketsBinding,
+  type SocketOp,
+  type SocketsTransport,
+  type SocketTransportReply,
+} from "./sockets.js";
+import type { ObjectChangeKind } from "./abi.js";
 import type {
+  MoveManyTarget,
   AuthenticateUserParams,
   CatalogDetailParams,
   AdapterExecuteRequest,
@@ -98,6 +110,9 @@ import type {
   CoverImage,
   MetadataChapters,
   MetadataChaptersParams,
+  MetadataFileParseParams,
+  MetadataFileRecord,
+  MetadataFileRenderParams,
   MetadataLookupParams,
   MetadataRecord,
   MetadataSearchParams,
@@ -107,6 +122,7 @@ import type {
   PluginDescribe as WirePluginDescribe,
   PluginMigration,
   PublishOk,
+  PricedRecord,
   PurchaseHint,
   PurchaseHintParams,
   PurchaseHintsParams,
@@ -117,6 +133,9 @@ import type {
   ScanPage,
   ScanParams,
   ScheduledController,
+  SocketClosed as WireSocketClosed,
+  SocketMessage as WireSocketMessage,
+  SocketMessageOk,
   SearchCatalogParams,
   SourceAccount,
 } from "./generated.js";
@@ -127,8 +146,17 @@ export { PluginError } from "./errors.js";
 // `schema/plugin.capnp` — re-exported here for guest convenience.
 export {
   FEATURE_SCALAR_LIMITS,
+  FEATURE_STORAGE_CHANGES,
+  FEATURE_STORAGE_CONDITIONAL_WRITE,
   FEATURE_STORAGE_COPY,
+  FEATURE_STORAGE_DELETE_MANY,
+  FEATURE_STORAGE_HEAD_MANY,
+  FEATURE_STORAGE_MOVE,
+  FEATURE_STORAGE_MOVE_MANY,
   FEATURE_STREAMS,
+  MAX_BATCH_KEYS,
+  MAX_CHANGES_CURSOR_BYTES,
+  MAX_CHANGES_PAGE,
   MAX_CHECKPOINT_BYTES,
   MAX_EVENT_PAYLOAD_BYTES,
   MAX_LIST_PAGE,
@@ -156,9 +184,16 @@ export type {
   HealthOk,
   Invocation,
   JobInvocation,
+  MetadataAudioFile,
   MetadataChapter,
   MetadataChapters,
   MetadataChaptersParams,
+  MetadataField,
+  MetadataFileParseParams,
+  MetadataFileParsed,
+  MetadataFileRecord,
+  MetadataFileRenderParams,
+  MetadataFileRendered,
   MetadataLookupParams,
   MetadataRecord,
   MetadataSearchParams,
@@ -230,10 +265,21 @@ export function dataMigrationOp(sql: string): { data: string } {
 // Storage / stream shapes (author-ergonomic projections of the ABI structs)
 // ---------------------------------------------------------------------------
 
-/** Object listing entry. */
+/**
+ * Object listing entry. The signature fields are set only when the listing
+ * was asked for them ({@link ListOptions.withSignatures}).
+ */
 export interface ObjectInfo {
   key: string;
   size: number;
+  /** Opaque backend entity tag. */
+  etag?: string;
+  /** Last modification time, UTC unix milliseconds. */
+  modifiedAtMs?: number;
+  /** Backend object version id (versioned buckets). */
+  versionId?: string;
+  /** Opaque change signature: unchanged means the object did not change. */
+  signature?: string;
 }
 
 /** Metadata without a body. */
@@ -243,6 +289,12 @@ export interface ObjectMetadata {
   contentType?: string;
   etag?: string;
   sha256?: Uint8Array;
+  /** Last modification time, UTC unix milliseconds. */
+  modifiedAtMs?: number;
+  /** Backend object version id (versioned buckets). */
+  versionId?: string;
+  /** Opaque change signature, as {@link ObjectInfo.signature}. */
+  signature?: string;
 }
 
 /** Paginated list request. */
@@ -250,12 +302,26 @@ export interface ListOptions {
   prefix?: string;
   cursor?: string;
   limit?: number;
+  /**
+   * Hint: fill the signature fields of each entry. Say whether you did in
+   * {@link ListPage.signaturesIncluded}.
+   */
+  withSignatures?: boolean;
+  /**
+   * Hint: only objects modified at or after this UTC unix millisecond. Say
+   * whether you filtered in {@link ListPage.modifiedSinceApplied}.
+   */
+  modifiedSinceMs?: number;
 }
 
 /** One page of keys. */
 export interface ListPage {
   objects: ObjectInfo[];
   nextCursor?: string;
+  /** True when every entry carries the signature fields the backend has. */
+  signaturesIncluded?: boolean;
+  /** True when objects modified before `modifiedSinceMs` were left out. */
+  modifiedSinceApplied?: boolean;
 }
 
 /** Optional byte range for a streamed read. */
@@ -276,6 +342,16 @@ export interface WriteOptions {
   sha256?: Uint8Array;
   commitToken?: string;
   stageOnly?: boolean;
+  /**
+   * Conditional write (`storage.conditionalWrite`): publish only while the
+   * stored object's etag equals this value, else reject with `conflict`.
+   */
+  ifMatch?: string;
+  /**
+   * Conditional write (`storage.conditionalWrite`): publish only when no
+   * object exists at the key, else reject with `conflict`.
+   */
+  ifNoneMatch?: boolean;
 }
 
 /** Streamed read result. `body` is a transferred ReadableStream. */
@@ -290,11 +366,93 @@ export interface PutResult {
   bytesWritten: number;
   etag?: string;
   sha256?: Uint8Array;
+  /** Modification time of the stored object, UTC unix milliseconds. */
+  modifiedAtMs?: number;
+  /** Version id of the stored object. */
+  versionId?: string;
+  /** Change signature of the stored object. */
+  signature?: string;
 }
 
 /** Result of a server-side copy. */
 export interface CopyResult {
   bytesCopied: number;
+}
+
+/** Options for {@link StorageEntrypoint.move} and {@link StorageEntrypoint.moveMany}. */
+export interface MoveOptions {
+  /** Reject with `conflict` instead of replacing an object at the target. */
+  noOverwrite?: boolean;
+  /** `move` only: move only while the source's etag equals this value. */
+  ifSourceMatch?: string;
+}
+
+/** How a single move was done. */
+export interface MoveResult {
+  /** True when the move was atomic (a rename). */
+  atomic: boolean;
+  /** True when the source was already gone and the target present. */
+  alreadyMoved?: boolean;
+}
+
+/** Argument of {@link StorageEntrypoint.moveMany}. */
+export interface MoveManyRequest {
+  /** Explicit pairs, or every object under a prefix. */
+  target: MoveManyTarget;
+  /** Prefix form: the previous page's `nextCursor`; absent starts. */
+  cursor?: string;
+  /** Prefix form: objects to move in this call (at most `MAX_BATCH_KEYS`). */
+  limit?: number;
+  /** Overwrite rule applied to every move. */
+  options?: MoveOptions;
+}
+
+/** Outcome for one key of a batch call; `error` is absent on success. */
+export interface KeyOutcome {
+  key: string;
+  error?: { code: string; message: string };
+}
+
+/** One page of {@link StorageEntrypoint.moveMany} progress. */
+export interface MoveManyPage {
+  /** Outcomes in request order (one per pair for the pairs form). */
+  results: KeyOutcome[];
+  /** Prefix form: cursor for the next call; absent when done. */
+  nextCursor?: string;
+  /** True when every move in this page was atomic. */
+  atomic?: boolean;
+  /** Objects moved in this page. */
+  objectsMoved?: number;
+}
+
+/** Argument of {@link StorageEntrypoint.changes}. */
+export interface ChangesRequest {
+  /** The previous page's `cursor`; absent asks for the current position. */
+  cursor?: string;
+  /** Requested changes per page (at most `MAX_CHANGES_PAGE`). */
+  limit?: number;
+}
+
+/** One entry of a change feed. */
+export interface ObjectChange {
+  key: string;
+  kind: ObjectChangeKind;
+  /** Listing fields after the change, when the feed carries them. */
+  info?: ObjectInfo;
+}
+
+/** One page of {@link StorageEntrypoint.changes}. */
+export interface ChangesPage {
+  changes: ObjectChange[];
+  /** Cursor for the next call; never empty. */
+  cursor: string;
+  /** True when more changes are ready now. */
+  more?: boolean;
+  /**
+   * False when the feed may have missed changes (overflow, expired
+   * retention); the host then backs it with a full listing.
+   */
+  complete: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -395,6 +553,60 @@ export class Destination extends RpcTarget {
    */
   abortStage(_key: string, _commitToken: string): Promise<void> {
     return Promise.reject(unsupported("abortStage"));
+  }
+
+  /**
+   * Move one object (declare `storage.move`). Repeating a finished move
+   * resolves with `alreadyMoved`.
+   *
+   * @param _from - Source key.
+   * @param _to - Target key.
+   * @param _options - Overwrite and source preconditions.
+   * @returns How the move was done.
+   */
+  move(_from: string, _to: string, _options: MoveOptions): Promise<MoveResult> {
+    return Promise.reject(unsupported("move"));
+  }
+
+  /**
+   * Move a set of objects or a whole prefix, one page per call (declare
+   * `storage.moveMany`). Safe to repeat.
+   *
+   * @param _request - Pairs or prefix, cursor, and options.
+   * @returns Per-key outcomes and the continuation.
+   */
+  moveMany(_request: MoveManyRequest): Promise<MoveManyPage> {
+    return Promise.reject(unsupported("moveMany"));
+  }
+
+  /**
+   * Remove up to `MAX_BATCH_KEYS` objects (declare `storage.deleteMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One outcome per key, in order; a missing key succeeds.
+   */
+  deleteMany(_keys: string[]): Promise<KeyOutcome[]> {
+    return Promise.reject(unsupported("deleteMany"));
+  }
+
+  /**
+   * Probe up to `MAX_BATCH_KEYS` objects (declare `storage.headMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One entry per key, in order; `null` when missing.
+   */
+  headMany(_keys: string[]): Promise<(ObjectMetadata | null)[]> {
+    return Promise.reject(unsupported("headMany"));
+  }
+
+  /**
+   * Keys changed since a cursor (declare `storage.changes`).
+   *
+   * @param _request - Cursor and page size.
+   * @returns One page of changes.
+   */
+  changes(_request: ChangesRequest): Promise<ChangesPage> {
+    return Promise.reject(unsupported("changes"));
   }
 }
 
@@ -566,6 +778,16 @@ export interface GrantedContext {
   queues?: NamedQueue[];
   /** `[[kv_namespaces]]` bindings, when granted. */
   kv?: NamedKv[];
+  /** The `[sockets]` binding, when granted (at most one entry). */
+  sockets?: NamedSockets[];
+}
+
+/** The granted `[sockets]` binding on the granted context. */
+export interface NamedSockets {
+  /** Binding name (`env.<name>`, `SOCKETS` unless renamed). */
+  name: string;
+  /** The adapter's grant (crosses the adapter → author RPC boundary). */
+  sockets: SocketsTransport;
 }
 
 /** One granted `[[kv_namespaces]]` binding on the granted context. */
@@ -669,7 +891,10 @@ export interface NamedDatabase {
  * plus the grant tokens the adapter exchanges for the author's `EVENTS` and
  * `env.<BINDING>` stubs. Authors never receive this shape.
  */
-export interface BridgeContext extends Omit<GrantedContext, "databases" | "queues" | "kv"> {
+export interface BridgeContext extends Omit<
+  GrantedContext,
+  "databases" | "queues" | "kv" | "sockets"
+> {
   /** Granted-channel bearer for `env.EVENTS.publish`; stripped before dispatch. */
   eventsToken?: string;
   /** Named `[[databases]]` binding → database-only bearer for `/db/execute`. */
@@ -678,6 +903,8 @@ export interface BridgeContext extends Omit<GrantedContext, "databases" | "queue
   queues?: Record<string, string>;
   /** `[[kv_namespaces]]` binding → kv-only bearer for `/kv/*`. */
   kv?: Record<string, string>;
+  /** `[sockets]` binding → sockets-only bearer for `/sockets/*`. */
+  sockets?: Record<string, string>;
 }
 
 /** Job-runner bridge context: the durable job id plus {@link GrantedContext}. */
@@ -782,6 +1009,8 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
         merged[entry.name] = entry.kv;
       }
     }
+    const sockets = socketsTransportOf(context);
+    if (sockets) merged[sockets.name] = socketsBinding(sockets.sockets);
   }
   return Object.freeze(merged) as BookclerkEnv;
 }
@@ -839,6 +1068,19 @@ function transportDatabase(entry: GrantedDatabaseTransport): DatabaseBinding {
     ...(readLimits ? { limits: readLimits } : {}),
     ...(streamed ? { executeStreamed: streamed } : {}),
   });
+}
+
+/**
+ * The granted `[sockets]` entry of a context, if any.
+ *
+ * @param context - Granted context.
+ * @returns The binding name and the adapter's grant, or `undefined`.
+ */
+function socketsTransportOf(context: GrantedContext | undefined): NamedSockets | undefined {
+  const list = context && Array.isArray(context.sockets) ? context.sockets : [];
+  return list.find(
+    (entry) => entry && typeof entry.name === "string" && entry.name !== "" && entry.sockets,
+  );
 }
 
 function applyInvocationEnv(instance: object, context: GrantedContext | undefined): void {
@@ -1663,6 +1905,33 @@ export class BookclerkEntrypoint<
   job?(job: JobController): Promise<JobCompletion | void> | JobCompletion | void;
 
   /**
+   * `[sockets]` handler, the Workers `webSocketMessage(ws, message)`: one
+   * message arrived on a host-brokered socket while the plugin may have been
+   * asleep. `ws` carries the socket's id and its attachment as it was when
+   * the message arrived. Throwing reports the failure to the host; the
+   * socket stays open. Return `{ pollEvents: true }` when the message
+   * announced something `pollEvents` hands over (a new user), and the host
+   * polls now instead of at its next scheduled poll.
+   */
+  webSocketMessage?(
+    ws: HostWebSocket,
+    message: SocketMessageData,
+  ): Promise<Partial<SocketMessageOk> | void> | Partial<SocketMessageOk> | void;
+
+  /**
+   * `[sockets]` handler, the Workers `webSocketClose(ws, code, reason,
+   * wasClean)`: a host-brokered socket closed, by the server, the network,
+   * or the host (1006 when the connection dropped or the host stopped the
+   * socket's broker). The socket's id is never reused.
+   */
+  webSocketClose?(
+    ws: HostWebSocket,
+    code: number,
+    reason: string,
+    wasClean: boolean,
+  ): Promise<void> | void;
+
+  /**
    * Complete ordered plugin-owned migration sequence for one named binding.
    * The host calls this at binding initialization, before ordinary execute.
    */
@@ -1751,6 +2020,57 @@ export class BookclerkEntrypoint<
     }
     applyInvocationEnv(this, context);
     await this.scheduled(scheduledControllerOf(wire));
+  }
+
+  /**
+   * Adapter dispatch for `SocketHandler.message`.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wire - Wire `SocketMessage`.
+   * @returns What the handler asks of the host (`pollEvents`).
+   * @internal
+   */
+  async bookclerkSocketMessage(
+    context: GrantedContext,
+    wire: Partial<WireSocketMessage>,
+  ): Promise<SocketMessageOk> {
+    if (typeof this.webSocketMessage !== "function") {
+      throw unsupported("webSocketMessage");
+    }
+    applyInvocationEnv(this, context);
+    const ws = hostWebSocketOf(socketsTransportOf(context)?.sockets, {
+      socket: wire?.socket,
+      attachment: wire?.attachment,
+    });
+    const asked = await this.webSocketMessage(ws, socketMessageData(wire?.frame));
+    return { pollEvents: asked?.pollEvents === true };
+  }
+
+  /**
+   * Adapter dispatch for `SocketHandler.closed`. Without a
+   * `webSocketClose` handler the close is acknowledged and ignored.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wire - Wire `SocketClosed`.
+   * @returns Resolves when the author's handler completes.
+   * @internal
+   */
+  async bookclerkSocketClosed(
+    context: GrantedContext,
+    wire: Partial<WireSocketClosed>,
+  ): Promise<void> {
+    if (typeof this.webSocketClose !== "function") return;
+    applyInvocationEnv(this, context);
+    const ws = hostWebSocketOf(socketsTransportOf(context)?.sockets, {
+      socket: wire?.socket,
+      attachment: wire?.attachment,
+    });
+    await this.webSocketClose(
+      ws,
+      Number(wire?.code ?? 0) || 0,
+      String(wire?.reason ?? ""),
+      wire?.clean === true,
+    );
   }
 
   /**
@@ -1860,6 +2180,32 @@ export class NamedEntrypoint<
  * and a store without a bulk endpoint still returns the titles it priced.
  */
 export const PURCHASE_HINTS_BUDGET_MS = 4_000;
+
+/**
+ * How many one-title lookups the default `purchaseHints` keeps in flight
+ * at once. A store without a bulk endpoint answers a page of cards in
+ * about a quarter of the time one lookup after another takes, while
+ * staying a polite handful of requests rather than a burst.
+ */
+export const PURCHASE_HINTS_CONCURRENCY = 4;
+
+/**
+ * A purchase-hint answer that carries the priced listings a title search
+ * matched, for a host that asked with `lookup = "title"`.
+ *
+ * Return it from {@link StorefrontEntrypoint.purchaseHint} (or as an entry
+ * of {@link StorefrontEntrypoint.purchaseHints}) instead of a bare
+ * {@link PurchaseHint} when the store's search returned more than one
+ * listing: the host places each record in its library model by
+ * identifiers, credits and kinds, and keeps only the recording it asked
+ * for. `hint` stays the store's own pick for hosts that ignore records.
+ */
+export interface PurchaseHintAnswer {
+  /** The store's own pick, or `null` when it found nothing. */
+  hint: PurchaseHint | null;
+  /** Every priced listing the search matched, with its full catalog record. */
+  records: PricedRecord[];
+}
 
 const STOREFRONT_METHODS = Object.freeze([
   "login",
@@ -1972,37 +2318,64 @@ export class StorefrontEntrypoint<
   /**
    * Purchase link / price hint; `null` when the title is unknown.
    *
-   * @param _params - Title identifiers.
-   * @returns Hint or `null`.
+   * `params.lookup` says how the host names the title: `"isbn"` or
+   * `"asin"` (sent only when `describe().catalog` declares `priceByIsbn` /
+   * `priceByAsin`) want that exact edition or `null`, never a title match;
+   * `"product"` names the store's own product; `"title"` asks for a search
+   * by title and authors, answered best with a {@link PurchaseHintAnswer}
+   * listing every priced result; `"unspecified"` (older hosts) leaves the
+   * choice to the store.
+   *
+   * @param _params - Title identifiers and how to look the title up.
+   * @returns Hint, an answer with title-search records, or `null`.
    */
-  purchaseHint(_params: PurchaseHintParams): Promise<PurchaseHint | null> {
+  purchaseHint(_params: PurchaseHintParams): Promise<PurchaseHint | PurchaseHintAnswer | null> {
     return Promise.reject(unsupported("purchaseHint"));
   }
   /**
    * Purchase links / price hints for several titles in one call, one
    * answer per query in order. The default asks {@link purchaseHint} for
-   * each query, those with a product id first, and stops starting lookups
-   * after {@link PURCHASE_HINTS_BUDGET_MS}; a store whose catalog prices
+   * each query, {@link PURCHASE_HINTS_CONCURRENCY} at a time, those with a
+   * product id first, and stops starting lookups after
+   * {@link PURCHASE_HINTS_BUDGET_MS}; a store whose catalog prices
    * many products per request overrides this to make one request. Reject with a
    * `rate_limited` {@link PluginError} (its `details.retryAfterMs` says how
    * long) when the store asks to slow down, so the host leaves it alone.
    *
    * @param params - The titles to price, in order.
-   * @returns One hint or `null` per query.
+   * @returns One hint, answer with records, or `null` per query.
    */
-  async purchaseHints(params: PurchaseHintsParams): Promise<Array<PurchaseHint | null>> {
+  async purchaseHints(
+    params: PurchaseHintsParams,
+  ): Promise<Array<PurchaseHint | PurchaseHintAnswer | null>> {
     const started = Date.now();
-    const out: Array<PurchaseHint | null> = params.queries.map(() => null);
+    const out: Array<PurchaseHint | PurchaseHintAnswer | null> = params.queries.map(() => null);
     // Queries that already name a product id are one lookup each; title
     // searches come after, and nothing starts past the budget.
     const order = params.queries
       .map((query, i) => ({ i, direct: Boolean(query.productId?.trim()) }))
       .sort((a, b) => Number(b.direct) - Number(a.direct))
       .map((entry) => entry.i);
-    for (const i of order) {
-      if (Date.now() - started >= PURCHASE_HINTS_BUDGET_MS) break;
-      out[i] = await this.purchaseHint(params.queries[i]);
-    }
+    // A few lanes take the next query in order; the first failure (a rate
+    // limit included) rejects the batch.
+    let next = 0;
+    // Set by the first failure, so the other lanes take on no new query
+    // (a rate limit must not be followed by more requests).
+    let failed = false;
+    const lane = async (): Promise<void> => {
+      while (next < order.length && !failed) {
+        if (Date.now() - started >= PURCHASE_HINTS_BUDGET_MS) return;
+        const i = order[next++];
+        try {
+          out[i] = await this.purchaseHint(params.queries[i]);
+        } catch (err) {
+          failed = true;
+          throw err;
+        }
+      }
+    };
+    const lanes = Math.min(PURCHASE_HINTS_CONCURRENCY, order.length);
+    await Promise.all(Array.from({ length: lanes }, lane));
     return out;
   }
   /**
@@ -2062,6 +2435,11 @@ const STORAGE_METHODS = Object.freeze([
   "delete",
   "commit",
   "abortStage",
+  "move",
+  "moveMany",
+  "deleteMany",
+  "headMany",
+  "changes",
 ]);
 
 /**
@@ -2155,6 +2533,60 @@ export class StorageEntrypoint<
    */
   abortStage(_key: string, _commitToken: string): Promise<void> {
     return Promise.reject(unsupported("abortStage"));
+  }
+
+  /**
+   * Move one object (declare `storage.move`). Repeating a finished move
+   * resolves with `alreadyMoved`.
+   *
+   * @param _from - Source key.
+   * @param _to - Target key.
+   * @param _options - Overwrite and source preconditions.
+   * @returns How the move was done.
+   */
+  move(_from: string, _to: string, _options: MoveOptions): Promise<MoveResult> {
+    return Promise.reject(unsupported("move"));
+  }
+
+  /**
+   * Move a set of objects or a whole prefix, one page per call (declare
+   * `storage.moveMany`). Safe to repeat.
+   *
+   * @param _request - Pairs or prefix, cursor, and options.
+   * @returns Per-key outcomes and the continuation.
+   */
+  moveMany(_request: MoveManyRequest): Promise<MoveManyPage> {
+    return Promise.reject(unsupported("moveMany"));
+  }
+
+  /**
+   * Remove up to `MAX_BATCH_KEYS` objects (declare `storage.deleteMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One outcome per key, in order; a missing key succeeds.
+   */
+  deleteMany(_keys: string[]): Promise<KeyOutcome[]> {
+    return Promise.reject(unsupported("deleteMany"));
+  }
+
+  /**
+   * Probe up to `MAX_BATCH_KEYS` objects (declare `storage.headMany`).
+   *
+   * @param _keys - Object keys.
+   * @returns One entry per key, in order; `null` when missing.
+   */
+  headMany(_keys: string[]): Promise<(ObjectMetadata | null)[]> {
+    return Promise.reject(unsupported("headMany"));
+  }
+
+  /**
+   * Keys changed since a cursor (declare `storage.changes`).
+   *
+   * @param _request - Cursor and page size.
+   * @returns One page of changes.
+   */
+  changes(_request: ChangesRequest): Promise<ChangesPage> {
+    return Promise.reject(unsupported("changes"));
   }
 }
 
@@ -2491,6 +2923,52 @@ export class CoverEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends Na
   }
 }
 
+/**
+ * `metadataFiles` entrypoint (`MetadataFiles`): reads and writes metadata
+ * files (sidecars such as `metadata.json`, OPF, NFO or CUE) for the host. The
+ * host reads every file, chooses every path and writes every result, so the
+ * entrypoint only converts bytes. Each dialect is a
+ * `[[metadata_files.dialects]]` row in `plugin.toml`; `params.dialect` names
+ * the row. Export it as `export class MetadataFiles extends MetadataFilesEntrypoint`.
+ */
+export class MetadataFilesEntrypoint<
+  Env extends BookclerkEnv = BookclerkEnv,
+> extends NamedEntrypoint<Env> {
+  static override bookclerkMethods = Object.freeze(["health", "parse", "render"]);
+
+  /**
+   * Reports whether the dialects can answer.
+   *
+   * @returns Health flag plus detail.
+   */
+  health(): Promise<HealthOk> {
+    return Promise.resolve({ ok: true, detail: "" });
+  }
+  /**
+   * What one file says about its edition. List every field the file states
+   * in `present`, including ones it states as empty; leave out fields it
+   * does not mention. Throw `invalid_params` for a file the dialect cannot
+   * read.
+   *
+   * @param _params - Dialect id, file name and the whole file.
+   * @returns The parsed record.
+   */
+  parse(_params: MetadataFileParseParams): Promise<MetadataFileRecord> {
+    return Promise.reject(unsupported("parse"));
+  }
+  /**
+   * The new file: `params.existing` with each field in `params.fields` set to
+   * the record's value (removed when the value is empty), everything else
+   * kept as it was. `existing` is empty when the host creates the file.
+   *
+   * @param _params - Dialect id, values, fields to set and the current file.
+   * @returns The new file's bytes; a string is written as UTF-8.
+   */
+  render(_params: MetadataFileRenderParams): Promise<Uint8Array | string> {
+    return Promise.reject(unsupported("render"));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Adapter isolate (trusted; owns GRANTED / BRIDGE_TOKEN / PLUGIN_DESCRIBE)
 // ---------------------------------------------------------------------------
@@ -2504,7 +2982,8 @@ export type EntrypointName =
   | "cli"
   | "oidc"
   | "metadata"
-  | "covers";
+  | "covers"
+  | "metadataFiles";
 
 /** Adapter binding name for each named entrypoint. */
 export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Object.freeze({
@@ -2516,6 +2995,7 @@ export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Obj
   oidc: "PLUGIN_OIDC",
   metadata: "PLUGIN_METADATA",
   covers: "PLUGIN_COVERS",
+  metadataFiles: "PLUGIN_METADATA_FILES",
 });
 
 /** Exported class name the launcher binds for each named entrypoint. */
@@ -2528,6 +3008,7 @@ export const ENTRYPOINT_CLASSES: Readonly<Record<EntrypointName, string>> = Obje
   oidc: "Oidc",
   metadata: "Metadata",
   covers: "Covers",
+  metadataFiles: "MetadataFiles",
 });
 
 /** Reverse-channel fetcher bound as `GRANTED` on the adapter isolate. */
@@ -2549,6 +3030,8 @@ export type AuthorStub = Pick<
   | "bookclerkEvent"
   | "bookclerkQueue"
   | "bookclerkScheduled"
+  | "bookclerkSocketMessage"
+  | "bookclerkSocketClosed"
   | "bookclerkJob"
   | "bookclerkDatabaseMigrations"
   | "bookclerkShutdown"
@@ -2668,6 +3151,14 @@ class GrantedDestination extends Destination {
     body: ReadableStream<Uint8Array>,
     options?: WriteOptions,
   ): Promise<PutResult> {
+    // The granted channel carries no preconditions yet; refuse a conditional
+    // write rather than silently overwrite.
+    if (options?.ifMatch || options?.ifNoneMatch) {
+      throw PluginError.fromWire(
+        "unsupported",
+        "conditional writes are not supported on granted destinations",
+      );
+    }
     const headers: Record<string, string> = { ...this.#auth };
     if (options?.contentType) headers["content-type"] = options.contentType;
     if (options?.contentLength != null) {
@@ -3151,6 +3642,63 @@ class GrantedKv extends RpcTarget implements KvNamespaceBinding {
 }
 
 /**
+ * `[sockets]` grant handed to the author: the adapter exchanges the
+ * sockets-only grant token on `POST /sockets/<op>`, so the author isolate
+ * never holds the bearer. Every failure, including a channel that cannot be
+ * reached, comes back as an `err` value rather than a throw, so its code
+ * survives the Workers RPC hop to the author isolate.
+ */
+class GrantedSockets extends RpcTarget implements SocketsTransport {
+  /** Granted reverse channel that serves `POST /sockets/<op>`. */
+  #granted: GrantedFetcher;
+  /** `Authorization` header carrying the sockets-only grant token. */
+  #auth: Record<string, string>;
+
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the sockets grant.
+   */
+  constructor(granted: GrantedFetcher, auth: Record<string, string>) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+
+  /**
+   * Makes one `POST /sockets/<op>` call on the granted channel.
+   *
+   * @param op - Operation, the path segment after `/sockets/`.
+   * @param body - That operation's JSON fields, bytes already base64.
+   * @returns `{ ok }` with the route's reply body, or `{ err }` with the
+   *   host's code (`unavailable` when the channel cannot be reached,
+   *   `internal` for a reply that is not JSON); never throws.
+   */
+  async call(op: SocketOp, body: Record<string, unknown>): Promise<SocketTransportReply> {
+    let resp: Response;
+    try {
+      resp = await this.#granted.fetch(`http://granted/sockets/${op}`, {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      return { err: { code: "unavailable", message: `sockets ${op}: ${errorMessage(err)}` } };
+    }
+    const value = (await resp.json().catch(() => null)) as
+      (Record<string, unknown> & { error?: { code?: string; message?: string } }) | null;
+    if (value && value.error) {
+      return {
+        err: { code: value.error.code || "internal", message: value.error.message || "" },
+      };
+    }
+    if (!resp.ok || !value || typeof value !== "object") {
+      return { err: { code: "internal", message: `sockets ${op} HTTP ${resp.status}` } };
+    }
+    return { ok: value };
+  }
+}
+
+/**
  * Named `[[databases]]` binding transport handed to the author: the adapter
  * exchanges the binding's database-only grant token on `POST /db/execute`,
  * so the author isolate never holds the bearer itself. ABI failures come
@@ -3508,12 +4056,16 @@ export function wrapPluginFromNative() {
 
 /** Wire names of the trigger families the launcher may ask `openInvocation` about. */
 export const TRIGGER_FAMILIES: Readonly<
-  Record<"eventConsumer" | "queueConsumer" | "scheduledHandler" | "jobRunner", string>
+  Record<
+    "eventConsumer" | "queueConsumer" | "scheduledHandler" | "jobRunner" | "socketHandler",
+    string
+  >
 > = Object.freeze({
   eventConsumer: "eventConsumer",
   queueConsumer: "queueConsumer",
   scheduledHandler: "scheduledHandler",
   jobRunner: "jobRunner",
+  socketHandler: "socketHandler",
 });
 
 /**
@@ -3541,6 +4093,7 @@ export function scheduledControllerOf(
  * capabilities: named entrypoints must be declared in `entrypoints`,
  * `eventConsumer` needs a non-empty `consumes`, `queueConsumer` needs a
  * non-empty `queueConsumers`, `scheduledHandler` needs a non-empty `crons`,
+ * `socketHandler` needs `sockets` (`[sockets]` in the manifest),
  * and `jobRunner` needs `jobs` or the `storage`
  * entrypoint (storage guests run the host `stream_copy` job). Unknown names
  * and a missing manifest fail closed.
@@ -3573,6 +4126,8 @@ export function allowedEntrypointFamilies(
       if (crons.length > 0) out.push(name);
     } else if (name === TRIGGER_FAMILIES.jobRunner) {
       if (jobs.length > 0 || exportsStorage) out.push(name);
+    } else if (name === TRIGGER_FAMILIES.socketHandler) {
+      if (capabilities.sockets === true) out.push(name);
     } else if (name in ENTRYPOINT_BINDINGS && entrypoints.includes(name as EntrypointName)) {
       out.push(name);
     }
@@ -3649,7 +4204,7 @@ function createInvocationAdapter() {
      */
     #bindContext(ctx: BridgeContext | undefined): GrantedContext {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, databases, queues, kv, ...rest } = source;
+      const { eventsToken, databases, queues, kv, sockets, ...rest } = source;
       const bound: GrantedContext = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
@@ -3686,6 +4241,17 @@ function createInvocationAdapter() {
           named.push({ name, kv: new GrantedKv(granted, { Authorization: `Bearer ${token}` }) });
         }
         if (named.length > 0) bound.kv = named;
+      }
+      if (sockets && typeof sockets === "object" && !Array.isArray(sockets) && granted) {
+        const named: NamedSockets[] = [];
+        for (const [name, token] of Object.entries(sockets)) {
+          if (!name || typeof token !== "string" || !token) continue;
+          named.push({
+            name,
+            sockets: new GrantedSockets(granted, { Authorization: `Bearer ${token}` }),
+          });
+        }
+        if (named.length > 0) bound.sockets = named.slice(0, 1);
       }
       return bound;
     }

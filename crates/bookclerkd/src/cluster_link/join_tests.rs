@@ -358,42 +358,39 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // "Use this computer to download" off: the link becomes a window, the
-    // other settings keep their values, and the window view lists it.
-    let (status, _, window) = call(&host, "GET", "/api/config/join/window", None).await;
-    assert_eq!(status, StatusCode::OK, "{window}");
-    assert_eq!(window["clusters"], json!([]));
-    let (status, _, windowed) = call(
-        &host,
-        "POST",
-        "/api/config/join/sharing",
-        Some(json!({ "cluster_id": cluster_id, "share_books": false, "include_branches": true, "download": false })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{windowed}");
-    assert_eq!(windowed["cluster"]["download"], false);
-    assert_eq!(windowed["cluster"]["share_books"], false);
-    assert_eq!(
-        windowed["cluster"]["list_members_books"], false,
-        "left as it is"
-    );
+    // "Keep copies on this computer" off: the other settings keep their
+    // values, and Books in other libraries lists the link either way.
     let (status, headers, window) = call(&host, "GET", "/api/config/join/window", None).await;
     assert_eq!(status, StatusCode::OK, "{window}");
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
     assert_eq!(window["clusters"][0]["cluster_id"], cluster_id.as_str());
-    assert_eq!(window["clusters"][0]["download"], false);
+    assert_eq!(window["clusters"][0]["keep_copies"], true);
     assert!(window["books"].is_array(), "{window}");
-    let (status, _, downloading) = call(
+    let (status, _, kept) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({ "cluster_id": cluster_id, "share_books": false, "include_branches": true, "keep_copies": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    assert_eq!(kept["cluster"]["keep_copies"], false);
+    assert_eq!(kept["cluster"]["share_books"], false);
+    assert_eq!(
+        kept["cluster"]["list_members_books"], false,
+        "left as it is"
+    );
+    let (_, _, window) = call(&host, "GET", "/api/config/join/window", None).await;
+    assert_eq!(window["clusters"][0]["keep_copies"], false);
+    // The old name is refused.
+    let (status, _, refused) = call(
         &host,
         "POST",
         "/api/config/join/sharing",
         Some(json!({ "cluster_id": cluster_id, "share_books": false, "include_branches": true, "download": true })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{downloading}");
-    assert_eq!(downloading["cluster"]["download"], true);
-    let (_, _, window) = call(&host, "GET", "/api/config/join/window", None).await;
-    assert_eq!(window["clusters"], json!([]));
+    assert!(status.is_client_error(), "{refused}");
 
     // Settings → Library's job cap: the running link's share follows it.
     let (status, _, listed) = call(&host, "GET", "/api/config/join/sharing", None).await;
@@ -747,9 +744,12 @@ async fn an_empty_install_joins_as_a_shared_branch_and_takes_the_librarys_bootst
     let node_id = joined["node_id"].as_str().unwrap().to_string();
     let cluster_id = joined["cluster_id"].as_str().unwrap().to_string();
 
-    // The library recorded an owner node; the joiner holds its bootstrap.
+    // The library recorded a shared node; the joiner holds its bootstrap.
     let node = load_node(&owner_store, &node_id).await.unwrap();
-    assert_eq!(node.kind, bookclerk_library::control_plane::NodeKind::Owner);
+    assert_eq!(
+        node.kind,
+        bookclerk_library::control_plane::NodeKind::Shared
+    );
     assert!(load_node_credential(&owner_store, &node_id)
         .await
         .unwrap()

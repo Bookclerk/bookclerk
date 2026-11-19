@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-node-proto"
-description = "Host-node protocol: node API frames, handshake signatures, key checks, and sealed boxes"
+description = "Branch-node protocol: node API frames, handshake signatures, key checks, and sealed boxes"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

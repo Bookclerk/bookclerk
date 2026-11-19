@@ -1,11 +1,11 @@
 //! The host side of the node API (H-4 design, sections 2 to 4; step 7).
 //!
-//! A host node is a separate Bookclerk install that enrolled into an owner
+//! A branch node is a separate Bookclerk install that enrolled into an owner
 //! cluster with a single-use link ([`join_cluster`]) or a sign-in at the
 //! owner ([`inspect_library`], [`authorize_branch`],
 //! [`redeem_branch_code`]); it tells the owner when it leaves
 //! ([`announce_leaving`]). An empty install may instead join as a shared branch, an
-//! owner node that shares the library's database and DEK
+//! shared node that shares the library's database and DEK
 //! ([`redeem_shared_branch_code`], [`apply_shared_branch_bootstrap`]). Its node keys are
 //! sealed in its own database
 //! (`bookclerk_library::control_plane::record_cluster_link`). For every
@@ -39,11 +39,24 @@
 //!   [`HostJobCtx::upload_file`], [`HostJobCtx::commit_upload`]); the job
 //!   completes with its closing upload's commit.
 //!
+//! A branch may also take the copy the library already holds of an
+//! edition: [`HostClientHandle::copy_grant`] asks for it and
+//! [`HostClientHandle::fetch_copy_file`] downloads each file, resuming a
+//! download that was cut short ([`fetch_copy_file`] is the same download
+//! for a clerk, which holds a plain token).
+//!
+//! An install may instead sign in to a library as a clerk, holding a
+//! library card for its person rather than node keys ([`authorize_clerk`],
+//! [`redeem_clerk_code`]); the daemon reads the person's books over the
+//! library's clerk socket ([`OwnerEndpoint::connect_clerk_socket`]).
+//!
 //! The consent decisions themselves (which plugins, which grant) and how a
 //! job runs its guest are the daemon's.
 
 mod branch;
+mod clerk;
 mod client;
+mod copies;
 mod endpoint;
 mod enroll;
 mod jobs;
@@ -54,19 +67,21 @@ pub use branch::{
     keep_brought_connections, library_origin, redeem_branch_code, BranchAuthorization,
     BranchRedeem, BroughtConnections, InspectedLibrary, RedeemedBranch,
 };
+pub use clerk::{authorize_clerk, redeem_clerk_code, ClerkAuthorization, ClerkRedeem};
 pub use client::{
     CatalogBatchAccepted, CatalogSession, ClientExit, ClientTiming, HeartbeatSource, HostClient,
     HostClientConfig, HostClientHandle, OfferedAccounts, AWAITING_HOST_CONSENT, KIND_NOT_RUN_HERE,
     MAX_ARTIFACT_BYTES, MAX_LEASE, SECRETS_UNOPENABLE,
 };
+pub use copies::{fetch_copy_file, CopyFetchError};
 pub use endpoint::{
-    DialError, OwnerEndpoint, OwnerIo, OwnerSocket, TlsProbe, CONNECT_PATH, ENROLL_OAUTH_PATH,
-    ENROLL_PATH, INFO_PATH,
+    CopyStreamError, DialError, OwnerEndpoint, OwnerIo, OwnerSocket, SocketMessage, TlsProbe,
+    CONNECT_PATH, ENROLL_OAUTH_PATH, ENROLL_PATH, INFO_PATH,
 };
 pub use enroll::{check_join_ancestry, join_cluster, refuse_cycle, JoinError};
 pub use jobs::{
-    HandedSecrets, HostJob, HostJobCtx, HostJobError, HostJobRunner, HostUpload, OwnerCallError,
-    WriteBackError,
+    GrantedCopy, HandedSecrets, HostJob, HostJobCtx, HostJobError, HostJobRunner, HostUpload,
+    OwnerCallError, WriteBackError,
 };
 pub use shared_branch::{
     apply_shared_branch_bootstrap, bootstrap_database_kind, checked_d1_api_base,

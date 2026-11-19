@@ -962,7 +962,7 @@
       "name": "Bindings",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 9,
+      "pointerCount": 10,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -1064,6 +1064,16 @@
             }
           },
           "offset": 8
+        },
+        {
+          "name": "sockets",
+          "codeOrder": 9,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "Sockets"
+          },
+          "offset": 9
         }
       ]
     },
@@ -1261,6 +1271,24 @@
             "kind": "bool"
           },
           "offset": 0
+        },
+        {
+          "name": "priceByIsbn",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 1
+        },
+        {
+          "name": "priceByAsin",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 2
         }
       ]
     },
@@ -1659,6 +1687,123 @@
           "type": {
             "kind": "struct",
             "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "ChangesPage": {
+      "name": "ChangesPage",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "changes",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "ObjectChange"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "cursor",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "more",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        },
+        {
+          "name": "complete",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 1
+        },
+        {
+          "name": "liveWatch",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "ChangesReply": {
+      "name": "ChangesReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "ChangesPage"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "ChangesRequest": {
+      "name": "ChangesRequest",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "cursor",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "limit",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
           },
           "offset": 0
         }
@@ -3873,6 +4018,59 @@
         }
       ]
     },
+    "DeleteManyReply": {
+      "name": "DeleteManyReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "DeleteManyResult"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "DeleteManyResult": {
+      "name": "DeleteManyResult",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "results",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "KeyOutcome"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
     "DescribeReply": {
       "name": "DescribeReply",
       "file": "plugin.capnp",
@@ -3946,6 +4144,46 @@
           "type": {
             "kind": "struct",
             "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Destination.changes$Params": {
+      "name": "Destination.changes$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "ChangesRequest"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Destination.changes$Results": {
+      "name": "Destination.changes$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "ChangesReply"
           },
           "offset": 0
         }
@@ -4086,6 +4324,48 @@
         }
       ]
     },
+    "Destination.deleteMany$Params": {
+      "name": "Destination.deleteMany$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "keys",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Destination.deleteMany$Results": {
+      "name": "Destination.deleteMany$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "DeleteManyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "Destination.get$Params": {
       "name": "Destination.get$Params",
       "file": "plugin.capnp",
@@ -4174,6 +4454,48 @@
         }
       ]
     },
+    "Destination.headMany$Params": {
+      "name": "Destination.headMany$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "keys",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Destination.headMany$Results": {
+      "name": "Destination.headMany$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "HeadManyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "Destination.list$Params": {
       "name": "Destination.list$Params",
       "file": "plugin.capnp",
@@ -4209,6 +4531,104 @@
           "type": {
             "kind": "struct",
             "name": "ListReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Destination.move$Params": {
+      "name": "Destination.move$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "from",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "to",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "options",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MoveOptions"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "Destination.move$Results": {
+      "name": "Destination.move$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MoveReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Destination.moveMany$Params": {
+      "name": "Destination.moveMany$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MoveManyRequest"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Destination.moveMany$Results": {
+      "name": "Destination.moveMany$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MoveManyReply"
           },
           "offset": 0
         }
@@ -4503,7 +4923,7 @@
       "name": "Entrypoints",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 12,
+      "pointerCount": 14,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -4626,6 +5046,26 @@
             "name": "CoverFetcher"
           },
           "offset": 11
+        },
+        {
+          "name": "socketHandler",
+          "codeOrder": 12,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "SocketHandler"
+          },
+          "offset": 12
+        },
+        {
+          "name": "metadataFiles",
+          "codeOrder": 13,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "MetadataFiles"
+          },
+          "offset": 13
         }
       ]
     },
@@ -6373,6 +6813,59 @@
         }
       ]
     },
+    "HeadManyReply": {
+      "name": "HeadManyReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "HeadManyResult"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "HeadManyResult": {
+      "name": "HeadManyResult",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "objects",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "HeadOk"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
     "HeadOk": {
       "name": "HeadOk",
       "file": "plugin.capnp",
@@ -7061,6 +7554,63 @@
         }
       ]
     },
+    "KeyOutcome": {
+      "name": "KeyOutcome",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "key",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "error",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "KeyPair": {
+      "name": "KeyPair",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "from",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "to",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
     "KvDeleteOk": {
       "name": "KvDeleteOk",
       "file": "plugin.capnp",
@@ -7615,7 +8165,7 @@
     "ListOptions": {
       "name": "ListOptions",
       "file": "plugin.capnp",
-      "dataWords": 1,
+      "dataWords": 2,
       "pointerCount": 2,
       "discriminantCount": 0,
       "discriminantOffset": 0,
@@ -7646,13 +8196,31 @@
             "kind": "uint32"
           },
           "offset": 0
+        },
+        {
+          "name": "withSignatures",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 32
+        },
+        {
+          "name": "modifiedSinceMs",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
         }
       ]
     },
     "ListPage": {
       "name": "ListPage",
       "file": "plugin.capnp",
-      "dataWords": 0,
+      "dataWords": 1,
       "pointerCount": 2,
       "discriminantCount": 0,
       "discriminantOffset": 0,
@@ -7676,6 +8244,24 @@
           "discriminantValue": null,
           "type": {
             "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "signaturesIncluded",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        },
+        {
+          "name": "modifiedSinceApplied",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
           },
           "offset": 1
         }
@@ -8151,6 +8737,34 @@
         }
       ]
     },
+    "MetadataAudioFile": {
+      "name": "MetadataAudioFile",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "durationMs",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "MetadataChapter": {
       "name": "MetadataChapter",
       "file": "plugin.capnp",
@@ -8322,6 +8936,510 @@
           "type": {
             "kind": "struct",
             "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFileParseParams": {
+      "name": "MetadataFileParseParams",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "dialect",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "fileName",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "bytes",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "MetadataFileParseReply": {
+      "name": "MetadataFileParseReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileParsed"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFileParsed": {
+      "name": "MetadataFileParsed",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "record",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileRecord"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFileRecord": {
+      "name": "MetadataFileRecord",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 14,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "present",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "enum",
+              "name": "MetadataField"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "title",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "subtitle",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        },
+        {
+          "name": "description",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
+        },
+        {
+          "name": "publisher",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 4
+        },
+        {
+          "name": "publishedAt",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 5
+        },
+        {
+          "name": "language",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 6
+        },
+        {
+          "name": "genres",
+          "codeOrder": 7,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 7
+        },
+        {
+          "name": "tags",
+          "codeOrder": 8,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 8
+        },
+        {
+          "name": "abridgement",
+          "codeOrder": 9,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "Abridgement"
+          },
+          "offset": 0
+        },
+        {
+          "name": "expressionKind",
+          "codeOrder": 10,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "ExpressionKind"
+          },
+          "offset": 1
+        },
+        {
+          "name": "identifiers",
+          "codeOrder": 11,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "Identifier"
+            }
+          },
+          "offset": 9
+        },
+        {
+          "name": "credits",
+          "codeOrder": 12,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "Credit"
+            }
+          },
+          "offset": 10
+        },
+        {
+          "name": "creditRoles",
+          "codeOrder": 13,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "enum",
+              "name": "CreditRole"
+            }
+          },
+          "offset": 11
+        },
+        {
+          "name": "seriesEntries",
+          "codeOrder": 14,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "SeriesEntry"
+            }
+          },
+          "offset": 12
+        },
+        {
+          "name": "chapters",
+          "codeOrder": 15,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "MetadataChapter"
+            }
+          },
+          "offset": 13
+        },
+        {
+          "name": "durationMs",
+          "codeOrder": 16,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "MetadataFileRenderParams": {
+      "name": "MetadataFileRenderParams",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 5,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "dialect",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "record",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileRecord"
+          },
+          "offset": 1
+        },
+        {
+          "name": "fields",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "enum",
+              "name": "MetadataField"
+            }
+          },
+          "offset": 2
+        },
+        {
+          "name": "existing",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 3
+        },
+        {
+          "name": "audioFiles",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "MetadataAudioFile"
+            }
+          },
+          "offset": 4
+        }
+      ]
+    },
+    "MetadataFileRenderReply": {
+      "name": "MetadataFileRenderReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileRendered"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFileRendered": {
+      "name": "MetadataFileRendered",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "bytes",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFiles.health$Params": {
+      "name": "MetadataFiles.health$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "MetadataFiles.health$Results": {
+      "name": "MetadataFiles.health$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "HealthReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFiles.parse$Params": {
+      "name": "MetadataFiles.parse$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileParseParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFiles.parse$Results": {
+      "name": "MetadataFiles.parse$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileParseReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFiles.render$Params": {
+      "name": "MetadataFiles.render$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileRenderParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataFiles.render$Results": {
+      "name": "MetadataFiles.render$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataFileRenderReply"
           },
           "offset": 0
         }
@@ -8822,6 +9940,253 @@
         }
       ]
     },
+    "MoveManyPage": {
+      "name": "MoveManyPage",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "results",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "KeyOutcome"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "nextCursor",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "atomic",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        },
+        {
+          "name": "objectsMoved",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "MoveManyReply": {
+      "name": "MoveManyReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "MoveManyPage"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MoveManyRequest": {
+      "name": "MoveManyRequest",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "target",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MoveManyTarget"
+          },
+          "offset": 0
+        },
+        {
+          "name": "cursor",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "limit",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 0
+        },
+        {
+          "name": "options",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MoveOptions"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "MoveManyTarget": {
+      "name": "MoveManyTarget",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "pairs",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "KeyPair"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "prefix",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "KeyPair"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MoveOptions": {
+      "name": "MoveOptions",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "noOverwrite",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        },
+        {
+          "name": "ifSourceMatch",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MoveReply": {
+      "name": "MoveReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "MoveResult"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MoveResult": {
+      "name": "MoveResult",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "atomic",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        },
+        {
+          "name": "alreadyMoved",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 1
+        }
+      ]
+    },
     "NamedDatabase": {
       "name": "NamedDatabase",
       "file": "plugin.capnp",
@@ -8956,11 +10321,50 @@
         }
       ]
     },
+    "ObjectChange": {
+      "name": "ObjectChange",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "key",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "kind",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "ObjectChangeKind"
+          },
+          "offset": 0
+        },
+        {
+          "name": "info",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "ObjectInfo"
+          },
+          "offset": 1
+        }
+      ]
+    },
     "ObjectInfo": {
       "name": "ObjectInfo",
       "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 1,
+      "dataWords": 2,
+      "pointerCount": 4,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -8981,14 +10385,50 @@
             "kind": "uint64"
           },
           "offset": 0
+        },
+        {
+          "name": "etag",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "modifiedAtMs",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        },
+        {
+          "name": "versionId",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        },
+        {
+          "name": "signature",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
         }
       ]
     },
     "ObjectMetadata": {
       "name": "ObjectMetadata",
       "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 4,
+      "dataWords": 2,
+      "pointerCount": 6,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -9036,6 +10476,33 @@
             "kind": "data"
           },
           "offset": 3
+        },
+        {
+          "name": "modifiedAtMs",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        },
+        {
+          "name": "versionId",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 4
+        },
+        {
+          "name": "signature",
+          "codeOrder": 7,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 5
         }
       ]
     },
@@ -9421,7 +10888,7 @@
     "PluginCapabilities": {
       "name": "PluginCapabilities",
       "file": "plugin.capnp",
-      "dataWords": 0,
+      "dataWords": 1,
       "pointerCount": 9,
       "discriminantCount": 0,
       "discriminantOffset": 0,
@@ -9535,6 +11002,15 @@
             }
           },
           "offset": 8
+        },
+        {
+          "name": "sockets",
+          "codeOrder": 9,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
         }
       ]
     },
@@ -10139,6 +11615,36 @@
         }
       ]
     },
+    "PricedRecord": {
+      "name": "PricedRecord",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "record",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "CatalogHit"
+          },
+          "offset": 0
+        },
+        {
+          "name": "hint",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "PurchaseHint"
+          },
+          "offset": 1
+        }
+      ]
+    },
     "ProgressSink.report$Params": {
       "name": "ProgressSink.report$Params",
       "file": "plugin.capnp",
@@ -10473,6 +11979,16 @@
             "kind": "bool"
           },
           "offset": 0
+        },
+        {
+          "name": "lookup",
+          "codeOrder": 7,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "PriceLookup"
+          },
+          "offset": 1
         }
       ]
     },
@@ -10510,7 +12026,7 @@
       "name": "PurchaseHintResult",
       "file": "plugin.capnp",
       "dataWords": 1,
-      "pointerCount": 1,
+      "pointerCount": 2,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -10532,6 +12048,19 @@
             "name": "PurchaseHint"
           },
           "offset": 0
+        },
+        {
+          "name": "records",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "PricedRecord"
+            }
+          },
+          "offset": 1
         }
       ]
     },
@@ -10644,8 +12173,8 @@
     "PutResult": {
       "name": "PutResult",
       "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 3,
+      "dataWords": 2,
+      "pointerCount": 5,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -10684,6 +12213,33 @@
             "kind": "data"
           },
           "offset": 2
+        },
+        {
+          "name": "modifiedAtMs",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        },
+        {
+          "name": "versionId",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
+        },
+        {
+          "name": "signature",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 4
         }
       ]
     },
@@ -12306,6 +13862,732 @@
         }
       ]
     },
+    "SocketAutoResponse": {
+      "name": "SocketAutoResponse",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketFrame"
+          },
+          "offset": 0
+        },
+        {
+          "name": "response",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketFrame"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "SocketClosed": {
+      "name": "SocketClosed",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "socket",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "code",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint16"
+          },
+          "offset": 0
+        },
+        {
+          "name": "reason",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "clean",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 16
+        },
+        {
+          "name": "attachment",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "SocketConnectReply": {
+      "name": "SocketConnectReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "SocketInfo"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketConnectRequest": {
+      "name": "SocketConnectRequest",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 5,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "url",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "protocols",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 1
+        },
+        {
+          "name": "headers",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "SocketHeader"
+            }
+          },
+          "offset": 2
+        },
+        {
+          "name": "autoResponses",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "SocketAutoResponse"
+            }
+          },
+          "offset": 3
+        },
+        {
+          "name": "attachment",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 4
+        }
+      ]
+    },
+    "SocketFrame": {
+      "name": "SocketFrame",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "text",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "binary",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketHandler.closed$Params": {
+      "name": "SocketHandler.closed$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "event",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketClosed"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketHandler.closed$Results": {
+      "name": "SocketHandler.closed$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketHandler.message$Params": {
+      "name": "SocketHandler.message$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "event",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketMessage"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketHandler.message$Results": {
+      "name": "SocketHandler.message$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketMessageReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketHeader": {
+      "name": "SocketHeader",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "value",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "SocketInfo": {
+      "name": "SocketInfo",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 4,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "socket",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "url",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "protocol",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        },
+        {
+          "name": "attachment",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 3
+        }
+      ]
+    },
+    "SocketList": {
+      "name": "SocketList",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "sockets",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "SocketInfo"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketListReply": {
+      "name": "SocketListReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "SocketList"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketMessage": {
+      "name": "SocketMessage",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "socket",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "frame",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketFrame"
+          },
+          "offset": 1
+        },
+        {
+          "name": "attachment",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "SocketMessageOk": {
+      "name": "SocketMessageOk",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "pollEvents",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketMessageReply": {
+      "name": "SocketMessageReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "SocketMessageOk"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Sockets.close$Params": {
+      "name": "Sockets.close$Params",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "socket",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "code",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint16"
+          },
+          "offset": 0
+        },
+        {
+          "name": "reason",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "Sockets.close$Results": {
+      "name": "Sockets.close$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Sockets.connect$Params": {
+      "name": "Sockets.connect$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketConnectRequest"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Sockets.connect$Results": {
+      "name": "Sockets.connect$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketConnectReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Sockets.list$Params": {
+      "name": "Sockets.list$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "Sockets.list$Results": {
+      "name": "Sockets.list$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketListReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Sockets.send$Params": {
+      "name": "Sockets.send$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "socket",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "frame",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketFrame"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "Sockets.send$Results": {
+      "name": "Sockets.send$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Sockets.setAttachment$Params": {
+      "name": "Sockets.setAttachment$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "socket",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "attachment",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "Sockets.setAttachment$Results": {
+      "name": "Sockets.setAttachment$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "Source.open$Params": {
       "name": "Source.open$Params",
       "file": "plugin.capnp",
@@ -12725,7 +15007,7 @@
       "name": "WriteOptions",
       "file": "plugin.capnp",
       "dataWords": 2,
-      "pointerCount": 3,
+      "pointerCount": 4,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -12773,6 +15055,24 @@
             "kind": "bool"
           },
           "offset": 64
+        },
+        {
+          "name": "ifMatch",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
+        },
+        {
+          "name": "ifNoneMatch",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 65
         }
       ]
     }
@@ -12885,7 +15185,8 @@
         "cli",
         "oidc",
         "metadata",
-        "covers"
+        "covers",
+        "metadataFiles"
       ]
     },
     "ExpressionKind": {
@@ -12949,6 +15250,36 @@
         "print"
       ]
     },
+    "MetadataField": {
+      "name": "MetadataField",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "title",
+        "subtitle",
+        "description",
+        "publisher",
+        "publishedAt",
+        "language",
+        "genres",
+        "tags",
+        "abridgement",
+        "expressionKind",
+        "identifiers",
+        "credits",
+        "series",
+        "chapters",
+        "duration"
+      ]
+    },
+    "ObjectChangeKind": {
+      "name": "ObjectChangeKind",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "changed",
+        "upserted",
+        "removed"
+      ]
+    },
     "PluginErrorCode": {
       "name": "PluginErrorCode",
       "file": "plugin.capnp",
@@ -12976,6 +15307,17 @@
         "unspecified",
         "password",
         "oauth"
+      ]
+    },
+    "PriceLookup": {
+      "name": "PriceLookup",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "unspecified",
+        "product",
+        "isbn",
+        "asin",
+        "title"
       ]
     },
     "ResolvedSqlType": {
@@ -13340,6 +15682,36 @@
           "ordinal": 7,
           "params": "Destination.abortStage$Params",
           "results": "Destination.abortStage$Results"
+        },
+        {
+          "name": "move",
+          "ordinal": 8,
+          "params": "Destination.move$Params",
+          "results": "Destination.move$Results"
+        },
+        {
+          "name": "moveMany",
+          "ordinal": 9,
+          "params": "Destination.moveMany$Params",
+          "results": "Destination.moveMany$Results"
+        },
+        {
+          "name": "deleteMany",
+          "ordinal": 10,
+          "params": "Destination.deleteMany$Params",
+          "results": "Destination.deleteMany$Results"
+        },
+        {
+          "name": "headMany",
+          "ordinal": 11,
+          "params": "Destination.headMany$Params",
+          "results": "Destination.headMany$Results"
+        },
+        {
+          "name": "changes",
+          "ordinal": 12,
+          "params": "Destination.changes$Params",
+          "results": "Destination.changes$Results"
         }
       ]
     },
@@ -13460,6 +15832,30 @@
           "ordinal": 3,
           "params": "KvNamespace.list$Params",
           "results": "KvNamespace.list$Results"
+        }
+      ]
+    },
+    "MetadataFiles": {
+      "name": "MetadataFiles",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "health",
+          "ordinal": 0,
+          "params": "MetadataFiles.health$Params",
+          "results": "MetadataFiles.health$Results"
+        },
+        {
+          "name": "parse",
+          "ordinal": 1,
+          "params": "MetadataFiles.parse$Params",
+          "results": "MetadataFiles.parse$Results"
+        },
+        {
+          "name": "render",
+          "ordinal": 2,
+          "params": "MetadataFiles.render$Params",
+          "results": "MetadataFiles.render$Results"
         }
       ]
     },
@@ -13661,6 +16057,60 @@
         }
       ]
     },
+    "SocketHandler": {
+      "name": "SocketHandler",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "message",
+          "ordinal": 0,
+          "params": "SocketHandler.message$Params",
+          "results": "SocketHandler.message$Results"
+        },
+        {
+          "name": "closed",
+          "ordinal": 1,
+          "params": "SocketHandler.closed$Params",
+          "results": "SocketHandler.closed$Results"
+        }
+      ]
+    },
+    "Sockets": {
+      "name": "Sockets",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "connect",
+          "ordinal": 0,
+          "params": "Sockets.connect$Params",
+          "results": "Sockets.connect$Results"
+        },
+        {
+          "name": "send",
+          "ordinal": 1,
+          "params": "Sockets.send$Params",
+          "results": "Sockets.send$Results"
+        },
+        {
+          "name": "close",
+          "ordinal": 2,
+          "params": "Sockets.close$Params",
+          "results": "Sockets.close$Results"
+        },
+        {
+          "name": "setAttachment",
+          "ordinal": 3,
+          "params": "Sockets.setAttachment$Params",
+          "results": "Sockets.setAttachment$Results"
+        },
+        {
+          "name": "list",
+          "ordinal": 4,
+          "params": "Sockets.list$Params",
+          "results": "Sockets.list$Results"
+        }
+      ]
+    },
     "Source": {
       "name": "Source",
       "file": "plugin.capnp",
@@ -13685,15 +16135,60 @@
       "file": "plugin.capnp",
       "value": "rpc.scalarLimits"
     },
+    "featureStorageChanges": {
+      "name": "featureStorageChanges",
+      "file": "plugin.capnp",
+      "value": "storage.changes"
+    },
+    "featureStorageConditionalWrite": {
+      "name": "featureStorageConditionalWrite",
+      "file": "plugin.capnp",
+      "value": "storage.conditionalWrite"
+    },
     "featureStorageCopy": {
       "name": "featureStorageCopy",
       "file": "plugin.capnp",
       "value": "storage.copy"
     },
+    "featureStorageDeleteMany": {
+      "name": "featureStorageDeleteMany",
+      "file": "plugin.capnp",
+      "value": "storage.deleteMany"
+    },
+    "featureStorageHeadMany": {
+      "name": "featureStorageHeadMany",
+      "file": "plugin.capnp",
+      "value": "storage.headMany"
+    },
+    "featureStorageMove": {
+      "name": "featureStorageMove",
+      "file": "plugin.capnp",
+      "value": "storage.move"
+    },
+    "featureStorageMoveMany": {
+      "name": "featureStorageMoveMany",
+      "file": "plugin.capnp",
+      "value": "storage.moveMany"
+    },
     "featureStreams": {
       "name": "featureStreams",
       "file": "plugin.capnp",
       "value": "rpc.streams"
+    },
+    "maxBatchKeys": {
+      "name": "maxBatchKeys",
+      "file": "plugin.capnp",
+      "value": 256
+    },
+    "maxChangesCursorBytes": {
+      "name": "maxChangesCursorBytes",
+      "file": "plugin.capnp",
+      "value": 4096
+    },
+    "maxChangesPage": {
+      "name": "maxChangesPage",
+      "file": "plugin.capnp",
+      "value": 256
     },
     "maxCheckpointBytes": {
       "name": "maxCheckpointBytes",
@@ -13760,6 +16255,36 @@
       "file": "plugin.capnp",
       "value": 256
     },
+    "maxMetadataAudioFiles": {
+      "name": "maxMetadataAudioFiles",
+      "file": "plugin.capnp",
+      "value": 4096
+    },
+    "maxMetadataFileBytes": {
+      "name": "maxMetadataFileBytes",
+      "file": "plugin.capnp",
+      "value": 262144
+    },
+    "maxMetadataFileChapters": {
+      "name": "maxMetadataFileChapters",
+      "file": "plugin.capnp",
+      "value": 2000
+    },
+    "maxMetadataFileDescriptionBytes": {
+      "name": "maxMetadataFileDescriptionBytes",
+      "file": "plugin.capnp",
+      "value": 65536
+    },
+    "maxMetadataFileListEntries": {
+      "name": "maxMetadataFileListEntries",
+      "file": "plugin.capnp",
+      "value": 256
+    },
+    "maxMetadataFileTextBytes": {
+      "name": "maxMetadataFileTextBytes",
+      "file": "plugin.capnp",
+      "value": 1024
+    },
     "maxPluginMigrationOps": {
       "name": "maxPluginMigrationOps",
       "file": "plugin.capnp",
@@ -13794,6 +16319,41 @@
       "name": "maxScanPageBooks",
       "file": "plugin.capnp",
       "value": 500
+    },
+    "maxSocketAttachmentBytes": {
+      "name": "maxSocketAttachmentBytes",
+      "file": "plugin.capnp",
+      "value": 2048
+    },
+    "maxSocketAutoResponseBytes": {
+      "name": "maxSocketAutoResponseBytes",
+      "file": "plugin.capnp",
+      "value": 256
+    },
+    "maxSocketAutoResponses": {
+      "name": "maxSocketAutoResponses",
+      "file": "plugin.capnp",
+      "value": 4
+    },
+    "maxSocketFrameBytes": {
+      "name": "maxSocketFrameBytes",
+      "file": "plugin.capnp",
+      "value": 262144
+    },
+    "maxSocketHeaders": {
+      "name": "maxSocketHeaders",
+      "file": "plugin.capnp",
+      "value": 16
+    },
+    "maxSocketUrlBytes": {
+      "name": "maxSocketUrlBytes",
+      "file": "plugin.capnp",
+      "value": 2048
+    },
+    "maxSocketsPerInstance": {
+      "name": "maxSocketsPerInstance",
+      "file": "plugin.capnp",
+      "value": 8
     },
     "maxStreamWindowBytes": {
       "name": "maxStreamWindowBytes",

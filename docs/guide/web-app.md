@@ -8,9 +8,16 @@ gives you.
 
 - **Discover**: suggestions and catalog search across every store. See
   [Discover and wishlist](discover.md).
-- **Library**: every book in the household's library, whoever bought it.
-  People allowed to download books also see **Scan** and **Acquire
-  pending** here.
+- **Library**: every book in the library, whoever bought it, once
+  however many accounts or formats it has. Search by title, or by
+  `author:`, `narrator:`, `series:`, `asin:` or `isbn:`. Filter by acquire
+  status, format, or one author, series, genre, narrator, publisher,
+  store, your own tags or your progress, and sort by title, author,
+  series, purchase date, date added or duration. Open a book to mark it
+  finished, rate it (overall, story and narration) and give it your own
+  tags under **Your copy**; these are yours alone, even when you share a
+  store account. People allowed to download books also see **Scan** and
+  **Acquire pending** here.
 - **Wishlist**: your wishlist and the Global queue everyone shares.
 - **Accounts**: connect and disconnect your store accounts. See
   [Stores](stores.md).
@@ -33,6 +40,9 @@ Everyone in a library has a role. It decides what they can do:
 | Host | Everything a Member can, plus look after the branches they own |
 | Administrator | Everything a Member can, plus scan, download books and add people |
 | Owner | Everything an Administrator can, plus manage sign-in options and other Administrators |
+
+An Owner or Administrator can limit which books a Member or Host sees; see
+[Limit what a patron sees](sharing.md#limit-what-a-patron-sees).
 
 The **operator** is not a person in the library. It is the key to the
 server itself: the operator token. It is used to set up the server, turn on

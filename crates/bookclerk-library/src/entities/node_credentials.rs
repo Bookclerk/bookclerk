@@ -3,11 +3,11 @@
 
 use sea_orm::entity::prelude::*;
 
-/// Row shape for one host node's credential.
+/// Row shape for one branch node's credential.
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "node_credentials")]
 pub struct Model {
-    /// Host node this credential belongs to.
+    /// Branch node this credential belongs to.
     #[sea_orm(primary_key, auto_increment = false)]
     pub node_id: String,
     /// Ed25519 public signing key (32 bytes).

@@ -166,11 +166,13 @@ pub use sql_plan::{
 };
 pub use store::event_outbox::{EVENT_STREAM_SCAN_FACTOR, EVENT_STREAM_SETTLE_SECS};
 pub use store::library_index::{
-    sort_title, LibraryWorkRow, WorkCursor, WorkPage, WorkPageQuery, WorkSort, LIBRARY_INDEX_LAYOUT,
+    facet_key, sort_title, FacetValue, FacetValuesOf, FacetValuesPage, LibraryWorkRow, WorkCursor,
+    WorkFacet, WorkFilter, WorkPage, WorkPageQuery, WorkScope, WorkSort, LIBRARY_INDEX_LAYOUT,
 };
 pub use store::work_detail::{
     EditionDetail, EditionListing, HoldingHolder, ListingHolding, WorkDetail,
 };
+pub use store::work_search::WorkSearchDoc;
 pub use store::{
     apply_user_states,
     catalog_listings::{
@@ -184,6 +186,7 @@ pub use store::{
         WorkEnrichment,
     },
     listening::{ListeningIdentifiers, ListeningMatch, ListeningProgressWrite},
+    overrides::{ConflictCursor, PinOutcome, ResolutionConflict, MAX_CONFLICT_PAGE},
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
     prefer_enrichment_source,
@@ -193,13 +196,21 @@ pub use store::{
     },
     scan_state::{plan_pass, PassStart, ScanState, FULL_PASS_INTERVAL, RESUME_CURSOR_TTL},
     search_feed::ListingRef,
-    set_dispatch_chunk_for_test, AcquiredBookKey, BookPage, CandidateRef, CatalogEnrichmentFields,
-    DiscoverSubject, EditionAcquisition, EditionFile, FileOwner, FileRole, HeldIdentifiers,
-    HoldingSelection, LibraryStore, NewBook, NewListeningProgress, NewTitleRequest,
-    NewTitleRequestSource, NodeHoldingSelection, QueueRank, SavedFilterRecord, ScannedTitle,
-    SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste, StoredFeed, StoredQueueRank,
-    UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT,
-    BOOK_PAGE_MAX_LIMIT, HOLDING_REMOVED, MAX_QUEUE_REASONS,
+    set_dispatch_chunk_for_test,
+    user_title_state::{FieldEdit, UserStateEdit},
+    work_split::{
+        parse_work_split_request, SplitOutcome, WorkSplitBody, WorkSplitRequest,
+        MAX_SPLIT_EXPRESSIONS, MAX_SPLIT_EXPRESSION_ID_BYTES,
+    },
+    AcquireTitle, AcquireTitlePage, AcquiredTitleKey, AcquiredTitleKeyPage, BookPage, CandidateRef,
+    CatalogEnrichmentFields, DiscoverSubject, EditionAcquisition, EditionAsin, EditionEnrichment,
+    EditionFile, EnrichCandidate, EnrichCandidatePage, FileOwner, FileProbe, FileRole,
+    HeldIdentifiers, HoldingSelection, LibraryStore, NewBook, NewListeningProgress,
+    NewTitleRequest, NewTitleRequestSource, NodeHoldingSelection, QueueRank, SavedFilterRecord,
+    ScannedTitle, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste, StoredFeed,
+    StoredQueueRank, TitleHolding, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE,
+    ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT, HOLDING_REMOVED,
+    MAX_QUEUE_REASONS,
 };
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

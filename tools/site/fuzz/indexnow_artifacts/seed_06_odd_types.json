@@ -1,0 +1,1 @@
+{"artifacts":[null,1,"x",[],{"name":"indexnow-snapshot","expired":"false","workflow_run":{"id":3,"head_branch":"main"}},{"name":"indexnow-snapshot","expired":false,"workflow_run":[3]},{"name":"indexnow-snapshot","expired":false,"workflow_run":null},{"name":"indexnow-snapshot","expired":false,"workflow_run":{"id":5,"head_branch":"main"}}]}

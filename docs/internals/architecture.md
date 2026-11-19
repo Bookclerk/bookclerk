@@ -27,8 +27,8 @@ flowchart TB
 ```
 
 1. **Scan** — each enabled source upserts owned titles into `library.db`.
-2. **Enrich** (optional) — non-Audible rows may gain an Audible ASIN via public
-   catalog search (`library.enrich_from_audible`).
+2. **Enrich** (optional) — held editions without an ASIN may gain one via
+   public catalog search (`library.enrich_from_audible`).
 3. **Acquire** — fetch Plain → package/encode → name → write every enabled
    destination. Decode, encode, and packaging do not run in the host: they are
    dispatched to a bounded pool of `bookclerk-media-worker` processes, each
@@ -82,8 +82,8 @@ PostgreSQL 16+, or Cloudflare D1
 | Source trait + registry (host side) | `bookclerk-source` (re-exports `bookclerk-storefront`) |
 | Storefront guest types | `bookclerk-storefront` (DTOs, ABI conversions, listing helpers; no database, ORM, config or OpenAPI) |
 | Store adapters (plugins) | `bookclerk-plugins/optional/source-{audible,libro,chirp,graphicaudio}` (lib + guest bin; each links only the SDK, `bookclerk-storefront` and its own store crates, Audible adding `bookclerk-audible-catalog` and `bookclerk-mp4`, Libro.fm, Chirp and GraphicAudio adding `bookclerk-scan-delta`) |
-| Scan deltas for stores with no change feed (plugins) | `bookclerk-scan-delta` (fingerprints in the plugin's own `SCAN_STATE` database, and the keyed reader the Audiobookshelf listening memory shares; links only the SDK) |
-| ABS integration (plugin) | `bookclerk-plugins/integration-audiobookshelf` (lib + guest bin; listening memory in its own `LISTENING_STATE` database) |
+| Scan deltas for stores with no change feed (plugins) | `bookclerk-scan-delta` (fingerprints in the plugin's own `SCAN_STATE` database, read through a keyed reader; links only the SDK) |
+| ABS integration (plugin) | `bookclerk-plugins/optional/integration-audiobookshelf` (TypeScript workerd guest, no Cargo package; user watch and listening memory in its own `LISTENING_STATE` database) |
 | Clear-media packaging | `bookclerk-media` (remux / fixup / MP3; no DRM) |
 | MP4 container plumbing | `bookclerk-mp4` (shared with store plugins, plus the Audible brand-trim helpers; no cryptography) |
 | Process confinement | `bookclerk-sandbox` (Landlock+seccomp / Seatbelt / AppContainer) |
@@ -91,12 +91,12 @@ PostgreSQL 16+, or Cloudflare D1
 | Workerd isolate launcher | `bookclerk-workerd` (pinned Cloudflare workerd + bridge/egress) |
 | Acquire orchestration | `bookclerk-acquire` |
 | Naming templates | `bookclerk-naming` |
-| Host-node protocol | `bookclerk-node-proto` (node socket frames, handshake signatures, key checks) |
-| Host-node client | `bookclerk-node-client` (enrollment, pinned owner socket, claimed work, write-back, wakes, resume) |
+| Branch-node protocol | `bookclerk-node-proto` (node socket frames, handshake signatures, key checks) |
+| Branch-node client | `bookclerk-node-client` (enrollment, pinned owner socket, claimed work, write-back, wakes, resume) |
 | Library DB | `bookclerk-library` (SeaORM plugins + rusqlite store) |
 | Search | `bookclerk-search` |
 | Discovery / recommendations | `bookclerk-discover` (via registered `ContentSource` catalog APIs) |
-| Storage backends | `bookclerk-storage` |
+| Storage backends | `bookclerk-storage` (local; the S3 backend sits behind its `s3` feature, which only the `s3` destination plugin enables, so the hosts do not link the AWS SDK) |
 | TLS provider and HTTP client | `bookclerk-tls` (one rustls provider, aws-lc-rs; see [tls.md](tls.md)) |
 | Public Audible catalog | `bookclerk-audible-catalog` (unauthenticated search, genres, ratings and reviews; linked by the Audible guest and `bookclerk-enrich`) |
 | Catalog enrichment | `bookclerk-enrich` (matches other stores' titles to an ASIN; re-exports `bookclerk-audible-catalog`) |
@@ -106,14 +106,21 @@ PostgreSQL 16+, or Cloudflare D1
 
 ## Files directory layout
 
-`$BOOKCLERK_FILES_DIR` (env or `--bookclerk-files`) is the unit of state:
+`$BOOKCLERK_FILES_DIR` (env or `--bookclerk-files`) is the unit of state.
+Without either, it is the platform's data directory for the app:
+
+- Linux: `$XDG_DATA_HOME/bookclerk` (`~/.local/share/bookclerk`).
+- macOS: `~/Library/Application Support/app.Bookclerk.bookclerk`.
+- Windows: `%APPDATA%\Bookclerk\bookclerk\data`.
+
+Its layout:
 
 ```text
 BookclerkFiles/
   config.toml
   library.db          # incl. encrypted_secrets (auth + Widevine CDM + S3 keys)
   cache/
-  search_index/
+  search_index_works/
   plugins/            # host-local trees (immutable to guests)
     .versions/<digest>/        # materialized installed versions, shared by instances
     <plugin-key-fs-id>/        # platform guests, dev trees, older installs
@@ -162,10 +169,12 @@ the API. Config reload swaps auth before listen rebind. See [sign-in.md](../serv
 | `GET` | `/api/jobs`, `/jobs` | yes | Job list |
 | `POST` | `/api/library/scan`, `/scan` | yes | Queue scan |
 | `POST` | `/api/library/acquire`, `/acquire` | yes | Queue acquire |
-| `GET` | `/api/library/books` | yes | Paginated book rows |
-| `GET` | `/api/library/books/{uuid}/cover` | yes | Best-effort local cover |
-| `GET` | `/api/library/works` | yes | Works from the page index, by cursor |
+| `GET` | `/api/library/works` | yes | Works from the page index, by cursor, or matching a search (`q`) |
 | `GET` | `/api/library/works/{id}` | yes | One work with editions, listings, holdings and own state |
+| `PUT`/`DELETE` | `/api/library/listings/{id}/pin` | Administrator | Pin a listing to an edition (moves it now), or drop the pin |
+| `POST` | `/api/library/works/{id}/split` | Administrator | Move expressions to a new, isolated work |
+| `GET` | `/api/library/conflicts` | Administrator | Conflicts the resolver recorded, by cursor |
+| `GET` | `/api/library/editions/{id}/cover` | yes | Best-effort local cover of an acquired edition |
 | static | `/` | no | Built React UI (`ui/dist`) when present |
 
 Portal claim sessions use `bookclerk_portal_session` (`Path=/`) via `/api/portal/*`.

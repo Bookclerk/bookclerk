@@ -12,6 +12,11 @@ from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, Protocol, TypedDict, Union
 
+ObjectChangeKind = Literal["changed", "upserted", "removed"]
+"""What happened to an object in a change feed. Unknown codes are kept and
+treated as `changed`.
+"""
+
 PluginErrorCode = Literal[
     "invalid_params",
     "unauthorized",
@@ -42,6 +47,7 @@ Entrypoint = Literal[
     "oidc",
     "metadata",
     "covers",
+    "metadataFiles",
 ]
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
@@ -114,8 +120,33 @@ CatalogSort = Literal["relevance", "popularity", "rating", "title", "author"]
 CatalogField = Literal["any", "author", "narrator", "series", "genre"]
 """Catalog search facet restricting which field the query matches."""
 
+PriceLookup = Literal["unspecified", "product", "isbn", "asin", "title"]
+"""How a purchase-hint query names the title to price."""
+
 Abridgement = Literal["unknown", "unabridged", "abridged"]
 """Whether an edition is abridged."""
+
+MetadataField = Literal[
+    "title",
+    "subtitle",
+    "description",
+    "publisher",
+    "publishedAt",
+    "language",
+    "genres",
+    "tags",
+    "abridgement",
+    "expressionKind",
+    "identifiers",
+    "credits",
+    "series",
+    "chapters",
+    "duration",
+]
+"""A field of a `MetadataFileRecord`. Dialects declare in the manifest which
+fields their format carries; a parsed record lists the ones its file
+states, and a render request lists the ones to write.
+"""
 
 DbType = Literal["unspecified", "bool", "int64", "float64", "text", "bytes"]
 """Universal database cell/parameter domain. Engine-native arrays, enums,
@@ -179,6 +210,11 @@ class ObjectMetadata(TypedDict):
         contentType: MIME type; empty when unknown.
         etag: Backend entity tag; empty when unsupported.
         sha256: Raw SHA-256 digest (32 bytes) or empty when unknown.
+        modifiedAtMs: Last modification time, UTC unix milliseconds; zero when unknown.
+        versionId: Backend object version id (versioned buckets); empty when none.
+        signature: Opaque change signature: an unchanged value means the object has not
+            changed. Backend-defined (a local file's inode, size, mtime and ctime; an S3
+            ETag and version id). Empty when the backend has none.
     """
 
     key: str
@@ -186,6 +222,9 @@ class ObjectMetadata(TypedDict):
     contentType: str
     etag: str
     sha256: bytes
+    modifiedAtMs: int
+    versionId: str
+    signature: str
 
 
 class ObjectInfo(TypedDict):
@@ -194,10 +233,21 @@ class ObjectInfo(TypedDict):
     Attributes:
         key: Object key.
         size: Object size in bytes.
+        etag: Backend entity tag; empty when unsupported or not requested
+            (`ListOptions.withSignatures`).
+        modifiedAtMs: Last modification time, UTC unix milliseconds; zero when unknown
+            or not requested.
+        versionId: Backend object version id; empty when none or not requested.
+        signature: Opaque change signature, as `ObjectMetadata.signature`; empty when
+            unsupported or not requested.
     """
 
     key: str
     size: int
+    etag: str
+    modifiedAtMs: int
+    versionId: str
+    signature: str
 
 
 class ListOptions(TypedDict):
@@ -207,11 +257,18 @@ class ListOptions(TypedDict):
         prefix: Only keys starting with this prefix; empty lists everything.
         cursor: Opaque cursor from a previous `ListPage.nextCursor`; empty starts over.
         limit: Requested page size; clamped to `maxListPage`. `0` means guest default.
+        withSignatures: Hint: fill `etag`, `modifiedAtMs`, `versionId` and `signature`
+            on each entry. `ListPage.signaturesIncluded` says whether the guest did.
+        modifiedSinceMs: Hint: only objects modified at or after this time (UTC unix
+            milliseconds); zero lists everything. `ListPage.modifiedSinceApplied` says
+            whether the guest filtered; when it did not, the page is unfiltered.
     """
 
     prefix: str
     cursor: str
     limit: int
+    withSignatures: bool
+    modifiedSinceMs: int
 
 
 class ListPage(TypedDict):
@@ -220,10 +277,16 @@ class ListPage(TypedDict):
     Attributes:
         objects: Objects in this page, in backend order.
         nextCursor: Cursor for the next page; empty when exhausted.
+        signaturesIncluded: True when every entry carries the signature fields the
+            backend has (`ListOptions.withSignatures` honoured).
+        modifiedSinceApplied: True when the guest left out objects modified before
+            `ListOptions.modifiedSinceMs`. False means the page is unfiltered.
     """
 
     objects: list[ObjectInfo]
     nextCursor: str
+    signaturesIncluded: bool
+    modifiedSinceApplied: bool
 
 
 class ByteRange(TypedDict):
@@ -257,6 +320,11 @@ class WriteOptions(TypedDict):
         sha256: Expected raw SHA-256 digest; empty skips verification.
         commitToken: Destination-side stage-and-publish. Empty means a one-shot put.
         stageOnly: When true, `put` stages remotely and does not publish until `commit`.
+        ifMatch: Conditional write (`storage.conditionalWrite`): publish only while the
+            stored object's `etag` equals this value, else fail with `conflict`. Empty
+            means unconditional. A staged put checks it at `commit`.
+        ifNoneMatch: Conditional write (`storage.conditionalWrite`): publish only when
+            no object exists at the key, else fail with `conflict`.
     """
 
     contentType: str
@@ -264,6 +332,8 @@ class WriteOptions(TypedDict):
     sha256: bytes
     commitToken: str
     stageOnly: bool
+    ifMatch: str
+    ifNoneMatch: bool
 
 
 class PutResult(TypedDict):
@@ -274,12 +344,20 @@ class PutResult(TypedDict):
         bytesWritten: Bytes persisted.
         etag: Backend entity tag; empty when unsupported.
         sha256: Raw SHA-256 digest of the stored bytes; empty when not computed.
+        modifiedAtMs: Modification time of the stored object, UTC unix milliseconds;
+            zero when unknown.
+        versionId: Version id of the stored object; empty when none.
+        signature: Change signature of the stored object (`ObjectMetadata.signature`),
+            so the host can recognise its own write in a later listing; empty when none.
     """
 
     key: str
     bytesWritten: int
     etag: str
     sha256: bytes
+    modifiedAtMs: int
+    versionId: str
+    signature: str
 
 
 class CopyResult(TypedDict):
@@ -290,6 +368,210 @@ class CopyResult(TypedDict):
     """
 
     bytesCopied: int
+
+
+class MoveOptions(TypedDict):
+    """Options for `Destination.move` and `Destination.moveMany`. Fields are only
+    ever appended.
+
+    Attributes:
+        noOverwrite: Fail with `conflict` instead of replacing an object at the target
+            key.
+        ifSourceMatch: `move` only: move only while the source's `etag` equals this
+            value, else fail with `conflict`. Empty skips the check.
+    """
+
+    noOverwrite: bool
+    ifSourceMatch: str
+
+
+class MoveResult(TypedDict):
+    """Summary of `Destination.move`.
+
+    Attributes:
+        atomic: True when the backend moved atomically (a rename): no reader saw the
+            object at both keys or at neither.
+        alreadyMoved: True when the source was already gone and the target present, as
+            when a move is repeated after a restart. The move counts as done.
+    """
+
+    atomic: bool
+    alreadyMoved: bool
+
+
+KeyPair = TypedDict(
+    "KeyPair",
+    {
+        "from": str,
+        "to": str,
+    },
+)
+"""One source and target key.
+
+Attributes:
+    from: Source object key (or source prefix).
+    to: Target object key (or target prefix).
+"""
+
+
+class MoveManyTargetPairs(TypedDict):
+    """``MoveManyTarget`` member ``pairs``.
+
+    Explicit moves, at most `maxBatchKeys`. Each is independent.
+
+    Attributes:
+        kind: Always ``"pairs"``.
+        value: Explicit moves, at most `maxBatchKeys`. Each is independent.
+    """
+
+    kind: Literal["pairs"]
+    value: list[KeyPair]
+
+
+class MoveManyTargetPrefix(TypedDict):
+    """``MoveManyTarget`` member ``prefix``.
+
+    Every object under `prefix.from` moves under `prefix.to`, keeping the
+    rest of its key. Paged through `MoveManyRequest.cursor`.
+
+    Attributes:
+        kind: Always ``"prefix"``.
+        value: Every object under `prefix.from` moves under `prefix.to`, keeping the
+            rest of its key. Paged through `MoveManyRequest.cursor`.
+    """
+
+    kind: Literal["prefix"]
+    value: KeyPair
+
+
+MoveManyTarget = Union[
+    MoveManyTargetPairs,
+    MoveManyTargetPrefix,
+]
+"""What `Destination.moveMany` moves."""
+
+
+class MoveManyRequest(TypedDict):
+    """Argument of `Destination.moveMany`. Fields are only ever appended.
+
+    Attributes:
+        target: Explicit pairs or a prefix.
+        cursor: Prefix form: `MoveManyPage.nextCursor` from the previous call; empty
+            starts. Ignored for `pairs`.
+        limit: Prefix form: objects to move in this call, clamped to `maxBatchKeys`;
+            zero means guest default.
+        options: Overwrite rule applied to every move (`ifSourceMatch` is ignored).
+    """
+
+    target: MoveManyTarget
+    cursor: str
+    limit: int
+    options: MoveOptions
+
+
+class KeyOutcome(TypedDict):
+    """Outcome for one key of a batch call.
+
+    Attributes:
+        key: The key this outcome is for (the source key for moves).
+        error: Failure for this key; an empty `code` means it succeeded.
+    """
+
+    key: str
+    error: PluginError
+
+
+class MoveManyPage(TypedDict):
+    """One page of `Destination.moveMany` progress.
+
+    Attributes:
+        results: Outcomes in request order. A prefix move done in one step (a folder
+            rename) may report a single outcome keyed by the source prefix.
+        nextCursor: Prefix form: cursor for the next call; empty when every object
+            moved.
+        atomic: True when every move in this page was atomic.
+        objectsMoved: Objects moved in this page (a folder rename counts what it carried
+            when known, else the outcomes).
+    """
+
+    results: list[KeyOutcome]
+    nextCursor: str
+    atomic: bool
+    objectsMoved: int
+
+
+class DeleteManyResult(TypedDict):
+    """Result of `Destination.deleteMany`.
+
+    Attributes:
+        results: One outcome per requested key, in request order. A missing key
+            succeeds.
+    """
+
+    results: list[KeyOutcome]
+
+
+class HeadManyResult(TypedDict):
+    """Result of `Destination.headMany`.
+
+    Attributes:
+        objects: One probe per requested key, in request order.
+    """
+
+    objects: list[HeadOk]
+
+
+class ChangesRequest(TypedDict):
+    """Argument of `Destination.changes`. Fields are only ever appended.
+
+    Attributes:
+        cursor: `ChangesPage.cursor` from the previous call. Empty asks for the current
+            position: the page carries a cursor and no changes.
+        limit: Requested changes per page, clamped to `maxChangesPage`; zero means guest
+            default.
+    """
+
+    cursor: str
+    limit: int
+
+
+class ObjectChange(TypedDict):
+    """One entry of a change feed.
+
+    Attributes:
+        key: Object key, relative to the destination root.
+        kind: What happened to it.
+        info: Listing fields after the change when the feed carries them (signature
+            fields may be empty); empty for `removed`.
+    """
+
+    key: str
+    kind: ObjectChangeKind
+    info: ObjectInfo
+
+
+class ChangesPage(TypedDict):
+    """One page of `Destination.changes`.
+
+    Attributes:
+        changes: Changes since the request's cursor, oldest first. A key may repeat.
+        cursor: Cursor for the next call; never empty.
+        more: True when more changes are ready now; call again with `cursor`.
+        complete: False when the feed may have missed changes since the request's cursor
+            (an overflowed watcher, expired queue retention, a restart): the host backs
+            it with a full listing. True means these are all the changes.
+        liveWatch: True when this running guest produces the feed itself (a filesystem
+            watcher) and stopping it would lose changes, so the host keeps it awake
+            while `complete` stays true. Durable feeds (a notification queue) leave it
+            false. The host honours it only from the first-party storage plugins it
+            starts on demand.
+    """
+
+    changes: list[ObjectChange]
+    cursor: str
+    more: bool
+    complete: bool
+    liveWatch: bool
 
 
 class PluginDescribe(TypedDict):
@@ -453,6 +735,9 @@ class Bindings(TypedDict):
             declares none.
         kv: Named `[[kv_namespaces]]` bindings: one host-served durable namespace per
             binding, scoped to this plugin. Empty when the manifest declares none.
+        sockets: `SOCKETS`: host-brokered outbound WebSockets that stay open while the
+            guest sleeps; null unless `[sockets]` is declared and granted. Null when the
+            guest does not export this capability.
     """
 
     config: ExtensibleConfig
@@ -464,6 +749,7 @@ class Bindings(TypedDict):
     storage: NotRequired[Destination | None]
     queues: list[NamedQueue]
     kv: list[NamedKv]
+    sockets: NotRequired[Sockets | None]
 
 
 class Entrypoints(TypedDict):
@@ -494,6 +780,10 @@ class Entrypoints(TypedDict):
             capability.
         covers: `covers` entrypoint. Null when the guest does not export this
             capability.
+        socketHandler: `[sockets]` handler: messages and closes on host-brokered
+            sockets. Null when the guest does not export this capability.
+        metadataFiles: `metadataFiles` entrypoint. Null when the guest does not export
+            this capability.
     """
 
     eventConsumer: NotRequired[EventConsumer | None]
@@ -508,6 +798,8 @@ class Entrypoints(TypedDict):
     scheduledHandler: NotRequired[ScheduledHandler | None]
     metadata: NotRequired[MetadataProvider | None]
     covers: NotRequired[CoverFetcher | None]
+    socketHandler: NotRequired[SocketHandler | None]
+    metadataFiles: NotRequired[MetadataFiles | None]
 
 
 class EntrypointsReplyOk(TypedDict):
@@ -1261,6 +1553,186 @@ CopyReply = Union[
 """Result union of `Destination.copy`."""
 
 
+class MoveReplyOk(TypedDict):
+    """``MoveReply`` member ``ok``.
+
+    Success: how the move was done.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: how the move was done.
+    """
+
+    kind: Literal["ok"]
+    value: MoveResult
+
+
+class MoveReplyErr(TypedDict):
+    """``MoveReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+MoveReply = Union[
+    MoveReplyOk,
+    MoveReplyErr,
+]
+"""Result union of `Destination.move`."""
+
+
+class MoveManyReplyOk(TypedDict):
+    """``MoveManyReply`` member ``ok``.
+
+    Success: per-key outcomes and the continuation.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: per-key outcomes and the continuation.
+    """
+
+    kind: Literal["ok"]
+    value: MoveManyPage
+
+
+class MoveManyReplyErr(TypedDict):
+    """``MoveManyReply`` member ``err``.
+
+    Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure of the whole call; `code` is a `PluginErrorCode` wire
+            string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+MoveManyReply = Union[
+    MoveManyReplyOk,
+    MoveManyReplyErr,
+]
+"""Result union of `Destination.moveMany`."""
+
+
+class DeleteManyReplyOk(TypedDict):
+    """``DeleteManyReply`` member ``ok``.
+
+    Success: per-key outcomes.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: per-key outcomes.
+    """
+
+    kind: Literal["ok"]
+    value: DeleteManyResult
+
+
+class DeleteManyReplyErr(TypedDict):
+    """``DeleteManyReply`` member ``err``.
+
+    Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure of the whole call; `code` is a `PluginErrorCode` wire
+            string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+DeleteManyReply = Union[
+    DeleteManyReplyOk,
+    DeleteManyReplyErr,
+]
+"""Result union of `Destination.deleteMany`."""
+
+
+class HeadManyReplyOk(TypedDict):
+    """``HeadManyReply`` member ``ok``.
+
+    Success: one probe per key.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: one probe per key.
+    """
+
+    kind: Literal["ok"]
+    value: HeadManyResult
+
+
+class HeadManyReplyErr(TypedDict):
+    """``HeadManyReply`` member ``err``.
+
+    Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure of the whole call; `code` is a `PluginErrorCode` wire
+            string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+HeadManyReply = Union[
+    HeadManyReplyOk,
+    HeadManyReplyErr,
+]
+"""Result union of `Destination.headMany`."""
+
+
+class ChangesReplyOk(TypedDict):
+    """``ChangesReply`` member ``ok``.
+
+    Success: one page of changes.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: one page of changes.
+    """
+
+    kind: Literal["ok"]
+    value: ChangesPage
+
+
+class ChangesReplyErr(TypedDict):
+    """``ChangesReply`` member ``err``.
+
+    Typed failure; `invalid_cursor` means the cursor expired and the host
+    starts over with a full listing.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `invalid_cursor` means the cursor expired and the host
+            starts over with a full listing.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+ChangesReply = Union[
+    ChangesReplyOk,
+    ChangesReplyErr,
+]
+"""Result union of `Destination.changes`."""
+
+
 class EmptyReplyOk(TypedDict):
     """``EmptyReply`` member ``ok``.
 
@@ -1695,6 +2167,66 @@ class Destination(Protocol):
         """
         ...
 
+    async def move(self, from_: str, to: str, options: MoveOptions) -> MoveReply:
+        """Move one object (requires `storage.move`). Repeating a finished move
+        succeeds with `alreadyMoved`.
+
+        Args:
+            from_: Source object key.
+            to: Target object key.
+            options: Overwrite and source preconditions.
+
+        Returns:
+            ``MoveReply``
+        """
+        ...
+
+    async def move_many(self, request: MoveManyRequest) -> MoveManyReply:
+        """Move a set of objects or a whole prefix (requires `storage.moveMany`).
+        Paged and safe to repeat.
+
+        Args:
+            request: Pairs or prefix, cursor, and options.
+
+        Returns:
+            ``MoveManyReply``
+        """
+        ...
+
+    async def delete_many(self, keys: list[str]) -> DeleteManyReply:
+        """Remove up to `maxBatchKeys` objects (requires `storage.deleteMany`).
+
+        Args:
+            keys: Object keys to remove.
+
+        Returns:
+            ``DeleteManyReply``
+        """
+        ...
+
+    async def head_many(self, keys: list[str]) -> HeadManyReply:
+        """Probe up to `maxBatchKeys` objects (requires `storage.headMany`).
+
+        Args:
+            keys: Object keys to probe.
+
+        Returns:
+            ``HeadManyReply``
+        """
+        ...
+
+    async def changes(self, request: ChangesRequest) -> ChangesReply:
+        """Keys changed since a cursor (requires `storage.changes`). A hint for
+        what to read; a scheduled listing stays the backstop.
+
+        Args:
+            request: Cursor and page size.
+
+        Returns:
+            ``ChangesReply``
+        """
+        ...
+
 
 class Source(Protocol):
     """Read-only byte source for job inputs (not a storefront)."""
@@ -1963,6 +2495,100 @@ class NamedKv(TypedDict):
     name: str
     namespace: str
     kv: NotRequired[KvNamespace | None]
+
+
+class Sockets(Protocol):
+    """Host-brokered outbound WebSockets, granted through `Bindings.sockets`.
+
+    The guest asks for a socket; a broker the host runs for the plugin
+    instance dials it under the plugin's network grant and keeps it open while
+    the guest sleeps, in the manner of hibernatable Workers WebSockets. Each
+    incoming message wakes the guest and arrives on
+    `Entrypoints.socketHandler`. Heartbeat pairs declared at connect are
+    answered by the broker without waking the guest.
+    """
+
+    async def connect(self, request: SocketConnectRequest) -> SocketConnectReply:
+        """Open a socket; it is owned by the plugin instance, not this invocation.
+
+        Args:
+            request: Target, subprotocols, headers, heartbeats.
+
+        Returns:
+            ``SocketConnectReply``
+        """
+        ...
+
+    async def send(self, socket: str, frame: SocketFrame) -> EmptyReply:
+        """Send one message on an open socket.
+
+        Args:
+            socket: Socket id from `connect` or `list`.
+            frame: Message, at most `maxSocketFrameBytes`.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+    async def close(self, socket: str, code: int, reason: str) -> EmptyReply:
+        """Close a socket; closing an unknown or closed socket is not an error.
+
+        Args:
+            socket: Socket id.
+            code: WebSocket close code; zero sends 1000.
+            reason: Close reason, at most 123 UTF-8 bytes.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+    async def set_attachment(self, socket: str, attachment: bytes) -> EmptyReply:
+        """Replace the attachment the host keeps for a socket.
+
+        Args:
+            socket: Socket id.
+            attachment: Opaque bytes, at most `maxSocketAttachmentBytes`.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+    async def list(self) -> SocketListReply:
+        """The instance's open sockets, for a guest that just woke.
+
+        Returns:
+            ``SocketListReply``
+        """
+        ...
+
+
+class SocketHandler(Protocol):
+    """Guest handler for host-brokered sockets (`Entrypoints.socketHandler`)."""
+
+    async def message(self, event: SocketMessage) -> SocketMessageReply:
+        """One message arrived on an open socket.
+
+        Args:
+            event: Socket, frame, and attachment.
+
+        Returns:
+            ``SocketMessageReply``
+        """
+        ...
+
+    async def closed(self, event: SocketClosed) -> EmptyReply:
+        """A socket closed, by the remote side, the network, or the host.
+
+        Args:
+            event: Socket, close code, and attachment.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
 
 
 class ContentSource(Protocol):
@@ -2328,6 +2954,48 @@ class CoverFetcher(Protocol):
         ...
 
 
+class MetadataFiles(Protocol):
+    """`metadataFiles` entrypoint: reads and writes metadata files that sit next
+    to an edition's media (sidecars such as `metadata.json`, OPF, NFO or CUE),
+    one dialect per format. The plugin only converts bytes: the host reads the
+    file, chooses every path and writes the result, so a dialect plugin needs
+    no network or file grants. The manifest's `[metadata_files]` table names
+    each dialect, the file names it reads and the fields it carries, so the
+    host routes a file to a sleeping plugin without starting it.
+    """
+
+    async def health(self) -> HealthReply:
+        """Liveness / readiness probe.
+
+        Returns:
+            ``HealthReply``
+        """
+        ...
+
+    async def parse(self, params: MetadataFileParseParams) -> MetadataFileParseReply:
+        """What one metadata file says about its edition.
+
+        Args:
+            params: Dialect, file name and bytes.
+
+        Returns:
+            ``MetadataFileParseReply``
+        """
+        ...
+
+    async def render(self, params: MetadataFileRenderParams) -> MetadataFileRenderReply:
+        """The bytes of a metadata file with the given fields set to the record's
+        values and everything else kept from the existing file.
+
+        Args:
+            params: Dialect, record, fields and existing bytes.
+
+        Returns:
+            ``MetadataFileRenderReply``
+        """
+        ...
+
+
 class EventConsumerSpec(TypedDict):
     """One declared event consumer: a `[[events.consumers]]` row the default
     entrypoint's `event(batch)` handler accepts.
@@ -2361,6 +3029,8 @@ class PluginCapabilities(TypedDict):
         crons: Five-field UTC cron schedules the default entrypoint handles
             (`scheduled(controller)` trigger, `[triggers] crons`), normalized to single
             spaces.
+        sockets: True when the guest declared `[sockets]`: it receives the host-brokered
+            `Sockets` binding and may export a `SocketHandler` for pushed messages.
     """
 
     entrypoints: list[Entrypoint]
@@ -2372,6 +3042,7 @@ class PluginCapabilities(TypedDict):
     queueConsumers: list[str]
     queueProducers: list[str]
     crons: list[str]
+    sockets: bool
 
 
 class CatalogCapabilities(TypedDict):
@@ -2384,9 +3055,17 @@ class CatalogCapabilities(TypedDict):
             `productId` and `isbn`) to a full bibliographic record. Catalog search then
             asks this store to fill description, narrators, runtime and genres on lean
             result rows from any store that carry an ISBN.
+        priceByIsbn: True when `purchaseHint` / `purchaseHints` price a query by its
+            exact ISBN (`lookup = isbn`): the answer is the store's listing of that ISBN
+            or not found, never a title match. The host then prices a card at this store
+            by the ISBNs of the card's recording before searching by title.
+        priceByAsin: True when `purchaseHint` / `purchaseHints` price a query by its
+            exact ASIN (`lookup = asin`), as `priceByIsbn` does for ISBNs.
     """
 
     detailByIsbn: bool
+    priceByIsbn: bool
+    priceByAsin: bool
 
 
 class Brand(TypedDict):
@@ -3365,6 +4044,8 @@ class PurchaseHintParams(TypedDict):
         isbn: ISBN when known. Omitted when absent (wire zero value).
         region: Storefront region / marketplace code.
         withPrice: When true, guests should include live price fields when available.
+        lookup: How the host asks the store to find the title. `unspecified` (an older
+            host) leaves the guest free to use any field, as before.
     """
 
     productId: NotRequired[str]
@@ -3374,6 +4055,7 @@ class PurchaseHintParams(TypedDict):
     isbn: NotRequired[str]
     region: str
     withPrice: bool
+    lookup: PriceLookup
 
 
 class ListDealsParams(TypedDict):
@@ -3622,9 +4304,26 @@ class PurchaseHintResult(TypedDict):
     Attributes:
         found: False when the guest could not resolve the title (`hint` is empty).
         hint: Purchase hint when `found`.
+        records: Every priced listing a title search matched (`lookup = title`), each
+            with its full catalog record, so the host can tell recordings apart by
+            identifiers, credits and kinds rather than by title. Empty for other lookups
+            and for guests that do not return records; `hint` then stays the answer.
     """
 
     found: bool
+    hint: PurchaseHint
+    records: list[PricedRecord]
+
+
+class PricedRecord(TypedDict):
+    """One priced listing returned by a title search.
+
+    Attributes:
+        record: The listing's catalog record: identifiers, credits, kinds, language.
+        hint: Its purchase link and prices, as `PurchaseHint` carries them.
+    """
+
+    record: CatalogHit
     hint: PurchaseHint
 
 
@@ -4804,6 +5503,464 @@ CoverImagesReply = Union[
     CoverImagesReplyErr,
 ]
 """Result union of `CoverFetcher.fetchCovers`."""
+
+
+class MetadataFileRecord(TypedDict):
+    """What one metadata file says about the edition it sits beside. A field the
+    file does not state is left out of `present` and means "unknown", never
+    "cleared"; a field in `present` with an empty value means the file states
+    that it is empty. The host checks every value against the `maxMetadataFile*`
+    caps and refuses a record that states a field its dialect does not carry.
+
+    Attributes:
+        present: Fields the file states, each at most once; at most the fields the
+            dialect declares.
+        title: Primary title. Omitted when absent (wire zero value).
+        subtitle: Subtitle when distinct from `title`. Omitted when absent (wire zero
+            value).
+        description: Long description / blurb; at most
+            `maxMetadataFileDescriptionBytes`. Omitted when absent (wire zero value).
+        publisher: Publisher name. Omitted when absent (wire zero value).
+        publishedAt: Publication date as `YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Omitted when
+            absent (wire zero value).
+        language: Content language as the file prints it (a code or a name). Omitted
+            when absent (wire zero value).
+        genres: Genre labels in file order.
+        tags: Free tags in file order.
+        abridgement: Whether the edition is abridged; `unknown` when the file does not
+            say.
+        expressionKind: How the work is realised; `unspecified` when the file does not
+            say.
+        identifiers: External identifiers the file carries.
+        credits: Credited contributors in billing order, only in the roles `creditRoles`
+            names.
+        creditRoles: Credit roles the file states, each at most once. A role listed here
+            with no credit means the file states nobody in that role; a role left out is
+            unknown. Empty unless `present` holds `credits`.
+        seriesEntries: Series the work belongs to.
+        chapters: Chapter layout in pre-order (see `MetadataChapter`); at most
+            `maxMetadataFileChapters`, starts never decreasing.
+        durationMs: Running time in milliseconds. Omitted when absent (wire zero value).
+    """
+
+    present: list[MetadataField]
+    title: NotRequired[str]
+    subtitle: NotRequired[str]
+    description: NotRequired[str]
+    publisher: NotRequired[str]
+    publishedAt: NotRequired[str]
+    language: NotRequired[str]
+    genres: list[str]
+    tags: list[str]
+    abridgement: Abridgement
+    expressionKind: ExpressionKind
+    identifiers: list[Identifier]
+    credits: list[Credit]
+    creditRoles: list[CreditRole]
+    seriesEntries: list[SeriesEntry]
+    chapters: list[MetadataChapter]
+    durationMs: NotRequired[int]
+
+
+class MetadataFileParseParams(TypedDict):
+    """Params of `MetadataFiles.parse`.
+
+    Attributes:
+        dialect: Dialect id from the manifest's `[[metadata_files.dialects]]` that the
+            host routed the file to.
+        fileName: The file's name without any folder (`metadata.json`, `Book.opf`).
+        bytes: The whole file; at most `maxMetadataFileBytes`.
+    """
+
+    dialect: str
+    fileName: str
+    bytes: bytes
+
+
+class MetadataFileParsed(TypedDict):
+    """Success payload of `MetadataFiles.parse`.
+
+    Attributes:
+        record: What the file says.
+    """
+
+    record: MetadataFileRecord
+
+
+class MetadataFileParseReplyOk(TypedDict):
+    """``MetadataFileParseReply`` member ``ok``.
+
+    Success: the parsed record.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the parsed record.
+    """
+
+    kind: Literal["ok"]
+    value: MetadataFileParsed
+
+
+class MetadataFileParseReplyErr(TypedDict):
+    """``MetadataFileParseReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+MetadataFileParseReply = Union[
+    MetadataFileParseReplyOk,
+    MetadataFileParseReplyErr,
+]
+"""Result union of `MetadataFiles.parse`. A file the dialect cannot read is
+`invalid_params`, so the host records it as unreadable and moves on.
+"""
+
+
+class MetadataAudioFile(TypedDict):
+    """One audio file of the edition a sidecar describes, for formats that name
+    their audio (a CUE sheet's `FILE` lines).
+
+    Attributes:
+        name: The file's name without any folder, as it sits next to the sidecar.
+        durationMs: Running time in milliseconds; 0 when the host does not know it.
+    """
+
+    name: str
+    durationMs: int
+
+
+class MetadataFileRenderParams(TypedDict):
+    """Params of `MetadataFiles.render`.
+
+    Attributes:
+        dialect: Dialect id from the manifest; one that declares `writes = true`.
+        record: Values to write. Only the fields in `fields` are read from it.
+        fields: Fields to set, each at most once and all declared by the dialect. A
+            listed field with an empty value removes it from the file.
+        existing: The file as it is now; empty when the host is creating it. Everything
+            the dialect does not change (unknown keys, comments, other fields) is kept.
+            At most `maxMetadataFileBytes`.
+        audioFiles: The edition's audio files in playback order, at most
+            `maxMetadataAudioFiles`; empty when the host has none or does not know them.
+            Chapter starts in `record` count from the start of the first file.
+    """
+
+    dialect: str
+    record: MetadataFileRecord
+    fields: list[MetadataField]
+    existing: bytes
+    audioFiles: list[MetadataAudioFile]
+
+
+class MetadataFileRendered(TypedDict):
+    """Success payload of `MetadataFiles.render`.
+
+    Attributes:
+        bytes: The new file; at most `maxMetadataFileBytes`. Empty when the dialect has
+            nothing left to write; the host decides whether to remove the file.
+    """
+
+    bytes: bytes
+
+
+class MetadataFileRenderReplyOk(TypedDict):
+    """``MetadataFileRenderReply`` member ``ok``.
+
+    Success: the new file.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the new file.
+    """
+
+    kind: Literal["ok"]
+    value: MetadataFileRendered
+
+
+class MetadataFileRenderReplyErr(TypedDict):
+    """``MetadataFileRenderReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+MetadataFileRenderReply = Union[
+    MetadataFileRenderReplyOk,
+    MetadataFileRenderReplyErr,
+]
+"""Result union of `MetadataFiles.render`."""
+
+
+class SocketFrameText(TypedDict):
+    """``SocketFrame`` member ``text``.
+
+    Text message, UTF-8.
+
+    Attributes:
+        kind: Always ``"text"``.
+        value: Text message, UTF-8.
+    """
+
+    kind: Literal["text"]
+    value: str
+
+
+class SocketFrameBinary(TypedDict):
+    """``SocketFrame`` member ``binary``.
+
+    Binary message.
+
+    Attributes:
+        kind: Always ``"binary"``.
+        value: Binary message.
+    """
+
+    kind: Literal["binary"]
+    value: bytes
+
+
+SocketFrame = Union[
+    SocketFrameText,
+    SocketFrameBinary,
+]
+"""One WebSocket message."""
+
+
+class SocketHeader(TypedDict):
+    """One request header on `Sockets.connect`.
+
+    Attributes:
+        name: Header name; the broker refuses hop-by-hop and WebSocket handshake names.
+        value: Header value. May carry a credential: the host never logs it.
+    """
+
+    name: str
+    value: str
+
+
+class SocketAutoResponse(TypedDict):
+    """A heartbeat the broker answers itself: when `request` arrives byte for byte,
+    it sends `response` and does not wake the guest.
+
+    Attributes:
+        request: Frame to match, at most `maxSocketAutoResponseBytes`.
+        response: Frame to send back, at most `maxSocketAutoResponseBytes`.
+    """
+
+    request: SocketFrame
+    response: SocketFrame
+
+
+class SocketConnectRequest(TypedDict):
+    """Arguments of `Sockets.connect`.
+
+    Attributes:
+        url: `wss://` or `ws://` URL, at most `maxSocketUrlBytes`. The host must be on
+            the plugin's network grant.
+        protocols: Requested subprotocols, at most `maxSocketHeaders`.
+        headers: Extra request headers, at most `maxSocketHeaders`.
+        autoResponses: Heartbeats the broker answers, at most `maxSocketAutoResponses`.
+        attachment: Initial attachment, at most `maxSocketAttachmentBytes`.
+    """
+
+    url: str
+    protocols: list[str]
+    headers: list[SocketHeader]
+    autoResponses: list[SocketAutoResponse]
+    attachment: bytes
+
+
+class SocketInfo(TypedDict):
+    """One open host-brokered socket.
+
+    Attributes:
+        socket: Host-minted socket id, stable for the socket's life.
+        url: URL the socket was opened to, without credentials.
+        protocol: Subprotocol the server chose; empty when none. Omitted when absent
+            (wire zero value).
+        attachment: Current attachment.
+    """
+
+    socket: str
+    url: str
+    protocol: NotRequired[str]
+    attachment: bytes
+
+
+class SocketConnectReplyOk(TypedDict):
+    """``SocketConnectReply`` member ``ok``.
+
+    Success: the handshake finished and the socket is open.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the handshake finished and the socket is open.
+    """
+
+    kind: Literal["ok"]
+    value: SocketInfo
+
+
+class SocketConnectReplyErr(TypedDict):
+    """``SocketConnectReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+SocketConnectReply = Union[
+    SocketConnectReplyOk,
+    SocketConnectReplyErr,
+]
+"""Result union of `Sockets.connect`."""
+
+
+class SocketList(TypedDict):
+    """Success payload of `Sockets.list`.
+
+    Attributes:
+        sockets: Open sockets, oldest first.
+    """
+
+    sockets: list[SocketInfo]
+
+
+class SocketListReplyOk(TypedDict):
+    """``SocketListReply`` member ``ok``.
+
+    Success: the open sockets.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the open sockets.
+    """
+
+    kind: Literal["ok"]
+    value: SocketList
+
+
+class SocketListReplyErr(TypedDict):
+    """``SocketListReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+SocketListReply = Union[
+    SocketListReplyOk,
+    SocketListReplyErr,
+]
+"""Result union of `Sockets.list`."""
+
+
+class SocketMessageReplyOk(TypedDict):
+    """``SocketMessageReply`` member ``ok``.
+
+    Success: what the guest asks of the host after the message.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: what the guest asks of the host after the message.
+    """
+
+    kind: Literal["ok"]
+    value: SocketMessageOk
+
+
+class SocketMessageReplyErr(TypedDict):
+    """``SocketMessageReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+SocketMessageReply = Union[
+    SocketMessageReplyOk,
+    SocketMessageReplyErr,
+]
+"""Reply of `SocketHandler.message`."""
+
+
+class SocketMessageOk(TypedDict):
+    """What a guest asks of the host after handling one pushed message.
+
+    Attributes:
+        pollEvents: True asks the host to call `Integration.pollEvents` now, while the
+            guest is awake, instead of at the next scheduled poll: the message announced
+            something the poll hands over (a new user). The host ignores it for a plugin
+            whose host schedules no poll.
+    """
+
+    pollEvents: bool
+
+
+class SocketMessage(TypedDict):
+    """Argument of `SocketHandler.message`.
+
+    Attributes:
+        socket: Socket the message arrived on.
+        frame: The message.
+        attachment: The socket's attachment when the message arrived.
+    """
+
+    socket: str
+    frame: SocketFrame
+    attachment: bytes
+
+
+class SocketClosed(TypedDict):
+    """Argument of `SocketHandler.closed`.
+
+    Attributes:
+        socket: Socket that closed; its id is not reused.
+        code: WebSocket close code; 1006 when the connection dropped without one.
+        reason: Close reason the peer sent; empty when none. Omitted when absent (wire
+            zero value).
+        clean: True when the close handshake completed.
+        attachment: The socket's last attachment.
+    """
+
+    socket: str
+    code: int
+    reason: NotRequired[str]
+    clean: bool
+    attachment: bytes
 
 
 class DbValueNull(TypedDict):
@@ -6148,6 +7305,7 @@ class PluginWorker(Protocol):
 
 
 __all__ = [
+    "ObjectChangeKind",
     "PluginErrorCode",
     "Entrypoint",
     "PortalAuthMode",
@@ -6161,7 +7319,9 @@ __all__ = [
     "FetchedFileRole",
     "CatalogSort",
     "CatalogField",
+    "PriceLookup",
     "Abridgement",
+    "MetadataField",
     "DbType",
     "DbStatementKind",
     "DbResultSelection",
@@ -6179,6 +7339,20 @@ __all__ = [
     "WriteOptions",
     "PutResult",
     "CopyResult",
+    "MoveOptions",
+    "MoveResult",
+    "KeyPair",
+    "MoveManyTargetPairs",
+    "MoveManyTargetPrefix",
+    "MoveManyTarget",
+    "MoveManyRequest",
+    "KeyOutcome",
+    "MoveManyPage",
+    "DeleteManyResult",
+    "HeadManyResult",
+    "ChangesRequest",
+    "ObjectChange",
+    "ChangesPage",
     "PluginDescribe",
     "OidcClientTemplate",
     "OidcClientsOk",
@@ -6242,6 +7416,21 @@ __all__ = [
     "CopyReplyOk",
     "CopyReplyErr",
     "CopyReply",
+    "MoveReplyOk",
+    "MoveReplyErr",
+    "MoveReply",
+    "MoveManyReplyOk",
+    "MoveManyReplyErr",
+    "MoveManyReply",
+    "DeleteManyReplyOk",
+    "DeleteManyReplyErr",
+    "DeleteManyReply",
+    "HeadManyReplyOk",
+    "HeadManyReplyErr",
+    "HeadManyReply",
+    "ChangesReplyOk",
+    "ChangesReplyErr",
+    "ChangesReply",
     "EmptyReplyOk",
     "EmptyReplyErr",
     "EmptyReply",
@@ -6284,12 +7473,15 @@ __all__ = [
     "NamedQueue",
     "KvNamespace",
     "NamedKv",
+    "Sockets",
+    "SocketHandler",
     "ContentSource",
     "RemoteLibrary",
     "PluginCli",
     "Oidc",
     "MetadataProvider",
     "CoverFetcher",
+    "MetadataFiles",
     "EventConsumerSpec",
     "PluginCapabilities",
     "CatalogCapabilities",
@@ -6364,6 +7556,7 @@ __all__ = [
     "CatalogDetailReply",
     "PurchaseHint",
     "PurchaseHintResult",
+    "PricedRecord",
     "PurchaseHintReplyOk",
     "PurchaseHintReplyErr",
     "PurchaseHintReply",
@@ -6448,6 +7641,38 @@ __all__ = [
     "CoverImagesReplyOk",
     "CoverImagesReplyErr",
     "CoverImagesReply",
+    "MetadataFileRecord",
+    "MetadataFileParseParams",
+    "MetadataFileParsed",
+    "MetadataFileParseReplyOk",
+    "MetadataFileParseReplyErr",
+    "MetadataFileParseReply",
+    "MetadataAudioFile",
+    "MetadataFileRenderParams",
+    "MetadataFileRendered",
+    "MetadataFileRenderReplyOk",
+    "MetadataFileRenderReplyErr",
+    "MetadataFileRenderReply",
+    "SocketFrameText",
+    "SocketFrameBinary",
+    "SocketFrame",
+    "SocketHeader",
+    "SocketAutoResponse",
+    "SocketConnectRequest",
+    "SocketInfo",
+    "SocketConnectReplyOk",
+    "SocketConnectReplyErr",
+    "SocketConnectReply",
+    "SocketList",
+    "SocketListReplyOk",
+    "SocketListReplyErr",
+    "SocketListReply",
+    "SocketMessageReplyOk",
+    "SocketMessageReplyErr",
+    "SocketMessageReply",
+    "SocketMessageOk",
+    "SocketMessage",
+    "SocketClosed",
     "DbValueNull",
     "DbValueBoolean",
     "DbValueInt64",

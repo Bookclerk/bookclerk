@@ -2,11 +2,11 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use bookclerk_config::{key_matches_reconcile_pattern, reconciliation_wildcard_rules};
-use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
+use bookclerk_library::{AcquireStatus, AcquireTitle, LibraryStore};
 use bookclerk_source::DownloadOptions;
 use bookclerk_storage::StorageBackend;
 #[cfg(test)]
@@ -181,17 +181,21 @@ pub async fn reconcile_library(
     )
     .await?;
     let mut summary = ReconcileSummary::default();
-    let mut after_id = None;
+    let mut walk = TitleWalk::default();
+    let mut after = None;
     loop {
-        let books = library
-            .list_books_page(options.account.as_deref(), after_id, 64)
+        let page = library
+            .acquire_titles_page(options.account.as_deref(), after.as_deref(), 64)
             .await?;
-        if books.is_empty() {
-            break;
+        for title in page.titles {
+            summary = reconcile_one(
+                library, storage, &index, &options, &mut walk, title, summary,
+            )
+            .await?;
         }
-        after_id = books.last().map(|book| book.id);
-        for book in books {
-            summary = reconcile_one(library, storage, &index, &options, book, summary).await?;
+        match page.next {
+            Some(next) => after = Some(next),
+            None => break,
         }
     }
     if let Some(scan_id) = index.scan_id() {
@@ -200,92 +204,172 @@ pub async fn reconcile_library(
     Ok(summary)
 }
 
+/// What one reconcile or storage-matching walk already wrote, so the
+/// edition two accounts hold is matched once, not once per title.
+#[derive(Debug, Default)]
+pub(crate) struct TitleWalk {
+    /// Editions this walk recorded as acquired.
+    matched: HashSet<String>,
+    /// Editions this walk cleared (their audio was missing): once the
+    /// acquiring holding is gone, every title of the edition may clear it,
+    /// and the first one does.
+    cleared: HashSet<String>,
+}
+
+impl TitleWalk {
+    /// True when this walk already recorded `title`'s edition as acquired
+    /// (the title's view was read before that write).
+    pub(crate) fn already_matched(&self, title: &AcquireTitle) -> bool {
+        self.matched.contains(&title.edition_id)
+    }
+
+    /// Notes that this walk recorded `title`'s edition as acquired.
+    pub(crate) fn record_match(&mut self, title: &AcquireTitle) {
+        self.matched.insert(title.edition_id.clone());
+    }
+
+    /// Notes that this walk cleared `title`'s edition.
+    pub(crate) fn record_clear(&mut self, title: &AcquireTitle) {
+        self.cleared.insert(title.edition_id.clone());
+    }
+}
+
+/// True when `title` names any of `ids` (its library UUID, store product
+/// id, ISBN or ASIN, any case); an empty `ids` names every title.
+pub(crate) fn title_is_named(title: &AcquireTitle, ids: &[String]) -> bool {
+    ids.is_empty()
+        || ids.iter().any(|a| {
+            title
+                .book_uuid
+                .as_ref()
+                .is_some_and(|uuid| a.eq_ignore_ascii_case(uuid))
+                || a.eq_ignore_ascii_case(&title.product_id)
+                || title
+                    .isbn
+                    .as_ref()
+                    .is_some_and(|isbn| a.eq_ignore_ascii_case(isbn))
+                || title
+                    .asin
+                    .as_ref()
+                    .is_some_and(|asin| a.eq_ignore_ascii_case(asin))
+        })
+}
+
+/// What reconcile or storage matching records for a title whose edition's
+/// audio was looked for in storage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TitleUpdate {
+    /// The edition's state already says so (or another title of it is the
+    /// one to change it): nothing to write.
+    Unchanged,
+    /// Record the edition as acquired at this key, by this title.
+    Acquired(String),
+    /// Record the edition as not acquired, by this title.
+    Cleared,
+}
+
+/// The write a found key (`Some`) or a miss (`None`) calls for, from the
+/// edition's state: an edition is matched once per walk, and only the title
+/// that acquired an edition clears it, as only that title's writes change
+/// an acquired edition.
+pub(crate) fn title_update(
+    title: &AcquireTitle,
+    walk: &TitleWalk,
+    found: Option<&str>,
+) -> TitleUpdate {
+    match found {
+        Some(key) => {
+            let current = title.status == AcquireStatus::Acquired
+                && title.storage_key.as_deref() == Some(key);
+            if current || walk.already_matched(title) {
+                TitleUpdate::Unchanged
+            } else {
+                TitleUpdate::Acquired(key.to_string())
+            }
+        }
+        None => {
+            let owner = title.acquired_by.is_none() || title.acquired_here();
+            let settled = walk.already_matched(title) || walk.cleared.contains(&title.edition_id);
+            if title.status == AcquireStatus::Acquired && owner && !settled {
+                TitleUpdate::Cleared
+            } else {
+                TitleUpdate::Unchanged
+            }
+        }
+    }
+}
+
 async fn reconcile_one(
     library: &LibraryStore,
     storage: &dyn StorageBackend,
     index: &StorageIndex,
     options: &ReconcileOptions,
-    book: BookRecord,
+    walk: &mut TitleWalk,
+    title: AcquireTitle,
     mut summary: ReconcileSummary,
 ) -> Result<ReconcileSummary> {
-    if !options.asins.is_empty()
-        && !options.asins.iter().any(|a| {
-            a.eq_ignore_ascii_case(&book.uuid)
-                || a.eq_ignore_ascii_case(&book.product_id)
-                || book
-                    .isbn
-                    .as_ref()
-                    .is_some_and(|isbn| a.eq_ignore_ascii_case(isbn))
-                || book
-                    .asin
-                    .as_ref()
-                    .is_some_and(|asin| a.eq_ignore_ascii_case(asin))
-        })
-    {
+    if !title_is_named(&title, &options.asins) {
         return Ok(summary);
     }
-    let matched = find_existing_for_book(index, storage, library, &book, &options.download).await?;
-    match matched {
-        Some(key) => {
-            if options.only_clear_missing {
-                summary.unchanged += 1;
-                return Ok(summary);
-            }
-            let needs_update = book.acquire_status != AcquireStatus::Acquired
-                || book.storage_key.as_deref() != Some(key.as_str());
-            if needs_update {
-                library
-                    .set_acquire_status(
-                        book.title_id(),
-                        &book.account_id,
-                        AcquireStatus::Acquired,
-                        Some(&key),
-                        None,
-                    )
-                    .await?;
-                summary.matched += 1;
-                tracing::info!(
-                    asin = %book.asin_or_isbn(),
-                    key = %key,
-                    "matched existing acquired media"
-                );
-            } else {
-                summary.unchanged += 1;
-            }
+    // The status writes are still keyed by the title's flat row.
+    let Some(book_uuid) = title.book_uuid.clone() else {
+        summary.unchanged += 1;
+        return Ok(summary);
+    };
+    let matched =
+        find_existing_for_title(index, storage, library, &title, &options.download).await?;
+    if (matched.is_some() && options.only_clear_missing)
+        || (matched.is_none() && (options.only_mark_found || !options.clear_missing))
+    {
+        summary.unchanged += 1;
+        return Ok(summary);
+    }
+    match title_update(&title, walk, matched.as_deref()) {
+        TitleUpdate::Unchanged => summary.unchanged += 1,
+        TitleUpdate::Acquired(key) => {
+            library
+                .set_acquire_status(
+                    &book_uuid,
+                    &title.account_id,
+                    AcquireStatus::Acquired,
+                    Some(&key),
+                    None,
+                )
+                .await?;
+            walk.record_match(&title);
+            summary.matched += 1;
+            tracing::info!(
+                asin = %title.asin_or_isbn(),
+                key = %key,
+                "matched existing acquired media"
+            );
         }
-        None => {
-            if options.only_mark_found {
+        TitleUpdate::Cleared => {
+            let still_there = match title.storage_key.as_deref() {
+                Some(key) => storage.exists(key).await?,
+                None => false,
+            };
+            if still_there {
                 summary.unchanged += 1;
                 return Ok(summary);
             }
-            if options.clear_missing && book.acquire_status == AcquireStatus::Acquired {
-                let still_there = match book.storage_key.as_deref() {
-                    Some(key) => storage.exists(key).await?,
-                    None => false,
-                };
-                if still_there {
-                    summary.unchanged += 1;
-                    return Ok(summary);
-                }
-                library
-                    .set_acquire_status(
-                        book.title_id(),
-                        &book.account_id,
-                        AcquireStatus::NotAcquired,
-                        None,
-                        None,
-                    )
-                    .await?;
-                summary.cleared += 1;
-            } else {
-                summary.unchanged += 1;
-            }
+            library
+                .set_acquire_status(
+                    &book_uuid,
+                    &title.account_id,
+                    AcquireStatus::NotAcquired,
+                    None,
+                    None,
+                )
+                .await?;
+            walk.record_clear(&title);
+            summary.cleared += 1;
         }
     }
     Ok(summary)
 }
 
-/// Find an existing acquired file for a book (planned path or ASIN-in-path).
+/// Find an existing acquired file for a title (planned path or ASIN-in-path).
 ///
 /// Honors configured folder/file templates and `save_podcasts_to_parent_folder`
 /// via the same path planner as acquire.
@@ -294,31 +378,31 @@ async fn reconcile_one(
 ///
 /// Returns a storage or database error from the lookup. A completed miss is
 /// `Ok(None)` and is not an error.
-pub async fn find_existing_for_book(
+pub async fn find_existing_for_title(
     index: &StorageIndex,
     storage: &dyn StorageBackend,
     library: &LibraryStore,
-    book: &BookRecord,
+    title: &AcquireTitle,
     download: &DownloadOptions,
 ) -> Result<Option<String>> {
-    // 1. Exact stored key, confirmed against the backend now.
-    if let Some(key) = &book.storage_key {
+    // 1. The edition's stored key, confirmed against the backend now.
+    if let Some(key) = &title.storage_key {
         if key_present(index, storage, key).await? {
             return Ok(Some(key.clone()));
         }
     }
 
-    let req = request_from_book(book, download);
+    let req = request_from_title(title, download);
     if let Some(key) = find_existing_for_request(index, storage, library, &req).await? {
         return Ok(Some(key));
     }
 
     // Fallback: match any identity token embedded in a storage key.
     for id in [
-        Some(book.product_id.as_str()),
-        book.asin.as_deref(),
-        book.isbn.as_deref(),
-        Some(book.asin_or_isbn()),
+        Some(title.product_id.as_str()),
+        title.asin.as_deref(),
+        title.isbn.as_deref(),
+        Some(title.asin_or_isbn()),
     ]
     .into_iter()
     .flatten()
@@ -445,7 +529,7 @@ async fn stream_identity(storage: &dyn StorageBackend, id: &str) -> Result<Optio
     Ok(best.map(|(_, key)| key))
 }
 
-/// Same as [`find_existing_for_book`] but for a acquire request before DB status is Acquired.
+/// Same as [`find_existing_for_title`] but for a acquire request before DB status is Acquired.
 ///
 /// Matching strategy:
 /// 1. Exact planned path under the *creation* replacement rules
@@ -669,18 +753,22 @@ async fn find_wildcard_planned(
     Ok(None)
 }
 
-/// Builds an acquire request from a library row for storage-key reconciliation.
-pub(crate) fn request_from_book(book: &BookRecord, download: &DownloadOptions) -> AcquireRequest {
+/// Builds an acquire request from a held title for storage-key
+/// reconciliation.
+pub(crate) fn request_from_title(
+    title: &AcquireTitle,
+    download: &DownloadOptions,
+) -> AcquireRequest {
     AcquireRequest {
-        asin: book.download_product_id().to_string(),
-        book_uuid: Some(book.uuid.clone()),
-        source: book.source.clone(),
-        account_id: book.account_id.clone(),
-        title: book.title.clone(),
-        authors: book.authors.clone(),
-        narrators: book.narrators.clone(),
-        series: book.series.clone(),
-        series_index: book.series_index.clone(),
+        asin: title.product_id.clone(),
+        book_uuid: title.book_uuid.clone(),
+        source: title.source.clone(),
+        account_id: title.account_id.clone(),
+        title: title.title.clone(),
+        authors: title.authors.clone(),
+        narrators: title.narrators.clone(),
+        series: title.series.clone(),
+        series_index: title.series_index.clone(),
         options: download.clone(),
         files_dir: PathBuf::new(),
         cache_dir: PathBuf::new(),
@@ -691,6 +779,7 @@ pub(crate) fn request_from_book(book: &BookRecord, download: &DownloadOptions) -
         library_id: None,
         parent_library_id: None,
         metadata: crate::AcquireMetadata::default(),
+        library_copies: crate::LibraryCopySource::default(),
     }
 }
 
@@ -1047,6 +1136,257 @@ mod reconcile_integration {
         assert_eq!(book.storage_key.as_deref(), Some("kept.m4b"));
     }
 
+    /// A library where two accounts hold the same Audible product.
+    async fn two_holders() -> LibraryStore {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        for account in ["acct", "other"] {
+            library
+                .upsert_account("audible", account, "us", None, true, "audible")
+                .await
+                .unwrap();
+            library
+                .upsert_book(&NewBook::minimal("B00EXAMPLE1", account, "us", "Cool Book"))
+                .await
+                .unwrap();
+        }
+        library
+    }
+
+    #[tokio::test]
+    async fn an_edition_two_accounts_hold_is_matched_once() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().join("books")).unwrap();
+        backend
+            .put(
+                "Some Author/Cool Book [B00EXAMPLE1].m4b",
+                Bytes::from_static(b"audio"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        let library = two_holders().await;
+        let summary = reconcile_library(&library, &backend, ReconcileOptions::default())
+            .await
+            .unwrap();
+        assert_eq!((summary.matched, summary.unchanged), (1, 1));
+        let title = library
+            .acquire_title("audible", "other", "us", "B00EXAMPLE1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(title.status, AcquireStatus::Acquired);
+        assert_eq!(
+            title.storage_key.as_deref(),
+            Some("Some Author/Cool Book [B00EXAMPLE1].m4b")
+        );
+
+        // A second pass finds the edition's state already current.
+        let again = reconcile_library(&library, &backend, ReconcileOptions::default())
+            .await
+            .unwrap();
+        assert_eq!((again.matched, again.unchanged), (0, 2));
+
+        // Only the titles a filter names are walked.
+        let named = reconcile_library(
+            &library,
+            &backend,
+            ReconcileOptions {
+                asins: vec!["b00example1".into()],
+                account: Some("other".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((named.matched, named.unchanged), (0, 1));
+        let none = reconcile_library(
+            &library,
+            &backend,
+            ReconcileOptions {
+                asins: vec!["B0NOTHERE".into()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((none.matched, none.unchanged, none.cleared), (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn only_the_acquiring_title_clears_a_missing_edition() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().join("books")).unwrap();
+        let library = two_holders().await;
+        library
+            .set_acquire_status(
+                "B00EXAMPLE1",
+                "other",
+                AcquireStatus::Acquired,
+                Some("gone.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        let summary = reconcile_library(&library, &backend, ReconcileOptions::default())
+            .await
+            .unwrap();
+        // The acquiring title ("other") clears it; "acct" leaves it alone.
+        assert_eq!((summary.cleared, summary.unchanged), (1, 1));
+        let title = library
+            .acquire_title("audible", "acct", "us", "B00EXAMPLE1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(title.status, AcquireStatus::NotAcquired);
+
+        // With clearing off, or only marking found files, a miss is left.
+        library
+            .set_acquire_status(
+                "B00EXAMPLE1",
+                "other",
+                AcquireStatus::Acquired,
+                Some("gone.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        for options in [
+            ReconcileOptions {
+                clear_missing: false,
+                ..Default::default()
+            },
+            ReconcileOptions {
+                only_mark_found: true,
+                ..Default::default()
+            },
+        ] {
+            let kept = reconcile_library(&library, &backend, options)
+                .await
+                .unwrap();
+            assert_eq!((kept.cleared, kept.unchanged), (0, 2));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_edition_whose_acquiring_holding_is_gone_is_cleared() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().join("books")).unwrap();
+        let library = two_holders().await;
+        library
+            .set_acquire_status(
+                "B00EXAMPLE1",
+                "other",
+                AcquireStatus::Acquired,
+                Some("gone.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        let before = library
+            .acquire_title("audible", "other", "us", "B00EXAMPLE1")
+            .await
+            .unwrap()
+            .unwrap();
+        // Revoking the acquiring account removes its holding; reconnecting
+        // and rescanning links the title again under a new holding.
+        library
+            .revoke_credentials("audible", "other")
+            .await
+            .unwrap();
+        library
+            .mark_connection_active("audible", "other")
+            .await
+            .unwrap();
+        library
+            .upsert_book(&NewBook::minimal("B00EXAMPLE1", "other", "us", "Cool Book"))
+            .await
+            .unwrap();
+        let after = library
+            .acquire_title("audible", "other", "us", "B00EXAMPLE1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(before.holding_id, after.holding_id);
+        assert_eq!(after.status, AcquireStatus::Acquired);
+        assert_eq!(after.acquired_by, None);
+
+        let summary = reconcile_library(&library, &backend, ReconcileOptions::default())
+            .await
+            .unwrap();
+        assert_eq!((summary.cleared, summary.unchanged), (1, 1));
+        let title = library
+            .acquire_title("audible", "acct", "us", "B00EXAMPLE1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(title.status, AcquireStatus::NotAcquired);
+    }
+
+    #[test]
+    fn a_title_update_follows_the_editions_state() {
+        let title = AcquireTitle {
+            holding_id: "h".into(),
+            edition_id: "ed".into(),
+            listing_id: "l".into(),
+            plugin_key: "audible".into(),
+            source: "audible".into(),
+            account_id: "acct".into(),
+            marketplace: "us".into(),
+            product_id: "B0".into(),
+            asin: None,
+            isbn: None,
+            title: "T".into(),
+            subtitle: None,
+            authors: None,
+            narrators: None,
+            series: None,
+            series_index: None,
+            series_product_id: None,
+            publisher: None,
+            categories: None,
+            length_minutes: None,
+            language: None,
+            is_abridged: false,
+            content_kind: "book",
+            purchased_at: None,
+            published_at: None,
+            status: AcquireStatus::Acquired,
+            storage_key: Some("a.m4b".into()),
+            acquired_by: Some("h".into()),
+            pdf_status: AcquireStatus::NotAcquired,
+            pdf_storage_key: None,
+            pdf_acquired_by: None,
+            book_uuid: Some("mine".into()),
+        };
+        let mut walk = TitleWalk::default();
+        assert_eq!(
+            title_update(&title, &walk, Some("a.m4b")),
+            TitleUpdate::Unchanged
+        );
+        assert_eq!(
+            title_update(&title, &walk, Some("b.m4b")),
+            TitleUpdate::Acquired("b.m4b".into())
+        );
+        assert_eq!(title_update(&title, &walk, None), TitleUpdate::Cleared);
+        let sibling = AcquireTitle {
+            holding_id: "other".into(),
+            book_uuid: Some("theirs".into()),
+            ..title.clone()
+        };
+        assert_eq!(title_update(&sibling, &walk, None), TitleUpdate::Unchanged);
+        let mut cleared = TitleWalk::default();
+        cleared.record_clear(&title);
+        assert_eq!(title_update(&title, &cleared, None), TitleUpdate::Unchanged);
+        walk.record_match(&title);
+        assert_eq!(
+            title_update(&sibling, &walk, Some("b.m4b")),
+            TitleUpdate::Unchanged
+        );
+        assert_eq!(title_update(&title, &walk, None), TitleUpdate::Unchanged);
+    }
+
     #[tokio::test]
     async fn deleted_preferred_format_uses_the_next_live_candidate() {
         let dir = tempdir().unwrap();
@@ -1090,16 +1430,16 @@ mod reconcile_integration {
             .upsert_book(&NewBook::minimal("B00EXAMPLE1", "acct", "us", "Cool Book"))
             .await
             .unwrap();
-        let book = library
-            .get_book("B00EXAMPLE1", "acct")
+        let title = library
+            .acquire_title("audible", "acct", "us", "B00EXAMPLE1")
             .await
             .unwrap()
             .unwrap();
-        let found = find_existing_for_book(
+        let found = find_existing_for_title(
             &StorageIndex::with_scan("scan-candidates"),
             &backend,
             &library,
-            &book,
+            &title,
             &bookclerk_source::DownloadOptions::default(),
         )
         .await
@@ -1152,8 +1492,13 @@ mod reconcile_integration {
             .storage_scan_put_object("scan-wild", key, 5, 0, true)
             .await
             .unwrap();
-        let req = request_from_book(
-            &stored,
+        let title = library
+            .acquire_title("audible", "acct", "us", "B00EXAMPLE1")
+            .await
+            .unwrap()
+            .unwrap();
+        let req = request_from_title(
+            &title,
             &bookclerk_source::DownloadOptions {
                 replacement_characters: bookclerk_config::posix_replacement_characters(),
                 ..Default::default()

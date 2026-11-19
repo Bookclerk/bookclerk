@@ -392,7 +392,9 @@ jobs:
             tools/lint/package-lock.json
             ui/package-lock.json
             packages/plugin-sdk/package-lock.json
+            crates/bookclerk-plugins/optional/integration-audiobookshelf/package-lock.json
             crates/bookclerk-plugins/optional/metadata-audnexus/package-lock.json
+            crates/bookclerk-plugins/optional/metadata-files/package-lock.json
             crates/bookclerk-plugins/optional/metadata-openlibrary/package-lock.json
 
       # The Python SDK check and its API docs install from
@@ -578,13 +580,13 @@ jobs:
           components: rustfmt, clippy, llvm-tools-preview
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-nextest@${{ steps.pins.outputs.cargo-nextest }}
 
       - name: Install cargo-llvm-cov
         if: env.CI_BUILD_ONLY != 'true'
-        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-llvm-cov@0.9.1
 
@@ -1792,8 +1794,8 @@ jobs:
 
       # GitHub sometimes never gives the macOS job a runner. Once that has
       # been retried (a pull request run re-run once, a merge group
-      # re-enqueued once), the gate lets the run pass without it
-      # (docs/contributing/ci.md#macos-job). Reads the GitHub API only.
+      # re-enqueued once), or at once on a build-only main push, the gate
+      # lets the run pass without it (docs/contributing/ci.md#macos-job). Reads the GitHub API only.
       # `needs` reports such a job as `abandoned` (the jobs API says
       # `cancelled`).
       - name: Check whether the macOS job never got a runner

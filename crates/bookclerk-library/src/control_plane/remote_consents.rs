@@ -1,4 +1,4 @@
-//! On a host node: this install's operator consent for owner plugins (H-4
+//! On a branch node: this install's operator consent for owner plugins (H-4
 //! design, section 5; step 8).
 //!
 //! An owner cluster that deploys a plugin to this host says which version

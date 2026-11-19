@@ -1,6 +1,6 @@
 # ADR: Library data model (works, expressions, editions, holdings)
 
-- **Status:** Accepted; steps 1 to 4 implemented, and step 5's holdings and branch titles (file quality, moved to step 5, still to come); the naming discriminator replaced by a required `<library id>` tag (see [Status of the work](#status-of-the-work)). Amended 2026-11-13: the kind enums were reshaped for mixed media and every kind became required (decisions 1 and 5)
+- **Status:** Accepted; steps 1 to 4 implemented, and step 5's holdings and branch titles (of file quality, moved to step 5, the probe of each stored file is recorded and the comparison is still to come); the naming discriminator replaced by a required `<library id>` tag (see [Status of the work](#status-of-the-work)). Amended 2026-11-13: the kind enums were reshaped for mixed media and every kind became required (decisions 1 and 5). A later record, [Metadata claims and file sync](metadata-claims-and-file-sync.md), decides to replace the work-level matcher of decision 4 with weighed evidence and to add a `catalog_id` slot; that work has not started
 - **Date:** 2026-11-04
 - **Related:** [Schema versioning](schema-versioning.md),
   [SQL database contract](sql-database-contract.md),
@@ -121,11 +121,11 @@ Each enum is a Rust enum matched exhaustively, a capnp enum on the wire, and a
 | `contributors` | A person or organisation, with a sort name | Surrogate id |
 | `credits` | A contributor's `role` on a work, expression or edition, with a position | `(target_kind, target_id, contributor_id, role)` |
 | `series`, `series_entries` | A series and a work's place in it (position text plus a sortable decimal) | `(series_id, work_id)` |
-| `store_listings` | What a store sells: `plugin_key`, `marketplace`, `product_id`, the edition, the store's ratings and its own text for the listing as parsed columns (synopsis, cover, credits as printed, URL), `observed_at` | `(plugin_key, marketplace, product_id)` |
+| `store_listings` | What a store sells: `plugin_key`, `marketplace`, `product_id`, the edition, the store's ratings and its own text for the listing as parsed columns (synopsis, cover, credits as printed, series and the store's series or show product id, URL), `observed_at` | `(plugin_key, marketplace, product_id)` |
 | `listing_offers` | What a listing costs one audience (`non_member` or `member`): price, label, currency, `observed_at` | `(listing_id, audience)` |
 | `holdings` | Ownership of a listing by an account (`plugin_key`, `account_id`), or by a branch (`node_id`, `node:<node_id>` provenance), as typed holder columns with cascading foreign keys, with entitlement (`purchase`, `plus`, `loan`, `free`) and `purchased_at` | Surrogate id; unique `(listing_id, holder)` |
 | `edition_files` | A file of an edition at a destination, with `role` (`audio`, `part`, `chapter`, `pdf`, `cover`, `sidecar`, `transcript`, `epub`), digest, quality and writer | `(destination, storage_key)` |
-| `edition_acquisitions` | An edition's acquire state (`status`, primary `storage_key`, last error) and the title whose write set it; only that title changes an acquired edition | `edition_id` |
+| `edition_acquisitions` | An edition's acquire state (`status`, primary `storage_key`, last error) and the account holding whose title's write set it (`holding_id`), plus its companion PDF's state (`pdf_status`, `pdf_storage_key`, `pdf_holding_id`); only the holding that acquired the audio or the PDF changes it | `edition_id` |
 | `user_title_state` | One user's finished flag, ratings and tags for a work (listening progress stays per provider in `listening_progress`, keyed by work) | `(user_id, work_id)` |
 | `resolution_overrides` | An Administrator's manual merge or split, which the resolver obeys | `(subject_kind, subject_id)` |
 
@@ -367,8 +367,19 @@ random id instead.
 
 Step 5 takes the quality comparison, because node frames do not carry a
 file's quality yet: storefronts may declare a file's format and quality,
-and the media worker probes each file and records it (`lossless`,
-`bitrate_kbps` stay empty until then). The same edition from another
+and the media worker probes each file and records it. The probe is in
+place: each audio file's row holds its media type, bitrate, whether it is
+lossless and the store it came from, written by the acquire that stored
+it or carried by the upload that delivered it. The comparison follows
+one rule for where a copy comes from, and an install's own acquire
+applies it (a library does not yet replace its own copy with a better
+one a host uploads). When a library already
+holds a copy of the edition from the same store, another install of that
+library takes the library's copy whatever its format, and the media
+worker converts it to the format that install prefers. When the
+library's copy came from a different store, the install downloads its
+own from its store, probes it, and keeps whichever of the two is better.
+The same edition from another
 store is then acquired anyway, the better audio kept and the sidecars
 merged, and both copies marked acquired. `edition_files_written` comes
 with step 5 too.
@@ -378,9 +389,15 @@ written in the same batch as the title's own status. A title of an edition
 another title already acquired takes that copy instead of fetching it again,
 and a sibling title that is queued, downloading or failed never hides files
 the edition already has. Only the title that acquired the edition, or any
-title once that one has left the library, can change its state. `book_acquired`
+title once that one has left the library, can change its state. An
+acquire job picks its titles from account holdings and their editions'
+state, not from `books`, so a title whose edition another account's title
+already acquired is not visited again. `book_acquired`
 names the edition (`editionId`), and a wishlist item records the edition
-that fulfilled it (`resolved_edition_id`).
+that fulfilled it (`resolved_edition_id`). Metadata gap-fill and the
+Audible catalog match walk held editions, not `books`: what they find
+fills the work, expression and edition, a matched ASIN becomes an edition
+identifier, and the edition records who enriched it (`enrich_source`).
 
 Step 6 also adds the page index the *Consequences* call for:
 `library_work_rows`, one row per held top-level work, refreshed by a
@@ -388,7 +405,22 @@ cluster-wide `host:library-index` event consumer and rebuilt by a
 `library_index_rebuild` job when the index has no finished build of the
 current layout. `GET /api/library/works` pages it by keyset cursor, and
 `GET /api/library/works/{id}` reads one work with its editions, listings,
-holdings and the caller's own state.
+holdings and the caller's own state. With `q`, the list route searches a
+per-node works index kept beside the title search index, fed by the same
+events and rebuilt by the same job. `GET /api/library/editions/{id}/cover`
+serves the cover an acquire wrote beside an edition's file, and
+`POST /api/library/acquire` takes `editions`, each queued as one of its
+titles until `books` is retired. The web app lists works, and
+`/api/library/books` (with `/{uuid}` and `/{uuid}/cover`) is removed.
+`PUT /api/library/works/{id}/state` edits the caller's own state, and an
+Administrator pins a listing to an edition with
+`PUT /api/library/listings/{id}/pin` (`DELETE` removes the pin) and reads
+the recorded conflicts from `GET /api/library/conflicts`. A pin moves the
+listing in the batch that records it, and its `edition_linked` dedup key
+carries the pin's revision, so moving a listing back publishes again.
+`POST /api/library/works/{id}/split` moves some of a work's expressions to
+a new work (copying its title, credits, series and each person's state)
+and isolates the new work, so the matcher keeps joining the original.
 
 User-facing pages (the glossary, *Where books go*, *Branches*, the plugin ABI
 reference) change with the step that changes their behaviour.

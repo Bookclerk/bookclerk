@@ -25,7 +25,7 @@ Connect-portal identities later.
 
 ```mermaid
 flowchart LR
-  Seeds["Local taste seeds<br/>finished, rated, listening"] --> Expand["Storefront expansion<br/>Libro.fm related audiobooks<br/>Audible author, series, ASIN, narrator (optional)<br/>Chirp related, series, author, catalog, deals<br/>GraphicAudio Magento related, series, search"]
+  Seeds["Local taste seeds<br/>finished, rated, listening"] --> Expand["Storefront expansion<br/>Libro.fm related audiobooks<br/>Audible series, author, narrator, similar titles<br/>Chirp related, series, author, catalog, deals<br/>GraphicAudio Magento related, series, search"]
   Expand --> Score["Local scoring<br/>filter owned<br/>embedding similarity<br/>author and series boost<br/>purchase hints"]
 ```
 
@@ -191,6 +191,11 @@ own token, and its hits and fetch time apply only while the call still
 carries it, so two members refreshing one call at once never leave a mix of
 both answers.
 
+A fetch reads the cached answers of every call a store's budget can reach,
+and the listings they name, in a few batched reads before it makes any
+call. An answer it makes and caches is reused by a later call in the same
+fetch with the same key.
+
 ### Shared listing pool
 
 Catalog data has one home: the library model's `store_listings`
@@ -324,24 +329,31 @@ picks that import up.
 ## Metadata gap-fill (Open Library compliance)
 
 `discover enrich-metadata` (and `discover recommend`) fill **low-volume
-metadata gaps** on owned rows (subjects / description / cover / language)
-from the deployed metadata-provider plugins, such as `openlibrary`. It is
-never a bulk catalog backend.
+metadata gaps** on held editions (subjects / description / cover /
+language) from the deployed metadata-provider plugins, such as
+`openlibrary`. It walks editions that some account or branch holds, a page
+at a time by edition id, and writes what it finds to the edition's work
+(description and subjects), its expression (language) and the edition
+itself (cover). It is never a bulk catalog backend.
 
 Per [Open Library API guidelines](https://openlibrary.org/developers/api):
 
 - The `openlibrary` plugin identifies itself with its `contact_email`
   setting ([integrations](../server/integrations.md#open-library-and-audnexus))
-- The host spaces rows about 400 ms apart and stops after 25 rows per run.
+- The host spaces editions about 400 ms apart and stops after 25 per run.
   It reads the library a page at a time and stops reading once the run's
   requests are spent
-- A row with an ISBN is looked up by ISBN; one without is searched by title
+- An edition with an ISBN is looked up by ISBN; one without is searched by title
   and author, and only a result with the same title (ignoring case and
   punctuation) is used. The first record that fills a gap wins, and the
-  title's work only takes the fields it lacks
-- Rows already enriched are skipped (`enrich_source` `metadata:<provider>`,
-  or the legacy `openlibrary`) — provenance cache. The work record is written
-  before the row is marked, so a failure leaves the row to retry
+  work only takes the fields it lacks
+- Editions already enriched are skipped (the edition's `enrich_source`
+  `metadata:<provider>`, or the legacy `openlibrary`) — provenance cache.
+  Until the `books` table is retired, the edition's `books` rows are
+  written first, each taking only the fields it lacks; then the work,
+  expression and cover; and the edition is marked last. A failure before
+  the mark keeps whatever was already written and leaves the edition
+  unmarked, so a later run asks again while any of its gaps is still open
 - For bulk data, use [monthly dumps](https://openlibrary.org/data), not the API
 
 WorldCat remains reserved (API key + ToS).
@@ -426,10 +438,22 @@ Candidates are **unowned** storefront hits (plus open wishlist items), scored by
    name. Names are compared without a leading article or trailing generic
    words such as "Series" or "Sequence", so "The Dune Sequence" matches
    "Dune" but "Midnight World" does not match "Midnight".
+   The Audible plugin asks, in order, for the seed's series, more by its
+   author, more by its narrator, and then the titles Audible lists as
+   similar to the seed (`/1.0/catalog/products/{asin}/sims`, its "listeners
+   also enjoyed"), and keeps that order when it cuts the list to the
+   requested size. It never keyword-searches the seed's title: that matched
+   words, not books (*The Great Hunt* found *Turkey Hunting for Kids*).
 3. Overlap with liked authors
-4. Embedding similarity to finished / highly rated / recently listened works
-5. Wishlist boost (`wish_count × 40` on the shared queue / Discover merge)
-6. Purchase hints resolved at view time (see below)
+4. **Genres** the person likes, read from the candidate's own genres
+   (`genre_match` in `bookclerk-discover`). The genres of the seed the
+   store was asked about count only for a candidate whose store gave none,
+   and then at a third of the weight: a store finds candidates from a seed,
+   but that does not make them the seed's genre. Each liked genre counts
+   once per candidate, however often the store's genre ladders repeat it.
+5. Embedding similarity to finished / highly rated / recently listened works
+6. Wishlist boost (`wish_count × 40` on the shared queue / Discover merge)
+7. Purchase hints resolved at view time (see below)
 
 Before scoring, a candidate in a language the reader does not listen in is
 dropped (`retain_reader_languages` in `bookclerk-discover`). The reader's
@@ -437,9 +461,9 @@ languages are the normalized languages of the taste books (the subject's own,
 with the household's blended in while those are few), or the default
 preferred language (`en`) when no taste book has one. A candidate whose store
 gave no language, or one `normalize_language` does not recognize, stays, as
-in catalog search. Editions in two different known languages are never merged
-into one candidate by a title-and-author match, so dropping one language never
-drops the other edition with it.
+in catalog search. Editions in two different languages are different
+expressions, so they are never merged into one candidate, and dropping one
+language never drops the other edition with it.
 
 Whether a wished title is already owned is decided by the library's
 resolver (`LibraryStore::owned_work_for`), the same way a scanned listing
@@ -587,14 +611,23 @@ CLI `discover recommend` applies the operator prefs row.
 **Discover shelves** stay taste-ranked (library, listening, embeddings).
 
 **Catalog search** (`GET /api/discover/search`) is a **non-personalized multi-store
-browser**: one page per connected storefront in parallel, identity-merge, then
-server-side include/exclude filters and sort. By default results are hard-filtered
+browser**: one page per connected storefront in parallel, merge the hits of one
+recording into one row, then server-side include/exclude filters and sort. By default results are hard-filtered
 to the client language (`lang` / `language=`). Chirp catalog hits carry Chirp’s
 `language` field (`English` / `Spanish` / …) plus `promotedTags` as genres, so
 non-matching languages are dropped; unknown/missing language metadata (e.g.
 sparse GraphicAudio rows) still passes. **All languages** (`all_languages=1`)
 disables the hard filter
 (soft prefer remains a weak tie-break).
+
+A row is one recording, never one title. Two stores' hits share a row when
+they share an ISBN or ASIN, or when the shared listing pool resolved both
+store products into the same expression (`LibraryStore::listing_expressions`;
+a product the pool has not listed, or placed in two recordings, merges only on
+its identifiers). Titles and authors are never compared, so a narration and a
+dramatisation of one book, or two narrations whose stores share no identifier
+and that the pool has not seen, are separate rows with their own cover,
+narrators and price.
 
 | Param | Notes |
 | --- | --- |
@@ -679,16 +712,54 @@ Kind matching: `author` hides every `author:…` row; `from_store` hides all
 
 ## Store links and pricing
 
-Recommendations are consolidated by bibliographic identity (canonical ISBN when
-present, ASIN, soft title+author) so the same book from multiple storefronts
-appears as **one card** with `store_editions` for each catalog match.
+Discover shows **one card per work**, and every card shows one recording
+of it. Which cards belong together comes from the library's data model, never
+from comparing titles and authors:
+
+- Candidates read from the shared listing pool carry the work and the
+  expression (`expressions.id`: one recording or text) their listing resolved
+  into; a live store hit carries the work the library's resolver places it in
+  (`LibraryStore::work_for`), when there is one. Each wish carries its work,
+  and the queue entry carries the edition the newest wish names and that
+  edition's expression.
+- Listings of **one recording** (the same expression, or a shared ISBN or ASIN)
+  are one card, with `store_editions` and a price for each store that sells it.
+- Listings of **one work in different recordings** (a narration and a full-cast
+  dramatisation, or two narrators) are one card too, but it keeps the owning
+  recording's cover, text and prices; the other recording adds only its taste
+  signals (score, reasons, shelf tags). A wish always owns its work's card and
+  keeps the edition it names, so **On the wishlist** shows the wished edition.
+  Between store cards, the higher-scoring one owns the card.
+- Cards with no work and no shared identifier stay apart, even with the same
+  title.
 
 Live prices use **public** storefront endpoints (no auth). The Discover feed
 loads with `no_purchase_hints=true`; the GUI:
 
-1. Progressively reveals shelves/cards while scrolling
-2. **Viewport-gates** pricing (`IntersectionObserver`)
-3. **Batches** visible cards into `POST /api/discover/purchase-hints/batch`
+1. Progressively reveals shelves and cards while scrolling. A shelf adds
+   eight cards at a time and keeps at least a screen's width of cards past
+   the visible ones, adding the next eight once less than that is left.
+2. Prices **a shelf at a time**: once a shelf is within half a screen of
+   the viewport, every card it has added looks up its prices and details
+   together, and each new group of eight does the same as it is added.
+3. **Batches** those lookups into `POST /api/discover/purchase-hints/batch`
+   and `POST /api/discover/title-meta/batch` (24 titles at most per
+   request). Lookups asked within 60 ms share a batch, only one batch of
+   each kind is in flight at a time (lookups asked meanwhile go out
+   together in the next one), and a title already waiting is not asked
+   twice.
+4. Lets **covers go first**: each batch waits until the covers on screen
+   have loaded, for at most 2 seconds, so on a small machine covers never
+   queue behind store lookups. Only covers that are loading and on screen
+   count; one off screen or clipped by a shelf does not.
+5. Keeps each finished answer **per title** for the tab (prices 10
+   minutes, details 6 hours) in memory and `sessionStorage`, and puts only
+   the titles it lacks into a batch, so a reload or a return to Discover
+   asks nothing it already has. The batch routes are `POST`s and API JSON
+   is `no-store`, so the browser's HTTP cache never holds them. Signing out
+   clears this cache, since prices depend on the viewer's linked stores,
+   and an answer to a lookup still running then is neither kept nor shared
+   with the next viewer.
 
 The daemon still searches **all** stores, then highlights `best` using the
 caller’s associated accounts (portal account links, or all operator accounts)
@@ -696,12 +767,60 @@ as a **membership** signal: linked stores are compared at member price; other
 stores at list / non-member price; the shelf shows the global cheapest of those
 effective prices. Client-supplied `preferred_sources` are ignored.
 
+Each store is asked about a card the strongest way it supports
+(`store_query_opts` in `bookclerk-discover`):
+
+1. By the product the card already names at that store (`lookup = product`).
+2. By the card's exact ISBN, when the store declares `catalog.priceByIsbn`.
+3. By the card's exact ASIN, when the store declares `catalog.priceByAsin`.
+4. Otherwise by title and authors (`lookup = title`).
+
+Of the first-party storefronts, Audible declares ASIN lookups and Libro.fm
+ISBN lookups. Chirp and GraphicAudio, whose catalogs know neither, are
+asked by title, as are Audible and Libro.fm for a card without the
+identifier they take.
+
+A title search can match another recording of the book (a full-cast
+dramatisation for a narration), so a store answers it with **records**:
+every priced listing the search found, each with its full catalog record
+(see [Price lookups](../plugins/abi.md#price-lookups)). The host stores the
+records in the [shared listing pool](#shared-listing-pool), which resolves
+each one into a recording, and keeps a record's price only when the record
+carries the card's ISBN or ASIN or the pool placed it in the same
+expression as the card's own store editions. Titles are never compared, and
+the store's own pick is not used. Placing the records shares the batch's
+deadline; when it fails or runs out, only records that carry the card's
+ISBN or ASIN price it, and the answer is marked `incomplete` and not
+cached, so the card asks again. An exact ISBN or ASIN answer is the card's edition
+and is kept as is. A store that answers a title search with one bare hint
+and no records (a guest from before records) is kept only when the hint's
+title and authors match the card's, as before. The single-title route
+prices its card through the same batch path.
+
+A bare hint can still name another recording than the card's. Before
+answering, the purchase-hint routes and the wishlist's own price
+lookup drop every price whose product the
+[shared listing pool](#shared-listing-pool) places only in another
+expression (recording) than the card's own store editions
+(`retain_card_recording` in `bookclerk-discover`, reading
+`LibraryStore::listing_expressions`). A card that names no store edition
+but an ASIN is checked as that Audible product. A price for a product the
+pool never listed stays, and so does every price when the pool knows none
+of the card's editions.
+
+The check shares the route's deadline (the batch's 10 seconds, or the
+wishlist's enrichment budget). When the pool read fails or runs out of time,
+the prices stay unchecked: a Discover answer is marked `incomplete`, so the
+page shows it but asks again later, and a new wish is saved with the
+resolved prices.
+
 A page of cards is priced with **one call per store**: the batch route
 sends every visible card's query to each deployed store's `purchaseHints`
-entrypoint together, with the product id the card already knows for that
-store, so Audible prices up to fifty titles in one catalog request and
+entrypoint together, each asked the strongest way the store supports (see
+above), so Audible prices up to fifty titles in one catalog request and
 Chirp prices a page in one aliased GraphQL query; Libro.fm and GraphicAudio
-have no bulk endpoint and loop inside the guest. Audible and Chirp resolve
+have no bulk endpoint, so the SDK's default `purchaseHints` looks their
+titles up four at a time inside the guest. Audible and Chirp resolve
 the titles whose product id they already know first, then look the rest up
 by title for at most five seconds, so a slow search never costs a known
 title its price; Audible prices each query in its own marketplace. The batch answers within

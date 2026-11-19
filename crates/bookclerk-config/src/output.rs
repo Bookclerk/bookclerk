@@ -306,15 +306,96 @@ pub enum BadBookAction {
     Ignore,
 }
 
-/// Which output destination plugin is active.
+/// How a destination names what it stores, which decides how acquire
+/// sanitizes and limits keys.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum OutputBackendKind {
-    /// Filesystem destination (the `local` plugin; default primary).
+#[serde(rename_all = "camelCase")]
+pub enum DestinationKeyStyle {
+    /// Paths on a file system (the `local` plugin): per-component length
+    /// limits, and Windows-safe names on Windows hosts.
     #[default]
-    Local,
-    /// Object-store destination (the `s3` plugin).
-    S3,
+    Filesystem,
+    /// Object-store keys (every other storage plugin): one key of at most
+    /// 1024 bytes and the object-store character set.
+    ObjectStore,
+}
+
+impl DestinationKeyStyle {
+    /// True for object-store keys.
+    #[must_use]
+    pub fn is_object_store(self) -> bool {
+        match self {
+            Self::Filesystem => false,
+            Self::ObjectStore => true,
+        }
+    }
+
+    /// True for file-system paths.
+    #[must_use]
+    pub fn is_filesystem(self) -> bool {
+        !self.is_object_store()
+    }
+}
+
+/// Id of one output destination: the plugin instance id of the deployed
+/// storage plugin instance that serves it.
+///
+/// Plans, upload manifests and `edition_files` name destinations by it.
+/// Several instances of one storage plugin are separate destinations
+/// (`docs/adr/storage-destinations.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct DestinationId(String);
+
+impl DestinationId {
+    /// Longest destination id in bytes; a hyphenated UUID is 36.
+    pub const MAX_LEN: usize = 64;
+
+    /// Checks `id`: 1 to [`Self::MAX_LEN`] lowercase ASCII letters, digits,
+    /// `_` or `-`, the characters a plugin instance id uses.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming what is wrong with `id`.
+    pub fn new(id: impl Into<String>) -> Result<Self, String> {
+        let id = id.into();
+        let valid = !id.is_empty()
+            && id.len() <= Self::MAX_LEN
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+        if valid {
+            Ok(Self(id))
+        } else {
+            Err(format!("invalid destination id {id:?}"))
+        }
+    }
+
+    /// The id as text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for DestinationId {
+    type Error = String;
+
+    fn try_from(id: String) -> Result<Self, Self::Error> {
+        Self::new(id)
+    }
+}
+
+impl From<DestinationId> for String {
+    fn from(id: DestinationId) -> Self {
+        id.0
+    }
+}
+
+impl std::fmt::Display for DestinationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// Normalize a storage key prefix: empty stays empty; otherwise ensure a trailing `/`.
@@ -334,6 +415,34 @@ pub fn normalize_storage_prefix(prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn destination_ids_take_plugin_instance_ids() {
+        for good in ["local", "my_store", "0d6f1c2e-8a4b-4c3d-9e2f-1a2b3c4d5e6f"] {
+            let id = DestinationId::new(good).unwrap();
+            assert_eq!(id.as_str(), good);
+            assert_eq!(id.to_string(), good);
+        }
+        let long = "a".repeat(DestinationId::MAX_LEN + 1);
+        for bad in ["", "S3", "a/b", "a b", "a.b", long.as_str()] {
+            assert!(DestinationId::new(bad).is_err(), "{bad:?}");
+        }
+        let parsed: DestinationId = serde_json::from_str("\"r2\"").unwrap();
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), "\"r2\"");
+        assert!(serde_json::from_str::<DestinationId>("\"R2\"").is_err());
+    }
+
+    #[test]
+    fn key_styles_say_which_is_an_object_store() {
+        assert!(!DestinationKeyStyle::Filesystem.is_object_store());
+        assert!(DestinationKeyStyle::ObjectStore.is_object_store());
+        assert!(DestinationKeyStyle::Filesystem.is_filesystem());
+        assert!(!DestinationKeyStyle::ObjectStore.is_filesystem());
+        assert_eq!(
+            DestinationKeyStyle::default(),
+            DestinationKeyStyle::Filesystem
+        );
+    }
 
     #[test]
     fn destination_naming_resolves_over_global_templates() {

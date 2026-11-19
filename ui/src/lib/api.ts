@@ -1,4 +1,7 @@
 import { normalizeThemePreference, type ThemePreference } from "@/lib/theme";
+import { coversSettled } from "@/lib/coverLoads";
+import { createLookupBatcher } from "@/lib/lookupBatcher";
+import { clearLookupCaches, createLookupCache, lookupGeneration } from "@/lib/lookupCache";
 
 /**
  * Pipeline acquire state for a library book row.
@@ -85,107 +88,228 @@ export interface AuthSession {
   second_factor?: AuthSecondFactor;
 }
 
+/** What a work is: a book, or a podcast (its show). */
+export type WorkKind = "book" | "podcast";
+
+/** How an edition is consumed. */
+export type MediaKind = "audio" | "ebook" | "print";
+
+/** How an expression renders its work. */
+export type ExpressionKind = "text" | "narration" | "dramatisation" | "graphic" | "original_audio";
+
+/** Whether an expression is abridged. */
+export type Abridgement = "unknown" | "unabridged" | "abridged";
+
+/** How a holder came to hold a listing. */
+export type Entitlement = "purchase" | "plus" | "loan" | "free";
+
+/** How `/api/library/works` orders a page (ignored while searching). */
+export type WorkSort = "title" | "author" | "series" | "purchased" | "added" | "length";
+
 /**
- * Library book row from `/api/library/books`.
- *
- * Field names match the daemon JSON (`snake_case`). Use `uuid` for acquire /
- * cover URLs; `asin` / `isbn` are store product ids when known.
+ * What `facet` and `value` filter works by: a value list of the page index,
+ * the caller's own tags, or their progress (`finished` / `not_finished`).
  */
-export interface BookRecord {
-  /** Library row primary key. */
-  id: number;
-  /** Stable book uuid used by acquire / cover / detail APIs. */
-  uuid: string;
-  /** Storefront plugin id (`audible`, `libro`, …). */
-  source: string;
-  /** Sealed account id that owns this title. */
-  account_id: string;
-  /** Store-native product id (ASIN, ISBN, UUID, …). */
-  product_id: string;
-  /** Audible ASIN when the source provides one. */
-  asin: string | null;
-  /** ISBN-13 / ISBN-10 when the source provides one. */
-  isbn: string | null;
-  /** Marketplace / locale code (`us`, `uk`, …). */
-  marketplace: string;
-  /** Display title. */
-  title: string;
-  /** Semicolon- or comma-separated author list. */
-  authors: string | null;
-  /** Semicolon- or comma-separated narrator list. */
-  narrators: string | null;
-  /** Series name when known. */
-  series: string | null;
-  /** Position within the series (string to preserve `#1.5` styles). */
-  series_index: string | null;
-  /** Audible series / podcast-parent ASIN when known. */
-  series_asin: string | null;
-  /** Pipeline state for the main audio acquire job. */
-  acquire_status: AcquireStatus;
-  /** Destination object key after a successful acquire. */
-  storage_key: string | null;
-  /** Last acquire / scan error message when status is `error`. */
-  error_message: string | null;
-  /** Purchase / library-add timestamp from the store (ISO-8601). */
-  purchased_at: string | null;
-  /** Space-separated user tags. */
-  tags: string | null;
-  /** Overall community rating (0–5) when enriched. */
-  rating_overall: number | null;
-  /** Performance / narrator rating when enriched. */
-  rating_performance: number | null;
-  /** Story rating when enriched. */
-  rating_story: number | null;
-  /** Whether the listener marked the title finished. */
-  is_finished: boolean;
-  /** Pipeline state for companion PDF acquire. */
-  pdf_status: AcquireStatus;
-  /** Destination key for an acquired companion PDF. */
-  pdf_storage_key: string | null;
-  /** Publisher name when known. */
-  publisher: string | null;
-  /** Runtime length in minutes when known. */
-  length_minutes: number | null;
-  /** True when the edition is abridged. */
-  is_abridged: boolean;
-  /** Content kind slug (`audiobook`, `podcast`, …). */
-  content_kind: string;
-  /** Genre / category list from the store (often `;`- or `,`-separated). */
-  categories: string | null;
-  /** Subtitle when the store provides one. */
-  subtitle: string | null;
-  /** Original publication date (ISO-8601 date or datetime). */
-  published_at: string | null;
-  /** Long-form description / blurb (may contain light HTML). */
-  description: string | null;
-  /** BCP-47-ish language code from the store. */
-  language: string | null;
-  /** Remote or proxied cover image URL. */
-  cover_url: string | null;
-  /** Same-origin path of this cover's processed images; see {@link coverSrc}. */
-  cover_path?: string | null;
-  /** Subject / BISAC-style tags when enriched. */
-  subjects: string | null;
-  /** Enrichment provider id that last wrote metadata. */
-  enrich_source: string | null;
-  /** Enrichment confidence score (0–1) when present. */
-  enrich_confidence: number | null;
-  /** When enrichment last ran (ISO-8601). */
-  enrich_updated_at: string | null;
-  /** Row insert time (ISO-8601). */
-  created_at: string;
-  /** Row last update time (ISO-8601). */
-  updated_at: string;
+export type WorkFacet =
+  "author" | "narrator" | "series" | "genre" | "publisher" | "source" | "tag" | "progress";
+
+/** One value of a facet, from `GET /api/library/works/facets/{facet}`. */
+export interface FacetValue {
+  /** The value, as {@link WorksQuery.value} takes it. */
+  value: string;
+  /** How many held works have it. */
+  works: number;
+}
+
+/** A page of a facet's values and the cursor of the next one. */
+export interface FacetValuesPage {
+  /** The page's values, by their lower-cased spelling. */
+  values: FacetValue[];
+  /** Pass as `cursor` for the next page; absent on the last. */
+  next_cursor?: string | null;
 }
 
 /**
- * Paginated library books list payload.
+ * One work row from `GET /api/library/works`: a book or podcast once,
+ * however many editions and accounts hold it.
  */
-export interface BooksResponse {
-  books: BookRecord[];
-  total: number;
-  limit: number;
-  offset: number;
+export interface WorkSummary {
+  /** Work id; opens the detail at `/api/library/works/{id}`. */
+  id: string;
+  /** Book or podcast. */
+  kind: WorkKind;
+  /** Display title. */
+  title: string;
+  /** Authors (or hosts), comma-separated, when known. */
+  authors: string | null;
+  /** Series name when the work is in one. */
+  series: string | null;
+  /** Position within the series (text, so `1.5` keeps its spelling). */
+  series_position: string | null;
+  /** Edition whose cover the row shows. */
+  cover_edition_id: string | null;
+  /** Same-origin path of that cover's processed images; see {@link coverSrc}. */
+  cover_path: string | null;
+  /** Media kinds the work's editions come in. */
+  media_kinds: MediaKind[];
+  /** The work's acquire state, summed over its editions. */
+  acquire_status: AcquireStatus;
+  /** Editions of the work in the library. */
+  edition_count: number;
+  /** Holdings of the work's listings. */
+  holding_count: number;
+  /** When the newest holding was added (ISO-8601). */
+  added_at: string;
+  /** Runtime in minutes of the longest held edition, when known. */
+  length_minutes?: number | null;
+  /** When the newest purchase a store reported happened (ISO-8601). */
+  purchased_at?: string | null;
+}
+
+/** A page of works and the cursor of the next one. */
+export interface WorksPage {
+  /** The page's works. */
+  works: WorkSummary[];
+  /** Pass as `cursor` for the next page; absent on the last. */
+  next_cursor?: string | null;
+}
+
+/** Who holds a listing: a store account, or a branch library's node. */
+export type Holder = AccountHolder | NodeHolder;
+
+/** A listing held by a store account. */
+export interface AccountHolder {
+  /** Discriminant. */
+  kind: "account";
+  /** The account's storefront plugin (`audible`, `libro`, ...). */
+  plugin_key: string;
+  /** The account's id on that storefront. */
+  account_id: string;
+}
+
+/** A listing held by a branch library's node. */
+export interface NodeHolder {
+  /** Discriminant. */
+  kind: "node";
+  /** The holding node's id. */
+  node_id: string;
+}
+
+/** One holding of a store listing. */
+export interface Holding {
+  /** Holding id. */
+  id: string;
+  /** Who holds it. */
+  holder: Holder;
+  /** How it is held. */
+  entitlement: Entitlement;
+  /** When the store says it was bought (ISO-8601), when known. */
+  purchased_at: string | null;
+  /** When the library first saw it (ISO-8601). */
+  added_at: string;
+}
+
+/** One store listing of an edition. */
+export interface Listing {
+  /** Listing id. */
+  id: string;
+  /** Storefront plugin (`audible`, `libro`, …). */
+  plugin_key: string;
+  /** Marketplace code (`us`, `uk`, …). */
+  marketplace: string;
+  /** The store's product id (ASIN, ISBN, …). */
+  product_id: string;
+  /** The listing's store page, when known. */
+  url: string | null;
+  /** Who holds it. */
+  holdings: Holding[];
+}
+
+/** One edition of a work, with its listings. */
+export interface Edition {
+  /** Edition id; acquire takes it in `editions`. */
+  id: string;
+  /** The work it belongs to (an episode for a podcast's editions). */
+  work_id: string;
+  /** Its expression. */
+  expression_id: string;
+  /** How the expression renders the work. */
+  expression_kind: ExpressionKind;
+  /** Language code, when known. */
+  language: string | null;
+  /** Whether it is abridged. */
+  abridgement: Abridgement;
+  /** How it is consumed. */
+  media_kind: MediaKind;
+  /** Edition title. */
+  title: string;
+  /** Subtitle, when known. */
+  subtitle: string | null;
+  /** Publication date (ISO-8601), when known. */
+  published_at: string | null;
+  /** Runtime in minutes, when known. */
+  duration_minutes: number | null;
+  /** Same-origin path of its processed cover; see {@link coverSrc}. */
+  cover_path: string | null;
+  /** Its acquire state. */
+  acquire_status: AcquireStatus;
+  /** Store listings that sell it. */
+  listings: Listing[];
+}
+
+/** The caller's own state for a work. */
+export interface WorkState {
+  /** Whether they finished it. */
+  is_finished: boolean;
+  /** Overall rating (0–5). */
+  rating_overall: number | null;
+  /** Performance rating (0–5). */
+  rating_performance: number | null;
+  /** Story rating (0–5). */
+  rating_story: number | null;
+  /** Space-separated tags. */
+  tags: string | null;
+}
+
+/** One work from `GET /api/library/works/{id}`. */
+export interface WorkDetail {
+  /** Work id. */
+  id: string;
+  /** Book or podcast. */
+  kind: WorkKind;
+  /** Display title. */
+  title: string;
+  /** Description, when known (may contain light HTML). */
+  description: string | null;
+  /** Authors (or hosts). */
+  authors: string[];
+  /** Series name, when in one. */
+  series: string | null;
+  /** Position within the series. */
+  series_position: string | null;
+  /** Its editions. */
+  editions: Edition[];
+  /** The caller's own state; absent when they recorded none. */
+  state?: WorkState | null;
+  /** Whether the caller can keep their own state (false for the operator token). */
+  can_edit_state?: boolean;
+}
+
+/**
+ * A change to the caller's own state for a work. A field left out keeps
+ * its value; `null` clears a rating or the tags.
+ */
+export interface WorkStateEdit {
+  /** Whether they finished it. */
+  is_finished?: boolean;
+  /** Overall rating (0–5). */
+  rating_overall?: number | null;
+  /** Performance rating (0–5). */
+  rating_performance?: number | null;
+  /** Story rating (0–5). */
+  rating_story?: number | null;
+  /** Whitespace-separated tags (at most 32, each at most 64 bytes). */
+  tags?: string | null;
 }
 
 /**
@@ -701,12 +825,21 @@ export async function fetchSigninMethods(): Promise<{
  * @throws {ApiError} When the library answers anything else.
  */
 export async function logout(): Promise<void> {
-  const res = await fetch("/api/auth/logout", {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
-  });
+  // What a viewer pays depends on their linked store accounts. Cleared
+  // again once the library answers: a lookup asked while the old session
+  // cookie still worked must not reach the next viewer either.
+  clearLookupCaches();
+  let res: Response;
+  try {
+    res = await fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+  } finally {
+    clearLookupCaches();
+  }
   if (!res.ok) {
     throw new ApiError(res.status, `Sign-out failed (${res.status})`);
   }
@@ -1241,6 +1374,40 @@ export interface ListedUser {
   }[];
 }
 
+/** The book field a patron scope rule matches one value of. */
+export type ScopeField = "genre" | "series" | "author" | "narrator";
+
+/** Whether a patron scope rule lets matching books in or keeps them out. */
+export type RuleEffect = "include" | "exclude";
+
+/** One rule of a patron scope. */
+export interface ScopeRule {
+  /** The field the rule matches. */
+  field: ScopeField;
+  /** One value of the field, compared without case. */
+  value: string;
+  /** Include or exclude. */
+  effect: RuleEffect;
+}
+
+/** Which part of the library a patron sees. */
+export interface PatronScope {
+  /** Visibility rules; empty means every book is visible. */
+  rules: ScopeRule[];
+}
+
+/** A patron's scope as `GET`/`PUT /api/users/{id}/scope` report it. */
+export interface UserScope {
+  /** The user. */
+  user_id: number;
+  /** The scope that applies: their own, or the library default. */
+  scope: PatronScope;
+  /** True when the user has their own scope. */
+  own: boolean;
+  /** False for an Owner or Administrator, who always see everything. */
+  applies: boolean;
+}
+
 /**
  * Created / patched user response from RBAC provisioning APIs.
  */
@@ -1279,8 +1446,8 @@ export interface ListedSession {
   client_label?: string | null;
   device_type?: string | null;
   user_agent?: string | null;
-  /** For a portal session: `browser`, or `client` for a clerk's library card. */
-  channel?: "browser" | "client" | null;
+  /** For a portal session: `browser`, or `clerk` for a clerk's library card. */
+  channel?: "browser" | "clerk" | null;
 }
 
 /**
@@ -1334,6 +1501,63 @@ export async function createUser(body: {
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Reads which part of the library a patron sees.
+ *
+ * @param id - The user.
+ * @returns The scope that applies and where it comes from.
+ */
+export async function getUserScope(id: number): Promise<UserScope> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/scope`, {
+    credentials: "include",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Gives a patron their own scope, or with `null` returns them to the
+ * library's default.
+ *
+ * @param id - The user.
+ * @param scope - Their own scope, or `null`.
+ * @returns The scope after the change.
+ */
+export async function putUserScope(id: number, scope: PatronScope | null): Promise<UserScope> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/scope`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scope }),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Reads the library's default patron scope.
+ *
+ * @returns The default.
+ */
+export async function getDefaultScope(): Promise<{ scope: PatronScope }> {
+  const res = await fetch("/api/users/default-scope", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Replaces the library's default patron scope.
+ *
+ * @param scope - The new default.
+ * @returns The default after the change.
+ */
+export async function putDefaultScope(scope: PatronScope): Promise<{ scope: PatronScope }> {
+  const res = await fetch("/api/users/default-scope", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(scope),
   });
   return parseJson(res);
 }
@@ -1698,14 +1922,43 @@ export interface PluginSettingChoice {
 export interface PluginSettingOption {
   key: string;
   label: string;
+  /** String form of the value; for a `table` setting, the rows as JSON text. */
   value: string;
-  value_type: "string" | "boolean" | "number" | "secret";
+  value_type: "string" | "boolean" | "number" | "secret" | "table";
   choices?: PluginSettingChoice[];
   /** True for a `secret` setting; `value` is always empty. */
   secret?: boolean;
   /** For a secret setting, whether a sealed value is stored for the instance. */
   secret_set?: boolean;
+  /** Columns of a `table` setting, in display order. */
+  columns?: PluginSettingColumn[];
 }
+
+/**
+ * One column of a `table` setting: the record field each row fills.
+ */
+export interface PluginSettingColumn {
+  /** Field name in each row object. */
+  key: string;
+  /** Column heading. */
+  label: string;
+  value_type: "string" | "boolean" | "number";
+  /** Dropdown values of an `enum` column. */
+  choices?: PluginSettingChoice[];
+  /** String form of the value a new row starts with. */
+  default?: string;
+  /** True when every row must have a value in this column. */
+  required?: boolean;
+}
+
+/** One stored cell of a `table` setting row. */
+export type SettingCellValue = string | number | boolean;
+
+/** One stored row of a `table` setting, keyed by column. */
+export type SettingRow = Record<string, SettingCellValue>;
+
+/** One value in a plugin instance document. */
+export type InstanceSettingValue = SettingCellValue | SettingRow[];
 
 /**
  * This node's deployment of a plugin instance, with its latest observation.
@@ -1787,7 +2040,7 @@ export interface PluginInstanceConfig {
   plugin_key: string;
   revision: number;
   /** Stored settings (operator writes only; defaults are not stored). */
-  settings: Record<string, string | number | boolean>;
+  settings: Record<string, InstanceSettingValue>;
   /** Secret refs (names only). */
   secret_refs: { key: string; name: string }[];
   /** Schema defaults under the stored settings. */
@@ -1799,7 +2052,7 @@ export interface PluginInstanceConfig {
  */
 export interface PluginInstanceConfigWrite {
   expected_revision: number;
-  settings: Record<string, string | number | boolean>;
+  settings: Record<string, InstanceSettingValue>;
   secret_refs: { key: string; name: string }[];
   /** Secret values to seal; never echoed back. */
   secrets?: Record<string, string>;
@@ -2296,7 +2549,7 @@ export interface ConfigNodeView {
   /** True for the node serving this request. */
   this_node: boolean;
   /** `owner` (shares the database) or `host` (its own database, enrolled to contribute). */
-  kind: "owner" | "host";
+  kind: "shared" | "branch";
   /** User who administers this node, when one is assigned. */
   owner: { user_id: number; display_name: string | null; role: string } | null;
 }
@@ -2333,7 +2586,7 @@ export interface ClusterSummary {
   nodes: number;
   live: number;
   drained: number;
-  host_nodes: number;
+  branch_nodes: number;
   cpu_budget_millicores: number;
   cpu_reserved_millicores: number;
   memory_budget_bytes: number;
@@ -2446,8 +2699,8 @@ export interface ClusterLinkView {
   work_for_members?: boolean;
   /** "Keep copies of other members' books" (off by default). */
   keep_member_copies?: boolean;
-  /** "Use this computer to download" (on by default); off makes this server a window. */
-  download?: boolean;
+  /** "Keep copies on this computer" (on by default): take the library's copies of this server's person's books. */
+  keep_copies?: boolean;
   /** The most jobs this host runs for the library at once; `null` is an equal share of the machine. */
   max_jobs?: number | null;
   /** Jobs the library may have running here now; absent while its link is not running. */
@@ -2765,12 +3018,19 @@ export async function portalLoginIntegration(body: {
  * @returns Resolves when logout finishes (best-effort).
  */
 export async function portalLogout(): Promise<void> {
-  await fetch("/api/portal/logout", {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
-  });
+  // What a viewer pays depends on their linked store accounts. Cleared
+  // again once the library answers (see `logout`).
+  clearLookupCaches();
+  try {
+    await fetch("/api/portal/logout", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+  } finally {
+    clearLookupCaches();
+  }
 }
 
 /**
@@ -2903,30 +3163,123 @@ export async function fetchJobs(): Promise<JobInfo[]> {
   return parseJson(res);
 }
 
-/**
- * Fetches one page of library books for the Library table.
- *
- * Omits `status` (or passes `all`) to include every acquire state. Default page
- * size is 40 when `limit` is omitted.
- *
- * @param params - Optional search string, acquire-status filter, and pagination.
- * @returns Paginated books plus total count for the pager.
- */
-export async function fetchBooks(params: {
+/** Filters and paging for {@link fetchWorks}. */
+export interface WorksQuery {
+  /** Search text; matches come best first and `sort` is ignored. */
   q?: string;
-  status?: string;
+  /** Page order without `q`. */
+  sort?: WorkSort;
+  /** Only works with an edition of this media kind. */
+  media_kind?: MediaKind;
+  /** Only books or only podcasts. */
+  kind?: WorkKind;
+  /** Only works in this acquire state (`all` or omitted for every state). */
+  status?: AcquireStatus | "all";
+  /** Only works held on this account id. */
+  account?: string;
+  /** Only works with {@link WorksQuery.value} under this facet. */
+  facet?: WorkFacet;
+  /** The facet's value; an empty series value means works in no series. */
+  value?: string;
+  /** The previous page's `next_cursor`. */
+  cursor?: string;
+  /** Page size (the daemon caps it at 200). */
   limit?: number;
-  offset?: number;
-}): Promise<BooksResponse> {
+}
+
+/**
+ * Fetches one page of the library's works.
+ *
+ * @param query - Filters, order and the cursor of the page to read.
+ * @returns The page and the next page's cursor.
+ */
+export async function fetchWorks(query: WorksQuery): Promise<WorksPage> {
   const sp = new URLSearchParams();
-  if (params.q) sp.set("q", params.q);
-  if (params.status && params.status !== "all") sp.set("status", params.status);
-  sp.set("limit", String(params.limit ?? 40));
-  sp.set("offset", String(params.offset ?? 0));
-  const res = await fetchRetryingBusy(`/api/library/books?${sp}`, {
+  if (query.q) sp.set("q", query.q);
+  if (query.sort && !query.q) sp.set("sort", query.sort);
+  if (query.media_kind) sp.set("media_kind", query.media_kind);
+  if (query.kind) sp.set("kind", query.kind);
+  if (query.status && query.status !== "all") sp.set("status", query.status);
+  if (query.account) sp.set("account", query.account);
+  if (query.facet) {
+    sp.set("facet", query.facet);
+    sp.set("value", query.value ?? "");
+  }
+  if (query.cursor) sp.set("cursor", query.cursor);
+  sp.set("limit", String(query.limit ?? 40));
+  const res = await fetchRetryingBusy(`/api/library/works?${sp}`, {
     credentials: "include",
   });
   return parseJson(res);
+}
+
+/**
+ * Fetches one page of a facet's values across the library's held works.
+ *
+ * @param facet - The facet (not `progress`, whose values are fixed).
+ * @param cursor - The previous page's `next_cursor`; omitted for the first.
+ * @returns The page and the next page's cursor.
+ */
+export async function fetchFacetValues(
+  facet: Exclude<WorkFacet, "progress">,
+  cursor?: string,
+): Promise<FacetValuesPage> {
+  const sp = new URLSearchParams({ limit: "500" });
+  if (cursor) sp.set("cursor", cursor);
+  const res = await fetchRetryingBusy(
+    `/api/library/works/facets/${encodeURIComponent(facet)}?${sp}`,
+    { credentials: "include" },
+  );
+  return parseJson(res);
+}
+
+/**
+ * Fetches one work with its editions, listings, holdings and own state.
+ *
+ * @param id - Work id.
+ * @returns The work.
+ */
+export async function fetchWork(id: string): Promise<WorkDetail> {
+  const res = await fetchRetryingBusy(`/api/library/works/${encodeURIComponent(id)}`, {
+    credentials: "include",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Changes the caller's own finished flag, ratings or tags for a work.
+ *
+ * @param id - The work.
+ * @param edit - The fields to change.
+ * @returns The caller's state after the change.
+ */
+export async function putWorkState(id: string, edit: WorkStateEdit): Promise<WorkState> {
+  const res = await fetch(`/api/library/works/${encodeURIComponent(id)}/state`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(edit),
+  });
+  return parseJson(res);
+}
+
+/**
+ * The editions of `work` an acquire should queue: those someone holds
+ * that are not acquired or on their way.
+ *
+ * @param work - A work's detail.
+ * @returns Edition ids for {@link triggerAcquire}'s `editions`.
+ */
+export function acquirableEditions(work: WorkDetail): string[] {
+  return work.editions
+    .filter(
+      (e) =>
+        e.listings.some((l) => l.holdings.length > 0) &&
+        e.acquire_status !== "acquired" &&
+        e.acquire_status !== "queued" &&
+        e.acquire_status !== "downloading",
+    )
+    .map((e) => e.id);
 }
 
 /**
@@ -2948,12 +3301,15 @@ export async function triggerScan(): Promise<ActionResponse> {
 }
 
 /**
- * Queues acquire for a library book by uuid and/or ASIN.
+ * Queues an acquire: everything pending when the body names nothing, or
+ * the named editions or title.
  *
- * @param body - Target identifiers (`uuid` and/or `asin`).
+ * @param body - `editions` (ids from a work's detail), or a title by
+ *   `uuid` / `asin`.
  * @returns Action ack including `job_id`.
  */
 export async function triggerAcquire(body: {
+  editions?: string[];
   uuid?: string;
   asin?: string;
 }): Promise<ActionResponse> {
@@ -3051,13 +3407,14 @@ export function resumeEventDelivery(id: string): Promise<ActionResponse> {
 }
 
 /**
- * Builds the authenticated cover image URL for a library book.
+ * Builds the authenticated URL of the cover an acquire wrote beside an
+ * edition's file (404 when this node has none).
  *
- * @param uuid - Book uuid.
- * @returns Relative URL under `/api/library/books/.../cover`.
+ * @param editionId - Edition id.
+ * @returns Relative URL under `/api/library/editions/.../cover`.
  */
-export function coverUrl(uuid: string): string {
-  return `/api/library/books/${encodeURIComponent(uuid)}/cover`;
+export function editionCoverUrl(editionId: string): string {
+  return `/api/library/editions/${encodeURIComponent(editionId)}/cover`;
 }
 
 /** A processed cover size the daemon serves: thumbnail, card, or full size. */
@@ -3575,7 +3932,7 @@ export async function requestDiscoverRefresh(): Promise<DiscoverStatus> {
  */
 export async function fetchDiscoverFeed(): Promise<DiscoverFeed> {
   // The daemon only reads stored shelves (queued jobs build them), so this
-  // answers quickly; live prices still load viewport-gated per card.
+  // answers quickly; live prices load per shelf, in batches (see lookupBatcher.ts).
   const res = await fetchWithTimeout(
     "/api/discover/recommendations",
     { credentials: "include" },
@@ -3585,14 +3942,24 @@ export async function fetchDiscoverFeed(): Promise<DiscoverFeed> {
   return parseJson(res);
 }
 
-type PurchaseHintsWaiter = {
-  query: PurchaseHintsQuery;
-  resolve: (value: PurchaseHintsResponse) => void;
-  reject: (err: unknown) => void;
-};
+/** Most queries the lookup batch routes take in one request. */
+const LOOKUP_BATCH_MAX = 24;
+/** How long the first card's lookup waits for other cards to join its batch. */
+const LOOKUP_BATCH_WINDOW_MS = 60;
+/**
+ * Longest a lookup batch waits for the covers on screen to load first. Covers
+ * are what the viewer sees first; prices and details follow.
+ */
+const COVERS_FIRST_MAX_WAIT_MS = 2_000;
 
-let purchaseHintsQueue: PurchaseHintsWaiter[] = [];
-let purchaseHintsTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * Lets the covers on screen load before a lookup batch goes out.
+ *
+ * @returns A promise that resolves once they have, or after the cap.
+ */
+function coversFirst(): Promise<void> {
+  return coversSettled(COVERS_FIRST_MAX_WAIT_MS);
+}
 
 function serializePurchaseHintsQuery(q: PurchaseHintsQuery) {
   return {
@@ -3607,59 +3974,60 @@ function serializePurchaseHintsQuery(q: PurchaseHintsQuery) {
   };
 }
 
-async function flushPurchaseHintsQueue() {
-  const batch = purchaseHintsQueue.splice(0, purchaseHintsQueue.length);
-  purchaseHintsTimer = null;
-  if (batch.length === 0) return;
-
-  // Chunk to the server's max of 24.
-  for (let i = 0; i < batch.length; i += 24) {
-    const chunk = batch.slice(i, i + 24);
-    try {
-      const res = await fetchWithTimeout(
-        "/api/discover/purchase-hints/batch",
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            queries: chunk.map((w) => serializePurchaseHintsQuery(w.query)),
-          }),
-        },
-        25_000,
-        "Purchase hints batch",
-      );
-      const data = (await parseJson(res)) as { results: PurchaseHintsResponse[] };
-      chunk.forEach((waiter, idx) => {
-        const result = data.results[idx] ?? { hints: [], best: null };
-        waiter.resolve(result);
-      });
-    } catch (err) {
-      // Fall back to single-card requests if the batch endpoint fails.
-      await Promise.all(
-        chunk.map(async (waiter) => {
-          try {
-            const res = await fetchWithTimeout(
-              "/api/discover/purchase-hints",
-              {
-                method: "POST",
-                credentials: "include",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(serializePurchaseHintsQuery(waiter.query)),
-              },
-              25_000,
-              "Purchase hints",
-            );
-            waiter.resolve(await parseJson(res));
-          } catch (singleErr) {
-            waiter.reject(singleErr);
-          }
-        }),
-      );
-      void err;
-    }
+/**
+ * Sends one purchase-hints batch; when the batch route fails, asks for each
+ * query on its own instead.
+ *
+ * @param queries - At most {@link LOOKUP_BATCH_MAX} queries.
+ * @returns One answer per query, in order.
+ */
+async function sendPurchaseHintsBatch(
+  queries: PurchaseHintsQuery[],
+): Promise<PurchaseHintsResponse[]> {
+  try {
+    const res = await fetchWithTimeout(
+      "/api/discover/purchase-hints/batch",
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queries: queries.map(serializePurchaseHintsQuery) }),
+      },
+      25_000,
+      "Purchase hints batch",
+    );
+    const data = (await parseJson(res)) as { results: PurchaseHintsResponse[] };
+    return queries.map((_, idx) => data.results[idx] ?? { hints: [], best: null });
+  } catch {
+    // Fall back to single-card requests if the batch endpoint fails.
+    return Promise.all(
+      queries.map(async (query) => {
+        const res = await fetchWithTimeout(
+          "/api/discover/purchase-hints",
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(serializePurchaseHintsQuery(query)),
+          },
+          25_000,
+          "Purchase hints",
+        );
+        return (await parseJson(res)) as PurchaseHintsResponse;
+      }),
+    );
   }
 }
+
+/** Purchase-hint lookups, batched (see `lookupBatcher.ts`). */
+const purchaseHintsBatcher = createLookupBatcher<PurchaseHintsQuery, PurchaseHintsResponse>({
+  maxBatch: LOOKUP_BATCH_MAX,
+  windowMs: LOOKUP_BATCH_WINDOW_MS,
+  keyOf: (q) => purchaseHintsClientKey(q),
+  send: sendPurchaseHintsBatch,
+  before: coversFirst,
+  generation: lookupGeneration,
+});
 
 /**
  * One Audible customer review for title detail.
@@ -3736,26 +4104,23 @@ export type TitleReviewsPage = {
   reviews: TitleReview[];
 };
 
-type CacheEntry<T> = { value: T; expires: number };
-
-const purchaseHintsClientCache = new Map<string, CacheEntry<PurchaseHintsResponse>>();
-const titleMetaClientCache = new Map<string, CacheEntry<TitleMeta | null>>();
 const PURCHASE_HINTS_CLIENT_TTL_MS = 10 * 60_000;
 const TITLE_META_CLIENT_TTL_MS = 6 * 60 * 60_000;
+/** Most titles each Discover lookup cache keeps for the tab. */
+const LOOKUP_CACHE_ENTRIES = 600;
 
-function clientCacheGet<T>(map: Map<string, CacheEntry<T>>, key: string): T | undefined {
-  const hit = map.get(key);
-  if (!hit) return undefined;
-  if (hit.expires <= Date.now()) {
-    map.delete(key);
-    return undefined;
-  }
-  return hit.value;
-}
-
-function clientCacheSet<T>(map: Map<string, CacheEntry<T>>, key: string, value: T, ttlMs: number) {
-  map.set(key, { value, expires: Date.now() + ttlMs });
-}
+/** Finished price answers per title (see `lookupCache.ts`). */
+const purchaseHintsClientCache = createLookupCache<PurchaseHintsResponse>(
+  "purchase-hints",
+  PURCHASE_HINTS_CLIENT_TTL_MS,
+  LOOKUP_CACHE_ENTRIES,
+);
+/** Details answers per title, `null` for none (see `lookupCache.ts`). */
+const titleMetaClientCache = createLookupCache<TitleMeta | null>(
+  "title-meta",
+  TITLE_META_CLIENT_TTL_MS,
+  LOOKUP_CACHE_ENTRIES,
+);
 
 function purchaseHintsClientKey(q: PurchaseHintsQuery): string {
   const editions = (q.store_editions ?? [])
@@ -3775,32 +4140,26 @@ function purchaseHintsClientKey(q: PurchaseHintsQuery): string {
 }
 
 /**
- * Resolves purchase hints, coalescing viewport-gated cards into a short batch window.
+ * Resolves purchase hints through a batch shared with every other card.
+ *
+ * Lookups asked close together go out as one batch request, one batch at a
+ * time, after the covers on screen have loaded (see `lookupBatcher.ts`).
  *
  * @param body - Title identity and optional candidate edition.
  * @returns Hints list plus optional best pick (client-cached).
  */
 export function fetchPurchaseHints(body: PurchaseHintsQuery): Promise<PurchaseHintsResponse> {
   const key = purchaseHintsClientKey(body);
-  const cached = clientCacheGet(purchaseHintsClientCache, key);
+  const cached = purchaseHintsClientCache.get(key);
   if (cached) return Promise.resolve(cached);
-  return new Promise((resolve, reject) => {
-    purchaseHintsQueue.push({
-      query: body,
-      resolve: (value) => {
-        // An unfinished lookup is not kept, so the next ask reaches the server.
-        if (!value.incomplete) {
-          clientCacheSet(purchaseHintsClientCache, key, value, PURCHASE_HINTS_CLIENT_TTL_MS);
-        }
-        resolve(value);
-      },
-      reject,
-    });
-    if (purchaseHintsTimer == null) {
-      purchaseHintsTimer = setTimeout(() => {
-        void flushPurchaseHintsQueue();
-      }, 40);
+  const asked = lookupGeneration();
+  return purchaseHintsBatcher(body).then((value) => {
+    // An unfinished lookup is not kept, so the next ask reaches the server;
+    // nor is one asked for a viewer who has since signed out.
+    if (!value.incomplete && lookupGeneration() === asked) {
+      purchaseHintsClientCache.set(key, value);
     }
+    return value;
   });
 }
 
@@ -3839,70 +4198,54 @@ function serializeTitleMetaQuery(body: TitleMetaQuery) {
   };
 }
 
-type TitleMetaWaiter = {
-  query: TitleMetaQuery;
-  resolve: (value: TitleMeta | null) => void;
-  reject: (err: unknown) => void;
-};
-
-let titleMetaQueue: TitleMetaWaiter[] = [];
-let titleMetaTimer: ReturnType<typeof setTimeout> | null = null;
-
-async function flushTitleMetaQueue() {
-  const batch = titleMetaQueue.splice(0, titleMetaQueue.length);
-  titleMetaTimer = null;
-  if (batch.length === 0) return;
-  for (let i = 0; i < batch.length; i += 24) {
-    const chunk = batch.slice(i, i + 24);
-    try {
-      const res = await fetchWithTimeout(
-        "/api/discover/title-meta/batch",
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            queries: chunk.map((w) => serializeTitleMetaQuery(w.query)),
-          }),
-        },
-        25_000,
-        "Title metadata batch",
-      );
-      const data = (await parseJson(res)) as { results: (TitleMeta | null)[] };
-      chunk.forEach((waiter, idx) => {
-        const meta = data.results[idx] ?? null;
-        clientCacheSet(
-          titleMetaClientCache,
-          titleMetaClientKey(waiter.query),
-          meta,
-          TITLE_META_CLIENT_TTL_MS,
-        );
-        waiter.resolve(meta);
-      });
-    } catch (err) {
-      chunk.forEach((waiter) => waiter.reject(err));
-    }
-  }
+/**
+ * Sends one title-metadata batch and keeps each answer in the client cache.
+ *
+ * @param queries - At most {@link LOOKUP_BATCH_MAX} queries.
+ * @returns One answer (or `null`) per query, in order.
+ */
+async function sendTitleMetaBatch(queries: TitleMetaQuery[]): Promise<(TitleMeta | null)[]> {
+  const asked = lookupGeneration();
+  const res = await fetchWithTimeout(
+    "/api/discover/title-meta/batch",
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ queries: queries.map(serializeTitleMetaQuery) }),
+    },
+    25_000,
+    "Title metadata batch",
+  );
+  const data = (await parseJson(res)) as { results: (TitleMeta | null)[] };
+  return queries.map((query, idx) => {
+    const meta = data.results[idx] ?? null;
+    if (lookupGeneration() === asked) titleMetaClientCache.set(titleMetaClientKey(query), meta);
+    return meta;
+  });
 }
 
+/** Title-metadata lookups, batched (see `lookupBatcher.ts`). */
+const titleMetaBatcher = createLookupBatcher<TitleMetaQuery, TitleMeta | null>({
+  maxBatch: LOOKUP_BATCH_MAX,
+  windowMs: LOOKUP_BATCH_WINDOW_MS,
+  keyOf: titleMetaClientKey,
+  send: sendTitleMetaBatch,
+  before: coversFirst,
+  generation: lookupGeneration,
+});
+
 /**
- * Fetches title metadata, coalescing viewport-gated cards into a short batch window.
+ * Fetches title metadata through a batch shared with every other card (see
+ * {@link fetchPurchaseHints}).
  *
  * @param body - Title identity fields.
  * @returns Metadata or `null` when none matched (client-cached).
  */
 export function fetchTitleMeta(body: TitleMetaQuery): Promise<TitleMeta | null> {
-  const key = titleMetaClientKey(body);
-  const cached = clientCacheGet(titleMetaClientCache, key);
+  const cached = titleMetaClientCache.get(titleMetaClientKey(body));
   if (cached !== undefined) return Promise.resolve(cached);
-  return new Promise((resolve, reject) => {
-    titleMetaQueue.push({ query: body, resolve, reject });
-    if (titleMetaTimer == null) {
-      titleMetaTimer = setTimeout(() => {
-        void flushTitleMetaQueue();
-      }, 40);
-    }
-  });
+  return titleMetaBatcher(body);
 }
 
 /**
@@ -3949,40 +4292,18 @@ export async function fetchTitleMetaBatch(
   const results: (TitleMeta | null)[] = new Array(queries.length).fill(null);
   const pending: { index: number; query: TitleMetaQuery }[] = [];
   queries.forEach((query, index) => {
-    const cached = clientCacheGet(titleMetaClientCache, titleMetaClientKey(query));
+    const cached = titleMetaClientCache.get(titleMetaClientKey(query));
     if (cached !== undefined) {
       results[index] = cached;
     } else {
       pending.push({ index, query });
     }
   });
-  for (let i = 0; i < pending.length; i += 24) {
-    const chunk = pending.slice(i, i + 24);
-    const res = await fetchWithTimeout(
-      "/api/discover/title-meta/batch",
-      {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          queries: chunk.map((c) => serializeTitleMetaQuery(c.query)),
-        }),
-      },
-      25_000,
-      "Title metadata batch",
-    );
-    const data = (await parseJson(res)) as { results: (TitleMeta | null)[] };
-    chunk.forEach((item, idx) => {
-      const meta = data.results[idx] ?? null;
-      clientCacheSet(
-        titleMetaClientCache,
-        titleMetaClientKey(item.query),
-        meta,
-        TITLE_META_CLIENT_TTL_MS,
-      );
-      results[item.index] = meta;
-    });
-  }
+  // Through the shared batcher: same scheduling, covers first, no duplicates.
+  const metas = await Promise.all(pending.map((item) => titleMetaBatcher(item.query)));
+  pending.forEach((item, idx) => {
+    results[item.index] = metas[idx] ?? null;
+  });
   return results;
 }
 

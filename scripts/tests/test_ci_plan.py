@@ -983,7 +983,11 @@ class CoverageCommandTests(unittest.TestCase):
 
     def test_workerd_guests_build_check_and_report(self) -> None:
         guest = Path("/ws/crates/bookclerk-plugins/optional/metadata-openlibrary")
-        with self.env(), mock.patch.object(execute, "workerd_guest_dirs", return_value=[guest]):
+        with (
+            self.env(),
+            mock.patch.object(execute, "workerd_guest_dirs", return_value=[guest]),
+            mock.patch.object(execute, "_declares_database", return_value=True),
+        ):
             cmds = commands(plan("crates/bookclerk-plugins/optional/metadata-openlibrary/src/client.ts"), "workerd_guests")
         self.assertEqual(cmds[:2], [["npm", "ci"], ["npm", "run", "build"]])
         self.assertIn(["npm", "run", "typecheck"], cmds)
@@ -991,11 +995,18 @@ class CoverageCommandTests(unittest.TestCase):
         self.assertIn([sys.executable, "-c", execute._MODULES_DRIFT], cmds)
         clear = cmds.index([sys.executable, "-c", execute._CLEAR_MODULES])
         self.assertEqual(cmds[clear + 1], ["npm", "run", "build"])
-        with self.env(), mock.patch.object(execute, "workerd_guest_dirs", return_value=[guest]):
+        with (
+            self.env(),
+            mock.patch.object(execute, "workerd_guest_dirs", return_value=[guest]),
+            mock.patch.object(execute, "_declares_database", return_value=True),
+        ):
             p = plan("crates/bookclerk-plugins/optional/metadata-openlibrary/src/client.ts")
             planned = [c for _, c in planned_commands(artifact(p), "workerd_guests", CTX)]
         drift = [c for c in planned if c.argv == [sys.executable, "-c", execute._MODULES_DRIFT]]
         self.assertEqual([c.cwd for c in drift], [str(guest)])
+        # Guests with a plugin database test it through the kit.
+        self.assertIn(["cargo", "build", "-p", "bookclerk-db-testkit", "--bin", "bookclerk-db-testkit"], cmds)
+        self.assertIn("BOOKCLERK_DB_TESTKIT", planned[-1].env)
         node = cmds[-1]
         self.assertEqual(node[:2], ["node", "--test"])
         self.assertIn(f"--test-reporter-destination={self.dir / 'workerd-guests' / 'lcov.info'}", node)
@@ -1009,6 +1020,9 @@ class CoverageCommandTests(unittest.TestCase):
             os.environ.pop("CI_COVERAGE_DIR", None)
             node = commands(p, "workerd_guests")[-1]
         self.assertNotIn("--test-reporter=lcov", node)
+        # No guest declares a database here, so the kit is not built.
+        with mock.patch.object(execute, "workerd_guest_dirs", return_value=[guest]):
+            self.assertNotIn("cargo", [c[0] for c in commands(p, "workerd_guests")])
         with mock.patch.object(execute, "workerd_guest_dirs", return_value=[]):
             self.assertEqual(len(commands(p, "workerd_guests")), 2)
 
@@ -1080,6 +1094,10 @@ class CoverageCommandTests(unittest.TestCase):
         dirs = [d.relative_to(REPO).as_posix() for d in execute.workerd_guest_dirs(REPO)]
         self.assertIn("crates/bookclerk-plugins/optional/metadata-openlibrary", dirs)
         self.assertIn("crates/bookclerk-plugins/optional/metadata-audnexus", dirs)
+        self.assertIn("crates/bookclerk-plugins/optional/integration-audiobookshelf", dirs)
+        self.assertTrue(execute._declares_database(REPO / "crates/bookclerk-plugins/optional/integration-audiobookshelf"))
+        self.assertFalse(execute._declares_database(REPO / "crates/bookclerk-plugins/optional/covers"))
+        self.assertIn("crates/bookclerk-plugins/optional/metadata-files", dirs)
         self.assertNotIn("crates/bookclerk-plugins/optional/source-libro", dirs)
 
     def test_rust_report_needs_instrumentation(self) -> None:

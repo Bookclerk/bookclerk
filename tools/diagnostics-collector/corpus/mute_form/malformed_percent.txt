@@ -1,0 +1,1 @@
+action=mute&signature=0123456789abcdef&reason=100%25+sure%zz&days=7

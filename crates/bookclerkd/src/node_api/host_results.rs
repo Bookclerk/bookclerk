@@ -31,12 +31,11 @@ use bookclerk_library::control_plane::{
     live_remote_job, HandedPassEnd, ScanAccept, ScanSighting, TitleNames, UploadDestination,
     UploadGrant, UploadGrantRequest,
 };
-use bookclerk_library::{JobKind, LibraryStore};
+use bookclerk_library::{AcquireTitle, JobKind, LibraryStore};
 use bookclerk_node_proto::{
-    seal_upload_token, AcquireTarget, Body, Frame, LibraryId, PlanDestination, MAX_FRAME_BYTES,
-    MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
+    seal_upload_token, AcquireTarget, Body, Frame, LibraryId, PlanDestination, TargetTitle,
+    MAX_FRAME_BYTES, MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
 };
-use bookclerk_storage::StorageBackend;
 use rand::RngCore as _;
 use zeroize::Zeroize as _;
 
@@ -216,8 +215,8 @@ pub(super) async fn scan_pass_report(
     })
 }
 
-/// The library row of `book`'s podcast parent, when `book` is an episode
-/// whose parent the library holds: the row an acquire names an episode's
+/// The podcast parent of `title`, when `title` is an episode whose show the
+/// same store account holds here: the title an acquire names an episode's
 /// folder from when episodes are saved to the parent's folder.
 ///
 /// # Errors
@@ -225,15 +224,53 @@ pub(super) async fn scan_pass_report(
 /// Returns the store's read error.
 async fn podcast_parent(
     library: &LibraryStore,
-    book: &bookclerk_library::BookRecord,
-) -> bookclerk_library::Result<Option<bookclerk_library::BookRecord>> {
-    if !bookclerk_library::is_episode(&book.content_kind) {
+    title: &AcquireTitle,
+) -> bookclerk_library::Result<Option<AcquireTitle>> {
+    if !bookclerk_library::is_episode(title.content_kind) {
         return Ok(None);
     }
-    let Some(parent_asin) = book.series_asin.as_deref() else {
+    let Some(show) = title.series_product_id.as_deref() else {
         return Ok(None);
     };
-    library.get_book(parent_asin, &book.account_id).await
+    Ok(library
+        .acquire_titles_named(Some(&title.account_id), show)
+        .await?
+        .into_iter()
+        .find(|parent| {
+            parent.plugin_key == title.plugin_key
+                && parent.account_id == title.account_id
+                && bookclerk_library::is_podcast_parent(parent.content_kind)
+        }))
+}
+
+/// `title` as an acquire target names it ([`TargetTitle`]).
+fn target_title(title: &AcquireTitle) -> TargetTitle {
+    TargetTitle {
+        product_id: title.product_id.clone(),
+        source: title.source.clone(),
+        marketplace: title.marketplace.clone(),
+        asin: title.asin.clone(),
+        isbn: title.isbn.clone(),
+        title: title.title.clone(),
+        subtitle: title.subtitle.clone(),
+        authors: title.authors.clone(),
+        narrators: title.narrators.clone(),
+        series: title.series.clone(),
+        series_index: title.series_index.clone(),
+        series_product_id: title.series_product_id.clone(),
+        publisher: title.publisher.clone(),
+        categories: title.categories.clone(),
+        length_minutes: title.length_minutes,
+        is_abridged: title.is_abridged,
+        content_kind: title.content_kind.to_string(),
+        purchased_at: title.purchased_at.map(|at| at.to_rfc3339()),
+        published_at: title.published_at.map(|at| at.to_rfc3339()),
+    }
+}
+
+/// The `<library id>` of `edition_id`, as a target carries it.
+fn target_library_id(edition_id: &str) -> Option<LibraryId> {
+    bookclerk_library::library_id(edition_id).and_then(|id| LibraryId::try_from(id).ok())
 }
 
 /// `acquire.plan`: the titles the job still needs, and how to name them.
@@ -256,53 +293,38 @@ pub(super) async fn acquire_plan(
     };
     let download_episodes = host.state.config.read().await.library.download_episodes;
     // The same scope the closing commit checks before it completes the job.
-    let Some(books) = job_titles(library, &host.node_id, &job).await? else {
+    let Some(titles) = job_titles(library, &host.node_id, &job).await? else {
         return Ok(lost(id, job_id, fence));
     };
     let mut targets = Vec::new();
-    for book in books {
+    for title in titles {
         if targets.len() >= MAX_PLAN_TARGETS {
             break;
         }
-        // Only titles whose audio is not acquired, exactly what the closing
-        // commit waits for. A title whose audio is acquired but whose
-        // companion PDF is missing is left to an acquire on a node holding
-        // the library: a host would fetch and upload the audio again, and
-        // a missing PDF is a soft failure that never keeps a job open.
-        if !crate::jobs::acquire_job_includes_book(&book, false, download_episodes) {
+        // Only titles whose audio is not acquired on their edition, exactly
+        // what the closing commit waits for and what a local acquire
+        // visits: an edition another account's title acquired is already
+        // in the library, so no host is sent to fetch it again. A title
+        // whose audio is acquired but whose companion PDF is missing is left
+        // to an acquire on a node holding the library: a host would fetch
+        // and upload the audio again, and a missing PDF is a soft failure
+        // that never keeps a job open.
+        if !crate::jobs::acquire_job_includes_title(&title, false, download_episodes) {
             continue;
         }
-        // Another account's copy of the edition is already here: this title
-        // shares its files, as a local acquire would, rather than send the
-        // host to fetch keys that title holds.
-        let backends: Vec<(&str, &dyn StorageBackend)> = destinations
-            .iter()
-            .map(|destination| (destination.id.as_str(), destination.backend.as_ref()))
-            .collect();
-        match bookclerk_acquire::share_acquired_sibling(library, &backends, &book).await {
-            Ok(Some(_)) => continue,
-            Ok(None) => {}
-            Err(err) => {
-                tracing::warn!(error = %err, book = %book.uuid, "could not share an acquired copy of the edition");
-            }
-        }
-        let parent = podcast_parent(library, &book).await?;
+        let parent = podcast_parent(library, &title).await?;
         // The host names with this library's edition ids, so it plans the
-        // same keys this node grants; a failed read fails the plan rather
-        // than send the host names this node would not grant.
-        let library_id = owner_library_id(library, &book.uuid).await?;
-        let parent_library_id = match &parent {
-            Some(parent) => owner_library_id(library, &parent.uuid).await?,
-            None => None,
-        };
+        // same keys this node grants.
         targets.push(AcquireTarget {
-            book_uuid: book.uuid.clone(),
-            plugin_key: book.plugin_key.clone(),
-            account_id: book.account_id.clone(),
-            book: serde_json::to_value(&book).unwrap_or_default(),
-            parent: parent.map(|parent| serde_json::to_value(&parent).unwrap_or_default()),
-            library_id,
-            parent_library_id,
+            holding_id: title.holding_id.clone(),
+            plugin_key: title.plugin_key.clone(),
+            account_id: title.account_id.clone(),
+            title: target_title(&title),
+            library_id: target_library_id(&title.edition_id),
+            parent_library_id: parent
+                .as_ref()
+                .and_then(|parent| target_library_id(&parent.edition_id)),
+            parent: parent.as_ref().map(target_title),
         });
     }
     let destinations = destinations
@@ -332,47 +354,27 @@ pub(super) async fn acquire_plan(
     Ok(frame)
 }
 
-/// The library id of title `book_uuid` in this node's library, as the
-/// `<library id>` naming tag writes it, or `None` when it has no edition.
-///
-/// # Errors
-///
-/// Returns an error when the edition cannot be read.
-async fn owner_library_id(
-    library: &LibraryStore,
-    book_uuid: &str,
-) -> bookclerk_library::Result<Option<LibraryId>> {
-    Ok(bookclerk_acquire::library_id_of(library, book_uuid)
-        .await?
-        .and_then(|id| LibraryId::try_from(id).ok()))
-}
-
-/// This node's destinations with the key scope of the title `book_uuid`
-/// on each: the folders a local acquire of the title would write under,
-/// named with that destination's own options from this node's library row,
+/// This node's destinations with the key scope of `title` on each: the
+/// folders a local acquire of the title would write under, named with that
+/// destination's own options from this node's holding of it,
 /// and, where that folder is shared with other titles or is the root, the
 /// title's own planned names there
 /// ([`bookclerk_acquire::planned_title_names`]). A title this node does not
 /// have gets an empty scope, so nothing of it is granted.
-///
-/// # Errors
-///
-/// Returns an error when the title cannot be read.
 async fn title_destinations(
     library: &LibraryStore,
     host: &HostContext,
-    book_uuid: &str,
+    title: Option<&AcquireTitle>,
     destinations: &[super::uploads::OwnerDestination],
-) -> bookclerk_library::Result<Vec<UploadDestination>> {
-    let book = library.get_book_by_uuid(book_uuid).await?;
+) -> Vec<UploadDestination> {
     let cfg = host.state.config.read().await.clone();
     let mut out = Vec::with_capacity(destinations.len());
     for destination in destinations {
-        let (title_folders, title_names) = match &book {
-            Some(book) => {
+        let (title_folders, title_names) = match title {
+            Some(title) => {
                 let request = crate::cluster_link::host_jobs::acquire_request(
                     &cfg,
-                    book,
+                    title.into(),
                     &destination.options,
                 );
                 let planned = bookclerk_acquire::planned_title_names(library, &request).await;
@@ -390,7 +392,7 @@ async fn title_destinations(
             title_names,
         });
     }
-    Ok(out)
+    out
 }
 
 /// `upload.grant`: opens an upload of one title and seals its token to the
@@ -409,29 +411,30 @@ pub(super) async fn upload_grant(
     // The manifest must cover exactly the destinations deployed here now
     // (the upload endpoint re-checks them for every file), each only under
     // the title's own keys there, computed here from this node's row.
-    let scoped = if request.book_uuid.is_empty() {
+    let scoped = if request.holding_id.is_empty() {
         Vec::new()
     } else {
+        let title = library.acquire_title_of_holding(request.holding_id).await?;
         // Only a title `acquire.plan` would hand out now: one whose audio
-        // is already acquired, or that the plan leaves out otherwise, is
-        // never uploaded again, whatever the host asks.
-        if let Some(book) = library.get_book_by_uuid(request.book_uuid).await? {
+        // is already acquired on its edition, or that the plan leaves out
+        // otherwise, is never uploaded again, whatever the host asks.
+        if let Some(title) = &title {
             let download_episodes = host.state.config.read().await.library.download_episodes;
-            if !crate::jobs::acquire_job_includes_book(&book, false, download_episodes) {
+            if !crate::jobs::acquire_job_includes_title(title, false, download_episodes) {
                 if live_remote_job(library, &host.node_id, &job_id, fence)
                     .await?
                     .is_none()
                 {
                     return Ok(lost(id, job_id, fence));
                 }
-                return Ok(error(id, "refused", "book_not_planned"));
+                return Ok(error(id, "refused", "title_not_planned"));
             }
         }
         let destinations = match super::uploads::owner_destinations(&host.state).await {
             Ok(destinations) if !destinations.is_empty() => destinations,
             _ => return Ok(error(id, "unavailable", "no_destination")),
         };
-        title_destinations(library, host, request.book_uuid, &destinations).await?
+        title_destinations(library, host, title.as_ref(), &destinations).await
     };
     let request = UploadGrantRequest {
         destinations: &scoped,
@@ -442,7 +445,7 @@ pub(super) async fn upload_grant(
         &host.node_id,
         &job_id,
         fence,
-        &host.owner_node_id,
+        &host.shared_node_id,
         &request,
     )
     .await?;

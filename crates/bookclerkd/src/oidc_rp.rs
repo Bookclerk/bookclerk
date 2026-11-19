@@ -100,6 +100,8 @@ fn sso_error_redirect(location: &'static str) -> Response {
 /// # Returns
 ///
 /// The public group, then the settings group.
+// Out of line so it is optimized apart from `api::route_groups`.
+#[inline(never)]
 pub(crate) fn route_groups() -> Vec<RouteGroup> {
     let public = OpenApiRouter::new()
         .routes(routes!(list_providers))
@@ -1906,11 +1908,23 @@ async fn resolve_endpoints(provider: &OidcProviderConfig) -> Result<Endpoints, (
 }
 
 /// Reqwest client that refuses redirects (token/userinfo must not hop).
-fn http_client() -> Result<reqwest::Client, ()> {
-    reqwest::Client::builder()
+///
+/// Built once per process and cloned, so sign-ins reuse the provider's TLS
+/// connections. It holds no cookies and no default headers.
+pub(crate) fn http_client() -> Result<reqwest::Client, ()> {
+    static SHARED: std::sync::Mutex<Option<reqwest::Client>> = std::sync::Mutex::new(None);
+    let mut shared = SHARED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(client) = shared.as_ref() {
+        return Ok(client.clone());
+    }
+    let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|_| ())
+        .map_err(|_| ())?;
+    *shared = Some(client.clone());
+    Ok(client)
 }
 
 /// Fetches `/.well-known/openid-configuration` and checks the returned issuer.

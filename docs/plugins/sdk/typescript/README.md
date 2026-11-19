@@ -47,6 +47,7 @@ extending its base:
 | `entrypoints = ["oidc"]` | `Oidc` | `OidcEntrypoint` |
 | `entrypoints = ["metadata"]` | `Metadata` | `MetadataEntrypoint` |
 | `entrypoints = ["covers"]` | `Covers` | `CoverEntrypoint` |
+| `entrypoints = ["metadataFiles"]` | `MetadataFiles` | `MetadataFilesEntrypoint` |
 
 ```ts
 import {
@@ -136,6 +137,45 @@ Generate the `Env` type from `plugin.toml`:
 npx bookclerk-plugin types .            # writes bookclerk-configuration.d.ts
 npx bookclerk-plugin types . --out src/env.d.ts
 ```
+
+## Pushed sockets
+
+A plugin that declares `[sockets]` (see
+[Pushed sockets](../../abi.md#pushed-sockets-sockets)) gets
+`this.env.SOCKETS`, shaped like Durable Objects' hibernatable WebSockets.
+The host holds the connection, so the plugin may sleep between messages,
+and each message reaches the default entrypoint's `webSocketMessage`:
+
+```ts
+export default class Plugin extends BookclerkEntrypoint<Env> {
+  async scheduled() {
+    if ((await this.env.SOCKETS.getWebSockets()).length > 0) return;
+    await this.env.SOCKETS.connect("wss://abs.example.com/socket.io/?EIO=4&transport=websocket", {
+      headers: { Authorization: `Bearer ${this.env.SECRETS.token}` },
+      autoResponses: [{ request: "2", response: "3" }], // answered without waking the plugin
+      attachment: { library: "main" },
+    });
+  }
+
+  async webSocketMessage(ws: HostWebSocket, message: string | ArrayBuffer) {
+    const { library } = ws.deserializeAttachment() as { library: string };
+    // …
+  }
+
+  async webSocketClose(ws: HostWebSocket, code: number, reason: string, wasClean: boolean) {}
+}
+```
+
+Text arrives as a `string` and binary as an `ArrayBuffer`. `ws.send`,
+`ws.close` and `ws.serializeAttachment` act on the host's socket; the
+attachment is JSON of at most 2 KiB, kept for the socket's life, so the
+handler doesn't depend on memory a restart would lose. Without a
+`webSocketMessage` handler the host is told the plugin has none; without
+`webSocketClose`, closes are ignored.
+
+A remote library whose message announced a new user returns
+`{ pollEvents: true }` from `webSocketMessage`, and the host calls
+`pollEvents` right away instead of at its next scheduled poll.
 
 ## Testing database code
 

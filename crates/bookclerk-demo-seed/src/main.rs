@@ -21,8 +21,8 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use bookclerk_config::Config;
 use bookclerk_demo_seed::{
-    best_match, clear_install_files, committed_records, deploy_on_node, distinct_records, lookups,
-    merge_records, parse_mode, records_json, search_query, seed, Lookup, Mode, Seeded,
+    best_match, clear_install_files, committed_records, covers, deploy_on_node, distinct_records,
+    lookups, merge_records, parse_mode, records_json, search_query, seed, Lookup, Mode, Seeded,
     StoreRecords, EXTRA_PLUGINS, STOREFRONTS,
 };
 use bookclerk_library::control_plane::strip_install_state;
@@ -70,6 +70,8 @@ async fn run() -> anyhow::Result<()> {
         Mode::Seed => None,
         Mode::WriteRecords(path) => Some(path),
         Mode::BakeFinish => return bake_finish(&config).await,
+        Mode::ListCovers(path) => return list_covers(&config, &path).await,
+        Mode::BakeCovers { list, base } => return bake_covers(&config, &list, &base),
     };
     let host = bookclerk_plugin_host::open_host_control_plane(&config)
         .await
@@ -267,6 +269,50 @@ async fn enable_demo_plugins(host: &HostControlPlane) -> anyhow::Result<()> {
             Err(err) => eprintln!("bookclerk-demo-seed: {key} not deployed: {err:#}"),
         }
     }
+    Ok(())
+}
+
+/// `--list-covers`: writes the cover URLs a new session's first pages can
+/// show to `path`. Run it after bookclerkd has stopped.
+///
+/// # Errors
+///
+/// Returns an error when the library cannot be opened or read, or the list
+/// cannot be written.
+async fn list_covers(config: &Config, path: &std::path::Path) -> anyhow::Result<()> {
+    let host = bookclerk_plugin_host::open_host_control_plane(config)
+        .await
+        .context("open the library")?;
+    let urls = covers::cover_urls(&host.store).await?;
+    std::fs::write(path, covers::list_text(&urls))
+        .with_context(|| format!("write {}", path.display()))?;
+    eprintln!(
+        "bookclerk-demo-seed: listed {} cover(s) to bake",
+        urls.len()
+    );
+    Ok(())
+}
+
+/// `--bake-covers`: requests every listed cover from the running bookclerkd,
+/// so its cache holds them. Best effort: failures are reported, not fatal.
+///
+/// # Errors
+///
+/// Returns an error when the list or bookclerkd's cover key cannot be read.
+fn bake_covers(config: &Config, list: &std::path::Path, base: &str) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(list).with_context(|| format!("read {}", list.display()))?;
+    let urls = covers::parse_list(&text);
+    let key = covers::read_key(&config.paths().cache_dir)?;
+    let bearer = std::env::var("BOOKCLERK_OPERATOR_TOKEN").ok();
+    let started = std::time::Instant::now();
+    let report = covers::warm(base, &key, bearer.as_deref(), &urls, covers::WARM_BUDGET);
+    eprintln!(
+        "bookclerk-demo-seed: cached {} cover(s) in {:.1} s; {} failed, {} not reached",
+        report.cached,
+        started.elapsed().as_secs_f64(),
+        report.failed,
+        report.skipped
+    );
     Ok(())
 }
 

@@ -81,7 +81,7 @@ fn plugin_scratch_dir(config: &Config, plugin: &DiscoveredPlugin) -> Result<Path
 /// library it joined as a branch gets that library's own subtree
 /// ([`StateScope::Link`]), so two libraries' copies of one plugin, and this
 /// install's own copy, never share a `HOME`.
-fn plugin_state_root(config: &Config, plugin: &DiscoveredPlugin) -> Result<PathBuf> {
+pub(crate) fn plugin_state_root(config: &Config, plugin: &DiscoveredPlugin) -> Result<PathBuf> {
     let base = config.paths().files_dir.join(PLUGIN_STATE_DIR);
     let base = match &plugin.state_scope {
         StateScope::Local => base,

@@ -4,6 +4,14 @@
 import type { LiveStatus } from "./live.ts";
 
 /** What the Worker asks of a visitor's `DemoSession` object over RPC. */
+/** The visitor's portal session as the Worker hands it to the browser. */
+export type PortalHandoff = {
+  /** bookclerkd's `bookclerk_portal_session` cookie value. */
+  value: string;
+  /** The demo session's hard stop, Unix seconds: the cookie lasts until then. */
+  endsAt: number;
+};
+
 export interface SessionApi {
   /**
    * Records a new session and boots its container.
@@ -19,11 +27,12 @@ export interface SessionApi {
    */
   status(): Promise<LiveStatus>;
   /**
-   * The visitor's bookclerkd portal session, once signed in.
+   * The visitor's bookclerkd portal session, once signed in, with the
+   * session's hard stop so the browser keeps the cookie exactly as long.
    *
-   * @returns The session cookie value, or null.
+   * @returns The session cookie value and hard stop, or null.
    */
-  portalSession(): Promise<string | null>;
+  portalSession(): Promise<PortalHandoff | null>;
   /**
    * Ends the session: signs the visitor out of the stores and stops the VM.
    *
@@ -81,6 +90,12 @@ export interface Env {
   DEMO_VERSION?: string;
   /** `https://` URL of the project website, linked from the demo's pages. */
   SITE_URL?: string;
+  /**
+   * `https://` origin of the diagnostics collector. When set, each
+   * visitor's copy sends problem reports there (`diagnostics.share_reports`);
+   * without it, the copies send none.
+   */
+  DIAGNOSTICS_URL?: string;
   /** Sessions that may run at once, as decimal text. */
   MAX_LIVE_SESSIONS?: string;
   /** Visitor-hours per UTC day, as decimal text. */

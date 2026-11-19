@@ -30,10 +30,30 @@ gateway ends) so a blocking stdin read cannot lock stdout.
 | RPC (Cap'n Proto) | Unix `BOOKCLERK_GATEWAY_GUEST_RPC=fd:3`. Windows `BOOKCLERK_GATEWAY_GUEST_RPC=handle:<read>` and `BOOKCLERK_GATEWAY_GUEST_RPC_WRITE=handle:<write>` | stdin + stdout |
 | CONNECT mux | Production: served by the unsandboxed host (no gateway env). Unjailed conformance may set Unix `BOOKCLERK_GATEWAY_PROXY=fd:4` or Windows `BOOKCLERK_GATEWAY_PROXY=handle:<read>` plus `BOOKCLERK_GATEWAY_PROXY_WRITE=handle:<write>` | Unix `BOOKCLERK_SOCKET_PROXY=fd:3`. Windows `BOOKCLERK_SOCKET_PROXY=handle:<read>` and `BOOKCLERK_SOCKET_PROXY_WRITE=handle:<write>` |
 
+With `BOOKCLERK_SOCKET_BROKER=1` the front door starts as the plugin's
+socket broker instead: no isolate and no guest, just the plugin ABI's
+`Sockets` served on stdio, with the host's `SocketHandler` on the same
+connection, under the same effective egress policy (see
+[Pushed sockets](../plugins/abi.md#pushed-sockets-sockets)). A manifest
+without `[sockets]` refuses broker mode. The host starts it through the
+ordinary spawn path, as the front door alone with no native sibling,
+whatever the plugin's runtime, and only under a grant with the `sockets`
+token (`bookclerk_plugin_host::SocketBroker`).
+
 `BOOKCLERK_WORKERD_STATE_DIR` is the host-owned `session-<nonce>/` directory
 (also the gateway `TMPDIR`). The guest `TMPDIR` is its own scratch, so it
 cannot read gateway state. See [guest-jail.md](guest-jail.md) and
 the [Workers RPC ADR](../adr/plugin-workers-rpc-workerd.md).
+
+An isolate without a native sibling has no host session directory. Its
+launcher creates a fresh `w<plugin hash><nonce>/` state directory under the
+guest's own `TMPDIR` and removes it when it returns. The host stops a
+session, for example when a plugin goes to sleep, by killing the launcher,
+so that cleanup does not always run. Each launcher therefore holds an
+exclusive lock on `.owner.lock` inside its directory for as long as it
+lives, and before allocating a new one it removes this plugin's sibling
+directories whose lock it can take, plus any older than two minutes that
+never got a lock. Links are never followed.
 
 ## The bridge socket
 
@@ -99,7 +119,7 @@ Request headers:
 | --- | --- |
 | `Authorization` | `Bearer <BRIDGE_TOKEN>` |
 | `Content-Type` | `application/x-capnp` |
-| `X-Bookclerk-Interface` | Cap'n interface name: `ContentSource`, `Destination`, `RemoteLibrary`, `EventConsumer`, `JobRunner`, `PluginCli`, `Oidc`, `MetadataProvider`, `CoverFetcher`, `Database`, `AdapterDatabaseSession`, `PluginWorker` |
+| `X-Bookclerk-Interface` | Cap'n interface name: `ContentSource`, `Destination`, `RemoteLibrary`, `EventConsumer`, `JobRunner`, `PluginCli`, `Oidc`, `MetadataProvider`, `CoverFetcher`, `MetadataFiles`, `Database`, `AdapterDatabaseSession`, `PluginWorker` |
 | `X-Bookclerk-Method` | Method name as declared in `plugin.capnp` (`login`, `event`, `job`, `openSession`, `databaseMigrations`, …) |
 | `X-Bookclerk-Context` | Bridge JSON `BridgeContext` (`invocation`, `config`, `secrets`, `eventsToken`, `databases` = `{ <BINDING>: <grant token> }`; `jobId` on `JobRunner.job`) — present for every entrypoint call, absent for `PluginWorker.*`. The adapter isolate exchanges the tokens for the author's `EVENTS` / `env.<BINDING>` bindings; authors never see them |
 | `X-Bookclerk-Caps` | JSON array of capability descriptors for the request message's capability table (only when the `$Params` struct carries interface-typed fields) |
@@ -173,6 +193,7 @@ reach the launcher through the granted `GET /open` / `PUT /put` routes.
 | `Oidc` | `clients`, `authenticateUser` | `Oidc extends OidcEntrypoint` |
 | `MetadataProvider` | `health`, `lookup`, `search`, `chapters` | `Metadata extends MetadataEntrypoint` |
 | `CoverFetcher` | `health`, `fetchCovers` — the `sink` is a `destination` grant token | `Covers extends CoverEntrypoint` |
+| `MetadataFiles` | `health`, `parse`, `render` | `MetadataFiles extends MetadataFilesEntrypoint` |
 | `Database` | `openSession` | `DatabaseAdapter extends DatabaseAdapterEntrypoint` |
 | `AdapterDatabaseSession` | all 10 (`X-Bookclerk-Target`) | the `AdapterDatabaseSession` object `openSession` returned |
 
@@ -198,6 +219,7 @@ unknown, expired, or revoked tokens.
 | `POST /db/execute-streamed` | `allow_database` | `GuestDatabase.executeStreamed`: the same request bytes as `/db/execute`, answered as consecutive Cap'n `ExecuteStreamFrame`s with a content length. The pre-dispatch checks answer with HTTP statuses like `/db/execute` (an unknown, expired or database-less grant, a chunked request body, a request past `maxRequestBytes` as `413` with the canonical `limit_exceeded` message); once a decoded request is dispatched every outcome is a frame sequence: a SQL authorization failure, a session that does not stream (`unsupported`) or a session error is one `err` frame. A body that does not decode as an `ExecuteRequest` closes the exchange without a reply, as on `/db/execute`; the SDKs report it as a transport failure |
 | `GET /db/limits` | `allow_database` | `GuestDatabase.limits`: the session's `DbCapabilities` as a Cap'n `DbCapabilitiesReply` (`401` when the grant has no database, `500` when the reply cannot be encoded) |
 | `POST /events/publish` | `events` present | `env.EVENTS.publish` |
+| `POST /sockets/<op>` | `sockets` present (a sockets-only token minted at `open` when `[sockets]` is granted) | `env.SOCKETS`: `connect`, `send`, `close`, `attachment` and `list`, each a JSON object of that operation's fields with frames and attachments in base64. The launcher applies the ABI socket checks before calling the host's `Sockets` (a refused call answers the typed `PluginError` with its status, another operation `404`, a body past one base64 frame plus 64 KiB `413`) and answers the `SocketInfo`, `{"sockets": [...]}` or `{}`. The parser is the `socket_route` fuzz target |
 
 ## Isolate embed
 

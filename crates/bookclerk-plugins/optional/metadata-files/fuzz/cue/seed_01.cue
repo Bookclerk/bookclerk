@@ -1,0 +1,7 @@
+TITLE "Two Files"
+FILE "part1.mp3" MP3
+  TRACK 01 AUDIO
+    INDEX 01 00:00:00
+FILE "part2.mp3" MP3
+  TRACK 02 AUDIO
+    INDEX 01 00:00:00

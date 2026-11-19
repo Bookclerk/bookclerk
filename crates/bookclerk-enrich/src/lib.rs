@@ -33,7 +33,7 @@ pub use bookclerk_audible_catalog::{
 };
 pub use bookclerk_library::decode_html_entities;
 pub use enrich::{
-    apply_enrichment_to_book, confidence_percent_to_fraction, enrich_books_from_audible,
+    apply_enrichment_to_edition, confidence_percent_to_fraction, enrich_editions_from_audible,
     enrichment_for_asin, enrichment_from_record, lookup_by_metadata,
     lookup_by_metadata_with_client, Enrichment, ScoredMatch, DEFAULT_ENRICH_MIN_CONFIDENCE,
 };

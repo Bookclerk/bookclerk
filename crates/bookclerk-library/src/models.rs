@@ -470,15 +470,15 @@ pub struct OperatorSessionRecord {
 /// Where a user's session token is presented.
 ///
 /// A token works only in its own place: a browser token only as the session
-/// cookie, a client token only as `Authorization: Bookclerk-Client`.
+/// cookie, a library card only as `Authorization: Bookclerk-Clerk`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PortalSessionKind {
     /// A browser's session cookie.
     Browser,
-    /// A client sign-in: a clerk that shows the user's books from
-    /// this library without joining it as a node.
-    Client,
+    /// A library card: a clerk that shows the user's books from this
+    /// library without joining it as a node.
+    Clerk,
 }
 
 impl PortalSessionKind {
@@ -487,7 +487,7 @@ impl PortalSessionKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Browser => "browser",
-            Self::Client => "client",
+            Self::Clerk => "clerk",
         }
     }
 
@@ -496,7 +496,7 @@ impl PortalSessionKind {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "browser" => Some(Self::Browser),
-            "client" => Some(Self::Client),
+            "clerk" => Some(Self::Clerk),
             _ => None,
         }
     }
@@ -519,7 +519,7 @@ pub struct PortalSessionRecord {
     pub user_agent: Option<String>,
     /// Best-effort device class.
     pub device_type: Option<String>,
-    /// Best-effort OS / client label; for a client sign-in, the name the
+    /// Best-effort OS / client label; for a library card, the name the
     /// clerk gave itself.
     pub client_label: Option<String>,
     /// Where the token is presented.
@@ -1301,6 +1301,15 @@ pub struct GlobalQueueEntry {
     pub work_key: String,
     /// The work every wish of this entry is for: the queue groups by it.
     pub work_id: String,
+    /// The edition the newest wish naming one is for (`editions.id`); the
+    /// entry's title, identifiers and cover describe that edition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edition_id: Option<String>,
+    /// That edition's expression (`expressions.id`), when the library
+    /// places it: store listings of the same expression are the same
+    /// recording, so Discover prices the wish from them only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression_id: Option<String>,
     /// Display title of the work or edition.
     pub title: String,
     /// Comma-separated or JSON author list from the storefront.

@@ -18,6 +18,10 @@ covers plugin, with exactly the grants their manifests request, then looks
 each title up in its store's public catalog through the storefront plugins
 (the search Discover uses, at most 15 seconds) and writes the record the
 store returns, so product ids, cover art and descriptions match the store.
+The record lands where a store's own answer would: the scan text on the
+title's store listing, then the record's full store text (cover, synopsis,
+rating) on that listing, whose cover becomes the cover of the edition it
+sells, for Sam's books and the branch's titles alike.
 A title not found live uses its committed store record
 (`crates/bookclerk-demo-seed/records.json`) when there is one, and otherwise
 keeps built-in fields under a made-up `demo-…` id.
@@ -27,6 +31,19 @@ a schema change that breaks it fails there.
 
 The bake then runs `bookclerkd` once, with a throwaway operator token kept
 in its environment, until it has stored Sam's Discover shelves.
+
+Next it bakes the covers a new session shows first, so a container does
+not download and decode them while the visitor waits on a quarter of a
+CPU. With `bookclerkd` stopped, `bookclerk-demo-seed --list-covers` lists
+each held work's cover (as the Library page shows it), then the covers of
+the store listings Discover ranks from (its cached store calls and stored
+candidates), at most 400. `bookclerkd` runs again while
+`bookclerk-demo-seed --bake-covers` requests each one from it, which
+downloads it through the `covers` plugin and stores the processed JPEGs
+in `cache/covers/`. A cover that fails is left for a container to fetch.
+The cache is keyed by image URL, not by the URL-signing key the next step
+deletes, so the entries stay valid under each container's new key.
+
 `bookclerk-demo-seed --bake-finish` then strips everything a container must
 make for itself, and the build fails if any of it is left:
 
@@ -69,7 +86,11 @@ every content signal to `no` (`use=immediate`).
    the operator (as an operator would in Settings; visitors cannot). It
    reads the plugin instance list first and leaves any plugin already
    deployed on the node alone, so on a baked image that one read is all
-   it sends. It then makes the visitor
+   it sends. When the deploy set `DIAGNOSTICS_URL` (the collector every
+   release build uses), the container also gets it as
+   `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL`, and `packaging/demo/boot.sh` turns
+   `diagnostics.share_reports` on, so the copy sends redacted problem
+   reports ([diagnostics](../../docs/server/diagnostics.md)). It then makes the visitor
    the host's Owner (with the fixed password `VISITOR_PASSWORD` in
    `src/lifecycle.ts`) and redeems the Owner's claim ticket. It then reads
    `GET /api/discover/status` as the visitor every second for up to 25
@@ -79,8 +100,11 @@ every content signal to `no` (`use=immediate`).
    visitor waits on
    `/_demo/wait`, which says how long a start usually takes: the median of
    the last week's recorded startup times (`sessions.startup_seconds`).
-3. `/_demo/enter` hands the browser the portal session cookie. From then on
-   every request goes through the Worker (`src/app.ts`), which:
+3. `/_demo/enter` hands the browser the portal session cookie, which lasts
+   until the session's hard stop like the Worker's own cookie. (A cookie
+   without an expiry lives only as long as the browser process, and mobile
+   browsers end that process while the visitor is in another app.) From
+   then on every request goes through the Worker (`src/app.ts`), which:
    - refuses any operation not allowed for the demo (`src/routes.ts`) before
      the container sees it: acquire and download, plugin installs and
      settings, users, auth changes, node and cluster routes, among others.
@@ -88,6 +112,11 @@ every content signal to `no` (`use=immediate`).
      test fails when the two drift;
    - refuses cross-site writes itself, then strips `Authorization`,
      `Cookie` (other than bookclerkd's own) and client IP headers;
+   - hands the portal session back when a browser that still has the
+     Worker's cookie arrives without it, on that request and in a
+     `Set-Cookie`, so a lost cookie never lands the visitor on bookclerkd's
+     sign-in page (whose sign-in the demo refuses). The Worker's cookie
+     already lets that browser fetch it from `/_demo/enter`;
    - counts store sign-in starts against per-session and per-day limits;
    - forwards the request as the visitor's own session, so bookclerkd
      authorizes everything as the visitor's Owner account and
@@ -129,6 +158,12 @@ every content signal to `no` (`use=immediate`).
    **Start over**. The Durable Object revokes every linked store account,
    destroys the container and refunds unused time to the day's budget. A
    cron sweep every five minutes ends any session that outlived its time.
+   A container that stops on its own (it crashed, or the platform stopped
+   it) also ends the session, recorded as `stopped`: the Durable Object
+   never forwards a request that would start a new container in its place,
+   because a new one holds an empty library with no sign-in for the visitor.
+   The visitor sees the ended page rather than a sign-in page that the demo
+   refuses.
 
 ## The image
 

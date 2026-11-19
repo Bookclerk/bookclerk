@@ -13,6 +13,8 @@ anyhow.workspace = true
 bookclerk-config.workspace = true
 # Cover pipeline types and the frames the cover worker speaks.
 bookclerk-cover.workspace = true
+# Embedded tag reader and the frames the tag worker speaks.
+bookclerk-tags.workspace = true
 # Capability probe only: the pool reports at startup whether this platform can
 # confine a worker at all, instead of letting the first acquire discover it.
 bookclerk-sandbox.workspace = true
@@ -26,13 +28,15 @@ serde_json.workspace = true
 mp4ameta = "0.13"
 id3 = "1.17"
 symphonia = { version = "0.6", default-features = false, features = ["aac", "isomp4", "mp3", "pcm"] }
-mp3lame-encoder = "0.2"
+mp3lame-encoder = "0.3"
 fdk-aac = "0.8"
 
 [dev-dependencies]
 # The faststart layout is written by the remuxer, so the tests that cover
 # editing one build it from the same synthetic file the remuxer's own tests use.
 bookclerk-mp4 = { workspace = true, features = ["fixtures"] }
+# The probe tests read the tag reader's own sample files.
+bookclerk-tags = { workspace = true, features = ["fixtures"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

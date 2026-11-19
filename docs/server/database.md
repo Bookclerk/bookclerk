@@ -668,8 +668,8 @@ collection deletes unreferenced objects.
 Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `accounts`, `books`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
-`operator_sessions`, `account_links`, `member_account_rules`,
-`account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
+`operator_sessions`, `account_links`, `member_account_rules`, `patron_scopes`,
+`patron_scope_keys`, `account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `discover_candidates`, `discover_store_calls`,
 `discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
@@ -681,7 +681,13 @@ model tables below.
 
 `member_account_rules` holds the operator's per-member rule on store
 accounts: a row with `may_connect = 0` stops that user from connecting
-store accounts here, and no row allows it. `account_shares` records each
+store accounts here, and no row allows it. `patron_scopes` holds a
+Member's own patron scope as JSON; a Member with no row follows the
+library's default scope (see [Sharing](../guide/sharing.md#limit-what-a-patron-sees)). `patron_scope_keys`
+holds a scope's include and exclude values as rows, keyed by a hash of
+the whole value set, so the Library filter joins them with a fixed
+number of parameters however many rules a scope has; the rows are
+written the first time a scope is used and never change. `account_shares` records each
 account a person's join sent to a branch (`sent`, peer `node:<id>`) or
 received from a library (`received`, peer `link:<cluster id>`); it is
 removed with the account. `account_credential_revisions` holds, per account
@@ -697,9 +703,16 @@ library holds as works, expressions and editions:
 
 - `works`, `expressions` and `editions`, with `work_identifiers` and
   `edition_identifiers` (a strong identifier is unique through
-  `strong_key`);
+  `strong_key`); an edition records which metadata provider last filled
+  its gaps (`enrich_source`, `enrich_confidence`, `enrich_updated_at`), so
+  gap-filling skips it next time
+  ([Metadata gap-fill](../internals/discovery.md#metadata-gap-fill-open-library-compliance));
 - `store_listings` (one per plugin, marketplace and product, with the
-  store's own text for it: synopsis, cover, credits as printed, ratings),
+  store's own text for it: synopsis, cover, credits as printed, series and
+  the store's own series or show product id, ratings; a scan fills it from
+  the title it lists, writing only a field that changed; a cover in a
+  store's text also becomes the cover of the edition the listing sells
+  when that edition has none, so the first store to report one sets it),
   `listing_offers` (its price per audience, `non_member` or `member`) and
   `holdings` (who holds each listing: an account or a branch library, in
   typed columns whose foreign keys drop the holding with its account or
@@ -712,31 +725,65 @@ library holds as works, expressions and editions:
   instead of keeping their own copies
   ([Shared listing pool](../internals/discovery.md#shared-listing-pool));
 - `contributors` and `credits`, `series` and `series_entries`;
-- `resolution_overrides` (an Administrator's pins and splits) and
-  `resolution_conflicts` (identifier clashes the resolver recorded instead
-  of merging);
+- `resolution_overrides` (an Administrator's pins and splits; a pin is
+  made with `PUT /api/library/listings/{id}/pin`, which moves the listing
+  to the edition in the same batch, and a split with
+  `POST /api/library/works/{id}/split`, which moves the expressions to a
+  new work and isolates it in the same batch, after locking the original
+  work's row so two splits of one work cannot both pass their checks on
+  Postgres; each write of the row gets a new `revision`) and `resolution_conflicts` (identifier clashes the resolver
+  recorded instead of merging, listed by `GET /api/library/conflicts` and
+  dropped when the listing is pinned);
 - `edition_files`: every key an acquire or a host upload wrote, per
   destination, with the edition it belongs to (a branch's delivered
   title's included), its role (`audio`, `part`,
   `chapter`, `pdf`, `cover`, `sidecar`, `transcript`, `epub`) and, for an
-  upload, the file's SHA-256. The quality columns (`lossless`,
-  `bitrate_kbps`) stay empty until uploads carry a file's quality.
+  upload, the file's SHA-256. An audio file's row also holds what a
+  probe of the file found: its media type (`content_type`, from the
+  container, not the file name), its average bitrate (`bitrate_kbps`),
+  whether the encoding is lossless (`lossless`), the store the copy came
+  from (`source_store`) and when it was probed (`probed_at`). The acquire
+  that writes a file probes it; an upload carries the sender's values and
+  they are stored when it commits. `probed_at` is empty for a file that
+  was never probed (it is not audio, the media worker was unavailable, or
+  it was stored before probes were recorded), and the other four columns
+  are then empty too. See [What a stored file's row
+  says](media.md#what-a-stored-files-row-says).
 - `edition_acquisitions`: each edition's acquire state (status, primary
-  storage key, last error) and the title whose write set it, written with
-  the title's own status. Only that title changes an acquired edition, so
-  a sibling title's failed attempt never hides its files.
+  storage key, last error) and the account holding (`holding_id`) whose
+  title's write set it, written with the title's own status. Only that
+  holding changes an acquired edition while it exists, so a sibling
+  title's failed attempt never hides its files. A write applies only
+  while its holding still holds the edition when it runs, so a status read
+  before a revoke or rescan cannot name a holding that is gone. Once the
+  acquiring holding is gone, the edition has no owner and any title that
+  holds it (reconcile included) may change it. The companion PDF's state
+  (`pdf_status`, `pdf_storage_key`) and the holding that set it
+  (`pdf_holding_id`) follow the same rule.
 - `library_work_rows`: the page index, one row per top-level work that
   has ever been held (title and author sort keys, first series, cover
   edition, media kinds, furthest acquire state, edition and holding
-  counts, newest holding time); pages skip rows with no holding left. It
+  counts, newest holding time, and the series, runtime and purchase-time
+  sort keys); pages skip rows with no holding left. It
   is derived data, refreshed by edition, holding and acquire events (not
   by a credit or series write alone) and rebuilt
   when `library_index_builds` has no row for the current layout; see
   [Library index](../internals/jobs.md#library-index).
+- `library_work_facets`: the page index's filter values, one row per
+  author, narrator, series, genre, publisher or source a held top-level
+  work has, keyed by the lower-cased value. Written with the work's
+  `library_work_rows` row and fenced by its refresh stamp; an unheld work
+  has none. A refresh's facets can span several batches, so the row's
+  `facets_ready` is 0 until the last of them is written, and a patron
+  scope admits only rows at 1.
 - `user_title_state`: one user's finished flag, ratings and tags for a
   work, keyed `(user_id, work_id)`. Fields imported for an account reach
-  every user linked to that account. Discover reads its taste from here,
+  every user linked to that account, and each user edits their own with
+  `PUT /api/library/works/{id}/state`. Discover reads its taste from here,
   not from `books`.
+- `user_work_tags`: one user's tags on a work, one row per tag, written
+  in the same batch as `user_title_state.tags` so the library page can
+  filter by a tag.
 
 Per-person rows point at works instead of copying a title:
 `listening_progress` (one row per listener and work, with the edition when
@@ -749,13 +796,17 @@ edition with no listing or holding.
 A book is acquired once per edition: the account rows of one edition share
 its files, and an acquire of one is marked acquired at the key the
 edition's acquiring title recorded (`edition_acquisitions`) when every
-destination already holds it. A host upload never replaces a file of
+destination already holds it. The companion PDF is shared the same way
+once it is on the primary destination. Storage matching and reconcile
+walk the titles accounts hold and record what they find on the edition,
+once per edition; only the acquiring title clears or converts it. A host upload never replaces a file of
 its edition that another account's acquire or upload wrote, and an acquire
 never writes a key another edition holds: the write is refused before it
 reaches storage. A book with
 no edition (a listing the resolver refused or has not resolved yet) is not
-acquired until a scan resolves it, and a host upload of it is refused
-(`unresolved_title`).
+acquired until a scan resolves it. A host upload names the title by its
+account holding, and one that resolves to no edition is refused
+(`unknown_title`).
 
 Every stored title is linked into its work, expression, edition,
 identifiers, listing and holding in one guarded batch (`linkListing`); a

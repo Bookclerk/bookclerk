@@ -1,0 +1,1 @@
+d{"rules":[{"field":"author","value":"Kids","effect":"include"},{"field":"author","value":"kids","effect":"exclude"}]}

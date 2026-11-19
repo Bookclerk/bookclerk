@@ -62,6 +62,13 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    groups:
+      # @vitest/coverage-v8 requires the exact vitest version it was
+      # released with, so bumping either one alone fails `npm ci`.
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
 
   # The hosted demo Worker (Containers library, wrangler).
   - package-ecosystem: npm
@@ -71,6 +78,13 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    groups:
+      # @vitest/coverage-v8 requires the exact vitest version it was
+      # released with, so bumping either one alone fails `npm ci`.
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
 
   # Deploy tooling (wrangler) for the bookclerk.app website.
   - package-ecosystem: npm
@@ -80,6 +94,13 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    groups:
+      # @vitest/coverage-v8 requires the exact vitest version it was
+      # released with, so bumping either one alone fails `npm ci`.
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
 
   # Lighthouse and axe-core for the website's CI audit.
   - package-ecosystem: npm
@@ -113,7 +134,9 @@ updates:
   - package-ecosystem: npm
     directories:
       - "/crates/bookclerk-plugins/optional/covers"
+      - "/crates/bookclerk-plugins/optional/integration-audiobookshelf"
       - "/crates/bookclerk-plugins/optional/metadata-audnexus"
+      - "/crates/bookclerk-plugins/optional/metadata-files"
       - "/crates/bookclerk-plugins/optional/metadata-openlibrary"
     schedule:
       interval: weekly

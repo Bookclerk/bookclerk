@@ -392,7 +392,7 @@ pub enum Body {
     AcquireTargets {
         /// Titles still to acquire, each one of the job's accounts.
         targets: Vec<AcquireTarget>,
-        /// Every output destination deployed on the answering owner node,
+        /// Every output destination deployed on the answering shared node,
         /// the primary first, each with its own packaging and naming
         /// options, so the host names each destination's files as a local
         /// acquire would.
@@ -406,9 +406,9 @@ pub enum Body {
         job_id: String,
         /// Lease generation the host holds.
         fence: i64,
-        /// Library id of the title the files are for (one of the job's
-        /// targets).
-        book_uuid: String,
+        /// The account holding of the title the files are for
+        /// (`holdings.id` on the owner; one of the job's targets).
+        holding_id: String,
         /// Storage key of the title's primary audio file on the primary
         /// destination (one of `files`' copies there).
         primary_key: String,
@@ -417,7 +417,7 @@ pub enum Body {
         /// uploaded.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pdf_key: Option<String>,
-        /// Every file, in upload order. Empty, with an empty `book_uuid`,
+        /// Every file, in upload order. Empty, with an empty `holding_id`,
         /// for the job's closing upload, whose commit only completes the
         /// job.
         files: Vec<UploadFile>,
@@ -703,9 +703,10 @@ pub enum Body {
     /// not a branch this library trusts.
     #[serde(rename = "window.books")]
     WindowBooks {
-        /// The `next` cursor of the previous page; 0 for the first page.
+        /// The `next` cursor of the previous page; empty (or absent) for
+        /// the first page.
         #[serde(default)]
-        after: i64,
+        after: crate::window::WindowCursor,
     },
     /// Library → window: one page of the person's books.
     #[serde(rename = "window.page")]
@@ -714,7 +715,41 @@ pub enum Body {
         works: Vec<crate::window::WindowWork>,
         /// The cursor to ask with for the next page; absent on the last.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        next: Option<i64>,
+        next: Option<crate::window::WindowCursor>,
+    },
+    /// Reader → library: ask for the copy this library holds of one
+    /// edition, named by its store listing, for the node's owner
+    /// (`copy_grant_problem`). Answered with [`Body::CopyGranted`], or `error`
+    /// with `refused` (not a branch this library trusts), `not_found` (the
+    /// person cannot take the edition, or the library holds no copy of it),
+    /// `invalid`, or `unavailable` (the library cannot read its storage
+    /// right now).
+    #[serde(rename = "copy.grant")]
+    CopyGrant {
+        /// Store id of the edition's listing.
+        store: String,
+        /// The listing's marketplace; empty (or absent) for a store
+        /// without marketplaces.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        marketplace: String,
+        /// The listing's product id.
+        product_id: String,
+    },
+    /// Library → reader: the copy may be downloaded.
+    #[serde(rename = "copy.granted")]
+    CopyGranted {
+        /// Copy id; the files are at `COPIES_PATH<copy_id>/files/<n>`.
+        copy_id: String,
+        /// The bearer token for the download endpoint, sealed to the
+        /// node's box key and bound to the node and the copy
+        /// (`crate::seal_copy_token`).
+        sealed_token: String,
+        /// Seconds the token stays valid.
+        expires_in_secs: u64,
+        /// What the copy is, as the library's page states it.
+        copy: crate::window::WindowCopy,
+        /// The copy's files; a file's index here is its `<n>`.
+        files: Vec<crate::copies::CopyFile>,
     },
     /// Owner → host: the request with this frame id was applied.
     #[serde(rename = "ok")]
@@ -997,20 +1032,21 @@ pub const MAX_DESTINATION_ID_BYTES: usize = 64;
 /// ([`Body::AcquireTargets`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcquireTarget {
-    /// Library id of the title.
-    pub book_uuid: String,
+    /// The owner's account holding of the title (`holdings.id`): the id the
+    /// host's upload of it names.
+    pub holding_id: String,
     /// Plugin key of the store that sells it.
     pub plugin_key: String,
     /// Store account that owns it.
     pub account_id: String,
-    /// The owner's library row (JSON), for naming and metadata.
-    pub book: serde_json::Value,
-    /// The owner's row for the title's podcast parent (JSON), when the
-    /// title is an episode whose parent is in the owner's library: a
-    /// destination that saves episodes to the parent's folder names them
-    /// from it, as an acquire on the owner would.
+    /// The title as the owner's library holds it, for naming and metadata.
+    pub title: TargetTitle,
+    /// The title's podcast parent as the owner's library holds it, when
+    /// the title is an episode whose show an account of the same store
+    /// holds there: a destination that saves episodes to the parent's
+    /// folder names them from it, as an acquire on the owner would.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<serde_json::Value>,
+    pub parent: Option<TargetTitle>,
     /// The title's library id on the owner (the short id of its edition
     /// there), which the `<library id>` naming tag writes. A host acquires
     /// into a scratch library whose edition ids differ, so it names with
@@ -1021,6 +1057,67 @@ pub struct AcquireTarget {
     /// saves episodes to the parent's folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_library_id: Option<LibraryId>,
+}
+
+/// A title an [`AcquireTarget`] names, as the owner's library holds it:
+/// the store listing's identity and the metadata a host names the title's
+/// files from and seeds its scratch library with. The store and account
+/// are the target's own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetTitle {
+    /// The store's product id of the listing (what the store fetches).
+    pub product_id: String,
+    /// The store's source name (`audible`, `librofm`, ...), as the
+    /// listing's plugin reports it.
+    pub source: String,
+    /// The store marketplace the listing is sold in (`us`, `uk`, ...).
+    pub marketplace: String,
+    /// The edition's ASIN, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asin: Option<String>,
+    /// The edition's ISBN, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isbn: Option<String>,
+    /// The listing's title.
+    pub title: String,
+    /// The listing's subtitle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    /// Authors, comma-separated, as the listing gives them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authors: Option<String>,
+    /// Narrators, comma-separated, as the listing gives them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrators: Option<String>,
+    /// The series name, when the title is in one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series: Option<String>,
+    /// The title's position in its series, as text (`1`, `2.5`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_index: Option<String>,
+    /// The store's product id of the series, or of an episode's show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_product_id: Option<String>,
+    /// The publisher.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    /// Categories, comma-separated, as the listing gives them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub categories: Option<String>,
+    /// Running time in whole minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_minutes: Option<i64>,
+    /// Whether the listing is abridged.
+    #[serde(default)]
+    pub is_abridged: bool,
+    /// `book`, `podcast` or `episode`.
+    pub content_kind: String,
+    /// When the account bought it, RFC 3339.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purchased_at: Option<String>,
+    /// When it was published, RFC 3339.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
 }
 
 /// Longest library id (see [`LibraryId`]).
@@ -1069,12 +1166,12 @@ impl From<LibraryId> for String {
     }
 }
 
-/// One output destination of the owner node that answered an acquire plan
+/// One output destination of the shared node that answered an acquire plan
 /// ([`Body::AcquireTargets`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanDestination {
-    /// Destination id on that owner node (its output kind, such as `local`
-    /// or `s3`; one destination per kind).
+    /// Destination id on that shared node: its storage plugin's id, such
+    /// as `local`, `s3` or `r2` (one destination per plugin).
     pub id: String,
     /// That destination's `DownloadOptions` (JSON): its naming templates,
     /// replacement characters and path limits.
@@ -1148,14 +1245,63 @@ pub struct UploadFile {
     /// MIME type to store with it.
     #[serde(default)]
     pub content_type: Option<String>,
+    /// What the sender's probe found in an audio file, so the library
+    /// keeps it on the file's row without reading the file back; absent
+    /// for other files and for audio the sender could not probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe: Option<UploadProbe>,
+}
+
+/// What a node's probe found in an audio file it uploads
+/// ([`UploadFile::probe`]). The media type travels as
+/// [`UploadFile::content_type`].
+///
+/// The library stores these values as the sender states them: the sender
+/// is a node it trusts with the title, and they decide only which of two
+/// copies of one edition is kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UploadProbe {
+    /// Average audio bitrate in kilobits per second, 1 to
+    /// [`MAX_PROBE_BITRATE_KBPS`]; absent when the file states no running
+    /// time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitrate_kbps: Option<u32>,
+    /// True for a lossless encoding (FLAC, ALAC).
+    #[serde(default)]
+    pub lossless: bool,
+    /// Plain id of the storefront the copy was downloaded from
+    /// ([`crate::is_store_id`]), when the sender knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_store: Option<String>,
+}
+
+/// Highest bitrate an [`UploadProbe`] may state, in kilobits per second:
+/// above any audiobook encoding, so a forged value cannot win by size alone.
+pub const MAX_PROBE_BITRATE_KBPS: u32 = 20_000;
+
+impl UploadProbe {
+    /// True when the bitrate, if stated, is 1 to
+    /// [`MAX_PROBE_BITRATE_KBPS`] and the storefront, if named, is a store
+    /// id ([`crate::is_store_id`]).
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        self.bitrate_kbps
+            .is_none_or(|kbps| (1..=MAX_PROBE_BITRATE_KBPS).contains(&kbps))
+            && self
+                .source_store
+                .as_deref()
+                .is_none_or(crate::catalog::is_store_id)
+    }
 }
 
 impl UploadFile {
     /// True when the file has between one and [`MAX_UPLOAD_COPIES`]
     /// copies, each naming a different destination id
     /// ([`is_destination_id`]) and a storage key ([`is_storage_key`]); the
-    /// size is within [`MAX_UPLOAD_FILE_BYTES`]; and the digest is
-    /// lowercase hex SHA-256.
+    /// size is within [`MAX_UPLOAD_FILE_BYTES`]; the digest is lowercase
+    /// hex SHA-256; and the probe, if there is one, is well formed
+    /// ([`UploadProbe::is_well_formed`]).
     #[must_use]
     pub fn is_well_formed(&self) -> bool {
         let mut destinations = std::collections::BTreeSet::new();
@@ -1175,7 +1321,8 @@ impl UploadFile {
             .content_type
             .as_deref()
             .is_none_or(|t| t.len() <= 128 && !t.chars().any(char::is_control));
-        copies_ok && digest_ok && type_ok && self.size <= MAX_UPLOAD_FILE_BYTES
+        let probe_ok = self.probe.as_ref().is_none_or(UploadProbe::is_well_formed);
+        copies_ok && digest_ok && type_ok && probe_ok && self.size <= MAX_UPLOAD_FILE_BYTES
     }
 
     /// This file's key on `destination`, if it is written there.
@@ -1307,10 +1454,10 @@ mod tests {
     fn a_library_id_is_short_ascii_alphanumeric_or_the_frame_is_refused() {
         let target = |id: &str| {
             serde_json::json!({
-                "book_uuid": "b",
+                "holding_id": "b",
                 "plugin_key": "store",
                 "account_id": "a",
-                "book": {},
+                "title": {"product_id": "p", "source": "store", "marketplace": "us", "title": "T", "content_kind": "book"},
                 "library_id": id,
             })
         };
@@ -1338,7 +1485,8 @@ mod tests {
             );
         }
         let absent: AcquireTarget = serde_json::from_value(serde_json::json!({
-            "book_uuid": "b", "plugin_key": "store", "account_id": "a", "book": {},
+            "holding_id": "b", "plugin_key": "store", "account_id": "a",
+            "title": {"product_id": "p", "source": "store", "marketplace": "us", "title": "T", "content_kind": "book"},
         }))
         .unwrap();
         assert_eq!(absent.library_id, None);
@@ -1358,6 +1506,7 @@ mod tests {
             size: 1,
             sha256: "0f".repeat(32),
             content_type: Some("audio/mp4".into()),
+            probe: None,
         };
         assert!(file("Author/Title/Title.m4b").is_well_formed());
         for bad in ["", "/abs.m4b", "a/../b.m4b", "a//b", "./a", "a\\b", "a\nb"] {
@@ -1402,6 +1551,48 @@ mod tests {
             }
             .is_well_formed());
         }
+        // A probe is optional, travels only when stated, and is bounded.
+        let probed = |probe: UploadProbe| UploadFile {
+            probe: Some(probe),
+            ..file("a.m4b")
+        };
+        let good = UploadProbe {
+            bitrate_kbps: Some(125),
+            lossless: false,
+            source_store: Some("audible".into()),
+        };
+        assert!(probed(good.clone()).is_well_formed());
+        assert!(probed(UploadProbe {
+            bitrate_kbps: None,
+            lossless: true,
+            source_store: None,
+        })
+        .is_well_formed());
+        for bitrate_kbps in [0, MAX_PROBE_BITRATE_KBPS + 1] {
+            assert!(!probed(UploadProbe {
+                bitrate_kbps: Some(bitrate_kbps),
+                ..good.clone()
+            })
+            .is_well_formed());
+        }
+        for store in ["", "Audible", "a b", &"s".repeat(65)] {
+            assert!(!probed(UploadProbe {
+                source_store: Some(store.into()),
+                ..good.clone()
+            })
+            .is_well_formed());
+        }
+        let text = serde_json::to_string(&probed(good.clone())).unwrap();
+        assert!(text.contains(r#""probe":{"bitrate_kbps":125,"#), "{text}");
+        assert_eq!(
+            serde_json::from_str::<UploadFile>(&text).unwrap().probe,
+            Some(good)
+        );
+        let bare = serde_json::to_string(&file("a.m4b")).unwrap();
+        assert!(!bare.contains("probe"), "{bare}");
+        assert!(
+            serde_json::from_str::<UploadProbe>(r#"{"lossless":false,"codec":"aac"}"#).is_err()
+        );
     }
 
     #[test]
@@ -1690,10 +1881,30 @@ mod tests {
             (
                 Body::AcquireTargets {
                     targets: vec![AcquireTarget {
-                        book_uuid: "b".into(),
+                        holding_id: "b".into(),
                         plugin_key: "store".into(),
                         account_id: "a".into(),
-                        book: serde_json::json!({}),
+                        title: TargetTitle {
+                            product_id: "p1".into(),
+                            source: "store".into(),
+                            marketplace: "us".into(),
+                            asin: None,
+                            isbn: Some("9780000000001".into()),
+                            title: "Dune".into(),
+                            subtitle: None,
+                            authors: Some("Frank Herbert".into()),
+                            narrators: None,
+                            series: None,
+                            series_index: None,
+                            series_product_id: None,
+                            publisher: None,
+                            categories: None,
+                            length_minutes: Some(1260),
+                            is_abridged: false,
+                            content_kind: "book".into(),
+                            purchased_at: None,
+                            published_at: Some("1965-08-01T00:00:00+00:00".into()),
+                        },
                         parent: None,
                         library_id: Some(LibraryId::try_from("abc12345".to_string()).unwrap()),
                         parent_library_id: None,
@@ -1709,7 +1920,7 @@ mod tests {
                 Body::UploadGrant {
                     job_id: job_id(),
                     fence: 2,
-                    book_uuid: "b".into(),
+                    holding_id: "b".into(),
                     primary_key: "A/B.m4b".into(),
                     pdf_key: None,
                     files: vec![UploadFile {
@@ -1720,6 +1931,7 @@ mod tests {
                         size: 3,
                         sha256: "ab".repeat(32),
                         content_type: None,
+                        probe: None,
                     }],
                 },
                 "upload.grant",

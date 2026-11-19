@@ -28,6 +28,16 @@ struct FakeGuest {
     held: AtomicBool,
     /// Opens held deliveries.
     release: tokio::sync::Notify,
+    /// Whether the guest exports `remoteLibrary`.
+    library: bool,
+    /// New-user polls this guest answered.
+    polls: AtomicUsize,
+    /// `oidcClients` asks this guest answered.
+    oidc_asks: AtomicUsize,
+    /// Set when `start` was handed a new-user hook.
+    started_with_hook: AtomicBool,
+    /// While set, `oidcClients` fails.
+    oidc_fails: AtomicBool,
 }
 
 impl FakeGuest {
@@ -40,7 +50,19 @@ impl FakeGuest {
             stopped_mid_delivery: AtomicBool::new(false),
             held: AtomicBool::new(false),
             release: tokio::sync::Notify::new(),
+            library: false,
+            polls: AtomicUsize::new(0),
+            oidc_asks: AtomicUsize::new(0),
+            started_with_hook: AtomicBool::new(false),
+            oidc_fails: AtomicBool::new(false),
         })
+    }
+
+    /// A running remote-library guest.
+    fn library() -> Arc<Self> {
+        let mut guest = Arc::into_inner(Self::new(Duration::ZERO)).expect("sole owner");
+        guest.library = true;
+        Arc::new(guest)
     }
 }
 
@@ -54,7 +76,10 @@ impl Integration for FakeGuest {
         "local:fake"
     }
 
-    async fn start(&self, _ctx: IntegrationContext) -> bookclerk_integrations::Result<()> {
+    async fn start(&self, ctx: IntegrationContext) -> bookclerk_integrations::Result<()> {
+        if ctx.on_external_user.is_some() {
+            self.started_with_hook.store(true, Ordering::SeqCst);
+        }
         Ok(())
     }
 
@@ -92,6 +117,70 @@ impl Integration for FakeGuest {
             detail: Some("awake".into()),
         })
     }
+
+    fn supports_library_scan(&self) -> bool {
+        self.library
+    }
+
+    async fn provided_oidc_clients(
+        &self,
+    ) -> bookclerk_integrations::Result<Vec<bookclerk_integrations::ProvidedOidcClient>> {
+        self.oidc_asks.fetch_add(1, Ordering::SeqCst);
+        if self.oidc_fails.load(Ordering::SeqCst) {
+            return Err(bookclerk_integrations::IntegrationError::message(
+                "oidcClients failed",
+            ));
+        }
+        Ok(vec![bookclerk_integrations::ProvidedOidcClient {
+            client_id: "fake".into(),
+            display_name: "Fake".into(),
+            callback_path: "/cb".into(),
+            public_client: true,
+            default_scopes: vec!["openid".into()],
+            issue_refresh_token: false,
+            origin_config_key: String::new(),
+        }])
+    }
+}
+
+#[async_trait]
+impl super::ExternalUserPoll for FakeGuest {
+    async fn poll_external_users(
+        &self,
+    ) -> bookclerk_integrations::Result<Vec<bookclerk_integrations::ExternalUser>> {
+        let n = self.polls.fetch_add(1, Ordering::SeqCst);
+        Ok(vec![bookclerk_integrations::ExternalUser {
+            provider: String::new(),
+            external_user_id: format!("user-{n}"),
+            display_name: None,
+            access_token: None,
+        }])
+    }
+
+    async fn fetch_oidc_clients(
+        &self,
+    ) -> bookclerk_integrations::Result<Vec<bookclerk_integrations::ProvidedOidcClient>> {
+        Integration::provided_oidc_clients(self).await
+    }
+}
+
+#[async_trait]
+impl crate::SocketSink for FakeGuest {
+    async fn deliver_socket_event(
+        &self,
+        event: crate::SocketEvent,
+    ) -> std::result::Result<bookclerk_plugin_abi::SocketMessageOk, String> {
+        self.delivered.fetch_add(1, Ordering::SeqCst);
+        // A `poll` text frame stands for a message announcing a new user.
+        let poll_events = matches!(
+            event,
+            crate::SocketEvent::Message(bookclerk_plugin_abi::SocketMessage {
+                frame: bookclerk_plugin_abi::SocketFrame::Text(ref text),
+                ..
+            }) if text == "poll"
+        );
+        Ok(bookclerk_plugin_abi::SocketMessageOk { poll_events })
+    }
 }
 
 #[async_trait]
@@ -120,7 +209,13 @@ struct FakeStarter {
     /// When set, each start waits (at most [`GATE_LIMIT`]) for the test to
     /// open it.
     gate: Option<Arc<tokio::sync::Notify>>,
+    /// Whether the guests it starts export `remoteLibrary`.
+    library: bool,
 }
+
+/// Time between new-user polls in these tests, long enough that only the
+/// tests that wait for a poll see one.
+const POLL_INTERVAL: Duration = Duration::from_secs(3600);
 
 /// Longest a gated start waits, so a regression fails instead of hanging.
 const GATE_LIMIT: Duration = Duration::from_secs(5);
@@ -134,7 +229,11 @@ impl GuestStarter<dyn AwakeGuest> for FakeStarter {
         if let Some(detail) = &self.fail {
             return Err(detail.clone());
         }
-        let guest = FakeGuest::new(self.delivery_time);
+        let guest = if self.library {
+            FakeGuest::library()
+        } else {
+            FakeGuest::new(self.delivery_time)
+        };
         self.started
             .lock()
             .expect("started guests")
@@ -172,11 +271,51 @@ fn gated_proxy(
             delivery_time,
             fail: fail.map(str::to_string),
             gate,
+            library: false,
         }),
         Arc::new(std::sync::Mutex::new(IntegrationContext::default())),
         idle,
+        POLL_INTERVAL,
     );
     (proxy, first, started)
+}
+
+/// Proxy over a remote-library guest that polls for new users every
+/// `poll` and sleeps after `idle`.
+fn library_proxy(
+    idle: Duration,
+    poll: Duration,
+) -> (Arc<OnDemandIntegration>, Arc<FakeGuest>, Started) {
+    let first = FakeGuest::library();
+    let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let proxy = OnDemandIntegration::wrap(
+        Arc::clone(&first) as Arc<dyn AwakeGuest>,
+        "instance-1",
+        Box::new(FakeStarter {
+            started: Arc::clone(&started),
+            delivery_time: Duration::ZERO,
+            fail: None,
+            gate: None,
+            library: true,
+        }),
+        Arc::new(std::sync::Mutex::new(IntegrationContext::default())),
+        idle,
+        poll,
+    );
+    (proxy, first, started)
+}
+
+/// A lifecycle context whose new-user hook records each user's id.
+fn hooked_context() -> (IntegrationContext, Arc<std::sync::Mutex<Vec<String>>>) {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    let ctx = IntegrationContext {
+        on_external_user: Some(Arc::new(move |user| {
+            assert_eq!(user.provider, "fake", "the alias fills an empty provider");
+            sink.lock().expect("seen").push(user.external_user_id);
+        })),
+    };
+    (ctx, seen)
 }
 
 /// Polls `ready` every 10 ms for at most five seconds.
@@ -247,6 +386,25 @@ async fn the_next_call_wakes_a_sleeping_guest_and_reuses_it_while_busy() {
     assert_eq!(guests.len(), 1);
     assert_eq!(guests[0].delivered.load(Ordering::SeqCst), 3);
     assert_eq!(proxy.guest_pid(), Some(4242));
+}
+
+#[tokio::test]
+async fn a_socket_message_wakes_a_sleeping_guest() {
+    use crate::SocketSink as _;
+    let (proxy, first, started) = proxy(Duration::from_millis(40), Duration::ZERO, None);
+    wait_asleep(&proxy, &first).await;
+    let message = bookclerk_plugin_abi::SocketMessage {
+        socket: "s1".into(),
+        frame: bookclerk_plugin_abi::SocketFrame::Text("42".into()),
+        attachment: b"cursor".to_vec(),
+    };
+    proxy
+        .deliver_socket_event(crate::SocketEvent::Message(message))
+        .await
+        .expect("delivered");
+    assert_eq!(proxy.wakes(), 1);
+    let guests = started.lock().expect("started").clone();
+    assert_eq!(guests[0].delivered.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -407,14 +565,33 @@ fn trigger_and_lookup_plugins_activate_on_demand() {
     assert!(activates_on_demand(&manifest("native", "\"covers\"", "")));
 }
 
+/// `[workerd]` and a module for a Python isolate.
+const PYTHON: &str = "[workerd]\ncompatibility_date = \"2026-08-01\"\n\
+compatibility_flags = [\"python_workers\", \"disable_python_external_sdk\"]\n\
+main_module = \"plugin.py\"\n\n[[modules]]\nname = \"plugin.py\"\n\
+path = \"plugin.py\"\ntype = \"python\"\n";
+
 #[test]
-fn stateful_sign_in_and_registry_plugins_stay_resident() {
-    assert!(!activates_on_demand(&manifest(
-        "native",
-        "\"remoteLibrary\"",
-        ""
+fn python_integrations_activate_on_demand() {
+    assert!(activates_on_demand(&manifest(
+        "workerd",
+        "",
+        &format!("{EVENTS}\n{PYTHON}")
     )));
-    assert!(!activates_on_demand(&manifest("native", "\"oidc\"", "")));
+}
+
+#[test]
+fn remote_libraries_and_sign_in_providers_activate_on_demand() {
+    assert!(activates_on_demand(&manifest(
+        "native",
+        "\"remoteLibrary\", \"oidc\"",
+        EVENTS
+    )));
+    assert!(activates_on_demand(&manifest("native", "\"oidc\"", "")));
+}
+
+#[test]
+fn storefront_and_storage_plugins_are_not_integration_proxies() {
     assert!(!activates_on_demand(&manifest(
         "native",
         "\"storefront\"",
@@ -502,11 +679,7 @@ async fn every_guest_call_wakes_a_sleeping_proxy_and_reaches_the_guest() {
     assert!(login.to_string().contains("credential login"));
     let scan = proxy.scan_library(false).await.expect_err("no scan");
     assert!(scan.to_string().contains("library scan"));
-    assert!(proxy
-        .provided_oidc_clients()
-        .await
-        .expect("oidc")
-        .is_empty());
+    assert_eq!(proxy.provided_oidc_clients().await.expect("oidc").len(), 1);
     let diagnosis = proxy.diagnose().await.expect("diagnose");
     assert!(
         diagnosis.iter().any(|line| line == "awake"),
@@ -591,4 +764,209 @@ async fn a_guest_that_finishes_starting_after_stop_is_stopped_unused() {
     assert!(!guests[0].guest_running(), "the late guest was stopped");
     assert_eq!(guests[0].delivered.load(Ordering::SeqCst), 0);
     assert_eq!(proxy.wakes(), 0);
+}
+
+#[tokio::test]
+async fn the_proxy_polls_a_sleeping_remote_library_through_a_wake() {
+    let (proxy, first, started) =
+        library_proxy(Duration::from_millis(40), Duration::from_millis(150));
+    let (ctx, seen) = hooked_context();
+    proxy.start(ctx).await.expect("start");
+    assert!(
+        !first.started_with_hook.load(Ordering::SeqCst),
+        "the guest never gets the hook"
+    );
+    wait_asleep(&proxy, &first).await;
+    assert_eq!(
+        first.polls.load(Ordering::SeqCst),
+        0,
+        "the guest slept unpolled"
+    );
+    wait_for("the first poll", || seen.lock().expect("seen").len() == 1).await;
+    let woken = started.lock().expect("started").clone();
+    assert_eq!(woken.len(), 1, "the poll woke one guest");
+    assert!(!woken[0].started_with_hook.load(Ordering::SeqCst));
+    // The guest sleeps again before the next poll, which wakes another.
+    wait_for("the polled guest to sleep", || {
+        !woken[0].guest_running() && !proxy.is_awake()
+    })
+    .await;
+    wait_for("the second poll", || seen.lock().expect("seen").len() == 2).await;
+    assert_eq!(started.lock().expect("started").len(), 2);
+    assert_eq!(
+        seen.lock().expect("seen").clone(),
+        ["user-0", "user-0"],
+        "each wake polls a fresh guest"
+    );
+}
+
+#[tokio::test]
+async fn a_pushed_new_user_is_polled_at_once() {
+    use crate::SocketSink as _;
+    // A poll interval far past the test, so only the guest's ask polls.
+    let (proxy, first, started) =
+        library_proxy(Duration::from_millis(40), Duration::from_secs(3600));
+    let (ctx, seen) = hooked_context();
+    proxy.start(ctx).await.expect("start");
+    wait_asleep(&proxy, &first).await;
+    let message = |text: &str| {
+        crate::SocketEvent::Message(bookclerk_plugin_abi::SocketMessage {
+            socket: "s1".into(),
+            frame: bookclerk_plugin_abi::SocketFrame::Text(text.into()),
+            attachment: Vec::new(),
+        })
+    };
+    let quiet = proxy
+        .deliver_socket_event(message("42"))
+        .await
+        .expect("delivered");
+    assert!(!quiet.poll_events);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        seen.lock().expect("seen").is_empty(),
+        "an ordinary message polls nothing"
+    );
+    let asks = proxy
+        .deliver_socket_event(message("poll"))
+        .await
+        .expect("delivered");
+    assert!(asks.poll_events);
+    wait_for("the asked-for poll", || {
+        seen.lock().expect("seen").len() == 1
+    })
+    .await;
+    // Each message woke a guest (the first slept again in between); the
+    // poll used the guest the asking message woke, starting no other.
+    let guests = started.lock().expect("started").clone();
+    assert_eq!(guests.len(), 2, "the poll started no guest of its own");
+    assert_eq!(guests[0].polls.load(Ordering::SeqCst), 0);
+    assert_eq!(guests[1].polls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn an_ask_with_no_poll_running_is_dropped() {
+    let generations = crate::user_poll::PollGeneration::default();
+    generations.poll_now();
+    let polls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&polls);
+    crate::user_poll::spawn(
+        &generations,
+        Duration::from_secs(3600),
+        "fake".into(),
+        Arc::new(|_| {}),
+        move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            async { Some(Ok(Vec::new())) }
+        },
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        polls.load(Ordering::SeqCst),
+        0,
+        "the earlier ask left nothing behind"
+    );
+    generations.poll_now();
+    wait_for("the asked-for poll", || polls.load(Ordering::SeqCst) == 1).await;
+    generations.end();
+    generations.poll_now();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        polls.load(Ordering::SeqCst),
+        1,
+        "an ended loop is not asked"
+    );
+}
+
+#[tokio::test]
+async fn stopping_the_proxy_ends_its_user_poll() {
+    let (proxy, first, started) =
+        library_proxy(Duration::from_millis(40), Duration::from_millis(60));
+    let (ctx, seen) = hooked_context();
+    proxy.start(ctx).await.expect("start");
+    proxy.stop().await.expect("stop");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(seen.lock().expect("seen").is_empty());
+    assert_eq!(first.polls.load(Ordering::SeqCst), 0);
+    assert!(started.lock().expect("started").is_empty());
+}
+
+#[tokio::test]
+async fn a_proxy_without_a_remote_library_starts_no_user_poll() {
+    let (proxy, first, started) = proxy(Duration::from_millis(40), Duration::ZERO, None);
+    let (ctx, seen) = hooked_context();
+    proxy.start(ctx).await.expect("start");
+    assert!(!first.started_with_hook.load(Ordering::SeqCst));
+    wait_asleep(&proxy, &first).await;
+    assert!(seen.lock().expect("seen").is_empty());
+    assert!(started.lock().expect("started").is_empty());
+}
+
+#[tokio::test]
+async fn sign_in_clients_are_read_from_the_guest_once() {
+    let (proxy, first, started) = proxy(Duration::from_millis(40), Duration::ZERO, None);
+    let clients = proxy.provided_oidc_clients().await.expect("clients");
+    assert_eq!(clients.len(), 1);
+    wait_asleep(&proxy, &first).await;
+    let again = proxy.provided_oidc_clients().await.expect("cached clients");
+    assert_eq!(again[0].client_id, "fake");
+    assert_eq!(first.oidc_asks.load(Ordering::SeqCst), 1);
+    assert!(
+        started.lock().expect("started").is_empty(),
+        "a later ask does not wake the guest"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_sign_in_client_read_is_retried_on_the_next_ask() {
+    let (proxy, first, _started) = proxy(Duration::from_secs(60), Duration::ZERO, None);
+    first.oidc_fails.store(true, Ordering::SeqCst);
+    let failed = proxy.provided_oidc_clients().await.expect("fallback");
+    assert!(failed.is_empty(), "a failure reads as no clients");
+    first.oidc_fails.store(false, Ordering::SeqCst);
+    assert_eq!(
+        proxy.provided_oidc_clients().await.expect("clients").len(),
+        1
+    );
+    assert_eq!(
+        proxy.provided_oidc_clients().await.expect("cached").len(),
+        1
+    );
+    assert_eq!(
+        first.oidc_asks.load(Ordering::SeqCst),
+        2,
+        "only the success is kept"
+    );
+}
+
+/// A grant holding the given database bindings.
+fn grant_with_databases(databases: &[&str]) -> crate::PluginGrant {
+    crate::PluginGrant {
+        bindings: databases
+            .iter()
+            .map(|name| format!("{}{name}", crate::consent::DATABASE_BINDING_PREFIX))
+            .collect(),
+        ..crate::PluginGrant::empty()
+    }
+}
+
+#[test]
+fn a_remote_library_sleeps_only_with_every_database_granted() {
+    use super::state_survives_sleep;
+    let library = manifest(
+        "native",
+        "\"remoteLibrary\"",
+        "[[databases]]\nbinding = \"LISTENING_STATE\"\n",
+    );
+    assert!(state_survives_sleep(
+        &library,
+        &grant_with_databases(&["LISTENING_STATE"])
+    ));
+    assert!(!state_survives_sleep(&library, &grant_with_databases(&[])));
+    let stateless = manifest("native", "\"remoteLibrary\"", "");
+    assert!(
+        !state_survives_sleep(&stateless, &grant_with_databases(&[])),
+        "a remote library with no database keeps its memory in the process"
+    );
+    let trigger = manifest("native", "", EVENTS);
+    assert!(state_survives_sleep(&trigger, &grant_with_databases(&[])));
 }

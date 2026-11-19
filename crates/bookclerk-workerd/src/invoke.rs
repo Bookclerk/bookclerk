@@ -142,6 +142,11 @@ const INTERFACES: &[InterfaceEntry] = &[
             "delete",
             "commit",
             "abortStage",
+            "move",
+            "moveMany",
+            "deleteMany",
+            "headMany",
+            "changes",
         ],
     },
     InterfaceEntry {
@@ -166,6 +171,11 @@ const INTERFACES: &[InterfaceEntry] = &[
         id: <plugin_capnp::cover_fetcher::Client as HasTypeId>::TYPE_ID,
         name: "CoverFetcher",
         methods: &["health", "fetchCovers"],
+    },
+    InterfaceEntry {
+        id: <plugin_capnp::metadata_files::Client as HasTypeId>::TYPE_ID,
+        name: "MetadataFiles",
+        methods: &["health", "parse", "render"],
     },
     InterfaceEntry {
         id: <plugin_capnp::event_consumer::Client as HasTypeId>::TYPE_ID,

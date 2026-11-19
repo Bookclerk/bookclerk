@@ -13,7 +13,7 @@
  */
 
 import type { CapTable } from "./db-capnp.js";
-import { MAX_SCALAR_BYTES } from "./abi.js";
+import { MAX_BATCH_KEYS, MAX_SCALAR_BYTES } from "./abi.js";
 import { PluginError } from "./errors.js";
 import type {
   AdapterDatabaseSession as WireAdapterDatabaseSession,
@@ -30,13 +30,17 @@ import type {
   JobOutcome,
   ListeningProgress,
   CoverImage,
+  MetadataFileRecord,
   MetadataRecord,
+  KeyOutcome as WireKeyOutcome,
   ObjectMetadata as WireObjectMetadata,
   OidcClientTemplate,
   PluginError as WirePluginError,
   PluginMigration as WirePluginMigration,
   PurchaseHint,
+  PurchaseHintResult,
   QueueResult,
+  SocketMessageOk,
   SourceAccount,
 } from "./generated.js";
 import * as W from "./generated-wire.js";
@@ -48,10 +52,16 @@ import type {
   GrantedContext,
   GrantedJobCapabilities,
   JobOutcomeRecord,
+  ChangesRequest,
+  KeyOutcome,
   ListOptions,
+  MoveManyPage,
+  MoveManyRequest,
+  MoveOptions,
   NamedStub,
   ObjectMetadata,
   PluginMigration,
+  PurchaseHintAnswer,
   QueueOutcome,
 } from "./plugin.js";
 
@@ -222,6 +232,26 @@ function withoutParams<P, R>(
 
 const asList = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
 
+/**
+ * One `purchaseHint` answer as the wire's `PurchaseHintResult`: a bare
+ * hint, `null`, or a {@link PurchaseHintAnswer} with title-search records.
+ *
+ * @param value - What the plugin's method returned for one query.
+ * @returns `found`, the hint and any records.
+ */
+function hintResult(value: unknown): PurchaseHintResult {
+  if (value != null && typeof value === "object" && "records" in value) {
+    const answer = value as PurchaseHintAnswer;
+    return {
+      found: answer.hint != null,
+      // The wire leaves `hint` unset when not found.
+      hint: (answer.hint ?? undefined) as PurchaseHint,
+      records: Array.isArray(answer.records) ? answer.records : [],
+    };
+  }
+  return { found: value != null, hint: (value ?? undefined) as PurchaseHint, records: [] };
+}
+
 const okHits = (value: unknown) => okValue({ hits: asList<CatalogHit>(value) });
 /**
  * Wraps a metadata provider's `lookup` / `search` return as `MetadataRecords`.
@@ -250,6 +280,48 @@ const okCoverImages = (value: unknown) => {
     throw PluginError.fromWire("internal", "cover fetcher must return a CoverImage[]");
   }
   return okValue({ images: value as CoverImage[] });
+};
+/**
+ * Wraps a metadata-file dialect's `parse` return as `MetadataFileParsed`. The
+ * Rust client checks the record against the ABI caps.
+ *
+ * @param value - The author method's return value.
+ * @returns The `ok` arm carrying the record.
+ * @throws {PluginError} `internal` when `value` is not an object with a
+ *   `present` list.
+ */
+const okFileRecord = (value: unknown) => {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    !Array.isArray((value as { present?: unknown }).present)
+  ) {
+    throw PluginError.fromWire(
+      "internal",
+      "metadata file dialect must return a MetadataFileRecord",
+    );
+  }
+  return okValue({ record: value as MetadataFileRecord });
+};
+/**
+ * Wraps a metadata-file dialect's `render` return as `MetadataFileRendered`;
+ * a string becomes its UTF-8 bytes.
+ *
+ * @param value - The author method's return value.
+ * @returns The `ok` arm carrying the bytes.
+ * @throws {PluginError} `internal` when `value` is neither bytes nor a string.
+ */
+const okFileBytes = (value: unknown) => {
+  if (typeof value === "string") {
+    return okValue({ bytes: new TextEncoder().encode(value) });
+  }
+  if (!(value instanceof Uint8Array)) {
+    throw PluginError.fromWire(
+      "internal",
+      "metadata file dialect must render a Uint8Array or string",
+    );
+  }
+  return okValue({ bytes: value });
 };
 const okLines = (value: unknown) =>
   okValue({ lines: asList<unknown>(value).map((l) => String(l)) });
@@ -367,6 +439,13 @@ function wireMigration(migration: PluginMigration): WirePluginMigration {
   };
 }
 
+/**
+ * Maps wire listing options to the author's, turning each zero value (the
+ * wire's "absent") into `undefined`, hints included.
+ *
+ * @param options - Decoded wire options, or `undefined` when none were sent.
+ * @returns The options handed to `Destination.list`.
+ */
 function listOptions(
   options: Partial<W.DestinationListParams["options"]> | undefined,
 ): ListOptions {
@@ -374,7 +453,91 @@ function listOptions(
     prefix: options?.prefix || undefined,
     cursor: options?.cursor || undefined,
     limit: options?.limit || undefined,
+    withSignatures: options?.withSignatures || undefined,
+    modifiedSinceMs: options?.modifiedSinceMs || undefined,
   };
+}
+
+/**
+ * Maps wire move options to the author's; `false` and empty text become
+ * `undefined`.
+ *
+ * @param options - Decoded wire options, or `undefined` when none were sent.
+ * @returns The options handed to `move` and `moveMany`.
+ */
+function moveOptions(
+  options: Partial<W.DestinationMoveParams["options"]> | undefined,
+): MoveOptions {
+  return {
+    noOverwrite: options?.noOverwrite || undefined,
+    ifSourceMatch: options?.ifSourceMatch || undefined,
+  };
+}
+
+/**
+ * Maps a wire `moveMany` request to the author's, refusing more than
+ * `MAX_BATCH_KEYS` explicit pairs. A prefix target is not counted: its page
+ * size is the author's `limit`.
+ *
+ * @param request - Decoded wire request, or `undefined` when none was sent.
+ * @returns The request handed to `moveMany`.
+ * @throws PluginError `payload_too_large` above the pair cap.
+ */
+function moveManyRequest(
+  request: Partial<W.DestinationMoveManyParams["request"]> | undefined,
+): MoveManyRequest {
+  const target = request?.target ?? { kind: "pairs", value: [] };
+  if (target.kind === "pairs" && target.value.length > MAX_BATCH_KEYS) {
+    throw new PluginError("payload_too_large", `moveMany of ${target.value.length} pairs`);
+  }
+  return {
+    target,
+    cursor: request?.cursor || undefined,
+    limit: request?.limit || undefined,
+    options: moveOptions(request?.options),
+  };
+}
+
+/**
+ * Checks a batch call's key list before the author's handler sees it. The
+ * host never sends an empty list or more than `MAX_BATCH_KEYS` keys.
+ *
+ * @param keys - Decoded wire keys, or `undefined` when none were sent.
+ * @returns The keys as strings, in the order sent.
+ * @throws PluginError `invalid_params` for no keys, `payload_too_large`
+ *   above the cap.
+ */
+function batchKeys(keys: string[] | undefined): string[] {
+  const list = keys ?? [];
+  if (list.length === 0) {
+    throw new PluginError("invalid_params", "a batch call needs at least one key");
+  }
+  if (list.length > MAX_BATCH_KEYS) {
+    throw new PluginError("payload_too_large", `batch of ${list.length} keys`);
+  }
+  return list.map(String);
+}
+
+/**
+ * Maps the author's per-key outcomes to the wire's.
+ *
+ * An author outcome without `error` is a success and goes out with an empty
+ * wire code, which is how the wire spells success. An author outcome with
+ * `error` is a failure even when its code is empty, so an empty code goes
+ * out as `internal` rather than as success.
+ *
+ * @param outcomes - The author's outcomes, one per key.
+ * @returns Wire outcomes in the same order.
+ */
+function wireOutcomes(outcomes: KeyOutcome[]): WireKeyOutcome[] {
+  return outcomes.map((o) => ({
+    key: String(o.key ?? ""),
+    error: {
+      code: o.error ? String(o.error.code ?? "") || "internal" : "",
+      message: o.error ? String(o.error.message ?? "") : "",
+      details: "",
+    },
+  }));
 }
 
 function sessionCall(method: string): AnySpec["call"] {
@@ -483,7 +646,7 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       "purchaseHint",
       W.ContentSourcePurchaseHintParamsCodec,
       W.ContentSourcePurchaseHintResultsCodec,
-      (value) => okValue({ found: value != null, hint: (value ?? undefined) as PurchaseHint }),
+      (value) => okValue(hintResult(value)),
     ),
     purchaseHints: withParams(
       "storefront",
@@ -492,10 +655,7 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       W.ContentSourcePurchaseHintsResultsCodec,
       (value) =>
         okValue({
-          results: asList<PurchaseHint | null>(value).map((hint) => ({
-            found: hint != null,
-            hint: (hint ?? undefined) as PurchaseHint,
-          })),
+          results: asList<PurchaseHint | PurchaseHintAnswer | null>(value).map(hintResult),
         }),
     ),
     listDeals: withParams(
@@ -592,6 +752,67 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
         ]),
       ok: okEmpty,
     }),
+    move: spec<W.DestinationMoveParams, W.DestinationMoveResults["result"]>({
+      params: W.DestinationMoveParamsCodec,
+      results: W.DestinationMoveResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) =>
+        named(s, cx.host.bindContext(cx.ctx), "move", [
+          String(p.from ?? ""),
+          String(p.to ?? ""),
+          moveOptions(p.options),
+        ]),
+      ok: okPass,
+    }),
+    moveMany: spec<W.DestinationMoveManyParams, W.DestinationMoveManyResults["result"]>({
+      params: W.DestinationMoveManyParamsCodec,
+      results: W.DestinationMoveManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) =>
+        named(s, cx.host.bindContext(cx.ctx), "moveMany", [moveManyRequest(p.request)]),
+      ok: (value) => {
+        const page = (value ?? { results: [] }) as MoveManyPage;
+        return okValue({
+          results: wireOutcomes(asList<KeyOutcome>(page.results)),
+          nextCursor: page.nextCursor ?? "",
+          atomic: page.atomic ?? false,
+          objectsMoved: page.objectsMoved ?? 0,
+        });
+      },
+    }),
+    deleteMany: spec<W.DestinationDeleteManyParams, W.DestinationDeleteManyResults["result"]>({
+      params: W.DestinationDeleteManyParamsCodec,
+      results: W.DestinationDeleteManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "deleteMany", [batchKeys(p.keys)]),
+      ok: (value) => okValue({ results: wireOutcomes(asList<KeyOutcome>(value)) }),
+    }),
+    headMany: spec<W.DestinationHeadManyParams, W.DestinationHeadManyResults["result"]>({
+      params: W.DestinationHeadManyParamsCodec,
+      results: W.DestinationHeadManyResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "headMany", [batchKeys(p.keys)]),
+      ok: (value) =>
+        okValue({
+          objects: asList<ObjectMetadata | null>(value).map((meta) => ({
+            found: meta != null,
+            meta: (meta ?? undefined) as unknown as WireObjectMetadata,
+          })),
+        }),
+    }),
+    changes: spec<W.DestinationChangesParams, W.DestinationChangesResults["result"]>({
+      params: W.DestinationChangesParamsCodec,
+      results: W.DestinationChangesResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) =>
+        named(s, cx.host.bindContext(cx.ctx), "changes", [
+          {
+            cursor: p.request?.cursor || undefined,
+            limit: p.request?.limit || undefined,
+          } satisfies ChangesRequest,
+        ]),
+      ok: okPass,
+    }),
   },
   RemoteLibrary: {
     health: withoutParams(
@@ -679,6 +900,27 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       stub: "author",
       call: (s, p, cx) =>
         (s as AuthorStub).bookclerkScheduled(cx.host.bindContext(cx.ctx), p.controller ?? {}),
+      ok: okEmpty,
+    }),
+  },
+  SocketHandler: {
+    message: spec<W.SocketHandlerMessageParams, W.SocketHandlerMessageResults["result"]>({
+      params: W.SocketHandlerMessageParamsCodec,
+      results: W.SocketHandlerMessageResultsCodec,
+      stub: "author",
+      call: (s, p, cx) =>
+        (s as AuthorStub).bookclerkSocketMessage(cx.host.bindContext(cx.ctx), p.event ?? {}),
+      ok: (value) =>
+        okValue({
+          pollEvents: (value as Partial<SocketMessageOk> | undefined)?.pollEvents === true,
+        }),
+    }),
+    closed: spec<W.SocketHandlerClosedParams, W.SocketHandlerClosedResults["result"]>({
+      params: W.SocketHandlerClosedParamsCodec,
+      results: W.SocketHandlerClosedResultsCodec,
+      stub: "author",
+      call: (s, p, cx) =>
+        (s as AuthorStub).bookclerkSocketClosed(cx.host.bindContext(cx.ctx), p.event ?? {}),
       ok: okEmpty,
     }),
   },
@@ -786,6 +1028,29 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       },
       ok: okCoverImages,
     }),
+  },
+  MetadataFiles: {
+    health: withoutParams(
+      "metadataFiles",
+      "health",
+      W.MetadataFilesHealthParamsCodec,
+      W.MetadataFilesHealthResultsCodec,
+      okHealth,
+    ),
+    parse: withParams(
+      "metadataFiles",
+      "parse",
+      W.MetadataFilesParseParamsCodec,
+      W.MetadataFilesParseResultsCodec,
+      okFileRecord,
+    ),
+    render: withParams(
+      "metadataFiles",
+      "render",
+      W.MetadataFilesRenderParamsCodec,
+      W.MetadataFilesRenderResultsCodec,
+      okFileBytes,
+    ),
   },
   Database: {
     openSession: spec<W.DatabaseOpenSessionParams, W.DatabaseOpenSessionResults["result"]>({

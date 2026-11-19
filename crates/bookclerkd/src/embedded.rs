@@ -17,7 +17,7 @@
 //! every response, so the page holds no credential of its own. With
 //! `daemon.auth.enabled = false` no token is added. The router sees every
 //! request as coming from [`EMBEDDED_ORIGIN`], a loopback origin, so a join
-//! asks the library to send the window back there.
+//! or a library card sign-in asks the library to send the window back there.
 //!
 //! **Other pages.** Because the token is added here, a page from anywhere
 //! else must not be able to reach the scheme: a request whose `Origin` is
@@ -25,11 +25,13 @@
 //! elsewhere) is refused with `403` before routing.
 //!
 //! **Leaving the app.** The window shows only app pages, with one exception:
-//! joining a library signs the person in on the library's own site. From a
-//! successful `POST /api/config/join/start` until the library sends the
-//! window back (or the sign-in expires), [`EmbeddedHost::navigation`] lets
-//! the window open `https` pages; the library's return to
-//! `http://localhost/join/callback` is handed back to the app scheme.
+//! joining a library, or signing in to one with a library card, signs the
+//! person in on the library's own site. From a successful
+//! `POST /api/config/join/start` or `POST /api/config/clerk/start` until the
+//! library sends the window back (or the sign-in expires),
+//! [`EmbeddedHost::navigation`] lets the window open `https` pages; the
+//! library's return to `http://localhost/join/callback` or
+//! `http://localhost/clerk/callback` is handed back to the app scheme.
 //!
 //! **What the window cannot reach.** The request carries no peer address,
 //! so routes that admit only a direct loopback connection (the tray
@@ -51,8 +53,8 @@ use axum::body::Body;
 use axum::http::{header, Request, Response, StatusCode};
 use axum::Router;
 use bookclerk_window_policy::{
-    classify_navigation, join_sign_in_ttl, refusal, rewrite_request_headers, Refusal,
-    JOIN_START_PATH,
+    classify_navigation, refusal, rewrite_request_headers, sign_in_ttl, Refusal,
+    SIGN_IN_START_PATHS,
 };
 pub use bookclerk_window_policy::{
     live_refusal, LiveRefusal, Navigation, APP_ORIGINS, EMBEDDED_ORIGIN, MAIN_WINDOW_LABEL,
@@ -89,8 +91,9 @@ pub struct EmbeddedHost {
     /// The web app and API router.
     app: Router,
     /// Until when the window may show the library's sign-in pages: set by a
-    /// successful join start, cleared when the library sends it back.
-    join_open_until: Mutex<Option<Instant>>,
+    /// successful join or library card start, cleared when the library
+    /// sends it back.
+    sign_in_open_until: Mutex<Option<Instant>>,
 }
 
 impl std::fmt::Debug for EmbeddedHost {
@@ -122,7 +125,7 @@ impl EmbeddedHost {
     /// not open, or operator auth that cannot be built).
     pub async fn start(options: EmbeddedOptions, syslog_identifier: &str) -> anyhow::Result<Self> {
         let config = bookclerk_config::Config::load(options.bookclerk_files, options.config)?;
-        init_logging(&config, syslog_identifier);
+        init_logging(&config, syslog_identifier, crate::ProcessRole::Desktop);
         let host = Self::from_host(start_host(config, HostMode::Embedded).await?);
         tracing::info!("host started embedded in the desktop window; no listener is bound");
         Ok(host)
@@ -143,7 +146,7 @@ impl EmbeddedHost {
         Self {
             state,
             app,
-            join_open_until: Mutex::new(None),
+            sign_in_open_until: Mutex::new(None),
         }
     }
 
@@ -163,12 +166,12 @@ impl EmbeddedHost {
         let auth = self.state.auth_snapshot().await;
         let bearer = auth.enabled.then(|| auth.token.clone());
         drop(auth);
-        let join_start =
-            request.method() == axum::http::Method::POST && request.uri().path() == JOIN_START_PATH;
+        let sign_in_start = request.method() == axum::http::Method::POST
+            && SIGN_IN_START_PATHS.contains(&request.uri().path());
         let response = serve(self.app.clone(), bearer.as_deref(), request).await;
-        if join_start && response.status().is_success() {
-            if let Some(ttl) = join_sign_in_ttl(response.body()) {
-                self.set_join_open(Some(Instant::now() + ttl));
+        if sign_in_start && response.status().is_success() {
+            if let Some(ttl) = sign_in_ttl(response.body()) {
+                self.set_sign_in_open(Some(Instant::now() + ttl));
             }
         }
         response
@@ -183,23 +186,23 @@ impl EmbeddedHost {
     /// # Returns
     ///
     /// What the window should do (see [`Navigation`]). A
-    /// [`Navigation::JoinReturn`] also closes the join's sign-in window.
+    /// [`Navigation::SignInReturn`] also closes the sign-in window.
     pub fn navigation(&self, url: &str) -> Navigation {
         let open = self
-            .join_open_until
+            .sign_in_open_until
             .lock()
             .map(|until| until.is_some_and(|until| Instant::now() < until))
             .unwrap_or(false);
         let decision = classify_navigation(url, open);
-        if matches!(decision, Navigation::JoinReturn(_)) {
-            self.set_join_open(None);
+        if matches!(decision, Navigation::SignInReturn(_)) {
+            self.set_sign_in_open(None);
         }
         decision
     }
 
-    /// Sets or clears the join sign-in deadline.
-    fn set_join_open(&self, until: Option<Instant>) {
-        if let Ok(mut slot) = self.join_open_until.lock() {
+    /// Sets or clears the sign-in deadline.
+    fn set_sign_in_open(&self, until: Option<Instant>) {
+        if let Ok(mut slot) = self.sign_in_open_until.lock() {
             *slot = until;
         }
     }
@@ -432,42 +435,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_join_start_opens_the_sign_in_until_the_library_sends_the_window_back() {
+    async fn a_join_or_library_card_start_opens_the_sign_in_until_the_library_sends_the_window_back(
+    ) {
         let _dek = crate::auth::tests::process_dek_lock().await;
         let files = tempfile::tempdir().unwrap();
         let (state, _store) = crate::node_api::tests::test_state(&files).await;
-        let app = echo_router().route(
-            JOIN_START_PATH,
-            post(|| async {
-                axum::Json(serde_json::json!({
-                    "authorize_url": "https://library.example/join/approve",
-                    "expires_in_secs": 600,
-                }))
-            }),
-        );
+        let started = || async {
+            axum::Json(serde_json::json!({
+                "authorize_url": "https://library.example/sign-in",
+                "expires_in_secs": 600,
+            }))
+        };
+        let app = echo_router()
+            .route(bookclerk_window_policy::JOIN_START_PATH, post(started))
+            .route(bookclerk_window_policy::CLERK_START_PATH, post(started));
         let host = EmbeddedHost {
             state,
             app,
-            join_open_until: Mutex::new(None),
+            sign_in_open_until: Mutex::new(None),
         };
         assert!(format!("{host:?}").starts_with("EmbeddedHost"));
-        let sign_in = "https://library.example/join/approve";
+        let sign_in = "https://library.example/sign-in";
         assert_eq!(host.navigation(sign_in), Navigation::Refuse);
 
         let echoed = host.handle(page_request("/api/echo")).await;
         assert_eq!(echoed.status(), StatusCode::OK);
         assert_eq!(host.navigation(sign_in), Navigation::Refuse);
 
-        let mut start = page_request(JOIN_START_PATH);
-        *start.method_mut() = axum::http::Method::POST;
-        let started = host.handle(start).await;
-        assert_eq!(started.status(), StatusCode::OK);
-        assert_eq!(host.navigation(sign_in), Navigation::JoinSignIn);
-        assert_eq!(
-            host.navigation("http://localhost/join/callback?code=c"),
-            Navigation::JoinReturn("/join/callback?code=c".into())
-        );
-        assert_eq!(host.navigation(sign_in), Navigation::Refuse);
+        for (start_path, callback) in [
+            ("/api/config/join/start", "/join/callback"),
+            ("/api/config/clerk/start", "/clerk/callback"),
+        ] {
+            let mut start = page_request(start_path);
+            *start.method_mut() = axum::http::Method::POST;
+            let answer = host.handle(start).await;
+            assert_eq!(answer.status(), StatusCode::OK, "{start_path}");
+            assert_eq!(host.navigation(sign_in), Navigation::SignIn, "{start_path}");
+            assert_eq!(
+                host.navigation(&format!("http://localhost{callback}?code=c")),
+                Navigation::SignInReturn(format!("{callback}?code=c")),
+            );
+            assert_eq!(host.navigation(sign_in), Navigation::Refuse, "{start_path}");
+        }
         host.shutdown().await;
     }
 
@@ -479,7 +488,7 @@ mod tests {
         let host = EmbeddedHost {
             state,
             app: echo_router(),
-            join_open_until: Mutex::new(None),
+            sign_in_open_until: Mutex::new(None),
         };
         let mut frames = Vec::new();
         // Stop after the first frame: `hello`, naming every topic.

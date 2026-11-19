@@ -50,6 +50,46 @@ function emitValue(value: unknown): string | null {
 }
 
 /**
+ * Emits an enum entry's `values` as an array of inline tables.
+ *
+ * @param values - Allowed ids with optional labels.
+ * @returns TOML array literal.
+ */
+function emitChoices(values: Array<{ id: string; label?: string }>): string {
+  const rendered = values.map((value) =>
+    value.label
+      ? `{ id = ${esc(value.id)}, label = ${esc(value.label)} }`
+      : `{ id = ${esc(value.id)} }`,
+  );
+  return `[${rendered.join(", ")}]`;
+}
+
+/**
+ * Emits a `table` setting's default rows as an array of inline tables, each
+ * row's keys sorted like `BTreeMap`.
+ *
+ * @param rows - Parsed default.
+ * @returns TOML array literal, or `null` when a row is not a flat table of
+ *   scalars.
+ */
+function emitRows(rows: unknown): string | null {
+  if (!Array.isArray(rows)) return null;
+  const rendered: string[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+    const cells: string[] = [];
+    for (const key of Object.keys(row).sort()) {
+      const value = (row as Record<string, unknown>)[key];
+      const literal = Array.isArray(value) ? null : emitValue(value);
+      if (literal === null) return null;
+      cells.push(`${key} = ${literal}`);
+    }
+    rendered.push(cells.length === 0 ? "{}" : `{ ${cells.join(", ")} }`);
+  }
+  return emitArray(rendered);
+}
+
+/**
  * Emits `key = value` rows for a flat table, keys sorted like `BTreeMap`.
  *
  * @param lines - Output line buffer.
@@ -218,15 +258,10 @@ export function formatManifest(m: Manifest): string {
     if (spec.label) lines.push(`label = ${esc(spec.label)}`);
     lines.push(`type = ${esc(spec.type)}`);
     if (spec.values && spec.values.length > 0) {
-      const rendered = spec.values.map((value) =>
-        value.label
-          ? `{ id = ${esc(value.id)}, label = ${esc(value.label)} }`
-          : `{ id = ${esc(value.id)} }`,
-      );
-      lines.push(`values = [${rendered.join(", ")}]`);
+      lines.push(`values = ${emitChoices(spec.values)}`);
     }
     if (spec.default !== undefined) {
-      const literal = emitValue(spec.default);
+      const literal = spec.type === "table" ? emitRows(spec.default) : emitValue(spec.default);
       if (literal === null) {
         throw new Error(
           `plugin.toml: [[settings]] default for \`${spec.key}\` cannot be formatted`,
@@ -236,6 +271,27 @@ export function formatManifest(m: Manifest): string {
     }
     if (spec.required) lines.push("required = true");
     if (spec.description) lines.push(`description = ${esc(spec.description)}`);
+    for (const column of spec.columns ?? []) {
+      lines.push("");
+      lines.push("[[settings.columns]]");
+      lines.push(`key = ${esc(column.key)}`);
+      if (column.label) lines.push(`label = ${esc(column.label)}`);
+      lines.push(`type = ${esc(column.type)}`);
+      if (column.values && column.values.length > 0) {
+        lines.push(`values = ${emitChoices(column.values)}`);
+      }
+      if (column.default !== undefined) {
+        const literal = emitValue(column.default);
+        if (literal === null) {
+          throw new Error(
+            `plugin.toml: [[settings]] default for \`${spec.key}\` column \`${column.key}\` cannot be formatted`,
+          );
+        }
+        lines.push(`default = ${literal}`);
+      }
+      if (column.required) lines.push("required = true");
+      if (column.description) lines.push(`description = ${esc(column.description)}`);
+    }
   }
   emitNamedBinding(lines, "[secrets]", m.secrets);
   for (const kv of m.kv_namespaces ?? []) {
@@ -247,6 +303,7 @@ export function formatManifest(m: Manifest): string {
   emitQueues(lines, m.queues);
   emitNamedBinding(lines, "[work_fs]", m.work_fs);
   emitNamedBinding(lines, "[oauth]", m.oauth);
+  emitNamedBinding(lines, "[sockets]", m.sockets);
 
   lines.push("");
   lines.push("[capabilities.network]");

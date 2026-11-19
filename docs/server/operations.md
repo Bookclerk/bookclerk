@@ -65,10 +65,13 @@ OS.
 | `GET`/`PUT /api/auth/mfa-policy` | Owner or operator | `require_second_factor`: password sign-in needs TOTP or a passkey |
 | `GET /api/status` (also `/status`) | Yes | Status snapshot |
 | `POST /api/library/scan` (also `/scan`) | Yes | Queue a scan. Any user may call `/api/library/scan`; a Member or Host scans only the store accounts linked to them. The `/scan` alias stays with Administrators |
-| `POST /api/library/acquire` (also `/acquire`) | Yes | Queue an acquire. Any user may call `/api/library/acquire`; a Member or Host acquires only from the store accounts linked to them. The `/acquire` alias stays with Administrators |
-| `GET /api/library/books` | Yes | Book rows for the web app |
-| `GET /api/library/works` | Yes | The library's works, one row per work, paged by cursor and filterable by media kind, kind, acquire status and account |
+| `POST /api/library/acquire` (also `/acquire`) | Yes | Queue an acquire. Any user may call `/api/library/acquire`; a Member or Host acquires only from the store accounts linked to them. `editions` queues editions from a work's detail. The `/acquire` alias stays with Administrators |
+| `GET /api/library/works` | Yes | The library's works, one row per work, paged by cursor and filterable by media kind, kind, acquire status and account; `q` searches titles, people, series and store identifiers |
 | `GET /api/library/works/{id}` | Yes | One work with its editions, store listings, holdings and the caller's own state |
+| `PUT`/`DELETE /api/library/listings/{id}/pin` | Provisioner | Pin a store listing to the edition it sells (it moves there at once, with its holdings and offers, and later scans keep it there), or remove the pin (the listing stays where it is) |
+| `POST /api/library/works/{id}/split` | Provisioner | Split a wrongly merged work: up to 12 of its expressions move, with their editions, listings and holdings, to a new work that copies its title, credits, series and each person's own state; new listings with the same title keep joining the original |
+| `GET /api/library/conflicts` | Provisioner | The identifier clashes and ambiguous matches the resolver left for an Administrator, paged by cursor |
+| `GET /api/library/editions/{id}/cover` | Yes | The JPEG cover written beside an acquired edition's file, when this node runs a local destination |
 | `GET /api/jobs` (also `/jobs`) | Yes | The durable job list: progress, attempts, times |
 | `POST /api/jobs/{id}/cancel` | Yes | Cancel pending work, or ask running work to stop |
 | `/` | None | The web app, when `ui/dist` is present |
@@ -223,7 +226,7 @@ editing TOML.
   matching `Origin` (or `Referer`) host. Sign-in, redeem and password
   paths are exempt.
 - The web app's live socket (`GET /api/live`) is a WebSocket, as is the
-  host-node socket (`GET /api/node/v1/connect`) in `proxy` mode. The proxy
+  branch-node socket (`GET /api/node/v1/connect`) in `proxy` mode. The proxy
   must forward the upgrade.
 - The live socket also needs `Origin` to equal `public_origin` exactly.
   Without a working socket, the web app falls back to polling.
@@ -311,9 +314,9 @@ middleware.
 | `[media]` | Swaps the media worker pool |
 | `[events]` | Compare-and-swap in the database. A reload overlays the committed revision and never copies TOML back over it. Each committed write wakes every node through its `node.<node_id>` queue, with a 60-second backstop for a missed wakeup |
 
-## Host nodes
+## Branch nodes
 
-A Bookclerk install can join another library as a host node, and run its
+A Bookclerk install can join another library as a branch node, and run its
 scans and acquires. The web app calls this a **branch**. The full guide
 is [Libraries and branches](cluster-hosts.md).
 
@@ -340,7 +343,7 @@ What a host needs:
 
 A host keeps its own database and `master.key`, and never sees the
 library's. On the library, `bookclerk nodes list` shows the host
-(`kind = host`) with its heartbeats, and `bookclerk nodes revoke
+(`kind = branch`) with its heartbeats, and `bookclerk nodes revoke
 <node_id>` disconnects it for good.
 
 ## systemd

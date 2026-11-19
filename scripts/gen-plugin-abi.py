@@ -228,6 +228,7 @@ def check_method_names() -> list[str]:
         "Oidc",
         "MetadataProvider",
         "CoverFetcher",
+        "MetadataFiles",
         "PluginCli",
         "EventConsumer",
         "EventPublisher",

@@ -1,9 +1,9 @@
 # Media worker pool
 
 This page explains the media worker: the confined helper process that
-decodes, encodes and packages audio, and re-encodes cover images. It
-covers how to install and configure it, and what to check when media work
-fails.
+decodes, encodes and packages audio, re-encodes cover images, and reads
+the tags embedded in media files. It covers how to install and configure
+it, and what to check when media work fails.
 
 ## What it does
 
@@ -60,6 +60,81 @@ one after another and fails when an optimized build takes longer than
 2 seconds. Run it with
 `cargo test --release -p bookclerk-cover --test budget -- --nocapture`
 to see the time on your hardware.
+
+### Embedded tags
+
+Files already on storage carry their own metadata: MP4 `ilst` items and
+chapter tracks, ID3 tags in MP3s, and Vorbis comments in FLAC files.
+Anyone who can put a file on storage controls those bytes, so they are
+read by one long-lived `bookclerk-media-worker tags` process, never by the
+daemon. For each file it reports:
+
+- the text entries (title, album, artist, composer, genre, freeform items
+  such as `com.pilabor.tone:AUDIBLE_ASIN` and `TXXX:ASIN`, and so on), as
+  the file holds them;
+- the chapters, from the QuickTime chapter track, Nero `chpl`, ID3 `CHAP`
+  frames or Vorbis `CHAPTERnnn` comments;
+- the running time, and whether the container states it or it was
+  estimated;
+- the audio encoding (AAC, ALAC, FLAC, MP3, Opus, E-AC-3 or AC-4), from
+  the audio track's sample description in an MP4 file;
+- where the cover picture lies in the file, its format and its SHA-256,
+  without the picture itself;
+- a SHA-256 digest of the metadata region (versioned), which changes when
+  a tag is edited and not when the audio is.
+
+The worker opens no file. It asks the daemon for the byte ranges it needs,
+and the daemon fetches them from wherever the file lives, so a file on S3
+is read with ranged `GET`s, just like a local one. Only box and frame
+headers and the metadata region are fetched, never the audio: the sample
+tables of a long book's audio track are skipped by size. Files are read in
+pages, up to 16 at once, and don't wait for a job slot.
+
+Like the cover process, the tag process is confined to no path and no
+network before it reads its first frame, and serves files until the daemon
+stops. The daemon treats it as compromised: it fetches only ranges inside
+the file, caps each file at 128 rounds and 16 MiB, holds at most 64 MiB of
+fetched bytes at once, stops the process when a round takes longer than
+30 seconds or it asks for more than that, and checks every record against
+the reader's limits before using it. A file the reader can't parse fails
+alone. With `media.isolation = "off"` tags are read in the daemon.
+
+The reader lives in `bookclerk-tags` and is fuzzed by the `tags_read` and
+`tags_wire` targets (see [Fuzzing](../contributing/fuzzing.md)).
+
+### What a stored file's row says
+
+Every audio file an acquire writes is probed once it is on its
+destination, through the same tag process, and the result is kept on the
+file's row in the database (`edition_files`):
+
+| Value | Meaning |
+| --- | --- |
+| Media type | `audio/mp4`, `audio/mpeg` or `audio/flac`, from the container the reader found, not from the file name |
+| Bitrate | The file's size over its running time, in kbps: an average that includes the cover and tags. Empty when the running time is unknown |
+| Lossless | Whether the audio track's encoding is lossless (FLAC, or ALAC in an MP4 file) |
+| Source store | The store the copy was downloaded from, such as `audible` or `libro` |
+
+The row answers "what copy do we hold?" without opening the file again,
+so comparing two copies of one edition, or telling another install what
+is on offer, is a database read.
+
+A probe never decides whether a file is kept. When the tag process is
+missing and `media.isolation` is `required`, or the reader cannot parse
+the file, the file is stored as before and its row stays unprobed.
+
+A host or a branch that acquires a book probes it the same way before
+uploading, and sends the bitrate, lossless flag and source store beside
+the file's media type. The library checks them with the manifest (a
+bitrate up to 20,000 kbps, a plain store id) and stores them when the
+upload commits, so an upload that is aborted or never finishes describes
+nothing. The values are the sender's word about its own file. They come
+from a node the library already trusts with the title, and they are only
+used to choose between two copies of the same edition.
+
+> [!NOTE]
+> Files stored before probes were recorded have unprobed rows. They are
+> not probed again by this change.
 
 ## Install the worker
 
@@ -239,6 +314,7 @@ through `bookclerk-jail`, the launcher plugins use:
 | `package_m4b` | Every part | The output's folder |
 | `align_chapters` | The input file | Nothing |
 | `covers` | Nothing (images arrive on stdin) | Nothing |
+| `tags` | Nothing (file ranges arrive on stdin) | Nothing |
 
 Write grants are folders, not single files, because codecs stage output
 in temporary files beside the destination. Packaging can't know the final

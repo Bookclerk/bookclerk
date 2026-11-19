@@ -74,9 +74,10 @@ use bookclerk_node_proto::{
     AuthContext, Body, BranchRequest, CarriedAccount, CatalogRef, CatalogTitle, ClaimFilter,
     ClaimScope, Frame, HeldFence, KeeperOutcome, LookupAnswer, LookupWork, PlanDestination,
     RequestOutcome, SealError, SecretEntry, SecretRef, SecretValue, SigningKey, UploadAnswer,
-    UploadCommitRequest, UploadFile, WindowWork, ACCOUNT_BUNDLE_VERSION, ARTIFACTS_PATH,
-    CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS,
-    ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
+    UploadCommitRequest, UploadFile, WindowCursor, WindowWork, ACCOUNT_BUNDLE_VERSION,
+    ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS,
+    IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH,
+    UPLOAD_AUTH_SCHEME,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -694,7 +695,7 @@ impl Shared {
         }
     }
 
-    /// `acquire.plan`: the titles still to acquire and the owner node's
+    /// `acquire.plan`: the titles still to acquire and the shared node's
     /// destinations, the primary first.
     pub(crate) async fn acquire_plan(
         &self,
@@ -719,7 +720,7 @@ impl Shared {
         &self,
         job_id: &str,
         fence: i64,
-        book_uuid: &str,
+        holding_id: &str,
         primary_key: &str,
         pdf_key: Option<&str>,
         files: Vec<UploadFile>,
@@ -727,7 +728,7 @@ impl Shared {
         let body = Body::UploadGrant {
             job_id: job_id.to_string(),
             fence,
-            book_uuid: book_uuid.to_string(),
+            holding_id: holding_id.to_string(),
             primary_key: primary_key.to_string(),
             pdf_key: pdf_key.map(str::to_string),
             files,
@@ -1351,7 +1352,7 @@ impl HostClientHandle {
     }
 
     /// `window.books`: one page of the books the library holds for this
-    /// window's person, from cursor `after` (0 for the first page).
+    /// window's person, from cursor `after` (empty for the first page).
     ///
     /// # Returns
     ///
@@ -1365,16 +1366,136 @@ impl HostClientHandle {
     /// count this node as a branch.
     pub async fn window_books(
         &self,
-        after: i64,
-    ) -> Result<(Vec<WindowWork>, Option<i64>), OwnerCallError> {
-        match self.catalog_call(Body::WindowBooks { after }).await? {
+        after: &WindowCursor,
+    ) -> Result<(Vec<WindowWork>, Option<WindowCursor>), OwnerCallError> {
+        match self
+            .catalog_call(Body::WindowBooks {
+                after: after.clone(),
+            })
+            .await?
+        {
             Body::WindowPage { works, next }
-                if window_page_problem(after, &works, next).is_none() =>
+                if window_page_problem(after, &works, next.as_ref()).is_none() =>
             {
                 Ok((works, next))
             }
             _ => Err(OwnerCallError::Unavailable),
         }
+    }
+
+    /// `copy.grant`: asks the library for the copy it holds of the edition
+    /// named by its store listing, for this node's owner, and opens the
+    /// sealed token (bound to this node and the copy).
+    ///
+    /// # Returns
+    ///
+    /// `None` when the library answers `not_found`: the person cannot take
+    /// that edition, or the library holds no copy of it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`]; `Refused` when the library does not
+    /// count this node as a branch, `Unavailable` for an answer that
+    /// breaks the frame rules or a token that does not open.
+    pub async fn copy_grant(
+        &self,
+        store: &str,
+        marketplace: &str,
+        product_id: &str,
+    ) -> Result<Option<crate::GrantedCopy>, OwnerCallError> {
+        let shared = &self.shared;
+        let conn = shared
+            .wait_conn(Instant::now() + shared.timing.request_timeout)
+            .await
+            .ok_or(OwnerCallError::Unavailable)?;
+        let answer = conn
+            .request(Body::CopyGrant {
+                store: store.to_string(),
+                marketplace: marketplace.to_string(),
+                product_id: product_id.to_string(),
+            })
+            .await
+            .map_err(|Unavailable| OwnerCallError::Unavailable)?;
+        let (copy_id, sealed_token, expires_in_secs, copy, files) = match answer.body {
+            Body::CopyGranted {
+                copy_id,
+                sealed_token,
+                expires_in_secs,
+                copy,
+                files,
+            } => (copy_id, sealed_token, expires_in_secs, copy, files),
+            Body::Error { code, .. } if code == "not_found" => return Ok(None),
+            Body::Error { code, message } if code == "refused" => {
+                return Err(OwnerCallError::Refused(message))
+            }
+            _ => return Err(OwnerCallError::Unavailable),
+        };
+        let frame = bookclerk_node_proto::CopyGrantedFrame {
+            copy_id: &copy_id,
+            sealed_token: &sealed_token,
+            expires_in_secs,
+            copy: &copy,
+            files: &files,
+        };
+        if let Some(problem) = bookclerk_node_proto::copy_granted_problem(&frame) {
+            tracing::warn!(problem, "the library's copy.granted breaks the frame rules");
+            return Err(OwnerCallError::Unavailable);
+        }
+        let token = bookclerk_node_proto::open_copy_token(
+            &shared.box_secret,
+            &shared.node_id,
+            &copy_id,
+            &sealed_token,
+        )
+        .map_err(|_| {
+            tracing::warn!(%copy_id, "the copy token does not open with this node's box key");
+            OwnerCallError::Unavailable
+        })?;
+        register_value_for_redaction(token.expose());
+        Ok(Some(crate::GrantedCopy::new(
+            shared.cluster_id.clone(),
+            copy_id,
+            expires_in_secs,
+            copy,
+            files,
+            token,
+        )))
+    }
+
+    /// Downloads file `index` of `copy` to `dest` from the library that
+    /// granted it, resuming what `dest` already holds
+    /// ([`crate::fetch_copy_file`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CopyFetchError`]: `OtherLibrary` when another
+    /// library granted `copy` (its token is not sent), `NoSuchFile` when
+    /// the grant lists no file at `index`.
+    pub async fn fetch_copy_file(
+        &self,
+        copy: &crate::GrantedCopy,
+        index: usize,
+        dest: &std::path::Path,
+    ) -> Result<(), crate::CopyFetchError> {
+        if !copy.granted_by(&self.shared.cluster_id) {
+            return Err(crate::CopyFetchError::OtherLibrary);
+        }
+        let file = copy
+            .files
+            .get(index)
+            .ok_or(crate::CopyFetchError::NoSuchFile)?;
+        let authorization = copy
+            .authorization()
+            .map_err(|_| crate::CopyFetchError::Status(401))?;
+        crate::fetch_copy_file(
+            &self.shared.endpoint,
+            &authorization,
+            &copy.copy_id,
+            index,
+            file.size,
+            dest,
+        )
+        .await
     }
 
     /// `catalog.upload`: opens an upload of one shared title's `files` and
@@ -1606,7 +1727,7 @@ impl<R: HostJobRunner> HostClient<R> {
                     tracing::error!(
                         node_id = %self.shared.node_id,
                         cluster_id = %self.shared.cluster_id,
-                        "the owner revoked this host node; stopping the cluster link"
+                        "the owner revoked this branch node; stopping the cluster link"
                     );
                     return ClientExit::Revoked;
                 }

@@ -319,8 +319,12 @@ else
   fail "plugin_copy still keys plugin databases on the job's plugin_id string"
 fi
 
+# Session lookups match through `SlotGuest::matches`, which compares the
+# occupancy identity of a resident session or a sleeping guest's captured one.
 if grep -A30 'pub fn plugin_session' crates/bookclerk-plugin-host/src/host/destination.rs \
-    | grep -q 'identity_matches_occupancy'; then
+    | grep -q 'guest.matches(plugin_id)' \
+  && grep -A12 'fn matches(&self, plugin_id: &str)' crates/bookclerk-plugin-host/src/host/destination.rs \
+    | grep -c 'identity_matches_occupancy' | grep -qx 2; then
   ok "destination plugin_session occupancy is PluginKey-aware"
 else
   fail "destination plugin_session still looks up only plugin_instance_key(alias)"
@@ -341,7 +345,9 @@ else
   fail "fetch_dir imports recv_passed_fd on Windows (unused import under clippy -D warnings)"
 fi
 
-if grep -A20 'pub fn new()' crates/bookclerk-plugin-sdk/src/http.rs \
+# `Client::new()` shares one default client per process; `build_default`
+# builds it and holds the fail-closed branch.
+if grep -A20 'fn build_default()' crates/bookclerk-plugin-sdk/src/http.rs \
     | grep -q 'nested_native_jail_requested'; then
   ok "SDK HTTP Client::new fail-closes under nested Deny instead of ambient TCP"
 else

@@ -171,6 +171,104 @@ run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
   console.log(`ok ${doc.cases.length} shared manifest cases`);
 }
 
+// Table settings: the TS checker refuses the declarations the Rust schema
+// validation refuses, with the same messages.
+{
+  const { parse } = await import("smol-toml");
+  const { validateManifest } = await import("../dist/tools/validate.js");
+  const { envPropertiesFor } = await import("../dist/tools/types.js");
+  const base =
+    'api_version = 3\nid = "tables"\nversion = "0.1.0"\nruntime = "workerd"\nentrypoints = ["cli"]\n' +
+    '[workerd]\ncompatibility_date = "2026-08-01"\nmain_module = "index.js"\n' +
+    '[capabilities.network]\nmode = "deny"\n[vars]\n';
+  const table = '[[settings]]\nkey = "mappings"\ntype = "table"\n';
+  const column = (key, type, extra = "") =>
+    `[[settings.columns]]\nkey = "${key}"\ntype = "${type}"\n${extra}`;
+  const cases = [
+    [table, "table setting `mappings` must declare `columns`"],
+    [
+      '[[settings]]\nkey = "name"\ntype = "string"\n' + column("a", "string"),
+      "setting `name` declares `columns` but is not a table",
+    ],
+    [table + column("a", "string") + column("a", "bool"), "column `a` is duplicated"],
+    [table + column("a", "secret"), "column `a` must be a string, bool, integer or enum"],
+    [table + column("Bad", "string"), "column `Bad` must match"],
+    [table + column("a", "enum"), "column `a` must declare `values`"],
+    [table + column("a", "string", "default = 1\n"), "default for table setting"],
+    [
+      table.replace('type = "table"\n', 'type = "table"\ndefault = [{ b = "x" }]\n') +
+        column("a", "string", "required = true\n") +
+        column("b", "string"),
+      "does not match its columns",
+    ],
+    [
+      table.replace('type = "table"\n', 'type = "table"\ndefault = [{ c = "x" }]\n') +
+        column("a", "string"),
+      "does not match its columns",
+    ],
+  ];
+  for (const [tables, needle] of cases) {
+    let got = null;
+    try {
+      validateManifest(parse(base + tables));
+    } catch (err) {
+      got = err.message;
+    }
+    if (!got || !got.startsWith("plugin.toml: [[settings]] ") || !got.includes(needle)) {
+      console.error(`FAIL table case ${JSON.stringify(needle)}: got ${JSON.stringify(got)}`);
+      process.exit(1);
+    }
+  }
+  const ok = parse(
+    base +
+      table +
+      column("library", "string", "required = true\n") +
+      column("depth", "integer") +
+      column("mode", "enum", 'values = [{ id = "read" }, { id = "write" }]\ndefault = "read"\n'),
+  );
+  validateManifest(ok);
+  const config = envPropertiesFor(ok).find((p) => p.name === "CONFIG");
+  const want =
+    'mappings: Array<{ library: string; depth?: number; mode: "read" | "write" }> | undefined;';
+  if (!config || !config.type.includes(want)) {
+    console.error("FAIL table CONFIG type", config?.type);
+    process.exit(1);
+  }
+  const { formatManifest } = await import("../dist/tools/format.js");
+  const canonical = (value) =>
+    JSON.stringify(value, (_, v) =>
+      v && typeof v === "object" && !Array.isArray(v)
+        ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1)))
+        : v,
+    );
+  const withDefault = parse(
+    base +
+      table.replace(
+        'type = "table"\n',
+        'type = "table"\ndefault = [{ library = "a" }, { mode = "write", library = "b" }]\n',
+      ) +
+      column("library", "string", 'label = "Library"\nrequired = true\n') +
+      column("mode", "enum", 'values = [{ id = "read", label = "Read" }, { id = "write" }]\n'),
+  );
+  validateManifest(withDefault);
+  const formatted = formatManifest(withDefault);
+  const reparsed = parse(formatted);
+  validateManifest(reparsed);
+  // Name the failed check rather than print the manifest text.
+  const failed = [
+    canonical(reparsed.settings) !== canonical(withDefault.settings) && "settings changed",
+    !formatted.includes(
+      'default = [\n    { library = "a" },\n    { library = "b", mode = "write" },\n]',
+    ) && "default rows not formatted",
+    formatManifest(reparsed) !== formatted && "second format differs",
+  ].filter(Boolean);
+  if (failed.length) {
+    console.error(`FAIL table setting format round trip: ${failed.join(", ")}`);
+    process.exit(1);
+  }
+  console.log(`ok ${cases.length + 2} table setting cases`);
+}
+
 // Shared main-module cases: the author-model check gives the Rust and Python
 // result and message for every source.
 {
@@ -311,6 +409,39 @@ function bindingMessage(manifest) {
   }
   return "";
 }
+// [metadata_files]: the host parses rows with deny_unknown_fields and a bool `writes`.
+{
+  const dialect = { id: "txt", name: "Text", file_names: ["desc.txt"], fields: ["description"] };
+  const files = (table) => ({
+    ...bindingBase,
+    entrypoints: ["metadataFiles"],
+    metadata_files: table,
+  });
+  const cases = [
+    [files({ dialects: [dialect] }), ""],
+    [files({ dialects: [{ ...dialect, writes: true }] }), ""],
+    [
+      files({ dialects: [{ ...dialect, wrties: true }] }),
+      "plugin.toml: metadata_files.dialects[0] has unknown key `wrties`",
+    ],
+    [
+      files({ dialects: [{ ...dialect, writes: "false" }] }),
+      "plugin.toml: metadata_files.dialects[0].writes must be a boolean",
+    ],
+    [
+      files({ dialects: [dialect], extra: 1 }),
+      "plugin.toml: `[metadata_files]` has unknown key `extra`",
+    ],
+  ];
+  for (const [manifest, want] of cases) {
+    const got = bindingMessage(manifest);
+    if (got !== want) {
+      console.error("FAIL metadata_files key check", JSON.stringify({ got, want }));
+      process.exit(1);
+    }
+  }
+  console.log("ok metadata_files rejects unknown keys and non-bool writes");
+}
 // [capabilities.network.own_user_agent]: outbound, 1-32 hosts that are not `*`,
 // and a one-line reason.
 {
@@ -426,6 +557,61 @@ if (!rowIndexed) {
   process.exit(1);
 }
 console.log("ok binding errors name the row index");
+// [sockets]: outbound only, a valid name that collides with nothing, and the
+// generated Env types it as SocketsBinding under its (renamed) binding.
+{
+  const { renderEnvTypes } = await import("../dist/tools/types.js");
+  const outbound = { ...bindingBase, capabilities: { network: { mode: "outbound", tcp: [] } } };
+  const cases = [
+    [{ ...bindingBase, sockets: {} }, "[sockets] needs capabilities.network.mode"],
+    [{ ...outbound, sockets: {} }, ""],
+    [{ ...outbound, sockets: { binding: "push" } }, "[sockets][0] binding must be"],
+    [
+      { ...outbound, sockets: {}, kv_namespaces: [{ binding: "SOCKETS" }] },
+      "[kv_namespaces][0] binding collides",
+    ],
+    [
+      {
+        ...outbound,
+        sockets: { binding: "EVENTS" },
+        events: { producers: [{ type: "echo_done" }] },
+      },
+      "[sockets][0] binding collides",
+    ],
+    [
+      {
+        ...outbound,
+        sockets: { binding: "EVENTS" },
+        events: { producers: [{ type: "echo_done", binding: "CUSTOM" }] },
+      },
+      "[sockets][0] binding collides",
+    ],
+  ];
+  for (const [manifest, expected] of cases) {
+    const message = bindingMessage(manifest);
+    const ok = expected === "" ? message === "" : message.includes(expected);
+    if (!ok) {
+      console.error(
+        "FAIL sockets",
+        JSON.stringify(manifest.sockets),
+        "->",
+        message || "(accepted)",
+      );
+      process.exit(1);
+    }
+  }
+  const types = renderEnvTypes({ ...outbound, sockets: { binding: "PUSH" } });
+  if (!types.includes("PUSH: SocketsBinding;") || !types.includes("SocketsBinding }")) {
+    console.error("FAIL sockets env types: missing the PUSH SocketsBinding property or import");
+    process.exit(1);
+  }
+  const formatted = formatManifest({ ...outbound, sockets: { binding: "PUSH" } });
+  if (!formatted.includes('[sockets]\nbinding = "PUSH"')) {
+    console.error("FAIL sockets format: missing the renamed [sockets] table");
+    process.exit(1);
+  }
+  console.log("ok [sockets] validates, formats and types as SocketsBinding");
+}
 const nameOnly = formatManifest({
   api_version: 3,
   id: "echo",
@@ -473,6 +659,11 @@ console.log("ok materialize rejects disk-only python even with both flags");
   const probed = healthInterfaces(["cli", "metadata", "storefront"]);
   if (JSON.stringify(probed) !== JSON.stringify(["ContentSource", "MetadataProvider"])) {
     console.error("FAIL smoke probes every health entrypoint", probed);
+    process.exit(1);
+  }
+  const files = healthInterfaces(["metadataFiles", "covers"]);
+  if (JSON.stringify(files) !== JSON.stringify(["CoverFetcher", "MetadataFiles"])) {
+    console.error("FAIL smoke probes metadataFiles health", files);
     process.exit(1);
   }
   if (healthInterfaces(["cli"]).length !== 0) {

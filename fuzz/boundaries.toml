@@ -126,9 +126,51 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.metadata_file_record]
+crate = "bookclerk-plugin-abi"
+boundary = "A metadata-file dialect's parse reply: what a sidecar says, its field list, credit roles, text and list caps, dates and chapter order, against the dialect's declared fields"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.event_read]
 crate = "bookclerk-plugin-abi"
 boundary = "A guest's EVENTS.read request: the /events/read JSON body, its opaque cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.storage_reply]
+crate = "bookclerk-plugin-abi"
+boundary = "A storage guest's replies to intent operations: moveMany, deleteMany, headMany and changes pages and the hinted list page, checked against the request that asked for them"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.s3_event]
+crate = "bookclerk-storage"
+boundary = "Messages on an S3 bucket's notification queue (S3 event notifications, SNS envelopes, EventBridge events), read by the s3 guest into change-feed entries"
+input_from = "storage"
+side = "guest"
+artifacts = ["bookclerk"]
+
+[targets.socket_request]
+crate = "bookclerk-plugin-abi"
+boundary = "A guest's host-brokered socket request: the Sockets.connect URL, headers, subprotocols, heartbeat pairs and attachment, and the SocketMessage the host delivers to a SocketHandler"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.socket_broker]
+crate = "bookclerk-workerd"
+boundary = "What the socket broker does with a remote WebSocket server's frames and closes and a guest's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting"
+input_from = "store"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.socket_route]
+crate = "bookclerk-workerd"
+boundary = "A workerd isolate's env.SOCKETS calls on the granted reverse channel: the POST /sockets/<op> JSON body for connect, send, close, attachment and list"
 input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
@@ -168,6 +210,20 @@ input_from = "media worker"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.tags_read]
+crate = "bookclerk-tags"
+boundary = "Embedded tags of media files on storage (MP4 ilst and chapter tracks, ID3v2/ID3v1, FLAC metadata), read in the tag worker"
+input_from = "storage"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.tags_wire]
+crate = "bookclerk-tags"
+boundary = "Tag worker frames (requests the worker reads, replies the host reads)"
+input_from = "media worker"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.guest_sql_authz]
 crate = "bookclerk-plugin-abi"
 boundary = "Guest SQL authorization under every host-issued policy shape"
@@ -196,6 +252,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.destination_id]
+crate = "bookclerk-config"
+boundary = "A destination id another node sends: an acquire plan's PlanDestination.id and upload records naming the owner's storage plugin instances"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.cache_settings]
 crate = "bookclerk-config"
 boundary = "cache.* values from the settings API and CLI"
@@ -203,24 +266,59 @@ input_from = "operator"
 side = "host"
 artifacts = ["bookclerk"]
 
-[targets.client_authorization]
+[targets.clerk_authorization]
 crate = "bookclerk-node-proto"
-boundary = "A clerk's library card, the Authorization: Bookclerk-Client header value"
+boundary = "A clerk's library card, the Authorization: Bookclerk-Clerk header value"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
-[targets.client_authorize]
+[targets.clerk_authorize]
 crate = "bookclerk-node-proto"
 boundary = "A clerk's authorization request, the /oidc/authorize query that leads to the library card consent page"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
-[targets.client_token_request]
+[targets.clerk_token_request]
 crate = "bookclerk-node-proto"
-boundary = "A library card's token exchange, the POST /api/client/v1/token body and its match against the stored code"
+boundary = "A library card's token exchange, the POST /api/clerk/v1/token body and its match against the stored code"
 input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.clerk_token_answer]
+crate = "bookclerk-node-proto"
+boundary = "A library's answer to a clerk's token exchange, read on the clerk before the card is sealed"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.copy_range]
+crate = "bookclerk-node-proto"
+boundary = "The Range header of a copy download, GET /api/copies/v1/{copy_id}/files/{n}, which decides which bytes of a library's file are sent"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.copy_answer]
+crate = "bookclerk-node-proto"
+boundary = "A library's answer to a copy download, GET /api/copies/v1/{copy_id}/files/{n}: where its head ends, and what the head says of how many bytes a branch or clerk takes and where in the file it writes them"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.clerk_socket_frame]
+crate = "bookclerk-node-proto"
+boundary = "The clerk socket's frames, GET /api/clerk/v1/connect: what a library reads from a clerk (pages asked for, a copy asked for) and what a clerk reads back (topics, pages, a granted copy and its token)"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.instance_config]
+crate = "bookclerk-library"
+boundary = "A plugin instance's settings, including table rows, from PUT /api/config/plugin-instances/{id}/config and bookclerk plugins config set"
+input_from = "operator"
 side = "host"
 artifacts = ["bookclerk"]
 
@@ -252,6 +350,20 @@ input_from = "Owner or operator"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.patron_scope_request]
+crate = "bookclerk-library"
+boundary = "A patron scope an Owner or Administrator sets, from PUT /api/users/default-scope and PUT /api/users/{id}/scope"
+input_from = "Owner, Administrator or operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.work_split_request]
+crate = "bookclerk-library"
+boundary = "An Administrator's choice of expressions to move out of a wrongly merged work, from POST /api/library/works/{id}/split"
+input_from = "Administrator, Owner or operator"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.connections_request]
 crate = "bookclerk-library"
 boundary = "A branch Owner's store connections to add to one library, or one to disconnect, from POST /api/config/join/connections and POST /api/config/join/connections/disconnect"
@@ -271,6 +383,15 @@ crate = "bookclerk-plugin-source-libro"
 boundary = "Libro.fm catalog search pages and audiobook details from the store's app API"
 input_from = "store"
 side = "guest"
+artifacts = ["bookclerk"]
+
+[targets.audible_catalog]
+crate = "bookclerk-audible-catalog"
+boundary = "Audible public catalog answers: search results and a title's similar titles"
+input_from = "store"
+# The audible guest parses them for Discover, and host enrichment links the
+# same crate.
+side = "host"
 artifacts = ["bookclerk"]
 
 [targets.graphicaudio_catalog]

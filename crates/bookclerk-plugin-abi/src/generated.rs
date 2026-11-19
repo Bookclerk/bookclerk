@@ -88,6 +88,8 @@ pub enum Entrypoint {
     Metadata,
     /// Cover fetcher: `fetchCovers` (`CoverFetcher`).
     Covers,
+    /// Metadata file dialects: `parse` and `render` (`MetadataFiles`).
+    MetadataFiles,
 }
 
 impl Entrypoint {
@@ -103,6 +105,7 @@ impl Entrypoint {
             Self::Oidc => "oidc",
             Self::Metadata => "metadata",
             Self::Covers => "covers",
+            Self::MetadataFiles => "metadataFiles",
         }
     }
 
@@ -118,6 +121,7 @@ impl Entrypoint {
             "oidc" => Some(Self::Oidc),
             "metadata" => Some(Self::Metadata),
             "covers" => Some(Self::Covers),
+            "metadataFiles" => Some(Self::MetadataFiles),
             _ => None,
         }
     }
@@ -134,6 +138,7 @@ impl From<Entrypoint> for plugin_capnp::Entrypoint {
             Entrypoint::Oidc => Self::Oidc,
             Entrypoint::Metadata => Self::Metadata,
             Entrypoint::Covers => Self::Covers,
+            Entrypoint::MetadataFiles => Self::MetadataFiles,
         }
     }
 }
@@ -149,6 +154,7 @@ impl From<plugin_capnp::Entrypoint> for Entrypoint {
             plugin_capnp::Entrypoint::Oidc => Self::Oidc,
             plugin_capnp::Entrypoint::Metadata => Self::Metadata,
             plugin_capnp::Entrypoint::Covers => Self::Covers,
+            plugin_capnp::Entrypoint::MetadataFiles => Self::MetadataFiles,
         }
     }
 }
@@ -895,6 +901,78 @@ impl From<plugin_capnp::CatalogField> for CatalogField {
     }
 }
 
+/// How a purchase-hint query names the title to price.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PriceLookup {
+    /// Any field may be used, strongest first (older hosts).
+    #[default]
+    Unspecified,
+    /// `productId` names the store's own product; answer for it alone.
+    Product,
+    /// `isbn` names the edition; answer for that exact ISBN or not found.
+    /// Sent only to a store that declared `CatalogCapabilities.priceByIsbn`.
+    Isbn,
+    /// `asin` names the edition; answer for that exact ASIN or not found.
+    /// Sent only to a store that declared `CatalogCapabilities.priceByAsin`.
+    Asin,
+    /// Search by `title` and `authors`, and return every priced listing the
+    /// search matched in `PurchaseHintResult.records`, so the host can place
+    /// each one in the library model and keep only the recording it asked for.
+    Title,
+}
+
+impl PriceLookup {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Product => "product",
+            Self::Isbn => "isbn",
+            Self::Asin => "asin",
+            Self::Title => "title",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "product" => Some(Self::Product),
+            "isbn" => Some(Self::Isbn),
+            "asin" => Some(Self::Asin),
+            "title" => Some(Self::Title),
+            _ => None,
+        }
+    }
+}
+
+impl From<PriceLookup> for plugin_capnp::PriceLookup {
+    fn from(value: PriceLookup) -> Self {
+        match value {
+            PriceLookup::Unspecified => Self::Unspecified,
+            PriceLookup::Product => Self::Product,
+            PriceLookup::Isbn => Self::Isbn,
+            PriceLookup::Asin => Self::Asin,
+            PriceLookup::Title => Self::Title,
+        }
+    }
+}
+
+impl From<plugin_capnp::PriceLookup> for PriceLookup {
+    fn from(value: plugin_capnp::PriceLookup) -> Self {
+        match value {
+            plugin_capnp::PriceLookup::Unspecified => Self::Unspecified,
+            plugin_capnp::PriceLookup::Product => Self::Product,
+            plugin_capnp::PriceLookup::Isbn => Self::Isbn,
+            plugin_capnp::PriceLookup::Asin => Self::Asin,
+            plugin_capnp::PriceLookup::Title => Self::Title,
+        }
+    }
+}
+
 /// Whether an edition is abridged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -951,6 +1029,136 @@ impl From<plugin_capnp::Abridgement> for Abridgement {
     }
 }
 
+/// A field of a `MetadataFileRecord`. Dialects declare in the manifest which
+/// fields their format carries; a parsed record lists the ones its file
+/// states, and a render request lists the ones to write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MetadataField {
+    /// `MetadataFileRecord.title`.
+    #[default]
+    Title,
+    /// `MetadataFileRecord.subtitle`.
+    Subtitle,
+    /// `MetadataFileRecord.description`.
+    Description,
+    /// `MetadataFileRecord.publisher`.
+    Publisher,
+    /// `MetadataFileRecord.publishedAt`.
+    PublishedAt,
+    /// `MetadataFileRecord.language`.
+    Language,
+    /// `MetadataFileRecord.genres`.
+    Genres,
+    /// `MetadataFileRecord.tags`.
+    Tags,
+    /// `MetadataFileRecord.abridgement`.
+    Abridgement,
+    /// `MetadataFileRecord.expressionKind`.
+    ExpressionKind,
+    /// `MetadataFileRecord.identifiers`.
+    Identifiers,
+    /// `MetadataFileRecord.credits` in the roles `creditRoles` names.
+    Credits,
+    /// `MetadataFileRecord.seriesEntries`.
+    Series,
+    /// `MetadataFileRecord.chapters`.
+    Chapters,
+    /// `MetadataFileRecord.durationMs`.
+    Duration,
+}
+
+impl MetadataField {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Subtitle => "subtitle",
+            Self::Description => "description",
+            Self::Publisher => "publisher",
+            Self::PublishedAt => "publishedAt",
+            Self::Language => "language",
+            Self::Genres => "genres",
+            Self::Tags => "tags",
+            Self::Abridgement => "abridgement",
+            Self::ExpressionKind => "expressionKind",
+            Self::Identifiers => "identifiers",
+            Self::Credits => "credits",
+            Self::Series => "series",
+            Self::Chapters => "chapters",
+            Self::Duration => "duration",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "title" => Some(Self::Title),
+            "subtitle" => Some(Self::Subtitle),
+            "description" => Some(Self::Description),
+            "publisher" => Some(Self::Publisher),
+            "publishedAt" => Some(Self::PublishedAt),
+            "language" => Some(Self::Language),
+            "genres" => Some(Self::Genres),
+            "tags" => Some(Self::Tags),
+            "abridgement" => Some(Self::Abridgement),
+            "expressionKind" => Some(Self::ExpressionKind),
+            "identifiers" => Some(Self::Identifiers),
+            "credits" => Some(Self::Credits),
+            "series" => Some(Self::Series),
+            "chapters" => Some(Self::Chapters),
+            "duration" => Some(Self::Duration),
+            _ => None,
+        }
+    }
+}
+
+impl From<MetadataField> for plugin_capnp::MetadataField {
+    fn from(value: MetadataField) -> Self {
+        match value {
+            MetadataField::Title => Self::Title,
+            MetadataField::Subtitle => Self::Subtitle,
+            MetadataField::Description => Self::Description,
+            MetadataField::Publisher => Self::Publisher,
+            MetadataField::PublishedAt => Self::PublishedAt,
+            MetadataField::Language => Self::Language,
+            MetadataField::Genres => Self::Genres,
+            MetadataField::Tags => Self::Tags,
+            MetadataField::Abridgement => Self::Abridgement,
+            MetadataField::ExpressionKind => Self::ExpressionKind,
+            MetadataField::Identifiers => Self::Identifiers,
+            MetadataField::Credits => Self::Credits,
+            MetadataField::Series => Self::Series,
+            MetadataField::Chapters => Self::Chapters,
+            MetadataField::Duration => Self::Duration,
+        }
+    }
+}
+
+impl From<plugin_capnp::MetadataField> for MetadataField {
+    fn from(value: plugin_capnp::MetadataField) -> Self {
+        match value {
+            plugin_capnp::MetadataField::Title => Self::Title,
+            plugin_capnp::MetadataField::Subtitle => Self::Subtitle,
+            plugin_capnp::MetadataField::Description => Self::Description,
+            plugin_capnp::MetadataField::Publisher => Self::Publisher,
+            plugin_capnp::MetadataField::PublishedAt => Self::PublishedAt,
+            plugin_capnp::MetadataField::Language => Self::Language,
+            plugin_capnp::MetadataField::Genres => Self::Genres,
+            plugin_capnp::MetadataField::Tags => Self::Tags,
+            plugin_capnp::MetadataField::Abridgement => Self::Abridgement,
+            plugin_capnp::MetadataField::ExpressionKind => Self::ExpressionKind,
+            plugin_capnp::MetadataField::Identifiers => Self::Identifiers,
+            plugin_capnp::MetadataField::Credits => Self::Credits,
+            plugin_capnp::MetadataField::Series => Self::Series,
+            plugin_capnp::MetadataField::Chapters => Self::Chapters,
+            plugin_capnp::MetadataField::Duration => Self::Duration,
+        }
+    }
+}
+
 /// One declared event consumer: a `\[\[events.consumers\]\]` row the default
 /// entrypoint's `event(batch)` handler accepts.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1002,6 +1210,10 @@ pub struct PluginCapabilities {
     /// single spaces.
     #[serde(default)]
     pub crons: Vec<String>,
+    /// True when the guest declared `\[sockets\]`: it receives the host-brokered
+    /// `Sockets` binding and may export a `SocketHandler` for pushed messages.
+    #[serde(default)]
+    pub sockets: bool,
 }
 
 /// Catalog behaviours a storefront declares in `describe()`. Catalog search
@@ -1016,6 +1228,16 @@ pub struct CatalogCapabilities {
     /// rows from any store that carry an ISBN.
     #[serde(default)]
     pub detail_by_isbn: bool,
+    /// True when `purchaseHint` / `purchaseHints` price a query by its exact
+    /// ISBN (`lookup = isbn`): the answer is the store's listing of that ISBN
+    /// or not found, never a title match. The host then prices a card at this
+    /// store by the ISBNs of the card's recording before searching by title.
+    #[serde(default)]
+    pub price_by_isbn: bool,
+    /// True when `purchaseHint` / `purchaseHints` price a query by its exact
+    /// ASIN (`lookup = asin`), as `priceByIsbn` does for ISBNs.
+    #[serde(default)]
+    pub price_by_asin: bool,
 }
 
 /// Portal brand crossing the RPC boundary. Distinct from `plugin.toml`
@@ -1847,6 +2069,10 @@ pub struct PurchaseHintParams {
     /// When true, guests should include live price fields when available.
     #[serde(default)]
     pub with_price: bool,
+    /// How the host asks the store to find the title. `unspecified` (an older
+    /// host) leaves the guest free to use any field, as before.
+    #[serde(default)]
+    pub lookup: PriceLookup,
 }
 
 /// Params of `ContentSource.listDeals`.
@@ -2064,13 +2290,32 @@ pub struct PurchaseHint {
 }
 
 /// Success payload of `ContentSource.purchaseHint`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PurchaseHintResult {
     /// False when the guest could not resolve the title (`hint` is empty).
     #[serde(default)]
     pub found: bool,
     /// Purchase hint when `found`.
+    #[serde(default)]
+    pub hint: PurchaseHint,
+    /// Every priced listing a title search matched (`lookup = title`), each
+    /// with its full catalog record, so the host can tell recordings apart by
+    /// identifiers, credits and kinds rather than by title. Empty for other
+    /// lookups and for guests that do not return records; `hint` then stays
+    /// the answer.
+    #[serde(default)]
+    pub records: Vec<PricedRecord>,
+}
+
+/// One priced listing returned by a title search.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PricedRecord {
+    /// The listing's catalog record: identifiers, credits, kinds, language.
+    #[serde(default)]
+    pub record: CatalogHit,
+    /// Its purchase link and prices, as `PurchaseHint` carries them.
     #[serde(default)]
     pub hint: PurchaseHint,
 }
@@ -2085,7 +2330,7 @@ pub struct PurchaseHintsParams {
 }
 
 /// Success payload of `ContentSource.purchaseHints`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PurchaseHintsResult {
     /// One answer per query, in the order the queries were sent.
@@ -2324,10 +2569,11 @@ pub struct QueueRetry {
 }
 
 /// Per-message outcome inside a `QueueConsumer.queue` batch reply.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
 pub enum QueueResult {
     /// Handled; the host marks the message delivered.
+    #[default]
     Ack,
     /// Redeliver later.
     Retry(QueueRetry),
@@ -2772,6 +3018,293 @@ pub struct CoverImages {
     pub images: Vec<CoverImage>,
 }
 
+/// What one metadata file says about the edition it sits beside. A field the
+/// file does not state is left out of `present` and means "unknown", never
+/// "cleared"; a field in `present` with an empty value means the file states
+/// that it is empty. The host checks every value against the `maxMetadataFile*`
+/// caps and refuses a record that states a field its dialect does not carry.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataFileRecord {
+    /// Fields the file states, each at most once; at most the fields the
+    /// dialect declares.
+    #[serde(default)]
+    pub present: Vec<MetadataField>,
+    /// Primary title.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Subtitle when distinct from `title`.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    /// Long description / blurb; at most `maxMetadataFileDescriptionBytes`.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Publisher name.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    /// Publication date as `YYYY`, `YYYY-MM` or `YYYY-MM-DD`.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
+    /// Content language as the file prints it (a code or a name).
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Genre labels in file order.
+    #[serde(default)]
+    pub genres: Vec<String>,
+    /// Free tags in file order.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Whether the edition is abridged; `unknown` when the file does not say.
+    #[serde(default)]
+    pub abridgement: Abridgement,
+    /// How the work is realised; `unspecified` when the file does not say.
+    #[serde(default)]
+    pub expression_kind: ExpressionKind,
+    /// External identifiers the file carries.
+    #[serde(default)]
+    pub identifiers: Vec<Identifier>,
+    /// Credited contributors in billing order, only in the roles `creditRoles`
+    /// names.
+    #[serde(default)]
+    pub credits: Vec<Credit>,
+    /// Credit roles the file states, each at most once. A role listed here
+    /// with no credit means the file states nobody in that role; a role left
+    /// out is unknown. Empty unless `present` holds `credits`.
+    #[serde(default)]
+    pub credit_roles: Vec<CreditRole>,
+    /// Series the work belongs to.
+    #[serde(default)]
+    pub series_entries: Vec<SeriesEntry>,
+    /// Chapter layout in pre-order (see `MetadataChapter`); at most
+    /// `maxMetadataFileChapters`, starts never decreasing.
+    #[serde(default)]
+    pub chapters: Vec<MetadataChapter>,
+    /// Running time in milliseconds.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+/// Params of `MetadataFiles.parse`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataFileParseParams {
+    /// Dialect id from the manifest's `\[\[metadata_files.dialects\]\]` that the
+    /// host routed the file to.
+    #[serde(default)]
+    pub dialect: String,
+    /// The file's name without any folder (`metadata.json`, `Book.opf`).
+    #[serde(default)]
+    pub file_name: String,
+    /// The whole file; at most `maxMetadataFileBytes`.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub bytes: Vec<u8>,
+}
+
+/// Success payload of `MetadataFiles.parse`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataFileParsed {
+    /// What the file says.
+    #[serde(default)]
+    pub record: MetadataFileRecord,
+}
+
+/// One audio file of the edition a sidecar describes, for formats that name
+/// their audio (a CUE sheet's `FILE` lines).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataAudioFile {
+    /// The file's name without any folder, as it sits next to the sidecar.
+    #[serde(default)]
+    pub name: String,
+    /// Running time in milliseconds; 0 when the host does not know it.
+    #[serde(default)]
+    pub duration_ms: u64,
+}
+
+/// Params of `MetadataFiles.render`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataFileRenderParams {
+    /// Dialect id from the manifest; one that declares `writes = true`.
+    #[serde(default)]
+    pub dialect: String,
+    /// Values to write. Only the fields in `fields` are read from it.
+    #[serde(default)]
+    pub record: MetadataFileRecord,
+    /// Fields to set, each at most once and all declared by the dialect. A
+    /// listed field with an empty value removes it from the file.
+    #[serde(default)]
+    pub fields: Vec<MetadataField>,
+    /// The file as it is now; empty when the host is creating it. Everything
+    /// the dialect does not change (unknown keys, comments, other fields) is
+    /// kept. At most `maxMetadataFileBytes`.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub existing: Vec<u8>,
+    /// The edition's audio files in playback order, at most
+    /// `maxMetadataAudioFiles`; empty when the host has none or does not know
+    /// them. Chapter starts in `record` count from the start of the first file.
+    #[serde(default)]
+    pub audio_files: Vec<MetadataAudioFile>,
+}
+
+/// Success payload of `MetadataFiles.render`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataFileRendered {
+    /// The new file; at most `maxMetadataFileBytes`. Empty when the dialect has
+    /// nothing left to write; the host decides whether to remove the file.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub bytes: Vec<u8>,
+}
+
+/// One WebSocket message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub enum SocketFrame {
+    /// Text message, UTF-8.
+    Text(String),
+    /// Binary message.
+    Binary(Vec<u8>),
+}
+
+impl Default for SocketFrame {
+    fn default() -> Self {
+        Self::Text(Default::default())
+    }
+}
+
+/// One request header on `Sockets.connect`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocketHeader {
+    /// Header name; the broker refuses hop-by-hop and WebSocket handshake names.
+    #[serde(default)]
+    pub name: String,
+    /// Header value. May carry a credential: the host never logs it.
+    #[serde(default)]
+    pub value: String,
+}
+
+/// A heartbeat the broker answers itself: when `request` arrives byte for byte,
+/// it sends `response` and does not wake the guest.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocketAutoResponse {
+    /// Frame to match, at most `maxSocketAutoResponseBytes`.
+    #[serde(default)]
+    pub request: SocketFrame,
+    /// Frame to send back, at most `maxSocketAutoResponseBytes`.
+    #[serde(default)]
+    pub response: SocketFrame,
+}
+
+/// Arguments of `Sockets.connect`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocketConnectRequest {
+    /// `wss://` or `ws://` URL, at most `maxSocketUrlBytes`. The host must be on
+    /// the plugin's network grant.
+    #[serde(default)]
+    pub url: String,
+    /// Requested subprotocols, at most `maxSocketHeaders`.
+    #[serde(default)]
+    pub protocols: Vec<String>,
+    /// Extra request headers, at most `maxSocketHeaders`.
+    #[serde(default)]
+    pub headers: Vec<SocketHeader>,
+    /// Heartbeats the broker answers, at most `maxSocketAutoResponses`.
+    #[serde(default)]
+    pub auto_responses: Vec<SocketAutoResponse>,
+    /// Initial attachment, at most `maxSocketAttachmentBytes`.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub attachment: Vec<u8>,
+}
+
+/// One open host-brokered socket.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocketInfo {
+    /// Host-minted socket id, stable for the socket's life.
+    #[serde(default)]
+    pub socket: String,
+    /// URL the socket was opened to, without credentials.
+    #[serde(default)]
+    pub url: String,
+    /// Subprotocol the server chose; empty when none.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    /// Current attachment.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub attachment: Vec<u8>,
+}
+
+/// Success payload of `Sockets.list`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocketList {
+    /// Open sockets, oldest first.
+    #[serde(default)]
+    pub sockets: Vec<SocketInfo>,
+}
+
+/// What a guest asks of the host after handling one pushed message.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocketMessageOk {
+    /// True asks the host to call `Integration.pollEvents` now, while the
+    /// guest is awake, instead of at the next scheduled poll: the message
+    /// announced something the poll hands over (a new user). The host ignores
+    /// it for a plugin whose host schedules no poll.
+    #[serde(default)]
+    pub poll_events: bool,
+}
+
+/// Argument of `SocketHandler.message`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocketMessage {
+    /// Socket the message arrived on.
+    #[serde(default)]
+    pub socket: String,
+    /// The message.
+    #[serde(default)]
+    pub frame: SocketFrame,
+    /// The socket's attachment when the message arrived.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub attachment: Vec<u8>,
+}
+
+/// Argument of `SocketHandler.closed`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocketClosed {
+    /// Socket that closed; its id is not reused.
+    #[serde(default)]
+    pub socket: String,
+    /// WebSocket close code; 1006 when the connection dropped without one.
+    #[serde(default)]
+    pub code: u16,
+    /// Close reason the peer sent; empty when none.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// True when the close handshake completed.
+    #[serde(default)]
+    pub clean: bool,
+    /// The socket's last attachment.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub attachment: Vec<u8>,
+}
+
 /// Encode a [`EventConsumerSpec`] onto a Cap'n Proto builder.
 ///
 /// # Errors
@@ -2878,6 +3411,7 @@ pub fn write_plugin_capabilities(
             items.set(list_len(i)?, item);
         }
     }
+    b.set_sockets(v.sockets);
     Ok(())
 }
 
@@ -2907,6 +3441,7 @@ pub fn read_plugin_capabilities(
         queue_consumers: read_text_list(r.get_queue_consumers()?)?,
         queue_producers: read_text_list(r.get_queue_producers()?)?,
         crons: read_text_list(r.get_crons()?)?,
+        sockets: r.get_sockets(),
     })
 }
 
@@ -2920,6 +3455,8 @@ pub fn write_catalog_capabilities(
     v: &CatalogCapabilities,
 ) -> capnp::Result<()> {
     b.set_detail_by_isbn(v.detail_by_isbn);
+    b.set_price_by_isbn(v.price_by_isbn);
+    b.set_price_by_asin(v.price_by_asin);
     Ok(())
 }
 
@@ -2933,6 +3470,8 @@ pub fn read_catalog_capabilities(
 ) -> capnp::Result<CatalogCapabilities> {
     Ok(CatalogCapabilities {
         detail_by_isbn: r.get_detail_by_isbn(),
+        price_by_isbn: r.get_price_by_isbn(),
+        price_by_asin: r.get_price_by_asin(),
     })
 }
 
@@ -4501,6 +5040,7 @@ pub fn write_purchase_hint_params(
     }
     b.set_region(&v.region);
     b.set_with_price(v.with_price);
+    b.set_lookup(v.lookup.into());
     Ok(())
 }
 
@@ -4520,6 +5060,7 @@ pub fn read_purchase_hint_params(
         isbn: opt_text(r.get_isbn()?)?,
         region: r.get_region()?.to_string()?,
         with_price: r.get_with_price(),
+        lookup: r.get_lookup()?.into(),
     })
 }
 
@@ -4946,6 +5487,12 @@ pub fn write_purchase_hint_result(
 ) -> capnp::Result<()> {
     b.set_found(v.found);
     write_purchase_hint(b.reborrow().init_hint(), &v.hint)?;
+    {
+        let mut items = b.reborrow().init_records(list_len(v.records.len())?);
+        for (i, item) in v.records.iter().enumerate() {
+            write_priced_record(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
     Ok(())
 }
 
@@ -4959,6 +5506,39 @@ pub fn read_purchase_hint_result(
 ) -> capnp::Result<PurchaseHintResult> {
     Ok(PurchaseHintResult {
         found: r.get_found(),
+        hint: read_purchase_hint(r.get_hint()?)?,
+        records: r
+            .get_records()?
+            .iter()
+            .map(|item| read_priced_record(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+    })
+}
+
+/// Encode a [`PricedRecord`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_priced_record(
+    mut b: plugin_capnp::priced_record::Builder<'_>,
+    v: &PricedRecord,
+) -> capnp::Result<()> {
+    write_catalog_hit(b.reborrow().init_record(), &v.record)?;
+    write_purchase_hint(b.reborrow().init_hint(), &v.hint)?;
+    Ok(())
+}
+
+/// Decode a [`PricedRecord`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_priced_record(
+    r: plugin_capnp::priced_record::Reader<'_>,
+) -> capnp::Result<PricedRecord> {
+    Ok(PricedRecord {
+        record: read_catalog_hit(r.get_record()?)?,
         hint: read_purchase_hint(r.get_hint()?)?,
     })
 }
@@ -6827,9 +7407,781 @@ pub fn read_cover_images_reply(
     }
 }
 
+/// Encode a [`MetadataFileRecord`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_metadata_file_record(
+    mut b: plugin_capnp::metadata_file_record::Builder<'_>,
+    v: &MetadataFileRecord,
+) -> capnp::Result<()> {
+    {
+        let mut items = b.reborrow().init_present(list_len(v.present.len())?);
+        for (i, item) in v.present.iter().enumerate() {
+            items.set(list_len(i)?, (*item).into());
+        }
+    }
+    if let Some(value) = &v.title {
+        b.set_title(value);
+    }
+    if let Some(value) = &v.subtitle {
+        b.set_subtitle(value);
+    }
+    if let Some(value) = &v.description {
+        b.set_description(value);
+    }
+    if let Some(value) = &v.publisher {
+        b.set_publisher(value);
+    }
+    if let Some(value) = &v.published_at {
+        b.set_published_at(value);
+    }
+    if let Some(value) = &v.language {
+        b.set_language(value);
+    }
+    {
+        let mut items = b.reborrow().init_genres(list_len(v.genres.len())?);
+        for (i, item) in v.genres.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    {
+        let mut items = b.reborrow().init_tags(list_len(v.tags.len())?);
+        for (i, item) in v.tags.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    b.set_abridgement(v.abridgement.into());
+    b.set_expression_kind(v.expression_kind.into());
+    {
+        let mut items = b
+            .reborrow()
+            .init_identifiers(list_len(v.identifiers.len())?);
+        for (i, item) in v.identifiers.iter().enumerate() {
+            write_identifier(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    {
+        let mut items = b.reborrow().init_credits(list_len(v.credits.len())?);
+        for (i, item) in v.credits.iter().enumerate() {
+            write_credit(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    {
+        let mut items = b
+            .reborrow()
+            .init_credit_roles(list_len(v.credit_roles.len())?);
+        for (i, item) in v.credit_roles.iter().enumerate() {
+            items.set(list_len(i)?, (*item).into());
+        }
+    }
+    {
+        let mut items = b
+            .reborrow()
+            .init_series_entries(list_len(v.series_entries.len())?);
+        for (i, item) in v.series_entries.iter().enumerate() {
+            write_series_entry(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    {
+        let mut items = b.reborrow().init_chapters(list_len(v.chapters.len())?);
+        for (i, item) in v.chapters.iter().enumerate() {
+            write_metadata_chapter(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    if let Some(value) = v.duration_ms {
+        b.set_duration_ms(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`MetadataFileRecord`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_metadata_file_record(
+    r: plugin_capnp::metadata_file_record::Reader<'_>,
+) -> capnp::Result<MetadataFileRecord> {
+    Ok(MetadataFileRecord {
+        present: r
+            .get_present()?
+            .iter()
+            .map(|item| item.map(Into::into))
+            .collect::<Result<Vec<_>, _>>()?,
+        title: opt_text(r.get_title()?)?,
+        subtitle: opt_text(r.get_subtitle()?)?,
+        description: opt_text(r.get_description()?)?,
+        publisher: opt_text(r.get_publisher()?)?,
+        published_at: opt_text(r.get_published_at()?)?,
+        language: opt_text(r.get_language()?)?,
+        genres: read_text_list(r.get_genres()?)?,
+        tags: read_text_list(r.get_tags()?)?,
+        abridgement: r.get_abridgement()?.into(),
+        expression_kind: r.get_expression_kind()?.into(),
+        identifiers: r
+            .get_identifiers()?
+            .iter()
+            .map(|item| read_identifier(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        credits: r
+            .get_credits()?
+            .iter()
+            .map(|item| read_credit(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        credit_roles: r
+            .get_credit_roles()?
+            .iter()
+            .map(|item| item.map(Into::into))
+            .collect::<Result<Vec<_>, _>>()?,
+        series_entries: r
+            .get_series_entries()?
+            .iter()
+            .map(|item| read_series_entry(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        chapters: r
+            .get_chapters()?
+            .iter()
+            .map(|item| read_metadata_chapter(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        duration_ms: opt_num(r.get_duration_ms()),
+    })
+}
+
+/// Encode a [`MetadataFileParseParams`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_metadata_file_parse_params(
+    mut b: plugin_capnp::metadata_file_parse_params::Builder<'_>,
+    v: &MetadataFileParseParams,
+) -> capnp::Result<()> {
+    b.set_dialect(&v.dialect);
+    b.set_file_name(&v.file_name);
+    b.set_bytes(&v.bytes);
+    Ok(())
+}
+
+/// Decode a [`MetadataFileParseParams`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_metadata_file_parse_params(
+    r: plugin_capnp::metadata_file_parse_params::Reader<'_>,
+) -> capnp::Result<MetadataFileParseParams> {
+    Ok(MetadataFileParseParams {
+        dialect: r.get_dialect()?.to_string()?,
+        file_name: r.get_file_name()?.to_string()?,
+        bytes: r.get_bytes()?.to_vec(),
+    })
+}
+
+/// Encode a [`MetadataFileParsed`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_metadata_file_parsed(
+    mut b: plugin_capnp::metadata_file_parsed::Builder<'_>,
+    v: &MetadataFileParsed,
+) -> capnp::Result<()> {
+    write_metadata_file_record(b.reborrow().init_record(), &v.record)?;
+    Ok(())
+}
+
+/// Decode a [`MetadataFileParsed`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_metadata_file_parsed(
+    r: plugin_capnp::metadata_file_parsed::Reader<'_>,
+) -> capnp::Result<MetadataFileParsed> {
+    Ok(MetadataFileParsed {
+        record: read_metadata_file_record(r.get_record()?)?,
+    })
+}
+
+/// Encode a `MetadataFileParseReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_metadata_file_parse_reply(
+    b: plugin_capnp::metadata_file_parse_reply::Builder<'_>,
+    v: &Result<MetadataFileParsed, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_metadata_file_parsed(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `MetadataFileParseReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_metadata_file_parse_reply(
+    r: plugin_capnp::metadata_file_parse_reply::Reader<'_>,
+) -> capnp::Result<Result<MetadataFileParsed, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::metadata_file_parse_reply::Ok(ok) => Ok(Ok(read_metadata_file_parsed(ok?)?)),
+        plugin_capnp::metadata_file_parse_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`MetadataAudioFile`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_metadata_audio_file(
+    mut b: plugin_capnp::metadata_audio_file::Builder<'_>,
+    v: &MetadataAudioFile,
+) -> capnp::Result<()> {
+    b.set_name(&v.name);
+    b.set_duration_ms(v.duration_ms);
+    Ok(())
+}
+
+/// Decode a [`MetadataAudioFile`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_metadata_audio_file(
+    r: plugin_capnp::metadata_audio_file::Reader<'_>,
+) -> capnp::Result<MetadataAudioFile> {
+    Ok(MetadataAudioFile {
+        name: r.get_name()?.to_string()?,
+        duration_ms: r.get_duration_ms(),
+    })
+}
+
+/// Encode a [`MetadataFileRenderParams`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_metadata_file_render_params(
+    mut b: plugin_capnp::metadata_file_render_params::Builder<'_>,
+    v: &MetadataFileRenderParams,
+) -> capnp::Result<()> {
+    b.set_dialect(&v.dialect);
+    write_metadata_file_record(b.reborrow().init_record(), &v.record)?;
+    {
+        let mut items = b.reborrow().init_fields(list_len(v.fields.len())?);
+        for (i, item) in v.fields.iter().enumerate() {
+            items.set(list_len(i)?, (*item).into());
+        }
+    }
+    b.set_existing(&v.existing);
+    {
+        let mut items = b
+            .reborrow()
+            .init_audio_files(list_len(v.audio_files.len())?);
+        for (i, item) in v.audio_files.iter().enumerate() {
+            write_metadata_audio_file(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`MetadataFileRenderParams`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_metadata_file_render_params(
+    r: plugin_capnp::metadata_file_render_params::Reader<'_>,
+) -> capnp::Result<MetadataFileRenderParams> {
+    Ok(MetadataFileRenderParams {
+        dialect: r.get_dialect()?.to_string()?,
+        record: read_metadata_file_record(r.get_record()?)?,
+        fields: r
+            .get_fields()?
+            .iter()
+            .map(|item| item.map(Into::into))
+            .collect::<Result<Vec<_>, _>>()?,
+        existing: r.get_existing()?.to_vec(),
+        audio_files: r
+            .get_audio_files()?
+            .iter()
+            .map(|item| read_metadata_audio_file(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+    })
+}
+
+/// Encode a [`MetadataFileRendered`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_metadata_file_rendered(
+    mut b: plugin_capnp::metadata_file_rendered::Builder<'_>,
+    v: &MetadataFileRendered,
+) -> capnp::Result<()> {
+    b.set_bytes(&v.bytes);
+    Ok(())
+}
+
+/// Decode a [`MetadataFileRendered`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_metadata_file_rendered(
+    r: plugin_capnp::metadata_file_rendered::Reader<'_>,
+) -> capnp::Result<MetadataFileRendered> {
+    Ok(MetadataFileRendered {
+        bytes: r.get_bytes()?.to_vec(),
+    })
+}
+
+/// Encode a `MetadataFileRenderReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_metadata_file_render_reply(
+    b: plugin_capnp::metadata_file_render_reply::Builder<'_>,
+    v: &Result<MetadataFileRendered, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_metadata_file_rendered(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `MetadataFileRenderReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_metadata_file_render_reply(
+    r: plugin_capnp::metadata_file_render_reply::Reader<'_>,
+) -> capnp::Result<Result<MetadataFileRendered, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::metadata_file_render_reply::Ok(ok) => {
+            Ok(Ok(read_metadata_file_rendered(ok?)?))
+        }
+        plugin_capnp::metadata_file_render_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a `SocketFrame` union.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_socket_frame(
+    mut b: plugin_capnp::socket_frame::Builder<'_>,
+    v: &SocketFrame,
+) -> capnp::Result<()> {
+    match v {
+        SocketFrame::Text(value) => {
+            b.set_text(value);
+        }
+        SocketFrame::Binary(value) => {
+            b.set_binary(value);
+        }
+    }
+    Ok(())
+}
+
+/// Decode a `SocketFrame` union.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_socket_frame(r: plugin_capnp::socket_frame::Reader<'_>) -> capnp::Result<SocketFrame> {
+    Ok(match r.which()? {
+        plugin_capnp::socket_frame::Text(value) => SocketFrame::Text(value?.to_string()?),
+        plugin_capnp::socket_frame::Binary(value) => SocketFrame::Binary(value?.to_vec()),
+    })
+}
+
+/// Encode a [`SocketHeader`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_socket_header(
+    mut b: plugin_capnp::socket_header::Builder<'_>,
+    v: &SocketHeader,
+) -> capnp::Result<()> {
+    b.set_name(&v.name);
+    b.set_value(&v.value);
+    Ok(())
+}
+
+/// Decode a [`SocketHeader`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_socket_header(
+    r: plugin_capnp::socket_header::Reader<'_>,
+) -> capnp::Result<SocketHeader> {
+    Ok(SocketHeader {
+        name: r.get_name()?.to_string()?,
+        value: r.get_value()?.to_string()?,
+    })
+}
+
+/// Encode a [`SocketAutoResponse`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_socket_auto_response(
+    mut b: plugin_capnp::socket_auto_response::Builder<'_>,
+    v: &SocketAutoResponse,
+) -> capnp::Result<()> {
+    write_socket_frame(b.reborrow().init_request(), &v.request)?;
+    write_socket_frame(b.reborrow().init_response(), &v.response)?;
+    Ok(())
+}
+
+/// Decode a [`SocketAutoResponse`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_socket_auto_response(
+    r: plugin_capnp::socket_auto_response::Reader<'_>,
+) -> capnp::Result<SocketAutoResponse> {
+    Ok(SocketAutoResponse {
+        request: read_socket_frame(r.get_request()?)?,
+        response: read_socket_frame(r.get_response()?)?,
+    })
+}
+
+/// Encode a [`SocketConnectRequest`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_socket_connect_request(
+    mut b: plugin_capnp::socket_connect_request::Builder<'_>,
+    v: &SocketConnectRequest,
+) -> capnp::Result<()> {
+    b.set_url(&v.url);
+    {
+        let mut items = b.reborrow().init_protocols(list_len(v.protocols.len())?);
+        for (i, item) in v.protocols.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    {
+        let mut items = b.reborrow().init_headers(list_len(v.headers.len())?);
+        for (i, item) in v.headers.iter().enumerate() {
+            write_socket_header(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    {
+        let mut items = b
+            .reborrow()
+            .init_auto_responses(list_len(v.auto_responses.len())?);
+        for (i, item) in v.auto_responses.iter().enumerate() {
+            write_socket_auto_response(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    b.set_attachment(&v.attachment);
+    Ok(())
+}
+
+/// Decode a [`SocketConnectRequest`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_socket_connect_request(
+    r: plugin_capnp::socket_connect_request::Reader<'_>,
+) -> capnp::Result<SocketConnectRequest> {
+    Ok(SocketConnectRequest {
+        url: r.get_url()?.to_string()?,
+        protocols: read_text_list(r.get_protocols()?)?,
+        headers: r
+            .get_headers()?
+            .iter()
+            .map(|item| read_socket_header(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        auto_responses: r
+            .get_auto_responses()?
+            .iter()
+            .map(|item| read_socket_auto_response(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        attachment: r.get_attachment()?.to_vec(),
+    })
+}
+
+/// Encode a [`SocketInfo`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_socket_info(
+    mut b: plugin_capnp::socket_info::Builder<'_>,
+    v: &SocketInfo,
+) -> capnp::Result<()> {
+    b.set_socket(&v.socket);
+    b.set_url(&v.url);
+    if let Some(value) = &v.protocol {
+        b.set_protocol(value);
+    }
+    b.set_attachment(&v.attachment);
+    Ok(())
+}
+
+/// Decode a [`SocketInfo`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_socket_info(r: plugin_capnp::socket_info::Reader<'_>) -> capnp::Result<SocketInfo> {
+    Ok(SocketInfo {
+        socket: r.get_socket()?.to_string()?,
+        url: r.get_url()?.to_string()?,
+        protocol: opt_text(r.get_protocol()?)?,
+        attachment: r.get_attachment()?.to_vec(),
+    })
+}
+
+/// Encode a `SocketConnectReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_socket_connect_reply(
+    b: plugin_capnp::socket_connect_reply::Builder<'_>,
+    v: &Result<SocketInfo, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_socket_info(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `SocketConnectReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_socket_connect_reply(
+    r: plugin_capnp::socket_connect_reply::Reader<'_>,
+) -> capnp::Result<Result<SocketInfo, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::socket_connect_reply::Ok(ok) => Ok(Ok(read_socket_info(ok?)?)),
+        plugin_capnp::socket_connect_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`SocketList`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_socket_list(
+    mut b: plugin_capnp::socket_list::Builder<'_>,
+    v: &SocketList,
+) -> capnp::Result<()> {
+    {
+        let mut items = b.reborrow().init_sockets(list_len(v.sockets.len())?);
+        for (i, item) in v.sockets.iter().enumerate() {
+            write_socket_info(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`SocketList`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_socket_list(r: plugin_capnp::socket_list::Reader<'_>) -> capnp::Result<SocketList> {
+    Ok(SocketList {
+        sockets: r
+            .get_sockets()?
+            .iter()
+            .map(|item| read_socket_info(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+    })
+}
+
+/// Encode a `SocketListReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_socket_list_reply(
+    b: plugin_capnp::socket_list_reply::Builder<'_>,
+    v: &Result<SocketList, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_socket_list(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `SocketListReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_socket_list_reply(
+    r: plugin_capnp::socket_list_reply::Reader<'_>,
+) -> capnp::Result<Result<SocketList, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::socket_list_reply::Ok(ok) => Ok(Ok(read_socket_list(ok?)?)),
+        plugin_capnp::socket_list_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a `SocketMessageReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_socket_message_reply(
+    b: plugin_capnp::socket_message_reply::Builder<'_>,
+    v: &Result<SocketMessageOk, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_socket_message_ok(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `SocketMessageReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_socket_message_reply(
+    r: plugin_capnp::socket_message_reply::Reader<'_>,
+) -> capnp::Result<Result<SocketMessageOk, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::socket_message_reply::Ok(ok) => Ok(Ok(read_socket_message_ok(ok?)?)),
+        plugin_capnp::socket_message_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`SocketMessageOk`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_socket_message_ok(
+    mut b: plugin_capnp::socket_message_ok::Builder<'_>,
+    v: &SocketMessageOk,
+) -> capnp::Result<()> {
+    b.set_poll_events(v.poll_events);
+    Ok(())
+}
+
+/// Decode a [`SocketMessageOk`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_socket_message_ok(
+    r: plugin_capnp::socket_message_ok::Reader<'_>,
+) -> capnp::Result<SocketMessageOk> {
+    Ok(SocketMessageOk {
+        poll_events: r.get_poll_events(),
+    })
+}
+
+/// Encode a [`SocketMessage`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_socket_message(
+    mut b: plugin_capnp::socket_message::Builder<'_>,
+    v: &SocketMessage,
+) -> capnp::Result<()> {
+    b.set_socket(&v.socket);
+    write_socket_frame(b.reborrow().init_frame(), &v.frame)?;
+    b.set_attachment(&v.attachment);
+    Ok(())
+}
+
+/// Decode a [`SocketMessage`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_socket_message(
+    r: plugin_capnp::socket_message::Reader<'_>,
+) -> capnp::Result<SocketMessage> {
+    Ok(SocketMessage {
+        socket: r.get_socket()?.to_string()?,
+        frame: read_socket_frame(r.get_frame()?)?,
+        attachment: r.get_attachment()?.to_vec(),
+    })
+}
+
+/// Encode a [`SocketClosed`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_socket_closed(
+    mut b: plugin_capnp::socket_closed::Builder<'_>,
+    v: &SocketClosed,
+) -> capnp::Result<()> {
+    b.set_socket(&v.socket);
+    b.set_code(v.code);
+    if let Some(value) = &v.reason {
+        b.set_reason(value);
+    }
+    b.set_clean(v.clean);
+    b.set_attachment(&v.attachment);
+    Ok(())
+}
+
+/// Decode a [`SocketClosed`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_socket_closed(
+    r: plugin_capnp::socket_closed::Reader<'_>,
+) -> capnp::Result<SocketClosed> {
+    Ok(SocketClosed {
+        socket: r.get_socket()?.to_string()?,
+        code: r.get_code(),
+        reason: opt_text(r.get_reason()?)?,
+        clean: r.get_clean(),
+        attachment: r.get_attachment()?.to_vec(),
+    })
+}
+
 /// Number of root structs [`read_any_message`] can decode; selectors are
 /// `0..READ_ANY_COUNT` in schema order.
-pub const READ_ANY_COUNT: u8 = 106;
+pub const READ_ANY_COUNT: u8 = 127;
 
 /// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
 /// root is the struct `selector` names, through that struct's `read_*`
@@ -7088,235 +8440,332 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
             )?;
         }
         54 => {
+            let _ =
+                read_priced_record(reader.get_root::<plugin_capnp::priced_record::Reader<'_>>()?)?;
+        }
+        55 => {
             let _ = read_purchase_hint_reply(
                 reader.get_root::<plugin_capnp::purchase_hint_reply::Reader<'_>>()?,
             )?;
         }
-        55 => {
+        56 => {
             let _ = read_purchase_hints_params(
                 reader.get_root::<plugin_capnp::purchase_hints_params::Reader<'_>>()?,
             )?;
         }
-        56 => {
+        57 => {
             let _ = read_purchase_hints_result(
                 reader.get_root::<plugin_capnp::purchase_hints_result::Reader<'_>>()?,
             )?;
         }
-        57 => {
+        58 => {
             let _ = read_purchase_hints_reply(
                 reader.get_root::<plugin_capnp::purchase_hints_reply::Reader<'_>>()?,
             )?;
         }
-        58 => {
+        59 => {
             let _ = read_scan_library_params(
                 reader.get_root::<plugin_capnp::scan_library_params::Reader<'_>>()?,
             )?;
         }
-        59 => {
+        60 => {
             let _ = read_authenticate_user_params(
                 reader.get_root::<plugin_capnp::authenticate_user_params::Reader<'_>>()?,
             )?;
         }
-        60 => {
+        61 => {
             let _ =
                 read_external_user(reader.get_root::<plugin_capnp::external_user::Reader<'_>>()?)?;
         }
-        61 => {
+        62 => {
             let _ = read_external_user_reply(
                 reader.get_root::<plugin_capnp::external_user_reply::Reader<'_>>()?,
             )?;
         }
-        62 => {
+        63 => {
             let _ = read_event_poll_result(
                 reader.get_root::<plugin_capnp::event_poll_result::Reader<'_>>()?,
             )?;
         }
-        63 => {
+        64 => {
             let _ = read_event_poll_reply(
                 reader.get_root::<plugin_capnp::event_poll_reply::Reader<'_>>()?,
             )?;
         }
-        64 => {
+        65 => {
             let _ = read_listening_progress(
                 reader.get_root::<plugin_capnp::listening_progress::Reader<'_>>()?,
             )?;
         }
-        65 => {
+        66 => {
             let _ = read_sync_listening_result(
                 reader.get_root::<plugin_capnp::sync_listening_result::Reader<'_>>()?,
             )?;
         }
-        66 => {
+        67 => {
             let _ = read_sync_listening_reply(
                 reader.get_root::<plugin_capnp::sync_listening_reply::Reader<'_>>()?,
             )?;
         }
-        67 => {
+        68 => {
             let _ =
                 read_plugin_event(reader.get_root::<plugin_capnp::plugin_event::Reader<'_>>()?)?;
         }
-        68 => {
+        69 => {
             let _ = read_publish_ok(reader.get_root::<plugin_capnp::publish_ok::Reader<'_>>()?)?;
         }
-        69 => {
+        70 => {
             let _ =
                 read_publish_reply(reader.get_root::<plugin_capnp::publish_reply::Reader<'_>>()?)?;
         }
-        70 => {
+        71 => {
             let _ = read_invocation(reader.get_root::<plugin_capnp::invocation::Reader<'_>>()?)?;
         }
-        71 => {
+        72 => {
             let _ =
                 read_queue_message(reader.get_root::<plugin_capnp::queue_message::Reader<'_>>()?)?;
         }
-        72 => {
+        73 => {
             let _ = read_queue_batch(reader.get_root::<plugin_capnp::queue_batch::Reader<'_>>()?)?;
         }
-        73 => {
+        74 => {
             let _ = read_queue_retry(reader.get_root::<plugin_capnp::queue_retry::Reader<'_>>()?)?;
         }
-        74 => {
+        75 => {
             let _ =
                 read_queue_result(reader.get_root::<plugin_capnp::queue_result::Reader<'_>>()?)?;
         }
-        75 => {
+        76 => {
             let _ = read_queue_batch_ok(
                 reader.get_root::<plugin_capnp::queue_batch_ok::Reader<'_>>()?,
             )?;
         }
-        76 => {
+        77 => {
             let _ = read_queue_batch_reply(
                 reader.get_root::<plugin_capnp::queue_batch_reply::Reader<'_>>()?,
             )?;
         }
-        77 => {
+        78 => {
             let _ = read_queue_send_message(
                 reader.get_root::<plugin_capnp::queue_send_message::Reader<'_>>()?,
             )?;
         }
-        78 => {
+        79 => {
             let _ =
                 read_queue_send_ok(reader.get_root::<plugin_capnp::queue_send_ok::Reader<'_>>()?)?;
         }
-        79 => {
+        80 => {
             let _ = read_queue_send_reply(
                 reader.get_root::<plugin_capnp::queue_send_reply::Reader<'_>>()?,
             )?;
         }
-        80 => {
+        81 => {
             let _ = read_kv_put_options(
                 reader.get_root::<plugin_capnp::kv_put_options::Reader<'_>>()?,
             )?;
         }
-        81 => {
+        82 => {
             let _ = read_kv_get_ok(reader.get_root::<plugin_capnp::kv_get_ok::Reader<'_>>()?)?;
         }
-        82 => {
+        83 => {
             let _ =
                 read_kv_get_reply(reader.get_root::<plugin_capnp::kv_get_reply::Reader<'_>>()?)?;
         }
-        83 => {
-            let _ = read_kv_put_ok(reader.get_root::<plugin_capnp::kv_put_ok::Reader<'_>>()?)?;
-        }
         84 => {
-            let _ =
-                read_kv_delete_ok(reader.get_root::<plugin_capnp::kv_delete_ok::Reader<'_>>()?)?;
+            let _ = read_kv_put_ok(reader.get_root::<plugin_capnp::kv_put_ok::Reader<'_>>()?)?;
         }
         85 => {
             let _ =
-                read_kv_put_reply(reader.get_root::<plugin_capnp::kv_put_reply::Reader<'_>>()?)?;
+                read_kv_delete_ok(reader.get_root::<plugin_capnp::kv_delete_ok::Reader<'_>>()?)?;
         }
         86 => {
+            let _ =
+                read_kv_put_reply(reader.get_root::<plugin_capnp::kv_put_reply::Reader<'_>>()?)?;
+        }
+        87 => {
             let _ = read_kv_delete_reply(
                 reader.get_root::<plugin_capnp::kv_delete_reply::Reader<'_>>()?,
             )?;
         }
-        87 => {
+        88 => {
             let _ = read_kv_list_options(
                 reader.get_root::<plugin_capnp::kv_list_options::Reader<'_>>()?,
             )?;
         }
-        88 => {
+        89 => {
             let _ = read_kv_list_key(reader.get_root::<plugin_capnp::kv_list_key::Reader<'_>>()?)?;
         }
-        89 => {
+        90 => {
             let _ = read_kv_list_ok(reader.get_root::<plugin_capnp::kv_list_ok::Reader<'_>>()?)?;
         }
-        90 => {
+        91 => {
             let _ =
                 read_kv_list_reply(reader.get_root::<plugin_capnp::kv_list_reply::Reader<'_>>()?)?;
         }
-        91 => {
+        92 => {
             let _ = read_scheduled_controller(
                 reader.get_root::<plugin_capnp::scheduled_controller::Reader<'_>>()?,
             )?;
         }
-        92 => {
+        93 => {
             let _ = read_metadata_lookup_params(
                 reader.get_root::<plugin_capnp::metadata_lookup_params::Reader<'_>>()?,
             )?;
         }
-        93 => {
+        94 => {
             let _ = read_metadata_search_params(
                 reader.get_root::<plugin_capnp::metadata_search_params::Reader<'_>>()?,
             )?;
         }
-        94 => {
+        95 => {
             let _ = read_metadata_chapters_params(
                 reader.get_root::<plugin_capnp::metadata_chapters_params::Reader<'_>>()?,
             )?;
         }
-        95 => {
+        96 => {
             let _ = read_metadata_record(
                 reader.get_root::<plugin_capnp::metadata_record::Reader<'_>>()?,
             )?;
         }
-        96 => {
+        97 => {
             let _ = read_metadata_records(
                 reader.get_root::<plugin_capnp::metadata_records::Reader<'_>>()?,
             )?;
         }
-        97 => {
+        98 => {
             let _ = read_metadata_records_reply(
                 reader.get_root::<plugin_capnp::metadata_records_reply::Reader<'_>>()?,
             )?;
         }
-        98 => {
+        99 => {
             let _ = read_metadata_chapter(
                 reader.get_root::<plugin_capnp::metadata_chapter::Reader<'_>>()?,
             )?;
         }
-        99 => {
+        100 => {
             let _ = read_metadata_chapters(
                 reader.get_root::<plugin_capnp::metadata_chapters::Reader<'_>>()?,
             )?;
         }
-        100 => {
+        101 => {
             let _ = read_metadata_chapters_reply(
                 reader.get_root::<plugin_capnp::metadata_chapters_reply::Reader<'_>>()?,
             )?;
         }
-        101 => {
+        102 => {
             let _ = read_cover_fetch_params(
                 reader.get_root::<plugin_capnp::cover_fetch_params::Reader<'_>>()?,
             )?;
         }
-        102 => {
+        103 => {
             let _ = read_cover_condition(
                 reader.get_root::<plugin_capnp::cover_condition::Reader<'_>>()?,
             )?;
         }
-        103 => {
+        104 => {
             let _ = read_cover_image(reader.get_root::<plugin_capnp::cover_image::Reader<'_>>()?)?;
         }
-        104 => {
+        105 => {
             let _ =
                 read_cover_images(reader.get_root::<plugin_capnp::cover_images::Reader<'_>>()?)?;
         }
-        105 => {
+        106 => {
             let _ = read_cover_images_reply(
                 reader.get_root::<plugin_capnp::cover_images_reply::Reader<'_>>()?,
             )?;
+        }
+        107 => {
+            let _ = read_metadata_file_record(
+                reader.get_root::<plugin_capnp::metadata_file_record::Reader<'_>>()?,
+            )?;
+        }
+        108 => {
+            let _ = read_metadata_file_parse_params(
+                reader.get_root::<plugin_capnp::metadata_file_parse_params::Reader<'_>>()?,
+            )?;
+        }
+        109 => {
+            let _ = read_metadata_file_parsed(
+                reader.get_root::<plugin_capnp::metadata_file_parsed::Reader<'_>>()?,
+            )?;
+        }
+        110 => {
+            let _ = read_metadata_file_parse_reply(
+                reader.get_root::<plugin_capnp::metadata_file_parse_reply::Reader<'_>>()?,
+            )?;
+        }
+        111 => {
+            let _ = read_metadata_audio_file(
+                reader.get_root::<plugin_capnp::metadata_audio_file::Reader<'_>>()?,
+            )?;
+        }
+        112 => {
+            let _ = read_metadata_file_render_params(
+                reader.get_root::<plugin_capnp::metadata_file_render_params::Reader<'_>>()?,
+            )?;
+        }
+        113 => {
+            let _ = read_metadata_file_rendered(
+                reader.get_root::<plugin_capnp::metadata_file_rendered::Reader<'_>>()?,
+            )?;
+        }
+        114 => {
+            let _ = read_metadata_file_render_reply(
+                reader.get_root::<plugin_capnp::metadata_file_render_reply::Reader<'_>>()?,
+            )?;
+        }
+        115 => {
+            let _ =
+                read_socket_frame(reader.get_root::<plugin_capnp::socket_frame::Reader<'_>>()?)?;
+        }
+        116 => {
+            let _ =
+                read_socket_header(reader.get_root::<plugin_capnp::socket_header::Reader<'_>>()?)?;
+        }
+        117 => {
+            let _ = read_socket_auto_response(
+                reader.get_root::<plugin_capnp::socket_auto_response::Reader<'_>>()?,
+            )?;
+        }
+        118 => {
+            let _ = read_socket_connect_request(
+                reader.get_root::<plugin_capnp::socket_connect_request::Reader<'_>>()?,
+            )?;
+        }
+        119 => {
+            let _ = read_socket_info(reader.get_root::<plugin_capnp::socket_info::Reader<'_>>()?)?;
+        }
+        120 => {
+            let _ = read_socket_connect_reply(
+                reader.get_root::<plugin_capnp::socket_connect_reply::Reader<'_>>()?,
+            )?;
+        }
+        121 => {
+            let _ = read_socket_list(reader.get_root::<plugin_capnp::socket_list::Reader<'_>>()?)?;
+        }
+        122 => {
+            let _ = read_socket_list_reply(
+                reader.get_root::<plugin_capnp::socket_list_reply::Reader<'_>>()?,
+            )?;
+        }
+        123 => {
+            let _ = read_socket_message_reply(
+                reader.get_root::<plugin_capnp::socket_message_reply::Reader<'_>>()?,
+            )?;
+        }
+        124 => {
+            let _ = read_socket_message_ok(
+                reader.get_root::<plugin_capnp::socket_message_ok::Reader<'_>>()?,
+            )?;
+        }
+        125 => {
+            let _ = read_socket_message(
+                reader.get_root::<plugin_capnp::socket_message::Reader<'_>>()?,
+            )?;
+        }
+        126 => {
+            let _ =
+                read_socket_closed(reader.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)?;
         }
         _ => {
             return Err(capnp::Error::failed(format!(
@@ -9659,6 +11108,47 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             }
         }
         54 => {
+            let first =
+                read_priced_record(reader.get_root::<plugin_capnp::priced_record::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_priced_record(
+                message.init_root::<plugin_capnp::priced_record::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_priced_record(again.get_root::<plugin_capnp::priced_record::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_priced_record(
+                    message.init_root::<plugin_capnp::priced_record::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded PricedRecord value".to_string(),
+                    ));
+                }
+            }
+        }
+        55 => {
             let first = read_purchase_hint_reply(
                 reader.get_root::<plugin_capnp::purchase_hint_reply::Reader<'_>>()?,
             )?;
@@ -9702,7 +11192,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        55 => {
+        56 => {
             let first = read_purchase_hints_params(
                 reader.get_root::<plugin_capnp::purchase_hints_params::Reader<'_>>()?,
             )?;
@@ -9746,7 +11236,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        56 => {
+        57 => {
             let first = read_purchase_hints_result(
                 reader.get_root::<plugin_capnp::purchase_hints_result::Reader<'_>>()?,
             )?;
@@ -9790,7 +11280,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        57 => {
+        58 => {
             let first = read_purchase_hints_reply(
                 reader.get_root::<plugin_capnp::purchase_hints_reply::Reader<'_>>()?,
             )?;
@@ -9834,7 +11324,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        58 => {
+        59 => {
             let first = read_scan_library_params(
                 reader.get_root::<plugin_capnp::scan_library_params::Reader<'_>>()?,
             )?;
@@ -9878,7 +11368,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        59 => {
+        60 => {
             let first = read_authenticate_user_params(
                 reader.get_root::<plugin_capnp::authenticate_user_params::Reader<'_>>()?,
             )?;
@@ -9922,7 +11412,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        60 => {
+        61 => {
             let first =
                 read_external_user(reader.get_root::<plugin_capnp::external_user::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -9963,7 +11453,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        61 => {
+        62 => {
             let first = read_external_user_reply(
                 reader.get_root::<plugin_capnp::external_user_reply::Reader<'_>>()?,
             )?;
@@ -10007,7 +11497,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        62 => {
+        63 => {
             let first = read_event_poll_result(
                 reader.get_root::<plugin_capnp::event_poll_result::Reader<'_>>()?,
             )?;
@@ -10051,7 +11541,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        63 => {
+        64 => {
             let first = read_event_poll_reply(
                 reader.get_root::<plugin_capnp::event_poll_reply::Reader<'_>>()?,
             )?;
@@ -10095,7 +11585,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        64 => {
+        65 => {
             let first = read_listening_progress(
                 reader.get_root::<plugin_capnp::listening_progress::Reader<'_>>()?,
             )?;
@@ -10139,7 +11629,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        65 => {
+        66 => {
             let first = read_sync_listening_result(
                 reader.get_root::<plugin_capnp::sync_listening_result::Reader<'_>>()?,
             )?;
@@ -10183,7 +11673,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        66 => {
+        67 => {
             let first = read_sync_listening_reply(
                 reader.get_root::<plugin_capnp::sync_listening_reply::Reader<'_>>()?,
             )?;
@@ -10227,7 +11717,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        67 => {
+        68 => {
             let first =
                 read_plugin_event(reader.get_root::<plugin_capnp::plugin_event::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -10268,7 +11758,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        68 => {
+        69 => {
             let first =
                 read_publish_ok(reader.get_root::<plugin_capnp::publish_ok::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -10309,7 +11799,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        69 => {
+        70 => {
             let first =
                 read_publish_reply(reader.get_root::<plugin_capnp::publish_reply::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -10350,7 +11840,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        70 => {
+        71 => {
             let first =
                 read_invocation(reader.get_root::<plugin_capnp::invocation::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -10391,7 +11881,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        71 => {
+        72 => {
             let first =
                 read_queue_message(reader.get_root::<plugin_capnp::queue_message::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -10432,7 +11922,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        72 => {
+        73 => {
             let first =
                 read_queue_batch(reader.get_root::<plugin_capnp::queue_batch::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -10473,7 +11963,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        73 => {
+        74 => {
             let first =
                 read_queue_retry(reader.get_root::<plugin_capnp::queue_retry::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -10514,7 +12004,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        74 => {
+        75 => {
             let first =
                 read_queue_result(reader.get_root::<plugin_capnp::queue_result::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -10555,7 +12045,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        75 => {
+        76 => {
             let first = read_queue_batch_ok(
                 reader.get_root::<plugin_capnp::queue_batch_ok::Reader<'_>>()?,
             )?;
@@ -10597,7 +12087,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        76 => {
+        77 => {
             let first = read_queue_batch_reply(
                 reader.get_root::<plugin_capnp::queue_batch_reply::Reader<'_>>()?,
             )?;
@@ -10641,7 +12131,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        77 => {
+        78 => {
             let first = read_queue_send_message(
                 reader.get_root::<plugin_capnp::queue_send_message::Reader<'_>>()?,
             )?;
@@ -10685,7 +12175,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        78 => {
+        79 => {
             let first =
                 read_queue_send_ok(reader.get_root::<plugin_capnp::queue_send_ok::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -10726,7 +12216,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        79 => {
+        80 => {
             let first = read_queue_send_reply(
                 reader.get_root::<plugin_capnp::queue_send_reply::Reader<'_>>()?,
             )?;
@@ -10770,7 +12260,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        80 => {
+        81 => {
             let first = read_kv_put_options(
                 reader.get_root::<plugin_capnp::kv_put_options::Reader<'_>>()?,
             )?;
@@ -10812,7 +12302,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        81 => {
+        82 => {
             let first = read_kv_get_ok(reader.get_root::<plugin_capnp::kv_get_ok::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
             write_kv_get_ok(
@@ -10852,7 +12342,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        82 => {
+        83 => {
             let first =
                 read_kv_get_reply(reader.get_root::<plugin_capnp::kv_get_reply::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -10893,7 +12383,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        83 => {
+        84 => {
             let first = read_kv_put_ok(reader.get_root::<plugin_capnp::kv_put_ok::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
             write_kv_put_ok(
@@ -10933,7 +12423,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        84 => {
+        85 => {
             let first =
                 read_kv_delete_ok(reader.get_root::<plugin_capnp::kv_delete_ok::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -10974,7 +12464,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        85 => {
+        86 => {
             let first =
                 read_kv_put_reply(reader.get_root::<plugin_capnp::kv_put_reply::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -11015,7 +12505,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        86 => {
+        87 => {
             let first = read_kv_delete_reply(
                 reader.get_root::<plugin_capnp::kv_delete_reply::Reader<'_>>()?,
             )?;
@@ -11057,7 +12547,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        87 => {
+        88 => {
             let first = read_kv_list_options(
                 reader.get_root::<plugin_capnp::kv_list_options::Reader<'_>>()?,
             )?;
@@ -11099,7 +12589,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        88 => {
+        89 => {
             let first =
                 read_kv_list_key(reader.get_root::<plugin_capnp::kv_list_key::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -11140,7 +12630,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        89 => {
+        90 => {
             let first =
                 read_kv_list_ok(reader.get_root::<plugin_capnp::kv_list_ok::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -11181,7 +12671,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        90 => {
+        91 => {
             let first =
                 read_kv_list_reply(reader.get_root::<plugin_capnp::kv_list_reply::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -11222,7 +12712,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        91 => {
+        92 => {
             let first = read_scheduled_controller(
                 reader.get_root::<plugin_capnp::scheduled_controller::Reader<'_>>()?,
             )?;
@@ -11266,7 +12756,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        92 => {
+        93 => {
             let first = read_metadata_lookup_params(
                 reader.get_root::<plugin_capnp::metadata_lookup_params::Reader<'_>>()?,
             )?;
@@ -11310,7 +12800,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        93 => {
+        94 => {
             let first = read_metadata_search_params(
                 reader.get_root::<plugin_capnp::metadata_search_params::Reader<'_>>()?,
             )?;
@@ -11354,7 +12844,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        94 => {
+        95 => {
             let first = read_metadata_chapters_params(
                 reader.get_root::<plugin_capnp::metadata_chapters_params::Reader<'_>>()?,
             )?;
@@ -11398,7 +12888,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        95 => {
+        96 => {
             let first = read_metadata_record(
                 reader.get_root::<plugin_capnp::metadata_record::Reader<'_>>()?,
             )?;
@@ -11440,7 +12930,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        96 => {
+        97 => {
             let first = read_metadata_records(
                 reader.get_root::<plugin_capnp::metadata_records::Reader<'_>>()?,
             )?;
@@ -11484,7 +12974,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        97 => {
+        98 => {
             let first = read_metadata_records_reply(
                 reader.get_root::<plugin_capnp::metadata_records_reply::Reader<'_>>()?,
             )?;
@@ -11528,7 +13018,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        98 => {
+        99 => {
             let first = read_metadata_chapter(
                 reader.get_root::<plugin_capnp::metadata_chapter::Reader<'_>>()?,
             )?;
@@ -11572,7 +13062,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        99 => {
+        100 => {
             let first = read_metadata_chapters(
                 reader.get_root::<plugin_capnp::metadata_chapters::Reader<'_>>()?,
             )?;
@@ -11616,7 +13106,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        100 => {
+        101 => {
             let first = read_metadata_chapters_reply(
                 reader.get_root::<plugin_capnp::metadata_chapters_reply::Reader<'_>>()?,
             )?;
@@ -11660,7 +13150,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        101 => {
+        102 => {
             let first = read_cover_fetch_params(
                 reader.get_root::<plugin_capnp::cover_fetch_params::Reader<'_>>()?,
             )?;
@@ -11704,7 +13194,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        102 => {
+        103 => {
             let first = read_cover_condition(
                 reader.get_root::<plugin_capnp::cover_condition::Reader<'_>>()?,
             )?;
@@ -11746,7 +13236,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        103 => {
+        104 => {
             let first =
                 read_cover_image(reader.get_root::<plugin_capnp::cover_image::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -11787,7 +13277,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        104 => {
+        105 => {
             let first =
                 read_cover_images(reader.get_root::<plugin_capnp::cover_images::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -11828,7 +13318,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        105 => {
+        106 => {
             let first = read_cover_images_reply(
                 reader.get_root::<plugin_capnp::cover_images_reply::Reader<'_>>()?,
             )?;
@@ -11868,6 +13358,869 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
                         "round trip changed the decoded CoverImagesReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        107 => {
+            let first = read_metadata_file_record(
+                reader.get_root::<plugin_capnp::metadata_file_record::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_file_record(
+                message.init_root::<plugin_capnp::metadata_file_record::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_file_record(
+                    again.get_root::<plugin_capnp::metadata_file_record::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_file_record(
+                    message.init_root::<plugin_capnp::metadata_file_record::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataFileRecord value".to_string(),
+                    ));
+                }
+            }
+        }
+        108 => {
+            let first = read_metadata_file_parse_params(
+                reader.get_root::<plugin_capnp::metadata_file_parse_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_file_parse_params(
+                message.init_root::<plugin_capnp::metadata_file_parse_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_file_parse_params(
+                    again.get_root::<plugin_capnp::metadata_file_parse_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_file_parse_params(
+                    message.init_root::<plugin_capnp::metadata_file_parse_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataFileParseParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        109 => {
+            let first = read_metadata_file_parsed(
+                reader.get_root::<plugin_capnp::metadata_file_parsed::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_file_parsed(
+                message.init_root::<plugin_capnp::metadata_file_parsed::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_file_parsed(
+                    again.get_root::<plugin_capnp::metadata_file_parsed::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_file_parsed(
+                    message.init_root::<plugin_capnp::metadata_file_parsed::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataFileParsed value".to_string(),
+                    ));
+                }
+            }
+        }
+        110 => {
+            let first = read_metadata_file_parse_reply(
+                reader.get_root::<plugin_capnp::metadata_file_parse_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_file_parse_reply(
+                message.init_root::<plugin_capnp::metadata_file_parse_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_file_parse_reply(
+                    again.get_root::<plugin_capnp::metadata_file_parse_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_file_parse_reply(
+                    message.init_root::<plugin_capnp::metadata_file_parse_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataFileParseReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        111 => {
+            let first = read_metadata_audio_file(
+                reader.get_root::<plugin_capnp::metadata_audio_file::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_audio_file(
+                message.init_root::<plugin_capnp::metadata_audio_file::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_audio_file(
+                    again.get_root::<plugin_capnp::metadata_audio_file::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_audio_file(
+                    message.init_root::<plugin_capnp::metadata_audio_file::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataAudioFile value".to_string(),
+                    ));
+                }
+            }
+        }
+        112 => {
+            let first = read_metadata_file_render_params(
+                reader.get_root::<plugin_capnp::metadata_file_render_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_file_render_params(
+                message.init_root::<plugin_capnp::metadata_file_render_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_file_render_params(
+                    again.get_root::<plugin_capnp::metadata_file_render_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_file_render_params(
+                    message.init_root::<plugin_capnp::metadata_file_render_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataFileRenderParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        113 => {
+            let first = read_metadata_file_rendered(
+                reader.get_root::<plugin_capnp::metadata_file_rendered::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_file_rendered(
+                message.init_root::<plugin_capnp::metadata_file_rendered::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_file_rendered(
+                    again.get_root::<plugin_capnp::metadata_file_rendered::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_file_rendered(
+                    message.init_root::<plugin_capnp::metadata_file_rendered::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataFileRendered value".to_string(),
+                    ));
+                }
+            }
+        }
+        114 => {
+            let first = read_metadata_file_render_reply(
+                reader.get_root::<plugin_capnp::metadata_file_render_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_file_render_reply(
+                message.init_root::<plugin_capnp::metadata_file_render_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_file_render_reply(
+                    again.get_root::<plugin_capnp::metadata_file_render_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_file_render_reply(
+                    message.init_root::<plugin_capnp::metadata_file_render_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataFileRenderReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        115 => {
+            let first =
+                read_socket_frame(reader.get_root::<plugin_capnp::socket_frame::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_socket_frame(
+                message.init_root::<plugin_capnp::socket_frame::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_socket_frame(again.get_root::<plugin_capnp::socket_frame::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_socket_frame(
+                    message.init_root::<plugin_capnp::socket_frame::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SocketFrame value".to_string(),
+                    ));
+                }
+            }
+        }
+        116 => {
+            let first =
+                read_socket_header(reader.get_root::<plugin_capnp::socket_header::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_socket_header(
+                message.init_root::<plugin_capnp::socket_header::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_socket_header(again.get_root::<plugin_capnp::socket_header::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_socket_header(
+                    message.init_root::<plugin_capnp::socket_header::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SocketHeader value".to_string(),
+                    ));
+                }
+            }
+        }
+        117 => {
+            let first = read_socket_auto_response(
+                reader.get_root::<plugin_capnp::socket_auto_response::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_socket_auto_response(
+                message.init_root::<plugin_capnp::socket_auto_response::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_socket_auto_response(
+                    again.get_root::<plugin_capnp::socket_auto_response::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_socket_auto_response(
+                    message.init_root::<plugin_capnp::socket_auto_response::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SocketAutoResponse value".to_string(),
+                    ));
+                }
+            }
+        }
+        118 => {
+            let first = read_socket_connect_request(
+                reader.get_root::<plugin_capnp::socket_connect_request::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_socket_connect_request(
+                message.init_root::<plugin_capnp::socket_connect_request::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_socket_connect_request(
+                    again.get_root::<plugin_capnp::socket_connect_request::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_socket_connect_request(
+                    message.init_root::<plugin_capnp::socket_connect_request::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SocketConnectRequest value".to_string(),
+                    ));
+                }
+            }
+        }
+        119 => {
+            let first =
+                read_socket_info(reader.get_root::<plugin_capnp::socket_info::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_socket_info(
+                message.init_root::<plugin_capnp::socket_info::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_socket_info(again.get_root::<plugin_capnp::socket_info::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_socket_info(
+                    message.init_root::<plugin_capnp::socket_info::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SocketInfo value".to_string(),
+                    ));
+                }
+            }
+        }
+        120 => {
+            let first = read_socket_connect_reply(
+                reader.get_root::<plugin_capnp::socket_connect_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_socket_connect_reply(
+                message.init_root::<plugin_capnp::socket_connect_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_socket_connect_reply(
+                    again.get_root::<plugin_capnp::socket_connect_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_socket_connect_reply(
+                    message.init_root::<plugin_capnp::socket_connect_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SocketConnectReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        121 => {
+            let first =
+                read_socket_list(reader.get_root::<plugin_capnp::socket_list::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_socket_list(
+                message.init_root::<plugin_capnp::socket_list::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_socket_list(again.get_root::<plugin_capnp::socket_list::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_socket_list(
+                    message.init_root::<plugin_capnp::socket_list::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SocketList value".to_string(),
+                    ));
+                }
+            }
+        }
+        122 => {
+            let first = read_socket_list_reply(
+                reader.get_root::<plugin_capnp::socket_list_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_socket_list_reply(
+                message.init_root::<plugin_capnp::socket_list_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_socket_list_reply(
+                    again.get_root::<plugin_capnp::socket_list_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_socket_list_reply(
+                    message.init_root::<plugin_capnp::socket_list_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SocketListReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        123 => {
+            let first = read_socket_message_reply(
+                reader.get_root::<plugin_capnp::socket_message_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_socket_message_reply(
+                message.init_root::<plugin_capnp::socket_message_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_socket_message_reply(
+                    again.get_root::<plugin_capnp::socket_message_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_socket_message_reply(
+                    message.init_root::<plugin_capnp::socket_message_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SocketMessageReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        124 => {
+            let first = read_socket_message_ok(
+                reader.get_root::<plugin_capnp::socket_message_ok::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_socket_message_ok(
+                message.init_root::<plugin_capnp::socket_message_ok::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_socket_message_ok(
+                    again.get_root::<plugin_capnp::socket_message_ok::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_socket_message_ok(
+                    message.init_root::<plugin_capnp::socket_message_ok::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SocketMessageOk value".to_string(),
+                    ));
+                }
+            }
+        }
+        125 => {
+            let first = read_socket_message(
+                reader.get_root::<plugin_capnp::socket_message::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_socket_message(
+                message.init_root::<plugin_capnp::socket_message::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_socket_message(again.get_root::<plugin_capnp::socket_message::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_socket_message(
+                    message.init_root::<plugin_capnp::socket_message::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SocketMessage value".to_string(),
+                    ));
+                }
+            }
+        }
+        126 => {
+            let first =
+                read_socket_closed(reader.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_socket_closed(
+                message.init_root::<plugin_capnp::socket_closed::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_socket_closed(again.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_socket_closed(
+                    message.init_root::<plugin_capnp::socket_closed::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded SocketClosed value".to_string(),
                     ));
                 }
             }

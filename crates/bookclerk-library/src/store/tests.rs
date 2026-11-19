@@ -104,7 +104,13 @@ async fn account_and_book_roundtrip() {
         .unwrap()
         .unwrap();
     assert_eq!(acquisition.status, AcquireStatus::Acquired);
-    assert_eq!(acquisition.title_uuid, updated.uuid);
+    let holding = store
+        .title_holding_of_book(&updated.uuid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(holding.edition_id, edition.unwrap());
+    assert_eq!(acquisition.holding_id, holding.holding_id);
 }
 
 #[tokio::test]
@@ -7546,6 +7552,24 @@ async fn job_retention_and_listing_read_through_their_indexes() {
 }
 
 #[tokio::test]
+async fn top_level_work_pages_walk_the_parent_index_in_order() {
+    let store = kit_store().await;
+    let page = query_plan(
+        &store,
+        "SELECT id FROM works WHERE parent_work_id IS NULL AND id > 'w' ORDER BY id LIMIT 100",
+    )
+    .await;
+    // A range search on the cursor, not a full scan of the index.
+    assert!(
+        page.contains(
+            "SEARCH works USING COVERING INDEX idx_works_parent (parent_work_id=? AND id>?)"
+        ),
+        "{page}"
+    );
+    assert!(!page.contains("TEMP B-TREE"), "{page}");
+}
+
+#[tokio::test]
 async fn works_page_by_id_and_embedding_hashes_read_in_bulk_under_every_profile() {
     for profile in crate::test_support::Profile::ALL {
         let kit = crate::test_support::sqlite::memory(profile).await;
@@ -8616,12 +8640,12 @@ async fn missing_rows_name_their_kind() {
     );
 }
 
-/// Client sign-in sessions under every database profile: a client token
-/// resolves only as a client session, each touch slides its expiry, an
+/// Clerk sign-in sessions under every database profile: a library card
+/// resolves only as a clerk session, each touch slides its expiry, an
 /// expired one resolves to nothing, and revoking it leaves browser
 /// sessions alone.
 #[tokio::test]
-async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
+async fn library_cards_slide_expire_and_stay_apart_from_browser_sessions() {
     use crate::entities::portal_sessions;
     use crate::hash_token;
     use crate::models::UserRole;
@@ -8648,13 +8672,13 @@ async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
             .await
             .unwrap();
         let client_id = store
-            .insert_client_session(&client, identity.id, Utc::now() + idle, "Pat's laptop")
+            .insert_clerk_session(&client, identity.id, Utc::now() + idle, "Pat's laptop")
             .await
             .unwrap();
 
         // Each kind resolves only through its own lookup.
         let found = store
-            .get_client_session_identity(&client, idle)
+            .get_clerk_session_identity(&client, idle)
             .await
             .unwrap();
         assert_eq!(found.map(|row| row.id), Some(identity.id), "{name}");
@@ -8668,7 +8692,7 @@ async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
         );
         assert!(
             store
-                .get_client_session_identity(&browser, idle)
+                .get_clerk_session_identity(&browser, idle)
                 .await
                 .unwrap()
                 .is_none(),
@@ -8681,7 +8705,7 @@ async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(row.kind, "client", "{name}");
+        assert_eq!(row.kind, "clerk", "{name}");
         assert_eq!(row.client_label.as_deref(), Some("Pat's laptop"), "{name}");
         let mut am: portal_sessions::ActiveModel = row.into();
         am.last_used_at = Set(Some(
@@ -8690,7 +8714,7 @@ async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
         am.expires_at = Set((Utc::now() + ChronoDuration::minutes(1)).to_rfc3339());
         am.update(kit.connection()).await.unwrap();
         assert!(store
-            .get_client_session_identity(&client, idle)
+            .get_clerk_session_identity(&client, idle)
             .await
             .unwrap()
             .is_some());
@@ -8711,16 +8735,16 @@ async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
         am.update(kit.connection()).await.unwrap();
         assert!(
             store
-                .get_client_session_identity(&client, idle)
+                .get_clerk_session_identity(&client, idle)
                 .await
                 .unwrap()
                 .is_none(),
             "{name}: expired"
         );
 
-        // Revoking deletes only client sessions.
+        // Revoking deletes only clerk sessions.
         assert!(
-            !store.delete_client_session(&browser).await.unwrap(),
+            !store.delete_clerk_session(&browser).await.unwrap(),
             "{name}"
         );
         assert!(store
@@ -8728,15 +8752,304 @@ async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
             .await
             .unwrap()
             .is_some());
-        assert!(
-            store.delete_client_session(&client).await.unwrap(),
-            "{name}"
-        );
+        assert!(store.delete_clerk_session(&client).await.unwrap(), "{name}");
         let left = portal_sessions::Entity::find()
-            .filter(portal_sessions::Column::Kind.eq("client"))
+            .filter(portal_sessions::Column::Kind.eq("clerk"))
             .all(kit.connection())
             .await
             .unwrap();
         assert!(left.is_empty(), "{name}");
+    }
+}
+
+#[tokio::test]
+async fn a_pdf_status_is_recorded_on_the_titles_edition_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        for account in ["acct-a", "acct-b"] {
+            store
+                .upsert_account("audible", account, "us", None, true, "audible")
+                .await
+                .unwrap();
+            store
+                .upsert_book(&NewBook::minimal("B0PDF0001", account, "us", "Maps"))
+                .await
+                .unwrap();
+        }
+        let first = store
+            .get_book("B0PDF0001", "acct-a")
+            .await
+            .unwrap()
+            .unwrap();
+        let second = store
+            .get_book("B0PDF0001", "acct-b")
+            .await
+            .unwrap()
+            .unwrap();
+        let edition = store.edition_of_book(&first.uuid).await.unwrap().unwrap();
+        let held_by = |uuid: String| {
+            let store = store.clone();
+            async move {
+                store
+                    .title_holding_of_book(&uuid)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .holding_id
+            }
+        };
+        let first_holding = held_by(first.uuid.clone()).await;
+        let second_holding = held_by(second.uuid.clone()).await;
+        assert_ne!(first_holding, second_holding);
+        assert_eq!(
+            store
+                .edition_of_book(&second.uuid)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(edition.as_str()),
+            "both accounts' titles sell one edition"
+        );
+
+        // The first PDF write creates the row; the audio stays not acquired.
+        store
+            .set_pdf_status("B0PDF0001", "acct-a", AcquireStatus::Queued, None)
+            .await
+            .unwrap();
+        let row = store.edition_acquisition(&edition).await.unwrap().unwrap();
+        assert_eq!(row.status, AcquireStatus::NotAcquired, "{}", profile.name());
+        assert_eq!(row.pdf_status, AcquireStatus::Queued, "{}", profile.name());
+        assert_eq!(row.pdf_holding_id.as_deref(), Some(first_holding.as_str()));
+
+        store
+            .set_pdf_status(
+                "B0PDF0001",
+                "acct-a",
+                AcquireStatus::Acquired,
+                Some("a.pdf"),
+            )
+            .await
+            .unwrap();
+        // An audio write keeps the PDF columns.
+        store
+            .set_acquire_status("B0PDF0001", "acct-b", AcquireStatus::Queued, None, None)
+            .await
+            .unwrap();
+        // Another title's PDF write leaves the acquired PDF alone.
+        store
+            .set_pdf_status("B0PDF0001", "acct-b", AcquireStatus::Error, None)
+            .await
+            .unwrap();
+        let row = store.edition_acquisition(&edition).await.unwrap().unwrap();
+        assert_eq!(row.status, AcquireStatus::Queued, "{}", profile.name());
+        assert_eq!(row.holding_id, second_holding);
+        assert_eq!(
+            row.pdf_status,
+            AcquireStatus::Acquired,
+            "{}",
+            profile.name()
+        );
+        assert_eq!(row.pdf_storage_key.as_deref(), Some("a.pdf"));
+        assert_eq!(row.pdf_holding_id.as_deref(), Some(first_holding.as_str()));
+
+        // Once the acquiring holding is gone, another title's write takes
+        // over.
+        kit.connection()
+            .execute_unprepared(&format!(
+                "DELETE FROM holdings WHERE id = '{first_holding}'"
+            ))
+            .await
+            .unwrap();
+        store
+            .set_pdf_status("B0PDF0001", "acct-b", AcquireStatus::Downloading, None)
+            .await
+            .unwrap();
+        let row = store.edition_acquisition(&edition).await.unwrap().unwrap();
+        assert_eq!(
+            row.pdf_status,
+            AcquireStatus::Downloading,
+            "{}",
+            profile.name()
+        );
+        assert_eq!(row.pdf_storage_key, None);
+        assert_eq!(row.pdf_holding_id.as_deref(), Some(second_holding.as_str()));
+    }
+}
+
+#[tokio::test]
+async fn a_scanned_title_fills_its_listings_store_text_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        store
+            .upsert_account("audible", "acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let mut book = NewBook::minimal("B0SER0001", "acct", "us", "Book One");
+        book.series = Some("Saga".into());
+        book.series_index = Some("1".into());
+        book.series_asin = Some("B0SAGA".into());
+        book.publisher = Some("First House".into());
+        book.is_abridged = true;
+        let stored = store.upsert_book(&book).await.unwrap();
+        let edition = store.edition_of_book(&stored.uuid).await.unwrap().unwrap();
+        let listing = crate::entities::store_listings::Entity::find()
+            .filter(crate::entities::store_listings::Column::EditionId.eq(edition.as_str()))
+            .one(store.db())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            listing.series.as_deref(),
+            Some("Saga"),
+            "{}",
+            profile.name()
+        );
+        assert_eq!(listing.series_index.as_deref(), Some("1"));
+        assert_eq!(listing.series_product_id.as_deref(), Some("B0SAGA"));
+        assert_eq!(listing.publisher.as_deref(), Some("First House"));
+        assert_eq!(listing.is_abridged, Some(1));
+
+        // A later scan that leaves a field out keeps the stored value.
+        let mut again = NewBook::minimal("B0SER0001", "acct", "us", "Book One");
+        again.publisher = Some("Second House".into());
+        store.upsert_book(&again).await.unwrap();
+        let record = store
+            .catalog_listings(std::slice::from_ref(&listing.id))
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(record.detail.series_product_id.as_deref(), Some("B0SAGA"));
+        assert_eq!(
+            record.detail.publisher.as_deref(),
+            Some("Second House"),
+            "{}",
+            profile.name()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_scanned_page_writes_store_text_only_when_it_changes_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        store
+            .upsert_account("audible", "acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let page = |publisher: &str| -> Vec<ScannedTitle> {
+            ["B0PAGE001", "B0PAGE002", "B0PAGE003"]
+                .iter()
+                .map(|asin| {
+                    let mut book = NewBook::minimal(*asin, "acct", "us", *asin);
+                    book.series = Some("Saga".into());
+                    book.series_asin = Some("B0SAGA".into());
+                    book.publisher = Some(publisher.into());
+                    ScannedTitle::from(book)
+                })
+                .collect()
+        };
+        let listings = || async {
+            let mut rows = crate::entities::store_listings::Entity::find()
+                .all(store.db())
+                .await
+                .unwrap();
+            rows.sort_by(|a, b| a.product_id.cmp(&b.product_id));
+            rows
+        };
+        store.upsert_scanned_titles(&page("First")).await.unwrap();
+        let first = listings().await;
+        assert_eq!(first.len(), 3, "{}", profile.name());
+        assert!(first.iter().all(|row| {
+            row.series_product_id.as_deref() == Some("B0SAGA")
+                && row.publisher.as_deref() == Some("First")
+        }));
+
+        // The same page again settles every listing from the pool and
+        // writes no store text.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        store.upsert_scanned_titles(&page("First")).await.unwrap();
+        let again = listings().await;
+        for (before, after) in first.iter().zip(&again) {
+            assert_eq!(before.updated_at, after.updated_at, "{}", profile.name());
+        }
+
+        store.upsert_scanned_titles(&page("Second")).await.unwrap();
+        assert!(
+            listings()
+                .await
+                .iter()
+                .all(|row| row.publisher.as_deref() == Some("Second")),
+            "{}",
+            profile.name()
+        );
+    }
+}
+
+#[test]
+fn listing_text_changes_only_for_a_set_field_that_differs() {
+    let row = crate::entities::store_listings::Model {
+        id: "l".into(),
+        plugin_key: "audible".into(),
+        marketplace: "us".into(),
+        product_id: "p".into(),
+        edition_id: "e".into(),
+        title: "T".into(),
+        categories: None,
+        subtitle: Some("Sub".into()),
+        authors: None,
+        narrators: None,
+        series: None,
+        series_index: None,
+        series_product_id: None,
+        description: None,
+        publisher: None,
+        published_at: None,
+        length_minutes: Some(60),
+        language: None,
+        cover_url: None,
+        url: None,
+        rating_overall: Some(4.5),
+        rating_count: None,
+        is_abridged: Some(0),
+        observed_at: String::new(),
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    let same = crate::ListingDetail {
+        subtitle: Some(" Sub ".into()),
+        authors: Some("  ".into()),
+        length_minutes: Some(60),
+        rating_overall: Some(4.5),
+        is_abridged: Some(false),
+        ..crate::ListingDetail::default()
+    };
+    assert!(!same.changes(&row));
+    assert!(!crate::ListingDetail::default().changes(&row));
+    for changed in [
+        crate::ListingDetail {
+            series_product_id: Some("S".into()),
+            ..crate::ListingDetail::default()
+        },
+        crate::ListingDetail {
+            length_minutes: Some(61),
+            ..crate::ListingDetail::default()
+        },
+        crate::ListingDetail {
+            rating_overall: Some(4.0),
+            ..crate::ListingDetail::default()
+        },
+        crate::ListingDetail {
+            rating_count: Some(3),
+            ..crate::ListingDetail::default()
+        },
+        crate::ListingDetail {
+            is_abridged: Some(true),
+            ..crate::ListingDetail::default()
+        },
+    ] {
+        assert!(changed.changes(&row), "{changed:?}");
     }
 }

@@ -78,11 +78,11 @@ async fn link(store: &LibraryStore, user_id: i64, account_id: &str) {
 
 /// Adds the [`HOST`] node, owned by `owner`, with a live credential.
 async fn add_host(store: &LibraryStore, owner: i64) {
-    add_host_node(store, HOST, owner).await;
+    add_branch_node(store, HOST, owner).await;
 }
 
 /// Adds the Host `node_id`, owned by `owner`, with a live credential.
-async fn add_host_node(store: &LibraryStore, node_id: &str, owner: i64) {
+async fn add_branch_node(store: &LibraryStore, node_id: &str, owner: i64) {
     let now = chrono::Utc::now().to_rfc3339();
     nodes::ActiveModel {
         node_id: Set(node_id.into()),
@@ -103,7 +103,7 @@ async fn add_host_node(store: &LibraryStore, node_id: &str, owner: i64) {
         scratch_bytes: Set(None),
         target: Set(String::new()),
         labels_json: Set("[]".into()),
-        kind: Set("host".into()),
+        kind: Set("branch".into()),
         owner_user_id: Set(Some(owner)),
         ..Default::default()
     }
@@ -1564,9 +1564,9 @@ async fn a_stale_fence_cannot_write_scan_rows_or_open_uploads() {
             HOST,
             &acquire,
             stale,
-            "owner-node",
+            "shared-node",
             &UploadGrantRequest {
-                book_uuid: "",
+                holding_id: "",
                 primary_key: "",
                 pdf_key: None,
                 files: &[],
@@ -1596,7 +1596,7 @@ async fn closing_upload(store: &LibraryStore, job_id: &str, fence: i64) -> Strin
         fence,
         "owner",
         &UploadGrantRequest {
-            book_uuid: "",
+            holding_id: "",
             primary_key: "",
             pdf_key: None,
             files: &[],
@@ -1619,6 +1619,17 @@ fn local(folder: &str) -> Vec<UploadDestination> {
     }]
 }
 
+/// The account holding of the books row `book_uuid` (the id an upload is
+/// granted for); empty for a uuid with no holding, which no grant accepts.
+async fn holding_of(store: &LibraryStore, book_uuid: &str) -> String {
+    store
+        .title_holding_of_book(book_uuid)
+        .await
+        .unwrap()
+        .map(|title| title.holding_id)
+        .unwrap_or_default()
+}
+
 /// Grants, receives and commits one title's upload.
 async fn upload_title(
     store: &LibraryStore,
@@ -1638,7 +1649,7 @@ async fn upload_title(
         fence,
         "owner",
         &UploadGrantRequest {
-            book_uuid,
+            holding_id: &holding_of(store, book_uuid).await,
             primary_key,
             pdf_key: None,
             files,
@@ -1761,7 +1772,7 @@ async fn a_live_fence_keeps_its_upload_token_alive() {
         fence,
         "owner",
         &UploadGrantRequest {
-            book_uuid: &book_uuid,
+            holding_id: &holding_of(&w.store, &book_uuid).await,
             primary_key: "Author/Title/Title.m4b",
             pdf_key: None,
             files: &files,
@@ -1828,7 +1839,7 @@ async fn an_abort_answers_the_files_it_had_received() {
     });
     let fence = claim(&w.store).await.unwrap().job.lease_generation;
     let request = UploadGrantRequest {
-        book_uuid: &book_uuid,
+        holding_id: &holding_of(&w.store, &book_uuid).await,
         primary_key: "Author/Title/Title.m4b",
         pdf_key: None,
         files: &files,
@@ -1893,12 +1904,12 @@ async fn a_moved_lease_supersedes_the_old_hosts_upload() {
     let _guard = master_key_test_lock_async().await;
     let w = world().await;
     const OTHER: &str = "host-riley-2";
-    add_host_node(&w.store, OTHER, w.riley).await;
+    add_branch_node(&w.store, OTHER, w.riley).await;
     let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
     let (book_uuid, files) = riley_title(&w.store).await;
     let fence = claim(&w.store).await.unwrap().job.lease_generation;
     let request = UploadGrantRequest {
-        book_uuid: &book_uuid,
+        holding_id: &holding_of(&w.store, &book_uuid).await,
         primary_key: "Author/Title/Title.m4b",
         pdf_key: None,
         files: &files,
@@ -1961,8 +1972,80 @@ async fn riley_title(store: &LibraryStore) -> (String, Vec<bookclerk_node_proto:
         size: 3,
         sha256: "ab".repeat(32),
         content_type: Some("audio/mp4".into()),
+        probe: None,
     }];
     (book.uuid, files)
+}
+
+/// The probe a branch states for an uploaded audio file reaches its file
+/// row when the upload commits, not before: a granted or aborted upload
+/// leaves the row unprobed, and so does a committed file that states no
+/// probe or no media type.
+#[tokio::test]
+async fn a_committed_uploads_probe_is_kept_on_the_file_row() {
+    let _guard = master_key_test_lock_async().await;
+    let key = "Author/Title/Title.m4b";
+    let stated = bookclerk_node_proto::UploadProbe {
+        bitrate_kbps: Some(125),
+        lossless: false,
+        source_store: Some("audible".into()),
+    };
+    // (probe, media type, whether the upload commits) -> the row's probe.
+    let cases = [
+        (Some(stated.clone()), Some("audio/mp4"), true, true),
+        (Some(stated.clone()), Some("audio/mp4"), false, false),
+        (None, Some("audio/mp4"), true, false),
+        (Some(stated), None, true, false),
+    ];
+    for (probe, content_type, commits, kept) in cases {
+        let w = world().await;
+        let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+        let (book_uuid, mut files) = riley_title(&w.store).await;
+        let fence = claim(&w.store).await.unwrap().job.lease_generation;
+        let destinations = local("Author/Title");
+        files[0].probe = probe;
+        files[0].content_type = content_type.map(str::to_string);
+        let request = UploadGrantRequest {
+            holding_id: &holding_of(&w.store, &book_uuid).await,
+            primary_key: key,
+            pdf_key: None,
+            files: &files,
+            destinations: &destinations,
+        };
+        let UploadGrant::Granted { upload_id, .. } =
+            grant_upload(&w.store, HOST, &job_id, fence, "owner", &request)
+                .await
+                .unwrap()
+        else {
+            panic!("granted");
+        };
+        assert_eq!(
+            w.store.edition_file_probe("local", key).await.unwrap(),
+            None,
+            "a granted upload has proved nothing yet"
+        );
+        if commits {
+            assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
+            assert!(matches!(
+                commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+                    .await
+                    .unwrap(),
+                UploadCommit::Committed { .. }
+            ));
+        } else {
+            assert!(abort_upload(&w.store, &upload_id).await.unwrap().is_some());
+        }
+        let expected = kept.then(|| crate::FileProbe {
+            content_type: "audio/mp4".into(),
+            bitrate_kbps: Some(125),
+            lossless: false,
+            source_store: Some("audible".into()),
+        });
+        assert_eq!(
+            w.store.edition_file_probe("local", key).await.unwrap(),
+            expected
+        );
+    }
 }
 
 /// An upload is granted only for a title of the job, its token opens only
@@ -1988,7 +2071,7 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
         .unwrap();
     let destinations = local("Author/Title");
     let sams = UploadGrantRequest {
-        book_uuid: &sam_book.uuid,
+        holding_id: &holding_of(&w.store, &sam_book.uuid).await,
         primary_key: "Author/Title/Title.m4b",
         pdf_key: None,
         files: &files,
@@ -1998,10 +2081,10 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
         grant_upload(&w.store, HOST, &job_id, fence, "owner", &sams)
             .await
             .unwrap(),
-        UploadGrant::Refused("book_not_in_job")
+        UploadGrant::Refused("title_not_in_job")
     ));
     let riley = UploadGrantRequest {
-        book_uuid: &book_uuid,
+        holding_id: &holding_of(&w.store, &book_uuid).await,
         ..sams
     };
     let bad = UploadGrantRequest {
@@ -2193,7 +2276,7 @@ async fn a_fence_lost_before_the_commit_writes_nothing() {
         fence,
         "owner",
         &UploadGrantRequest {
-            book_uuid: &book_uuid,
+            holding_id: &holding_of(&w.store, &book_uuid).await,
             primary_key: "Author/Title/Title.m4b",
             pdf_key: None,
             files: &files,
@@ -2218,6 +2301,73 @@ async fn a_fence_lost_before_the_commit_writes_nothing() {
         w.store.get_job(&job_id).await.unwrap().unwrap().state,
         crate::models::JobState::Succeeded
     );
+}
+
+/// A title's upload records its companion PDF on the edition too, under
+/// the uploading holding, so later grants see that key as the title's.
+#[tokio::test]
+async fn an_upload_records_its_pdf_on_the_edition() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, mut files) = riley_title(&w.store).await;
+    files.push(bookclerk_node_proto::UploadFile {
+        copies: vec![bookclerk_node_proto::FileCopy {
+            destination: "local".into(),
+            key: "Author/Title/Title.pdf".into(),
+        }],
+        sha256: "cd".repeat(32),
+        content_type: Some("application/pdf".into()),
+        ..files[0].clone()
+    });
+    let holding_id = holding_of(&w.store, &book_uuid).await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let UploadGrant::Granted { upload_id, .. } = grant_upload(
+        &w.store,
+        HOST,
+        &job_id,
+        fence,
+        "owner",
+        &UploadGrantRequest {
+            holding_id: &holding_id,
+            primary_key: "Author/Title/Title.m4b",
+            pdf_key: Some("Author/Title/Title.pdf"),
+            files: &files,
+            destinations: &local("Author/Title"),
+        },
+    )
+    .await
+    .unwrap() else {
+        panic!("granted");
+    };
+    for index in 0..files.len() {
+        assert!(record_upload_file(&w.store, &upload_id, index)
+            .await
+            .unwrap());
+    }
+    assert_eq!(
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Committed {
+            job_completed: false
+        }
+    );
+    let edition = w.store.edition_of_book(&book_uuid).await.unwrap().unwrap();
+    let state = w
+        .store
+        .edition_acquisition(&edition)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.storage_key.as_deref(), Some("Author/Title/Title.m4b"));
+    assert_eq!(state.holding_id, holding_id);
+    assert_eq!(state.pdf_status, crate::models::AcquireStatus::Acquired);
+    assert_eq!(
+        state.pdf_storage_key.as_deref(),
+        Some("Author/Title/Title.pdf")
+    );
+    assert_eq!(state.pdf_holding_id.as_deref(), Some(holding_id.as_str()));
 }
 
 /// A title's upload acquires the title but leaves its edition with the
@@ -2270,7 +2420,13 @@ async fn an_upload_keeps_the_edition_with_the_title_that_acquired_it() {
         .unwrap()
         .unwrap();
     assert_eq!(kept.status, crate::models::AcquireStatus::Acquired);
-    assert_eq!(kept.title_uuid, sam_book.uuid);
+    let sam_holding = w
+        .store
+        .title_holding_of_book(&sam_book.uuid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.holding_id, sam_holding.holding_id);
     assert_eq!(kept.storage_key.as_deref(), Some("Sam/Title/Title.m4b"));
 }
 
@@ -2518,6 +2674,29 @@ async fn set_book_keys(store: &LibraryStore, uuid: &str, audio: &str, pdf: Optio
         .exec(store.db())
         .await
         .unwrap();
+    // The edition's acquire state, which the upload checks read.
+    let title = store.title_holding_of_book(uuid).await.unwrap().unwrap();
+    crate::store::event_outbox::update_edition_acquisition_on(
+        store.db(),
+        &title.edition_id,
+        &title.holding_id,
+        crate::models::AcquireStatus::Acquired,
+        Some(audio),
+        None,
+    )
+    .await
+    .unwrap();
+    if let Some(pdf) = pdf {
+        crate::store::event_outbox::update_edition_pdf_on(
+            store.db(),
+            &title.edition_id,
+            &title.holding_id,
+            crate::models::AcquireStatus::Acquired,
+            Some(pdf),
+        )
+        .await
+        .unwrap();
+    }
 }
 
 /// A Host can write a title only under that title's own key scope on each
@@ -2593,7 +2772,7 @@ async fn an_upload_is_bound_to_its_titles_key_scope() {
                 fence,
                 "owner",
                 &UploadGrantRequest {
-                    book_uuid: &book_uuid,
+                    holding_id: &holding_of(&store, &book_uuid).await,
                     primary_key: primary,
                     pdf_key: None,
                     files: &files,
@@ -2637,7 +2816,7 @@ async fn an_upload_is_bound_to_its_titles_key_scope() {
     ] {
         assert_eq!(
             refused(with_extra(key), "Author/Title/Title.m4b").await,
-            "key_of_another_book",
+            "key_of_another_title",
             "{key}"
         );
     }
@@ -2645,7 +2824,7 @@ async fn an_upload_is_bound_to_its_titles_key_scope() {
     overwrite[0].copies[0].key = "Author/Title/Neighbour.m4b".into();
     assert_eq!(
         refused(overwrite, "Author/Title/Neighbour.m4b").await,
-        "key_of_another_book",
+        "key_of_another_title",
         "another title's audio cannot be the primary either"
     );
     let unscoped = vec![UploadDestination {
@@ -2661,7 +2840,7 @@ async fn an_upload_is_bound_to_its_titles_key_scope() {
             fence,
             "owner",
             &UploadGrantRequest {
-                book_uuid: &book_uuid,
+                holding_id: &holding_of(&w.store, &book_uuid).await,
                 primary_key: "Author/Title/Title.m4b",
                 pdf_key: None,
                 files: &files,
@@ -2701,7 +2880,7 @@ async fn an_upload_is_bound_to_its_titles_key_scope() {
             fence,
             "owner",
             &UploadGrantRequest {
-                book_uuid: &book_uuid,
+                holding_id: &holding_of(&w.store, &book_uuid).await,
                 primary_key: "Author/Title/Title.m4b",
                 pdf_key: None,
                 files: &own,
@@ -2880,7 +3059,7 @@ async fn an_upload_grant_into_a_shared_folder_is_bound_to_the_titles_names() {
                 fence,
                 "owner",
                 &UploadGrantRequest {
-                    book_uuid: &book_uuid,
+                    holding_id: &holding_of(&store, &book_uuid).await,
                     primary_key: primary,
                     pdf_key: None,
                     files: &files,
@@ -3363,7 +3542,7 @@ async fn write_back_is_one_guarded_batch_without_begin() {
 }
 
 /// Permits taken under a higher limit are still found after the limit is
-/// lowered (or on an owner node configured lower), so the fence stays live
+/// lowered (or on a shared node configured lower), so the fence stays live
 /// and finishing gives them back.
 #[tokio::test]
 async fn permits_above_a_lowered_limit_are_still_held() {
@@ -3588,7 +3767,7 @@ async fn a_shared_folder_never_grants_another_titles_recorded_file() {
                 fence,
                 "owner",
                 &UploadGrantRequest {
-                    book_uuid: &uuid,
+                    holding_id: &holding_of(&store, &uuid).await,
                     primary_key: "Author/Title/Title.m4b",
                     pdf_key: None,
                     files: &files,
@@ -3605,7 +3784,7 @@ async fn a_shared_folder_never_grants_another_titles_recorded_file() {
             with_local_file(&files, "Author/Title/Neighbour - 01.mp3")
         )
         .await,
-        UploadGrant::Refused("key_of_another_book")
+        UploadGrant::Refused("key_of_another_title")
     ));
     let granted = grant(
         book_uuid.clone(),
@@ -3643,7 +3822,7 @@ async fn a_shared_folder_never_grants_another_titles_recorded_file() {
     // is refused, though nothing is acquired yet.
     assert!(matches!(
         grant(neighbour.uuid.clone(), files.clone()).await,
-        UploadGrant::Refused("key_of_another_book")
+        UploadGrant::Refused("key_of_another_title")
     ));
     // An acquire on the owner that writes the key afterwards takes it
     // over, so the upload no longer owns it.
@@ -3690,7 +3869,11 @@ async fn the_commit_gate_carries_the_nodes_trust() {
     let passes = |book: Option<crate::entities::books::Model>| {
         let store = w.store.clone();
         async move {
-            let (sql, binds) = uploads::commit_trust_gate(HOST, book.as_ref());
+            let (sql, binds) = uploads::commit_trust_gate(
+                HOST,
+                book.as_ref()
+                    .map(|book| (book.plugin_key.as_str(), book.account_id.as_str())),
+            );
             let reply = batch::execute_host_batch(
                 &store,
                 batch::request(
@@ -3828,7 +4011,7 @@ async fn grant_title(
         fence,
         "owner",
         &UploadGrantRequest {
-            book_uuid,
+            holding_id: &holding_of(store, book_uuid).await,
             primary_key: "Author/Title/Title.m4b",
             pdf_key: None,
             files,
@@ -3874,7 +4057,7 @@ async fn an_upload_never_replaces_its_editions_file_another_account_wrote() {
             &with_local_file(&files, "Author/Title/cover.jpg"),
         )
         .await,
-        UploadGrant::Refused("key_of_another_book")
+        UploadGrant::Refused("key_of_another_title")
     ));
     let cover = w
         .store
@@ -3899,14 +4082,16 @@ async fn an_upload_never_replaces_its_editions_file_another_account_wrote() {
     assert_eq!(audio.sha256.as_deref(), Some("ab".repeat(32).as_str()));
 }
 
-/// A title not resolved to an edition yet has no owner to record its keys
-/// for, so its upload is refused (the next scan resolves it again).
+/// A title whose account holding is gone (its listing was removed since
+/// the plan) has nothing to record its keys for, so its upload is refused.
 #[tokio::test]
-async fn an_unresolved_titles_upload_is_refused() {
+async fn an_upload_of_a_removed_holding_is_refused() {
     let _guard = master_key_test_lock_async().await;
     let w = world().await;
     let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
     let (book_uuid, files) = riley_title(&w.store).await;
+    let holding_id = holding_of(&w.store, &book_uuid).await;
+    assert!(!holding_id.is_empty());
     crate::entities::store_listings::Entity::delete_many()
         .filter(crate::entities::store_listings::Column::ProductId.eq("t1"))
         .exec(w.store.db())
@@ -3914,10 +4099,26 @@ async fn an_unresolved_titles_upload_is_refused() {
         .unwrap();
     assert!(w.store.edition_of_book(&book_uuid).await.unwrap().is_none());
     let fence = claim(&w.store).await.unwrap().job.lease_generation;
-    assert!(matches!(
-        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await,
-        UploadGrant::Refused("unresolved_title")
-    ));
+    let granted = grant_upload(
+        &w.store,
+        HOST,
+        &job_id,
+        fence,
+        "owner",
+        &UploadGrantRequest {
+            holding_id: &holding_id,
+            primary_key: "Author/Title/Title.m4b",
+            pdf_key: None,
+            files: &files,
+            destinations: &local("Author/Title"),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(granted, UploadGrant::Refused("unknown_title")),
+        "{granted:?}"
+    );
     assert!(w
         .store
         .edition_file("local", "Author/Title/Title.m4b")
@@ -3968,7 +4169,7 @@ async fn a_refused_upload_grant_gives_back_the_keys_it_claimed() {
     );
     assert!(matches!(
         grant_title(&w.store, &job_id, fence, &book_uuid, &refused).await,
-        UploadGrant::Refused("key_of_another_book")
+        UploadGrant::Refused("key_of_another_title")
     ));
     let primary = w
         .store
@@ -4065,7 +4266,10 @@ async fn an_upload_job_naming_its_account_by_label_covers_its_titles() {
         let job = w.store.get_job(&job_id).await.unwrap().unwrap();
         let titles = job_titles(&w.store, HOST, &job).await.unwrap().unwrap();
         assert_eq!(
-            titles.iter().map(|b| b.uuid.as_str()).collect::<Vec<_>>(),
+            titles
+                .iter()
+                .filter_map(|t| t.book_uuid.as_deref())
+                .collect::<Vec<_>>(),
             vec![book_uuid.as_str()],
             "{selector}"
         );
@@ -4282,7 +4486,7 @@ async fn a_job_upload_takes_over_a_branch_delivered_copy_of_its_edition() {
         .create_user(UserRole::Member, Some("Kim"), None)
         .await
         .unwrap();
-    add_host_node(&w.store, branch, kim.id).await;
+    add_branch_node(&w.store, branch, kim.id).await;
     let (book_uuid, files) = riley_title(&w.store).await;
     let key = files[0].copies[0].key.clone();
 
@@ -4477,4 +4681,28 @@ async fn an_administrators_branch_takes_other_members_work_only_when_asked() {
     }
     assert!(job_for_node_owner(&store, HOST, &pinned).await.unwrap());
     assert!(!job_for_node_owner(&store, HOST, &unpinned).await.unwrap());
+}
+
+/// A job whose stored token no longer unseals is not handed to the branch
+/// node: the claim answers nothing, and the attempt fails as
+/// `secrets_unavailable` with the reason a branch node operator reads.
+#[tokio::test]
+async fn a_token_that_does_not_unseal_fails_the_attempt() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    // The sealed token is damaged at rest, so it no longer opens.
+    w.store
+        .db()
+        .execute_unprepared("UPDATE encrypted_secrets SET ciphertext = X'00'")
+        .await
+        .unwrap();
+
+    assert!(claim(&w.store).await.is_none(), "nothing is handed out");
+    let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert_eq!(job.error_kind.as_deref(), Some(SECRETS_UNAVAILABLE));
+    assert_eq!(
+        job.error_message.as_deref(),
+        Some("the job's secrets could not be unsealed for a branch node")
+    );
 }

@@ -9,8 +9,8 @@ use bookclerk_plugin_sdk::{
     DatabaseBinding, Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation,
     ListDealsParams, LoginParams, LoginResult, PlainFetch, PluginDescribe, PluginError,
     PluginMigration, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams,
-    PurchaseHintsParams, ScalarLimits, ScanPage, ScanParams, SearchCatalogParams,
-    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    PurchaseHintResult, PurchaseHintsParams, ScalarLimits, ScanPage, ScanParams,
+    SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_scan_delta::SCAN_STATE_BINDING;
 use bookclerk_storefront::abi::{expand_seed_from_params, DEFAULT_LIST_DEALS_LIMIT};
@@ -43,9 +43,12 @@ impl PluginWorker for ChirpRoot {
                     "https://www.google.com/s2/favicons?domain=chirpbooks.com&sz=128".into(),
                 ),
             }),
-            // Chirp has no catalog detail lookup.
+            // Chirp has no catalog detail lookup, and its search knows no ISBN
+            // or ASIN, so prices come from title searches with records.
             catalog: CatalogCapabilities {
                 detail_by_isbn: false,
+                price_by_isbn: false,
+                price_by_asin: false,
             },
             ..PluginDescribe::default()
         })
@@ -172,6 +175,38 @@ impl ContentSourceRole for ChirpContentSource {
             .purchase_hints(&opts)
             .await
             .map(|hints| hints.into_iter().map(|h| h.map(Into::into)).collect())
+            .map_err(PluginError::from)
+    }
+
+    /// A title search answers every audiobook it found as a priced record.
+    async fn purchase_hint_result(
+        &self,
+        params: PurchaseHintParams,
+    ) -> Result<PurchaseHintResult, PluginError> {
+        let source = bookclerk_plugin_source_chirp::ChirpSource::new();
+        source
+            .purchase_answer(&PurchaseHintOpts::from(params))
+            .await
+            .map(PurchaseHintResult::from)
+            .map_err(PluginError::from)
+    }
+
+    /// One aliased GraphQL request prices a page of cards and their
+    /// title-search records.
+    async fn purchase_hints_results(
+        &self,
+        params: PurchaseHintsParams,
+    ) -> Result<Vec<PurchaseHintResult>, PluginError> {
+        let opts: Vec<PurchaseHintOpts> = params
+            .queries
+            .into_iter()
+            .map(PurchaseHintOpts::from)
+            .collect();
+        let source = bookclerk_plugin_source_chirp::ChirpSource::new();
+        source
+            .purchase_answers(&opts)
+            .await
+            .map(|answers| answers.into_iter().map(PurchaseHintResult::from).collect())
             .map_err(PluginError::from)
     }
 

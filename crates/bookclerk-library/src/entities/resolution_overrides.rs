@@ -20,6 +20,9 @@ pub struct Model {
     pub created_by_user_id: Option<i64>,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,
+    /// Id of this write of the row (a UUID), new each time the decision is
+    /// made again; empty for rows written before revisions.
+    pub revision: String,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).

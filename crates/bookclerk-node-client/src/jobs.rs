@@ -162,6 +162,89 @@ impl std::fmt::Debug for HostUpload {
     }
 }
 
+/// A copy of an edition the library granted this node
+/// ([`crate::HostClientHandle::copy_grant`]): what it is, its files, and
+/// the bearer token of its downloads. The token is zeroized on drop and
+/// never shown by `Debug`.
+pub struct GrantedCopy {
+    /// Copy id; file `n` is at `COPIES_PATH<copy_id>/files/<n>`.
+    pub copy_id: String,
+    /// Seconds the token stays valid from the grant.
+    pub expires_in_secs: u64,
+    /// What the copy is.
+    pub copy: bookclerk_node_proto::WindowCopy,
+    /// The copy's files, in download order.
+    pub files: Vec<bookclerk_node_proto::CopyFile>,
+    /// The bearer token, opened with this node's box key.
+    token: SecretValue,
+    /// Cluster id of the library that granted the copy: the only one its
+    /// token is sent to.
+    library: String,
+}
+
+impl GrantedCopy {
+    /// Wraps a grant opened on the link to the library `library` (its
+    /// cluster id).
+    pub(crate) fn new(
+        library: String,
+        copy_id: String,
+        expires_in_secs: u64,
+        copy: bookclerk_node_proto::WindowCopy,
+        files: Vec<bookclerk_node_proto::CopyFile>,
+        token: SecretValue,
+    ) -> Self {
+        Self {
+            copy_id,
+            expires_in_secs,
+            copy,
+            files,
+            token,
+            library,
+        }
+    }
+
+    /// True when the library with cluster id `cluster_id` granted this
+    /// copy. A branch may be linked to several libraries, and a copy's
+    /// token goes to none but its own.
+    pub(crate) fn granted_by(&self, cluster_id: &str) -> bool {
+        self.library == cluster_id
+    }
+
+    /// The `Authorization` header value of this copy's downloads.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError::Unavailable`] when the token is not text.
+    pub fn authorization(&self) -> Result<zeroize::Zeroizing<String>, OwnerCallError> {
+        let token =
+            std::str::from_utf8(self.token.expose()).map_err(|_| OwnerCallError::Unavailable)?;
+        Ok(zeroize::Zeroizing::new(format!(
+            "{} {token}",
+            bookclerk_node_proto::COPY_AUTH_SCHEME
+        )))
+    }
+}
+
+impl Drop for GrantedCopy {
+    /// The token leaves the redaction registry (it was registered when
+    /// opened) and its local copy is zeroized with the handle.
+    fn drop(&mut self) {
+        if let Ok(token) = std::str::from_utf8(self.token.expose()) {
+            bookclerk_config::unregister_secret(token);
+        }
+    }
+}
+
+impl std::fmt::Debug for GrantedCopy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GrantedCopy")
+            .field("copy_id", &self.copy_id)
+            .field("files", &self.files.len())
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
 /// How a job failed: a stable kind and an operator-facing message. Neither
 /// may contain a secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,7 +448,7 @@ impl HostJobCtx {
     }
 
     /// Asks the owner which titles this acquire should fetch, and with
-    /// which destinations (the owner node's, the primary first, each with
+    /// which destinations (the shared node's, the primary first, each with
     /// its own `DownloadOptions`).
     ///
     /// # Errors
@@ -379,7 +462,7 @@ impl HostJobCtx {
             .await
     }
 
-    /// Opens an upload of one title's `files` (an empty `book_uuid` and no
+    /// Opens an upload of one title's `files` (an empty `holding_id` and no
     /// files for the job's closing upload).
     ///
     /// # Errors
@@ -387,7 +470,7 @@ impl HostJobCtx {
     /// Returns [`OwnerCallError`]; `Lost` also cancels the job.
     pub async fn grant_upload(
         &self,
-        book_uuid: &str,
+        holding_id: &str,
         primary_key: &str,
         pdf_key: Option<&str>,
         files: Vec<UploadFile>,
@@ -396,7 +479,7 @@ impl HostJobCtx {
             .upload_grant(
                 &self.job.job.id,
                 self.job.fence,
-                book_uuid,
+                holding_id,
                 primary_key,
                 pdf_key,
                 files,
@@ -462,4 +545,32 @@ impl HostJobCtx {
 pub trait HostJobRunner: Send + Sync + 'static {
     /// Runs one job; `Ok` carries the outcome text recorded as progress.
     fn run(&self, ctx: HostJobCtx) -> impl Future<Output = Result<String, HostJobError>> + Send;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A grant belongs to the library whose link opened it, and to no
+    /// other library the branch is linked to.
+    #[test]
+    fn a_granted_copy_knows_the_library_that_granted_it() {
+        let copy = GrantedCopy::new(
+            "library-a".into(),
+            "6f1c2b7e-0d4a-4e8b-9a51-2c3d4e5f6a7b".into(),
+            3600,
+            bookclerk_node_proto::WindowCopy {
+                source_store: None,
+                content_type: "audio/mp4".into(),
+                bitrate_kbps: None,
+                lossless: false,
+                version: "v1".into(),
+            },
+            Vec::new(),
+            SecretValue::new(b"copy-token-for-library-a".to_vec()),
+        );
+        assert!(copy.granted_by("library-a"));
+        assert!(!copy.granted_by("library-b"));
+        assert!(!copy.granted_by(""));
+    }
 }

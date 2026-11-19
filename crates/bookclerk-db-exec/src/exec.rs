@@ -438,15 +438,89 @@ pub fn sea_value_to_json(v: &Value) -> JsonValue {
 }
 
 /// Encoded JSON length of a SeaORM proxy row (keys, numbers, punctuation).
+///
+/// The length of the compact JSON object [`sea_value_to_json`] would build
+/// from the row, worked out without building it: every result row is
+/// measured against `maxResultBytes`, and cloning each cell into a map and
+/// printing it cost more than reading the row. Names must be distinct, as
+/// a row's column names are.
 #[must_use]
 pub fn encoded_proxy_row_len<'a>(
     values: impl IntoIterator<Item = (&'a String, &'a Value)>,
 ) -> usize {
-    let mut map = serde_json::Map::new();
+    let mut len = 2usize; // `{` and `}`
+    let mut first = true;
     for (name, value) in values {
-        map.insert(name.clone(), sea_value_to_json(value));
+        if !first {
+            len = len.saturating_add(1); // `,`
+        }
+        first = false;
+        len = len
+            .saturating_add(json_string_len(name))
+            .saturating_add(1) // `:`
+            .saturating_add(sea_value_json_len(value));
     }
-    JsonValue::Object(map).to_string().len()
+    len
+}
+
+/// Compact JSON length of the cell [`sea_value_to_json`] maps `v` onto.
+#[must_use]
+pub fn sea_value_json_len(v: &Value) -> usize {
+    /// Characters of a printed integer, sign included.
+    fn int_len(n: i128) -> usize {
+        let digits = n.unsigned_abs().checked_ilog10().map_or(1, |d| {
+            usize::try_from(d).map_or(usize::MAX, |d| d.saturating_add(1))
+        });
+        digits.saturating_add(usize::from(n < 0))
+    }
+    match v {
+        Value::Bool(Some(b)) => {
+            if *b {
+                4
+            } else {
+                5
+            }
+        }
+        Value::TinyInt(Some(n)) => int_len(i128::from(*n)),
+        Value::SmallInt(Some(n)) => int_len(i128::from(*n)),
+        Value::Int(Some(n)) => int_len(i128::from(*n)),
+        Value::BigInt(Some(n)) => int_len(i128::from(*n)),
+        Value::TinyUnsigned(Some(n)) => int_len(i128::from(*n)),
+        Value::SmallUnsigned(Some(n)) => int_len(i128::from(*n)),
+        Value::Unsigned(Some(n)) => int_len(i128::from(*n)),
+        Value::BigUnsigned(Some(n)) => int_len(i128::from(*n)),
+        // Floats are rare in rows; print them the way serde_json does.
+        Value::Float(Some(_)) | Value::Double(Some(_)) => sea_value_to_json(v).to_string().len(),
+        Value::String(Some(s)) => json_string_len(s),
+        Value::Char(Some(c)) => json_string_len(c.encode_utf8(&mut [0; 4])),
+        Value::Bytes(Some(b)) => json_string_len(&crate::bytes_to_b64_string(b)),
+        _ => 4, // `null`
+    }
+}
+
+/// UTF-8 length of the cell [`sea_value_to_json`] maps `v` onto, as
+/// [`json_cell_utf8_len`] measures it, without building the cell.
+#[must_use]
+pub fn sea_cell_utf8_len(v: &Value) -> usize {
+    match v {
+        Value::String(Some(s)) => s.len(),
+        Value::Char(Some(c)) => c.len_utf8(),
+        Value::Bytes(Some(b)) => crate::bytes_to_b64_string(b).len(),
+        _ => 0,
+    }
+}
+
+/// Length of `s` as a compact JSON string: the quotes, plus each byte,
+/// plus serde_json's escapes (`\"`, `\\` and the short control escapes
+/// add one byte; any other control character becomes six-byte `\u00XX`).
+fn json_string_len(s: &str) -> usize {
+    s.bytes().fold(2usize, |len, byte| {
+        len.saturating_add(match byte {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 2,
+            0x00..=0x1f => 6,
+            _ => 1,
+        })
+    })
 }
 
 /// Executes canonical SQL on a physical engine the adapter opened.
@@ -615,6 +689,69 @@ mod tests {
             "JSON punctuation and the numeric cell must count: {nbytes} vs alias {}",
             alias.len()
         );
+    }
+
+    #[test]
+    fn row_and_cell_lengths_match_the_json_they_measure() {
+        use super::{
+            encoded_proxy_row_len, json_cell_utf8_len, sea_cell_utf8_len, sea_value_json_len,
+            sea_value_to_json,
+        };
+        let mut cells = vec![
+            Value::Bool(Some(true)),
+            Value::Bool(Some(false)),
+            Value::Bool(None),
+            Value::String(None),
+            Value::TinyInt(Some(i8::MIN)),
+            Value::SmallInt(Some(-1)),
+            Value::Int(Some(0)),
+            Value::Int(Some(9)),
+            Value::Int(Some(10)),
+            Value::BigInt(Some(i64::MIN)),
+            Value::BigInt(Some(i64::MAX)),
+            Value::TinyUnsigned(Some(u8::MAX)),
+            Value::SmallUnsigned(Some(999)),
+            Value::Unsigned(Some(1000)),
+            Value::BigUnsigned(Some(u64::MAX)),
+            Value::Float(Some(1.5)),
+            Value::Float(Some(f32::NAN)),
+            Value::Double(Some(-0.0)),
+            Value::Double(Some(1e300)),
+            Value::Double(Some(f64::INFINITY)),
+            Value::Char(Some('"')),
+            Value::Char(Some('\u{1}')),
+            Value::Char(Some('🦀')),
+            Value::Bytes(Some(vec![])),
+            Value::Bytes(Some(vec![0, 255, 7, 1])),
+            Value::String(Some(String::new())),
+            Value::String(Some("plain é 汉 🦀".into())),
+            Value::String(Some("q\"b\\n\nr\rt\tb\u{8}f\u{c}".into())),
+            Value::String(Some("\u{0}\u{1}\u{1f}\u{7f}\u{80}".into())),
+        ];
+        // Every byte value, so every escape rule is checked.
+        cells.push(Value::String(Some(
+            (0u8..=127).map(char::from).collect::<String>(),
+        )));
+        for cell in &cells {
+            let json = sea_value_to_json(cell);
+            assert_eq!(sea_value_json_len(cell), json.to_string().len(), "{cell:?}");
+            assert_eq!(
+                sea_cell_utf8_len(cell),
+                json_cell_utf8_len(&json),
+                "{cell:?}"
+            );
+        }
+        let names: Vec<String> = (0..cells.len()).map(|i| format!("c{i}\"\u{2}")).collect();
+        let row: Vec<(&String, &Value)> = names.iter().zip(&cells).collect();
+        let mut map = serde_json::Map::new();
+        for (name, value) in &row {
+            map.insert((*name).clone(), sea_value_to_json(value));
+        }
+        assert_eq!(
+            encoded_proxy_row_len(row.iter().copied()),
+            serde_json::Value::Object(map).to_string().len()
+        );
+        assert_eq!(encoded_proxy_row_len(std::iter::empty()), 2);
     }
 
     #[test]

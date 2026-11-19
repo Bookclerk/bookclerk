@@ -1,7 +1,7 @@
 //! Per-item trust: which jobs a node may claim, and the scan-all planner.
 //!
-//! A node that shares the library database and `master.key` (kind `owner`)
-//! already holds every secret, so it may claim any job. A Host node keeps
+//! A node that shares the library database and `master.key` (kind `shared`)
+//! already holds every secret, so it may claim any job. A Branch node keeps
 //! its own database and receives a job's secrets from the owner, so what it
 //! may claim follows the role of the user who owns it:
 //!
@@ -57,14 +57,14 @@ pub enum Claimant {
     #[default]
     Local,
     /// A node that authenticated over the node API. It must have a `nodes`
-    /// row and, unless it is an owner node, a live node credential.
+    /// row and, unless it is a shared node, a live node credential.
     Remote,
 }
 
 /// What a node is trusted with, resolved from the database.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeTrust {
-    /// Every job: an owner node, or a Host owned by an active Owner or
+    /// Every job: a shared node, or a Host owned by an active Owner or
     /// Administrator.
     All,
     /// Only jobs whose secrets all belong to this user.
@@ -118,9 +118,9 @@ pub async fn node_trust(
             Claimant::Remote => NodeTrust::Nothing,
         });
     };
-    // Only the exact stored kind `owner` shares the database; anything
-    // else (including text this build does not know) is treated as a Host.
-    if row.kind == "owner" {
+    // Only the exact stored kind `shared` shares the database; anything
+    // else (including text this build does not know) is treated as a branch.
+    if row.kind == "shared" {
         return Ok(NodeTrust::All);
     }
     let credential_live = load_node_credential(store, &row.node_id)
@@ -286,11 +286,12 @@ pub fn claimant_may_run(claimant: Claimant, job: &JobRecord) -> bool {
 /// - A scan that names an account touches every `accounts` row with that
 ///   id (within the pinned instance's plugin). A scan of every account is
 ///   `None`: what it touches is not known until it runs.
-/// - An acquire touches the named account's rows, plus the account of every
-///   library row its filters match (title id, account, pinned plugin),
-///   whatever the row's acquire status. That is a superset of the titles it
-///   will fetch, so a node must be trusted with at least everything it
-///   fetches.
+/// - An acquire touches the named account's rows, plus every account
+///   holding a title its filters match (the title id as
+///   [`LibraryStore::acquire_titles_named`] matches it, the account and the
+///   pinned plugin), whatever the edition's acquire status. That is a
+///   superset of the titles it will fetch, so a node must be trusted with
+///   at least everything it fetches.
 /// - Anything else, and a job pinned to an unknown instance, is `None`.
 ///
 /// # Errors
@@ -312,36 +313,29 @@ pub async fn job_item_accounts(
         JobKind::Scan => Ok(account.map(|_| items)),
         JobKind::Acquire => {
             let title = job.payload.title.as_deref().filter(|t| !t.is_empty());
-            for book in store.list_books(account).await? {
-                if plugin_key
-                    .as_deref()
-                    .is_some_and(|key| key != book.plugin_key)
-                    || title.is_some_and(|t| !book_matches_title(&book, t))
-                {
-                    continue;
+            match title {
+                // The accounts holding a title the filter names, read from
+                // the holdings the job visits.
+                Some(title) => {
+                    for held in store.acquire_titles_named(account, title).await? {
+                        if plugin_key
+                            .as_deref()
+                            .is_none_or(|key| key == held.plugin_key)
+                        {
+                            items.insert((held.plugin_key, held.account_id));
+                        }
+                    }
                 }
-                items.insert((book.plugin_key, book.account_id));
+                None => items.extend(
+                    store
+                        .accounts_holding_titles(account, plugin_key.as_deref())
+                        .await?,
+                ),
             }
             Ok(Some(items))
         }
         _ => Ok(None),
     }
-}
-
-/// True when `id` names `book` (uuid, product id, ISBN or ASIN, any case),
-/// as an acquire's title filter matches.
-#[must_use]
-pub fn book_matches_title(book: &BookRecord, id: &str) -> bool {
-    id.eq_ignore_ascii_case(&book.uuid)
-        || id.eq_ignore_ascii_case(&book.product_id)
-        || book
-            .isbn
-            .as_deref()
-            .is_some_and(|i| id.eq_ignore_ascii_case(i))
-        || book
-            .asin
-            .as_deref()
-            .is_some_and(|x| id.eq_ignore_ascii_case(x))
 }
 
 /// What `node_id` is trusted with for a claim of `scope`.
@@ -352,7 +346,7 @@ pub fn book_matches_title(book: &BookRecord, id: &str) -> bool {
 /// user's pinned jobs and jobs with requirements), as a branch takes only
 /// its owner's work unless its
 /// operator turned on "Download for other members". A scope never widens
-/// trust, and an owner node, which shares the database, keeps every job.
+/// trust, and a shared node, which shares the database, keeps every job.
 ///
 /// # Errors
 ///
@@ -375,7 +369,7 @@ pub async fn node_trust_in_scope(
         // A worker in this process (no `nodes` row) holds the database.
         return Ok(trust);
     };
-    if row.kind == "owner" {
+    if row.kind == "shared" {
         return Ok(trust);
     }
     Ok(row
@@ -956,7 +950,6 @@ pub async fn plan_acquire(
     };
     let account = resolved.as_deref();
     if !titles.is_empty() {
-        let books = store.list_books(account).await?;
         let not_yours = || {
             LibraryError::Forbidden(
                 "that title is not in a store account linked to this user".into(),
@@ -964,15 +957,16 @@ pub async fn plan_acquire(
         };
         let mut out = Vec::new();
         for title in &titles {
-            let touched: BTreeSet<AccountKey> = books
-                .iter()
-                .filter(|book| {
+            let touched: BTreeSet<AccountKey> = store
+                .acquire_titles_named(account, title)
+                .await?
+                .into_iter()
+                .filter(|held| {
                     plugin_key
                         .as_deref()
-                        .is_none_or(|key| key == book.plugin_key)
-                        && book_matches_title(book, title)
+                        .is_none_or(|key| key == held.plugin_key)
                 })
-                .map(|book| (book.plugin_key.clone(), book.account_id.clone()))
+                .map(|held| (held.plugin_key, held.account_id))
                 .collect();
             if !wholly_owned(&touched) {
                 return Err(not_yours());
@@ -1027,6 +1021,127 @@ pub async fn plan_acquire(
         if wholly_owned(&accounts_named(store, &id, plugin_key.as_deref()).await?) {
             out.push(payload(Some(&id), None));
         }
+    }
+    Ok(out)
+}
+
+/// The library titles an acquire by edition queues: for each edition, one
+/// title (`books.uuid`) that sells it in an account `requester` may
+/// acquire for, and in `account` when one is named.
+///
+/// An edition's titles share its files, so acquiring one of them acquires
+/// the edition. Each title is still planned by [`plan_acquire`], which
+/// checks the requester again.
+///
+/// # Arguments
+///
+/// * `store` - The library.
+/// * `requester` - Who asks; a member is limited to their own accounts.
+/// * `account` - When named (an id or label), only titles in that account.
+/// * `plugin_instance_id` - When the acquire is pinned to a plugin
+///   instance, only titles on that instance's plugin, so the title picked
+///   is one the pinned plan keeps.
+/// * `editions` - Edition ids (`editions.id`); blanks and repeats are
+///   skipped.
+///
+/// # Returns
+///
+/// One title uuid per edition, in the order the editions were given.
+///
+/// # Errors
+///
+/// - [`LibraryError::Invalid`] when every edition id given is blank, the
+///   pinned instance id does not parse, or an edition has no title in the
+///   library (or none in `account` or on the pinned plugin).
+/// - [`LibraryError::Forbidden`] when an edition's titles are all in
+///   accounts the requester may not acquire for.
+/// - [`LibraryError::Orm`] when a read fails.
+pub async fn acquire_titles_of_editions(
+    store: &LibraryStore,
+    requester: ScanRequester,
+    account: Option<&str>,
+    plugin_instance_id: Option<&str>,
+    editions: &[String],
+) -> Result<Vec<String>> {
+    let account = named_account(account)?;
+    // An unknown pin is refused by the plan (or at run time), as for titles;
+    // it narrows nothing here.
+    let pinned_key = match plugin_instance_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(raw) => {
+            let id = PluginInstanceId::parse(raw)
+                .map_err(|err| LibraryError::Invalid(format!("plugin instance id: {err}")))?;
+            load_plugin_instance(store, &id)
+                .await?
+                .map(|instance| instance.plugin_key)
+        }
+        None => None,
+    };
+    let mut seen = BTreeSet::new();
+    let editions: Vec<&str> = editions
+        .iter()
+        .map(|e| e.trim())
+        .filter(|e| !e.is_empty() && seen.insert(*e))
+        .collect();
+    if editions.is_empty() {
+        return Err(LibraryError::Invalid(
+            "every edition id given is blank".into(),
+        ));
+    }
+    let owned = match requester_scope(store, requester).await? {
+        Some(user_id) => Some(accounts_owned_by(store, user_id).await?),
+        None => None,
+    };
+    // The accounts the filter names, matched by id or label as a job's
+    // account filter is; an unknown name matches by id only.
+    let named = match account {
+        Some(needle) => Some((needle, accounts_named(store, needle, None).await?)),
+        None => None,
+    };
+    let mut out = Vec::with_capacity(editions.len());
+    for edition in editions {
+        let mut titles: Vec<BookRecord> = Vec::new();
+        for listing in store.listing_refs_of_edition(edition).await? {
+            titles.extend(store.books_of_listing(&listing).await?);
+        }
+        if titles.is_empty() {
+            return Err(LibraryError::Invalid(format!(
+                "edition {edition} has no title in the library"
+            )));
+        }
+        titles.sort_by(|a, b| a.uuid.cmp(&b.uuid));
+        let on_pin = |book: &BookRecord| {
+            pinned_key
+                .as_deref()
+                .is_none_or(|key| key == book.plugin_key)
+        };
+        let in_account = |book: &BookRecord| match &named {
+            None => true,
+            Some((needle, keys)) if keys.is_empty() => book.account_id == *needle,
+            Some((_, keys)) => keys.contains(&(book.plugin_key.clone(), book.account_id.clone())),
+        };
+        let titles: Vec<BookRecord> = titles
+            .into_iter()
+            .filter(|book| on_pin(book) && in_account(book))
+            .collect();
+        if titles.is_empty() {
+            return Err(LibraryError::Invalid(format!(
+                "edition {edition} has no title in that account or on the pinned plugin"
+            )));
+        }
+        let allowed = titles.iter().find(|book| {
+            owned.as_ref().is_none_or(|owned| {
+                owned.contains(&(book.plugin_key.clone(), book.account_id.clone()))
+            })
+        });
+        let Some(book) = allowed else {
+            return Err(LibraryError::Forbidden(
+                "that edition is not in a store account linked to this user".into(),
+            ));
+        };
+        out.push(book.uuid.clone());
     }
     Ok(out)
 }

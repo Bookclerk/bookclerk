@@ -35,27 +35,44 @@ boundary extends it.
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
 | `cover_token` | Cover tokens in `/api/covers` and `/api/images` paths, and Gravatar hashes in `/api/avatars` paths: which remote URL a route may fetch | `bookclerk-cover::token` |
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
+| `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, read by range in the tag worker | `bookclerk-tags::TagReader` |
+| `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
 | `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
+| `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
+| `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany` and `changes` pages and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
+| `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
+| `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL, headers, subprotocols, heartbeat pairs and attachment, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
+| `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
+| `socket_route` | A workerd plugin's `env.SOCKETS` calls on the granted reverse channel: the `POST /sockets/<op>` JSON body for `connect`, `send`, `close`, `attachment` and `list` | `bookclerk-workerd::granted_sockets` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
+| `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
+| `audible_catalog` | Audible public catalog answers (search results and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
-| `client_authorization` | A clerk's library card, the `Authorization: Bookclerk-Client <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_client_authorization` |
-| `client_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_client_query`, `client_request_problem` |
-| `client_token_request` | A library card's token exchange, the body of `POST /api/client/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_client_token_request`, `client_exchange_matches` |
+| `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
+| `clerk_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_clerk_query`, `clerk_request_problem` |
+| `clerk_token_request` | A library card's token exchange, the body of `POST /api/clerk/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_clerk_token_request`, `clerk_exchange_matches` |
+| `clerk_token_answer` | A library's answer to a clerk's token exchange, read on the clerk before it seals the library card and records the library | `bookclerk-node-proto::parse_clerk_token_answer` |
+| `copy_range` | The `Range` header of a copy download, `GET /api/copies/v1/{copy_id}/files/{n}`, which decides which bytes of a library's file are sent | `bookclerk-node-proto::parse_copy_range` |
+| `copy_answer` | A library's answer to a copy download, read on the branch or clerk that took the copy: where its head ends, how many bytes follow and where in the file they are written | `bookclerk-node-proto::copy_answer_head_end`, `parse_copy_answer` |
+| `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics, pages of the library's books with the person's marked, and the grant of a copy with its download token) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
+| `instance_config` | A plugin instance's settings, table rows included: the `settings` object of `PUT /api/config/plugin-instances/{id}/config` and the row text of `bookclerk plugins config set` | `bookclerk-library::control_plane::PluginInstanceConfigV1::validate`, `parse_setting_text` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
 | `members_books_request` | A library operator's "Acquire all of this branch's members' books" choice, the body of `PUT /api/config/branches/members-books` | `bookclerk-library::control_plane::parse_members_books_request` |
+| `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
+| `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
 
@@ -147,6 +164,13 @@ only that. The others check:
   byte, and that URL is the hash's picture on `www.gravatar.com` with
   nothing else in it. The shared oracle is `fuzz/oracles/cover_token.rs`,
   replayed from `bookclerk-cover`.
+- **`destination_id`**: the input is the id as received, read as UTF-8
+  lossily. It is accepted exactly when it is 1 to 64 bytes, each a
+  lowercase ASCII letter, a digit, `_` or `-`, checked byte by byte, so no
+  separator, dot or control byte reaches a storage key or a table row. An
+  accepted id keeps its text and survives a JSON round trip, and JSON
+  refuses whatever the parser refuses. The shared oracle is
+  `fuzz/oracles/destination_id.rs`, replayed from `bookclerk-config`.
 - **`cache_settings`**: the first byte picks the key. A value is accepted
   exactly when, after ASCII whitespace is trimmed, it is one or more ASCII
   digits whose number, read digit by digit with overflow detection, lies in
@@ -157,6 +181,20 @@ only that. The others check:
   An accepted frame re-encodes to exactly its own bytes, and an accepted
   reply carries only JPEG-signed images and a nonzero size. The shared
   oracle is `fuzz/oracles/cover_wire.rs`, replayed from `bookclerk-cover`.
+- **`tags_read`**: the input is a whole media file. The reader is driven
+  twice, supplying each round's spans in order and then reversed, and both
+  drives must give the same answer as reading with every byte available up
+  front, so the result never depends on how bytes arrive. Every span asked
+  for is non-empty and inside the file, within the round and span limits.
+  An accepted record passes the host's `TagRecord::validate` and survives
+  the worker's `Done` frame unchanged. The shared oracle is
+  `fuzz/oracles/tags_read.rs`, replayed from `bookclerk-tags`.
+- **`tags_wire`**: the first byte picks the request or the reply decoder.
+  An accepted request, `Need` or `Failed` frame re-encodes to exactly its
+  own bytes; a `Need` names one to 64 non-empty, non-overflowing spans; a
+  `Done` record re-encodes to a frame that decodes to the same record. The
+  shared oracle is `fuzz/oracles/tags_wire.rs`, replayed from
+  `bookclerk-tags`.
 - **`cache_headers`**: the first byte, modulo 4, picks a mode. A built
   `If-None-Match` list of well-formed tags matches exactly when one of
   them is the current tag, strong or weak. Any raw header that matches,
@@ -191,6 +229,17 @@ only that. The others check:
   reply round-trips through the codec and is accepted again. The shared
   oracle is `fuzz/oracles/plain_fetch.rs`, replayed from
   `bookclerk-plugin-abi`.
+- **`metadata_file_record`**: the input is a `MetadataFileRecord` message.
+  The host accepts it exactly when an independent restatement of every
+  rule agrees: no field or credit role listed twice, a value only for a
+  field in `present`, each credit's role in `creditRoles`, labels on one
+  non-blank line within their caps, a partial ISO date, list and chapter
+  caps, and chapters in start order with no depth jump. An accepted
+  record is then checked against a fixed `abs_metadata_json` dialect,
+  and passes exactly when it states only that dialect's fields and roles.
+  An accepted record round-trips through the codec and is accepted again.
+  The shared oracle is `fuzz/oracles/metadata_file_record.rs`, replayed
+  from `bookclerk-plugin-abi`.
 - **`event_read`**: byte 0 modulo 4 picks a `/events/read` JSON body (0),
   a bare cursor (1), or a Cap'n Proto `EventReadRequest` (2) or
   `EventReadPage` (3). The body parser accepts exactly the JSON objects whose
@@ -203,6 +252,62 @@ only that. The others check:
   survives `write` then `read` unchanged and stays inside the cursor and
   list bounds. The shared oracle is `fuzz/oracles/event_read.rs`, replayed
   from `bookclerk-plugin-abi`.
+- **`storage_reply`**: byte 0 modulo 5 picks a Cap'n Proto `moveMany`
+  page (0), `deleteMany` result (1), `headMany` result (2), `changes` page
+  (3) or hinted `list` page (4). A decoded reply survives encode then
+  decode unchanged, and each validator accepts the reply, against a fixed
+  request, exactly when an independent restatement of its rules does: one
+  outcome per sent key in order, prefix pages under the prefix with a
+  cursor that advances, change pages within the page and cursor bounds. A
+  per-key error whose code is unreadable decodes as an `unknown` failure,
+  never as success. The shared oracle is `fuzz/oracles/storage_reply.rs`,
+  replayed from `bookclerk-plugin-abi`.
+- **`s3_event`**: byte 0 picks the destination's key prefix (even: none,
+  odd: `library/`) and the rest is one queue message. Parsing never panics
+  and answers the same twice; a body over 1 MiB is refused as too large;
+  every reported change has a non-empty key without NUL, within 1,024
+  bytes, with listing fields only on an upsert. Whenever the parser accepts
+  a message, an independent walk of the same JSON, with its own
+  percent-decoder, finds exactly the same changes in the same order. Keys
+  are form-decoded only in S3 event records (direct or inside an SNS
+  envelope); EventBridge keys arrive decoded. A key outside the bucket or
+  prefix is skipped before it is checked, so a broken key elsewhere in the
+  bucket does not fail the message. The
+  shared oracle is `fuzz/oracles/s3_event.rs`, replayed from
+  `bookclerk-storage`.
+- **`socket_request`**: byte 0 modulo 3 picks a socket URL (0), a Cap'n
+  Proto `SocketConnectRequest` (1) or a `SocketMessage` (2). Every URL the
+  parser accepts is one a WHATWG URL parser (the `url` crate) reads as the
+  same scheme, host and port with no credentials or fragment, so the
+  network grant and the connection can't disagree about the target.
+  Connect validation accepts exactly the requests whose URL parses and
+  that an independent restatement of the header, subprotocol, heartbeat
+  and attachment rules accepts; heartbeat matching answers exactly the
+  frames equal to a declared request; delivery checks agree with the
+  restated id, frame and attachment bounds; and a decoded message
+  survives `write` then `read` unchanged. The shared oracle is
+  `fuzz/oracles/socket_request.rs`, replayed from `bookclerk-plugin-abi`.
+- **`socket_broker`**: the input is a script of operations on the broker's
+  socket table (connect requests, handshake outcomes, frames and closes
+  from the server, sends, attachments and closes from the plugin), checked
+  against an independent model. The table never holds more than 8
+  sockets, pending ones included; ids are valid and never reused; a frame
+  from the server is answered by the broker exactly when it equals a
+  declared heartbeat, closes the socket with 1009 exactly when it is over
+  the frame cap, and is otherwise delivered with the socket's current
+  attachment; nothing reaches the plugin for a pending or ended socket; a
+  socket is reported closed once, with its last attachment; and the
+  listing matches the model. The shared oracle is
+  `fuzz/oracles/socket_broker.rs`, replayed from `bookclerk-workerd`.
+- **`socket_route`**: the first byte picks the operation and the rest is
+  the JSON body. An unknown operation is refused as not found, and nothing
+  else is; a body that is not a JSON object, or that carries a field the
+  operation does not define, is refused as invalid; every accepted call is
+  inside restated ABI rules (socket ids, frame and attachment sizes, close
+  codes and reasons, and the connect checks the broker applies); and an
+  accepted call written back out in the route's form parses the same way.
+  The shared oracle is `fuzz/oracles/socket_route.rs`, replayed from
+  `bookclerk-workerd`.
 - **`guest_sql_authz`**: every table, column, function and schema action
   that SQLite's own authorizer reports for an admitted statement is inside
   the policy. The shared oracle is `fuzz/oracles/guest_sql_authz.rs`,
@@ -242,11 +347,25 @@ only that. The others check:
   and a positive generation. A
   `window.page` that passes its validator carries at most 100 works, each
   once, with plain identifiers, 1 to 8 distinct owned editions with a
-  title, and a next cursor past the one asked with. A `scan.removed` or
+  title, a copy (where one is stated) with a lowercase media type, a
+  bitrate of 1 to 20000 kbit/s, a short lowercase source store and a
+  plain version, and a plain next cursor (up to 64 letters, digits and `-`)
+  sorting past the one asked with. A `scan.removed` or
   `scan.pass_end` that passes its validator names an account and carries
   at most 500 product ids, each non-blank, at most 512 bytes and free of
   control characters, or a sync token of at most 4096 bytes with no
-  control characters. Seeds cover `accounts.update`, `accounts.updated`,
+  control characters. A file of an `upload.grant` or `catalog.upload`
+  that passes its validator states a probe only with a bitrate of at most
+  20,000 kbps and a plain store id. A `copy.grant` that passes its
+  validator names a plain store id, a lowercase marketplace and a product
+  id with no control characters or outer whitespace. A `copy.granted`
+  that passes its validator carries a lowercase hyphenated UUID as its
+  copy id, a token of 1 to 1024 base64url characters, a life of one
+  second to a day, and 1 to 1000 files with distinct relative names
+  (at most 512 bytes, no `.` or `..` segment, backslash, control
+  character or drive prefix), each at most 1 TiB, exactly one of them the
+  primary audio. The `copy_*` seeds' names say whether the receiver takes
+  the frame, and the replay test checks each against its name. Seeds cover `accounts.update`, `accounts.updated`,
   `scan.removed`, `scan.pass_end` and a `work` frame with scan tokens. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
@@ -268,25 +387,25 @@ only that. The others check:
   Member, checked against the oracle's own model rather than the planner's
   queries. A refusal is `Forbidden` or `Invalid`. The shared oracle is
   `fuzz/oracles/plan_authz.rs`, replayed from `bookclerk-library`.
-- **`client_authorization`**: reads the header value byte by byte. It
-  yields a token exactly when it is the scheme `Bookclerk-Client` in any
+- **`clerk_authorization`**: reads the header value byte by byte. It
+  yields a token exactly when it is the scheme `Bookclerk-Clerk` in any
   ASCII case, one space, and 43 characters from `A-Z`, `a-z`, `0-9`, `-`
   and `_`, with nothing else, and the token is those 43 bytes. The shared
-  oracle is `fuzz/oracles/client_authorization.rs`, replayed from
+  oracle is `fuzz/oracles/clerk_authorization.rs`, replayed from
   `bookclerk-node-proto`.
-- **`client_authorize`**: reads the query as form-encoded pairs. It
+- **`clerk_authorize`**: reads the query as form-encoded pairs. It
   parses exactly when no parameter repeats and `client_id`,
   `redirect_uri`, `response_type` and `code_challenge` are present, and
   each field is the decoded value sent. It is accepted exactly when the
-  client is `bookclerk-client`, the response type is `code`, the
+  client is `bookclerk-clerk`, the response type is `code`, the
   challenge is S256 with 43 base64url characters, the scope is
   `library:member`, the redirect URI is `https` with a host or `http` on
   a loopback address or `localhost` (no user info, no fragment), the
-  client name is 1 to 64 bytes, not blank and without control
+  clerk name is 1 to 64 bytes, not blank and without control
   characters, and any state is at most 512 bytes without control
-  characters. The shared oracle is `fuzz/oracles/client_authorize.rs`,
+  characters. The shared oracle is `fuzz/oracles/clerk_authorize.rs`,
   replayed from `bookclerk-node-proto`.
-- **`client_token_request`**: the first byte picks the stored code (the
+- **`clerk_token_request`**: the first byte picks the stored code (the
   clerk's, the branch client's, or one with the `plain` method) and
   the rest is the body. The body parses exactly when it is one JSON
   object with no repeated keys and exactly the string keys `code`,
@@ -295,8 +414,89 @@ only that. The others check:
   method is S256, the redirect URI is the stored one, and the trimmed
   verifier is not empty and hashes to the stored challenge (checked
   against RFC 7636's example pair). The shared oracle is
-  `fuzz/oracles/client_token_request.rs`, replayed from
+  `fuzz/oracles/clerk_token_request.rs`, replayed from
   `bookclerk-node-proto`.
+- **`clerk_token_answer`**: the input is the answer body, checked
+  against the body read as an untyped JSON value. It parses exactly when
+  it is at most 8 KiB and one object, no field it reads is written twice,
+  `token` is 43 base64url characters, `cluster_id` is a cluster id,
+  `user.id` is a positive integer, `user.display_name` (optional) is at
+  most 128 bytes with no control characters, and `idle_secs` is from 1
+  second to a year; other keys are ignored, and each field is the value
+  sent. The shared oracle is `fuzz/oracles/clerk_token_answer.rs`,
+  replayed from `bookclerk-node-proto`.
+- **`copy_range`**: the input is the file's size (eight bytes, big
+  endian) and then the header as sent. A part the parser answers lies
+  inside the file (at least one byte, ending at or before the end), so a
+  read never passes the file; only a header that is `bytes=`, digits and
+  exactly one `-` gets a part or "unsatisfiable", and anything else gets
+  the whole file; and the answer equals the one the oracle works out by
+  reading the header a second way (digits folded into a wide integer).
+  Seeds named `part-*` must parse as a part and the others must not. The
+  shared oracle is `fuzz/oracles/copy_range.rs`, replayed from
+  `bookclerk-node-proto`.
+- **`copy_answer`**: the input is the byte the reader asked to resume
+  from and the file's size (eight bytes each, big endian) and then the
+  answer as received: the head, the blank line that ends it (CRLF CRLF)
+  and, if a seed wants them, first bytes of the body. A seed whose head
+  has no blank line after it is read as an answer that has not ended, and
+  is refused. The head ends before the first blank line, which the oracle
+  finds by a second scan one byte at a time; it is refused when that is
+  past 16 KiB; and every shorter run of the same bytes finds the same
+  head once it holds the blank line and none before, so where the
+  library's writes fall never moves a byte between the head and the
+  file. A body the parser
+  answers ends exactly at the file's end and starts at byte 0 or at the
+  byte asked for, and only a `206` starts above 0, so a reader never
+  writes past the size the grant stated or leaves a gap. A head is
+  refused when it is not printable ASCII lines ended by
+  CRLF, has no `HTTP/1.0` or `HTTP/1.1` status line with a status from
+  100 to 599, has a header line without a colon or whose name is not an
+  HTTP token, states a
+  transfer encoding, or repeats or misstates `Content-Length` or
+  `Content-Range`; a `200` is a body exactly when its length is the
+  file's size and it states no range; a `206` exactly when a byte inside
+  the file was asked for and the range and length are that byte to the
+  end; a `416` that states a range must state `bytes */<size>`; every
+  other status is an answer without file bytes. The answer
+  equals the one the oracle works out by reading the head a second way
+  (bytes compared one by one, digits folded into a wide integer). Seeds
+  named `body-*` and `status-*` must parse as that and the others must be
+  refused. The shared oracle is `fuzz/oracles/copy_answer.rs`, replayed
+  from `bookclerk-node-proto`.
+- **`clerk_socket_frame`**: the first byte picks the direction (even:
+  clerk to library; odd: library to clerk) and the rest is the frame,
+  checked against the frame read as an untyped JSON value. A clerk frame
+  parses exactly when it is at most 4 KiB, one object with no repeated
+  keys and `v` the integer 1, and is either `books` with `after` (a
+  cursor string: empty, or up to 64 letters, digits and `-`) and no
+  listing field, or `copy.grant` with a well-formed `store`, `product_id`
+  and optional `marketplace` and no `after`. A library frame is refused when it is not one
+  object, repeats a key, has another `v` or an unknown `type`, or carries
+  another type's field; `hello` and `changed` parse exactly when `topics`
+  holds at most 16 well-formed names, and keep only the ones the clerk
+  knows; `error` parses exactly for a known `code`; an accepted
+  `books.page` passes `window_page_problem`; `copy.granted` parses
+  exactly when its listing is well formed, `copy_id` is a lowercase UUID,
+  `token` is 1 to 1024 base64url characters, the life is 1 to 86 400
+  seconds, `copy` is present and well formed
+  (`WindowCopy::is_well_formed`), and the files are 1 to 1000 well-formed files with distinct
+  names and exactly one primary audio. Every accepted frame
+  round-trips through its encoder, unless the encoded text is over the
+  size limit. The shared oracle is
+  `fuzz/oracles/clerk_socket_frame.rs`, replayed from
+  `bookclerk-node-proto`.
+- **`instance_config`**: the first byte picks the path, against a fixed
+  schema with a string `name` and a table `mappings` (`library` required,
+  `prefix`, `watch` with a default, `mode` an enum). The settings object
+  is read as an untyped JSON value and accepted exactly when every key is
+  declared and every value fits its kind, rows included, with strings of
+  at most 1024 bytes and no NUL; an accepted table normalizes once and
+  then stays the same, with defaults filled. Row text is split by the
+  oracle's own reading of `|`, `\|` and `\\` and accepted exactly when its
+  cells fit their columns and name `library`, giving one row of exactly
+  those cells. The shared oracle is `fuzz/oracles/instance_config.rs`,
+  replayed from `bookclerk-library`.
 - **`job_cap_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
   besides `cluster_id` (a string) and `max_jobs` (`null` or a whole number
@@ -319,11 +519,31 @@ only that. The others check:
   and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/members_books_request.rs`, replayed from
   `bookclerk-library`.
+- **`patron_scope_request`**: the first byte picks the body (`d` for the
+  default scope, `u` for a user's) and the oracle reads the rest as an
+  untyped JSON value. A scope is accepted exactly when it is one object
+  with no repeated keys at any depth and at most the key `rules`, an array
+  of at most 16 rules, each exactly `field` (`genre`, `series`, `author` or
+  `narrator`), `value` (a string, 1 to 256 bytes once trimmed, no NUL) and
+  `effect` (`include` or `exclude`), with no two rules sharing field,
+  effect and lowercase trimmed value, and the trimmed rules come to at
+  most 1,024 bytes as compact JSON. A user's body is at most the key
+  `scope`, `null` or such a scope. The parser then returns the rules in
+  order with trimmed values, and otherwise refuses the body as `Invalid`.
+  The shared oracle is `fuzz/oracles/patron_scope_request.rs`, replayed
+  from `bookclerk-library`.
+- **`work_split_request`**: reads the body as an untyped JSON value. It
+  is accepted exactly when it is one object with no repeated keys and
+  exactly the key `expression_ids`, an array of strings each 1 to 64 bytes
+  long, with 1 to 12 distinct values (a repeated id counts once). The
+  parser then returns those ids sorted and distinct, and otherwise refuses
+  it as `Invalid`. The shared oracle is `fuzz/oracles/work_split_request.rs`,
+  replayed from `bookclerk-library`.
 - **`sharing_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
   besides `cluster_id`, `share_books`, `include_branches`,
   `list_members_books`, `work_for_members`, `keep_member_copies` and
-  `download`, with a string `cluster_id` and booleans for `share_books`
+  `keep_copies`, with a string `cluster_id` and booleans for `share_books`
   and `include_branches`, and each of the other four absent, `null` or a
   boolean. The parser then returns the trimmed id and those values, with
   an absent or `null` setting left unset (kept as stored) rather than read
@@ -759,6 +979,14 @@ The tests and corpora live in `tools/diagnostics-collector/`.
   - Test and corpus: `b2-error.fuzz.test.ts`, `corpus/b2_error/`.
   - Oracle: nothing, or exactly the body's own `code` when it is a 1–40
     character lowercase identifier.
+- **Usage check-in body** (`parseCheckin` in `checkin.ts`). It is the body
+  anyone can send to `POST /checkin`, and decides what a check-in row
+  stores and which install ID is hashed into the install key.
+  - Test and corpus: `checkin.fuzz.test.ts`, `corpus/checkin/`.
+  - Oracle: a check-in exactly when the body is at most 1,024 characters
+    of JSON naming an object with exactly the five fields, a lowercase
+    version-4 UUID checked by position, and version, platform and kind
+    tokens checked character by character.
 
 ### Member dashboard
 
@@ -776,7 +1004,9 @@ In `dashboard/report-ids.ts`, `dashboard/signature.ts`,
 - **Stored-report summary** (`summarizeReport`) writes every report's index
   row. Corpus `corpus/signature/`. Oracle: level counts recounted, a
   signature exactly when an error or warning exists, bounded control-free
-  fields.
+  fields, the slowest `latency_ms` recomputed, an install key only when the
+  stored one is 64 lowercase hex characters, and a route only with a
+  signature.
 - **Event log** (`eventLog`) renders a report page's stored events. Corpus
   `corpus/signature/` (shared with the signature reader). Oracle: one row
   per event up to 500, level counts that add up to the rows, no event text
@@ -860,6 +1090,8 @@ these oracles:
   lowercase hex oid;
 - a `fixed-in:<version>` label read only as a well-formed
   `MAJOR.MINOR.PATCH`, with optional prerelease and build;
+- label names for the close button read only from objects with a string
+  `name` of at most 100 characters;
 - releases decoded to the published non-draft entries with a plain tag
   name, oldest first;
 - a compare answer read as containing only for `identical` or `behind`,
@@ -879,6 +1111,24 @@ In `dashboard/links.ts` and `dashboard/storage.ts`:
   viewing downloads, and where reindexing continues. Corpus
   `corpus/b2_list/`. Oracle: decoded to exactly the uploaded entries with a
   string name and id, without throwing.
+
+In `dashboard/triage-forms.ts`, tested in
+`tools/diagnostics-collector/triage-forms.fuzz.test.ts` against a form
+body split and percent-decoded by hand:
+
+- **Triage mark form** (`parseTriageMark`) decides which reports a member
+  marks seen or noise, or puts back in the queue. Corpus
+  `corpus/triage_form/`. Oracle: a known state and one to 40 distinct
+  lowercase UUIDs.
+- **Mute form** (`parseMuteAction`) decides which signature leaves the
+  triage queue and the ingest pull, why, and until when. Corpus
+  `corpus/mute_form/`. Oracle: a 16-hex signature, and for a mute a
+  trimmed, control-free reason of 1 to 200 characters and exactly one end
+  (1 to 365 days, or a release version).
+- **Owner close form** (`parseCloseAction`) decides which issue an owner
+  closes on GitHub and the fixed-in label it gets. Corpus
+  `corpus/close_form/`. Oracle: an issue number, and a release version
+  when closing as fixed.
 
 ### Website Worker
 
@@ -955,10 +1205,17 @@ fuzzing in `npm test`.
   entity decoder, a URL check against the site's origin and the
   last-updated date oracle.
 - **IndexNow snapshot reader** (`readSnapshot` in `tools/site/indexnow.ts`)
-  reads the previous run's snapshot back from the Actions cache. Corpus
+  reads the previous run's snapshot back from its artifact. Corpus
   `tools/site/fuzz/indexnow_snapshot/`. Oracle: the document read through
   property descriptors, each URL checked against the site's origin and each
   date by the last-updated date oracle.
+- **IndexNow snapshot artifact lookup** (`previousSnapshotRun` in
+  `tools/site/indexnow.ts`) reads GitHub's artifact listing in the
+  `indexnow` workflow and picks the run whose snapshot the next run
+  downloads. Corpus `tools/site/fuzz/indexnow_artifacts/`. Oracle: an
+  explicit walk of own properties: the first entry wins that is named
+  `indexnow-snapshot`, has `expired` exactly `false`, was uploaded on the
+  default branch and whose run `id` is a positive safe integer.
 
 ### Hosted demo Worker
 
@@ -1067,6 +1324,49 @@ pick another run.
   exactly when it is at most 1024 bytes of tab, space and `VCHAR`. A
   condition outside that is refused, and a response header outside it is
   dropped from the answer.
+
+### Metadata file dialect guests
+
+Two guests read sidecar files from storage the host does not control: the
+shared `metadata_files` guest (`libation_json`) and the Audiobookshelf
+plugin (`abs_metadata_json`, `abs_nfo`, `desc_txt` and `reader_txt`).
+Each one's `test/fuzz.test.ts` replays one corpus per dialect under
+`fuzz/<dialect id>/` and runs seeded byte and text mutations, spliced
+across every corpus, in `npm test` (the `workerd_guests` check);
+`FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
+
+- **Parsing** (`parseFile` in each guest's `src/dialects.ts`, under
+  `crates/bookclerk-plugins/optional/metadata-files` (`libation_json`,
+  `opf`, `kodi_album_nfo` and `cue`) and `integration-audiobookshelf`).
+  Oracle, written from the ABI's record rules (`validate_metadata_file_record` and
+  `check_record_against_dialect`) and the dialect's manifest row: a file
+  is refused only with `invalid_params`. Otherwise the record passes every
+  rule the host applies, states only the row's fields and credit roles,
+  and is the same on a second parse.
+- **Rendering** (`renderFile`), for every row with `writes = true` (`opf`,
+  `kodi_album_nfo`, `cue` and all four Audiobookshelf dialects), over every
+  mutated file as the existing file, with a random record and field list
+  (and, for `metadata_files`, a random list of audio files). Oracle: a
+  refusal only for a file `parse` also refuses, an answer that would pass
+  the size cap, a request the format cannot hold (chapters for a CUE sheet
+  with several files and no audio files, past a file of unknown length or
+  after the last file's known end;
+  an audio file name with a double quote), a `metadata.json` number whose
+  exact value a double cannot keep, an existing Audiobookshelf file with
+  bytes that decode only to U+FFFD, or an Audiobookshelf NFO description
+  line it would read as an underline. Chapters laid out across several
+  audio files are not compared, because the CUE reader leaves them
+  unstated. Otherwise the answer is within
+  `MAX_METADATA_FILE_BYTES`, and a re-parse passes the same rules, reads
+  back each field it was asked to write, and reads every other field (and
+  every credit role the request does not state) as the existing file did.
+  The Audiobookshelf oracle also checks that each such field stays stated
+  or absent as before.
+- **XML scanning** (`parseXml` in `src/xml.ts`), under every XML dialect's
+  parse and render. It decodes only XML's five entities and numeric
+  references, refuses a document type with an internal subset and nesting
+  past 64 levels, so no file can make it expand; the parse oracle above
+  covers it.
 
 ### Egress bridge User-Agent rule
 

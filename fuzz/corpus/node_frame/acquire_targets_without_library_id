@@ -1,1 +1,1 @@
-{"v":1,"id":"r3","type":"acquire.targets","targets":[{"book_uuid":"b1","plugin_key":"store","account_id":"a1","book":{}}],"destinations":[{"id":"s3","options":{"folder_template":"<title>"}}]}
+{"v":1,"id":"r3","type":"acquire.targets","targets":[{"holding_id":"b1","plugin_key":"store","account_id":"a1","title":{"product_id":"p1","source":"store","marketplace":"us","title":"Dune","content_kind":"book"}}],"destinations":[{"id":"s3","options":{"folder_template":"<title>"}}]}

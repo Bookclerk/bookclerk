@@ -41,7 +41,7 @@ from .path_guard import (
 PYTHON_WORKERD_FLAGS = ("python_workers", "disable_python_external_sdk")
 """Compatibility flags required for Python Workers under bookclerk-workerd."""
 
-WORKERD_PIN_COMPAT_DATE = "2026-11-07"
+WORKERD_PIN_COMPAT_DATE = "2026-11-10"
 """Newest ``compatibility_date`` the pinned workerd binary honors."""
 
 _LOAD_SUFFIXES = (".js", ".mjs", ".py", ".wasm", ".json")
@@ -811,6 +811,164 @@ def _validate_media(m: dict[str, Any]) -> None:
             )
 
 
+_METADATA_FIELDS: tuple[str, ...] = (
+    "title",
+    "subtitle",
+    "description",
+    "publisher",
+    "publishedAt",
+    "language",
+    "genres",
+    "tags",
+    "abridgement",
+    "expressionKind",
+    "identifiers",
+    "credits",
+    "series",
+    "chapters",
+    "duration",
+)
+"""Fields a ``[[metadata_files.dialects]].fields`` entry may name."""
+
+_CREDIT_ROLES: tuple[str, ...] = (
+    "author",
+    "narrator",
+    "translator",
+    "editor",
+    "illustrator",
+    "publisher",
+    "host",
+    "cast",
+    "adaptor",
+)
+"""Credit roles a ``[[metadata_files.dialects]].credit_roles`` entry may name."""
+
+_DIALECT_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}\Z")
+"""Dialect id grammar, as the host's ``is_dialect_id``."""
+
+
+def _is_ascii_file_name(name: str) -> bool:
+    """Whether ``name`` is printable ASCII naming one file with no folder.
+
+    Args:
+        name: File name or suffix as written in ``plugin.toml``.
+
+    Returns:
+        True when the host would accept it.
+    """
+    return (
+        bool(name)
+        and len(name) <= 255
+        and all(0x20 <= ord(c) <= 0x7E for c in name)
+        and name not in (".", "..")
+        and "/" not in name
+        and "\\" not in name
+    )
+
+
+_DIALECT_KEYS = frozenset(
+    ("id", "name", "file_names", "suffixes", "fields", "credit_roles", "writes")
+)
+"""Keys a ``[[metadata_files.dialects]]`` row may carry (the host's fields)."""
+
+
+def _validate_metadata_files(m: dict[str, Any]) -> None:
+    """Check ``[metadata_files]`` against the entrypoints with the host's rules and messages.
+
+    Args:
+        m: Manifest dictionary.
+
+    Raises:
+        ValueError: If a ``metadataFiles`` plugin has no dialects or another
+            plugin has the table, a table or row has an unknown key, a
+            ``writes`` value is not a boolean, or a dialect has a bad or repeated id, no
+            name, no file names or suffixes, a malformed or repeated name or
+            suffix, no or unknown fields, a repeated field or credit role, or
+            credit roles that do not match ``credits``.
+    """
+    exported = "metadataFiles" in (m.get("entrypoints") or [])
+    table = m.get("metadata_files")
+    if table is None:
+        if exported:
+            raise ValueError(
+                "plugin.toml: `[metadata_files]` is required for a plugin with the "
+                "`metadataFiles` entrypoint (declare at least one dialect)"
+            )
+        return
+    if not exported:
+        raise ValueError("plugin.toml: `[metadata_files]` needs the `metadataFiles` entrypoint")
+    # The host parses these tables with `deny_unknown_fields`.
+    for key in table:
+        if key != "dialects":
+            raise ValueError(f"plugin.toml: `[metadata_files]` has unknown key `{key}`")
+    dialects = list(table.get("dialects") or [])
+    if not dialects:
+        raise ValueError("plugin.toml: `[metadata_files].dialects` is empty")
+    ids: set[str] = set()
+    claimed: set[str] = set()
+    for i, dialect in enumerate(dialects):
+        row = f"plugin.toml: metadata_files.dialects[{i}]"
+        for key in dialect:
+            if key not in _DIALECT_KEYS:
+                raise ValueError(f"{row} has unknown key `{key}`")
+        if "writes" in dialect and not isinstance(dialect["writes"], bool):
+            raise ValueError(f"{row}.writes must be a boolean")
+        dialect_id = str(dialect.get("id", ""))
+        if not _DIALECT_ID_RE.match(dialect_id):
+            raise ValueError(
+                f"{row}.id `{dialect_id}` is not an identifier ([a-z][a-z0-9_]{{0,63}})"
+            )
+        if dialect_id in ids:
+            raise ValueError(
+                f"plugin.toml: metadata_files dialect id `{dialect_id}` is declared twice"
+            )
+        ids.add(dialect_id)
+        if not str(dialect.get("name", "")).strip():
+            raise ValueError(f"{row}.name is required")
+        names = list(dialect.get("file_names") or [])
+        suffixes = list(dialect.get("suffixes") or [])
+        if not names and not suffixes:
+            raise ValueError(f"{row} declares no `file_names` or `suffixes`")
+        for name in names:
+            if not _is_ascii_file_name(name):
+                raise ValueError(f"{row}.file_names entry `{name}` is not a plain ASCII file name")
+        for suffix in suffixes:
+            if len(suffix) < 2 or not suffix.startswith(".") or not _is_ascii_file_name(suffix):
+                raise ValueError(
+                    f"{row}.suffixes entry `{suffix}` must start with `.` and be a plain ASCII file name"
+                )
+        for name in names + suffixes:
+            key = name.lower()
+            if key in claimed:
+                raise ValueError(f"plugin.toml: metadata_files `{name}` is claimed twice")
+            claimed.add(key)
+        fields = list(dialect.get("fields") or [])
+        for field in fields:
+            if field not in _METADATA_FIELDS:
+                raise ValueError(f"{row}.fields names unknown field `{field}`")
+        roles = list(dialect.get("credit_roles") or [])
+        for role in roles:
+            if role not in _CREDIT_ROLES:
+                raise ValueError(f"{row}.credit_roles names unknown role `{role}`")
+        if not fields:
+            raise ValueError(f"{row}.fields is empty")
+        seen: set[str] = set()
+        for field in fields:
+            if field in seen:
+                raise ValueError(f"{row}.fields names `{field}` twice")
+            seen.add(field)
+        seen = set()
+        for role in roles:
+            if role in seen:
+                raise ValueError(f"{row}.credit_roles names `{role}` twice")
+            seen.add(role)
+        credits = "credits" in fields
+        if credits and not roles:
+            raise ValueError(f"{row}.credit_roles is empty but `fields` names `credits`")
+        if not credits and roles:
+            raise ValueError(f"{row}.credit_roles needs `credits` in `fields`")
+
+
 def validate_manifest(m: dict[str, Any]) -> None:
     """Validate a parsed ``plugin.toml`` mapping.
 
@@ -833,6 +991,7 @@ def validate_manifest(m: dict[str, Any]) -> None:
     if m.get("logo") is not None:
         validate_logo(str(m["logo"]))
     _validate_media(m)
+    _validate_metadata_files(m)
     _validate_surface(m)
     runtime = m.get("runtime") or "native"
     net = (m.get("capabilities") or {}).get("network") or {}
@@ -881,6 +1040,7 @@ ENTRYPOINT_NAMES: tuple[str, ...] = (
     "oidc",
     "metadata",
     "covers",
+    "metadataFiles",
 )
 """Entrypoint wire names accepted in ``entrypoints``."""
 
@@ -923,6 +1083,13 @@ def _validate_surface(m: dict[str, Any]) -> None:
                 )
     _validate_queues(m)
     _validate_kv_namespaces(m)
+    if m.get("sockets") is not None and (
+        ((m.get("capabilities") or {}).get("network") or {}).get("mode") != "outbound"
+    ):
+        raise ValueError(
+            'plugin.toml: [sockets] needs capabilities.network.mode = "outbound" '
+            "(every socket URL must pass the network grant)"
+        )
     for index, consumer in enumerate(consumers):
         event_type = str(consumer.get("type") or "")
         if not event_type.strip():
@@ -967,7 +1134,7 @@ def _validate_surface(m: dict[str, Any]) -> None:
         if name in bindings:
             raise ValueError(f"plugin.toml: [[databases]] binding `{name}` is duplicated")
         bindings.add(name)
-    reserved = {"CONFIG", "SECRETS", "EVENTS", "WORK_FS", _LOOPBACK_ENV}
+    reserved = {"CONFIG", "SECRETS", "EVENTS", "WORK_FS", _LOOPBACK_ENV, "SOCKETS"}
     # Row index, not the binding text. The text can be an oauth name, and an
     # error that includes it is logged as clear text.
     named: list[tuple[str, str, int]] = []
@@ -980,6 +1147,9 @@ def _validate_surface(m: dict[str, Any]) -> None:
     oauth = m.get(_LOOPBACK_TABLE)
     if isinstance(oauth, dict):
         named.append(("oauth", str(oauth.get("binding") or _LOOPBACK_ENV), 0))
+    sockets = m.get("sockets")
+    if isinstance(sockets, dict):
+        named.append(("sockets", str(sockets.get("binding") or "SOCKETS"), 0))
     for index, kv in enumerate(m.get("kv_namespaces") or []):
         named.append(("kv_namespaces", str(kv.get("binding") or "KV"), index))
     for index, producer in enumerate((m.get("events") or {}).get("producers") or []):
@@ -1005,6 +1175,17 @@ def _validate_surface(m: dict[str, Any]) -> None:
                 f"plugin.toml: [{table}][{index}] binding collides with another binding"
             )
         bindings.add(name)
+    # Producers may share one publisher binding, but ``env.SOCKETS`` is its own
+    # property and cannot take a publisher's name, nor ``EVENTS``, which the
+    # generated ``Env`` always carries when the plugin publishes.
+    sockets_name = next((name for table, name, _ in named if table == "sockets"), None)
+    producer_names = [name for table, name, _ in named if table == "events.producers"]
+    if (
+        sockets_name is not None
+        and producer_names
+        and (sockets_name == "EVENTS" or sockets_name in producer_names)
+    ):
+        raise ValueError("plugin.toml: [sockets][0] binding collides with another binding")
 
 
 def _workerd_modules_dir(plugin_dir: Path, m: dict[str, Any]) -> Path:
@@ -1085,6 +1266,7 @@ ENTRYPOINT_EXPORT_CLASSES: dict[str, str] = {
     "oidc": "Oidc",
     "metadata": "Metadata",
     "covers": "Covers",
+    "metadataFiles": "MetadataFiles",
 }
 """Exported class name the launcher binds for each ``entrypoints`` wire name."""
 
@@ -1113,7 +1295,7 @@ def check_main_module_source(
         raise ValueError(
             f"{main_name}: `BookclerkPlugin` was removed in api_version 3; extend `{base}` "
             "(default export with event()/job() triggers) and export named entrypoint classes "
-            "(Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata, Covers)"
+            "(Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata, Covers, MetadataFiles)"
         )
     if language == "python":
         if "bookclerk_plugin_sdk" not in src and base not in src:
@@ -1464,6 +1646,7 @@ def format_manifest(m: dict[str, Any]) -> str:
     _emit_queues(lines, m.get("queues"))
     _named_binding(lines, "[work_fs]", m.get("work_fs"))
     _named_binding(lines, f"[{_LOOPBACK_TABLE}]", m.get(_LOOPBACK_TABLE))
+    _named_binding(lines, "[sockets]", m.get("sockets"))
 
     caps = m.get("capabilities") or {}
     net = caps.get("network") or {}
@@ -1697,7 +1880,9 @@ def package_plugin(plugin_dir: Path, out_dir: Path) -> Path:
 TYPES_OUTPUT_FILE = "bookclerk_configuration.py"
 """Default ``types`` output filename next to ``plugin.toml``."""
 
-_RESERVED_BINDINGS = frozenset({"CONFIG", _SEALED_ENV, "EVENTS", "WORK_FS", "KV", _LOOPBACK_ENV})
+_RESERVED_BINDINGS = frozenset(
+    {"CONFIG", _SEALED_ENV, "EVENTS", "WORK_FS", "KV", _LOOPBACK_ENV, "SOCKETS"}
+)
 
 
 def _var_type(value: Any) -> str:
@@ -1779,6 +1964,16 @@ def env_properties_for(m: dict[str, Any]) -> list[tuple[str, str, str]]:
                 "(Workers `Queue`-shaped `send` / `send_batch`).",
             )
         )
+    sockets = m.get("sockets")
+    if isinstance(sockets, dict):
+        props.append(
+            (
+                str(sockets.get("binding") or "SOCKETS"),
+                "SocketsBinding",
+                "`[sockets]` host-brokered WebSockets; messages reach `web_socket_message` / "
+                "`web_socket_close`.",
+            )
+        )
     loopback = m.get(_LOOPBACK_TABLE)
     if isinstance(loopback, dict):
         props.append(
@@ -1835,7 +2030,9 @@ def render_env_types(m: dict[str, Any]) -> str:
     if any(t == "DatabaseBinding" for _, t, _ in props):
         lines.append("")
         lines.append("from bookclerk_plugin_sdk.db_value import DatabaseBinding")
-    workerd_types = sorted({t for _, t, _ in props if t in ("KvNamespace", "QueueBinding")})
+    workerd_types = sorted(
+        {t for _, t, _ in props if t in ("KvNamespace", "QueueBinding", "SocketsBinding")}
+    )
     if workerd_types:
         lines.append(f"from bookclerk_plugin_sdk.workerd import {', '.join(workerd_types)}")
     lines += [

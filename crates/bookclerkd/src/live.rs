@@ -35,7 +35,7 @@
 //! | `{"v":1,"type":"changed","topics":[...]}` | a topic's revision moved |
 //!
 //! Changes are found by reading [`live_revisions`] every
-//! [`POLL_INTERVAL`] (the library database is shared by every owner node,
+//! [`POLL_INTERVAL`] (the library database is shared by every shared node,
 //! so this sees changes made on any of them) and by in-process pokes
 //! ([`poke`]) for immediate updates. The first read, the baseline, is
 //! taken before `hello` is sent, so a write made once the client has
@@ -81,17 +81,17 @@ pub const REAUTH_INTERVAL: Duration = if cfg!(test) {
 };
 
 /// How long a re-check that was refused waits before it checks again.
-const REAUTH_RETRY_DELAY: Duration = if cfg!(test) {
+pub(crate) const REAUTH_RETRY_DELAY: Duration = if cfg!(test) {
     Duration::from_millis(50)
 } else {
     Duration::from_secs(1)
 };
 
 /// How often the server pings.
-const PING_INTERVAL: Duration = Duration::from_secs(20);
+pub(crate) const PING_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Silence from the client after which the socket closes.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Largest frame accepted from the client (it sends nothing of use).
 const MAX_CLIENT_FRAME: usize = 4 * 1024;
@@ -121,6 +121,12 @@ static POKES: LazyLock<broadcast::Sender<LiveTopic>> = LazyLock::new(|| broadcas
 /// waiting for the next revision read.
 pub fn poke(topic: LiveTopic) {
     let _ = POKES.send(topic);
+}
+
+/// A receiver of this process's pokes, for another socket that reports
+/// topics (the clerk socket, [`crate::node_api::clerk_socket`]).
+pub(crate) fn subscribe_pokes() -> broadcast::Receiver<LiveTopic> {
+    POKES.subscribe()
 }
 
 /// True when `host` (a `Host` header value) names a loopback host.
@@ -348,7 +354,7 @@ fn shared_read(state: &AppState) -> Arc<Mutex<SharedRead>> {
 /// made within [`SHARED_READ_FRESH`]; logs once per failure streak when the
 /// read fails. A reused read is older than a fresh one would be, so it can
 /// only report a change again, never absorb one.
-async fn read_revisions(state: &AppState) -> Option<LiveRevisions> {
+pub(crate) async fn read_revisions(state: &AppState) -> Option<LiveRevisions> {
     let shared = shared_read(state);
     let mut read = shared.lock().await;
     if let Some((at, revisions)) = &read.last {

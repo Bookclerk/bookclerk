@@ -38,6 +38,7 @@ members = [
     "crates/bookclerk-source",
     "crates/bookclerk-storefront",
     "crates/bookclerk-storage",
+    "crates/bookclerk-tags",
     "crates/bookclerk-tls",
     "crates/bookclerk-tray",
     "crates/bookclerk-window-policy",
@@ -67,7 +68,9 @@ exclude = [
     "third_party/audible-rs",
     "fuzz",
     "crates/bookclerk-plugins/optional/covers",
+    "crates/bookclerk-plugins/optional/integration-audiobookshelf",
     "crates/bookclerk-plugins/optional/metadata-audnexus",
+    "crates/bookclerk-plugins/optional/metadata-files",
     "crates/bookclerk-plugins/optional/metadata-openlibrary",
 ]
 
@@ -96,6 +99,7 @@ bookclerk-enrich = { path = "crates/bookclerk-enrich" }
 bookclerk-sandbox = { path = "crates/bookclerk-sandbox" }
 bookclerk-mp4 = { path = "crates/bookclerk-mp4" }
 bookclerk-cover = { path = "crates/bookclerk-cover" }
+bookclerk-tags = { path = "crates/bookclerk-tags" }
 bookclerk-media = { path = "crates/bookclerk-media" }
 bookclerk-storage = { path = "crates/bookclerk-storage" }
 bookclerk-library = { path = "crates/bookclerk-library" }
@@ -206,6 +210,12 @@ openidconnect = { version = "4", default-features = false }
 aws-sdk-s3 = { version = "1", default-features = false, features = [
     "sigv4a",
     "http-1x",
+    "default-https-client",
+    "rt-tokio",
+] }
+# Same client stack as aws-sdk-s3: the s3 destination drains its bucket's
+# notification queue.
+aws-sdk-sqs = { version = "1", default-features = false, features = [
     "default-https-client",
     "rt-tokio",
 ] }

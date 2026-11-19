@@ -10,6 +10,8 @@ use bookclerk_node_proto::{
 };
 use sea_orm::{ActiveModelTrait, ActiveValue::Set};
 
+use crate::BookRecord;
+
 use super::*;
 use crate::control_plane::{
     ask_branches, claimant_may_run, pending_questions, record_answers, AnswersRecorded, Claimant,
@@ -43,7 +45,7 @@ async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) {
         compatible: Set(1),
         target: Set(String::new()),
         labels_json: Set("[]".into()),
-        kind: Set("host".into()),
+        kind: Set("branch".into()),
         owner_user_id: Set(Some(owner)),
         ..Default::default()
     }
@@ -473,7 +475,7 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
             max_jobs: Set(None),
             list_members_books: Set(1),
             person_user_id: Set(None),
-            download: Set(1),
+            keep_copies: Set(1),
         }
         .insert(store.db())
         .await
@@ -495,24 +497,28 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
         };
         // Listed only while the link lists members' books.
         assert!(
-            crate::control_plane::book_for_request(&store, &request, false)
+            crate::control_plane::title_for_request(&store, &request, false)
                 .await
                 .unwrap()
                 .is_none(),
             "{name}"
         );
-        let found = crate::control_plane::book_for_request(&store, &request, true)
+        let found = crate::control_plane::title_for_request(&store, &request, true)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(found.uuid, members.uuid, "{name}");
+        assert_eq!(
+            (found.account_id.as_str(), found.product_id.as_str()),
+            ("riley-acct", "B0MEMBOOK1"),
+            "{name}"
+        );
         // Another edition of the work is not the requested one.
         let other = BranchRequest {
             product_id: "B0ELSEWHERE".into(),
             ..request.clone()
         };
         assert!(
-            crate::control_plane::book_for_request(&store, &other, true)
+            crate::control_plane::title_for_request(&store, &other, true)
                 .await
                 .unwrap()
                 .is_none(),
@@ -525,8 +531,11 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
                 .await
                 .unwrap();
         }
-        let keys = store.acquired_book_keys_page(None, 100).await.unwrap();
-        let key = keys.iter().find(|k| k.uuid == members.uuid).unwrap();
+        let keys = store.all_acquired_title_keys().await;
+        let key = keys
+            .iter()
+            .find(|k| k.account_id == members.account_id && k.product_id == members.product_id)
+            .unwrap();
         let asked = OwnerShareFilter::load(&store, "library-x", false)
             .await
             .unwrap();
@@ -651,18 +660,19 @@ async fn a_library_that_acquires_all_members_books_is_sent_every_listed_one() {
             max_jobs: Set(None),
             list_members_books: Set(1),
             person_user_id: Set(None),
-            download: Set(1),
+            keep_copies: Set(1),
         }
         .insert(store.db())
         .await
         .unwrap();
-        let keys = store.acquired_book_keys_page(None, 100).await.unwrap();
-        let key_of = |uuid: &str| keys.iter().find(|k| k.uuid == uuid).unwrap().clone();
-        let (owners, members, orphan) = (
-            key_of(&owners.uuid),
-            key_of(&members.uuid),
-            key_of(&orphan.uuid),
-        );
+        let keys = store.all_acquired_title_keys().await;
+        let key_of = |book: &crate::models::BookRecord| {
+            keys.iter()
+                .find(|k| k.account_id == book.account_id && k.product_id == book.product_id)
+                .unwrap()
+                .clone()
+        };
+        let (owners, members, orphan) = (key_of(&owners), key_of(&members), key_of(&orphan));
 
         let off = OwnerShareFilter::load(&store, "library-x", false)
             .await

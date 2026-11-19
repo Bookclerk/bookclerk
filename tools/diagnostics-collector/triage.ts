@@ -101,7 +101,12 @@ SECURITY (mandatory):
 TASK:
 1. Cluster related failures (same root cause) into at most 5 groups.
 2. For each group worth tracking, plan ONE GitHub issue:
-   - title: starts with "[diagnostics] ", at most 120 characters
+   - title: starts with "[diagnostics] ", at most 120 characters, then
+     "<area>: <what fails>". The area is the crate or module of the event
+     target (for example "bookclerkd::api"), plus the HTTP method and route
+     template when the event names a route (for example "GET
+     /api/library/works/{id}"); never a concrete path, ID or host. Say what
+     fails in plain words ("responds slowly", "fails to refresh the token").
    - bug: true only if it is clearly a defect
    - report_ids: every report_id in the group, copied exactly
    - body: Markdown with a short summary, suspected area of code, suggested

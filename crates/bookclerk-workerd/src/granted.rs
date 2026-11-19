@@ -2,7 +2,8 @@
 //! streams (`Source` / `Destination` / `ProgressSink`), the job's
 //! `Cancellation` long poll (`/cancel`), named database sessions
 //! (`/db/execute`, `/db/execute-streamed`), and the `EVENTS` outbox binding
-//! (`/events/publish`, `/events/read`).
+//! (`/events/publish`, `/events/read`), and the `SOCKETS` broker binding
+//! (`/sockets/*`, parsed in [`crate::granted_sockets`]).
 //!
 //! HTTP accept/read/write runs on the multi-thread runtime (`tokio::spawn`) so
 //! it is not starved by the Cap'n Proto vat `LocalSet`. Stub calls stay on the
@@ -28,11 +29,16 @@ use bookclerk_plugin_abi::{
     encoded_execute_result_reply_bytes, Cancellation, Destination, EventPublisher, EventReadPage,
     EventReadRequest, ExecuteStreamLimits, GuestDatabase, KvDeleteOk, KvGetOk, KvListOk,
     KvListOptions, KvNamespace, KvPutOk, KvPutOptions, ObjectMetadata, PluginEvent, ProgressSink,
-    PublishOk, QueueProducer, QueueSendMessage, QueueSendOk, Source, WriteOptions,
+    PublishOk, QueueProducer, QueueSendMessage, QueueSendOk, Sockets, Source, WriteOptions,
     MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE, MAX_SCALAR_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
+
+use crate::granted_sockets::{
+    parse_socket_call, socket_reply_json, SocketCall, SocketReply, MAX_SOCKET_ROUTE_BODY_BYTES,
+    SOCKET_ROUTE_OPS,
+};
 
 use crate::granted_http::{
     body_framing, declared_content_length_over_cap, declared_content_length_past_cap,
@@ -106,9 +112,35 @@ pub struct GrantedSlot {
     pub queue: Option<Rc<dyn QueueProducer>>,
     /// Host KV namespace, when this grant is one `[[kv_namespaces]]` binding.
     pub kv: Option<Rc<dyn KvNamespace>>,
+    /// Host socket broker, when this grant is the `SOCKETS` binding.
+    pub sockets: Option<Rc<dyn Sockets>>,
 }
 
 impl GrantedSlot {
+    /// A grant that only reaches the instance's socket broker over
+    /// `/sockets/*` (no streams, no database, no events, no KV).
+    #[must_use]
+    pub fn sockets_only(sockets: Rc<dyn Sockets>, expires: std::time::Instant) -> Self {
+        Self {
+            input: None,
+            output: None,
+            progress: None,
+            cancel: None,
+            expires,
+            allow_open: false,
+            allow_put: false,
+            allow_progress: false,
+            database: None,
+            allow_database: false,
+            sql_policy: GuestSqlPolicy::host_authoritative(),
+            max_request_bytes: 0,
+            events: None,
+            queue: None,
+            kv: None,
+            sockets: Some(sockets),
+        }
+    }
+
     /// A grant that only reaches one KV namespace over `/kv/*` (no streams,
     /// no database, no events).
     #[must_use]
@@ -129,6 +161,7 @@ impl GrantedSlot {
             events: None,
             queue: None,
             kv: Some(kv),
+            sockets: None,
         }
     }
 
@@ -152,6 +185,7 @@ impl GrantedSlot {
             events: None,
             queue: None,
             kv: None,
+            sockets: None,
         }
     }
 
@@ -174,6 +208,7 @@ impl GrantedSlot {
             events: None,
             queue: Some(producer),
             kv: None,
+            sockets: None,
         }
     }
 
@@ -196,6 +231,7 @@ impl GrantedSlot {
             events: Some(events),
             queue: None,
             kv: None,
+            sockets: None,
         }
     }
 
@@ -220,6 +256,7 @@ impl GrantedSlot {
             events: None,
             queue: None,
             kv: None,
+            sockets: None,
         }
     }
 }
@@ -284,6 +321,12 @@ enum GrantedCmd {
     Limits {
         invocation: String,
         resp: oneshot::Sender<Result<Vec<u8>, (u16, String)>>,
+    },
+    /// `env.SOCKETS` calls through the grant.
+    Sockets {
+        invocation: String,
+        call: SocketCall,
+        resp: oneshot::Sender<Result<SocketReply, PluginError>>,
     },
     /// `env.<KV>.get` / `put` / `delete` / `list` through the grant.
     Kv {
@@ -469,6 +512,13 @@ async fn dispatch_granted(mut rx: mpsc::Receiver<GrantedCmd>, table: GrantedTabl
                 } => {
                     let _ = resp.send(dispatch_kv(&table, invocation, call).await);
                 }
+                GrantedCmd::Sockets {
+                    invocation,
+                    call,
+                    resp,
+                } => {
+                    let _ = resp.send(dispatch_sockets(&table, invocation, call).await);
+                }
             }
         });
     }
@@ -549,6 +599,48 @@ async fn dispatch_kv(
         } => KvReply::Put(kv.put(key, value, options).await?),
         KvCall::Delete { key } => KvReply::Delete(kv.delete(key).await?),
         KvCall::List { options } => KvReply::List(kv.list(options).await?),
+    })
+}
+
+/// `env.SOCKETS` through the grant: the slot must carry the instance's socket
+/// broker. The call was checked when it was parsed; the host checks it again.
+async fn dispatch_sockets(
+    table: &GrantedTable,
+    invocation: String,
+    call: SocketCall,
+) -> Result<SocketReply, PluginError> {
+    let sockets = {
+        let mut table = table.borrow_mut();
+        let slot = table
+            .get_mut(&invocation)
+            .ok_or_else(|| PluginError::forbidden("unknown or revoked grant"))?;
+        if slot.expires <= std::time::Instant::now() {
+            table.remove(&invocation);
+            return Err(PluginError::forbidden("grant expired"));
+        }
+        slot.sockets
+            .clone()
+            .ok_or_else(|| PluginError::forbidden("sockets not granted"))?
+    };
+    Ok(match call {
+        SocketCall::Connect(request) => SocketReply::Connected(sockets.connect(request).await?),
+        SocketCall::Send { socket, frame } => {
+            sockets.send(socket, frame).await?;
+            SocketReply::Done
+        }
+        SocketCall::Close {
+            socket,
+            code,
+            reason,
+        } => {
+            sockets.close(socket, code, reason).await?;
+            SocketReply::Done
+        }
+        SocketCall::SetAttachment { socket, attachment } => {
+            sockets.set_attachment(socket, attachment).await?;
+            SocketReply::Done
+        }
+        SocketCall::List => SocketReply::Listed(sockets.list().await?),
     })
 }
 
@@ -1165,6 +1257,7 @@ where
                 sha256: None,
                 commit_token: None,
                 stage_only: false,
+                ..Default::default()
             },
             body_rx,
             resp: resp_tx,
@@ -1575,6 +1668,58 @@ where
         return Ok(());
     }
 
+    if method == "POST" && path_only.starts_with("/sockets/") {
+        let op = &path_only["/sockets/".len()..];
+        if !SOCKET_ROUTE_OPS.contains(&op) {
+            write_status(&mut writer, 404, "not found").await?;
+            return Ok(());
+        }
+        if declared_content_length_over_cap(&headers, MAX_SOCKET_ROUTE_BODY_BYTES) {
+            write_status(&mut writer, 413, "payload too large").await?;
+            return Ok(());
+        }
+        let rest =
+            match read_content(&mut reader, &headers, prefix, MAX_SOCKET_ROUTE_BODY_BYTES).await {
+                Ok(body) => body,
+                Err(err) => {
+                    let Some((status, reason)) = body_error_response(&err) else {
+                        return Err(err);
+                    };
+                    write_status(&mut writer, status, &reason).await?;
+                    return Ok(());
+                }
+            };
+        let call = match parse_socket_call(op, &rest) {
+            Ok(call) => call,
+            Err(err) => {
+                write_plugin_error(&mut writer, &err).await?;
+                return Ok(());
+            }
+        };
+        let (resp_tx, resp_rx) = oneshot::channel();
+        cmds.send(GrantedCmd::Sockets {
+            invocation,
+            call,
+            resp: resp_tx,
+        })
+        .await
+        .context("granted dispatch closed")?;
+        match resp_rx.await.context("granted sockets call dropped")? {
+            Ok(reply) => {
+                let payload = socket_reply_json(&reply)?;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    payload.len()
+                );
+                writer.write_all(resp.as_bytes()).await?;
+                writer.write_all(&payload).await?;
+                writer.flush().await?;
+            }
+            Err(err) => write_plugin_error(&mut writer, &err).await?,
+        }
+        return Ok(());
+    }
+
     write_status(&mut writer, 404, "not found").await?;
     Ok(())
 }
@@ -1815,6 +1960,7 @@ mod tests {
                 events: None,
                 queue: None,
                 kv: None,
+                sockets: None,
             },
         );
         let err = match take_slot_source(&table, "g1") {
@@ -1863,6 +2009,7 @@ mod tests {
                 events: None,
                 queue: None,
                 kv: None,
+                sockets: None,
             },
         );
         table.borrow_mut().remove("g-live");
@@ -1898,6 +2045,7 @@ mod tests {
                 events: None,
                 queue: None,
                 kv: None,
+                sockets: None,
             },
         );
         let req = ExecuteRequest {
@@ -1968,6 +2116,7 @@ mod tests {
                 events: None,
                 queue: None,
                 kv: None,
+                sockets: None,
             },
         );
         let req = ExecuteRequest {
@@ -2061,6 +2210,7 @@ mod tests {
                 events: None,
                 queue: None,
                 kv: None,
+                sockets: None,
             },
         );
         let request = |sql: &str| ExecuteRequest {
@@ -2119,6 +2269,7 @@ mod tests {
                 events: None,
                 queue: None,
                 kv: None,
+                sockets: None,
             },
         );
         table
@@ -2533,6 +2684,7 @@ mod tests {
                 events: None,
                 queue: None,
                 kv: None,
+                sockets: None,
             },
         );
 
@@ -2734,6 +2886,7 @@ mod tests {
             events: None,
             queue: None,
             kv: None,
+            sockets: None,
         }
     }
 
@@ -3024,6 +3177,7 @@ mod tests {
                 events: None,
                 queue: None,
                 kv: None,
+                sockets: None,
             },
         );
         (table, session)
@@ -3342,5 +3496,284 @@ Transfer-Encoding: chunked\r\n\
         let (response, dispatched) = events_read_exchange(chunked, never).await;
         assert!(dispatched, "a chunked body is read whole: {response}");
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    }
+
+    /// Sends one raw request to `handle_conn` and returns the whole response.
+    /// `/sockets/*` commands are answered by `answer`; the returned flag says
+    /// whether any reached it.
+    async fn sockets_exchange(
+        request: String,
+        answer: fn(SocketCall) -> Result<SocketReply, PluginError>,
+    ) -> (String, bool) {
+        let (cmds_tx, mut cmds_rx) = mpsc::channel(8);
+        let dispatched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&dispatched);
+        tokio::spawn(async move {
+            while let Some(cmd) = cmds_rx.recv().await {
+                if let GrantedCmd::Sockets {
+                    invocation,
+                    call,
+                    resp,
+                } = cmd
+                {
+                    assert_eq!(invocation, "grant-1");
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = resp.send(answer(call));
+                }
+            }
+        });
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let serve = tokio::spawn(async move { handle_conn(server, "bridge", cmds_tx).await });
+        let (mut reader, mut writer) = tokio::io::split(client);
+        writer.write_all(request.as_bytes()).await.unwrap();
+        let mut out = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), reader.read_to_end(&mut out))
+            .await
+            .expect("http response")
+            .unwrap();
+        drop(writer);
+        let _ = serve.await;
+        (
+            String::from_utf8_lossy(&out).into_owned(),
+            dispatched.load(std::sync::atomic::Ordering::SeqCst),
+        )
+    }
+
+    /// `POST /sockets/<op>` with `body` under the test grant.
+    fn sockets_request(op: &str, body: &str) -> String {
+        format!(
+            "POST /sockets/{op} HTTP/1.1\r\nAuthorization: Bearer grant-1\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    #[tokio::test]
+    async fn sockets_route_answers_connect_with_the_socket_json() {
+        let (response, dispatched) = sockets_exchange(
+            sockets_request(
+                "connect",
+                r#"{"url":"wss://abs.example/","attachment":"aGk="}"#,
+            ),
+            |call| {
+                let SocketCall::Connect(request) = call else {
+                    panic!("expected connect");
+                };
+                assert_eq!(request.url, "wss://abs.example/");
+                Ok(SocketReply::Connected(bookclerk_plugin_abi::SocketInfo {
+                    socket: "g1_a".into(),
+                    url: request.url,
+                    protocol: None,
+                    attachment: request.attachment,
+                }))
+            },
+        )
+        .await;
+        assert!(dispatched);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let body = response.rsplit("\r\n\r\n").next().unwrap_or_default();
+        let info: serde_json::Value = serde_json::from_str(body).expect("socket json");
+        assert_eq!(info["socket"], "g1_a");
+        assert_eq!(info["attachment"], "aGk=");
+    }
+
+    #[tokio::test]
+    async fn sockets_route_reads_a_largest_escaped_text_frame() {
+        let body = serde_json::to_string(&crate::granted_sockets::RouteSend {
+            socket: "g1_a".into(),
+            frame: crate::granted_sockets::RouteFrame::Text(
+                "\0".repeat(bookclerk_plugin_abi::MAX_SOCKET_FRAME_BYTES as usize),
+            ),
+        })
+        .expect("send json");
+        let (response, dispatched) = sockets_exchange(sockets_request("send", &body), |call| {
+            assert!(matches!(call, SocketCall::Send { .. }));
+            Ok(SocketReply::Done)
+        })
+        .await;
+        assert!(dispatched, "{response}");
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    }
+
+    #[tokio::test]
+    async fn sockets_route_carries_host_refusals() {
+        let (response, dispatched) = sockets_exchange(
+            sockets_request("send", r#"{"socket":"g1_a","frame":{"text":"hi"}}"#),
+            |_| Err(PluginError::not_found("socket closed")),
+        )
+        .await;
+        assert!(dispatched);
+        assert!(response.contains("not_found"), "{response}");
+    }
+
+    #[tokio::test]
+    async fn sockets_route_checks_the_call_before_dispatch() {
+        let never = |_| Ok(SocketReply::Done);
+        let (response, dispatched) = sockets_exchange(
+            sockets_request("send", r#"{"socket":"../x","frame":{"text":"hi"}}"#),
+            never,
+        )
+        .await;
+        assert!(!dispatched, "{response}");
+        assert!(response.contains("invalid_params"), "{response}");
+
+        let (response, dispatched) = sockets_exchange(sockets_request("open", "{}"), never).await;
+        assert!(!dispatched);
+        assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+
+        let oversized = format!(
+            "POST /sockets/send HTTP/1.1\r\nAuthorization: Bearer grant-1\r\nContent-Length: {}\r\n\r\n",
+            MAX_SOCKET_ROUTE_BODY_BYTES + 1
+        );
+        let (response, dispatched) = sockets_exchange(oversized, never).await;
+        assert!(!dispatched);
+        assert!(response.contains("413"), "{response}");
+
+        let (response, dispatched) = sockets_exchange(sockets_request("list", "{}"), |call| {
+            assert_eq!(call, SocketCall::List);
+            Ok(SocketReply::Listed(Vec::new()))
+        })
+        .await;
+        assert!(dispatched);
+        assert!(response.ends_with(r#"{"sockets":[]}"#), "{response}");
+    }
+
+    /// Records every `Sockets` call it serves.
+    #[derive(Default)]
+    struct RecordingSockets {
+        /// Calls served, in order, as `op socket`.
+        calls: RefCell<Vec<String>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl Sockets for RecordingSockets {
+        async fn connect(
+            &self,
+            request: bookclerk_plugin_abi::SocketConnectRequest,
+        ) -> bookclerk_plugin_abi::Result<bookclerk_plugin_abi::SocketInfo> {
+            self.calls
+                .borrow_mut()
+                .push(format!("connect {}", request.url));
+            Ok(bookclerk_plugin_abi::SocketInfo {
+                socket: "g1_a".into(),
+                url: request.url,
+                protocol: None,
+                attachment: Vec::new(),
+            })
+        }
+        async fn send(
+            &self,
+            socket: String,
+            _frame: bookclerk_plugin_abi::SocketFrame,
+        ) -> bookclerk_plugin_abi::Result<()> {
+            self.calls.borrow_mut().push(format!("send {socket}"));
+            Ok(())
+        }
+        async fn close(
+            &self,
+            socket: String,
+            code: u16,
+            _reason: String,
+        ) -> bookclerk_plugin_abi::Result<()> {
+            self.calls
+                .borrow_mut()
+                .push(format!("close {socket} {code}"));
+            Ok(())
+        }
+        async fn set_attachment(
+            &self,
+            socket: String,
+            _attachment: Vec<u8>,
+        ) -> bookclerk_plugin_abi::Result<()> {
+            self.calls.borrow_mut().push(format!("attachment {socket}"));
+            Ok(())
+        }
+        async fn list(
+            &self,
+        ) -> bookclerk_plugin_abi::Result<Vec<bookclerk_plugin_abi::SocketInfo>> {
+            self.calls.borrow_mut().push("list".into());
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sockets_dispatch_forwards_to_the_granted_broker_only() {
+        let broker = Rc::new(RecordingSockets::default());
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        let far = std::time::Instant::now() + Duration::from_secs(60);
+        table.borrow_mut().insert(
+            "sock".into(),
+            GrantedSlot::sockets_only(Rc::clone(&broker) as Rc<dyn Sockets>, far),
+        );
+        let calls = [
+            SocketCall::Connect(bookclerk_plugin_abi::SocketConnectRequest {
+                url: "wss://abs.example/".into(),
+                ..Default::default()
+            }),
+            SocketCall::Send {
+                socket: "g1_a".into(),
+                frame: bookclerk_plugin_abi::SocketFrame::Text("x".into()),
+            },
+            SocketCall::Close {
+                socket: "g1_a".into(),
+                code: 1000,
+                reason: String::new(),
+            },
+            SocketCall::SetAttachment {
+                socket: "g1_a".into(),
+                attachment: Vec::new(),
+            },
+            SocketCall::List,
+        ];
+        for call in calls {
+            dispatch_sockets(&table, "sock".into(), call).await.unwrap();
+        }
+        assert_eq!(
+            *broker.calls.borrow(),
+            [
+                "connect wss://abs.example/",
+                "send g1_a",
+                "close g1_a 1000",
+                "attachment g1_a",
+                "list"
+            ]
+        );
+
+        // Another binding's grant does not reach the broker.
+        table.borrow_mut().insert(
+            "events".into(),
+            GrantedSlot::events_only(Rc::new(NoEvents) as Rc<dyn EventPublisher>, far),
+        );
+        let err = dispatch_sockets(&table, "events".into(), SocketCall::List)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, bookclerk_plugin_abi::PluginErrorCode::Forbidden);
+        let err = dispatch_sockets(&table, "missing".into(), SocketCall::List)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, bookclerk_plugin_abi::PluginErrorCode::Forbidden);
+
+        // An expired grant is refused and dropped.
+        let past = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        table.borrow_mut().insert(
+            "old".into(),
+            GrantedSlot::sockets_only(Rc::clone(&broker) as Rc<dyn Sockets>, past),
+        );
+        let err = dispatch_sockets(&table, "old".into(), SocketCall::List)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, bookclerk_plugin_abi::PluginErrorCode::Forbidden);
+        assert!(!table.borrow().contains_key("old"));
+    }
+
+    /// An `EVENTS` publisher that is never called.
+    struct NoEvents;
+
+    #[async_trait::async_trait(?Send)]
+    impl EventPublisher for NoEvents {
+        async fn publish(&self, _event: PluginEvent) -> bookclerk_plugin_abi::Result<PublishOk> {
+            Err(PluginError::unsupported("publish"))
+        }
     }
 }

@@ -1,5 +1,5 @@
 //! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
-//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch` and `event_read` fuzz corpora in PR CI
+//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch`, `metadata_file_record`, `event_read`, `socket_request` and `storage_reply` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -134,13 +134,13 @@ const SCAN_PAGE_SELECTOR: u8 = 31;
 /// See [`SCAN_PAGE_SELECTOR`].
 const CATALOG_HITS_SELECTOR: u8 = 48;
 /// See [`SCAN_PAGE_SELECTOR`].
-const METADATA_RECORDS_SELECTOR: u8 = 96;
+const METADATA_RECORDS_SELECTOR: u8 = 97;
 /// See [`SCAN_PAGE_SELECTOR`].
-const METADATA_CHAPTERS_SELECTOR: u8 = 99;
+const METADATA_CHAPTERS_SELECTOR: u8 = 100;
 /// See [`SCAN_PAGE_SELECTOR`].
-const COVER_FETCH_PARAMS_SELECTOR: u8 = 101;
+const COVER_FETCH_PARAMS_SELECTOR: u8 = 102;
 /// See [`SCAN_PAGE_SELECTOR`].
-const COVER_IMAGES_SELECTOR: u8 = 104;
+const COVER_IMAGES_SELECTOR: u8 = 105;
 
 /// A scan page with every structured book record and paging field filled.
 fn structured_scan_page() -> bookclerk_plugin_abi::ScanPage {
@@ -1114,6 +1114,560 @@ fn plain_fetch_seeds_are_current() {
         let path = dir.join(name);
         if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
             std::fs::create_dir_all(&dir).expect("corpus dir");
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
+}
+
+#[path = "../../../fuzz/oracles/metadata_file_record.rs"]
+mod metadata_file_record_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/metadata_file_record.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_metadata_file_record_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("metadata_file_record") {
+        metadata_file_record_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no metadata_file_record seed");
+}
+
+/// Seeds for `metadata_file_record`: a full record inside the dialect, an
+/// empty one, one that states a field the dialect does not carry, and one
+/// breaking each record rule. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O or encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn metadata_file_record_seeds_are_current() {
+    use bookclerk_plugin_abi::{
+        encode_metadata_file_record_bytes, Abridgement, Credit, CreditRole, ExpressionKind,
+        Identifier, IdentifierScheme, MetadataChapter, MetadataField, MetadataFileRecord,
+        SeriesEntry,
+    };
+
+    let full = MetadataFileRecord {
+        present: vec![
+            MetadataField::Title,
+            MetadataField::Subtitle,
+            MetadataField::Description,
+            MetadataField::Publisher,
+            MetadataField::PublishedAt,
+            MetadataField::Language,
+            MetadataField::Genres,
+            MetadataField::Tags,
+            MetadataField::Abridgement,
+            MetadataField::Identifiers,
+            MetadataField::Credits,
+            MetadataField::Series,
+            MetadataField::Chapters,
+        ],
+        title: Some("The Final Empire".into()),
+        subtitle: Some("Mistborn, Book 1".into()),
+        description: Some("A world of ash.\n\nA heist.".into()),
+        publisher: Some("Macmillan Audio".into()),
+        published_at: Some("2009-02-28".into()),
+        language: Some("English".into()),
+        genres: vec!["Fantasy".into(), "Epic".into()],
+        tags: vec!["heist".into()],
+        abridgement: Abridgement::Unabridged,
+        identifiers: vec![
+            Identifier {
+                scheme: IdentifierScheme::Asin,
+                value: "B002UZMLXM".into(),
+                marketplace: Some("us".into()),
+            },
+            Identifier {
+                scheme: IdentifierScheme::Isbn,
+                value: "9781427205391".into(),
+                marketplace: None,
+            },
+        ],
+        credits: vec![
+            Credit {
+                name: "Brandon Sanderson".into(),
+                role: CreditRole::Author,
+                ..Credit::default()
+            },
+            Credit {
+                name: "Michael Kramer".into(),
+                role: CreditRole::Narrator,
+                ..Credit::default()
+            },
+        ],
+        credit_roles: vec![CreditRole::Author, CreditRole::Narrator],
+        series_entries: vec![SeriesEntry {
+            name: "Mistborn".into(),
+            position: Some("1".into()),
+            store_series_id: None,
+        }],
+        chapters: vec![
+            MetadataChapter {
+                title: "Prologue".into(),
+                start_ms: 0,
+                depth: 0,
+                ..MetadataChapter::default()
+            },
+            MetadataChapter {
+                title: "Part One".into(),
+                start_ms: 61_000,
+                depth: 0,
+                ..MetadataChapter::default()
+            },
+            MetadataChapter {
+                title: "Chapter 1".into(),
+                start_ms: 61_000,
+                length_ms: Some(1_200_000),
+                depth: 1,
+            },
+        ],
+        ..MetadataFileRecord::default()
+    };
+    let seeds: Vec<(&str, MetadataFileRecord)> = vec![
+        ("full.bin", full.clone()),
+        ("empty.bin", MetadataFileRecord::default()),
+        (
+            "stated_empty.bin",
+            MetadataFileRecord {
+                present: vec![MetadataField::Genres, MetadataField::Credits],
+                credit_roles: vec![CreditRole::Narrator],
+                ..MetadataFileRecord::default()
+            },
+        ),
+        (
+            "outside_dialect.bin",
+            MetadataFileRecord {
+                present: vec![MetadataField::ExpressionKind, MetadataField::Duration],
+                expression_kind: ExpressionKind::Dramatisation,
+                duration_ms: Some(3_600_000),
+                ..MetadataFileRecord::default()
+            },
+        ),
+        (
+            "value_not_present.bin",
+            MetadataFileRecord {
+                present: Vec::new(),
+                ..full.clone()
+            },
+        ),
+        (
+            "role_not_stated.bin",
+            MetadataFileRecord {
+                credit_roles: vec![CreditRole::Author],
+                ..full.clone()
+            },
+        ),
+        (
+            "bad_date.bin",
+            MetadataFileRecord {
+                published_at: Some("2023-02-29".into()),
+                ..full.clone()
+            },
+        ),
+        (
+            "multiline_title.bin",
+            MetadataFileRecord {
+                title: Some("The\nFinal Empire".into()),
+                ..full.clone()
+            },
+        ),
+        (
+            "chapters_out_of_order.bin",
+            MetadataFileRecord {
+                chapters: vec![
+                    MetadataChapter {
+                        title: "Late".into(),
+                        start_ms: 10,
+                        ..MetadataChapter::default()
+                    },
+                    MetadataChapter {
+                        title: "Early".into(),
+                        start_ms: 5,
+                        ..MetadataChapter::default()
+                    },
+                ],
+                ..full.clone()
+            },
+        ),
+        (
+            "duplicate_field.bin",
+            MetadataFileRecord {
+                present: vec![MetadataField::Title, MetadataField::Title],
+                title: Some("Twice".into()),
+                ..MetadataFileRecord::default()
+            },
+        ),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/metadata_file_record");
+    for (name, record) in seeds {
+        let seed = encode_metadata_file_record_bytes(&record).expect("encode");
+        let path = dir.join(name);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::create_dir_all(&dir).expect("corpus dir");
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
+}
+
+#[path = "../../../fuzz/oracles/socket_request.rs"]
+mod socket_request_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/socket_request.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_socket_request_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("socket_request") {
+        socket_request_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no socket_request seed");
+}
+
+/// A `1`-prefixed Cap'n Proto `SocketConnectRequest` seed.
+// Test helper: an encoding failure is the test failing.
+#[allow(clippy::expect_used)]
+fn capnp_socket_connect(request: &bookclerk_plugin_abi::SocketConnectRequest) -> Vec<u8> {
+    let mut message = capnp::message::Builder::new_default();
+    bookclerk_plugin_abi::write_socket_connect_request(message.init_root(), request)
+        .expect("encode connect request");
+    let mut seed = vec![1u8];
+    seed.extend(capnp::serialize::write_message_to_words(&message));
+    seed
+}
+
+/// A `2`-prefixed Cap'n Proto `SocketMessage` seed.
+// Test helper: an encoding failure is the test failing.
+#[allow(clippy::expect_used)]
+fn capnp_socket_message(event: &bookclerk_plugin_abi::SocketMessage) -> Vec<u8> {
+    let mut message = capnp::message::Builder::new_default();
+    bookclerk_plugin_abi::write_socket_message(message.init_root(), event)
+        .expect("encode socket message");
+    let mut seed = vec![2u8];
+    seed.extend(capnp::serialize::write_message_to_words(&message));
+    seed
+}
+
+/// Seeds for `socket_request`: accepted and refused URLs, connect requests
+/// and deliveries. Byte 0 is `0` for a URL, `1` for a Cap'n Proto
+/// `SocketConnectRequest` and `2` for a Cap'n Proto `SocketMessage`.
+/// Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O or encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn socket_request_seeds_are_current() {
+    use bookclerk_plugin_abi::{
+        SocketAutoResponse, SocketConnectRequest, SocketFrame, SocketHeader, SocketMessage,
+    };
+
+    let url = |text: &str| {
+        let mut seed = vec![0u8];
+        seed.extend_from_slice(text.as_bytes());
+        seed
+    };
+    let abs = SocketConnectRequest {
+        url: "wss://abs.example.com/socket.io/?EIO=4&transport=websocket".into(),
+        protocols: vec!["chat".into()],
+        headers: vec![SocketHeader {
+            name: "Authorization".into(),
+            value: "Bearer token".into(),
+        }],
+        auto_responses: vec![SocketAutoResponse {
+            request: SocketFrame::Text("2".into()),
+            response: SocketFrame::Text("3".into()),
+        }],
+        attachment: b"{\"user\":\"u1\"}".to_vec(),
+    };
+    let mut smuggled = abs.clone();
+    smuggled.headers[0].name = "Sec-WebSocket-Key".into();
+    let mut crlf = abs.clone();
+    crlf.headers[0].value = "x\r\nX-Evil: 1".into();
+    let mut heavy = abs.clone();
+    heavy.attachment = vec![0; bookclerk_plugin_abi::MAX_SOCKET_ATTACHMENT_BYTES as usize + 1];
+    let mut aliased = abs.clone();
+    aliased.url = "ws://0x7f.1:13378/socket.io".into();
+    let delivery = SocketMessage {
+        socket: "s-1".into(),
+        frame: SocketFrame::Text("42[\"item_updated\",{}]".into()),
+        attachment: b"{}".to_vec(),
+    };
+    let mut bad_id = delivery.clone();
+    bad_id.socket = "../s".into();
+    let seeds: Vec<(&str, Vec<u8>)> = vec![
+        ("url_wss.bin", url("wss://abs.example.com/socket.io/?EIO=4")),
+        ("url_ws_port.bin", url("ws://10.0.0.5:13378/socket.io")),
+        ("url_v6.bin", url("ws://[::1]:8080/")),
+        ("url_credentials.bin", url("wss://user:pass@example.com")),
+        ("url_backslash.bin", url("wss://exa\\mple.com/")),
+        ("url_short_ipv4.bin", url("ws://127.1/")),
+        ("url_https.bin", url("https://example.com")),
+        ("connect_abs.bin", capnp_socket_connect(&abs)),
+        (
+            "connect_smuggled_header.bin",
+            capnp_socket_connect(&smuggled),
+        ),
+        ("connect_crlf_value.bin", capnp_socket_connect(&crlf)),
+        ("connect_heavy_attachment.bin", capnp_socket_connect(&heavy)),
+        ("connect_aliased_ipv4.bin", capnp_socket_connect(&aliased)),
+        ("message.bin", capnp_socket_message(&delivery)),
+        ("message_bad_id.bin", capnp_socket_message(&bad_id)),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/socket_request");
+    if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+        std::fs::create_dir_all(&dir).expect("corpus dir");
+    }
+    for (name, seed) in seeds {
+        let path = dir.join(name);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
+}
+
+#[path = "../../../fuzz/oracles/storage_reply.rs"]
+mod storage_reply_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/storage_reply.rs` with the shared oracle.
+// Test code: a failed read is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_storage_reply_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("storage_reply") {
+        storage_reply_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no storage_reply seed");
+}
+
+/// A `deleteMany` reply (selector `1`) whose first outcome carries an error
+/// with a struct where its `code` text belongs, built by hand because no
+/// encoder writes one. The second outcome succeeds.
+// Test code: a failed build is the test failing.
+#[allow(clippy::expect_used)]
+fn delete_many_struct_code_seed() -> Vec<u8> {
+    use bookclerk_plugin_abi::plugin_capnp::{delete_many_result, move_many_request, plugin_error};
+
+    // `MoveManyRequest` keeps a struct at pointer 0, where `PluginError`
+    // keeps `code`: copied in as a `PluginError`, its code is unreadable.
+    let mut fake = capnp::message::Builder::new_default();
+    fake.init_root::<move_many_request::Builder<'_>>()
+        .init_target()
+        .init_pairs(0);
+    let fake_error = fake
+        .get_root_as_reader::<plugin_error::Reader<'_>>()
+        .expect("struct root");
+    let mut msg = capnp::message::Builder::new_default();
+    let mut results = msg
+        .init_root::<delete_many_result::Builder<'_>>()
+        .init_results(2);
+    let mut first = results.reborrow().get(0);
+    first.set_key("a/1.m4b");
+    first.set_error(fake_error).expect("copy error");
+    results.reborrow().get(1).set_key("a/2.m4b");
+    let mut out = vec![1];
+    out.extend(capnp::serialize::write_message_to_words(&msg));
+    out
+}
+
+/// The hand-built seed's failure survives decoding: a round trip cannot
+/// catch a failure read as success, because the wrong reading round-trips.
+// Test code: a failed decode is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn an_unreadable_error_code_never_decodes_as_success() {
+    use bookclerk_plugin_abi::{decode_storage_reply_bytes, StorageReply, StorageReplyKind};
+
+    let seed = delete_many_struct_code_seed();
+    let reply =
+        decode_storage_reply_bytes(StorageReplyKind::DeleteMany, &seed[1..]).expect("decodes");
+    let StorageReply::DeleteMany(results) = reply else {
+        panic!("a deleteMany reply");
+    };
+    assert_eq!(
+        results[0]
+            .error
+            .as_ref()
+            .map(bookclerk_plugin_abi::PluginError::wire_str),
+        Some("unknown")
+    );
+    assert!(results[1].error.is_none());
+}
+
+/// Seeds for `storage_reply`: replies each validator accepts and one
+/// breaking each rule. Byte 0 is `0` for a `moveMany` page, `1` for
+/// `deleteMany`, `2` for `headMany`, `3` for `changes` and `4` for a hinted
+/// `list` page. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O or encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn storage_reply_seeds_are_current() {
+    use bookclerk_plugin_abi::{
+        encode_storage_reply_bytes, ChangesPage, KeyOutcome, ListPage, MoveManyPage, ObjectChange,
+        ObjectChangeKind, ObjectInfo, ObjectMetadata, PluginError, StorageReply,
+    };
+
+    let seed = |selector: u8, reply: StorageReply| {
+        let mut out = vec![selector];
+        out.extend(encode_storage_reply_bytes(&reply).expect("encode seed"));
+        out
+    };
+    let page = |keys: &[&str], next: Option<&str>| MoveManyPage {
+        results: keys.iter().map(|k| KeyOutcome::ok(*k)).collect(),
+        next_cursor: next.map(str::to_string),
+        atomic: false,
+        objects_moved: u64::try_from(keys.len()).expect("small"),
+    };
+    let changes = |cursor: &str, more: bool, keys: &[&str]| ChangesPage {
+        changes: keys
+            .iter()
+            .map(|k| ObjectChange {
+                key: (*k).to_string(),
+                kind: ObjectChangeKind::Upserted,
+                info: Some(ObjectInfo {
+                    key: (*k).to_string(),
+                    size: 3,
+                    etag: Some("e1".into()),
+                    modified_at_ms: Some(1_762_855_200_000),
+                    version_id: None,
+                    signature: Some("sig".into()),
+                }),
+            })
+            .collect(),
+        cursor: cursor.to_string(),
+        more,
+        complete: true,
+        live_watch: false,
+    };
+    let meta = |key: &str| ObjectMetadata {
+        key: key.to_string(),
+        size: 3,
+        etag: Some("e1".into()),
+        version_id: Some("v1".into()),
+        ..ObjectMetadata::default()
+    };
+    let seeds: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "move_pairs.bin",
+            seed(
+                0,
+                StorageReply::MoveMany(page(&["a/1.m4b", "a/2.m4b"], None)),
+            ),
+        ),
+        (
+            "move_prefix_page.bin",
+            seed(0, StorageReply::MoveMany(page(&["a/1.m4b"], Some("c2")))),
+        ),
+        (
+            "move_prefix_stuck_cursor.bin",
+            seed(0, StorageReply::MoveMany(page(&["a/1.m4b"], Some("c1")))),
+        ),
+        (
+            "move_outside_prefix.bin",
+            seed(0, StorageReply::MoveMany(page(&["b/1.m4b"], None))),
+        ),
+        (
+            "delete_many.bin",
+            seed(
+                1,
+                StorageReply::DeleteMany(vec![
+                    KeyOutcome::ok("a/1.m4b"),
+                    KeyOutcome::failed("a/2.m4b", PluginError::conflict("busy")),
+                ]),
+            ),
+        ),
+        (
+            "delete_many_reordered.bin",
+            seed(
+                1,
+                StorageReply::DeleteMany(vec![
+                    KeyOutcome::ok("a/2.m4b"),
+                    KeyOutcome::ok("a/1.m4b"),
+                ]),
+            ),
+        ),
+        (
+            "delete_many_struct_code.bin",
+            delete_many_struct_code_seed(),
+        ),
+        (
+            "head_many.bin",
+            seed(2, StorageReply::HeadMany(vec![Some(meta("a/1.m4b")), None])),
+        ),
+        (
+            "head_many_wrong_key.bin",
+            seed(2, StorageReply::HeadMany(vec![None, Some(meta("a/9.m4b"))])),
+        ),
+        (
+            "changes.bin",
+            seed(3, StorageReply::Changes(changes("c2", true, &["a/1.m4b"]))),
+        ),
+        (
+            "changes_stuck_cursor.bin",
+            seed(3, StorageReply::Changes(changes("c1", true, &[]))),
+        ),
+        (
+            "changes_empty_cursor.bin",
+            seed(3, StorageReply::Changes(changes("", false, &[]))),
+        ),
+        (
+            "changes_live_watch.bin",
+            seed(
+                3,
+                StorageReply::Changes(ChangesPage {
+                    live_watch: true,
+                    ..changes("w1.id.3", false, &["a/2.m4b"])
+                }),
+            ),
+        ),
+        (
+            "list_hinted.bin",
+            seed(
+                4,
+                StorageReply::List(ListPage {
+                    objects: vec![ObjectInfo {
+                        key: "a/1.m4b".into(),
+                        size: 3,
+                        etag: Some("e1".into()),
+                        modified_at_ms: Some(1),
+                        version_id: Some("v1".into()),
+                        signature: Some("sig".into()),
+                    }],
+                    next_cursor: None,
+                    signatures_included: true,
+                    modified_since_applied: true,
+                }),
+            ),
+        ),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/storage_reply");
+    if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+        std::fs::create_dir_all(&dir).expect("corpus dir");
+    }
+    for (name, seed) in seeds {
+        let path = dir.join(name);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
             std::fs::write(&path, &seed).expect("write seed");
         }
         assert_eq!(

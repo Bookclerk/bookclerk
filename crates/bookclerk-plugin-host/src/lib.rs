@@ -77,13 +77,18 @@ mod kv_binding;
 mod manifest;
 mod on_demand;
 mod on_demand_source;
+mod on_demand_storage;
+mod python_snapshot;
 mod queue_producer;
 mod registry;
 mod remote_consent;
 mod rpc;
 mod rpc_session;
+mod socket_broker;
 mod spawn_plan;
 mod spawn_stdio;
+mod storage_intent;
+mod user_poll;
 
 pub use bookclerk_plugin_sdk::protocol;
 pub use bookclerk_plugin_sdk::{
@@ -139,10 +144,10 @@ pub use deployment::{
 pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{
     discover_plugins, first_party_database_kind, identity_matches_occupancy,
-    is_first_party_audiobookshelf, is_first_party_local_output, is_first_party_local_output_key,
-    is_first_party_s3_output, occupancy_matches_alias, occupancy_names_alias, occupancy_spec,
-    plugin_matches_occupancy, plugin_search_dirs, resolve_plugin_ref, resolve_plugin_slot,
-    settings_table, settings_table_for, stamp_occupancy_plugin_key, upgrade_unique_alias_occupancy,
+    is_first_party_local_output, is_first_party_local_output_key, is_first_party_s3_output,
+    occupancy_matches_alias, occupancy_names_alias, occupancy_spec, plugin_matches_occupancy,
+    plugin_search_dirs, resolve_plugin_ref, resolve_plugin_slot, settings_table,
+    settings_table_for, stamp_occupancy_plugin_key, upgrade_unique_alias_occupancy,
     DiscoveredPlugin, LinkStateDir, StateScope,
 };
 pub use enrollment::{
@@ -157,8 +162,9 @@ pub use host::{
     backup_adapter_id, database_connect_bindings, export_registered_plugin_units,
     load_external_database, migrate_database_plugin, migrate_library_schema, open_library_store,
     open_library_store_for_plugin, restore_plugin_backup_units, DatabaseRegistry,
-    DestinationRegistry, ExternalDatabase, ExternalIntegration, ExternalSource, HandedPass,
-    HandedScan, RefreshedCredentialSink,
+    DeployedDestination, DestinationRegistry, DestinationSession, DestinationSettings,
+    ExternalDatabase, ExternalIntegration, ExternalSource, HandedPass, HandedScan,
+    RefreshedCredentialSink,
 };
 pub use host_control_plane::{
     allow_credential_login, enroll_node, open_host_control_plane,
@@ -193,6 +199,9 @@ pub use on_demand::{activates_on_demand, OnDemandIntegration, TRIGGER_IDLE_TIMEO
 pub use on_demand_source::{
     storefront_activates_on_demand, OnDemandSource, STOREFRONT_IDLE_TIMEOUT,
 };
+pub use on_demand_storage::{
+    storage_activates_on_demand, HeldSession, OnDemandStorage, STORAGE_IDLE_TIMEOUT,
+};
 pub use queue_producer::{OutboxQueueProducer, QueueOutbox};
 pub use registry::{
     family_keyword, host_target_triple, validate_plugin_id, BookclerkPackageMetadata,
@@ -208,6 +217,7 @@ pub use rpc_session::{
     plugin_instance_key, ExecutorIdentity, GuestDatabaseFactory, PluginSession, PluginStorage,
     RpcBackupOps, SessionServices, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
+pub use socket_broker::{BrokerSockets, SocketBroker, SocketEvent, SocketSink};
 pub use spawn_plan::{
     GuestRuntimeKind, SpawnPlan, SpawnTransport, WorkerdFrontDoor, WORKERD_BIN_ENV,
     WORKERD_LAUNCHER_ENV,
@@ -217,3 +227,4 @@ pub use spawn_stdio::{
     retry_abandoned_acl_journals, revoke_plugin_state_before_purge, TEST_CHANNEL_IDENT_ENV,
     TEST_CHANNEL_TAG_FILE, TEST_INJECT_EXTRA_ENDPOINT_ENV, TEST_OBSERVE_EXTRA_ENDPOINT_ENV,
 };
+pub use user_poll::{ON_DEMAND_USER_POLL_INTERVAL, RESIDENT_USER_POLL_INTERVAL};

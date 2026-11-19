@@ -1,4 +1,4 @@
-//! Fetching an archive whose URL an owner cluster chose, on a host node.
+//! Fetching an archive whose URL an owner cluster chose, on a branch node.
 //!
 //! A host fetches owner `https:` archives itself, outside any plugin jail
 //! and network consent, so the URL is held to more than the installer's

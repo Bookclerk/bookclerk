@@ -17,7 +17,12 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
+use crate::bounded::{MULTIPART_PART_SIZE, S3_MAX_PARTS};
 use crate::error::{Result, StorageError};
+use crate::intent::{
+    ConditionalPutResult, HintedListPage, ListRequest, MoveOptions, MoveResult,
+    StorageCapabilities, WriteCondition,
+};
 use crate::traits::{ObjectInfo, ObjectMeta, ObjectProbe, StorageBackend};
 
 /// Connection settings for one S3 / MinIO destination.
@@ -76,13 +81,6 @@ fn redact_access_key(access_key_id: &str) -> String {
 /// (5 GiB on AWS) still work.
 pub(crate) const MULTIPART_THRESHOLD: u64 = 100 * 1024 * 1024;
 
-/// Each part is read into a buffer this large at most. S3 requires 5 MiB minimum
-/// per part except the last. `8 MiB * S3_MAX_PARTS` is the application object ceiling.
-pub(crate) const MULTIPART_PART_SIZE: usize = 8 * 1024 * 1024;
-
-/// AWS multipart upload part-count ceiling.
-pub(crate) const S3_MAX_PARTS: i32 = 10_000;
-
 /// S3-compatible object storage.
 #[derive(Clone)]
 pub struct S3Backend {
@@ -101,6 +99,66 @@ pub struct S3Backend {
     journal: Option<std::sync::Arc<MultipartJournal>>,
     /// Part size. Production uses [`MULTIPART_PART_SIZE`]; tests may shrink it.
     part_size: usize,
+    /// Which conditional requests the store enforces, learned once by
+    /// [`S3Backend::conditional_support`] and shared by clones.
+    conditional: std::sync::Arc<tokio::sync::OnceCell<ConditionalSupport>>,
+    /// The shared AWS configuration (region, credentials) the client was
+    /// built from; the notification queue's client reuses it.
+    sdk: aws_config::SdkConfig,
+    /// The change feed drained from the bucket's notification queue, set by
+    /// [`S3Backend::with_notification_queue`].
+    queue: Option<std::sync::Arc<crate::s3_queue::QueueFeed>>,
+}
+
+/// Which conditional requests a store enforces.
+///
+/// Some S3-compatible stores accept `If-None-Match` and `If-Match` but ignore
+/// them, which would drop a precondition without a word. The backend
+/// therefore trusts a condition only after [`S3Backend::conditional_support`]
+/// has seen the store refuse one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConditionalSupport {
+    /// `PutObject` refuses `If-None-Match: *` on an existing key and a
+    /// mismatched `If-Match`. Gates conditional writes of small objects.
+    pub writes: bool,
+    /// `CompleteMultipartUpload` refuses `If-None-Match: *` on an existing
+    /// key and a mismatched `If-Match`. Gates conditional writes of large
+    /// objects and the completion of a large no-overwrite move.
+    pub completes: bool,
+    /// `CopyObject` refuses `If-None-Match: *` onto an existing key. Gates
+    /// no-overwrite moves.
+    pub copies: bool,
+    /// `CopyObject` refuses a mismatched `x-amz-copy-source-if-match`.
+    /// Gates every native move, which pins its copy to the source ETag.
+    pub copy_pins: bool,
+    /// `UploadPartCopy` refuses a mismatched `x-amz-copy-source-if-match`.
+    /// Gates every native move, because a large source is copied in parts
+    /// and a rewrite between parts must not produce a mixed target.
+    pub part_copy_pins: bool,
+    /// `DeleteObject` refuses a mismatched `If-Match`. Gates every native
+    /// move, whose last step deletes the source only while it is unchanged.
+    pub deletes: bool,
+}
+
+impl ConditionalSupport {
+    /// True when every request a conditional write may send is enforced,
+    /// whichever of the single-request or multipart paths its size picks.
+    #[must_use]
+    pub fn conditional_writes(self) -> bool {
+        self.writes && self.completes
+    }
+
+    /// True when a move with these options can run natively: the copy is
+    /// always pinned to the source ETag and the source delete is always
+    /// conditional, and a no-overwrite move also needs the copy and the
+    /// multipart completion to refuse an existing target.
+    #[must_use]
+    pub fn native_move(self, no_overwrite: bool) -> bool {
+        self.deletes
+            && self.copy_pins
+            && self.part_copy_pins
+            && (!no_overwrite || (self.copies && self.completes))
+    }
 }
 
 impl std::fmt::Debug for S3Backend {
@@ -111,6 +169,7 @@ impl std::fmt::Debug for S3Backend {
             .field("region", &self.region)
             .field("endpoint", &self.endpoint)
             .field("part_size", &self.part_size)
+            .field("notification_queue", &self.queue.is_some())
             .field(
                 "journal",
                 &self
@@ -230,7 +289,46 @@ impl S3Backend {
                 .unwrap_or_default(),
             journal: None,
             part_size: MULTIPART_PART_SIZE,
+            conditional: std::sync::Arc::default(),
+            sdk: shared,
+            queue: None,
         })
+    }
+
+    /// Serves `changes` from the bucket's notification queue.
+    ///
+    /// The bucket must send its object-created and object-removed events to
+    /// `queue` (directly, through SNS, or through an EventBridge rule), and
+    /// nothing else may drain the queue. The feed keeps the receipts of the
+    /// messages it has handed out in `state_dir` (the guest's `HOME`) until
+    /// the host's next call says it has read them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the queue client cannot be built or
+    /// `state_dir` cannot be created.
+    pub fn with_notification_queue(
+        mut self,
+        queue: crate::s3_queue::QueueUrl,
+        state_dir: &Path,
+    ) -> Result<Self> {
+        let id = queue.as_str().to_string();
+        let client = crate::s3_queue::SqsQueue::new(&self.sdk, queue)?;
+        let feed = crate::s3_queue::QueueFeed::open(
+            Box::new(client),
+            &id,
+            &self.bucket,
+            &self.prefix,
+            state_dir,
+        )?;
+        self.queue = Some(std::sync::Arc::new(feed));
+        Ok(self)
+    }
+
+    /// True when `changes` is served from a notification queue.
+    #[must_use]
+    pub fn has_notification_queue(&self) -> bool {
+        self.queue.is_some()
     }
 
     /// Prepends the destination prefix to `key` (no-op when the prefix is empty).
@@ -242,9 +340,16 @@ impl S3Backend {
         }
     }
 
-    /// Single `PutObject` with Bookclerk metadata headers.
-    async fn put_body(&self, key: &str, body: ByteStream, meta: ObjectMeta) -> Result<()> {
-        let req = apply_meta_put(
+    /// Single `PutObject` with Bookclerk metadata headers, sent with
+    /// `condition` as `If-None-Match` / `If-Match`. Returns the new ETag.
+    async fn put_body(
+        &self,
+        key: &str,
+        body: ByteStream,
+        meta: ObjectMeta,
+        condition: Option<&WriteCondition>,
+    ) -> Result<Option<String>> {
+        let mut req = apply_meta_put(
             self.client
                 .put_object()
                 .bucket(&self.bucket)
@@ -252,11 +357,280 @@ impl S3Backend {
                 .body(body),
             &meta,
         );
-
-        req.send()
+        match condition {
+            Some(WriteCondition::IfNoneMatch) => req = req.if_none_match("*"),
+            Some(WriteCondition::IfMatch(etag)) => req = req.if_match(etag),
+            None => {}
+        }
+        let out = req
+            .send()
             .await
-            .map_err(|err| StorageError::S3(err.to_string()))?;
-        Ok(())
+            .map_err(|err| map_conditional(key, condition, &err))?;
+        Ok(out.e_tag().map(str::to_string))
+    }
+
+    /// What every S3 backend can do natively once the store has shown it
+    /// enforces conditions; each operation falls back to the host's
+    /// algorithm on a store that does not (see [`Self::conditional_support`]).
+    pub const CAPABILITIES: StorageCapabilities = StorageCapabilities {
+        move_object: true,
+        move_many: true,
+        delete_many: true,
+        head_many: true,
+        conditional_write: true,
+        changes: false,
+    };
+
+    /// Which conditional requests this store enforces, probed on first use
+    /// and remembered for the backend's lifetime.
+    ///
+    /// Each request kind is probed on its own, because a store can enforce a
+    /// condition on one and ignore it on another. Under `.bookclerk-probe/`
+    /// the probe writes a scratch object with `If-None-Match: *` twice
+    /// (the second must be refused) and overwrites it with a wrong
+    /// `If-Match` (refused); completes a one-part multipart upload onto it
+    /// with each condition (both refused) and aborts the upload; copies it
+    /// onto a second existing object with a wrong
+    /// `x-amz-copy-source-if-match` (refused) and with `If-None-Match: *`
+    /// (refused); copies it as an upload part with a wrong
+    /// `x-amz-copy-source-if-match` (refused) and aborts that upload; and
+    /// deletes it with a wrong `If-Match` (refused). It then removes both
+    /// objects. Any other answer, including an error, counts as "not
+    /// enforced", so a store is never trusted by default.
+    pub async fn conditional_support(&self) -> ConditionalSupport {
+        *self
+            .conditional
+            .get_or_init(|| self.probe_conditional_support())
+            .await
+    }
+
+    /// Runs the probe behind [`Self::conditional_support`].
+    async fn probe_conditional_support(&self) -> ConditionalSupport {
+        let id = uuid::Uuid::new_v4();
+        let key = self.full_key(&format!(".bookclerk-probe/conditional-{id}"));
+        let other = self.full_key(&format!(".bookclerk-probe/conditional-{id}-target"));
+        let mut support = ConditionalSupport::default();
+        if let Some(writes) = self.probe_writes(&key).await {
+            support.writes = writes;
+            support.completes = self.probe_completes(&key).await;
+            (support.copies, support.copy_pins) = self.probe_copies(&key, &other).await;
+            support.part_copy_pins = self.probe_part_copy_pins(&key).await;
+            support.deletes = refused(
+                self.client
+                    .delete_object()
+                    .bucket(&self.bucket)
+                    .key(&key)
+                    .if_match(PROBE_MISMATCH)
+                    .send()
+                    .await,
+            );
+        }
+        for scratch in [&key, &other] {
+            let _ = self
+                .client
+                .delete_object()
+                .bucket(&self.bucket)
+                .key(scratch)
+                .send()
+                .await;
+        }
+        tracing::debug!(
+            bucket = %self.bucket,
+            writes = support.writes,
+            completes = support.completes,
+            copies = support.copies,
+            copy_pins = support.copy_pins,
+            part_copy_pins = support.part_copy_pins,
+            deletes = support.deletes,
+            "probed S3 conditional request support"
+        );
+        support
+    }
+
+    /// Creates the probe object at `key` and checks that `PutObject` then
+    /// refuses both conditions.
+    ///
+    /// # Returns
+    ///
+    /// Whether both were refused, or `None` when the probe object could not
+    /// be created (the rest of the probe needs it, so nothing is trusted).
+    async fn probe_writes(&self, key: &str) -> Option<bool> {
+        let put = || {
+            self.client
+                .put_object()
+                .bucket(&self.bucket)
+                .key(key)
+                .body(ByteStream::from_static(b"probe"))
+        };
+        put().if_none_match("*").send().await.ok()?;
+        Some(
+            refused(put().if_none_match("*").send().await)
+                && refused(put().if_match(PROBE_MISMATCH).send().await),
+        )
+    }
+
+    /// True when `CompleteMultipartUpload` onto the existing `key` refuses
+    /// both `If-None-Match: *` and a mismatched `If-Match`. The upload is
+    /// aborted afterwards whatever happened.
+    async fn probe_completes(&self, key: &str) -> bool {
+        let Ok(created) = self
+            .client
+            .create_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+        else {
+            return false;
+        };
+        let Some(upload_id) = created.upload_id().map(str::to_string) else {
+            return false;
+        };
+        let enforced = async {
+            let part = self
+                .client
+                .upload_part()
+                .bucket(&self.bucket)
+                .key(key)
+                .upload_id(&upload_id)
+                .part_number(1)
+                .body(ByteStream::from_static(b"probe"))
+                .send()
+                .await
+                .ok()?;
+            let parts = CompletedMultipartUpload::builder()
+                .parts(
+                    CompletedPart::builder()
+                        .part_number(1)
+                        .set_e_tag(part.e_tag().map(str::to_string))
+                        .build(),
+                )
+                .build();
+            let complete = || {
+                self.client
+                    .complete_multipart_upload()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .upload_id(&upload_id)
+                    .multipart_upload(parts.clone())
+            };
+            Some(
+                refused(complete().if_none_match("*").send().await)
+                    && refused(complete().if_match(PROBE_MISMATCH).send().await),
+            )
+        }
+        .await
+        .unwrap_or(false);
+        let _ = self
+            .client
+            .abort_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .upload_id(&upload_id)
+            .send()
+            .await;
+        enforced
+    }
+
+    /// Checks how `CopyObject` from `key` onto the existing `other` treats
+    /// its conditions, sent the way a move sends them.
+    ///
+    /// The source's ETag is read afresh, because an earlier probe step that
+    /// a store did not refuse may have rewritten it, and a stale
+    /// `x-amz-copy-source-if-match` would be refused for the wrong reason.
+    ///
+    /// # Returns
+    ///
+    /// `(copies, copy_pins)`: whether `If-None-Match: *` onto `other` was
+    /// refused, and whether a wrong `x-amz-copy-source-if-match` was.
+    async fn probe_copies(&self, key: &str, other: &str) -> (bool, bool) {
+        let created = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(other)
+            .body(ByteStream::from_static(b"target"))
+            .send()
+            .await;
+        if created.is_err() {
+            return (false, false);
+        }
+        let copy = || {
+            self.client
+                .copy_object()
+                .bucket(&self.bucket)
+                .key(other)
+                .copy_source(encode_copy_source(&self.bucket, key))
+        };
+        // Leaves `other` in place whether or not the store refuses it.
+        let copy_pins = refused(copy().copy_source_if_match(PROBE_MISMATCH).send().await);
+        let Some(etag) = self.probe_etag(key).await else {
+            return (false, copy_pins);
+        };
+        let copies = refused(
+            copy()
+                .copy_source_if_match(&etag)
+                .if_none_match("*")
+                .send()
+                .await,
+        );
+        (copies, copy_pins)
+    }
+
+    /// True when `UploadPartCopy` from `key` refuses a wrong
+    /// `x-amz-copy-source-if-match`. The upload is aborted afterwards
+    /// whatever happened, so `key` is never rewritten.
+    async fn probe_part_copy_pins(&self, key: &str) -> bool {
+        let Ok(created) = self
+            .client
+            .create_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+        else {
+            return false;
+        };
+        let Some(upload_id) = created.upload_id().map(str::to_string) else {
+            return false;
+        };
+        let enforced = refused(
+            self.client
+                .upload_part_copy()
+                .bucket(&self.bucket)
+                .key(key)
+                .upload_id(&upload_id)
+                .part_number(1)
+                .copy_source(encode_copy_source(&self.bucket, key))
+                .copy_source_if_match(PROBE_MISMATCH)
+                .send()
+                .await,
+        );
+        let _ = self
+            .client
+            .abort_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .upload_id(&upload_id)
+            .send()
+            .await;
+        enforced
+    }
+
+    /// The current ETag of the probe object at `key`, or `None` when it
+    /// cannot be read.
+    async fn probe_etag(&self, key: &str) -> Option<String> {
+        let head = self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .ok()?;
+        head.e_tag()
+            .filter(|etag| !etag.is_empty())
+            .map(str::to_string)
     }
 
     /// Streams a local file as fixed-size parts (used above [`MULTIPART_THRESHOLD`]).
@@ -264,14 +638,16 @@ impl S3Backend {
     /// Uses the same journal, digest, and abort path as [`Self::put_stream`].
     async fn put_file_multipart(&self, key: &str, path: &Path, meta: ObjectMeta) -> Result<()> {
         let file = tokio::fs::File::open(path).await?;
-        self.put_stream_multipart(key, Box::pin(file), meta)
+        self.put_stream_multipart(key, Box::pin(file), meta, None)
             .await
             .map(|_| ())
     }
 
     /// Streams `body` as multipart parts (bounded window; no full-object buffer).
     ///
-    /// Returns `(bytes, sha256 hex)`. A dropped future aborts the upload via
+    /// Returns `(bytes, sha256 hex, ETag)`. `condition` is sent on
+    /// `CompleteMultipartUpload`, so nothing is published unless it holds. A
+    /// dropped future aborts the upload via
     /// [`MultipartGuard`]. When a journal is configured, the upload id is
     /// recorded before any part is sent. A failed journal write aborts the
     /// upload. The whole-object SHA-256 is stored in a sidecar object before
@@ -281,7 +657,8 @@ impl S3Backend {
         key: &str,
         mut body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
         mut meta: ObjectMeta,
-    ) -> Result<(u64, String)> {
+        condition: Option<&WriteCondition>,
+    ) -> Result<(u64, String, Option<String>)> {
         use sha2::{Digest, Sha256};
         use tokio::io::AsyncReadExt;
 
@@ -405,11 +782,13 @@ impl S3Backend {
             if completed.is_empty() {
                 self.abort_upload(&full_key, &upload_id).await;
                 guard.disarm();
-                self.put(key, Bytes::new(), meta).await?;
-                return Ok((0, hex::encode(Sha256::digest([]))));
+                let etag = self
+                    .put_body(key, ByteStream::from(Bytes::new()), meta, condition)
+                    .await?;
+                return Ok((0, hex::encode(Sha256::digest([])), etag));
             }
 
-            let completed_out = self
+            let mut complete = self
                 .client
                 .complete_multipart_upload()
                 .bucket(&self.bucket)
@@ -419,10 +798,16 @@ impl S3Backend {
                     CompletedMultipartUpload::builder()
                         .set_parts(Some(completed))
                         .build(),
-                )
+                );
+            match condition {
+                Some(WriteCondition::IfNoneMatch) => complete = complete.if_none_match("*"),
+                Some(WriteCondition::IfMatch(etag)) => complete = complete.if_match(etag),
+                None => {}
+            }
+            let completed_out = complete
                 .send()
                 .await
-                .map_err(|err| StorageError::S3(err.to_string()))?;
+                .map_err(|err| map_conditional(key, condition, &err))?;
             let etag = completed_out.e_tag().unwrap_or("").to_string();
             if etag.is_empty() {
                 return Err(StorageError::Integrity(
@@ -435,7 +820,7 @@ impl S3Backend {
             self.put_bound_integrity(key, &etag, &meta).await?;
             guard.disarm();
             self.clear_orphan(&upload_id);
-            Ok((total, digest))
+            Ok((total, digest, Some(etag)))
         };
 
         match upload.await {
@@ -476,24 +861,86 @@ impl S3Backend {
         }
     }
 
+    /// Server-side copies the object `probe` describes from `from` to `to`,
+    /// only while the source still has the probed ETag, and with `target`
+    /// sent as the destination's precondition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::PayloadTooLarge`] above the supported object
+    /// size, [`StorageError::Integrity`] when the source has no ETag or
+    /// changed during an unconditioned copy, [`StorageError::Conflict`] when
+    /// a conditioned copy is refused, and S3 errors otherwise.
+    async fn copy_probed(
+        &self,
+        from: &str,
+        to: &str,
+        probe: &ObjectProbe,
+        target: Option<&WriteCondition>,
+    ) -> Result<()> {
+        if probe.size > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES {
+            return Err(StorageError::PayloadTooLarge(format!(
+                "copy of {} bytes exceeds {}",
+                probe.size,
+                crate::bounded::MAX_SUPPORTED_OBJECT_BYTES
+            )));
+        }
+        let etag = probe
+            .etag
+            .clone()
+            .filter(|etag| !etag.is_empty())
+            .ok_or_else(|| {
+                StorageError::Integrity("refusing server copy without a source ETag".into())
+            })?;
+        let multipart = if self.part_size == MULTIPART_PART_SIZE {
+            !crate::bounded::copy_uses_single_request(probe.size)
+        } else {
+            // Tests shrink the part size so a multipart copy can be exercised
+            // without a multi-gigabyte object. Production keeps the 5 GiB ceiling.
+            probe.size > self.part_size as u64
+        };
+        if multipart {
+            self.copy_multipart(from, to, probe, target).await
+        } else {
+            self.copy_object_single(from, to, &etag, &probe.meta, target)
+                .await
+        }
+    }
+
     async fn copy_object_single(
         &self,
         from: &str,
         to: &str,
         source_etag: &str,
         source_meta: &ObjectMeta,
+        target: Option<&WriteCondition>,
     ) -> Result<()> {
-        let copied = self
+        let mut req = self
             .client
             .copy_object()
             .bucket(&self.bucket)
             .key(self.full_key(to))
             .copy_source(encode_copy_source(&self.bucket, &self.full_key(from)))
             .copy_source_if_match(source_etag)
-            .metadata_directive(aws_sdk_s3::types::MetadataDirective::Copy)
-            .send()
-            .await
-            .map_err(|err| map_copy_failure(from, format!("{err:?}")))?;
+            .metadata_directive(aws_sdk_s3::types::MetadataDirective::Copy);
+        match target {
+            Some(WriteCondition::IfNoneMatch) => req = req.if_none_match("*"),
+            Some(WriteCondition::IfMatch(etag)) => req = req.if_match(etag),
+            None => {}
+        }
+        let copied = req.send().await.map_err(|err| {
+            let msg = format!("{err:?}");
+            // S3 answers 412 for both the source and the target condition
+            // without saying which one failed; either way the copy did not
+            // happen and the caller's precondition no longer holds.
+            if target.is_some() && refused_precondition(&msg) {
+                StorageError::Conflict(format!(
+                    "{to} did not meet its precondition or {from} changed during the copy"
+                ))
+            } else {
+                map_copy_failure(from, msg)
+            }
+        })?;
         if source_meta.sha256_hex.is_some() || source_meta.commit_token.is_some() {
             // The CopyObject response is the publication identity. A later HEAD
             // can observe a replacement and must not label that body with this
@@ -512,7 +959,13 @@ impl S3Backend {
         Ok(())
     }
 
-    async fn copy_multipart(&self, from: &str, to: &str, probe: &ObjectProbe) -> Result<()> {
+    async fn copy_multipart(
+        &self,
+        from: &str,
+        to: &str,
+        probe: &ObjectProbe,
+        target: Option<&WriteCondition>,
+    ) -> Result<()> {
         let full_from = self.full_key(from);
         let full_to = self.full_key(to);
         let source = encode_copy_source(&self.bucket, &full_from);
@@ -589,7 +1042,7 @@ impl S3Backend {
                 start = end;
                 part_number += 1;
             }
-            let completed_out = self
+            let mut complete = self
                 .client
                 .complete_multipart_upload()
                 .bucket(&self.bucket)
@@ -599,10 +1052,16 @@ impl S3Backend {
                     CompletedMultipartUpload::builder()
                         .set_parts(Some(completed))
                         .build(),
-                )
+                );
+            match target {
+                Some(WriteCondition::IfNoneMatch) => complete = complete.if_none_match("*"),
+                Some(WriteCondition::IfMatch(etag)) => complete = complete.if_match(etag),
+                None => {}
+            }
+            let completed_out = complete
                 .send()
                 .await
-                .map_err(|err| StorageError::S3(err.to_string()))?;
+                .map_err(|err| map_conditional(to, target, &err))?;
             let etag = completed_out.e_tag().unwrap_or("").to_string();
             if etag.is_empty() {
                 return Err(StorageError::Integrity(
@@ -717,8 +1176,10 @@ impl S3Backend {
                 content_type: Some("application/json".into()),
                 ..ObjectMeta::default()
             },
+            None,
         )
         .await
+        .map(|_| ())
     }
 
     async fn read_bound_integrity(&self, key: &str, etag: &str) -> Result<Option<BoundIntegrity>> {
@@ -835,7 +1296,9 @@ impl StorageBackend for S3Backend {
                 ));
             }
         }
-        self.put_body(key, data.into(), meta).await
+        self.put_body(key, data.into(), meta, None)
+            .await
+            .map(|_| ())
     }
 
     async fn put_file(&self, key: &str, path: &Path, meta: ObjectMeta) -> Result<()> {
@@ -862,7 +1325,7 @@ impl StorageBackend for S3Backend {
         let body = ByteStream::from_path(path)
             .await
             .map_err(|err| StorageError::S3(format!("failed to open {}: {err}", path.display())))?;
-        self.put_body(key, body, meta).await
+        self.put_body(key, body, meta, None).await.map(|_| ())
     }
 
     async fn get(&self, key: &str) -> Result<Bytes> {
@@ -898,8 +1361,18 @@ impl StorageBackend for S3Backend {
             .send()
             .await
             .map_err(|err| {
+                // A HEAD answer has no body, so the SDK's message for a
+                // missing key is only "service error": read the status.
+                let missing = err.as_service_error().is_some_and(|e| e.is_not_found())
+                    || err
+                        .raw_response()
+                        .is_some_and(|raw| raw.status().as_u16() == 404);
                 let msg = err.to_string();
-                if msg.contains("NotFound") || msg.contains("404") || msg.contains("NoSuchKey") {
+                if missing
+                    || msg.contains("NotFound")
+                    || msg.contains("404")
+                    || msg.contains("NoSuchKey")
+                {
                     StorageError::NotFound(key.into())
                 } else {
                     StorageError::S3(msg)
@@ -941,6 +1414,9 @@ impl StorageBackend for S3Backend {
             content_type: meta.content_type.clone(),
             meta,
             etag: out.e_tag().map(str::to_string),
+            modified_at_ms: out.last_modified().and_then(unix_ms),
+            version_id: out.version_id().map(str::to_string),
+            signature: out.e_tag().map(str::to_string),
         })
     }
 
@@ -949,32 +1425,7 @@ impl StorageBackend for S3Backend {
             return Ok(());
         }
         let probe = self.probe(from).await?;
-        if probe.size > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES {
-            return Err(StorageError::PayloadTooLarge(format!(
-                "copy of {} bytes exceeds {}",
-                probe.size,
-                crate::bounded::MAX_SUPPORTED_OBJECT_BYTES
-            )));
-        }
-        let etag = probe
-            .etag
-            .clone()
-            .filter(|etag| !etag.is_empty())
-            .ok_or_else(|| {
-                StorageError::Integrity("refusing server copy without a source ETag".into())
-            })?;
-        let multipart = if self.part_size == MULTIPART_PART_SIZE {
-            !crate::bounded::copy_uses_single_request(probe.size)
-        } else {
-            // Tests shrink the part size so a multipart copy can be exercised
-            // without a multi-gigabyte object. Production keeps the 5 GiB ceiling.
-            probe.size > self.part_size as u64
-        };
-        if multipart {
-            self.copy_multipart(from, to, &probe).await
-        } else {
-            self.copy_object_single(from, to, &etag, &probe.meta).await
-        }
+        self.copy_probed(from, to, &probe, None).await
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
@@ -1043,6 +1494,10 @@ impl StorageBackend for S3Backend {
                 objects.push(ObjectInfo {
                     key,
                     size: obj.size().unwrap_or(0) as u64,
+                    etag: obj.e_tag().map(str::to_string),
+                    modified_at_ms: obj.last_modified().and_then(unix_ms),
+                    version_id: None,
+                    signature: obj.e_tag().map(str::to_string),
                 });
             }
             let truncated = resp.is_truncated().unwrap_or(false);
@@ -1121,13 +1576,171 @@ impl StorageBackend for S3Backend {
         body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
         meta: ObjectMeta,
     ) -> Result<crate::PutStreamResult> {
-        let (n, sha) = self.put_stream_multipart(key, body, meta).await?;
+        let (n, sha, etag) = self.put_stream_multipart(key, body, meta, None).await?;
         Ok(crate::PutStreamResult {
             bytes_written: n,
-            etag: None,
+            etag,
             sha256_hex: Some(sha),
         })
     }
+
+    fn capabilities(&self) -> StorageCapabilities {
+        StorageCapabilities {
+            changes: self.queue.is_some(),
+            ..Self::CAPABILITIES
+        }
+    }
+
+    /// Drains the bucket's notification queue when one is configured
+    /// ([`S3Backend::with_notification_queue`]); otherwise there is no feed.
+    async fn changes(
+        &self,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<Option<crate::ChangeFeedPage>> {
+        match &self.queue {
+            Some(queue) => queue.changes(cursor, limit).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Server-side copies the source, only while it still has the ETag the
+    /// move started from (and, with `no_overwrite`, only while nothing is at
+    /// the target), then deletes the source only while it still has that
+    /// ETag. S3 has no rename, so the move is never atomic. A store that has
+    /// not shown it enforces these conditions gets
+    /// [`crate::intent::fallback_move`] instead.
+    async fn move_object(&self, from: &str, to: &str, options: &MoveOptions) -> Result<MoveResult> {
+        let support = self.conditional_support().await;
+        if !support.native_move(options.no_overwrite) {
+            return crate::intent::fallback_move(self, from, to, options).await;
+        }
+        let Some(source) = self.head(from).await? else {
+            if from != to && self.head(to).await?.is_some() {
+                return Ok(MoveResult {
+                    atomic: false,
+                    already_moved: true,
+                });
+            }
+            return Err(StorageError::NotFound(from.to_string()));
+        };
+        if let Some(expected) = &options.if_source_match {
+            if source.etag.as_deref() != Some(expected.as_str()) {
+                return Err(StorageError::Conflict(format!(
+                    "{from} changed since it was read"
+                )));
+            }
+        }
+        if from == to {
+            return Ok(MoveResult {
+                atomic: true,
+                already_moved: false,
+            });
+        }
+        let Some(source_etag) = source.etag.clone().filter(|etag| !etag.is_empty()) else {
+            return crate::intent::fallback_move(self, from, to, options).await;
+        };
+        let target = options.no_overwrite.then_some(WriteCondition::IfNoneMatch);
+        self.copy_probed(from, to, &source, target.as_ref())
+            .await
+            .map_err(|err| match err {
+                StorageError::Integrity(msg) if msg.contains("changed during copy") => {
+                    StorageError::Conflict(format!("{from} changed while it was copied to {to}"))
+                }
+                other => other,
+            })?;
+        let deleted = self
+            .client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(self.full_key(from))
+            .if_match(&source_etag)
+            .send()
+            .await;
+        match deleted {
+            Ok(_) => self.delete_bound_integrity(from).await?,
+            Err(err) => {
+                let msg = format!("{err:?}");
+                if refused_precondition(&msg) {
+                    return Err(StorageError::Conflict(format!(
+                        "{from} changed while it was copied to {to}; the source was kept"
+                    )));
+                }
+                // Someone else already removed the source; the copy stands.
+                if !matches!(map_missing(from, msg), StorageError::NotFound(_)) {
+                    return Err(StorageError::S3(format!("{err}")));
+                }
+            }
+        }
+        Ok(MoveResult {
+            atomic: false,
+            already_moved: false,
+        })
+    }
+
+    /// Sends the condition with the upload (`If-None-Match` / `If-Match` on
+    /// `PutObject` or `CompleteMultipartUpload`), so the store decides it
+    /// atomically, after a cheap `HeadObject` that refuses a write bound to
+    /// fail before its body is uploaded. A store that has not shown it
+    /// enforces conditions gets [`crate::intent::fallback_put_conditional`].
+    async fn put_stream_conditional(
+        &self,
+        key: &str,
+        body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        meta: ObjectMeta,
+        condition: &WriteCondition,
+    ) -> Result<ConditionalPutResult> {
+        if !self.conditional_support().await.conditional_writes() {
+            return crate::intent::fallback_put_conditional(self, key, body, meta, condition).await;
+        }
+        let current = self.head(key).await?;
+        let holds = match (condition, &current) {
+            (WriteCondition::IfNoneMatch, current) => current.is_none(),
+            (WriteCondition::IfMatch(expected), current) => {
+                current.as_ref().and_then(|p| p.etag.as_deref()) == Some(expected.as_str())
+            }
+        };
+        if !holds {
+            return Err(StorageError::Conflict(format!(
+                "{key}: precondition failed"
+            )));
+        }
+        let (bytes_written, sha, etag) = self
+            .put_stream_multipart(key, body, meta, Some(condition))
+            .await?;
+        Ok(ConditionalPutResult {
+            put: crate::PutStreamResult {
+                bytes_written,
+                etag,
+                sha256_hex: Some(sha),
+            },
+            atomic: true,
+        })
+    }
+
+    /// `ListObjectsV2` already carries each object's ETag and modification
+    /// time, so every page has signatures. The time filter runs on the page
+    /// the store returned, so a filtered page can be short or empty while
+    /// `next_cursor` says more remain.
+    async fn list_hinted(&self, request: &ListRequest) -> Result<HintedListPage> {
+        let mut page = self
+            .list_page(&request.prefix, request.cursor.as_deref(), request.limit)
+            .await?;
+        if let Some(since) = request.modified_since_ms {
+            page.objects
+                .retain(|object| object.modified_at_ms.is_none_or(|at| at >= since));
+        }
+        Ok(HintedListPage {
+            page,
+            signatures_included: true,
+            modified_since_applied: request.modified_since_ms.is_some(),
+        })
+    }
+}
+
+/// Converts an S3 timestamp to UTC unix milliseconds; `None` before 1970.
+fn unix_ms(at: &aws_sdk_s3::primitives::DateTime) -> Option<u64> {
+    u64::try_from(at.to_millis().ok()?).ok()
 }
 
 /// True when a file should be uploaded in parts rather than one `PutObject`.
@@ -1540,6 +2153,40 @@ fn bound_integrity_key(key: &str, etag: &str) -> String {
         "{key}.bookclerk-integrity/{}.json",
         hex::encode(etag.as_bytes())
     )
+}
+
+/// The `If-Match` value the conditional probe sends, which no real object's
+/// ETag equals.
+const PROBE_MISMATCH: &str = "\"bookclerk-probe-mismatch\"";
+
+/// True when a probe request failed because the store refused its
+/// precondition; success or any other failure means "not enforced".
+fn refused<T, E: std::fmt::Debug>(answer: std::result::Result<T, E>) -> bool {
+    matches!(answer, Err(err) if refused_precondition(&format!("{err:?}")))
+}
+
+/// True when an S3 error says a request's precondition did not hold.
+fn refused_precondition(msg: &str) -> bool {
+    msg.contains("PreconditionFailed")
+        || msg.contains("412")
+        || msg.contains("ConditionalRequestConflict")
+}
+
+/// Maps a failed conditional write of `key`.
+///
+/// A refused precondition is [`StorageError::Conflict`] when the request
+/// carried one; the error's debug text is read only to recognise that
+/// refusal. Every other failure keeps the plain [`StorageError::S3`] message
+/// an unconditional write reports.
+fn map_conditional<E>(key: &str, condition: Option<&WriteCondition>, err: &E) -> StorageError
+where
+    E: std::fmt::Debug + std::fmt::Display,
+{
+    if condition.is_some() && refused_precondition(&format!("{err:?}")) {
+        StorageError::Conflict(format!("{key}: precondition failed"))
+    } else {
+        StorageError::S3(err.to_string())
+    }
 }
 
 fn map_copy_failure(key: &str, msg: String) -> StorageError {

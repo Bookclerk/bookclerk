@@ -34,12 +34,28 @@ pub struct ObjectMeta {
 }
 
 /// Listing entry returned by [`StorageBackend::list`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// The signature fields are filled only by a listing asked for them
+/// ([`crate::ListRequest::with_signatures`]) on a backend that has them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectInfo {
     /// Relative storage key (prefix + path; no leading slash).
     pub key: String,
     /// Object size in bytes.
     pub size: u64,
+    /// Backend entity tag. Opaque; not a content checksum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
+    /// Last modification time in UTC unix milliseconds, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at_ms: Option<u64>,
+    /// Backend object version id (versioned buckets), when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_id: Option<String>,
+    /// Opaque change signature: an unchanged value means the object did not
+    /// change. Compare only values from the same backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 /// Cheap object probe (S3 `HeadObject` / local sidecar meta) — never downloads
@@ -57,6 +73,15 @@ pub struct ObjectProbe {
     /// Backend entity tag. Opaque; not a content checksum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
+    /// Last modification time in UTC unix milliseconds, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at_ms: Option<u64>,
+    /// Backend object version id (versioned buckets), when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_id: Option<String>,
+    /// Opaque change signature, as [`ObjectInfo::signature`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 /// Audio extensions considered acquired media for storage matching.
@@ -262,13 +287,136 @@ pub trait StorageBackend: Send + Sync {
     /// file copy). Preserves object metadata when the backend supports it.
     async fn copy(&self, from: &str, to: &str) -> Result<()>;
 
-    /// Move `from` → `to` (copy then delete source).
+    /// Move `from` → `to`, replacing any object at `to`.
+    ///
+    /// Forwards to [`Self::move_object`], so a backend that renames natively
+    /// does it in one step.
     async fn rename(&self, from: &str, to: &str) -> Result<()> {
-        if from == to {
-            return Ok(());
-        }
-        self.copy(from, to).await?;
-        self.delete(from).await
+        self.move_object(from, to, &crate::MoveOptions::default())
+            .await
+            .map(|_| ())
+    }
+
+    /// Which intent operations this backend does natively. The default is
+    /// none: every operation runs its fallback from the primitives.
+    fn capabilities(&self) -> crate::StorageCapabilities {
+        crate::StorageCapabilities::default()
+    }
+
+    /// Move one object. The default is [`crate::intent::fallback_move`]
+    /// (probe, copy, delete).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::NotFound`] when neither key exists,
+    /// [`StorageError::Conflict`] when a precondition fails, and backend
+    /// errors otherwise.
+    async fn move_object(
+        &self,
+        from: &str,
+        to: &str,
+        options: &crate::MoveOptions,
+    ) -> Result<crate::MoveResult> {
+        crate::intent::fallback_move(self, from, to, options).await
+    }
+
+    /// Move each `(from, to)` pair, one outcome per pair in order. The
+    /// default loops [`Self::move_object`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when the whole call fails; per-pair failures
+    /// are in the outcomes.
+    async fn move_many(
+        &self,
+        pairs: &[(String, String)],
+        options: &crate::MoveOptions,
+    ) -> Result<Vec<crate::KeyResult>> {
+        Ok(crate::intent::fallback_move_many(self, pairs, options).await)
+    }
+
+    /// Move one page of the objects under `from_prefix` to `to_prefix`.
+    /// The default is [`crate::intent::fallback_move_prefix`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::InvalidKey`] for overlapping prefixes,
+    /// [`StorageError::InvalidCursor`] for a cursor the backend no longer
+    /// accepts (start over with `None`), and listing errors.
+    async fn move_prefix(
+        &self,
+        from_prefix: &str,
+        to_prefix: &str,
+        cursor: Option<&str>,
+        limit: u32,
+        options: &crate::MoveOptions,
+    ) -> Result<crate::MovePrefixPage> {
+        crate::intent::fallback_move_prefix(self, from_prefix, to_prefix, cursor, limit, options)
+            .await
+    }
+
+    /// Delete each key, one outcome per key in order. The default loops
+    /// [`Self::delete`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when the whole call fails.
+    async fn delete_many(&self, keys: &[String]) -> Result<Vec<crate::KeyResult>> {
+        Ok(crate::intent::fallback_delete_many(self, keys).await)
+    }
+
+    /// Probe each key, one entry per key in order. The default loops
+    /// [`Self::head`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the first probe failure other than absence.
+    async fn head_many(&self, keys: &[String]) -> Result<Vec<Option<ObjectProbe>>> {
+        crate::intent::fallback_head_many(self, keys).await
+    }
+
+    /// Write `body` under `key` only when `condition` holds. The default
+    /// checks first and then writes, and reports that it was not atomic.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Conflict`] when the condition fails, and
+    /// backend errors otherwise.
+    async fn put_stream_conditional(
+        &self,
+        key: &str,
+        body: Pin<Box<dyn AsyncRead + Send>>,
+        meta: ObjectMeta,
+        condition: &crate::WriteCondition,
+    ) -> Result<crate::ConditionalPutResult> {
+        crate::intent::fallback_put_conditional(self, key, body, meta, condition).await
+    }
+
+    /// One listing page with hints. The default ignores the hints and says
+    /// so in the reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns listing errors.
+    async fn list_hinted(&self, request: &crate::ListRequest) -> Result<crate::HintedListPage> {
+        crate::intent::fallback_list_hinted(self, request).await
+    }
+
+    /// Changes since `cursor` from the backend's change feed. `Ok(None)`
+    /// means the backend has no feed and the caller relies on listings,
+    /// which is the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::InvalidCursor`] for an expired cursor (start
+    /// over with a full listing) and feed errors.
+    async fn changes(
+        &self,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<Option<crate::ChangeFeedPage>> {
+        let _ = (cursor, limit);
+        Ok(None)
     }
 
     /// Delete an object (no-op if missing).

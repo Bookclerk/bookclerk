@@ -530,9 +530,9 @@ async fn undeployed_cron_fire_fails_after_grace(store_a: LibraryStore, store_b: 
     );
 }
 
-/// Inserts a Host node owned by a new user of `role`, with a live
+/// Inserts a Branch node owned by a new user of `role`, with a live
 /// credential.
-async fn add_host_node(store: &LibraryStore, node_id: &str, role: UserRole) {
+async fn add_branch_node(store: &LibraryStore, node_id: &str, role: UserRole) {
     use crate::entities::{node_credentials, nodes};
     use sea_orm::{ActiveModelTrait, ActiveValue::Set};
 
@@ -561,7 +561,7 @@ async fn add_host_node(store: &LibraryStore, node_id: &str, role: UserRole) {
         scratch_bytes: Set(None),
         target: Set(String::new()),
         labels_json: Set("[]".into()),
-        kind: Set("host".into()),
+        kind: Set("branch".into()),
         owner_user_id: Set(Some(owner)),
         ..Default::default()
     }
@@ -586,8 +586,8 @@ async fn add_host_node(store: &LibraryStore, node_id: &str, role: UserRole) {
 /// user cannot be claimed by anyone, so it fails after the grace period;
 /// one on an administrator's Host stays routable.
 async fn cron_fire_on_member_host_fails_after_grace(store_a: LibraryStore, store_b: LibraryStore) {
-    add_host_node(&store_a, "host-member", UserRole::Host).await;
-    add_host_node(&store_a, "host-admin", UserRole::Administrator).await;
+    add_branch_node(&store_a, "host-member", UserRole::Host).await;
+    add_branch_node(&store_a, "host-admin", UserRole::Administrator).await;
     let mut jobs = Vec::new();
     for host in ["host-member", "host-admin"] {
         let instance = create_plugin_instance(&store_a, &operator(), LOCAL_KEY, host)

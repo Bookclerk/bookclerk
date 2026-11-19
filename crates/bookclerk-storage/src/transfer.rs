@@ -843,6 +843,7 @@ fn is_retryable(err: &StorageError) -> bool {
         | StorageError::PayloadTooLarge(_)
         | StorageError::InvalidCursor(_)
         | StorageError::Integrity(_)
+        | StorageError::Conflict(_)
         | StorageError::Other(_) => false,
     }
 }

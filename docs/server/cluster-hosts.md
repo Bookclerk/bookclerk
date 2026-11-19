@@ -18,7 +18,7 @@ branch on the library's own database, and what each side runs and shares.
   operator is the library's operator. See
   [Shared branches](#shared-branches).
 - A **clerk** signs in to a library as its person with a **library
-  card** and shows that person's books. It isn't a node: the library
+  card** and shows that library's books, the person's own marked. It isn't a node: the library
   never sends it work, and it holds no node key. See
   [Library cards](sign-in.md#library-cards).
 
@@ -28,13 +28,13 @@ the older names:
 | Web UI | Code, API and CLI |
 | --- | --- |
 | Library | Owner cluster (`clusters`) |
-| The library's own daemons, shared branches included | Owner nodes (`kind = owner`) |
-| Branch | Host node (`nodes`, `kind = host`) |
+| The library's own daemons, shared branches included | Shared nodes (`kind = shared`) |
+| Branch | Branch node (`nodes`, `kind = branch`) |
 | Branch invite | Enrollment link |
 | "Let new branches join" | `core.host_enrollment` |
 
 The design record is
-[ADR: Control plane](../adr/control-plane.md#host-node-enrollment-and-transport)
+[ADR: Control plane](../adr/control-plane.md#branch-node-enrollment-and-transport)
 (H-4).
 
 ## First start
@@ -60,7 +60,7 @@ same wizard.
    use (the same one people open the library at), and choose a
    `[daemon.node_api]` mode: `acme`, `proxy`, `self_signed` or `loopback`.
    The modes, their required settings and what each refuses are in
-   [Configuration → Host nodes](configuration.md#host-nodes).
+   [Configuration → Branch nodes](configuration.md#branch-nodes).
 2. **Let new branches join.** **Settings → Branches** (operator or Owner)
    has the switch, on by default, and shows the address to join. In
    `self_signed` mode it also shows the certificate fingerprint that a
@@ -84,7 +84,7 @@ keep working.
 ### What a branch is trusted with
 
 A branch's node appears among the nodes (`bookclerk nodes list`,
-`kind = host`), owned by the user who signed in, or the invite's user.
+`kind = branch`), owned by the user who signed in, or the invite's user.
 **Trust follows that user's role**:
 
 - A Member's or Host's branch receives only jobs whose store accounts
@@ -202,15 +202,15 @@ The exchange runs in five steps:
    consumes the code and checks its client, redirect URI, scope and
    verifier. It checks again that new branches may join and the user is
    active. Then it runs the **same canonical redeem batch** as an invite:
-   one `nodes` row (`kind = host`, owned by the signed-in user),
+   one `nodes` row (`kind = branch`, owned by the signed-in user),
    `node_credentials` and a receipt.
 5. **Done.** The daemon checks that the answer names the library it read.
    It seals both private keys into its `encrypted_secrets`, records the
    link in `cluster_links`, and starts the link's client.
 
 A clerk's library card uses the same authorization server with a
-second built-in public client, `bookclerk-client` (scope
-`library:member`). Its code is redeemed at `POST /api/client/v1/token`
+second built-in public client, `bookclerk-clerk` (scope
+`library:member`). Its code is redeemed at `POST /api/clerk/v1/token`
 for a session token, not at the node API, and no node row is made. See
 [Library cards](sign-in.md#library-cards).
 
@@ -396,9 +396,9 @@ drops, resuming any job it still holds.
 ## Shared branches
 
 A shared branch is a second (or third) server for the
-**same** library. It is an owner node that opens the library's database
+**same** library. It is a shared node that opens the library's database
 with the library's key, serves the web UI, plans jobs, and can take over
-maintenance leases when another owner node goes down. Any other branch
+maintenance leases when another shared node goes down. Any other branch
 keeps its own database; a shared branch has none of its own.
 
 ### Who can add one
@@ -506,7 +506,7 @@ Audit events:
 - On the library: `shared_branch_authorize`, `shared_branch_authorize_refused`,
   `shared_branch_enroll_refused` and `shared_branch_enrolled`.
 - On the joining server: `shared_branch_joined`.
-- When one is removed: `owner_node_removed`.
+- When one is removed: `shared_node_removed`.
 
 ## Consent: what the library may run here
 
@@ -616,12 +616,19 @@ A host never writes library SQL.
 
 ### Acquires
 
-1. The host asks the owner for the job's titles (`acquire.plan`).
-2. The answer, `acquire.targets`, lists the titles and every output
-   destination deployed on the owner node that answered, each with its own
+1. The host asks the owner for the job's titles (`acquire.plan`). As for
+   a local acquire, a title whose edition another store account already
+   acquired is left out: the library already has its files.
+2. The answer, `acquire.targets`, lists the titles still to fetch and every output
+   destination deployed on the shared node that answered, each with its own
    naming options (templates, replacement characters, path limits). Each
-   title carries its library id on the owner, so the `<library id>` naming
-   tag writes the owner's id rather than the host's scratch one.
+   title carries its store account's holding id on the owner, which its
+   upload names, and its library id on the owner, so the `<library id>`
+   naming tag writes the owner's id rather than the host's scratch one.
+   It also carries the store listing the acquire needs (store, product id,
+   marketplace, title, people, series and dates), read from the owner's
+   holdings and editions, and a podcast episode carries its show's
+   listing the same way.
 3. The host acquires each title into a per-title outbox, with one
    sub-directory per owner destination. So each destination's file names
    come out exactly as a local acquire on the owner would name them.
@@ -695,7 +702,7 @@ install's running daemon and its link
 It runs as the user who owns this node:
 
 - An Owner or Administrator scanning every account gets one job per
-  scan-enabled account, spread over every owner node and host trusted with
+  scan-enabled account, spread over every shared node and host trusted with
   each.
 - Anyone else scans only their own accounts. A named account that isn't
   theirs is refused (403).
@@ -708,12 +715,16 @@ node would be trusted to claim.
 ## Uploads
 
 Files stream **through** the owner to its destinations. Nothing is staged
-on an owner node's disk.
+on a shared node's disk.
 
-1. **Grant.** The host sends `upload.grant` over the node socket, with a
-   manifest. The manifest lists each distinct file content once (`size`,
+1. **Grant.** The host sends `upload.grant` over the node socket, with
+   the title's holding id from the plan and a manifest. The manifest lists each distinct file content once (`size`,
    `sha256`, `content_type`), with a list of **copies**, one
-   `{destination, key}` per owner destination. The owner answers
+   `{destination, key}` per owner destination. An audio file the host
+   could probe also carries `probe` (`bitrate_kbps`, `lossless`,
+   `source_store`), which the owner keeps on the file's row once the
+   upload commits (see [What a stored file's row
+   says](media.md#what-a-stored-files-row-says)). The owner answers
    `upload.granted` with an upload id and a bearer token **sealed to the
    host's box key**. Only its hash is stored, and it lives one hour.
 2. **Send.** The host sends
@@ -734,15 +745,143 @@ destination's stream with an error, so each discards what it wrote.
 | Refusal | Meaning |
 | --- | --- |
 | `401 unauthorized` | Unknown upload, or a wrong or expired token |
-| `421 misdirected` | Another owner node granted it |
+| `421 misdirected` | Another shared node granted it |
 | `409 lost` | The fence is gone |
-| `422 refused`, `422 destinations_changed` | The owner node's destinations aren't the ones the manifest was written for. The upload is aborted and the title fails on the host, to be retried |
+| `422 refused`, `422 destinations_changed` | The shared node's destinations aren't the ones the manifest was written for. The upload is aborted and the title fails on the host, to be retried |
 
 Limits: 512 files per title, 8 GiB per file, 16 copies per file and 1 KiB
 keys.
 
 These routes sit outside the cookie and operator-auth layers, because the
 sealed token is the credential. They run the transport policy first.
+
+## Taking a copy from the library
+
+A branch can take the files the library already holds of an edition,
+instead of downloading the book from the store again. Nothing new has to
+be turned on: the library answers a branch it trusts, for the person the
+branch belongs to.
+
+1. **Grant.** The branch sends `copy.grant` over the node socket, naming
+   the edition by its store listing (`store`, `marketplace`,
+   `product_id`). The library answers `copy.granted` with a copy id, what
+   the copy is (media type, bitrate, source store, version, as the
+   [list of books in other libraries](#books-in-other-libraries) states it), the list of files with their
+   sizes, and a bearer token **sealed to the branch's box key**. Only the
+   token's hash is stored, and it lives one hour.
+2. **Download.** The branch sends
+   `GET /api/copies/v1/{copy_id}/files/{n}` per file, with
+   `Authorization: Bookclerk-Copy <token>`. The library streams the file
+   from its destination; nothing is staged on its disk. One `Range`
+   (`bytes=a-b`, `bytes=a-` or `bytes=-n`) is honoured with `206`, so a
+   broken download resumes where it stopped.
+
+The reader writes each file to disk as it arrives and takes it only when
+the answer states exactly the bytes it asked for: `200` with the size the
+grant listed, or `206` from the byte it resumes at to the end of the
+file. An answer with another length or range, or with a chunked body, is
+refused, and what the reader already holds is kept for the next try. A
+`416` on a resumed download starts that file over once. A branch linked
+to several libraries sends a copy's token only to the library that
+granted it.
+
+The library sends a copy of an edition when it holds the edition's audio
+and the person may see the edition. The primary audio file comes first,
+then the files stored in the same folder (parts, chapters, cover, PDF,
+sidecars). File names are relative to that folder. They say what a file
+is; the branch names the files its own way.
+
+The library checks the grant again on **every** download, not only when
+it hands out the token: the branch is still trusted, it still belongs to
+the same person, that person may still see the edition, and the files
+are still the ones the grant listed. A token outlives none of them.
+
+### When a branch takes the copy
+
+A branch asks for a copy when it acquires one of its **own** titles: a
+book on a store account connected to the branch, found by the branch's
+own scan. Before it fetches the title from the store, it asks each
+library it joined, in turn, for the copy of that listing.
+
+- **Same store: the library's copy is used.** When the library downloaded
+  its copy from the same store as the branch's title, and holds it as
+  one audio file, the branch downloads the library's audio and cover and
+  the store is not asked. The files then go through the branch's own
+  acquire like a store download: converted to the branch's output
+  format, named by its templates, tagged, probed and recorded. Chapters
+  are read from the downloaded file in the confined media worker.
+- **Several audio files: the store.** A book the library holds as parts
+  or as one file per chapter is fetched from the branch's store. The
+  grant lists those files by name, which need not be playing order.
+- **Split by chapter: MP4 audio only.** A branch whose output is split
+  into chapter files takes the library's copy only when it is an M4B,
+  M4A or MP4 file; otherwise it fetches from the store.
+- **Another store: the better copy is kept.** When no library has a copy
+  from the title's store but one has a copy of the same edition from a
+  different store, the branch downloads from its own store first,
+  probes that download and asks its libraries again (a store download
+  can outlast the hour a library's answer is good for). If the library's probe says its copy is better
+  (lossless beats lossy, then the higher bitrate wins), the branch
+  downloads the library's copy too, probes it itself, and stores it in
+  place of its own download only when its own probe agrees. Otherwise it
+  keeps its own, as it does when the two don't fit in the acquire's
+  scratch budget together. A lossless copy (FLAC or ALAC) is taken only
+  by a branch whose output keeps files as delivered: every other output
+  repackages the audio, and the media worker decodes AAC and MP3
+  audio only (so a copy in another encoding, such as Opus, is not taken
+  by such a branch either). The comparison runs once, in that acquire. The stored
+  file's row names the store the audio really came from, and the cover
+  and companion PDF of the branch's own download are kept (the library's
+  cover is used only when the store sent none).
+- **Unknown store: the branch fetches its own.** A copy whose store the
+  library doesn't know is never offered.
+- **Any problem: the store.** If the copy doesn't arrive whole, is larger
+  than the acquire's scratch budget, or holds audio the media worker
+  can't read, the branch removes what it downloaded and fetches from the
+  store.
+
+Only the audio, the cover and the companion PDF are taken. The branch
+writes its own sidecars (`.cue`, chapter JSON). The PDF is taken only
+when companion PDFs are turned on at the branch and the library holds
+one; it is the file the store gives for the edition, and the branch
+stores it without opening it. The store is not asked for a PDF the
+library doesn't hold, because a store's only way to a PDF is a whole
+download of the title; a later acquire of the same title asks the store
+for a missing PDF as it does for any title whose audio is already
+stored.
+
+The branch asks a library only while that link's **Keep copies on this
+computer** setting is on and its connection is up; a library that is
+offline is skipped, not waited for. A book taken this way is recorded
+for that library before the branch stores any of it, so the branch never
+shares it back to the library it came from (see
+[Shared catalog](#shared-catalog)); a copy that can't be recorded isn't
+used. The job log line
+`acquired` carries `from_library=true` for such a title.
+
+A clerk takes copies the same way, for the person its library card
+belongs to. Its own acquire asks each library it holds an active card
+for, after any library it joined as a branch, by sending `copy.grant` on
+that card's clerk socket; a library whose socket isn't connected is
+skipped. The same-store rule and the fall-back to the store apply, and a
+taken book is recorded for that library too. The grant's token is not
+sealed (a clerk has no box key; the socket is the card's own connection,
+TLS except on loopback), and each download checks that the card is still
+signed in instead of a branch's trust. See
+[The clerk socket](sign-in.md#the-clerk-socket).
+
+| Refusal | Meaning |
+| --- | --- |
+| `error` `refused` (socket) | Not a branch this library trusts |
+| `error` `not_found` (socket) | The person may not take the edition, or the library holds no copy of it. The two are not told apart. The only refusal a clerk gets besides `invalid` and `unavailable` |
+| `error` `unavailable` (socket), `503 unavailable` | The library's storage can't be read right now. Try again later |
+| `401 unauthorized` | Unknown copy, a wrong or expired token, or a grant that no longer holds (for a clerk: its card was signed out or expired, or its user disabled) |
+| `421 misdirected` | Another library node granted it |
+| `404 unknown_file` | The copy has no file `{n}` |
+| `416 range_not_satisfiable` | The range starts at or past the end of the file |
+
+Limits: 1000 files per copy and 512-byte names. A grant is dropped once
+it expires.
 
 ## Node-local instances
 
@@ -760,7 +899,7 @@ bookclerk plugins deploy <instance_id> --node <node_id>
 `{plugin_key, display_name, node_id}`. Deploying the instance to another
 node, or handing it to the scheduler (`--replicas`), is refused.
 
-Uploads reach every destination deployed on the owner node that granted
+Uploads reach every destination deployed on the shared node that granted
 them, node-local ones included.
 
 ## Branches of branches
@@ -773,8 +912,9 @@ C is B's.
   A has no record of C and never learns it exists. A's work runs on B
   itself and is never passed on to C. No store account, store token or
   user of B or C is ever sent to A.
-- **Books flow up.** B shares its owner's books with A: those acquired on
-  B on a store account connected there to B's Owner, and (when "Include
+- **Books flow up.** B shares its owner's books with A: those held on B
+  by a store account connected there to B's Owner whose edition B has
+  acquired (whichever of B's store accounts downloaded it), and (when "Include
   books from my own branches" is on) those C shared with B. B's other
   members' books stay on B, unless A requests one or A's operator turns on
   **Acquire all of this branch's members' books** (see below). Each title
@@ -810,9 +950,13 @@ all on by default:
 - **List my members' books to <library>.** Off: B answers A's catalog
   questions with its owner's books only (see
   [Shared catalog](#shared-catalog)).
-- **Use this computer to download.** Off: B is a window of that library.
-  It takes none of A's work and shows the books A holds for B's person
-  instead (see [Window mode](#window-mode)).
+- **Keep copies on this computer.** On: when B acquires one of its own
+  titles and A already holds a copy from the same store, B takes A's copy
+  instead of downloading from the store (see
+  [When a branch takes the copy](#when-a-branch-takes-the-copy)). Off: B
+  leaves A's copies at A and downloads its own titles from their stores.
+  B still takes A's work, lists its books to A and shows A's books (see
+  [Books in other libraries](#books-in-other-libraries)).
 
 B's operator or an Owner of B may change them. An Owner sees only the
 libraries, these settings and each library's job cap (see
@@ -822,8 +966,8 @@ refused (403).
 
 The routes are `GET /api/config/join/sharing` (→ `{clusters}`) and
 `POST /api/config/join/sharing`
-`{cluster_id, share_books, include_branches, list_members_books?, download?}`
-(`list_members_books` and `download` are left as they are when absent),
+`{cluster_id, share_books, include_branches, list_members_books?, keep_copies?}`
+(`list_members_books` and `keep_copies` are left as they are when absent),
 which also takes the [work settings](#work-settings-on-the-branch).
 
 ### Work settings on the branch
@@ -957,8 +1101,7 @@ entries; leave `node_id` out to ask the first branch that lists the work.
    **What B lists** above): its owner's books always, a member's while
    **List my members' books to <library>** is on and the member has not
    opted out, and nothing while **Share this branch's books with
-   <library>** is off or B is a window of A (see
-   [Window mode](#window-mode)). B's listing settings are where B's
+   <library>** is off. B's listing settings are where B's
    operator draws the line; there is no per-request approval.
 4. **B fetches and sends the book.** An accepted book not yet downloaded
    is queued as an ordinary acquire in B's own library, on the store
@@ -1005,42 +1148,36 @@ Branches**. The API is `PUT /api/config/branches/members-books`
 - Each change is written to A's security audit log
   (`branch_members_books_set`).
 
-### Window mode
+### Books in other libraries
 
-A window shows the books its person has in the libraries they joined,
-without downloading anything. It is the same install as a branch with one
-setting per library turned off: **Use this computer to download** in
-**Settings → Library**. A person can start as a window and turn the
-setting on later to keep copies.
+Every branch shows the books of the library it joined, whatever its
+**Keep copies on this computer** setting says. That setting only decides
+whether B takes A's copies of its person's books; B takes A's work and
+answers A's catalog questions and requests either way.
 
-With the setting off for library A, B:
+For each library A it joined, B:
 
-- **Takes no work from A.** B claims no jobs from A and runs none of A's
-  plugins. Each deployment A made to B is reported to A as `error` with
-  the detail "this computer does not download for this library (window
-  mode)", and B records, fetches and configures nothing for it. Turning
-  the setting off hands back any job B holds for A at once. A's share of
-  B's job slots goes to the libraries B downloads for, and A's job cap
-  applies again when the setting is turned back on.
-- **Lists nothing to A and takes none of its requests.** A window is a
-  client of A, not one of its nodes. It answers A's catalog questions as
-  "missing" and every interlibrary request from A as "not listed", so A
-  shows no title as available through B.
-- **Reads its person's books from A.** On every connection, every 30
-  minutes, and at once when the setting changes, B sends `window.books`
-  page by page. A answers each page (`window.page`) with the books on the
-  store accounts linked to B's owner in A, at most 100 works per page,
-  grouped by A's works with each work's identifiers. A answers only a
-  branch it trusts, and the frame names no user, so B can read only its
-  own person's books.
+- **Reads A's books.** On every connection and every 30 minutes, B sends
+  `window.books` page by page. A answers each page (`window.page`) with
+  the titles on all of A's store accounts, as A's own Library page lists
+  them for a member, at most 100 works per page, grouped by A's works
+  with each work's identifiers. Each edition is marked `yours` when a
+  store account linked to B's owner holds it, and carries `copy` when A
+  already holds its audio: the file's media type, its bitrate and the
+  store it came from when A has probed it, whether it is lossless, and a
+  version that changes when A's file does. Each page ends with an opaque
+  cursor string, which B sends back to get the next page. A answers only
+  a branch it trusts, and the frame names no user, so the mark is always
+  for B's own person.
 - **Keeps one copy of the list per library.** B stores each page as it
-  arrives. Once the last page is in, it drops the books A no longer
-  named. A read cut short keeps the list from the last complete read.
-  Turning the setting back on clears that library's list.
+  arrives, with the copy A stated for each edition. Once the last page is
+  in, it drops the books A no longer named. A read cut short keeps the
+  list from the last complete read. Leaving A clears that library's list.
 
-B's **Library** page then shows **Your books in other libraries** to B's
-operator and Owners: every library B is a window of, merged into one list
-by work. Two books are the same work when their identifiers reach the
+B's **Library** page then shows **Books in other libraries** to B's
+operator and Owners: every library B is a branch of, merged into one list
+by work, the person's own books marked **Yours**, with an **Only yours**
+filter. Two books are the same work when their identifiers reach the
 same work in B's own library, when they share a strong identifier (an
 ASIN with its marketplace, or an OpenLibrary edition or work id), or when
 one library groups them under one work. An ISBN alone doesn't join two
@@ -1049,12 +1186,11 @@ never compared,
 because work ids differ between libraries. Each entry shows which
 libraries hold it, from which stores, and in which formats.
 
-The route is `GET /api/config/join/window` (→ `{clusters, books}`), for
-B's operator or an Owner of B.
+The list also has the books of every library B holds a library card for
+(see [Signing in with a library card](sign-in.md#signing-in-with-a-library-card)).
 
-> [!NOTE]
-> Asking a library to send a book to a window isn't built yet. It arrives
-> with window-mode requests, after interlibrary requests to branches.
+The route is `GET /api/config/join/window` (→ `{clusters, cards, books}`),
+for B's operator or an Owner of B.
 
 ### No loops
 
@@ -1104,9 +1240,15 @@ shared stay in the library, marked as from a branch that left (see
   (the operator or an Owner). There is no CLI command for them yet.
 - A branch answers only from its own library, not from other libraries it
   joined.
-- A window can't ask a library to send it a book yet, and the library's
-  scheduler can still place plugin replicas on a window (the window
-  reports them as errors and never runs them).
+- A branch takes a library's copy only for a title its own scan found on
+  a store account connected to the branch, and only when the library's
+  copy came from the same store or is better than the branch's own
+  download. It doesn't take a book the library holds as several audio
+  files, and it doesn't compare again after the title is acquired, so a
+  better copy the library gets later isn't picked up. A clerk works the
+  same way.
+- A clerk always takes a library's copy when it can: there is no setting
+  per library card to turn it off.
 - The library's name is the host of its public origin. There is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the
@@ -1129,7 +1271,7 @@ shared stay in the library, marked as from a branch that left (see
 - [Node API and the live socket](../internals/node-api.md): the
   `/api/node/v1/` routes, the node socket's handshake and frames, and the
   web app's `/api/live` socket.
-- [Configuration → Host nodes](configuration.md#host-nodes): the
+- [Configuration → Branch nodes](configuration.md#branch-nodes): the
   transport modes.
 - [Managing plugins](plugins.md): deploy plugins to nodes.
 - [Branches](../guide/branches.md) on the Use Bookclerk shelf: joining a

@@ -20,9 +20,9 @@ use async_trait::async_trait;
 use bookclerk_library::SourceScope;
 use bookclerk_source::{
     CatalogHit, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions,
-    ImportCredentialsOptions, LoginOptions, OAuthProgress, PortalAuthMode, PurchaseHintOpts,
-    ScanOptions, ScanSummary, SourceAccount, SourceBrand, SourceConfigOption, SourceError,
-    SourceFetch, SourcePurchaseHint,
+    ImportCredentialsOptions, LoginOptions, OAuthProgress, PortalAuthMode, PricedAnswer,
+    PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount, SourceBrand, SourceConfigOption,
+    SourceError, SourceFetch, SourcePurchaseHint,
 };
 
 use crate::activation::{Activation, Busy, Guest, GuestStarter, OnDemandStatus, WakeError};
@@ -37,15 +37,15 @@ pub const STOREFRONT_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// True when a storefront deployment of `manifest` may sleep while idle.
 ///
-/// The plugin must belong only to the source family and must not be
-/// Python, whose guests take seconds to start.
+/// The plugin must belong only to the source family. Python storefronts
+/// sleep too, since they start from a stored snapshot.
 ///
 /// # Arguments
 ///
 /// * `manifest` - the installed manifest the deployment spawns.
 #[must_use]
 pub fn storefront_activates_on_demand(manifest: &PluginManifest) -> bool {
-    manifest.families() == [PluginFamily::Source] && !manifest.declares_python()
+    manifest.families() == [PluginFamily::Source]
 }
 
 /// A running storefront guest the proxy forwards to.
@@ -76,6 +76,10 @@ struct Identity {
     config_options: &'static [SourceConfigOption],
     /// Whether catalog detail answers ISBN lookups.
     answers_catalog_detail_by_isbn: bool,
+    /// Whether purchase hints price by exact ISBN.
+    answers_price_by_isbn: bool,
+    /// Whether purchase hints price by exact ASIN.
+    answers_price_by_asin: bool,
 }
 
 impl Identity {
@@ -92,6 +96,8 @@ impl Identity {
             sort_key: guest.sort_key(),
             config_options: guest.config_options(),
             answers_catalog_detail_by_isbn: guest.answers_catalog_detail_by_isbn(),
+            answers_price_by_isbn: guest.answers_price_by_isbn(),
+            answers_price_by_asin: guest.answers_price_by_asin(),
         }
     }
 }
@@ -146,7 +152,7 @@ impl OnDemandSource {
     /// # Errors
     ///
     /// Returns an error when the proxy is retired or the guest cannot start.
-    async fn awake(&self) -> bookclerk_source::Result<(Arc<dyn AwakeSource>, Busy<'_>)> {
+    async fn awake(&self) -> bookclerk_source::Result<(Arc<dyn AwakeSource>, Busy)> {
         self.activation.awake().await.map_err(|err| match err {
             WakeError::Retired => {
                 SourceError::api(format!("storefront `{}` was stopped", self.identity.id))
@@ -341,6 +347,14 @@ impl ContentSource for OnDemandSource {
         self.identity.answers_catalog_detail_by_isbn
     }
 
+    fn answers_price_by_isbn(&self) -> bool {
+        self.identity.answers_price_by_isbn
+    }
+
+    fn answers_price_by_asin(&self) -> bool {
+        self.identity.answers_price_by_asin
+    }
+
     async fn catalog_detail_by_isbn(
         &self,
         isbn: &str,
@@ -372,6 +386,14 @@ impl ContentSource for OnDemandSource {
     ) -> bookclerk_source::Result<Vec<Option<SourcePurchaseHint>>> {
         let (guest, _busy) = self.awake().await?;
         guest.purchase_hints(opts).await
+    }
+
+    async fn purchase_hint_answers(
+        &self,
+        opts: &[PurchaseHintOpts],
+    ) -> bookclerk_source::Result<Vec<PricedAnswer>> {
+        let (guest, _busy) = self.awake().await?;
+        guest.purchase_hint_answers(opts).await
     }
 
     async fn list_deals(&self, limit: usize) -> bookclerk_source::Result<Vec<CatalogHit>> {

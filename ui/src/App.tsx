@@ -62,11 +62,14 @@ const WishlistPage = lazy(() =>
 const JoinApprovePage = lazy(() =>
   import("@/components/JoinApprovePage").then((m) => ({ default: m.JoinApprovePage })),
 );
-const ClientApprovePage = lazy(() =>
-  import("@/components/ClientApprovePage").then((m) => ({ default: m.ClientApprovePage })),
+const ClerkApprovePage = lazy(() =>
+  import("@/components/ClerkApprovePage").then((m) => ({ default: m.ClerkApprovePage })),
 );
 const JoinCallbackPage = lazy(() =>
   import("@/components/JoinCallbackPage").then((m) => ({ default: m.JoinCallbackPage })),
+);
+const ClerkCallbackPage = lazy(() =>
+  import("@/components/ClerkCallbackPage").then((m) => ({ default: m.ClerkCallbackPage })),
 );
 const WelcomeScreen = lazy(() =>
   import("@/components/WelcomeScreen").then((m) => ({ default: m.WelcomeScreen })),
@@ -345,10 +348,10 @@ export default function App() {
     );
   }
 
-  if (join === "client-approve") {
+  if (join === "clerk-approve") {
     return (
       <PageSuspense>
-        <ClientApprovePage
+        <ClerkApprovePage
           onSignOut={async () => {
             // A failure reaches the page, which says so and stays signed in.
             await logout();
@@ -363,6 +366,14 @@ export default function App() {
     return (
       <PageSuspense>
         <JoinCallbackPage onOpenLibrary={() => openSettings("clusters")} />
+      </PageSuspense>
+    );
+  }
+
+  if (join === "clerk-callback") {
+    return (
+      <PageSuspense>
+        <ClerkCallbackPage onOpenLibrary={() => openSettings("clusters")} />
       </PageSuspense>
     );
   }

@@ -14,14 +14,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Json;
 use axum::Router;
-use bookclerk_acquire::sidecar_key;
 use bookclerk_config::{Config, ListenAddrs};
 use bookclerk_integrations::{portal_spa_routes, IntegrationRegistry, PortalState};
 use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::{
-    hash_token, AcquireStatus, BookRecord, ClaimTicketRecord, JobRecord, JobTrigger, LibraryError,
-    LibraryStore, NewTitleRequest, NewTitleRequestSource, QueueWisher, RequestStatus,
-    TitleRequestRecord,
+    hash_token, ClaimTicketRecord, JobRecord, JobTrigger, LibraryError, LibraryStore,
+    NewTitleRequest, NewTitleRequestSource, QueueWisher, RequestStatus, TitleRequestRecord,
 };
 use bookclerk_plugin_host::{
     consent_request, consent_summary, cores_to_percent, effective_cpu_cores, format_cpu_cores,
@@ -33,7 +31,6 @@ use bookclerk_plugin_host::{
     PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX, PLUGIN_STATE_BUDGET_MIB_DEFAULT,
     PLUGIN_STATE_BUDGET_MIB_MAX,
 };
-use bookclerk_search::SearchEngine;
 use bookclerk_source::SourceRegistry;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -461,7 +458,8 @@ struct PluginSettingOption {
     /// Current string form of the setting.
     #[schema(example = "m4b")]
     value: String,
-    /// UI widget hint (`boolean`, `string`, or `number`).
+    /// UI widget hint (`boolean`, `string`, `number`, `secret`, or
+    /// `table`).
     #[schema(example = "string")]
     value_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -475,6 +473,36 @@ struct PluginSettingOption {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = true)]
     secret_set: Option<bool>,
+    /// Columns of a `table` setting, in display order; omitted for other
+    /// kinds. `value` is then the rows as JSON text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    columns: Option<Vec<PluginSettingColumn>>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// One column of a `table` setting in the Settings UI.
+struct PluginSettingColumn {
+    /// Record field the column fills in each row.
+    #[schema(example = "prefix")]
+    key: String,
+    /// Column heading.
+    #[schema(example = "Storage key prefix")]
+    label: String,
+    /// UI widget hint (`boolean`, `string`, or `number`).
+    #[schema(example = "string")]
+    value_type: String,
+    /// Dropdown values of an `enum` column; omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    choices: Option<Vec<PluginSettingChoice>>,
+    /// String form of the value a new row starts with; omitted when there
+    /// is no default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "")]
+    default: Option<String>,
+    /// True when every row must have a value in this column.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[schema(example = true)]
+    required: bool,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -625,7 +653,7 @@ struct PluginConsentLimits {
     #[schema(example = 62)]
     max_extra_processes: u32,
     /// Suggested / default host bindings operators may grant.
-    #[schema(example = json!(["config", "secrets", "plugin_kv", "work_fs", "oauth"]))]
+    #[schema(example = json!(["config", "secrets", "plugin_kv", "work_fs", "oauth", "sockets"]))]
     known_bindings: Vec<&'static str>,
 }
 
@@ -1008,6 +1036,13 @@ pub struct AcquireRequestBody {
     #[serde(default)]
     #[schema(example = json!(["8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"]))]
     pub titles: Vec<String>,
+    /// Editions to acquire (`id` of an edition in a work's detail). Each
+    /// becomes one job for a title that sells it in an account the caller
+    /// may acquire for (in `account` when that is set); the edition's
+    /// titles share its files.
+    #[serde(default)]
+    #[schema(example = json!(["0f3a5c7e-2b4d-4f6a-8c1e-3d5b7f9a1c2e"]))]
+    pub editions: Vec<String>,
     /// Re-download titles already acquired.
     #[serde(default)]
     #[schema(example = false)]
@@ -1049,40 +1084,6 @@ struct DatabaseMigrateRequest {
     apply: bool,
 }
 
-#[derive(Debug, Deserialize, Default, utoipa::ToSchema, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-/// Query string for `GET /api/library/books`.
-struct BooksQuery {
-    /// Restrict results to this store account id.
-    account: Option<String>,
-    /// Optional `AcquireStatus` wire-string filter.
-    status: Option<String>,
-    /// Full-text search over this node's search index. Hits are sorted by
-    /// title and every hit counts toward `total` (there is no hit cap); an
-    /// empty value skips the index.
-    q: Option<String>,
-    /// Page size, clamped to 1–500 (default 40).
-    limit: Option<usize>,
-    /// Number of matching titles to skip.
-    offset: Option<usize>,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-/// Paginated library listing.
-struct BooksResponse {
-    /// Current page of title records.
-    books: Vec<BookRecord>,
-    /// Match count before pagination.
-    #[schema(example = 412)]
-    total: usize,
-    /// Applied page size.
-    #[schema(example = 50)]
-    limit: usize,
-    /// Applied skip count.
-    #[schema(example = 0)]
-    offset: usize,
-}
-
 /// Every documented route group served under the root, with who may call it.
 ///
 /// The groups carry no state or auth layers: [`router`] wraps each in the
@@ -1093,14 +1094,44 @@ struct BooksResponse {
 /// # Returns
 ///
 /// The groups from this module and the auth, OIDC, passkey and TOTP modules.
-// The legacy aliases are deprecated in the document and still served.
-#[allow(deprecated)]
 pub(crate) fn route_groups() -> Vec<RouteGroup> {
     // Use `route_layer` (not `layer`) for auth, so auth never wraps the
     // router's fallback: `.layer(auth)` made unmatched paths, including `/`
     // when the GUI dist was missing, return a bare 401 instead of serving the
     // SPA or the branded 404.
-    let operator_or_admin = OpenApiRouter::new()
+    let mut groups = vec![
+        RouteGroup::new(public_routes(), Access::Public),
+        RouteGroup::new(operator_or_admin_routes(), Access::OperatorOrAdministrator),
+        RouteGroup::new(operator_only_routes(), Access::Operator),
+        RouteGroup::new(node_admin_routes(), Access::OperatorOrNodeOwner),
+        RouteGroup::new(user_scoped_routes(), Access::OperatorOrUser),
+        RouteGroup::new(shared_routes(), Access::OperatorOrPortal),
+    ];
+    // OIDC authorization server (ABS / third-party user tokens).
+    groups.extend(crate::oidc::route_groups());
+    // Optional upstream OIDC/OAuth relying party (identity broker).
+    groups.extend(crate::oidc_rp::route_groups());
+    // WebAuthn passkeys (login + Owner elevate).
+    groups.extend(crate::passkeys::route_groups());
+    // TOTP MFA + host second-factor policy.
+    groups.extend(crate::totp::route_groups());
+    groups
+}
+
+/// Routes for the operator or an Administrator (jobs, events, queues, legacy aliases).
+///
+/// Kept out of line so the optimizer works on one group at a time: inlined
+/// together, the whole route table is a single function that the
+/// fat-LTO release build spends minutes optimizing.
+///
+/// # Returns
+///
+/// The group's routes, without auth layers (see [`route_groups`]).
+// The legacy aliases are deprecated in the document and still served.
+#[allow(deprecated)]
+#[inline(never)]
+fn operator_or_admin_routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
         .routes(routes!(legacy_status))
         .routes(routes!(legacy_scan))
         .routes(routes!(legacy_acquire))
@@ -1118,9 +1149,21 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(ack_event_delivery))
         .routes(routes!(cancel_event_delivery))
         .routes(routes!(resume_event_delivery))
-        .routes(routes!(sync_listening));
+        .routes(routes!(sync_listening))
+}
 
-    let operator_only = OpenApiRouter::new()
+/// Routes for the operator alone (configuration, plugins, cluster consents, joining a library).
+///
+/// Kept out of line so the optimizer works on one group at a time: inlined
+/// together, the whole route table is a single function that the
+/// fat-LTO release build spends minutes optimizing.
+///
+/// # Returns
+///
+/// The group's routes, without auth layers (see [`route_groups`]).
+#[inline(never)]
+fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
         .routes(routes!(reload_config))
         .routes(routes!(
             crate::config_authority::get_events_domain,
@@ -1179,26 +1222,58 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(get_plugin_logo))
         .routes(routes!(migrate_database))
         .routes(routes!(auth::impersonate, auth::impersonate_end))
-        .routes(routes!(auth::elevate_end));
+        .routes(routes!(auth::elevate_end))
+}
 
-    // Node administration: operators see and edit every node; a user who
-    // owns nodes (Host, Administrator, Owner) sees and edits only those. An
-    // Owner also sees and removes every owner node (the shared branches).
-    let node_admin = OpenApiRouter::new()
+/// Node administration routes: operators see and edit every node; a node owner sees and edits only theirs.
+///
+/// Kept out of line so the optimizer works on one group at a time: inlined
+/// together, the whole route table is a single function that the
+/// fat-LTO release build spends minutes optimizing.
+///
+/// # Returns
+///
+/// The group's routes, without auth layers (see [`route_groups`]).
+// Node administration: operators see and edit every node; a user who
+// owns nodes (Host, Administrator, Owner) sees and edits only those. An
+// Owner also sees and removes every shared node (the shared branches).
+#[inline(never)]
+fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
         .routes(routes!(crate::config_authority::get_nodes))
-        .routes(routes!(crate::config_authority::delete_owner_node))
-        // Settings → Shared branches: every owner node for the operator or an Owner.
+        .routes(routes!(crate::config_authority::delete_shared_node))
+        // Settings → Shared branches: every shared node for the operator or an Owner.
         .routes(routes!(crate::config_authority::get_shared_branches))
         .routes(routes!(crate::config_authority::put_node_runtime))
-        .routes(routes!(crate::config_authority::get_cluster_status));
+        .routes(routes!(crate::config_authority::get_cluster_status))
+}
 
-    // Host enrollment links: any signed-in user acts for themselves; the
-    // library lets the operator or an Owner act for others.
-    let user_scoped = OpenApiRouter::new()
+/// Routes any signed-in user calls for themselves (enrollment links, branch and client consents, branch settings).
+///
+/// Kept out of line so the optimizer works on one group at a time: inlined
+/// together, the whole route table is a single function that the
+/// fat-LTO release build spends minutes optimizing.
+///
+/// # Returns
+///
+/// The group's routes, without auth layers (see [`route_groups`]).
+// Host enrollment links: any signed-in user acts for themselves; the
+// library lets the operator or an Owner act for others.
+#[inline(never)]
+fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
         // Any active user queues scans and acquires; the planner limits a
         // Member or Host to the store accounts linked to them.
         .routes(routes!(trigger_scan))
         .routes(routes!(trigger_acquire))
+        // How listings resolve: the handlers admit only the operator, an
+        // Owner or an Administrator.
+        .routes(routes!(
+            crate::library_overrides::put_listing_pin,
+            crate::library_overrides::delete_listing_pin
+        ))
+        .routes(routes!(crate::library_overrides::list_conflicts))
+        .routes(routes!(crate::library_overrides::post_work_split))
         .routes(routes!(
             crate::node_api::get_node_invites,
             crate::node_api::post_node_invite
@@ -1214,11 +1289,11 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(
             crate::node_api::branch::post_branch_consent_step_up
         ))
-        // A client sign-in's consent ("Let <client> show your books from
+        // A clerk sign-in's consent ("Let <clerk> show your books from
         // <library>?"): a signed-in user, never the operator alone.
         .routes(routes!(
-            crate::node_api::client::get_client_consent,
-            crate::node_api::client::post_client_consent
+            crate::node_api::clerk::get_clerk_consent,
+            crate::node_api::clerk::post_clerk_consent
         ))
         // Settings → Branches: the library's join settings (operator or
         // Owner; the handler checks).
@@ -1237,6 +1312,13 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         // The window view on a branch (operator or Owner; the handler
         // checks).
         .routes(routes!(crate::cluster_link::join::get_join_window))
+        // Library cards: signing in to a library as a clerk (operator or
+        // Owner; the handlers check).
+        .routes(routes!(crate::clerk_link::api::get_clerk_cards))
+        .routes(routes!(crate::clerk_link::api::post_clerk_inspect))
+        .routes(routes!(crate::clerk_link::api::post_clerk_start))
+        .routes(routes!(crate::clerk_link::api::post_clerk_callback))
+        .routes(routes!(crate::clerk_link::api::post_clerk_sign_out))
         // Store connections across linked libraries: the branch's person
         // only (the handler checks).
         .routes(routes!(
@@ -1256,14 +1338,26 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(
             crate::node_api::get_host_enrollment,
             crate::node_api::put_host_enrollment
-        ));
+        ))
+}
 
-    let shared = OpenApiRouter::new()
-        .routes(routes!(list_books))
-        .routes(routes!(get_book))
-        .routes(routes!(get_book_cover))
+/// Routes for the operator or any signed-in patron (works, covers, wishlist, sessions, profile).
+///
+/// Kept out of line so the optimizer works on one group at a time: inlined
+/// together, the whole route table is a single function that the
+/// fat-LTO release build spends minutes optimizing.
+///
+/// # Returns
+///
+/// The group's routes, without auth layers (see [`route_groups`]).
+#[inline(never)]
+fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
         .routes(routes!(crate::library_works::list_works))
         .routes(routes!(crate::library_works::get_work))
+        .routes(routes!(crate::library_works::put_work_state))
+        .routes(routes!(crate::library_works::list_facet_values))
+        .routes(routes!(crate::library_works::get_edition_cover))
         .routes(routes!(crate::covers::get_cover))
         .routes(routes!(crate::covers::get_image))
         .routes(routes!(crate::covers::get_gravatar))
@@ -1294,12 +1388,24 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
             crate::profile::delete_avatar
         ))
         .routes(routes!(crate::profile::get_avatar))
-        .routes(routes!(get_preferences, patch_preferences));
+        .routes(routes!(get_preferences, patch_preferences))
+}
 
-    // `/api/auth/me` stays public so the SPA bootstrap can probe session state
-    // without a bare middleware 401 (which some browsers render as an error
-    // document). The handler itself reports operator / portal / anonymous.
-    let public = OpenApiRouter::new()
+/// Routes with no auth layer; each handler checks what it needs.
+///
+/// Kept out of line so the optimizer works on one group at a time: inlined
+/// together, the whole route table is a single function that the
+/// fat-LTO release build spends minutes optimizing.
+///
+/// # Returns
+///
+/// The group's routes, without auth layers (see [`route_groups`]).
+// `/api/auth/me` stays public so the SPA bootstrap can probe session state
+// without a bare middleware 401 (which some browsers render as an error
+// document). The handler itself reports operator / portal / anonymous.
+#[inline(never)]
+fn public_routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
         .routes(routes!(health))
         .routes(routes!(auth::login))
         .routes(routes!(auth::signin_methods))
@@ -1313,26 +1419,16 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(auth::password_login, auth::set_password))
         .routes(routes!(auth::list_users, auth::create_user))
         .routes(routes!(auth::patch_user, auth::delete_user))
+        .routes(routes!(
+            crate::patron_scopes::get_default_scope,
+            crate::patron_scopes::put_default_scope
+        ))
+        .routes(routes!(
+            crate::patron_scopes::get_user_scope,
+            crate::patron_scopes::put_user_scope
+        ))
         .routes(routes!(auth::create_user_claim_ticket))
-        .routes(routes!(auth::reset_user_password));
-
-    let mut groups = vec![
-        RouteGroup::new(public, Access::Public),
-        RouteGroup::new(operator_or_admin, Access::OperatorOrAdministrator),
-        RouteGroup::new(operator_only, Access::Operator),
-        RouteGroup::new(node_admin, Access::OperatorOrNodeOwner),
-        RouteGroup::new(user_scoped, Access::OperatorOrUser),
-        RouteGroup::new(shared, Access::OperatorOrPortal),
-    ];
-    // OIDC authorization server (ABS / third-party user tokens).
-    groups.extend(crate::oidc::route_groups());
-    // Optional upstream OIDC/OAuth relying party (identity broker).
-    groups.extend(crate::oidc_rp::route_groups());
-    // WebAuthn passkeys (login + Owner elevate).
-    groups.extend(crate::passkeys::route_groups());
-    // TOTP MFA + host second-factor policy.
-    groups.extend(crate::totp::route_groups());
-    groups
+        .routes(routes!(auth::reset_user_password))
 }
 
 /// Wraps a route group in the auth middleware its access names.
@@ -1374,8 +1470,8 @@ fn guarded(
             state,
             auth::require_operator_or_user_auth,
         )),
-        // The one group a client sign-in's token is admitted to: the auth
-        // layer runs after the token is put back (`crate::client_token`).
+        // The one group a library card is admitted to: the auth
+        // layer runs after the token is put back (`crate::clerk_token`).
         Access::OperatorOrPortal => routes
             .route_layer(middleware::from_fn_with_state(
                 state.clone(),
@@ -1383,7 +1479,7 @@ fn guarded(
             ))
             .route_layer(middleware::from_fn_with_state(
                 state,
-                crate::client_token::admit_client_token,
+                crate::clerk_token::admit_clerk_token,
             )),
     }
 }
@@ -1439,7 +1535,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             .split_for_parts();
         app = app.merge(routes);
     }
-    // Host-node enrollment and socket: never behind the cookie/auth
+    // Branch-node enrollment and socket: never behind the cookie/auth
     // layers; the transport policy runs first.
     app = app.merge(crate::node_api::node_router(state.clone()));
     app = app.merge(
@@ -1478,9 +1574,9 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         state,
         crate::csrf::require_csrf_for_cookie_api,
     ));
-    // A client sign-in's token is taken out of every request before routing
+    // A library card is taken out of every request before routing
     // and put back only for the routes that admit it.
-    app = app.layer(middleware::from_fn(crate::client_token::hold_client_token));
+    app = app.layer(middleware::from_fn(crate::clerk_token::hold_clerk_token));
 
     if let Some(dist) = ui_dist {
         if dist.is_dir() {
@@ -1503,8 +1599,10 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 // joining install's callback.
                 "/join/approve",
                 "/join/callback",
-                // A client sign-in's consent page on the library.
-                "/client/approve",
+                // A clerk sign-in: the consent page on the library, and
+                // this install's callback.
+                "/clerk/approve",
+                "/clerk/callback",
             ];
             let spa_index = axum::routing::get_service(ServeFile::new(index.clone()))
                 .layer(middleware::from_fn(spa_document_csp));
@@ -1537,41 +1635,151 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     // the branding so the body compared is the one a client receives.
     #[cfg(test)]
     let app = app.layer(middleware::from_fn(crate::openapi_contract::check));
-    app.layer(NormalizePathLayer::trim_trailing_slash()).layer(
-        TraceLayer::new_for_http()
-            .make_span_with(|request: &Request| {
-                tracing::span!(
-                    Level::INFO,
-                    "http.request",
-                    method = %request.method(),
-                    path = %request.uri().path(),
-                )
-            })
-            .on_response(
-                |response: &Response, latency: Duration, _span: &tracing::Span| {
-                    let status = response.status();
-                    let latency_ms = latency.as_millis() as u64;
-                    if status.is_server_error() || latency_ms >= 1_000 {
-                        tracing::warn!(
-                            status = status.as_u16(),
-                            latency_ms,
-                            "request completed with elevated latency or server error"
+    app.layer(NormalizePathLayer::trim_trailing_slash())
+        .layer(middleware::from_fn(log_request_outcome))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request| {
+                    tracing::span!(
+                        Level::INFO,
+                        "http.request",
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                        route = request_route(request),
+                    )
+                })
+                // `log_request_outcome` logs slow responses and server errors
+                // with the route; the trace layer adds nothing per response.
+                .on_response(())
+                .on_failure(
+                    |failure: ServerErrorsFailureClass,
+                     latency: Duration,
+                     _span: &tracing::Span| {
+                        tracing::error!(
+                            failure = ?failure,
+                            latency_ms = u64::try_from(latency.as_millis()).unwrap_or(u64::MAX),
+                            "request failed"
                         );
-                    } else if latency_ms >= 250 {
-                        tracing::info!(status = status.as_u16(), latency_ms, "request completed");
-                    }
-                },
-            )
-            .on_failure(
-                |failure: ServerErrorsFailureClass, latency: Duration, _span: &tracing::Span| {
-                    tracing::error!(
-                        failure = ?failure,
-                        latency_ms = latency.as_millis() as u64,
-                        "request failed"
-                    );
-                },
-            ),
-    )
+                    },
+                ),
+        )
+}
+
+/// Route label for a request no API route matched: a static file of the web
+/// app, or a path nothing serves.
+const UNROUTED: &str = "(static or unmatched)";
+
+/// Latency, in milliseconds, from which a request an API route answered is
+/// logged as slow.
+const SLOW_ROUTED_MS: u64 = 1_000;
+
+/// Latency, in milliseconds, from which a static file or unmatched request is
+/// logged as slow. Higher than [`SLOW_ROUTED_MS`]: a starved machine serves
+/// files slowly without anything being wrong.
+const SLOW_UNROUTED_MS: u64 = 3_000;
+
+/// Latency, in milliseconds, from which a request is logged at INFO.
+const NOTED_MS: u64 = 250;
+
+/// The route template a request matched (for example `/api/works/{id}`), or
+/// [`UNROUTED`]. The template carries no IDs, so it is what logs and
+/// diagnostics reports name instead of the raw path.
+///
+/// # Arguments
+///
+/// * `request` - The request, after routing.
+fn request_route(request: &Request) -> &str {
+    request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map_or(UNROUTED, axum::extract::MatchedPath::as_str)
+}
+
+/// How [`log_request_outcome`] reports one finished request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequestOutcome {
+    /// Log a WARN "server error response" (a 5xx status).
+    server_error: bool,
+    /// Log a WARN "slow response" on [`bookclerk_config::SLOW_TARGET`], which
+    /// counts toward the `slow_burst` diagnostics trigger, not `warn_burst`.
+    slow: bool,
+    /// Log an INFO "request completed" (noticeably slow, not slow enough to
+    /// warn).
+    noted: bool,
+}
+
+impl RequestOutcome {
+    /// Classifies a finished request.
+    ///
+    /// # Arguments
+    ///
+    /// * `status` - The response status.
+    /// * `latency_ms` - Time from routing to the response, in milliseconds.
+    /// * `routed` - Whether an API route matched (static files and unmatched
+    ///   paths get the higher [`SLOW_UNROUTED_MS`]).
+    fn classify(status: StatusCode, latency_ms: u64, routed: bool) -> Self {
+        let slow_after = if routed {
+            SLOW_ROUTED_MS
+        } else {
+            SLOW_UNROUTED_MS
+        };
+        let slow = latency_ms >= slow_after;
+        Self {
+            server_error: status.is_server_error(),
+            slow,
+            noted: !slow && latency_ms >= NOTED_MS,
+        }
+    }
+}
+
+/// Logs slow responses and server errors with their method, route template,
+/// status and latency, inside the request's `http.request` span.
+///
+/// # Arguments
+///
+/// * `request` - The request, after routing.
+/// * `next` - The rest of the stack.
+///
+/// # Returns
+///
+/// The response, unchanged.
+async fn log_request_outcome(request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let route = request_route(&request).to_owned();
+    let routed = route != UNROUTED;
+    let started = Instant::now();
+    let response = next.run(request).await;
+    let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let status = response.status();
+    let outcome = RequestOutcome::classify(status, latency_ms, routed);
+    if outcome.server_error {
+        tracing::warn!(
+            method = %method,
+            route = %route,
+            status = status.as_u16(),
+            latency_ms,
+            "server error response"
+        );
+    }
+    if outcome.slow {
+        tracing::warn!(
+            target: bookclerk_config::SLOW_TARGET,
+            method = %method,
+            route = %route,
+            status = status.as_u16(),
+            latency_ms,
+            "slow response"
+        );
+    } else if outcome.noted {
+        tracing::info!(
+            method = %method,
+            route = %route,
+            status = status.as_u16(),
+            latency_ms,
+            "request completed"
+        );
+    }
+    response
 }
 
 /// Content-Security-Policy of the web app's document.
@@ -1676,6 +1884,12 @@ fn api_timeout_for_path(path: &str) -> Duration {
         // Their own bounded waits add up to 29 s; the rest is margin for the
         // database round trips around them.
         "/api/config/join/callback" | "/api/config/join/invite" => Duration::from_secs(45),
+        // Signing in with a library card reads the library, or redeems the
+        // code with it (connect and request timeouts in
+        // `bookclerk_node_client::endpoint`).
+        "/api/config/clerk/inspect" | "/api/config/clerk/start" | "/api/config/clerk/callback" => {
+            Duration::from_secs(45)
+        }
         // Reading a library dials it (connect and request timeouts in
         // `bookclerk_node_client::endpoint`), so an unreachable one is
         // answered as `unreachable` rather than cut off.
@@ -2578,6 +2792,7 @@ fn plugin_setting_option(
         choices: None,
         secret: false,
         secret_set: None,
+        columns: None,
     }
 }
 
@@ -2612,6 +2827,7 @@ fn plugin_setting_option_with_choices(
         },
         secret: false,
         secret_set: None,
+        columns: None,
     }
 }
 
@@ -2813,6 +3029,65 @@ async fn plugin_settings_snapshot(
     groups
 }
 
+/// String form of a setting value in the Settings UI: a string as itself,
+/// anything else (numbers, booleans, table rows) as JSON text.
+fn setting_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// UI widget hint for a setting kind.
+fn setting_value_type(kind: bookclerk_plugin_abi::SettingKind) -> &'static str {
+    use bookclerk_plugin_abi::SettingKind;
+    match kind {
+        SettingKind::Bool => "boolean",
+        SettingKind::Integer => "number",
+        SettingKind::String | SettingKind::Enum => "string",
+        SettingKind::Secret => "secret",
+        SettingKind::Table => "table",
+    }
+}
+
+/// Dropdown choices of an `enum` entry, labelled by id when unlabelled.
+fn setting_choices(spec: &bookclerk_plugin_abi::SettingSpec) -> Vec<PluginSettingChoice> {
+    spec.values
+        .iter()
+        .map(|choice| {
+            plugin_setting_choice(
+                choice.id.clone(),
+                if choice.label.trim().is_empty() {
+                    choice.id.clone()
+                } else {
+                    choice.label.clone()
+                },
+            )
+        })
+        .collect()
+}
+
+/// Settings UI column for one column of a `table` setting.
+fn setting_column(column: &bookclerk_plugin_abi::SettingSpec) -> PluginSettingColumn {
+    let choices = setting_choices(column);
+    PluginSettingColumn {
+        key: column.key.clone(),
+        label: if column.label.trim().is_empty() {
+            setting_label(&column.key)
+        } else {
+            column.label.clone()
+        },
+        value_type: setting_value_type(column.kind).to_string(),
+        choices: if choices.is_empty() {
+            None
+        } else {
+            Some(choices)
+        },
+        default: column.default.as_ref().map(setting_text),
+        required: column.required,
+    }
+}
+
 /// Settings group for one plugin instance, rendered from its pinned schema.
 ///
 /// Option keys are the bare setting keys; the group's `plugin_instance_id`
@@ -2830,24 +3105,19 @@ fn instance_settings_group(
     for spec in &view.schema {
         let value = stored
             .and_then(|config| config.settings.get(&spec.key))
-            .map(|value| match value {
-                SettingValue::Bool(flag) => flag.to_string(),
-                SettingValue::Number(number) => number.to_string(),
-                SettingValue::String(text) => text.clone(),
-            })
-            .or_else(|| {
-                spec.default.as_ref().map(|default| match default {
-                    serde_json::Value::String(text) => text.clone(),
-                    other => other.to_string(),
-                })
-            })
-            .unwrap_or_default();
-        let value_type = match spec.kind {
-            SettingKind::Bool => "boolean",
-            SettingKind::Integer => "number",
-            SettingKind::String | SettingKind::Enum => "string",
-            SettingKind::Secret => "secret",
-        };
+            .map(SettingValue::to_json)
+            .or_else(|| spec.default.clone())
+            // Show what the guest receives: table rows with column
+            // defaults filled.
+            .map(|value| setting_text(&spec.normalize_value(&value)))
+            .unwrap_or_else(|| {
+                if spec.kind == SettingKind::Table {
+                    "[]".to_string()
+                } else {
+                    String::new()
+                }
+            });
+        let value_type = setting_value_type(spec.kind);
         let label = if spec.label.trim().is_empty() {
             setting_label(&spec.key)
         } else {
@@ -2859,23 +3129,14 @@ fn instance_settings_group(
                 label,
                 value,
                 value_type,
-                spec.values
-                    .iter()
-                    .map(|choice| {
-                        plugin_setting_choice(
-                            choice.id.clone(),
-                            if choice.label.trim().is_empty() {
-                                choice.id.clone()
-                            } else {
-                                choice.label.clone()
-                            },
-                        )
-                    })
-                    .collect(),
+                setting_choices(spec),
             )
         } else {
             plugin_setting_option(spec.key.clone(), label, value, value_type)
         };
+        if spec.kind == SettingKind::Table {
+            option.columns = Some(spec.columns.iter().map(setting_column).collect());
+        }
         if spec.kind == SettingKind::Secret {
             option.value = String::new();
             option.secret = true;
@@ -4066,13 +4327,11 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
     let (listen, storage_backend) = {
         let cfg = state.config.read().await;
         let destinations = state.destinations.read().await;
-        let mut names = Vec::new();
-        if destinations.local().is_some() {
-            names.push("local");
-        }
-        if destinations.s3().is_some() {
-            names.push("s3");
-        }
+        let names: Vec<String> = destinations
+            .destinations()
+            .into_iter()
+            .map(|d| d.id.to_string())
+            .collect();
         (
             cfg.daemon.listen.join_comma(),
             if names.is_empty() {
@@ -4375,7 +4634,7 @@ fn plan_response(kind: &str, admits: Vec<AdmitJob>) -> Response {
     request_body = Option<AcquireRequestBody>,
     responses(
         (status = 200, description = "The acquire jobs were accepted.", body = ScanPlanResponse, example = json!({"ok": true, "message": "acquire job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted", "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b", "job_ids": ["acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"]})),
-        (status = 400, description = "The body names no valid title.", body = ActionResponse, example = json!({"ok": false, "message": "every title id given is blank", "job_id": "", "error": "invalid"})),
+        (status = 400, description = "The body names no valid title or edition.", body = ActionResponse, example = json!({"ok": false, "message": "every title id given is blank", "job_id": "", "error": "invalid"})),
         (status = 403, description = "The caller may not acquire for these accounts.", body = ActionResponse, example = json!({"ok": false, "message": "that title is not in a store account linked to this user", "job_id": "", "error": "forbidden"})),
         (status = 409, description = "The same acquire is already pending or running, or no node can run it.", body = PlanConflict, examples(("duplicate" = (summary = "Every planned job is already pending or running", value = json!({"ok": false, "message": "acquire already pending or running", "job_id": "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"}))), ("unroutable" = (summary = "No node runs every plugin instance the job requires", value = json!({"ok": false, "message": "no node runs all of the plugin instances this acquire job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node", "job_id": "", "error": "unroutable"}))))),
         (status = 422, description = "No account of the caller's can acquire.", body = ScanPlanResponse, example = json!({"ok": false, "message": "no store account of yours to acquire from", "job_id": "", "job_ids": [], "error": "nothing_to_acquire"})),
@@ -4401,6 +4660,25 @@ async fn trigger_acquire(
         .into_iter()
         .collect();
     titles.extend(body.titles);
+    if !body.editions.is_empty() {
+        let library = state.library_snapshot().await;
+        match bookclerk_library::control_plane::acquire_titles_of_editions(
+            &library,
+            requester,
+            body.account.as_deref(),
+            body.plugin_instance_id.as_deref(),
+            &body.editions,
+        )
+        .await
+        {
+            Ok(of_editions) => titles.extend(of_editions),
+            Err(LibraryError::Forbidden(message)) => return planner_error_response(None, &message),
+            Err(LibraryError::Invalid(message)) => {
+                return planner_error_response(Some(StatusCode::BAD_REQUEST), &message)
+            }
+            Err(err) => return enqueue_error_response(err.into()),
+        }
+    }
     let ask = crate::jobs::AcquireAsk {
         titles,
         account: body.account,
@@ -5270,167 +5548,6 @@ async fn trigger_integration_scan(
     }
 }
 
-/// Lists or searches library titles with optional account/status filters and pagination.
-#[utoipa::path(
-    get,
-    path = "/api/library/books",
-    params(BooksQuery),
-    responses(
-        (status = 200, description = "A page of titles.", body = BooksResponse),
-        (status = 400, description = "A filter is invalid."),
-        (status = 500, description = "The library could not be read.", body = crate::http_error::ErrorJson),
-    ),
-)]
-async fn list_books(
-    State(state): State<Arc<AppState>>,
-    _headers: HeaderMap,
-    Query(query): Query<BooksQuery>,
-) -> Result<Json<BooksResponse>, (StatusCode, Json<crate::http_error::ErrorJson>)> {
-    let library = state.library_snapshot().await;
-    let limit = query.limit.unwrap_or(40).clamp(1, 500);
-    let offset = query.offset.unwrap_or(0);
-    let status = query
-        .status
-        .as_deref()
-        .and_then(AcquireStatus::parse)
-        .map(AcquireStatus::as_str);
-    let account = query.account.as_deref().filter(|value| !value.is_empty());
-
-    // Authenticated callers (operator or user) share the full library for
-    // browsing. Account *linking* and acquire remain capability-gated; store
-    // connect is User-only.
-    //
-    // Without a query, filtering, sorting and paging run in SQL. With one,
-    // the node's search index matches, sorts by title, pages and counts,
-    // so no hit cap applies; only the page's uuids are hydrated from SQL.
-    // Account and status are read from SQL, not the index, so a filtered
-    // search takes every hit and lets SQL filter and page them.
-
-    let page = if let Some(q) = query.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        let index_dir = state.config.read().await.paths().search_index_dir.clone();
-        // Offloaded: Tantivy query work would otherwise block this request task.
-        if account.is_none() && status.is_none() {
-            let hits = SearchEngine::open_and_search_page(index_dir, q.to_string(), offset, limit)
-                .await
-                .map_err(books_query_error)?;
-            let mut page = library
-                .list_books_by_uuid_page(&hits.uuids, None, None, limit as u64, 0)
-                .await
-                .map_err(books_query_error)?;
-            page.total = hits.total;
-            page
-        } else {
-            let uuids = SearchEngine::open_and_match_uuids(index_dir, q.to_string())
-                .await
-                .map_err(books_query_error)?;
-            library
-                .list_books_by_uuid_page(&uuids, account, status, limit as u64, offset as u64)
-                .await
-                .map_err(books_query_error)?
-        }
-    } else {
-        library
-            .list_books_filtered_page(account, status, limit as u64, offset as u64)
-            .await
-            .map_err(books_query_error)?
-    };
-    let mut books = page.books;
-    for book in &mut books {
-        state
-            .covers
-            .decorate(book.cover_url.as_deref(), &mut book.cover_path);
-    }
-    Ok(Json(BooksResponse {
-        books,
-        total: page.total,
-        limit,
-        offset,
-    }))
-}
-
-/// Logs one library-books failure and returns the branded internal-error body.
-fn books_query_error(
-    err: impl std::fmt::Display,
-) -> (StatusCode, Json<crate::http_error::ErrorJson>) {
-    tracing::error!(error = %err, "GET /api/library/books failed");
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(crate::http_error::ErrorJson::for_status(
-            StatusCode::INTERNAL_SERVER_ERROR,
-        )),
-    )
-}
-
-/// Returns one title by UUID, or 404 when it is absent.
-#[utoipa::path(
-    get,
-    path = "/api/library/books/{uuid}",
-    params(("uuid" = String, Path, description = "Title UUID.")),
-    responses(
-        (status = 200, description = "The title.", body = bookclerk_library::BookRecord),
-        (status = 404, description = "No such title.", body = crate::http_error::ErrorJson),
-        (status = 500, description = "The library could not be read.", body = crate::http_error::ErrorJson),
-    ),
-)]
-async fn get_book(
-    State(state): State<Arc<AppState>>,
-    AxumPath(uuid): AxumPath<String>,
-) -> Result<Json<BookRecord>, StatusCode> {
-    let library = state.library_snapshot().await;
-    let mut book = library
-        .get_book_by_uuid(&uuid)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    state
-        .covers
-        .decorate(book.cover_url.as_deref(), &mut book.cover_path);
-    Ok(Json(book))
-}
-
-/// Serves the JPEG cover sidecar from the deployed local destination, or 404
-/// when no local destination runs on this node.
-#[utoipa::path(
-    get,
-    path = "/api/library/books/{uuid}/cover",
-    params(("uuid" = String, Path, description = "Title UUID.")),
-    responses(
-        (status = 200, description = "The cover.", content_type = "image/jpeg"),
-        (status = 404, description = "No such title, or it has no cover.", body = crate::http_error::ErrorJson),
-    ),
-)]
-async fn get_book_cover(
-    State(state): State<Arc<AppState>>,
-    AxumPath(uuid): AxumPath<String>,
-) -> Result<Response, StatusCode> {
-    // Without a local destination there is no sidecar to serve, so answer
-    // before reading the library.
-    let local = state
-        .destinations
-        .read()
-        .await
-        .local()
-        .ok_or(StatusCode::NOT_FOUND)?;
-    let library = state.library_snapshot().await;
-    let book = library
-        .get_book_by_uuid(&uuid)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    let storage_key = book.storage_key.as_deref().ok_or(StatusCode::NOT_FOUND)?;
-    let cover_key = sidecar_key(storage_key, "jpg");
-    let bytes = local
-        .get(&cover_key)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "image/jpeg")],
-        bytes,
-    )
-        .into_response())
-}
-
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Wishlist / title-request create body from Discover or the portal.
 struct CreateRequestBody {
@@ -5666,11 +5783,51 @@ async fn discover_purchase_hints(
     validate_purchase_hints_query(&body)?;
     // Always derive linked stores server-side (ignore client-supplied overrides).
     body.preferred_sources = preferred_sources_for_caller(&state, &headers).await;
+    let library = state.library_snapshot().await;
     let sources = state.sources.read().await;
-    let response = bookclerk_discover::resolve_purchase_hints(&sources, &body)
+    let mut response = bookclerk_discover::resolve_purchase_hints(&sources, Some(&library), &body)
         .await
         .map_err(internal_err)?;
+    let deadline = tokio::time::Instant::now() + bookclerk_discover::BATCH_DEADLINE;
+    check_card_recording(&library, &sources, &body, &mut response, deadline).await;
     Ok(Json(response))
+}
+
+/// Drops the prices `response` holds for another recording than the card's
+/// (see [`bookclerk_discover::retain_card_recording`]).
+///
+/// A store's title search can answer with another recording of the book.
+/// When the listing pool read fails or does not finish by `deadline`, the
+/// hints stay unchecked and the response is marked incomplete, so the
+/// client shows them for now but asks again rather than keep them.
+///
+/// # Arguments
+///
+/// * `library` - The library holding the shared listing pool.
+/// * `sources` - Maps each hint's store to its plugin key.
+/// * `query` - The card the prices are for.
+/// * `response` - The resolved prices, filtered in place.
+/// * `deadline` - When the route must answer.
+async fn check_card_recording(
+    library: &LibraryStore,
+    sources: &bookclerk_source::SourceRegistry,
+    query: &bookclerk_discover::PurchaseHintsQuery,
+    response: &mut bookclerk_discover::PurchaseHintsResponse,
+    deadline: tokio::time::Instant,
+) {
+    let mut checked = response.clone();
+    let check = bookclerk_discover::retain_card_recording(library, sources, query, &mut checked);
+    match tokio::time::timeout_at(deadline, check).await {
+        Ok(Ok(())) => *response = checked,
+        Ok(Err(err)) => {
+            tracing::debug!(error = %err, "purchase-hint recording check failed");
+            response.incomplete = true;
+        }
+        Err(_) => {
+            tracing::debug!("purchase-hint recording check ran past the deadline");
+            response.incomplete = true;
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
@@ -5720,13 +5877,18 @@ async fn discover_purchase_hints_batch(
         q.preferred_sources = preferred.clone();
         queries.push(q);
     }
-    let resolved = {
-        let sources = state.sources.read().await;
-        bookclerk_discover::resolve_purchase_hints_batch(&sources, &queries, 4).await
-    };
+    // One deadline covers the store lookups and the recording checks.
+    let deadline = tokio::time::Instant::now() + bookclerk_discover::BATCH_DEADLINE;
+    let library = state.library_snapshot().await;
+    let sources = state.sources.read().await;
+    let resolved =
+        bookclerk_discover::resolve_purchase_hints_batch(&sources, Some(&library), &queries, 4)
+            .await;
     let mut results = Vec::with_capacity(resolved.len().min(MAX_PURCHASE_HINT_QUERIES));
-    for item in resolved {
-        results.push(item.map_err(internal_err)?);
+    for (item, query) in resolved.into_iter().zip(&queries) {
+        let mut response = item.map_err(internal_err)?;
+        check_card_recording(&library, &sources, query, &mut response, deadline).await;
+        results.push(response);
     }
     Ok(Json(PurchaseHintsBatchResponse { results }))
 }
@@ -5986,11 +6148,13 @@ async fn discover_catalog_search(
         min_length_minutes: q.min_length_minutes.filter(|n| *n > 0),
         max_length_minutes: q.max_length_minutes.filter(|n| *n > 0),
     };
+    let library = state.library_snapshot().await;
     let sources = state.sources.read().await;
     let page = timeout(
         CATALOG_SEARCH_TIMEOUT,
         bookclerk_discover::catalog_search_page(
             &sources,
+            Some(&library),
             bookclerk_discover::CatalogSearchPageOpts {
                 query: &query,
                 region: &region,
@@ -6034,7 +6198,6 @@ async fn discover_catalog_search(
         })
         .collect();
     drop(sources);
-    let library = state.library_snapshot().await;
     bookclerk_discover::join_search_branch_availability(&library, &mut page.items, |id| {
         plugin_keys.get(id).cloned()
     })
@@ -6302,9 +6465,18 @@ async fn create_request_inner(
     let deadline = tokio::time::Instant::now() + WISH_ENRICH_BUDGET;
     let pooled = {
         let registry = state.sources.read().await;
-        let resolve = bookclerk_discover::resolve_purchase_hints(&registry, &hint_query);
+        let resolve =
+            bookclerk_discover::resolve_purchase_hints(&registry, Some(&library), &hint_query);
         let hints = match tokio::time::timeout_at(deadline, resolve).await {
-            Ok(Ok(resolved)) => resolved.hints,
+            Ok(Ok(mut resolved)) => {
+                // Keep only prices for the recording the wish names, when the
+                // listing pool already knows it.
+                // The check shares the stores' deadline; when it fails or
+                // runs out the wish keeps the resolved hints.
+                check_card_recording(&library, &registry, &hint_query, &mut resolved, deadline)
+                    .await;
+                resolved.hints
+            }
             Ok(Err(err)) => {
                 tracing::debug!(error = %err, "wishlist purchase-hint resolve soft-failed");
                 Vec::new()
@@ -6780,6 +6952,54 @@ fn internal_err(err: impl std::fmt::Display) -> (StatusCode, String) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn request_outcomes_split_slowness_from_faults() {
+        use axum::http::StatusCode;
+        let ok = StatusCode::OK;
+        let quiet = RequestOutcome {
+            server_error: false,
+            slow: false,
+            noted: false,
+        };
+        assert_eq!(RequestOutcome::classify(ok, 10, true), quiet);
+        assert_eq!(
+            RequestOutcome::classify(ok, NOTED_MS, true),
+            RequestOutcome {
+                noted: true,
+                ..quiet
+            }
+        );
+        assert_eq!(
+            RequestOutcome::classify(ok, SLOW_ROUTED_MS, true),
+            RequestOutcome {
+                slow: true,
+                ..quiet
+            }
+        );
+        assert_eq!(
+            RequestOutcome::classify(StatusCode::NOT_MODIFIED, 2_900, false),
+            RequestOutcome {
+                noted: true,
+                ..quiet
+            },
+            "a static file gets the higher threshold"
+        );
+        assert_eq!(
+            RequestOutcome::classify(ok, SLOW_UNROUTED_MS, false),
+            RequestOutcome {
+                slow: true,
+                ..quiet
+            }
+        );
+        assert_eq!(
+            RequestOutcome::classify(StatusCode::BAD_GATEWAY, 5, true),
+            RequestOutcome {
+                server_error: true,
+                ..quiet
+            }
+        );
+    }
+
     /// Asking the stores about a new wish leaves at least two seconds of the
     /// route's budget to save it.
     #[test]
@@ -6788,32 +7008,13 @@ mod tests {
         assert!(super::WISH_ENRICH_BUDGET + std::time::Duration::from_secs(2) <= route);
     }
 
-    #[test]
-    fn books_query_error_returns_the_branded_internal_error_body() {
-        let (status, axum::Json(body)) = super::books_query_error("boom");
-        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        let body = serde_json::to_value(body).unwrap();
-        assert_eq!(body["status"], 500);
-        assert_eq!(body["error"], "internal_error");
-        assert_eq!(
-            body["message"],
-            "Something went wrong on the Bookclerk daemon."
-        );
-        assert_eq!(
-            body,
-            serde_json::to_value(crate::http_error::ErrorJson::for_status(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            ))
-            .unwrap()
-        );
-    }
-
     use super::{
         allowed_setting_key, apply_database_enable_updates, build_approved_grant,
         build_database_settings_group, current_settings_snapshot,
         database_backends_requiring_grant, normalize_disabled_shelves, normalize_setting_value,
         stamp_settings_occupancy, validate_daemon_listen, validate_daemon_listen_against_auth,
-        InviteLinkError, PluginGrantOverride,
+        InviteLinkError, PluginGrantOverride, RequestOutcome, NOTED_MS, SLOW_ROUTED_MS,
+        SLOW_UNROUTED_MS,
     };
     use bookclerk_config::{Config, ListenAddrs};
 
@@ -8943,302 +9144,57 @@ tcp = {tcp}
         let missing = super::serve_invite_spa(&dist.path().join("gone.html")).await;
         assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
     }
+}
 
-    /// Library pages filter, sort, and paginate in SQL, including the search path.
-    #[tokio::test]
-    async fn library_books_page_filters_in_sql_and_limits_search_hydration() {
-        use std::sync::Arc;
+#[cfg(test)]
+mod instance_settings_tests {
+    use bookclerk_plugin_abi::SettingSpec;
 
-        use axum::extract::{Query, State};
-        use axum::http::HeaderMap;
-        use bookclerk_integrations::IntegrationRegistry;
-        use bookclerk_library::{AcquireStatus, LibraryStore, NewBook};
-        use bookclerk_plugin_host::{DatabaseRegistry, DestinationRegistry};
-        use bookclerk_search::SearchEngine;
-        use bookclerk_source::SourceRegistry;
-        use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
+    use crate::config_authority::PluginInstanceView;
 
-        use crate::api::AppState;
-        use crate::auth::OperatorAuthState;
-
-        let files = tempfile::tempdir().unwrap();
-        let mut cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
-        cfg.daemon.auth.enabled = false;
-        let store = LibraryStore::from_connection(
-            bookclerk_plugin_database_sqlite::open_memory()
-                .await
-                .unwrap(),
-        );
-        store
-            .upsert_account("audible", "envelope-a", "us", None, false, "audible")
-            .await
-            .unwrap();
-        store
-            .upsert_account("audible", "envelope-b", "us", None, false, "audible")
-            .await
-            .unwrap();
-        for i in 0..20u32 {
-            let account = if i < 16 { "envelope-a" } else { "envelope-b" };
-            let book = NewBook::minimal(format!("B{i:05}"), account, "us", format!("Title {i:05}"));
-            let saved = store.upsert_book(&book).await.unwrap();
-            let status = if i % 10 == 0 {
-                AcquireStatus::Error
-            } else {
-                AcquireStatus::Acquired
-            };
-            store
-                .set_acquire_status(&saved.uuid, &saved.account_id, status, None, None)
-                .await
-                .unwrap();
-            if i == 0 {
-                store
-                    .update_catalog_enrichment(
-                        &saved.uuid,
-                        &bookclerk_library::CatalogEnrichmentFields {
-                            cover_url: Some("https://img.example/c.jpg".into()),
-                            ..Default::default()
-                        },
-                    )
-                    .await
-                    .unwrap();
-            }
+    /// An instance with one table setting whose default rows omit a
+    /// defaulted column.
+    // A fixed, valid literal.
+    #[allow(clippy::expect_used)]
+    fn view() -> PluginInstanceView {
+        let table: SettingSpec = serde_json::from_value(serde_json::json!({
+            "key": "mappings",
+            "type": "table",
+            "default": [{ "library": "main" }],
+            "columns": [
+                { "key": "library", "type": "string", "required": true },
+                { "key": "watch", "type": "bool", "default": true }
+            ]
+        }))
+        .expect("spec");
+        PluginInstanceView {
+            plugin_instance_id: "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b".into(),
+            plugin_key: "example".into(),
+            alias: "example".into(),
+            display_name: String::new(),
+            is_default: true,
+            created_at: "2026-11-18T00:00:00Z".into(),
+            schema: vec![table],
+            config: None,
+            deployments: Vec::new(),
+            placement: None,
         }
-        SearchEngine::open(&cfg.paths().search_index_dir)
-            .unwrap()
-            .rebuild(&store)
-            .await
-            .unwrap();
-
-        let state = Arc::new(AppState {
-            config: Arc::new(RwLock::new(cfg)),
-            library: Arc::new(RwLock::new(store)),
-            database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
-            job_notify: Arc::new(Notify::new()),
-            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
-            job_runtime: Arc::new(RwLock::new(())),
-            work_lock: Mutex::new(()),
-            discover_gate: Arc::new(Semaphore::new(1)),
-            integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
-            sources: Arc::new(RwLock::new(SourceRegistry::new())),
-            destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
-            auth: Arc::new(RwLock::new(Arc::new(OperatorAuthState::new(
-                String::new(),
-                12,
-                false,
-                5,
-                30,
-            )))),
-            reload_lock: Mutex::new(()),
-            listen_reload: Arc::new(Notify::new()),
-            last_bound_listen: RwLock::new(None),
-            tray: RwLock::new(None),
-            tray_handoff: Mutex::new(None),
-            deployment_runtime: std::sync::OnceLock::new(),
-            node_api_tls_bound: std::sync::OnceLock::new(),
-            library_swaps: tokio::sync::watch::Sender::new(0),
-            covers: Arc::new(crate::covers::CoverService::detached()),
-        });
-
-        let page = super::list_books(
-            State(state.clone()),
-            HeaderMap::new(),
-            Query(super::BooksQuery {
-                account: None,
-                status: None,
-                q: None,
-                limit: Some(5),
-                offset: Some(0),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(page.total, 20);
-        assert_eq!(page.books.len(), 5);
-        assert_eq!(page.limit, 5);
-        assert_eq!(page.books[0].title, "Title 00000");
-        assert!(page.books[0].title < page.books[4].title);
-        // A remote cover gets a same-origin path; a title without one doesn't.
-        let first = &page.books[0];
-        let path = first.cover_path.as_deref().expect("cover path");
-        assert!(path.starts_with("/api/covers/"), "{path}");
-        assert_eq!(
-            state
-                .covers
-                .open_token(&path["/api/covers/".len()..])
-                .as_deref(),
-            Some("https://img.example/c.jpg")
-        );
-        assert_eq!(page.books[1].cover_path, None);
-        let one = super::get_book(
-            State(state.clone()),
-            axum::extract::Path(first.uuid.clone()),
-        )
-        .await
-        .unwrap();
-        assert_eq!(one.cover_path.as_deref(), Some(path));
-        assert_eq!(
-            super::get_book(State(state.clone()), axum::extract::Path("missing".into()))
-                .await
-                .map(|_| ())
-                .unwrap_err(),
-            axum::http::StatusCode::NOT_FOUND
-        );
-        // Gravatars and store icons come through the same service: a hash
-        // that is not a SHA-256 or a store nobody deployed is a 404, and a
-        // node with no cover cache answers 503.
-        let status = |res: axum::response::Response| res.status();
-        let gravatar = |hash: &str| {
-            crate::covers::get_gravatar(
-                State(state.clone()),
-                axum::extract::Path(hash.to_owned()),
-                HeaderMap::new(),
-            )
-        };
-        assert_eq!(
-            status(
-                crate::covers::get_image(
-                    State(state.clone()),
-                    axum::extract::Path("forged.token".into()),
-                    HeaderMap::new()
-                )
-                .await
-            ),
-            axum::http::StatusCode::NOT_FOUND
-        );
-        assert_eq!(
-            status(gravatar("not-a-hash").await),
-            axum::http::StatusCode::NOT_FOUND
-        );
-        assert_eq!(
-            status(gravatar(&"a".repeat(64)).await),
-            axum::http::StatusCode::SERVICE_UNAVAILABLE
-        );
-        assert_eq!(
-            status(
-                crate::covers::get_store_icon(
-                    State(state.clone()),
-                    axum::extract::Path("nowhere".into()),
-                    HeaderMap::new()
-                )
-                .await
-            ),
-            axum::http::StatusCode::NOT_FOUND
-        );
-
-        let acquired = super::list_books(
-            State(state.clone()),
-            HeaderMap::new(),
-            Query(super::BooksQuery {
-                account: None,
-                status: Some("acquired".into()),
-                q: None,
-                limit: Some(40),
-                offset: Some(0),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(acquired.total, 18);
-        assert_eq!(acquired.books.len(), 18);
-        assert!(acquired
-            .books
-            .iter()
-            .all(|book| book.acquire_status == AcquireStatus::Acquired));
-
-        let searched = super::list_books(
-            State(state.clone()),
-            HeaderMap::new(),
-            Query(super::BooksQuery {
-                account: None,
-                status: None,
-                q: Some("Title".into()),
-                limit: Some(8),
-                offset: Some(0),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(searched.books.len(), 8);
-        assert_eq!(searched.total, 20, "every hit counts, not only one page");
-        assert_eq!(searched.books[0].title, "Title 00000");
-        // The index pages in title order, so the next page continues it.
-        let next = super::list_books(
-            State(state.clone()),
-            HeaderMap::new(),
-            Query(super::BooksQuery {
-                account: None,
-                status: None,
-                q: Some("Title".into()),
-                limit: Some(8),
-                offset: Some(16),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(next.total, 20);
-        let titles: Vec<&str> = next.books.iter().map(|b| b.title.as_str()).collect();
-        assert_eq!(
-            titles,
-            ["Title 00016", "Title 00017", "Title 00018", "Title 00019"]
-        );
-        // A status filter is read from the database, not the index.
-        let failed = super::list_books(
-            State(state.clone()),
-            HeaderMap::new(),
-            Query(super::BooksQuery {
-                account: None,
-                status: Some("error".into()),
-                q: Some("Title".into()),
-                limit: Some(40),
-                offset: Some(0),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(failed.total, 2);
-
-        let account_b = super::list_books(
-            State(state),
-            HeaderMap::new(),
-            Query(super::BooksQuery {
-                account: Some("envelope-b".into()),
-                status: None,
-                q: Some("Title".into()),
-                limit: Some(40),
-                offset: Some(0),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(account_b.total, 4);
-        assert_eq!(account_b.books.len(), 4);
-        assert!(account_b
-            .books
-            .iter()
-            .all(|book| book.account_id == "envelope-b"));
     }
 
-    /// With no local destination on the node, a title's sidecar cover is a
-    /// 404 whether or not the title exists, answered without a library read.
-    #[tokio::test]
-    async fn book_cover_is_not_found_without_a_local_destination() {
-        use axum::body::Body;
-        use axum::http::{header, Request, StatusCode};
-        use tower::ServiceExt;
-
-        let (state, app, _library) = crate::auth::tests::phase2_harness("op-token-cover").await;
-        assert!(state.destinations.read().await.local().is_none());
-        let cookie = crate::auth::operator_session_cookie(&state).await;
-        let res = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/library/books/no-such-title/cover")
-                    .header(header::COOKIE, &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    #[test]
+    // The test's own literal value.
+    #[allow(clippy::expect_used)]
+    fn an_unset_table_shows_its_default_rows_with_column_defaults() {
+        let group = super::instance_settings_group(&view(), None, "node-1");
+        let option = group
+            .settings
+            .iter()
+            .find(|option| option.key == "mappings")
+            .expect("the table");
+        let rows: serde_json::Value = serde_json::from_str(&option.value).expect("rows");
+        assert_eq!(
+            rows,
+            serde_json::json!([{ "library": "main", "watch": true }])
+        );
     }
 }

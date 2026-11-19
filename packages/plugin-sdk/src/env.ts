@@ -10,6 +10,120 @@
 import type { DatabaseBinding } from "./db-execute.js";
 import type { EventReadPage, PluginEvent, PublishOk, QueueSendOk } from "./generated.js";
 
+/**
+ * A message that arrived on a host-brokered socket: text as a string, binary
+ * as an `ArrayBuffer` (as Workers delivers to `webSocketMessage`).
+ */
+export type SocketMessageData = string | ArrayBuffer;
+
+/** A message to send on a host-brokered socket. */
+export type SocketSendData = string | ArrayBuffer | ArrayBufferView;
+
+/**
+ * A heartbeat the host answers itself, like a Workers
+ * `WebSocketRequestResponsePair`: when a message equal to `request` (same
+ * kind, same bytes) arrives, the host sends `response` and does not wake the
+ * plugin.
+ */
+export interface SocketAutoResponsePair {
+  /** Message to match, 1 to `MAX_SOCKET_AUTO_RESPONSE_BYTES` bytes. */
+  request: SocketSendData;
+  /** Message to send back, 1 to `MAX_SOCKET_AUTO_RESPONSE_BYTES` bytes. */
+  response: SocketSendData;
+}
+
+/** Options for {@link SocketsBinding.connect}. */
+export interface SocketConnectOptions {
+  /** Subprotocols to request (`Sec-WebSocket-Protocol`), at most 16. */
+  protocols?: string[];
+  /**
+   * Extra request headers, at most 16. Values may be credentials; the host
+   * never logs them. Handshake and hop-by-hop headers are refused.
+   */
+  headers?: Record<string, string> | Array<[string, string]>;
+  /** Heartbeats the host answers without waking the plugin, at most 4. */
+  autoResponses?: SocketAutoResponsePair[];
+  /**
+   * Initial attachment, as {@link HostWebSocket.serializeAttachment} would
+   * store it.
+   */
+  attachment?: unknown;
+}
+
+/**
+ * One host-brokered WebSocket, shaped like a hibernatable Workers WebSocket.
+ *
+ * The host holds the connection while the plugin sleeps and wakes the
+ * plugin's `webSocketMessage` / `webSocketClose` handlers when something
+ * arrives. The object is a handle: it carries the socket's id and the
+ * attachment as it was when the handle was made, and each method is one call
+ * to the host.
+ */
+export interface HostWebSocket {
+  /** Host-minted id, stable for the socket's life and never reused. */
+  readonly id: string;
+  /** URL the socket was opened to, without credentials; empty in a handler. */
+  readonly url: string;
+  /** Subprotocol the server chose; empty when none or unknown. */
+  readonly protocol: string;
+  /**
+   * Send one message.
+   *
+   * @param message - Text or bytes, at most `MAX_SOCKET_FRAME_BYTES`.
+   * @throws PluginError `not_found` when the socket has closed.
+   */
+  send(message: SocketSendData): Promise<void>;
+  /**
+   * Close the socket. Closing a closed socket is not an error.
+   *
+   * @param code - Close code; omitted sends 1000.
+   * @param reason - Close reason, at most 123 UTF-8 bytes.
+   */
+  close(code?: number, reason?: string): Promise<void>;
+  /**
+   * Replace the attachment the host keeps for this socket and hands back
+   * with every message, so state survives the plugin sleeping. The value is
+   * stored as JSON and must encode to at most `MAX_SOCKET_ATTACHMENT_BYTES`.
+   *
+   * @param value - JSON-serializable value; `null` or `undefined` clears it.
+   * @throws PluginError `payload_too_large` when it does not fit.
+   */
+  serializeAttachment(value: unknown): Promise<void>;
+  /**
+   * The attachment as this handle last saw it.
+   *
+   * @returns The stored value, or `null` when none is set.
+   */
+  deserializeAttachment(): unknown;
+}
+
+/**
+ * `SOCKETS` binding (`[sockets]`, renamed by `binding = "..."`): outbound
+ * WebSockets the host holds open while the plugin sleeps. Messages and
+ * closes reach the default entrypoint's `webSocketMessage(ws, message)` and
+ * `webSocketClose(ws, code, reason, wasClean)`.
+ */
+export interface SocketsBinding {
+  /**
+   * Open a socket once the handshake finishes. It belongs to the plugin
+   * instance and outlives this invocation.
+   *
+   * @param url - `wss://` or `ws://` URL on the plugin's network grant.
+   * @param options - Subprotocols, headers, heartbeats and attachment.
+   * @returns The open socket.
+   * @throws PluginError `forbidden` for a host outside the network grant,
+   *   `limit_exceeded` when the instance already holds `MAX_SOCKETS_PER_INSTANCE`
+   *   sockets.
+   */
+  connect(url: string, options?: SocketConnectOptions): Promise<HostWebSocket>;
+  /**
+   * The instance's open sockets, oldest first, for a plugin that just woke.
+   *
+   * @returns One handle per open socket.
+   */
+  getWebSockets(): Promise<HostWebSocket[]>;
+}
+
 /** Plain JSON object (string keys, JSON values). */
 export type JsonObject = Record<string, unknown>;
 
@@ -329,6 +443,8 @@ export interface BookclerkEnv {
   WORK_FS?: StorageBinding;
   /** `[[kv_namespaces]]` durable KV binding (default name). */
   KV?: KvNamespaceBinding;
+  /** `[sockets]` host-brokered WebSockets (default name). */
+  SOCKETS?: SocketsBinding;
   /** `[oauth]` loopback helper; surface reserved. */
   OAUTH?: unknown;
   /**

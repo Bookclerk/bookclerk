@@ -9,7 +9,7 @@
 //! value rather than the typed body: a body is accepted exactly when it is
 //! one JSON object with no repeated keys, no keys besides `cluster_id`,
 //! `share_books`, `include_branches`, `list_members_books`,
-//! `work_for_members`, `keep_member_copies` and `download`, a string
+//! `work_for_members`, `keep_member_copies` and `keep_copies`, a string
 //! `cluster_id`, and booleans for `share_books` and `include_branches`;
 //! each of the other four is absent, `null` or a boolean. An accepted body yields the
 //! trimmed `cluster_id` and those values, with an absent or `null` setting
@@ -33,7 +33,7 @@ const KEYS: [&str; 7] = [
     "list_members_books",
     "work_for_members",
     "keep_member_copies",
-    "download",
+    "keep_copies",
 ];
 
 /// What the oracle expects from one body.
@@ -109,12 +109,12 @@ fn expected(data: &[u8]) -> Expected {
         Some(list_members_books),
         Some(work_for_members),
         Some(keep_member_copies),
-        Some(download),
+        Some(keep_copies),
     ) = (
         optional(&fields, "list_members_books"),
         optional(&fields, "work_for_members"),
         optional(&fields, "keep_member_copies"),
-        optional(&fields, "download"),
+        optional(&fields, "keep_copies"),
     )
     else {
         return Expected::Refused;
@@ -127,7 +127,7 @@ fn expected(data: &[u8]) -> Expected {
             list_members_books,
             work_for_members,
             keep_member_copies,
-            download,
+            keep_copies,
         },
     )
 }

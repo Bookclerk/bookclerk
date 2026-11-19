@@ -8,6 +8,10 @@ use std::path::PathBuf;
 #[path = "../../../fuzz/oracles/cache_settings.rs"]
 mod cache_settings_oracle;
 
+/// The `destination_id` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/destination_id.rs"]
+mod destination_id_oracle;
+
 /// Every file in `fuzz/corpus/<target>/`, sorted.
 // Test code: an unreadable corpus directory is the test failing.
 #[allow(clippy::expect_used)]
@@ -35,4 +39,17 @@ fn fuzz_corpus_cache_settings_holds_invariants() {
         checked += 1;
     }
     assert!(checked > 0, "no cache_settings seed");
+}
+
+/// Mirrors `fuzz/fuzz_targets/destination_id.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_destination_id_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("destination_id") {
+        destination_id_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no destination_id seed");
 }

@@ -12,6 +12,7 @@
 //! | Native guest (`runtime = "native"`) | [`PluginWorker`] / [`serve`] (`api_version = 3`) |
 //! | Fetch / upload work paths | [`fetch_work_dir`], [`upload_file_path`] |
 //! | Mediated TCP sockets | [`connect_socket`] / [`net`] (Workers `connect()` equivalent) |
+//! | Host-held WebSockets that let the plugin sleep (`[sockets]`) | [`sockets`] / [`HostWebSocket`] |
 //! | Native HTTPS through the socket proxy | feature `http` → `http::Client` |
 //! | OAuth callback without guest listen | [`callback_tunnel`] |
 //! | Workerd / Wasm guests | [`workerd`] + npm `@bookclerk/plugin-sdk` |
@@ -50,6 +51,7 @@ pub mod net;
 mod pass_fd;
 pub mod protocol;
 mod scan_page;
+pub mod sockets;
 pub mod workerd;
 
 pub use callback_tunnel::{TunnelGuest, TunnelHost, TunnelStream};
@@ -89,42 +91,54 @@ pub use protocol::{
     MAX_RPC_LINE_BYTES, PROTOCOL_NAME,
 };
 pub use scan_page::{scan_page, StorePage};
+pub use sockets::{
+    HostWebSocket, SocketAutoResponse, SocketClosed, SocketConnectRequest, SocketFrame,
+    SocketHandler, SocketHeader, SocketInfo, SocketMessage, Sockets,
+};
 
 pub use bookclerk_plugin_abi::{
     byte_source_from_async_read, canonical_execute_request_hash, connect_plugin,
     database_adapter_config_from_bindings, decode_db_value_bytes, decode_execute_request_bytes,
     decode_execute_result_reply_bytes, encoded_db_value_bytes, encoded_execute_reply_bytes,
     encoded_execute_request_bytes, encoded_execute_result_reply_bytes,
-    encoded_statement_result_bytes, negotiate_rpc_features, pull_byte_source_to_writer,
+    encoded_statement_result_bytes, hint_result, negotiate_rpc_features,
+    pull_byte_source_to_writer, purchase_hint_results_one_by_one,
     require_plugin_migration_registration, serve_plugin, serve_plugin_stdio, sql_payload_bytes,
     sql_payload_exceeds, stream_copy_keys, AdapterBackupOps, AdapterDatabaseSession,
-    AdapterExecuteRequest, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
-    ContentSourceClient, CopyResult, CoverFetchParams, CoverFetcher, CoverFetcherClient,
-    CoverImage, CoverImages, Database, DatabaseAdapterConfig, DatabaseClient, DbBootstrap,
-    DbCapabilities, DbColumn, DbIdentityHighWater, DbPlanStatementKind, DbResultSelection, DbRow,
-    DbTiming, DbType, DbValue, Destination, DestinationClient, DestinationServer, DiagnoseResult,
-    DomainEvent, Entrypoints, EventConsumer, EventConsumerClient, EventPublisher,
-    EventPublisherClient, EventReadPage, EventReadRequest, EventResult, ExecuteReply,
-    ExecuteRequest, ExecuteStream, ExecuteStreamLimits, ExtensibleConfig, GuestDatabase, HealthOk,
-    HostBindings, Invocation, IsolationReq, JobCheckpoint, JobController, JobInvocation,
-    JobInvocationLease, JobOutcome, JobRunner, JobRunnerClient, KvDeleteOk, KvGetOk, KvListKey,
-    KvListOk, KvListOptions, KvNamespace, KvNamespaceClient, KvPutOk, KvPutOptions, LimitExceeded,
-    ListOptions, ListPage, MetadataChapter, MetadataChapters, MetadataChaptersParams,
-    MetadataLookupParams, MetadataProvider, MetadataProviderClient, MetadataRecord,
-    MetadataSearchParams, NamedKvBinding, NamedQueueBinding, NeverCancel, ObjectInfo,
-    ObjectMetadata, Oidc, OidcClient, OidcClientTemplate, OpenedEntrypoints, PluginCli,
-    PluginCliClient, PluginClient, PluginDescribe, PluginError, PluginErrorCode, PluginEvent,
-    PluginMigration, PluginMigrationOp, PluginServer, PluginWorker, ProgressSink, PublishOk,
-    PutResult, QueryPage, QueueBatch, QueueConsumer, QueueConsumerClient, QueueMessage,
-    QueueProducer, QueueResult, QueueRetry, QueueSendMessage, QueueSendOk, ReadResult,
-    RemoteLibrary, RemoteLibraryClient, ScalarLimits, Source, SourceClient, SourceServer,
-    StatementResult, StreamCopyHandler, StreamCopySpec, TypedDbStatement, WriteOptions,
-    FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY, FEATURE_STREAMS, MAX_EVENT_CURSOR_BYTES,
+    AdapterExecuteRequest, BindingValues, Bindings, ByteRange, Cancellation, ChangesPage,
+    ChangesRequest, ContentSource, ContentSourceClient, CopyResult, CoverFetchParams, CoverFetcher,
+    CoverFetcherClient, CoverImage, CoverImages, Database, DatabaseAdapterConfig, DatabaseClient,
+    DbBootstrap, DbCapabilities, DbColumn, DbIdentityHighWater, DbPlanStatementKind,
+    DbResultSelection, DbRow, DbTiming, DbType, DbValue, Destination, DestinationClient,
+    DestinationServer, DiagnoseResult, DomainEvent, Entrypoints, EventConsumer,
+    EventConsumerClient, EventPublisher, EventPublisherClient, EventReadPage, EventReadRequest,
+    EventResult, ExecuteReply, ExecuteRequest, ExecuteStream, ExecuteStreamLimits,
+    ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Invocation, IsolationReq,
+    JobCheckpoint, JobController, JobInvocation, JobInvocationLease, JobOutcome, JobRunner,
+    JobRunnerClient, KeyOutcome, KeyPair, KvDeleteOk, KvGetOk, KvListKey, KvListOk, KvListOptions,
+    KvNamespace, KvNamespaceClient, KvPutOk, KvPutOptions, LimitExceeded, ListOptions, ListPage,
+    MetadataChapter, MetadataChapters, MetadataChaptersParams, MetadataField,
+    MetadataFileParseParams, MetadataFileParsed, MetadataFileRecord, MetadataFileRenderParams,
+    MetadataFileRendered, MetadataFiles, MetadataFilesClient, MetadataLookupParams,
+    MetadataProvider, MetadataProviderClient, MetadataRecord, MetadataSearchParams, MoveManyPage,
+    MoveManyRequest, MoveManyTarget, MoveOptions, MoveResult, NamedKvBinding, NamedQueueBinding,
+    NeverCancel, ObjectChange, ObjectChangeKind, ObjectInfo, ObjectMetadata, Oidc, OidcClient,
+    OidcClientTemplate, OpenedEntrypoints, PluginCli, PluginCliClient, PluginClient,
+    PluginDescribe, PluginError, PluginErrorCode, PluginEvent, PluginMigration, PluginMigrationOp,
+    PluginServer, PluginWorker, ProgressSink, PublishOk, PutResult, QueryPage, QueueBatch,
+    QueueConsumer, QueueConsumerClient, QueueMessage, QueueProducer, QueueResult, QueueRetry,
+    QueueSendMessage, QueueSendOk, ReadResult, RemoteLibrary, RemoteLibraryClient, ScalarLimits,
+    Source, SourceClient, SourceServer, StatementResult, StreamCopyHandler, StreamCopySpec,
+    TypedDbStatement, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_CHANGES,
+    FEATURE_STORAGE_CONDITIONAL_WRITE, FEATURE_STORAGE_COPY, FEATURE_STORAGE_DELETE_MANY,
+    FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE, FEATURE_STORAGE_MOVE_MANY, FEATURE_STREAMS,
+    MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES, MAX_CHANGES_PAGE, MAX_EVENT_CURSOR_BYTES,
     MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE,
-    MAX_PLUGIN_MIGRATION_OPS, MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
-    MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES,
-    MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
-    SQL_CONTRACT_VERSION,
+    MAX_METADATA_FILE_BYTES, MAX_METADATA_FILE_CHAPTERS, MAX_METADATA_FILE_DESCRIPTION_BYTES,
+    MAX_METADATA_FILE_LIST_ENTRIES, MAX_METADATA_FILE_TEXT_BYTES, MAX_PLUGIN_MIGRATION_OPS,
+    MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS,
+    MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
+    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION, SQL_CONTRACT_VERSION, STORAGE_OPERATION_FEATURES,
 };
 
 /// Serves a [`PluginWorker`] on stdin/stdout (Cap'n Proto RPC).

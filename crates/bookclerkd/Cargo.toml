@@ -21,9 +21,9 @@ onnx-embeddings = ["bookclerk-discover/onnx"]
 
 [dependencies]
 anyhow.workspace = true
-# `ws`: the host-node socket at /api/node/v1/connect.
+# `ws`: the branch-node socket at /api/node/v1/connect.
 axum = { workspace = true, features = ["ws"] }
-# The host side of the node API (this daemon as a host node).
+# The host side of the node API (this daemon as a branch node).
 bookclerk-node-client.workspace = true
 bookclerk-node-proto.workspace = true
 bookclerk-window-policy.workspace = true
@@ -104,6 +104,8 @@ libc = "0.2"
 async-trait.workspace = true
 bytes.workspace = true
 bookclerk-library = { workspace = true, features = ["test-support"] }
+# Tagged audio fixtures for the upload manifest's probe test.
+bookclerk-tags = { workspace = true, features = ["fixtures"] }
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 http-body-util = "0.1"
 # Builds a second test image for the cover cache's replace-on-change tests;
@@ -128,7 +130,7 @@ wiremock.workspace = true
 webauthn-authenticator-rs = { version = "0.6.2", default-features = false, features = ["softpasskey"] }
 # Checks every example in the OpenAPI document against its schema; no
 # remote references, so no resolver features.
-jsonschema = { version = "0.60.2", default-features = false }
+jsonschema = { version = "0.61.0", default-features = false }
 
 [lints]
 workspace = true

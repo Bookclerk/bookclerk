@@ -48,6 +48,12 @@ image and Node.js majors alone; the
 Node.js major moves by hand. Dependabot still updates the `node` image's
 digest within the pinned major.
 
+Packages that must share one version are grouped so they move in one pull
+request: `capnp`, `capnp-rpc`, `capnpc` and `capnp-futures` in Cargo, and
+`vitest` with its `@vitest/*` plugins in each Worker under `tools/`
+(`@vitest/coverage-v8` accepts only the vitest release it shipped with, so
+bumping either one alone fails `npm ci`).
+
 `examples/` lockfiles are left out, because they are reference plugins and
 never packaged. The full OSV scan still reports them.
 
@@ -786,7 +792,11 @@ shows it as "Last updated", in the reader's own time zone.
 - **`publish`** checks out only `scripts/docs-publish.py` from the default
   branch. It mints the [Automation App](#automation-app) token for
   `bookclerk-docs` alone (contents: write), and writes one commit through
-  the Git Data API, so GitHub signs it as the App.
+  the Git Data API, so GitHub signs it as the App. Pages over 32 KiB are
+  uploaded as blobs first, so each create-tree call stays small. GitHub
+  sometimes answers a create-tree call with HTTP 422 "Sorry, your request
+  timed out" or a 5xx; the script retries those up to four times, waiting
+  5, 10 and 20 seconds.
 
 A manual run publishes only from `main`. The publish script refuses
 redirects, so the token is only sent to `api.github.com`.
@@ -1065,17 +1075,25 @@ edge cache shows the published docs.
 1. It reads every URL that the live `/sitemap.xml` index lists, and gives
    each one a fingerprint: its `<lastmod>`, or a SHA-256 of the page as
    Markdown for pages without one.
-2. It compares them with the snapshot that the previous run kept in the
-   Actions cache. URLs that are new, changed or no longer listed are
-   submitted, each at most once per UTC day. A change made after that
-   day's submission waits for the next day's run. A dated page submitted on
-   the day it is dated is submitted once more on a later day, since its
-   date cannot show a second change that day.
+2. It compares them with the snapshot that the previous run kept as the
+   `indexnow-snapshot` artifact. URLs that are new, changed or no longer
+   listed are submitted, each at most once per UTC day. A change made after
+   that day's submission waits for the next day's run. A dated page
+   submitted on the day it is dated is submitted once more on a later day,
+   since its date cannot show a second change that day.
 3. Only once IndexNow accepts the URLs does it save the new snapshot, so a
    failed run is retried in full.
 
-With no snapshot (the first run, or a run after the cache went 7 days
-unused) every URL is submitted.
+With no snapshot (the first run, or 90 days without an accepted run) only
+pages whose sitemap `<lastmod>` is today or one of the 7 days before are
+submitted, and every listed URL becomes the snapshot the next run compares
+against. Search engines learn the older and undated pages from the sitemaps.
+
+> [!NOTE]
+> The snapshot is an artifact rather than an Actions cache entry. CI's
+> build caches fill the repository's cache quota and push small entries out
+> within minutes, so a cached snapshot was often missing and every URL was
+> submitted again.
 
 - **Setup.** Set the repository or organization variable `INDEXNOW_KEY` to
   8 to 128 letters, digits or `-`, for example `uuidgen | tr -d -`. The key

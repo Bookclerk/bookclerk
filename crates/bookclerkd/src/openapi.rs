@@ -52,12 +52,15 @@ const NODE_SIGNATURE: &str = "nodeSignature";
 /// Security scheme: an upload grant's `Authorization: Bookclerk-Upload …` header.
 const UPLOAD_TOKEN: &str = "uploadToken";
 
+/// Security scheme: a copy grant's `Authorization: Bookclerk-Copy …` header.
+const COPY_TOKEN: &str = "copyToken";
+
 /// Security scheme: an access token this daemon issued as an OIDC provider.
 const OIDC_ACCESS_TOKEN: &str = "oidcAccessToken";
 
-/// Security scheme: a client sign-in's session token (a library card), as
-/// `Authorization: Bookclerk-Client <token>`.
-const CLIENT_TOKEN: &str = "clientToken";
+/// Security scheme: a library card (a library card), as
+/// `Authorization: Bookclerk-Clerk <token>`.
+const CLERK_TOKEN: &str = "clerkToken";
 
 /// Who a route group admits, as enforced by its auth layer.
 ///
@@ -118,7 +121,7 @@ impl Access {
                 OPERATOR_TOKEN,
                 OPERATOR_SESSION,
                 PORTAL_SESSION,
-                CLIENT_TOKEN,
+                CLERK_TOKEN,
             ],
         }
     }
@@ -143,7 +146,7 @@ impl Access {
             }
             Access::OperatorOrUser => "The operator, or any signed-in user.",
             Access::OperatorOrPortal => {
-                "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+                "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
             }
         }
     }
@@ -155,8 +158,8 @@ impl Access {
 ///
 /// (name, scheme) for the operator Bearer token, the two session cookies, and
 /// the credentials single routes check themselves: node signatures, upload
-/// tokens, OIDC access tokens and client sign-in tokens.
-fn security_schemes() -> [(&'static str, SecurityScheme); 7] {
+/// tokens, OIDC access tokens and clerk sign-in tokens.
+fn security_schemes() -> [(&'static str, SecurityScheme); 8] {
     [
         (
             OPERATOR_TOKEN,
@@ -198,6 +201,13 @@ fn security_schemes() -> [(&'static str, SecurityScheme); 7] {
             ))),
         ),
         (
+            COPY_TOKEN,
+            SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
+                "Authorization",
+                "The token of a copy grant, as `Authorization: Bookclerk-Copy <token>`.",
+            ))),
+        ),
+        (
             OIDC_ACCESS_TOKEN,
             SecurityScheme::Http(
                 HttpBuilder::new()
@@ -209,10 +219,10 @@ fn security_schemes() -> [(&'static str, SecurityScheme); 7] {
             ),
         ),
         (
-            CLIENT_TOKEN,
+            CLERK_TOKEN,
             SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
                 "Authorization",
-                "A client sign-in's session token (`POST /api/client/v1/token`), as `Authorization: Bookclerk-Client <token>`. Accepted only on routes any library session may use, over TLS except on loopback.",
+                "A library card (`POST /api/clerk/v1/token`), as `Authorization: Bookclerk-Clerk <token>`. Accepted only on routes any library session may use, over TLS except on loopback.",
             ))),
         ),
     ]
@@ -260,8 +270,9 @@ const TAGS: &[(&str, &str, &str)] = &[
     ("Cluster", "/api/config/cluster-consents", "Nodes, branches, joining a library and host enrollment."),
     ("Cluster", "/api/config/clusters", "Nodes, branches, joining a library and host enrollment."),
     ("Accounts", "/api/portal", "Store accounts a library user connects (the Accounts page)."),
-    ("Client sign-in", "/api/client/v1", "A clerk's sign-in as a person: redeem an approved code for a session token."),
+    ("Clerk sign-in", "/api/clerk/v1", "A clerk's sign-in as a person: redeem an approved code for a session token."),
     ("Node protocol", "/api/node/v1", "Node-to-node enrollment, socket, artifacts and uploads; each route checks its own credential."),
+    ("Library copies", "/api/copies/v1", "Downloads of an edition's files the library already holds, by a branch or clerk it granted the copy to; the grant's token is the credential."),
     ("OIDC provider", "/.well-known", "Bookclerk as an OpenID Connect provider for other apps."),
     ("OIDC provider", "/oidc", "Bookclerk as an OpenID Connect provider for other apps."),
     ("OIDC provider", "/api/auth/oidc/clients", "Bookclerk as an OpenID Connect provider for other apps."),
@@ -710,8 +721,8 @@ const MANUAL_JSON_BODIES: &[&str] = &[
     "/api/node/v1/enroll/oauth",
     "/api/auth/branch-consent",
     "/api/node/v1/uploads/{upload_id}/commit",
-    "/api/auth/client-consent",
-    "/api/client/v1/token",
+    "/api/auth/clerk-consent",
+    "/api/clerk/v1/token",
 ];
 
 /// The three refusals axum's `Json` extractor writes before a handler
@@ -1189,21 +1200,21 @@ struct MiddlewareRefusal {
     message: &'static str,
 }
 
-/// The two refusals [`crate::client_token::admit_client_token`] answers in
+/// The two refusals [`crate::clerk_token::admit_clerk_token`] answers in
 /// front of every [`Access::OperatorOrPortal`] route when a library card
 /// fails the transport check or the node API is not mounted.
 const CLIENT_TRANSPORT_REFUSALS: [MiddlewareRefusal; 2] = [
     MiddlewareRefusal {
-        slug: crate::client_token::TRANSPORT_INSECURE,
+        slug: crate::clerk_token::TRANSPORT_INSECURE,
         summary: "A library card over plain HTTP from another machine",
         sentence: "A library card sent over plain HTTP from another machine gets `transport_insecure`.",
-        message: crate::client_token::TRANSPORT_INSECURE_MESSAGE,
+        message: crate::clerk_token::TRANSPORT_INSECURE_MESSAGE,
     },
     MiddlewareRefusal {
-        slug: crate::client_token::CLIENT_SIGN_IN_UNAVAILABLE,
+        slug: crate::clerk_token::CLERK_SIGN_IN_UNAVAILABLE,
         summary: "A library card on a listener without the node API",
-        sentence: "A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
-        message: crate::client_token::CLIENT_SIGN_IN_UNAVAILABLE_MESSAGE,
+        sentence: "A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
+        message: crate::clerk_token::CLERK_SIGN_IN_UNAVAILABLE_MESSAGE,
     },
 ];
 
@@ -1475,7 +1486,8 @@ pub(crate) struct SettingSpecDoc {
     /// Operator-facing label; omitted when the key is shown.
     #[schema(example = "Library root")]
     label: Option<String>,
-    /// Value type: `string`, `bool`, `integer`, `enum` or `secret`.
+    /// Value type: `string`, `bool`, `integer`, `enum`, `secret` or
+    /// `table`.
     #[schema(rename = "type", example = "string")]
     kind: SettingKindDoc,
     /// Allowed values of an `enum` setting; omitted for other kinds.
@@ -1491,6 +1503,10 @@ pub(crate) struct SettingSpecDoc {
     /// Help text shown beside the setting; omitted when there is none.
     #[schema(example = "Directory the finished audiobooks are written to.")]
     description: Option<String>,
+    /// Columns of a `table` setting, in display order: each a scalar entry
+    /// naming one field of every row. Omitted for other kinds.
+    #[schema(no_recursion)]
+    columns: Option<Vec<SettingSpecDoc>>,
 }
 
 /// Value type of a declared plugin setting.
@@ -1510,6 +1526,9 @@ pub(crate) enum SettingKindDoc {
     Enum,
     /// A secret stored through the secrets binding, never in the document.
     Secret,
+    /// Rows of records: an array of objects keyed by the declared
+    /// `columns`.
+    Table,
 }
 
 /// One allowed value of an `enum` setting: the stored id and its label.
@@ -1535,7 +1554,8 @@ fn setting_default_schema() -> utoipa::openapi::schema::Schema {
         .schema_type(SchemaType::AnyValue)
         .description(Some(
             "Default applied when the instance document has no value; omitted when there is \
-             none. A string, boolean or integer, as the setting's `type` says.",
+             none. A string, boolean or integer, or for a `table` an array of row objects, as \
+             the setting's `type` says.",
         ))
         .examples([serde_json::json!("/srv/audiobooks")])
         .build()
@@ -2044,7 +2064,7 @@ mod tests {
         for (method, path) in [
             ("get", "/api/wishlist"),
             ("post", "/api/library/scan"),
-            ("get", "/api/library/books"),
+            ("get", "/api/library/works"),
             ("get", "/api/status"),
             ("get", "/api/config/nodes"),
             ("get", "/api/auth/oidc/clients"),
@@ -2076,7 +2096,7 @@ mod tests {
         assert_eq!(
             examples("get", "/api/wishlist"),
             [
-                "client_sign_in_unavailable",
+                "clerk_sign_in_unavailable",
                 "mfa_enrollment_required",
                 "transport_insecure"
             ]
@@ -2084,7 +2104,7 @@ mod tests {
         assert_eq!(
             examples("post", "/api/wishlist"),
             [
-                "client_sign_in_unavailable",
+                "clerk_sign_in_unavailable",
                 "forbidden",
                 "mfa_enrollment_required",
                 "transport_insecure"
@@ -3129,8 +3149,8 @@ mod tests {
             reload["x-bookclerk-access"],
             serde_json::json!(Access::Operator.rule())
         );
-        let books = find("get", "/api/library/books");
-        assert!(books["security"]
+        let works = find("get", "/api/library/works");
+        assert!(works["security"]
             .as_array()
             .is_some_and(|s| s.contains(&serde_json::json!({ PORTAL_SESSION: [] }))));
         // The Accounts routes are nested under their mount point.

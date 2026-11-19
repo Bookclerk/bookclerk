@@ -13,7 +13,7 @@
 //!
 //! External guests share the same [`SourceScope`] boundary.
 //!
-//! On a host node running an owner cluster's job, the store credentials are
+//! On a branch node running an owner cluster's job, the store credentials are
 //! the ones the owner handed with the job
 //! ([`ExternalSource::with_handed_credentials`]): the guest gets only those,
 //! the host's own library is never read for credentials, and a scan
@@ -33,8 +33,8 @@ use bookclerk_source::abi::{
 };
 use bookclerk_source::{
     CatalogHit, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions, LoginOptions,
-    OAuthProgress, PortalAuthMode, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount,
-    SourceBrand, SourceFetch, SourcePurchaseHint,
+    OAuthProgress, PortalAuthMode, PriceLookup, PricedAnswer, PurchaseHintOpts, ScanOptions,
+    ScanSummary, SourceAccount, SourceBrand, SourceFetch, SourcePurchaseHint,
 };
 use serde_json::Value;
 
@@ -81,6 +81,10 @@ pub struct ExternalSource {
     sort_key: u32,
     /// Declared `CatalogCapabilities.detailByIsbn` from `describe()`.
     detail_by_isbn: bool,
+    /// Declared `CatalogCapabilities.priceByIsbn` from `describe()`.
+    price_by_isbn: bool,
+    /// Declared `CatalogCapabilities.priceByAsin` from `describe()`.
+    price_by_asin: bool,
     /// Scoped data directory for this plugin only.
     plugin_data_dir: PathBuf,
     /// `CONFIG` object delivered to the guest (also the spawn config table).
@@ -285,6 +289,8 @@ impl ExternalSource {
             describe.sort_key
         };
         let detail_by_isbn = describe.catalog.detail_by_isbn;
+        let price_by_isbn = describe.catalog.price_by_isbn;
+        let price_by_asin = describe.catalog.price_by_asin;
         let plugin_data_dir = plugin_data_dir(config, plugin)?;
         session.open(prepared.bindings).await?;
         Ok(Self {
@@ -297,6 +303,8 @@ impl ExternalSource {
             aliases,
             sort_key,
             detail_by_isbn,
+            price_by_isbn,
+            price_by_asin,
             plugin_data_dir,
             source_config,
             plugin_instance_id: None,
@@ -737,6 +745,14 @@ impl ContentSource for ExternalSource {
         self.detail_by_isbn
     }
 
+    fn answers_price_by_isbn(&self) -> bool {
+        self.price_by_isbn
+    }
+
+    fn answers_price_by_asin(&self) -> bool {
+        self.price_by_asin
+    }
+
     async fn login(
         &self,
         scope: &SourceScope,
@@ -1022,6 +1038,9 @@ impl ContentSource for ExternalSource {
         &self,
         opts: &PurchaseHintOpts,
     ) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
+        if !self.lookup_declared(opts.lookup) {
+            return Ok(None);
+        }
         let params = bookclerk_plugin_sdk::PurchaseHintParams::from(opts);
         match self
             .session
@@ -1049,26 +1068,50 @@ impl ContentSource for ExternalSource {
         &self,
         opts: &[PurchaseHintOpts],
     ) -> bookclerk_source::Result<Vec<Option<SourcePurchaseHint>>> {
+        Ok(self
+            .purchase_hint_answers(opts)
+            .await?
+            .into_iter()
+            .map(|answer| answer.hint)
+            .collect())
+    }
+
+    async fn purchase_hint_answers(
+        &self,
+        opts: &[PurchaseHintOpts],
+    ) -> bookclerk_source::Result<Vec<PricedAnswer>> {
+        let wanted = opts.len();
+        // Identifier lookups the guest did not declare are never sent: the
+        // guest might answer them with a title match.
+        let sent: Vec<usize> = opts
+            .iter()
+            .enumerate()
+            .filter(|(_, query)| self.lookup_declared(query.lookup))
+            .map(|(at, _)| at)
+            .collect();
+        let mut out: Vec<PricedAnswer> = vec![PricedAnswer::default(); wanted];
+        if sent.is_empty() {
+            return Ok(out);
+        }
         let params = bookclerk_plugin_sdk::PurchaseHintsParams {
-            queries: opts
+            queries: sent
                 .iter()
+                .filter_map(|at| opts.get(*at))
                 .map(bookclerk_plugin_sdk::PurchaseHintParams::from)
                 .collect(),
         };
-        let wanted = opts.len();
         match self
             .session
-            .storefront(move |src| async move { src.purchase_hints(params).await })
+            .storefront(move |src| async move { src.purchase_hints_results(params).await })
             .await
         {
-            Ok(hints) => {
-                let mut out: Vec<Option<SourcePurchaseHint>> = hints
-                    .into_iter()
-                    .map(|hint| hint.map(purchase_hint_from_abi))
-                    .collect();
+            Ok(results) => {
                 // A guest that answered short left the rest unpriced.
-                out.resize_with(wanted, || None);
-                out.truncate(wanted);
+                for (at, result) in sent.into_iter().zip(results) {
+                    if let Some(slot) = out.get_mut(at) {
+                        *slot = PricedAnswer::from(result).decode_html_entities();
+                    }
+                }
                 Ok(out)
             }
             Err(crate::PluginError::RateLimited { retry_after, .. }) => {
@@ -1080,7 +1123,7 @@ impl ContentSource for ExternalSource {
                     error = %err,
                     "external purchase_hints soft-failed"
                 );
-                Ok(vec![None; wanted])
+                Ok(out)
             }
         }
     }
@@ -1147,6 +1190,22 @@ impl ExternalSource {
                 );
                 Ok(None)
             }
+        }
+    }
+}
+
+impl ExternalSource {
+    /// Whether this guest may be asked a purchase-hint query by `lookup`:
+    /// an ISBN or ASIN lookup only when the guest declared it.
+    ///
+    /// # Arguments
+    ///
+    /// * `lookup` - How the query names the title.
+    fn lookup_declared(&self, lookup: PriceLookup) -> bool {
+        match lookup {
+            PriceLookup::Isbn => self.price_by_isbn,
+            PriceLookup::Asin => self.price_by_asin,
+            PriceLookup::Unspecified | PriceLookup::Product | PriceLookup::Title => true,
         }
     }
 }

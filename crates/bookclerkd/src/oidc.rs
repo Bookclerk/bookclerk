@@ -8,10 +8,10 @@
 //! or https redirect URIs). Its authorize requests go to the SPA consent
 //! page `/join/approve`, and its codes are redeemed only at
 //! `POST /api/node/v1/enroll/oauth` (`crate::node_api::branch`), never at
-//! the token endpoint. A second, `bookclerk-client` (scope
+//! the token endpoint. A second, `bookclerk-clerk` (scope
 //! `library:member`), is how a clerk signs in as a person: its
-//! requests go to `/client/approve` and its codes are redeemed only at
-//! `POST /api/client/v1/token` (`crate::node_api::client`).
+//! requests go to `/clerk/approve` and its codes are redeemed only at
+//! `POST /api/clerk/v1/token` (`crate::node_api::clerk`).
 
 use crate::openapi::{Access, RouteGroup};
 use std::sync::Arc;
@@ -48,6 +48,8 @@ const CODE_TTL_SECS: i64 = 300;
 /// # Returns
 ///
 /// The two groups, protocol first.
+// Out of line so it is optimized apart from `api::route_groups`.
+#[inline(never)]
 pub(crate) fn route_groups() -> Vec<RouteGroup> {
     let protocol = OpenApiRouter::new()
         .routes(routes!(openid_configuration))
@@ -161,7 +163,7 @@ pub struct AuthorizeQuery {
     path = "/oidc/authorize",
     params(AuthorizeQuery),
     responses(
-        (status = 303, description = "A `bookclerk-branch` request is sent to the SPA consent page `/join/approve`, and a `bookclerk-client` request to `/client/approve`."),
+        (status = 303, description = "A `bookclerk-branch` request is sent to the SPA consent page `/join/approve`, and a `bookclerk-clerk` request to `/clerk/approve`."),
         (status = 307, description = "Redirects to sign-in (no user session) or to the client with a code."),
         (status = 400, description = "The request is invalid. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body. A query string that cannot be parsed gets a plain-text line.", content(
             (crate::http_error::ErrorJson = "application/json"),
@@ -187,8 +189,8 @@ async fn authorize(
     if q.client_id == bookclerk_node_proto::BRANCH_CLIENT_ID {
         return branch_authorize(raw.as_deref().unwrap_or(""));
     }
-    if q.client_id == bookclerk_node_proto::CLIENT_CLIENT_ID {
-        return client_authorize(raw.as_deref().unwrap_or(""));
+    if q.client_id == bookclerk_node_proto::CLERK_CLIENT_ID {
+        return clerk_authorize(raw.as_deref().unwrap_or(""));
     }
     validate_authorize_request(&state, &q).await?;
     let Some(user_id) = require_user_session(&state, &headers).await? else {
@@ -215,15 +217,15 @@ fn branch_authorize(raw: &str) -> Result<Response, StatusCode> {
     Ok(Redirect::to(&format!("/join/approve?{raw}")).into_response())
 }
 
-/// A `bookclerk-client` authorize request: checked here (a malformed one is
+/// A `bookclerk-clerk` authorize request: checked here (a malformed one is
 /// 400 and never redirects), then sent to the SPA consent page, which signs
 /// the user in and asks before any code is issued.
-fn client_authorize(raw: &str) -> Result<Response, StatusCode> {
-    let params = crate::node_api::client::parse_client_query(raw).ok_or(StatusCode::BAD_REQUEST)?;
-    if crate::node_api::client::client_request_problem(&params).is_some() {
+fn clerk_authorize(raw: &str) -> Result<Response, StatusCode> {
+    let params = crate::node_api::clerk::parse_clerk_query(raw).ok_or(StatusCode::BAD_REQUEST)?;
+    if crate::node_api::clerk::clerk_request_problem(&params).is_some() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    Ok(Redirect::to(&format!("/client/approve?{raw}")).into_response())
+    Ok(Redirect::to(&format!("/clerk/approve?{raw}")).into_response())
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -528,9 +530,9 @@ async fn token_authorization_code(
         .ok_or(StatusCode::BAD_REQUEST)?;
     let client_id = form.client_id.as_deref().ok_or(StatusCode::BAD_REQUEST)?;
     // A branch's code is redeemed only at the node API's enroll/oauth, and
-    // a client sign-in's only at the client token route.
+    // a clerk sign-in's only at the library card route.
     if client_id.trim() == bookclerk_node_proto::BRANCH_CLIENT_ID
-        || client_id.trim() == bookclerk_node_proto::CLIENT_CLIENT_ID
+        || client_id.trim() == bookclerk_node_proto::CLERK_CLIENT_ID
     {
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -1288,7 +1290,7 @@ fn oidc_client_error(status: StatusCode, message: impl Into<String>) -> Response
 /// clerk's library card), which are never stored as registered clients.
 fn is_built_in_client_id(id: &str) -> bool {
     let id = id.trim();
-    id == bookclerk_node_proto::BRANCH_CLIENT_ID || id == bookclerk_node_proto::CLIENT_CLIENT_ID
+    id == bookclerk_node_proto::BRANCH_CLIENT_ID || id == bookclerk_node_proto::CLERK_CLIENT_ID
 }
 
 /// Reject empty, oversized, or punctuation-heavy client ids.
@@ -2117,6 +2119,7 @@ mod tests {
             default: None,
             required: false,
             description: None,
+            columns: Vec::new(),
         }]);
         pin_plugin_schema(
             library,

@@ -363,6 +363,28 @@ impl IntoUrlArg for &Url {
     }
 }
 
+/// The environment a shared default [`Client`] was built for: whether
+/// requests dial through the host's socket proxy and whether the nested
+/// jail forbids ambient TCP. Both are fixed for a guest's life; a change
+/// (only tests make one) builds a fresh default client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DefaultClientMode {
+    /// [`crate::SOCKET_PROXY_ENV`] is set.
+    socket_proxy: bool,
+    /// The nested native jail is requested.
+    nested_jail: bool,
+}
+
+impl DefaultClientMode {
+    /// The mode the process is in now.
+    fn current() -> Self {
+        Self {
+            socket_proxy: use_socket_proxy(),
+            nested_jail: nested_native_jail_requested(),
+        }
+    }
+}
+
 impl Client {
     /// Default client (ambient or proxied from env).
     ///
@@ -372,8 +394,38 @@ impl Client {
     /// the proxied client cannot be built. Does not fall back to ambient TCP.
     /// Ambient reqwest construction failure without those env vars also panics
     /// only if the last-resort `reqwest::Client::new` cannot be created.
+    ///
+    /// Every call in one plugin process hands out a clone of the same
+    /// client, so its requests share one connection pool and reuse TLS
+    /// connections instead of handshaking per call. That client holds no
+    /// cookie jar and no default headers, so sharing it carries nothing
+    /// from one request (or account) to the next; a client that needs
+    /// cookies or its own headers is built with [`Client::builder`] and
+    /// keeps its own pool. The sharing never crosses processes, so it never
+    /// crosses a plugin's sandbox.
     #[must_use]
     pub fn new() -> Self {
+        static SHARED: Mutex<Option<(DefaultClientMode, Client)>> = Mutex::new(None);
+        let mode = DefaultClientMode::current();
+        let mut shared = SHARED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((built_for, client)) = shared.as_ref() {
+            if *built_for == mode {
+                return client.clone();
+            }
+        }
+        let client = Self::build_default();
+        *shared = Some((mode, client.clone()));
+        client
+    }
+
+    /// Builds the default client [`Client::new`] shares.
+    ///
+    /// # Panics
+    ///
+    /// As [`Client::new`].
+    fn build_default() -> Self {
         match Self::builder().build() {
             Ok(client) => client,
             Err(err) if use_socket_proxy() || nested_native_jail_requested() => {
@@ -1506,6 +1558,71 @@ mod query_encoding_tests {
             Some("custom/1")
         );
         assert_eq!(agent_for(None, "https://example.com/", None), None);
+    }
+
+    #[tokio::test]
+    async fn the_shared_default_client_reuses_its_connection_and_keeps_no_cookies() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let accepts = Arc::clone(&accepted);
+        tokio::spawn(async move {
+            loop {
+                let (mut s, _) = listener.accept().await.unwrap();
+                accepts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = vec![0_u8; 4096];
+                    loop {
+                        let Ok(n) = s.read(&mut buf).await else {
+                            return;
+                        };
+                        if n == 0 {
+                            return;
+                        }
+                        let request = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
+                        let cookie = request
+                            .lines()
+                            .find_map(|l| l.strip_prefix("cookie:").map(|v| v.trim().to_string()))
+                            .unwrap_or_default();
+                        // Every answer tries to set a session cookie.
+                        let reply = format!(
+                            "HTTP/1.1 200 OK\r\nset-cookie: session=secret; Path=/\r\n\
+                             content-length: {}\r\n\r\n{cookie}",
+                            cookie.len()
+                        );
+                        if s.write_all(reply.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        // Three `Client::new()` calls, as storefront code makes one per
+        // request; the environment lock is released before any await.
+        let clients: Vec<Client> = {
+            let _guard = crate::net::SOCKET_PROXY_ENV_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let previous_jail = std::env::var_os(NESTED_NATIVE_JAIL_ENV);
+            std::env::remove_var(NESTED_NATIVE_JAIL_ENV);
+            let clients = (0..3).map(|_| Client::new()).collect();
+            match previous_jail {
+                Some(v) => std::env::set_var(NESTED_NATIVE_JAIL_ENV, v),
+                None => std::env::remove_var(NESTED_NATIVE_JAIL_ENV),
+            }
+            clients
+        };
+        let url = format!("http://127.0.0.1:{port}/");
+        for client in clients {
+            let body = client.get(url.clone()).send().await.unwrap();
+            assert_eq!(body.text().await.unwrap(), "", "no cookie is replayed");
+        }
+        assert_eq!(
+            accepted.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the calls share one kept-alive connection"
+        );
     }
 
     #[tokio::test]

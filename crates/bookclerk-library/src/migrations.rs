@@ -530,6 +530,13 @@ pub fn host_sql_type_env() -> bookclerk_plugin_abi::SqlTypeEnv {
     // Every host write stamps its batch against this environment, so it is
     // parsed once per process and cloned: the statements it comes from are
     // themselves fixed for the life of the binary.
+    host_sql_type_env_ref().clone()
+}
+
+/// [`host_sql_type_env`] without the copy: the environment parsed once per
+/// process.
+#[must_use]
+pub fn host_sql_type_env_ref() -> &'static bookclerk_plugin_abi::SqlTypeEnv {
     static ENV: OnceLock<bookclerk_plugin_abi::SqlTypeEnv> = OnceLock::new();
     ENV.get_or_init(|| {
         // The ledger table is created before any plan step and is not part of
@@ -540,7 +547,14 @@ pub fn host_sql_type_env() -> bookclerk_plugin_abi::SqlTypeEnv {
                 .chain(current_canonical_statements().iter().map(String::as_str)),
         )
     })
-    .clone()
+}
+
+/// [`host_sql_type_env`] merged with the host bookkeeping tables, prepared
+/// once per process so stamping a host request does not copy the schema.
+#[must_use]
+pub fn host_stamp_catalog() -> &'static bookclerk_db_exec::StampCatalog {
+    static CATALOG: OnceLock<bookclerk_db_exec::StampCatalog> = OnceLock::new();
+    CATALOG.get_or_init(|| bookclerk_db_exec::StampCatalog::new(host_sql_type_env_ref()))
 }
 
 /// Frozen host migration steps. Empty until a release cut copies
@@ -591,6 +605,15 @@ pub(crate) fn override_host_migration_plan(
 mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    #[test]
+    fn the_prepared_host_catalog_matches_the_host_schema() {
+        assert_eq!(*host_sql_type_env_ref(), host_sql_type_env());
+        assert_eq!(
+            *host_stamp_catalog(),
+            bookclerk_db_exec::StampCatalog::new(&host_sql_type_env())
+        );
+    }
 
     fn apply_current_schema(conn: &Connection) {
         conn.execute_batch(current_canonical_schema()).unwrap();

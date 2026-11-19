@@ -49,7 +49,7 @@ async fn add_node(store: &LibraryStore, node_id: &str, kind: &str, owner: Option
     .insert(store.db())
     .await
     .unwrap();
-    if kind == "host" {
+    if kind == "branch" {
         node_credentials::ActiveModel {
             node_id: Set(node_id.into()),
             sign_public_key: Set(vec![1; 32]),
@@ -72,7 +72,7 @@ async fn world(dir: &std::path::Path) -> (LibraryStore, i64) {
         .create_user(UserRole::Member, Some("Riley"), None)
         .await
         .unwrap();
-    add_node(&store, BRANCH, "host", Some(member.id)).await;
+    add_node(&store, BRANCH, "branch", Some(member.id)).await;
     (store, member.id)
 }
 
@@ -221,7 +221,7 @@ async fn only_a_trusted_branch_may_share() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let (store, member) = world(dir.path()).await;
-    add_node(&store, "shared_branch", "owner", Some(member)).await;
+    add_node(&store, "shared_branch", "shared", Some(member)).await;
     for node in ["shared_branch", "nobody"] {
         assert_eq!(
             begin_catalog(&store, node, true, true).await.unwrap(),
@@ -604,6 +604,7 @@ async fn a_catalog_upload_commits_only_under_the_live_fence() {
         size,
         sha256: "ab".repeat(32),
         content_type: None,
+        probe: None,
     };
     let key = "Author/p1/p1.m4b";
     let grant = |files: Vec<UploadFile>, fence: i64| {
@@ -614,7 +615,7 @@ async fn a_catalog_upload_commits_only_under_the_live_fence() {
                 &store,
                 BRANCH,
                 fence,
-                "owner-node",
+                "shared-node",
                 "audible",
                 "p1",
                 &files,
@@ -641,7 +642,7 @@ async fn a_catalog_upload_commits_only_under_the_live_fence() {
             &store,
             BRANCH,
             session.fence,
-            "owner-node",
+            "shared-node",
             "audible",
             "nope",
             &[file(key, 3)],
@@ -785,7 +786,7 @@ async fn ancestry_lists_this_library_then_every_parent_and_refuses_cycles() {
         list_members_books: Some(false),
         work_for_members: Some(true),
         keep_member_copies: None,
-        download: Some(false),
+        keep_copies: Some(false),
     };
     assert!(set_cluster_link_settings(&store, "parent", settings)
         .await
@@ -793,10 +794,7 @@ async fn ancestry_lists_this_library_then_every_parent_and_refuses_cycles() {
     let link = load_cluster_link(&store, "parent").await.unwrap().unwrap();
     assert!(link.share_books && !link.include_branches && !link.list_members_books);
     assert!(link.work_for_members && !link.keep_member_copies);
-    assert!(
-        !link.download,
-        "the window setting is written with the rest"
-    );
+    assert!(!link.keep_copies, "keep copies is written with the rest");
     assert!(!set_cluster_link_settings(&store, "elsewhere", settings)
         .await
         .unwrap());
@@ -865,7 +863,7 @@ async fn a_catalog_upload_never_overwrites_another_titles_files() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let (store, member) = world(dir.path()).await;
-    add_node(&store, "branch-c", "host", Some(member)).await;
+    add_node(&store, "branch-c", "branch", Some(member)).await;
     store
         .upsert_account(PLUGIN, "someone-else", "us", None, true, "test")
         .await
@@ -937,12 +935,13 @@ async fn a_catalog_upload_never_overwrites_another_titles_files() {
                 size: 1,
                 sha256: "ab".repeat(32),
                 content_type: None,
+                probe: None,
             }];
             grant_catalog_upload(
                 &store,
                 branch,
                 fence,
-                "owner-node",
+                "shared-node",
                 "audible",
                 product,
                 &files,
@@ -1076,6 +1075,7 @@ fn local_files(keys: &[&str]) -> Vec<UploadFile> {
             size: 1,
             sha256: "ab".repeat(32),
             content_type: None,
+            probe: None,
         })
         .collect()
 }
@@ -1102,7 +1102,7 @@ async fn grant_branch_local(
         store,
         branch,
         fence,
-        "owner-node",
+        "shared-node",
         "audible",
         product,
         &local_files(keys),
@@ -1169,7 +1169,7 @@ async fn a_catalog_upload_never_writes_into_another_titles_folder() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let (store, member) = world(dir.path()).await;
-    add_node(&store, "branch-c", "host", Some(member)).await;
+    add_node(&store, "branch-c", "branch", Some(member)).await;
     acquired_book(
         &store,
         "someone-else",
@@ -1243,7 +1243,7 @@ async fn a_catalog_upload_never_writes_into_another_titles_folder() {
                     &[&primary, key]
                 )
                 .await,
-                UploadGrant::Refused("key_of_another_book")
+                UploadGrant::Refused("key_of_another_title")
             ),
             "{key} is the library book's sidecar"
         );
@@ -1423,7 +1423,7 @@ async fn shared_folders_hold_only_against_other_branches_delivered_titles() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let (store, member) = world(dir.path()).await;
-    add_node(&store, "branch-c", "host", Some(member)).await;
+    add_node(&store, "branch-c", "branch", Some(member)).await;
     let other = open_branch(
         &store,
         "branch-c",
@@ -1489,7 +1489,7 @@ async fn the_first_branch_to_write_a_folder_holds_it() {
     for a_first in [true, false] {
         let dir = tempfile::tempdir().unwrap();
         let (store, member) = world(dir.path()).await;
-        add_node(&store, "branch-c", "host", Some(member)).await;
+        add_node(&store, "branch-c", "branch", Some(member)).await;
         let a_keys = ["Mine/x.m4b", "BAuthor/BBook/evil.mp3"];
         let b_keys = ["BAuthor/BBook/BBook.m4b"];
         let b = open_branch(&store, "branch-c", &[title_with("bbook", b_keys[0], &[])]).await;
@@ -1597,7 +1597,7 @@ async fn insert_node_holding(
             "INSERT OR IGNORE INTO nodes (node_id, cluster_id, created_at, incarnation, \
              heartbeat_at, software_version, schema_state, compatible, kind, share_books) \
              VALUES ('{BRANCH}', 'c', '2026-01-01T00:00:00Z', 'i', '2026-01-01T00:00:00Z', \
-             'v', 's', 1, 'host', 1)"
+             'v', 's', 1, 'branch', 1)"
         ))
         .await
         .unwrap();
@@ -1911,7 +1911,7 @@ async fn a_large_shared_title_works_under_every_profile() {
             .create_user(UserRole::Member, Some("Riley"), None)
             .await
             .unwrap();
-        add_node(&store, BRANCH, "host", Some(member.id)).await;
+        add_node(&store, BRANCH, "branch", Some(member.id)).await;
         let key = "Author/p1/p1.m4b";
         let mut big = title_with("p1", key, &[]);
         big.metadata.title = "Ä long title ".repeat(60);
@@ -1966,7 +1966,7 @@ async fn left_behind_counts_and_removal_work_under_every_profile() {
             .create_user(UserRole::Member, Some("Riley"), None)
             .await
             .unwrap();
-        add_node(&store, BRANCH, "host", Some(member.id)).await;
+        add_node(&store, BRANCH, "branch", Some(member.id)).await;
         let titles = [
             title_with("p1", "Author/p1/p1.m4b", &[]),
             title_with("p2", "Author/p2/p2.m4b", &[]),
@@ -2041,7 +2041,7 @@ async fn replaced_holdings_are_found_under_every_profile() {
             .create_user(UserRole::Member, Some("Riley"), None)
             .await
             .unwrap();
-        add_node(&store, BRANCH, "host", Some(member.id)).await;
+        add_node(&store, BRANCH, "branch", Some(member.id)).await;
         let opened = match begin_catalog(&store, BRANCH, true, true).await.unwrap() {
             CatalogBegin::Opened(opened) => opened,
             other => panic!("{name}: expected a session: {other:?}"),
@@ -2091,12 +2091,13 @@ async fn a_catalog_upload_is_refused_once_its_listing_sells_another_edition() {
         size: 3,
         sha256: "ab".repeat(32),
         content_type: None,
+        probe: None,
     }];
     let UploadGrant::Granted { upload_id, .. } = grant_catalog_upload(
         &store,
         BRANCH,
         session.fence,
-        "owner-node",
+        "shared-node",
         "audible",
         "p1",
         &files,
@@ -2206,7 +2207,7 @@ async fn an_abandoned_claim_does_not_suppress_another_branchs_delivery() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let (store, member) = world(dir.path()).await;
-    add_node(&store, "branch-c", "host", Some(member)).await;
+    add_node(&store, "branch-c", "branch", Some(member)).await;
     let key = "Author/p1/p1.m4b";
     let fence = open_branch(&store, BRANCH, &[title_with("p1", key, &[])]).await;
     let UploadGrant::Granted { upload_id, .. } =

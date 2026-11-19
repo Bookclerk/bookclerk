@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-node-client"
-description = "Host-node client: enrollment, the pinned owner socket, heartbeats, claimed work, token write-back, wakes and resume"
+description = "Branch-node client: enrollment, the pinned owner socket, heartbeats, claimed work, token write-back, wakes and resume"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -37,6 +37,7 @@ webpki-roots = "1"
 zeroize.workspace = true
 
 [dev-dependencies]
+log = "0.4"
 tempfile.workspace = true
 
 [lints]

@@ -18,7 +18,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 
 use bookclerk_plugin_abi::TypedDbStatement;
 use bookclerk_resolve as resolve;
@@ -108,6 +108,9 @@ pub struct ListingDetail {
     pub series: Option<String>,
     /// Position in the series (`1`, `2.5`).
     pub series_index: Option<String>,
+    /// The store's own product id for the series or podcast show (an
+    /// Audible series ASIN); store-specific, so it lives on the listing.
+    pub series_product_id: Option<String>,
     /// Synopsis, kept whole.
     pub description: Option<String>,
     /// Publisher or imprint.
@@ -128,6 +131,103 @@ pub struct ListingDetail {
     pub rating_count: Option<i64>,
     /// Abridged (`true`), unabridged (`false`) or unknown.
     pub is_abridged: Option<bool>,
+}
+
+impl ListingDetail {
+    /// The store text a scanned library title carries, for its listing.
+    ///
+    /// Only the fields a scan reports are taken: the flat row's synopsis,
+    /// language, cover and rating can come from metadata enrichment rather
+    /// than the store, so they are left out. A title the store marks
+    /// unabridged is left unknown, since the flat row cannot tell
+    /// unabridged from unreported.
+    #[must_use]
+    pub fn of_book(book: &crate::models::BookRecord) -> Self {
+        Self {
+            subtitle: book.subtitle.clone(),
+            authors: book.authors.clone(),
+            narrators: book.narrators.clone(),
+            series: book.series.clone(),
+            series_index: book.series_index.clone(),
+            series_product_id: book.series_asin.clone(),
+            publisher: book.publisher.clone(),
+            published_at: book.published_at.map(|t| t.to_rfc3339()),
+            length_minutes: book.length_minutes,
+            is_abridged: book.is_abridged.then_some(true),
+            ..Self::default()
+        }
+    }
+}
+
+impl ListingDetail {
+    /// The store text of a storefront catalog record, as the store
+    /// reported it.
+    ///
+    /// Everything the record carries is taken, including cover, synopsis,
+    /// product page and rating; a podcast episode's show product becomes
+    /// [`Self::series_product_id`]. HTML entities are left as the record
+    /// has them.
+    #[must_use]
+    pub fn of_catalog_hit(hit: &bookclerk_storefront::CatalogHit) -> Self {
+        Self {
+            subtitle: hit.subtitle.clone(),
+            authors: hit.authors(),
+            narrators: hit.narrators(),
+            series: hit.series(),
+            series_index: hit.series_index(),
+            series_product_id: hit.parent_product_id.clone(),
+            description: hit.description.clone(),
+            publisher: hit.publisher.clone(),
+            published_at: hit.published_at.clone(),
+            length_minutes: hit.length_minutes,
+            language: hit.language.clone(),
+            cover_url: hit.cover_url.clone(),
+            url: hit.url.clone(),
+            rating_overall: hit.rating_overall,
+            rating_count: hit.rating_count,
+            is_abridged: hit.is_abridged,
+        }
+    }
+
+    /// True when writing these fields would change `row`: a field set here
+    /// (blank counts as unset) differs from the stored value.
+    #[must_use]
+    pub(crate) fn changes(&self, row: &store_listings::Model) -> bool {
+        fn text(offered: Option<&String>, stored: Option<&String>) -> bool {
+            offered
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+                .is_some_and(|v| stored.map(String::as_str) != Some(v))
+        }
+        text(self.subtitle.as_ref(), row.subtitle.as_ref())
+            || text(self.authors.as_ref(), row.authors.as_ref())
+            || text(self.narrators.as_ref(), row.narrators.as_ref())
+            || text(self.series.as_ref(), row.series.as_ref())
+            || text(self.series_index.as_ref(), row.series_index.as_ref())
+            || text(
+                self.series_product_id.as_ref(),
+                row.series_product_id.as_ref(),
+            )
+            || text(self.description.as_ref(), row.description.as_ref())
+            || text(self.publisher.as_ref(), row.publisher.as_ref())
+            || text(self.published_at.as_ref(), row.published_at.as_ref())
+            || text(self.language.as_ref(), row.language.as_ref())
+            || text(self.cover_url.as_ref(), row.cover_url.as_ref())
+            || text(self.url.as_ref(), row.url.as_ref())
+            || self
+                .length_minutes
+                .is_some_and(|v| row.length_minutes != Some(v))
+            || self
+                .rating_overall
+                .filter(|v| v.is_finite())
+                .is_some_and(|v| row.rating_overall != Some(v))
+            || self
+                .rating_count
+                .is_some_and(|v| row.rating_count != Some(v))
+            || self
+                .is_abridged
+                .is_some_and(|v| row.is_abridged != Some(i64::from(v)))
+    }
 }
 
 /// One title a store's catalog answer reported.
@@ -157,6 +257,11 @@ pub struct CatalogListingRecord {
     pub edition_id: String,
     /// That edition's work, when the rows are consistent.
     pub work_id: Option<String>,
+    /// That edition's expression (`expressions.id`), when the rows are
+    /// consistent. Listings of one expression are the same recording or
+    /// text, so their prices compare; listings of one work in different
+    /// expressions (a narration and a full-cast dramatisation) do not.
+    pub expression_id: Option<String>,
     /// Title as the store lists it.
     pub title: String,
     /// Store category labels.
@@ -194,6 +299,40 @@ fn real_opt(value: Option<f64>) -> bookclerk_plugin_abi::DbValue {
     }
 }
 
+/// The statements that write a listing's store text: [`detail_update`],
+/// then, when the text carries a cover, [`edition_cover_fill`].
+fn detail_writes(listing_id: &str, detail: &ListingDetail, now: &str) -> Vec<TypedDbStatement> {
+    let mut writes = vec![detail_update(listing_id, detail, now)];
+    if let Some(cover) = detail
+        .cover_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
+        writes.push(edition_cover_fill(listing_id, cover, now));
+    }
+    writes
+}
+
+/// The statement that gives the edition a listing sells the store's cover
+/// when the edition has none yet.
+///
+/// An edition's own cover is the first one the library shows for it; the
+/// first store that reports one sets it, and a later store or a later
+/// answer never replaces it.
+fn edition_cover_fill(listing_id: &str, cover: &str, now: &str) -> TypedDbStatement {
+    batch::exec(
+        "UPDATE editions SET cover_url = ?, updated_at = ? \
+         WHERE (cover_url IS NULL OR cover_url = '') \
+         AND id IN (SELECT edition_id FROM store_listings WHERE id = ?)",
+        vec![
+            batch::text(cover),
+            batch::text(now),
+            batch::text(listing_id),
+        ],
+    )
+}
+
 /// The statement that fills a listing's store text, keeping a stored
 /// value the store left out this time.
 fn detail_update(listing_id: &str, detail: &ListingDetail, now: &str) -> TypedDbStatement {
@@ -201,7 +340,8 @@ fn detail_update(listing_id: &str, detail: &ListingDetail, now: &str) -> TypedDb
         "UPDATE store_listings SET \
          subtitle = COALESCE(?, subtitle), authors = COALESCE(?, authors), \
          narrators = COALESCE(?, narrators), series = COALESCE(?, series), \
-         series_index = COALESCE(?, series_index), description = COALESCE(?, description), \
+         series_index = COALESCE(?, series_index), \
+         series_product_id = COALESCE(?, series_product_id), description = COALESCE(?, description), \
          publisher = COALESCE(?, publisher), published_at = COALESCE(?, published_at), \
          length_minutes = COALESCE(?, length_minutes), language = COALESCE(?, language), \
          cover_url = COALESCE(?, cover_url), url = COALESCE(?, url), \
@@ -214,6 +354,7 @@ fn detail_update(listing_id: &str, detail: &ListingDetail, now: &str) -> TypedDb
             text_trim(detail.narrators.as_deref()),
             text_trim(detail.series.as_deref()),
             text_trim(detail.series_index.as_deref()),
+            text_trim(detail.series_product_id.as_deref()),
             text_trim(detail.description.as_deref()),
             text_trim(detail.publisher.as_deref()),
             text_trim(detail.published_at.as_deref()),
@@ -277,6 +418,7 @@ fn record_of(m: store_listings::Model) -> CatalogListingRecord {
             narrators: m.narrators,
             series: m.series,
             series_index: m.series_index,
+            series_product_id: m.series_product_id,
             description: m.description,
             publisher: m.publisher,
             published_at: m.published_at,
@@ -294,6 +436,7 @@ fn record_of(m: store_listings::Model) -> CatalogListingRecord {
         product_id: m.product_id,
         edition_id: m.edition_id,
         work_id: None,
+        expression_id: None,
         title: m.title,
         categories: m.categories,
         asin: None,
@@ -482,7 +625,9 @@ impl LibraryStore {
             // A title an answer lists twice is written once, with the
             // first copy's text and every copy's offers.
             if resolved && done.insert(id.clone()) {
-                if let Some(full) = batches.push(detail_update(&id, &input.detail, &now_text))? {
+                if let Some(full) =
+                    batches.push_group(detail_writes(&id, &input.detail, &now_text))?
+                {
                     self.run_catalog_batch(full).await?;
                 }
             }
@@ -528,6 +673,152 @@ impl LibraryStore {
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    /// Fills a stored listing's store text, keeping a stored value `detail`
+    /// leaves out. A cover in `detail` also becomes the cover of the
+    /// edition the listing sells when that edition has none.
+    ///
+    /// # Arguments
+    ///
+    /// * `listing_id` - `store_listings.id`; an id no longer stored writes
+    ///   nothing.
+    /// * `detail` - The store's text for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    pub(crate) async fn record_listing_detail(
+        &self,
+        listing_id: &str,
+        detail: &ListingDetail,
+    ) -> Result<()> {
+        self.run_catalog_batch(detail_writes(listing_id, detail, &now_str()))
+            .await
+    }
+
+    /// Fills the store text of many stored listings, in batches sized from
+    /// the database plugin's limits.
+    ///
+    /// # Arguments
+    ///
+    /// * `details` - `(listing id, store text)` pairs; an id no longer
+    ///   stored writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first batch's database error, after every batch was
+    /// tried.
+    pub(crate) async fn record_listing_details(
+        &self,
+        details: &[(String, ListingDetail)],
+    ) -> Result<()> {
+        let now = now_str();
+        let mut batches = WriteBatches::new(self.db_capabilities(), "listing text");
+        let mut first_error = None;
+        for (listing_id, detail) in details {
+            if let Some(full) = batches.push_group(detail_writes(listing_id, detail, &now))? {
+                if let Err(err) = self.run_catalog_batch(full).await {
+                    first_error.get_or_insert(err);
+                }
+            }
+        }
+        if let Some(last) = batches.finish() {
+            if let Err(err) = self.run_catalog_batch(last).await {
+                first_error.get_or_insert(err);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    /// Fills the store text of stored listings named by their store key, as
+    /// a store's answer for titles the library already lists would.
+    ///
+    /// Each listing keeps a stored value its text leaves out, and a cover
+    /// in the text also becomes the cover of the edition the listing sells
+    /// when that edition has none.
+    ///
+    /// # Arguments
+    ///
+    /// * `texts` - `(store key, store text)` pairs; a key with no stored
+    ///   listing is skipped.
+    ///
+    /// A held work whose edition gained a cover has its page index row
+    /// refreshed, so the row can name that edition as its cover edition.
+    ///
+    /// # Returns
+    ///
+    /// How many of `texts` named a stored listing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error of the listing read, of the first write
+    /// batch that failed (after every batch was tried), or of the row
+    /// refresh.
+    pub async fn record_store_text(
+        &self,
+        texts: &[(resolve::ListingKey, ListingDetail)],
+    ) -> Result<usize> {
+        let products: Vec<String> = texts
+            .iter()
+            .map(|(key, _)| key.product_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        // Several stores can share a product id (an ISBN), so the read is
+        // paged by result rows, not only by bind count.
+        let rows = super::library_model::find_chunked_paged::<store_listings::Entity, _>(
+            self,
+            &products,
+            |part| {
+                store_listings::Entity::find()
+                    .filter(store_listings::Column::ProductId.is_in(part.iter().cloned()))
+                    .order_by_asc(store_listings::Column::Id)
+            },
+        )
+        .await?;
+        let listings: HashMap<(String, String, String), (String, String)> = rows
+            .into_iter()
+            .map(|row| {
+                (
+                    (row.plugin_key, row.marketplace, row.product_id),
+                    (row.id, row.edition_id),
+                )
+            })
+            .collect();
+        let mut writes: Vec<(String, ListingDetail)> = Vec::new();
+        let mut covered_editions: BTreeSet<String> = BTreeSet::new();
+        for (key, detail) in texts {
+            let Some((id, edition_id)) = listings.get(&(
+                key.plugin_key.clone(),
+                key.marketplace.clone(),
+                key.product_id.clone(),
+            )) else {
+                continue;
+            };
+            if detail
+                .cover_url
+                .as_deref()
+                .is_some_and(|c| !c.trim().is_empty())
+            {
+                covered_editions.insert(edition_id.clone());
+            }
+            writes.push((id.clone(), detail.clone()));
+        }
+        self.record_listing_details(&writes).await?;
+        // A cover can make another edition the better cover edition of a
+        // held work whose row was written before the cover was known.
+        let mut works: BTreeSet<String> = BTreeSet::new();
+        for edition_id in &covered_editions {
+            if let Some(work) = self.work_of_edition(edition_id).await? {
+                works.insert(work);
+            }
+        }
+        if !works.is_empty() {
+            self.refresh_library_works(&works.into_iter().collect::<Vec<_>>())
+                .await?;
+        }
+        Ok(writes.len())
     }
 
     /// Sends one chunk of catalog writes as one atomic host batch.
@@ -591,7 +882,7 @@ impl LibraryStore {
         }
         let editions: BTreeSet<String> = rows.values().map(|r| r.edition_id.clone()).collect();
         let edition_list: Vec<String> = editions.iter().cloned().collect();
-        let work_of = self.works_of_editions(editions).await?;
+        let placement_of = self.placements_of_editions(editions).await?;
         let mut identifiers: HashMap<String, Vec<edition_identifiers::Model>> = HashMap::new();
         for chunk in edition_list.chunks(self.lookup_chunk()) {
             for m in edition_identifiers::Entity::find()
@@ -625,7 +916,10 @@ impl LibraryStore {
             }
         }
         for record in rows.values_mut() {
-            record.work_id = work_of.get(&record.edition_id).cloned();
+            if let Some(placement) = placement_of.get(&record.edition_id) {
+                record.work_id = Some(placement.work_id.clone());
+                record.expression_id = Some(placement.expression_id.clone());
+            }
             if let Some(ids) = identifiers.get(&record.edition_id) {
                 let asins = || ids.iter().filter(|m| m.scheme == "asin");
                 record.asin = asins()
@@ -645,6 +939,82 @@ impl LibraryStore {
             }
         }
         Ok(unique.iter().filter_map(|id| rows.remove(id)).collect())
+    }
+
+    /// The expressions (recordings) the shared listing pool placed each
+    /// store product in, in any marketplace.
+    ///
+    /// A store's product id names one edition per marketplace, so a product
+    /// usually has one expression; a product listed in two marketplaces
+    /// under different editions has each of their expressions. A product
+    /// the pool never listed is left out.
+    ///
+    /// # Arguments
+    ///
+    /// * `products` - `(plugin_key, product_id)` pairs, as stores report
+    ///   them (the product id is compared in its stored spelling).
+    ///
+    /// # Returns
+    ///
+    /// Each pooled product's expression ids, keyed by the pair as given.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    pub async fn listing_expressions(
+        &self,
+        products: &[(String, String)],
+    ) -> Result<HashMap<(String, String), BTreeSet<String>>> {
+        let stored: Vec<(String, String, &(String, String))> = products
+            .iter()
+            .map(|pair| (pair.0.clone(), resolve::stored_product_id(&pair.1), pair))
+            .filter(|(key, product, _)| !key.trim().is_empty() && !product.is_empty())
+            .collect();
+        let ids: Vec<String> = stored
+            .iter()
+            .map(|(_, product, _)| product.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        // Several stores can share a product id (an ISBN), so the read is
+        // paged by result rows, not only by bind count.
+        let rows = super::library_model::find_chunked_paged::<store_listings::Entity, _>(
+            self,
+            &ids,
+            |part| {
+                store_listings::Entity::find()
+                    .filter(store_listings::Column::ProductId.is_in(part.iter().cloned()))
+                    .order_by_asc(store_listings::Column::Id)
+            },
+        )
+        .await?;
+        let mut editions_of: HashMap<(String, String), BTreeSet<String>> = HashMap::new();
+        for row in rows {
+            editions_of
+                .entry((row.plugin_key, row.product_id))
+                .or_default()
+                .insert(row.edition_id);
+        }
+        let all_editions: BTreeSet<String> = editions_of.values().flatten().cloned().collect();
+        let placement_of = self.placements_of_editions(all_editions).await?;
+        let mut out = HashMap::new();
+        for (key, product, pair) in stored {
+            let Some(editions) = editions_of.get(&(key, product)) else {
+                continue;
+            };
+            let expressions: BTreeSet<String> = editions
+                .iter()
+                .filter_map(|edition| placement_of.get(edition))
+                .map(|placement| placement.expression_id.clone())
+                .collect();
+            if !expressions.is_empty() {
+                out.insert(pair.clone(), expressions);
+            }
+        }
+        Ok(out)
     }
 
     /// Deletes catalog listings nothing refers to any more.
@@ -754,6 +1124,49 @@ mod tests {
         }
     }
 
+    /// The pool says which recording each listed product is: a narration
+    /// and a full-cast dramatisation of one title are different
+    /// expressions, a product listed nowhere has none.
+    #[tokio::test]
+    async fn listed_products_name_their_recordings() {
+        for profile in crate::test_support::Profile::ALL {
+            let store = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let narration = title("9780000000011");
+            let mut drama = title("9780000000012");
+            drama.draft.plugin_key = String::from("chirp");
+            drama.draft.product_id = String::from("ga-12");
+            drama.draft.title = narration.draft.title.clone();
+            drama.draft.expression_kind = Some(resolve::ExpressionKind::Dramatisation);
+            drama.draft.credits.truncate(1);
+            // More listings than the tightest profile reads in one page.
+            let mut listings = vec![narration, drama];
+            listings.extend((20..26).map(|n| title(&format!("97800000000{n}"))));
+            let ids = store.record_catalog_listings(&listings).await.unwrap().ids;
+            assert!(ids.iter().all(Option::is_some), "{profile:?}");
+            let pair = |key: &str, product: &str| (key.to_string(), product.to_string());
+            let mut asked = vec![
+                pair("libro", "9780000000011"),
+                pair("chirp", "ga-12"),
+                pair("chirp", "never-listed"),
+                pair("libro", " 9780000000011 "),
+            ];
+            asked.extend((20..26).map(|n| pair("libro", &format!("97800000000{n}"))));
+            let got = store.listing_expressions(&asked).await.unwrap();
+            let narration = &got[&pair("libro", "9780000000011")];
+            let drama = &got[&pair("chirp", "ga-12")];
+            assert_eq!(narration.len(), 1, "{profile:?}");
+            assert_eq!(drama.len(), 1, "{profile:?}");
+            assert_ne!(narration, drama, "two recordings, two expressions");
+            assert!(!got.contains_key(&pair("chirp", "never-listed")));
+            // The product id is compared in its stored spelling.
+            assert_eq!(&got[&pair("libro", " 9780000000011 ")], narration);
+            assert_eq!(got.len(), 9, "every listed product answers ({profile:?})");
+            assert!(store.listing_expressions(&[]).await.unwrap().is_empty());
+        }
+    }
+
     #[tokio::test]
     async fn catalog_titles_resolve_into_the_pool_and_read_back() {
         let store = store().await;
@@ -776,6 +1189,7 @@ mod tests {
         assert_eq!(got.title, "Title 9780000000001");
         assert_eq!(got.isbn.as_deref(), Some("9780000000001"));
         assert!(got.work_id.is_some(), "the resolver placed it in a work");
+        assert!(got.expression_id.is_some(), "and in an expression");
         assert_eq!(
             got.detail.description.as_deref(),
             Some("About 9780000000001.")
@@ -1092,6 +1506,13 @@ mod tests {
                 .unwrap();
             assert_eq!(stored.work_id, work.work_id);
             assert_eq!(stored.edition_id, work.edition_id);
+            // The queue entry names the wished edition and its recording, the
+            // listing's own expression, so Discover prices the wish from it.
+            let queue = store.list_global_request_queue().await.unwrap();
+            assert_eq!(queue.len(), 1);
+            assert_eq!(queue[0].edition_id, work.edition_id);
+            assert_eq!(queue[0].expression_id, record.expression_id);
+            assert!(queue[0].expression_id.is_some());
             let source = crate::NewTitleRequestSource {
                 source: String::from("libro"),
                 product_id: String::from("9780000000003"),

@@ -67,8 +67,8 @@ pub use classify::{
 };
 pub use exec::{
     cap_query_sql, encoded_proxy_row_len, execute_physical_sql, json_cell_utf8_len,
-    note_encoded_result_bytes, query_physical_sql, query_physical_sql_typed, sea_value_to_json,
-    AtomicSession, ExecCaps, PhysicalEngine, SqlExecTarget,
+    note_encoded_result_bytes, query_physical_sql, query_physical_sql_typed, sea_cell_utf8_len,
+    sea_value_json_len, sea_value_to_json, AtomicSession, ExecCaps, PhysicalEngine, SqlExecTarget,
 };
 pub use guest_receipt::{
     guest_batch_is_read_only, guest_receipt_applied_stmt, guest_receipt_finalize_stmts,
@@ -106,5 +106,6 @@ pub use typed::{
     execute_typed_on_open_envelope, execute_typed_on_session, execute_typed_on_session_then,
     execute_typed_on_txn, execute_typed_on_txn_envelope, load_physical_sql_type_env,
     load_sql_type_env, load_sql_type_env_capped, proofs_for_host_plan, query_canonical_stamped,
-    stamp_adapter_execute, stamp_host_proofs,
+    sqlite_snapshot_key, stamp_adapter_execute, stamp_adapter_execute_with, stamp_host_proofs,
+    stamp_host_proofs_with, StampCatalog,
 };

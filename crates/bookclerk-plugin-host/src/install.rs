@@ -469,7 +469,7 @@ pub async fn materialize_owner_version(
 enum ArtifactOrigin {
     /// This node's operator or registry ([`fetch_artifact`]).
     Local,
-    /// An owner cluster, on a host node ([`fetch_owner_artifact`]).
+    /// An owner cluster, on a branch node ([`fetch_owner_artifact`]).
     Owner,
 }
 

@@ -71,6 +71,15 @@ import {
   dashboardMatchClosed,
   dashboardScheduled,
 } from "./dashboard/routes.ts";
+import {
+  MAX_CHECKIN_CHARS,
+  checkinDailyRows,
+  installKey,
+  isInstallId,
+  parseCheckin,
+  pruneUsage,
+  recordCheckin,
+} from "./checkin.ts";
 import { MAX_CURSOR_CHARS, commitCursor, parseCursor, readCursor } from "./ingest-cursor.ts";
 import { handleTriage, readCapped } from "./triage.ts";
 import { extractVersionFromKey, normalizeVersion, versionAcceptable } from "./version-filter.ts";
@@ -329,7 +338,16 @@ export default {
   },
 
   async scheduled(_controller, env, ctx): Promise<void> {
-    ctx.waitUntil(dashboardScheduled(env, Date.now()));
+    const now = Date.now();
+    ctx.waitUntil(dashboardScheduled(env, now));
+    const db = env.DASHBOARD_DB;
+    if (db) {
+      ctx.waitUntil(
+        pruneUsage(db, now).catch((err: unknown) => {
+          console.error(`usage prune failed: ${err instanceof Error ? err.message : String(err)}`);
+        }),
+      );
+    }
   },
 } satisfies ExportedHandler<Env>;
 
@@ -372,6 +390,10 @@ async function respond(request: Request, env: Env, ctx: Background): Promise<Res
     // as Cloudflare's opaque error 1101.
     if (request.method === "POST" && path === "/submit") {
       return await handleSubmit(request, env, ctx);
+    }
+
+    if (request.method === "POST" && path === "/checkin") {
+      return await handleCheckin(request, env);
     }
 
     if (request.method === "GET" && path === "/report") {
@@ -589,14 +611,25 @@ async function handleSubmit(request: Request, env: Env, ctx: Background): Promis
   if (typeof checked === "string") {
     return json({ error: checked }, 400);
   }
-  const payload = checked;
+  // The install ID never reaches storage: with the dashboard database bound
+  // it becomes this month's install key (checkin.ts), otherwise it is
+  // dropped. A database failure only costs the key, never the report.
+  const { install_id: installId, ...payload } = checked;
+  const receivedAt = Date.now();
+  let key: string | null = null;
+  if (env.DASHBOARD_DB && isInstallId(installId)) {
+    try {
+      key = await installKey(env.DASHBOARD_DB, installId, receivedAt);
+    } catch (err) {
+      console.error(`install key failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   const asText = JSON.stringify(payload);
   if (looksLikeSecretLeak(asText)) {
     return json({ error: "payload rejected by secret heuristics" }, 400);
   }
 
-  const receivedAt = Date.now();
   const reportId = crypto.randomUUID();
   const enriched = {
     schema_version: 1,
@@ -604,6 +637,7 @@ async function handleSubmit(request: Request, env: Env, ctx: Background): Promis
     received_at_unix_ms: receivedAt,
     worker: "bookclerk-diagnostics",
     user_agent: truncate(request.headers.get("user-agent") || "", 200),
+    ...(key ? { install_key: key } : {}),
     payload,
   };
 
@@ -644,9 +678,38 @@ async function handleSubmit(request: Request, env: Env, ctx: Background): Promis
 }
 
 /**
+ * `POST /checkin`: one install's opt-in weekly usage check-in (checkin.ts).
+ *
+ * @param request - The client's request.
+ * @param env - Worker bindings.
+ * @returns 204 when stored or already counted this week, 400 for a body
+ *   that is refused, 413 for one too long, 429 when today's cap is reached
+ *   and 503 without the dashboard database.
+ */
+async function handleCheckin(request: Request, env: Env): Promise<Response> {
+  const db = env.DASHBOARD_DB;
+  if (!db) return json({ error: "usage counting is not configured" }, 503);
+  const len = Number(request.headers.get("content-length") || "0");
+  if (len > MAX_CHECKIN_CHARS * 4) return json({ error: "payload too large" }, 413);
+  const text = await readCapped(request, MAX_CHECKIN_CHARS * 4);
+  if (text === null) return json({ error: "payload too large" }, 413);
+  const checkin = parseCheckin(text);
+  if (!checkin) return json({ error: "invalid check-in" }, 400);
+  const outcome = await recordCheckin(
+    db,
+    checkin,
+    Date.now(),
+    checkinDailyRows(env.CHECKIN_DAILY_ROWS),
+  );
+  if (outcome === "capped") return json({ error: "daily check-in cap reached" }, 429);
+  return new Response(null, { status: 204 });
+}
+
+/**
  * `GET /report`: the ingest Action pulls the stored reports after a cursor,
  * passing over versions older than the latest stable release and, with
- * `unfiled=1`, reports an issue already lists or tracks by signature.
+ * `unfiled=1`, reports an issue already lists or tracks by signature and
+ * reports whose signature a member muted.
  *
  * @param request - The Action's request (needs the report key).
  * @param env - Worker bindings.

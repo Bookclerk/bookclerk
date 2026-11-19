@@ -35,6 +35,7 @@ pub const OPTIONAL_PLUGINS: &[&str] = &[
     "s3",
     "d1",
     "postgres",
+    "metadata_files",
 ];
 
 /// Reference Echo guests staged under `$BOOKCLERK_PLUGIN_ARTIFACTS`.

@@ -21,7 +21,21 @@ files.
 | Local filesystem | `local` (platform) | none | Yes, on every host at enrollment |
 | S3 / MinIO | `s3` (optional) | Sealed keys, or the AWS SDK chain | No, until `bookclerk plugins deploy s3` |
 
-External plugins with a `storage` entrypoint load the same way.
+Any other plugin with a `storage` entrypoint is a destination too, and an
+acquire writes to it like the built-in ones:
+
+- Each deployed plugin instance is its own destination, named by its
+  plugin instance id. That id is what upload records and `edition_files`
+  keep, so two instances of one plugin (two buckets, say) are two
+  destinations, and an acquire writes to both. Add one with
+  `bookclerk plugins instances create s3 --name "Backup bucket"`, then
+  deploy it ([plugin instances](plugins.md#instances)).
+- Destinations that name files as paths come first and the rest follow by
+  instance id. The first one is the primary destination: the library
+  records its key as the title's storage key.
+- `local` names files as paths on a file system. Every other destination
+  gets object-store keys: one key of at most 1024 bytes, with the
+  object-store character set (`output.path_sanitization = "auto"`).
 
 ## Local filesystem
 
@@ -32,6 +46,7 @@ plus its own `plugin-state/<plugin-key-fs-id>/data` and `tmp` folders.
 | --- | --- | --- |
 | `root` | `Audiobooks` | A relative path resolves under `BOOKCLERK_FILES_DIR` |
 | `prefix` | `""` | Key prefix inside the root |
+| `watch` | `false` | Notice files added, changed or removed outside Bookclerk right away (see [Watching the folder](#watching-the-folder)) |
 | `naming_profile`, `folder_template`, `file_template`, `chapter_file_template` | from `core.output` | Naming for this destination only |
 
 To move the library folder:
@@ -40,6 +55,70 @@ To move the library folder:
 bookclerk plugins config set local root /data/Audiobooks
 bookclerk plugins config get local
 ```
+
+Bookclerk moves, renames and checks files in this folder directly. How it
+does so depends on the file system each file is on, since a folder inside
+the library can be another mount.
+
+On a local disk:
+
+- A move is a rename, so a reader never sees a half-moved file. The
+  `.bookclerk-meta.json` sidecar moves with its file.
+- A move that must not replace a file links it to the new name first,
+  which fails if a file is already there. On a file system without hard
+  links (FAT or exFAT, for example) it checks for the file just before the
+  rename instead.
+- A write that must not replace a file uses the same link step. A write
+  that must replace only the file Bookclerk last read checks it just before
+  the rename. Bookclerk's own writes cannot slip into that moment, but a
+  program outside Bookclerk writing the same file at that instant can.
+
+On a network share (NFS, SMB, AFP, WebDAV, a Windows network drive) or a
+FUSE mount (sshfs, rclone, mergerfs and the like):
+
+- Bookclerk never uses hard links. A retried NFS request can report that a
+  link failed after it succeeded, and many of these file systems fake hard
+  links or have none. Writes and moves that must not replace a file check
+  just before the rename instead, and report that they were not atomic.
+- A file's change signature is its size and modification time only.
+  Inode numbers and change times can shift after a remount without the file
+  changing.
+
+Between two file systems (a move into a folder that is another mount),
+Bookclerk copies the file, syncs it to disk, checks its size, and only then
+deletes the original.
+
+### Watching the folder
+
+With `watch` on, the plugin asks the operating system to tell it whenever a
+file in the folder is added, changed, renamed or removed, and keeps a list
+of those changes. Bookclerk reads the list instead of walking the whole
+folder, so changes made by other programs show up within seconds.
+
+```sh
+bookclerk plugins config set local watch true
+```
+
+Things to know:
+
+- **It keeps the plugin running.** Plugins normally stop after a few idle
+  minutes. A watching plugin stays up while its watch works, because the
+  list lives in its memory. That costs a few megabytes (see
+  [the record](../adr/event-delivery-model.md#decision)).
+- **Local disks only.** On a network share or a FUSE mount the operating
+  system is not told about changes made by other machines, so the plugin
+  does not watch there, and Bookclerk keeps finding changes by listing.
+- **Listing stays the backstop.** When the watch cannot vouch for what it
+  saw (the plugin restarted, the operating system dropped events, more than
+  16,384 changes piled up unread, or a whole folder was moved), Bookclerk
+  lists the folder once and carries on from there.
+- On Linux each watched folder uses one inotify watch. A library with more
+  folders than `fs.inotify.max_user_watches` allows stops the watch, and
+  Bookclerk falls back to listing.
+
+Change signatures need a modification time that moves with every write.
+FAT keeps it to 2 seconds and exFAT to 10 milliseconds, so two writes of
+the same size within that window can look alike.
 
 ## S3 and MinIO
 
@@ -52,6 +131,7 @@ The `s3` plugin writes to an S3 bucket or any S3-compatible service.
 | `endpoint` | none | MinIO or another S3-compatible host; a bare hostname gets `https://` |
 | `force_path_style` | `false` | |
 | `prefix` | `library/` | |
+| `notification_queue_url` | none | Amazon SQS queue that receives the bucket's object events (see [Following changes in the bucket](#following-changes-in-the-bucket)) |
 | `naming_profile`, `folder_template`, `file_template`, `chapter_file_template` | from `core.output` | Naming for this destination only |
 | `access_key_id`, `secret_access_key`, `session_token` | none | Secrets, sealed in the database |
 
@@ -93,6 +173,88 @@ files, SSO, and EC2, ECS or EKS roles.
 The `endpoint` setting is granted to the plugin as a network endpoint.
 Nothing is read from `BOOKCLERK_S3_*` or `BOOKCLERK_AWS_*` variables.
 
+### Moves and conditional writes
+
+S3 has no rename, so a move copies the object inside the bucket and then
+deletes the original. Some S3-compatible services accept the `If-None-Match`
+and `If-Match` headers but ignore them, sometimes on only some kinds of
+request. So the first time the plugin needs them it checks the bucket once,
+with scratch objects under `.bookclerk-probe/`: it tries a plain upload, a
+multipart upload, a copy, a copy in parts and a delete that should each be
+refused, and then removes the scratch objects. Each kind of request is trusted only if
+the bucket refused it. The plugin remembers the answer until it restarts.
+
+When the bucket enforces the headers on every request an operation sends:
+
+- A write that must not replace an object, or must replace only the object
+  Bookclerk last read, sends the condition with the upload, and S3 refuses
+  it if another writer got there first.
+- A move copies only while the original is unchanged, and with
+  `noOverwrite` only while nothing is at the new name. It deletes the
+  original only while that is still the object it copied; if something
+  rewrote it meanwhile, the original is kept and the move reports a
+  conflict.
+
+When it does not, Bookclerk checks each condition just before the write or
+copy instead, and reports the result as not atomic. A writer outside
+Bookclerk can slip into that moment.
+
+Listings carry each object's ETag and modification time, so Bookclerk can
+tell which objects changed without reading them.
+
+### Following changes in the bucket
+
+Bookclerk finds files that other programs add, change or remove by listing
+the bucket on a schedule. On Amazon S3 it can also follow the bucket's
+event notifications, so it only reads what changed.
+
+1. Create an Amazon SQS standard queue for this bucket, and let the bucket
+   send to it (the queue's access policy allows `s3.amazonaws.com` to call
+   `sqs:SendMessage` for the bucket).
+2. Send the bucket's `s3:ObjectCreated:*` and `s3:ObjectRemoved:*` events
+   to the queue in one of these ways:
+   - An event notification on the bucket that targets the queue.
+   - An event notification that targets an SNS topic the queue subscribes
+     to. The topic's access policy allows `s3.amazonaws.com` to call
+     `sns:Publish`, and the queue's policy allows `sns.amazonaws.com` to
+     call `sqs:SendMessage` for the topic.
+   - EventBridge: turn on **Send notifications to Amazon EventBridge** in
+     the bucket's event notification settings, then add a rule for the
+     bucket's `Object Created` and `Object Deleted` events that targets the
+     queue. The queue's policy allows `events.amazonaws.com` to call
+     `sqs:SendMessage` for the rule.
+3. Let the plugin's credentials call `sqs:ReceiveMessage`,
+   `sqs:DeleteMessage` and `sqs:ChangeMessageVisibility` on the queue.
+4. Give the plugin the queue's URL:
+
+   ```sh
+   bookclerk plugins config set s3 notification_queue_url \
+     https://sqs.us-east-1.amazonaws.com/123456789012/my-audiobooks-events
+   ```
+
+Things to know:
+
+- **One reader per queue.** Each message goes to whoever receives it, so
+  nothing else may read the queue, and only one destination on one node
+  should name it. A queue can carry events for several buckets; the plugin
+  skips other buckets and keys outside its `prefix`. Its receipts are kept
+  per queue, bucket and prefix, so changing either setting starts over
+  with one listing.
+- **Messages wait for Bookclerk.** The plugin deletes a message only after
+  Bookclerk has taken the changes in it. Until then the message stays
+  hidden for 12 hours, after which the queue offers it again. It keeps the
+  receipts it needs to delete messages under its `HOME`, so they survive
+  the plugin sleeping between checks.
+- **Listing stays the backstop.** After the queue is first set, after the
+  plugin loses its receipts, when a message cannot be read, or when the
+  plugin could not hand a message back to the queue (or stopped in the
+  middle of receiving), Bookclerk
+  lists the bucket once and carries on from there. Messages that the queue
+  drops (its retention ran out, or a dead-letter queue took them) are found
+  by the next scheduled listing.
+- Only Amazon SQS queues are read for now. MinIO and other S3-compatible
+  services deliver their events elsewhere, so Bookclerk lists those buckets.
+
 ### Matching existing files
 
 Object user metadata, and the local `.bookclerk-meta.json` files, let
@@ -102,6 +264,12 @@ follow `output.creation_time` and `output.last_write_time`.
 A match leaves files where they are. To move matched audio and its
 sidecars onto your naming layout instead, set
 `library.fix_storage_layout = true`.
+
+Matching works per edition. When two accounts own the same book, its file
+is matched once and both accounts see it as acquired. When the file is
+gone, the account whose acquire recorded it marks the book not acquired.
+`bookclerk library convert` also converts each edition once, through that
+account.
 
 ## Several destinations
 
@@ -218,6 +386,9 @@ Every host applies a new revision at its next configuration wakeup. See
 [Configuration](configuration.md#output-shared).
 
 If a sidecar file fails, Bookclerk logs it and still keeps the audio.
+
+With `fixup_metadata` on, an M4B also records which Bookclerk version
+tagged it, in the freeform item `----:app.bookclerk:TOOL`.
 
 Audible's own options (Widevine, xHE-AAC, brand trim) are on the
 [Stores](stores.md#audible) page.

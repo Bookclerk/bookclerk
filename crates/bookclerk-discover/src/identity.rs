@@ -143,6 +143,41 @@ impl<'a> WorkIdentity<'a> {
     }
 }
 
+/// What two shared bibliographic identifiers say about two editions.
+///
+/// When both sides carry an ISBN, the ISBNs decide (ISBN-10 and ISBN-13 of
+/// one book are equal); otherwise, when both carry an ASIN, the ASINs do.
+///
+/// # Arguments
+///
+/// * `a_asin`, `a_isbn` - The first edition's identifiers.
+/// * `b_asin`, `b_isbn` - The second edition's identifiers.
+///
+/// # Returns
+///
+/// `Some(true)` for the same edition, `Some(false)` for different ones, and
+/// `None` when the two share no kind of identifier, so nothing is known.
+#[must_use]
+pub fn same_edition_identifiers(
+    a_asin: Option<&str>,
+    a_isbn: Option<&str>,
+    b_asin: Option<&str>,
+    b_isbn: Option<&str>,
+) -> Option<bool> {
+    let isbn = |v: Option<&str>| v.map(canonicalize_isbn).filter(|s| !s.is_empty());
+    if let (Some(ia), Some(ib)) = (isbn(a_isbn), isbn(b_isbn)) {
+        return Some(ia == ib);
+    }
+    /// The trimmed ASIN, when one is given.
+    fn asin(v: Option<&str>) -> Option<&str> {
+        v.map(str::trim).filter(|s| !s.is_empty())
+    }
+    match (asin(a_asin), asin(b_asin)) {
+        (Some(aa), Some(ab)) => Some(aa.eq_ignore_ascii_case(ab)),
+        _ => None,
+    }
+}
+
 /// Whether two bibliographic identities refer to the same work.
 ///
 /// # Arguments
@@ -731,6 +766,12 @@ pub fn merge_candidate_metadata(into: &mut StorefrontCandidate, from: &Storefron
     if into.is_abridged.is_none() {
         into.is_abridged = from.is_abridged;
     }
+    if into.work_id.is_none() {
+        into.work_id = from.work_id.clone();
+    }
+    if into.expression_id.is_none() {
+        into.expression_id = from.expression_id.clone();
+    }
     if from.title.len() > into.title.len() && !from.title.is_empty() {
         // Prefer the longer title when both exist (often includes subtitle).
         into.title = from.title.clone();
@@ -1012,6 +1053,7 @@ mod tests {
             is_abridged: None,
             store_rank: None,
             work_id: None,
+            expression_id: None,
             starter_genre: None,
         }
     }

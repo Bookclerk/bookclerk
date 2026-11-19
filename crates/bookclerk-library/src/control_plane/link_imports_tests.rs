@@ -34,16 +34,21 @@ async fn connect(store: &LibraryStore, account: &str, user: Option<i64>) {
     }
 }
 
-/// The library's row of `product` on `account`, as the branch is handed
-/// it: written to a store of its own (the library's).
-async fn library_row(profile: Profile, account: &str, product: &str) -> BookRecord {
+/// The library's title `product` on `account`, as the branch is handed it:
+/// written to a store of its own (the library's), under that library's
+/// uuid.
+async fn library_row(profile: Profile, account: &str, product: &str) -> NewBook {
     let library = kit(profile).await;
     library
         .upsert_account(PLUGIN, account, "us", Some(account), true, PLUGIN)
         .await
         .unwrap();
     let new = NewBook::minimal(product, account, "us", format!("Title {product}"));
-    library.upsert_book(&new).await.unwrap()
+    let row = library.upsert_book(&new).await.unwrap();
+    NewBook {
+        uuid: Some(row.uuid),
+        ..new
+    }
 }
 
 /// The branch owner's book acquired for a library joins the branch's own
@@ -88,7 +93,11 @@ async fn the_owners_book_from_a_library_joins_the_branch() {
         else {
             panic!("{name}: the owner's book is imported");
         };
-        assert_ne!(book.uuid, row.uuid, "{name}: the branch's own uuid");
+        assert_ne!(
+            Some(&book.uuid),
+            row.uuid.as_ref(),
+            "{name}: the branch's own uuid"
+        );
         assert_eq!(book.acquire_status, AcquireStatus::Acquired, "{name}");
         assert_eq!(
             book.storage_key.as_deref(),
@@ -147,7 +156,8 @@ async fn the_owners_book_from_a_library_joins_the_branch() {
 
 /// The catalog sync sends a library only the branch owner's books: not a
 /// member's, not an unlinked account's, and not one imported from that
-/// same library (though it is sent to another library).
+/// same library, through any account holding its edition (though it is
+/// sent to another library).
 #[tokio::test]
 async fn only_the_owners_own_books_are_shared_upward() {
     for profile in Profile::ALL {
@@ -206,11 +216,23 @@ async fn only_the_owners_own_books_are_shared_upward() {
             panic!("{name}: imported");
         };
 
-        let keys = store.acquired_book_keys_page(None, 100).await.unwrap();
+        // The owner's second account holds the imported edition too; its
+        // holding must not send library A's copy back either.
+        store
+            .upsert_book(&NewBook::minimal("FROM-A", "own-acct-2", "us", "FROM-A"))
+            .await
+            .unwrap();
+        let keys = store.all_acquired_title_keys().await;
+        assert_eq!(
+            keys.iter().filter(|key| key.product_id == "FROM-A").count(),
+            2,
+            "{name}: both owner accounts hold the imported edition"
+        );
         let sent = |filter: &OwnerShareFilter| -> BTreeSet<String> {
-            keys.iter()
-                .filter(|key| filter.admits(key))
-                .map(|key| key.product_id.clone())
+            filter
+                .admit_editions(keys.clone())
+                .into_iter()
+                .map(|key| key.product_id)
                 .collect()
         };
         let to_a = OwnerShareFilter::load(&store, "lib-a", false)
@@ -363,7 +385,7 @@ async fn a_primary_key_another_edition_holds_is_not_imported() {
             ),
             "{name}"
         );
-        let books = store.acquired_book_keys_page(None, 100).await.unwrap();
+        let books = store.all_acquired_title_keys().await;
         assert!(
             books.iter().all(|key| key.product_id != "P9"),
             "{name}: not acquired"
@@ -419,5 +441,40 @@ async fn a_primary_key_another_edition_holds_is_not_imported() {
         assert_eq!(book.acquire_status, AcquireStatus::Acquired, "{name}");
         assert_ne!(book.pdf_status, AcquireStatus::Acquired, "{name}");
         assert_eq!(book.pdf_storage_key, None, "{name}");
+    }
+}
+
+/// A copy this install took from a library is recorded for that library
+/// alone, once however often it is taken, so the catalog sync never sends
+/// the book back to it.
+#[tokio::test]
+async fn a_copy_taken_from_a_library_is_recorded_once_for_that_library() {
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        let name = profile.name();
+        connect(&store, "own-acct", None).await;
+        let book = TakenCopy {
+            plugin_key: PLUGIN,
+            account_id: "own-acct",
+            marketplace: "us",
+            product_id: "P9",
+        };
+        for _ in 0..2 {
+            record_copy_taken_from_link(&store, "lib-a", book)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            books_imported_from_link(&store, "lib-a").await.unwrap(),
+            BTreeSet::from([(PLUGIN.into(), "us".into(), "P9".into(), "own-acct".into())]),
+            "{name}"
+        );
+        assert!(
+            books_imported_from_link(&store, "lib-b")
+                .await
+                .unwrap()
+                .is_empty(),
+            "{name}"
+        );
     }
 }

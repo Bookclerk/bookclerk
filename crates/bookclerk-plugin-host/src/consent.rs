@@ -183,7 +183,14 @@ pub fn effective_cpu_cores(value: Option<f64>) -> f64 {
 }
 
 /// Host binding names operators may grant (widen or narrow).
-pub const KNOWN_HOST_BINDINGS: &[&str] = &["config", "secrets", "plugin_kv", "work_fs", "oauth"];
+pub const KNOWN_HOST_BINDINGS: &[&str] = &[
+    "config",
+    "secrets",
+    "plugin_kv",
+    "work_fs",
+    "oauth",
+    "sockets",
+];
 
 /// Grant-entry prefix for named plugin database bindings (`database:<NAME>`).
 pub const DATABASE_BINDING_PREFIX: &str = "database:";
@@ -416,7 +423,8 @@ pub struct PluginGrant {
     /// Display / CLI alias from `plugin.toml` (not security authoritative).
     pub plugin_id: String,
     /// Approved named entrypoints (wire names: `storefront`, `storage`,
-    /// `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`, `covers`).
+    /// `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`, `covers`,
+    /// `metadataFiles`).
     #[serde(default)]
     pub entrypoints: BTreeSet<String>,
     /// Approved event types the plugin may publish through its events binding.
@@ -1041,6 +1049,9 @@ pub fn consent_request_alias(manifest: &PluginManifest) -> PluginGrant {
     }
     if b.oauth {
         bindings.insert("oauth".into());
+    }
+    if b.sockets {
+        bindings.insert("sockets".into());
     }
     for name in &b.databases {
         bindings.insert(format!("{DATABASE_BINDING_PREFIX}{name}"));
@@ -2481,13 +2492,13 @@ pub fn grant_has_binding(grant: &PluginGrant, name: &str) -> bool {
 
 /// Maps a `describe()` env binding name onto the persisted grant token.
 ///
-/// Host bindings (`CONFIG`, `[secrets]`, `[work_fs]`, `[oauth]`, KV) are
+/// Host bindings (`CONFIG`, `[secrets]`, `[work_fs]`, `[oauth]`, `[sockets]`, KV) are
 /// authorized through [`PluginGrant::bindings`]. Producer `EVENTS` names are
 /// authorized through [`PluginGrant::producers`] instead.
 fn grant_binding_for_described(manifest: &PluginManifest, env_name: &str) -> Option<&'static str> {
     use bookclerk_plugin_manifest::{
         CONFIG_BINDING, DEFAULT_KV_BINDING, DEFAULT_OAUTH_BINDING, DEFAULT_SECRETS_BINDING,
-        DEFAULT_WORK_FS_BINDING,
+        DEFAULT_SOCKETS_BINDING, DEFAULT_WORK_FS_BINDING,
     };
     // Queue producer bindings are checked by `validate_described_capabilities`
     // through `queue_producers`; the env name itself needs no grant token here.
@@ -2522,6 +2533,13 @@ fn grant_binding_for_described(manifest: &PluginManifest, env_name: &str) -> Opt
         .is_some_and(|binding| env_name == binding.name_or(DEFAULT_OAUTH_BINDING))
     {
         return Some("oauth");
+    }
+    if manifest
+        .sockets
+        .as_ref()
+        .is_some_and(|binding| env_name == binding.name_or(DEFAULT_SOCKETS_BINDING))
+    {
+        return Some("sockets");
     }
     if manifest
         .kv_namespaces
@@ -2663,7 +2681,6 @@ pub fn inject_workerd_grant_env(cmd: &mut Command, grant: &PluginGrant) {
 ///
 /// - active Postgres `[database.postgres].url`
 /// - active D1 `[database.d1].api_base`
-/// - Audiobookshelf `[integrations.audiobookshelf].base_url`
 /// - S3 `[output.s3].endpoint` (custom/MinIO)
 ///
 /// Occupancy is uniquified with [`crate::resolve_plugin_slot`]: a bare alias
@@ -2690,8 +2707,8 @@ pub fn overlay_host_implied_network(
 /// endpoint.
 ///
 /// `deployed_endpoint` of `Some` means this spawn is a deployed instance
-/// whose document names a host to reach (the S3 `endpoint`, the
-/// Audiobookshelf `base_url`); the inner value is `None` when the document
+/// whose document names a host to reach (the S3 `endpoint`); the inner
+/// value is `None` when the document
 /// names none. There is no `config.toml` fallback for plugin endpoints.
 pub(crate) fn overlay_host_implied_network_with(
     grant: &mut PluginGrant,
@@ -2711,8 +2728,8 @@ pub(crate) fn overlay_host_implied_network_with(
 /// SHA-256 of host config that participates in implied network overlays.
 ///
 /// Changing a Postgres URL or D1 API origin must mint a new executor
-/// `configuration_revision` and fence live sessions. Plugin endpoints (S3,
-/// Audiobookshelf) come from instance documents, not `config.toml`.
+/// `configuration_revision` and fence live sessions. Plugin endpoints (the
+/// S3 `endpoint`) come from instance documents, not `config.toml`.
 #[must_use]
 pub fn host_overlay_config_digest(config: &Config) -> String {
     let mut hasher = Sha256::new();
@@ -2900,7 +2917,7 @@ fn overlay_database_slot_matches(
 }
 
 /// Grants TCP to the host a deployed instance document names (the S3
-/// `endpoint` or the Audiobookshelf `base_url`). Default AWS hosts come from
+/// `endpoint`). Default AWS hosts come from
 /// the S3 guest manifest `tcp` list.
 fn overlay_deployed_endpoint(grant: &mut PluginGrant, deployed_endpoint: Option<Option<&str>>) {
     if let Some(Some(endpoint)) = deployed_endpoint {
@@ -3828,16 +3845,16 @@ mode = "outbound"
     }
 
     #[test]
-    fn overlay_audiobookshelf_loopback_implies_cidrs() {
+    fn overlay_loopback_endpoint_implies_cidrs() {
         let dir = tempfile::tempdir().unwrap();
         let plugin = discovered(
             dir.path(),
             r#"
 api_version = 3
-id = "audiobookshelf"
+id = "s3"
 runtime = "native"
 command = "./guest"
-entrypoints = ["remoteLibrary"]
+entrypoints = ["storage"]
 
 [capabilities.network]
 mode = "outbound"

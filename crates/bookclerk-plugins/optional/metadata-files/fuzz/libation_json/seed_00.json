@@ -1,0 +1,37 @@
+{
+  "asin": "B002V5D7B0",
+  "title": "Dune",
+  "subtitle": "Dune, Book 1",
+  "authors": [{ "asin": "B000AQ0842", "name": "Frank Herbert" }],
+  "narrators": [{ "name": "Scott Brick" }, { "name": "Orlagh Cassidy" }],
+  "publisher_name": "Macmillan Audio",
+  "release_date": "2007-01-01",
+  "issue_date": "2006-12-31",
+  "language": "english",
+  "format_type": "unabridged",
+  "runtime_length_min": 1263,
+  "series": [{ "asin": "B00GHWF2GM", "sequence": "1", "title": "Dune" }],
+  "publisher_summary": "<p>Set on the desert planet Arrakis, <b>Dune</b> is the story of Paul Atreides&nbsp;&mdash; heir.</p><p>A &quot;classic&quot; &#8212; &#x2014; &bogus;</p>",
+  "category_ladders": [
+    { "ladder": [{ "id": "1", "name": "Science Fiction & Fantasy" }, { "id": "2", "name": "Science Fiction" }], "root": "Genres" },
+    { "ladder": [{ "id": "1", "name": "Science Fiction & Fantasy" }, { "id": "3", "name": "Space Opera" }], "root": "Genres" }
+  ],
+  "content_metadata": {
+    "chapter_info": {
+      "runtime_length_ms": 75780000,
+      "chapters": [
+        { "title": "Opening Credits", "start_offset_ms": 0, "length_ms": 30000 },
+        {
+          "title": "Book One: Dune",
+          "start_offset_ms": 30000,
+          "length_ms": 4000000,
+          "chapters": [
+            { "title": "Chapter 1", "start_offset_ms": 30000, "length_ms": 2000000 },
+            { "title": "Chapter 2", "start_offset_ms": 2030000, "length_ms": 2000000 }
+          ]
+        },
+        { "title": "End Credits", "start_offset_ms": 75700000, "length_ms": 80000 }
+      ]
+    }
+  }
+}

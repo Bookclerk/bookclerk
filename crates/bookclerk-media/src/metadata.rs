@@ -19,7 +19,7 @@ pub const BOOKCLERK_TOOL_NAME: &str = "bookclerk";
 /// Tone / ABS freeform namespace used for series + Audible ASIN on MPEG-4.
 const TONE_MEAN: &str = "com.pilabor.tone";
 /// Bookclerk freeform namespace for tool attribution.
-const BOOKCLERK_MEAN: &str = "org.bookclerk";
+const BOOKCLERK_MEAN: &str = "app.bookclerk";
 /// Common iTunes freeform mean (ffprobe often surfaces these without the mean).
 const ITUNES_MEAN: &str = "com.apple.iTunes";
 

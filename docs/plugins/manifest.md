@@ -75,7 +75,7 @@ version = "0.1.0"               # required semver; pins the [[settings]] schema
 # logo = "https://example.com/icon.png"   # or "assets/logo.png" (host-served)
 runtime = "native"
 command = "./bookclerk-plugin-echo-native-rust"
-entrypoints = ["cli"]           # storefront | storage | remoteLibrary | databaseAdapter | cli | oidc | metadata | covers
+entrypoints = ["cli"]           # storefront | storage | remoteLibrary | databaseAdapter | cli | oidc | metadata | covers | metadataFiles
 
 [capabilities.network]
 mode = "deny"
@@ -222,6 +222,53 @@ fetches = ["audio"]           # what fetchTitle can deliver
 `describe()` returns the same declaration, and the host refuses records
 outside it. See [Declaring media](abi.md#declaring-media) for the rules.
 
+### `[metadata_files]` (metadata file dialects)
+
+A plugin with the `metadataFiles` entrypoint lists the file formats it
+reads, one `[[metadata_files.dialects]]` row each. The table is required
+for that entrypoint, with at least one dialect, and every other plugin
+must leave it out.
+
+```toml
+entrypoints = ["metadataFiles"]
+
+[[metadata_files.dialects]]
+id = "abs_metadata_json"
+name = "Audiobookshelf metadata.json"
+file_names = ["metadata.json"]
+fields = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "identifiers", "credits", "series", "chapters"]
+credit_roles = ["author", "narrator"]
+writes = true
+
+[[metadata_files.dialects]]
+id = "opf"
+name = "OPF package"
+suffixes = [".opf"]
+fields = ["title", "description", "credits"]
+credit_roles = ["author", "narrator"]
+```
+
+- `id`: `[a-z][a-z0-9_]{0,63}`, unique within the plugin. The host passes
+  it back to `parse` and `render`.
+- `name`: shown in settings and on a book's file list.
+- `file_names` and `suffixes`: the files the dialect claims. Each is a
+  plain ASCII file name; a suffix starts with `.`. Both compare without
+  ASCII case, an exact name wins over a suffix and the longest suffix
+  wins. A name or suffix may be claimed once per plugin, and a row needs
+  at least one of them.
+- `fields`: what the format carries, by wire name (`title`, `subtitle`,
+  `description`, `publisher`, `publishedAt`, `language`, `genres`,
+  `tags`, `abridgement`, `expressionKind`, `identifiers`, `credits`,
+  `series`, `chapters`, `duration`). Never empty, no repeats.
+- `credit_roles`: the roles the format carries. Required exactly when
+  `fields` names `credits`.
+- `writes`: whether `render` can write the format. Defaults to false, for
+  read-only formats such as a store's own catalog JSON.
+
+The host refuses a parsed record that states anything outside its row.
+See [Metadata file dialects](abi.md#metadata-file-dialects) for the
+methods and limits.
+
 ### `command` (native)
 
 `command` may be absolute, or relative to the manifest folder. An absolute
@@ -270,6 +317,11 @@ The isolate runs at that applied date.
 - Queues aren't a substitute for `[[events.consumers]]` or
   `[[events.producers]]`, which are the bindings of the host's own
   `core.events` queue.
+
+- `[sockets]` asks for host-brokered WebSockets (`env.SOCKETS`, or the
+  name in `binding`). It needs `[capabilities.network] mode =
+  "outbound"`, and every URL must still pass the network grant (see
+  [Pushed sockets](abi.md#pushed-sockets-sockets)).
 
 ### `[triggers]`
 
@@ -364,7 +416,7 @@ nothing per plugin.
 [[settings]]
 key = "bitrate"              # ^[a-z][a-z0-9_]{0,63}$, unique within the plugin
 label = "Bitrate"
-type = "enum"                # string | bool | integer | enum | secret
+type = "enum"                # string | bool | integer | enum | secret | table
 values = [{ id = "high", label = "High" }, { id = "normal", label = "Normal" }]
 default = "high"
 required = false
@@ -384,6 +436,48 @@ type = "secret"              # sealed in the database, delivered in SECRETS; no 
   as `env.CONFIG`, and sealed values as `env.SECRETS`.
 - `required = true` makes a spawn fail with an `error` observation when
   neither the document nor a default supplies the key.
+
+### Table settings
+
+A `table` setting holds a list of rows, such as one row per mapped
+library. Its `[[settings.columns]]` declare the fields of each row. A
+column is a `string`, `bool`, `integer` or `enum` entry with its own
+`label`, `values`, `default`, `required` and `description`.
+
+```toml
+[[settings]]
+key = "mappings"
+label = "Library mappings"
+type = "table"
+default = [{ library = "main", prefix = "" }]
+
+[[settings.columns]]
+key = "library"
+label = "Library"
+type = "string"
+required = true              # every row needs a value, from the row or the default
+
+[[settings.columns]]
+key = "prefix"
+label = "Storage key prefix"
+type = "string"
+
+[[settings.columns]]
+key = "watch"
+type = "bool"
+default = true               # a row that leaves the column out gets this value
+```
+
+- A table declares 1 to 16 columns and holds at most 64 rows.
+- Rows are stored and delivered as objects keyed by column, so
+  `env.CONFIG.mappings` is an array such as
+  `[{ "library": "main", "prefix": "", "watch": true }]`. The TypeScript
+  SDK types it from the columns.
+- Adding a column keeps existing rows valid: a row that leaves a column
+  out gets the column's default. A new column that is `required` needs a
+  default for the same reason.
+- When a newer version removes a column, its values are dropped from
+  every row at enrollment, and the rest of each row is kept.
 
 `describe().configOptions` is derived from this list. The SDK fills it
 in, and a guest that returns its own non-empty list must return the same

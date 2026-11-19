@@ -144,7 +144,7 @@ pub async fn set_branch_members_books(
             .one(store.db())
             .await
             .map_err(LibraryError::Orm)?
-            .filter(|row| NodeKind::parse(&row.kind) == NodeKind::Host)
+            .filter(|row| NodeKind::parse(&row.kind) == NodeKind::Branch)
         else {
             return Ok(None);
         };

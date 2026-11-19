@@ -115,12 +115,12 @@ pub struct NodeRecord {
 /// How a node joined the cluster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
-#[schema(example = "owner")]
+#[schema(example = "shared")]
 pub enum NodeKind {
     /// Shares the library database and `master.key`. Every node is one today.
-    Owner,
+    Shared,
     /// Keeps its own database and operator, and enrolled to contribute work.
-    Host,
+    Branch,
 }
 
 impl NodeKind {
@@ -128,17 +128,17 @@ impl NodeKind {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Owner => "owner",
-            Self::Host => "host",
+            Self::Shared => "shared",
+            Self::Branch => "branch",
         }
     }
 
-    /// Parses stored text; anything unknown reads as [`Self::Owner`].
+    /// Parses stored text; anything unknown reads as [`Self::Shared`].
     #[must_use]
     pub fn parse(raw: &str) -> Self {
         match raw {
-            "host" => Self::Host,
-            _ => Self::Owner,
+            "branch" => Self::Branch,
+            _ => Self::Shared,
         }
     }
 }

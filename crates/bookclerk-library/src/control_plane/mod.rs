@@ -15,8 +15,11 @@ mod branch_requests;
 mod cache;
 mod carried_accounts;
 mod catalog_lookup;
+mod clerk_links;
 mod cluster_links;
+pub(crate) use cluster_links::from_object;
 mod connections_request;
+mod copies;
 mod cron_fires;
 mod deployments;
 mod documents;
@@ -33,6 +36,7 @@ mod node_queue;
 mod node_status;
 mod output;
 mod ownership;
+mod patron_scope;
 mod pending_joins;
 mod placement;
 mod remote_catalog;
@@ -50,6 +54,10 @@ mod trust;
 mod uploads;
 mod versions;
 mod window_books;
+/// The reply-capped library fixture, for store tests outside the control
+/// plane.
+#[cfg(test)]
+pub(crate) use window_books::tests::capped_store;
 
 use crate::EntityKind;
 use std::path::Path;
@@ -90,18 +98,21 @@ pub use carried_accounts::{
     Withdrawn, SHARE_RECEIVED, SHARE_SENT,
 };
 pub use catalog_lookup::{
-    answer_questions, ask_branches, book_for_request, branch_listing_key,
-    branch_listings_for_works, branch_offers_for_works, catalog_listing_always,
-    catalog_listing_opted_out, pending_questions, record_answers, set_catalog_listing_opt_out,
-    trusted_branches, works_of_interest, works_of_listings, AnswerReport, AnswersRecorded,
-    AskReport, BranchListing, BranchOffer, BRANCH_LISTING_PREFIX, BRANCH_LISTING_TTL,
-    LOOKUP_ANSWER_TTL, LOOKUP_RESEND,
+    answer_questions, ask_branches, branch_listing_key, branch_listings_for_works,
+    branch_offers_for_works, catalog_listing_always, catalog_listing_opted_out, pending_questions,
+    record_answers, set_catalog_listing_opt_out, title_for_request, trusted_branches,
+    works_of_interest, works_of_listings, AnswerReport, AnswersRecorded, AskReport, BranchListing,
+    BranchOffer, BRANCH_LISTING_PREFIX, BRANCH_LISTING_TTL, LOOKUP_ANSWER_TTL, LOOKUP_RESEND,
+};
+pub use clerk_links::{
+    forget_clerk_link, list_clerk_links, load_clerk_card, load_clerk_link, record_clerk_link,
+    sign_out_clerk_link, ClerkLink, ClerkLinkState, LibraryCard, NewClerkLink, CLERK_CARD_NAME,
 };
 pub use cluster_links::{
     decode_spki_pin, join_cycle, join_overflows_ancestry, leave_cluster_link, library_ancestry,
     list_cluster_links, load_cluster_link, load_cluster_link_keys, mark_cluster_link_revoked,
     parse_job_cap_request, parse_sharing_request, record_cluster_link, set_cluster_link_ancestry,
-    set_cluster_link_download, set_cluster_link_job_cap, set_cluster_link_listing,
+    set_cluster_link_job_cap, set_cluster_link_keep_copies, set_cluster_link_listing,
     set_cluster_link_person, set_cluster_link_settings, set_cluster_link_sharing,
     set_cluster_link_state, set_cluster_link_work, CapacityBody, ClusterLink, ClusterLinkKeys,
     ClusterLinkSettings, JobCapRequest, LinkJobCap, NewClusterLink, SharingBody, SharingRequest,
@@ -110,6 +121,10 @@ pub use cluster_links::{
 pub use connections_request::{
     parse_add_connections_request, parse_disconnect_request, AccountRef, AddConnectionsBody,
     AddConnectionsRequest, DisconnectBody, DisconnectRequest, MAX_ADD_CONNECTIONS,
+};
+pub use copies::{
+    authorize_copy, open_copy, plan_copy, CopyDownload, CopyHolder, CopyListing, CopyPlan,
+    CopyPlanFile, CopyPlanned, OpenedCopy, COPY_TOKEN_TTL_SECS,
 };
 pub use cron_fires::{
     claim_cron_fire, ensure_cron_cursor, load_cron_cursor, CronCursor, CronFireClaim,
@@ -125,9 +140,9 @@ pub use deployments::{
 };
 pub use documents::{
     audit_count, change_count, ConfigActor, DocumentKey, ReplaceOutcome, StoredDocument,
-    VerifiedClusterOwner, VerifiedNodeOwner, CLUSTER_SCOPE_ID, CLUSTER_SCOPE_TYPE,
-    MAX_CONFIGURATION_DOCUMENT_BYTES, NODE_SCOPE_TYPE, PLUGIN_INSTANCE_CONFIG_NAMESPACE,
-    PLUGIN_INSTANCE_SCOPE_TYPE,
+    VerifiedClusterOwner, VerifiedNodeOwner, VerifiedPatronAdministrator, CLUSTER_SCOPE_ID,
+    CLUSTER_SCOPE_TYPE, MAX_CONFIGURATION_DOCUMENT_BYTES, NODE_SCOPE_TYPE,
+    PLUGIN_INSTANCE_CONFIG_NAMESPACE, PLUGIN_INSTANCE_SCOPE_TYPE,
 };
 pub use enrollment::{
     authorized_enrollment_link, check_redeem_request, enrollment_link_brings_accounts,
@@ -151,8 +166,9 @@ pub use instance_config::{
     reconcile_instance_configs_to_schema, replace_instance_config, resolve_instance_bindings,
     seal_instance_secret, set_secret_ref, set_setting, InstanceBindingGrant,
     InstanceConfigDocument, InstanceConfigReplace, InstanceSecretRefV1, PluginInstanceConfigV1,
-    PrunedInstanceConfig, ResolvedInstanceBindings, SettingValue, MAX_INSTANCE_SECRET_REFS,
-    MAX_INSTANCE_SETTINGS, MAX_INSTANCE_SETTING_BYTES, PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
+    PrunedInstanceConfig, ResolvedInstanceBindings, SettingCell, SettingValue,
+    MAX_INSTANCE_SECRET_REFS, MAX_INSTANCE_SETTINGS, MAX_INSTANCE_SETTING_BYTES,
+    PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
 };
 pub use instances::{
     create_node_local_instance, create_plugin_instance, default_instance_for_key,
@@ -178,8 +194,8 @@ pub use leases::{
     RECORD_RETENTION_LEASE, SESSION_EXPIRY_LEASE,
 };
 pub use link_imports::{
-    books_imported_from_link, import_link_title, HeldBookKey, LinkImport, LinkImportOutcome,
-    OwnerShareFilter,
+    books_imported_from_link, import_link_title, record_copy_taken_from_link, HeldBookKey,
+    LinkImport, LinkImportOutcome, OwnerShareFilter, TakenCopy,
 };
 pub(crate) use live::{
     bump, bump_if_any, bump_if_stamped, bump_on, exec_bumped_via, sea_exec, sea_probe, Bump,
@@ -203,6 +219,13 @@ pub use output::{
     OUTPUT_SCHEMA_VERSION, OUTPUT_SETTING_ALIASES, OUTPUT_SETTING_KEYS,
 };
 pub use ownership::{nodes_owned_by, set_node_owner, verify_node_owner};
+pub use patron_scope::{
+    assigned_patron_scope, default_patron_scope, default_work_scope, load_default_patron_scope,
+    parse_patron_scope, parse_user_scope_request, role_is_scoped, scope_for_user,
+    set_default_patron_scope, set_patron_scope, verify_patron_administrator, work_scope_for_user,
+    AssignedScope, PatronScope, PutUserScope, RuleEffect, ScopeField, ScopeRule,
+    MAX_SCOPE_JSON_BYTES, MAX_SCOPE_RULES, MAX_SCOPE_VALUE_BYTES, PATRON_SCOPE_NAMESPACE,
+};
 pub use pending_joins::{
     create_pending_join, finish_pending_join, open_pending_join, purge_expired_pending_joins,
     take_pending_join, NewPendingJoin, PendingJoin, TakenJoin, MAX_JOIN_NAME_BYTES,
@@ -256,11 +279,11 @@ pub use semaphore::{
     SemaphoreRequest, MAX_SEMAPHORE_LIMIT, SEMAPHORE_LEASE_PREFIX,
 };
 pub use shared_branches::{
-    library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents,
+    library_contents, remove_shared_node, shared_nodes_visible_to, LibraryContents,
 };
 pub use template::{strip_install_state, TemplateStrip};
 pub use trust::{
-    accounts_owned_by, book_matches_title, claimant_may_run, handoff_routed_job,
+    accounts_owned_by, acquire_titles_of_editions, claimant_may_run, handoff_routed_job,
     job_for_node_owner, job_item_accounts, job_trusted, node_may_claim_job,
     node_may_claim_job_in_scope, node_trust, node_trust_in_scope, plan_acquire, plan_scan,
     remote_node_may_view_job, remote_node_requester, AccountKey, Claimant, NodeTrust,
@@ -268,10 +291,9 @@ pub use trust::{
 };
 pub use uploads::{
     abort_job_uploads, abort_upload, authorize_upload, commit_upload, extend_job_uploads,
-    grant_upload, job_titles, load_upload, names_book, record_upload_file, upload_fence_live,
-    upload_owns_key, TitleNames, UploadCommit, UploadDestination, UploadFinish, UploadGrant,
-    UploadGrantRequest, UploadSession, UPLOAD_NAME_WILDCARD, UPLOAD_NUMBER_WILDCARD,
-    UPLOAD_TOKEN_TTL_SECS,
+    grant_upload, job_titles, load_upload, record_upload_file, upload_fence_live, upload_owns_key,
+    TitleNames, UploadCommit, UploadDestination, UploadFinish, UploadGrant, UploadGrantRequest,
+    UploadSession, UPLOAD_NAME_WILDCARD, UPLOAD_NUMBER_WILDCARD, UPLOAD_TOKEN_TTL_SECS,
 };
 pub use versions::{
     activate_version, add_plugin_version, approve_version_grant, clear_install, list_installs,
@@ -279,9 +301,9 @@ pub use versions::{
     PluginInstall, PluginVersion, ARTIFACT_BLOB_SCHEME,
 };
 pub use window_books::{
-    clear_window_books, discard_window_read, finish_window_read, record_window_page,
-    window_books_page, window_read_stamp, window_view, WindowEntry, WindowEntryEdition,
-    WINDOW_BOOKS_READ,
+    clear_window_books, discard_window_read, finish_window_read, person_books_page,
+    record_window_page, window_books_page, window_read_stamp, window_view, WindowEntry,
+    WindowEntryEdition, WINDOW_BOOKS_READ,
 };
 
 use documents::{import_if_absent, load_document, replace_document};

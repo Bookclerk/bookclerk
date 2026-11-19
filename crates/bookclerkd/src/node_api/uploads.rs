@@ -13,7 +13,7 @@
 //! sealed to the host's box key. The route sits outside the cookie and
 //! operator auth layers (the token is the credential) and runs the
 //! transport policy first. Refusals: 401 `unauthorized` (no such upload,
-//! wrong or expired token), 421 `misdirected` (another owner node received
+//! wrong or expired token), 421 `misdirected` (another shared node received
 //! the grant), 409 `lost` (the job's fence is gone), 422 `refused`.
 //!
 //! A file is never staged on the owner. Its body is read once and teed,
@@ -47,7 +47,7 @@
 //! of the title or an acquire that wrote the key since keeps its file,
 //! however late the stale cleanup runs.
 //! Files go straight to the destinations, so deletion is the rollback. An
-//! upload received by another owner node is that node's to clean: this
+//! upload received by another shared node is that node's to clean: this
 //! node only logs it.
 //!
 //! The PUTs of one declared file run one at a time on this node
@@ -111,20 +111,14 @@ const MAX_COMMIT_BODY: usize = 16 * 1024;
 /// Longest job outcome text a commit records.
 const MAX_DETAIL_BYTES: usize = 4 * 1024;
 
-/// One output destination deployed on this owner node.
+/// One output destination deployed on this shared node.
 pub(crate) struct OwnerDestination {
-    /// Its id in plans and manifests ([`destination_id`]).
+    /// Its id in plans and manifests: its storage plugin's alias.
     pub id: String,
     /// Its storage backend (a guest's session, or a test stand-in).
     pub backend: Box<dyn StorageBackend>,
     /// Its naming and packaging options.
     pub options: DownloadOptions,
-}
-
-/// The id of the destination of `kind`: its lowercase kind name (a node
-/// deploys at most one destination per kind).
-pub(crate) fn destination_id(kind: bookclerk_config::OutputBackendKind) -> String {
-    bookclerk_acquire::destination_id(kind).to_string()
 }
 
 #[cfg(test)]
@@ -136,13 +130,16 @@ mod test_destinations {
     use std::path::{Path, PathBuf};
     use std::sync::{LazyLock, Mutex};
 
-    use bookclerk_config::{DestinationNaming, OutputBackendKind};
+    use bookclerk_config::{DestinationId, DestinationKeyStyle, DestinationNaming};
 
-    /// One stand-in destination: its kind, root and naming overrides.
+    /// One stand-in destination: its id, key style, root and naming
+    /// overrides.
     #[derive(Clone)]
     pub(crate) struct TestDestination {
-        /// The kind it stands in for.
-        pub kind: OutputBackendKind,
+        /// The destination id it stands in for.
+        pub id: DestinationId,
+        /// How the destination it stands in for names keys.
+        pub key_style: DestinationKeyStyle,
         /// Where its files go.
         pub root: PathBuf,
         /// Its naming overrides.
@@ -158,7 +155,8 @@ mod test_destinations {
         set_many(
             files_dir,
             vec![TestDestination {
-                kind: OutputBackendKind::Local,
+                id: DestinationId::new("local").unwrap(),
+                key_style: DestinationKeyStyle::Filesystem,
                 root: root.to_path_buf(),
                 naming: DestinationNaming::default(),
             }],
@@ -188,7 +186,7 @@ pub(crate) use test_destinations::{
 ///
 /// # Errors
 ///
-/// Returns an error when none is deployed or two of one kind are.
+/// Returns an error when none is deployed or two instances serve one id.
 pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<OwnerDestination>> {
     let cfg = state.config.read().await.clone();
     #[cfg(test)]
@@ -196,11 +194,11 @@ pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<O
         let mut out = Vec::with_capacity(stand_ins.len());
         for stand_in in stand_ins {
             out.push(OwnerDestination {
-                id: destination_id(stand_in.kind),
+                id: stand_in.id.to_string(),
                 backend: Box::new(bookclerk_storage::LocalFsBackend::new(stand_in.root)?),
                 options: DownloadOptions::for_destination(
                     &cfg,
-                    stand_in.kind,
+                    stand_in.key_style,
                     &stand_in.naming,
                     "",
                 ),
@@ -215,7 +213,7 @@ pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<O
         .items
         .into_iter()
         .map(|item| OwnerDestination {
-            id: destination_id(item.kind),
+            id: item.id.to_string(),
             backend: item.backend,
             options: item.options,
         })
@@ -272,7 +270,7 @@ fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
     (scheme == UPLOAD_AUTH_SCHEME && !token.is_empty()).then_some(token.trim())
 }
 
-/// This owner node's id.
+/// This shared node's id.
 fn this_node(state_files: &std::path::Path) -> Option<String> {
     load_or_create_node_identity(state_files)
         .ok()
@@ -337,7 +335,7 @@ async fn discard_file(
 /// Deletes every copy an aborted upload had received from this node's
 /// destinations, so an abort leaves no partial title behind; a copy whose
 /// key was written again since is left alone ([`discard_copy`]). An upload
-/// another owner node received is left to that node (logged).
+/// another shared node received is left to that node (logged).
 pub(crate) async fn discard_received(
     state: &AppState,
     library: &LibraryStore,
@@ -352,7 +350,7 @@ pub(crate) async fn discard_received(
             upload_id = %session.upload_id,
             job_id = %session.job_id,
             receiving_node_id = %session.receiving_node_id,
-            "an aborted upload was received by another owner node; its files stay there"
+            "an aborted upload was received by another shared node; its files stay there"
         );
         return;
     }
@@ -1186,14 +1184,14 @@ pub async fn put_file(
     let destinations = match owner_destinations(&state).await {
         Ok(destinations) if !destinations.is_empty() => destinations,
         Ok(_) | Err(_) => {
-            tracing::warn!(upload_id = %session.upload_id, "no output destination is deployed on this owner node");
+            tracing::warn!(upload_id = %session.upload_id, "no output destination is deployed on this shared node");
             return unavailable();
         }
     };
     if destination_ids(&destinations) != session.destinations {
         // The host named the files for the destinations it was planned
         // with; writing them to a changed set would mis-name or skip one.
-        tracing::warn!(upload_id = %session.upload_id, "this owner node's destinations changed since the upload was granted; aborted");
+        tracing::warn!(upload_id = %session.upload_id, "this shared node's destinations changed since the upload was granted; aborted");
         abort_and_discard(&state, &library, &session.upload_id).await;
         return refused("destinations_changed");
     }
@@ -1244,7 +1242,7 @@ pub async fn put_file(
         (status = 404, description = "The node API is not mounted on this listener (`node_api_unmounted`).", body = crate::http_error::ErrorMessage, example = json!({"error": "node_api_unmounted"})),
         (status = 409, description = "The upload lost its fence to a newer one (`lost`).", body = bookclerk_node_proto::UploadAnswer, example = json!({"status": "lost", "job_completed": false})),
         (status = 421, description = "This node is not the upload's receiving node (`misdirected`).", body = bookclerk_node_proto::UploadAnswer, example = json!({"status": "misdirected", "job_completed": false})),
-        (status = 422, description = "The commit was refused (`refused`), with the cause in `reason`: the body does not parse (`invalid_body`); the upload is unknown, aborted, or its job was cancelled (`unknown_upload`, `upload_aborted`, `job_cancelled`); not every granted file arrived (`files_missing`); the destinations changed since the grant (`destinations_changed`); a storage key now belongs to another title or writer, or the title or book is gone (`key_taken`, `unknown_title`, `unknown_book`); or the closing upload is mismatched: an ordinary upload claims to finish the job (`not_a_closing_upload`), the closing upload does not (`closing_upload_must_finish`), or it arrives while titles are still pending (`titles_remaining`).", body = bookclerk_node_proto::UploadAnswer, examples(
+        (status = 422, description = "The commit was refused (`refused`), with the cause in `reason`: the body does not parse (`invalid_body`); the upload is unknown, aborted, or its job was cancelled (`unknown_upload`, `upload_aborted`, `job_cancelled`); not every granted file arrived (`files_missing`); the destinations changed since the grant (`destinations_changed`); a storage key now belongs to another title or writer, or the title's holding is gone (`key_taken`, `unknown_title`); or the closing upload is mismatched: an ordinary upload claims to finish the job (`not_a_closing_upload`), the closing upload does not (`closing_upload_must_finish`), or it arrives while titles are still pending (`titles_remaining`).", body = bookclerk_node_proto::UploadAnswer, examples(
             ("invalid_body" = (summary = "The body does not parse as a commit request.", value = json!({"status": "refused", "reason": "invalid_body", "job_completed": false}))),
             ("unknown_upload" = (summary = "No live upload has this id.", value = json!({"status": "refused", "reason": "unknown_upload", "job_completed": false}))),
             ("upload_aborted" = (summary = "The upload was aborted before the commit.", value = json!({"status": "refused", "reason": "upload_aborted", "job_completed": false}))),
@@ -1252,8 +1250,7 @@ pub async fn put_file(
             ("files_missing" = (summary = "Not every granted file was received.", value = json!({"status": "refused", "reason": "files_missing", "job_completed": false}))),
             ("destinations_changed" = (summary = "The destinations changed since the grant.", value = json!({"status": "refused", "reason": "destinations_changed", "job_completed": false}))),
             ("key_taken" = (summary = "A storage key now belongs to another title or writer.", value = json!({"status": "refused", "reason": "key_taken", "job_completed": false}))),
-            ("unknown_title" = (summary = "The title the upload was granted for no longer exists.", value = json!({"status": "refused", "reason": "unknown_title", "job_completed": false}))),
-            ("unknown_book" = (summary = "The book the upload was granted for no longer exists.", value = json!({"status": "refused", "reason": "unknown_book", "job_completed": false}))),
+            ("unknown_title" = (summary = "The holding the upload was granted for no longer exists.", value = json!({"status": "refused", "reason": "unknown_title", "job_completed": false}))),
             ("not_a_closing_upload" = (summary = "An ordinary upload claims to finish the job.", value = json!({"status": "refused", "reason": "not_a_closing_upload", "job_completed": false}))),
             ("closing_upload_must_finish" = (summary = "The closing upload does not claim to finish the job.", value = json!({"status": "refused", "reason": "closing_upload_must_finish", "job_completed": false}))),
             ("titles_remaining" = (summary = "The closing upload arrived while titles are still pending.", value = json!({"status": "refused", "reason": "titles_remaining", "job_completed": false}))),
@@ -1283,16 +1280,16 @@ pub async fn post_commit(
     // the title once it is marked acquired (later plans skip it). The
     // closing upload carries no files, and an already committed title is
     // answered as committed again.
-    if !session.book_uuid.is_empty() && session.state != "committed" {
+    if !session.holding_id.is_empty() && session.state != "committed" {
         match owner_destinations(&state).await {
             Ok(destinations) if destination_ids(&destinations) == session.destinations => {}
             Ok(destinations) if !destinations.is_empty() => {
-                tracing::warn!(upload_id = %session.upload_id, "this owner node's destinations changed before the upload's commit; aborted");
+                tracing::warn!(upload_id = %session.upload_id, "this shared node's destinations changed before the upload's commit; aborted");
                 abort_and_discard(&state, &library, &session.upload_id).await;
                 return refused("destinations_changed");
             }
             Ok(_) | Err(_) => {
-                tracing::warn!(upload_id = %session.upload_id, "no output destination is deployed on this owner node");
+                tracing::warn!(upload_id = %session.upload_id, "no output destination is deployed on this shared node");
                 return unavailable();
             }
         }

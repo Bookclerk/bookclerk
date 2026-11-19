@@ -175,7 +175,9 @@ Native plugins must be rebuilt against this SDK.
 - Integrity metadata (etag, sha256) rides on `PutResult` and
   `ReadResult`.
 - Optional facilities *within* the ABI are feature flags (`rpc.streams`,
-  `rpc.scalarLimits`, `storage.copy`), not a substitute for `apiVersion`.
+  `rpc.scalarLimits`, `storage.copy`, and the storage
+  [intent operations](#intent-operations)), not a substitute for
+  `apiVersion`.
 
 Spawn **negotiates**:
 
@@ -573,8 +575,112 @@ frozen `ScheduledController` (`cron`, `scheduled_time`, `fire_id`,
   never fires, and `describe()` can't add schedules beyond `plugin.toml`.
 
 > [!NOTE]
-> Fires run only on library nodes. An owned host node (one that runs work
+> Fires run only on library nodes. An owned branch node (one that runs work
 > for a single member) doesn't claim `plugin_scheduled` jobs.
+
+## Pushed sockets (`[sockets]`)
+
+Some services push changes over a WebSocket instead of being polled
+(Audiobookshelf's Socket.io channel, for example). Holding that socket
+open would keep the plugin running forever, so the host holds it instead,
+as Durable Objects' hibernatable WebSockets do: the plugin opens a socket
+through its binding, the host keeps the connection while the plugin
+sleeps, and each real message wakes the plugin's socket handler.
+
+```toml
+[sockets]                 # env.SOCKETS; `binding = "PUSH"` renames it
+
+[capabilities.network]
+mode = "outbound"
+tcp = ["abs.example.com:443"]
+```
+
+> [!NOTE]
+> The host hands out the `Sockets` binding to deployed integrations (the
+> family Audiobookshelf belongs to) whose grant has the `sockets` token.
+> Storefront and storage deployments don't get it yet. Until a plugin uses
+> it, it keeps its polling fallback.
+
+Each SDK shapes the binding like Durable Objects' hibernatable WebSockets:
+`env.SOCKETS.connect(url, options)` and `getWebSockets()` in TypeScript
+(`get_web_sockets()` in Python), with messages on the default
+entrypoint's `webSocketMessage(ws, message)` and closes on
+`webSocketClose(ws, code, reason, wasClean)` (`web_socket_message` and
+`web_socket_close` in Python). Rust plugins use the binding directly or
+through `bookclerk_plugin_sdk::sockets::HostWebSocket`. SDK attachments
+are UTF-8 JSON, so any SDK reads what another stored. See the
+[TypeScript](sdk/typescript/README.md#pushed-sockets),
+[Python](sdk/python/README.md#pushed-sockets) and
+[Rust](sdk/rust/README.md#pushed-sockets) guides.
+
+- **Binding.** `Sockets.connect` takes a `ws://` or `wss://` URL, the
+  subprotocols to offer, extra request headers, up to 4 heartbeat pairs
+  and an attachment, and returns the socket's id. `send`, `close`,
+  `setAttachment` and `list` act on the plugin's own sockets only. An
+  instance holds at most 8 sockets (`maxSocketsPerInstance`).
+- **Handler.** A plugin that declares `[sockets]` may return a
+  `SocketHandler` from `open`. The host calls `message` with each frame
+  and the socket's attachment, and `closed` once when the socket ends,
+  with the close code, the reason and whether the close was clean. A
+  plugin that returns no handler gets no pushed messages.
+- **Poll now.** `message` replies with `SocketMessageOk`. Setting
+  `pollEvents` asks the host to call `pollEvents` right away, while the
+  plugin is awake, instead of at the next scheduled poll. A remote
+  library sets it when a message announces a new user, so the user gets
+  a claim ticket within seconds. The host ignores it for a plugin whose
+  host schedules no poll.
+- **Heartbeats.** Each pair names a request frame and its reply. When an
+  incoming frame equals a request exactly (same kind and bytes), the host
+  sends the reply and doesn't wake the plugin, so a Socket.io ping `2`
+  answered with `3` costs no start. Frames are 1 to 256 bytes.
+- **Attachment.** Up to 2 KiB of plugin bytes stored with the socket and
+  handed back with every message, as `serializeAttachment` is for
+  Durable Objects. A plugin keeps what it needs to handle a message there
+  (an account id, a library id), since it may have restarted in between.
+- **Checks.** The host refuses, and the Rust SDK client checks before
+  sending, a URL with credentials, a
+  fragment, a percent-encoded, punycode (`xn--`) or non-canonical host
+  (`127.1`, `0x7f.1`),
+  or a bad port; header names the broker owns (`Host`, `Upgrade`,
+  `Connection`, `Sec-WebSocket-*` and other hop-by-hop headers); control
+  bytes in a header value; frames over 256 KiB
+  (`maxSocketFrameBytes`); and close codes a peer may not send. Header
+  values may be credentials, so errors never repeat them.
+- **Consent.** Declaring `[sockets]` adds the `sockets` binding token to
+  the grant, and the target of every socket is checked against the
+  network grant as any other connection is.
+- **Broker.** One broker per plugin instance holds its sockets: the
+  front door, `bookclerk-workerd`, started in broker mode inside the
+  plugin's jail under its effective network grant. A socket's host must
+  be on the grant's `domains` (a WebSocket starts as an HTTP request) or
+  have a `tcp` entry for its port, and the broker connects only to
+  resolved addresses the grant allows, with no redirects. `wss://` is
+  checked against Mozilla's root certificates. The broker sends the
+  host's `User-Agent` (see [User-Agent](capabilities.md#user-agent)) and
+  gives up on a connection after 10 seconds, a handshake after 15, a
+  frame write after 10 and a close after 5.
+- **Lifetime.** The host starts the broker on the plugin's first
+  `connect` and stops it once the last socket closed, so an instance
+  with no socket runs nothing. The broker belongs to the deployment, not
+  to the plugin process: a plugin that sleeps or restarts keeps its
+  sockets, and a message for a sleeping plugin starts it. A message that
+  arrives while the instance is still starting waits for it rather than
+  being dropped. If the broker dies, each of its sockets is reported
+  closed with 1006 and the attachment the host last saw. A change to the
+  plugin's grant stops the broker the same way, like any other plugin
+  process; the next `connect` starts a broker under the new grant.
+  Redeploying the instance starts a fresh broker, and the old one's
+  sockets close with it.
+- **Delivery.** Messages for one socket reach the plugin in order, one
+  at a time. Up to 32 may wait while the plugin starts; past that the
+  broker stops reading the socket (heartbeats included) until the plugin
+  catches up, but still sends what the plugin sends on it. A socket that
+  ended still counts against the 8-socket limit until the plugin has
+  taken its last message and its close. `closed` comes after a socket's
+  last message, with code 1009 when the server sent a message over
+  256 KiB, 1005 when its close frame had no code, 1006 when the
+  connection dropped without one, and 1001 when the broker itself
+  stopped.
 
 ## Entrypoint methods
 
@@ -808,7 +914,9 @@ transaction. Its `source` is the book's storefront plugin id too.
 batch as its rows:
 
 - `edition_linked` (`editionId`, `listingId`) when a listing is first
-  stored or now sells another edition;
+  stored or now sells another edition (an Administrator's pin publishes it
+  too, with `edition_updated` for the edition the listing left; each pin
+  publishes again, even back to an edition the listing sold before);
 - `edition_updated` (`editionId`) when the listing filled a missing
   subtitle, publication date or duration on its edition;
 - `holding_added` (`listingId`, `holder`, `holdingId`) when an account or
@@ -895,8 +1003,43 @@ methods on [`ContentSource`](../../packages/plugin-sdk/src/plugin.ts) and
 | `searchCatalog` | `{ query, region, limit, page, sort, field }` → `CatalogHit[]` (see [Book records](#book-records)). A `limit` of `0` means the storefront's default page of 20 hits; an empty query returns `[]` |
 | `catalogDetail` | `{ productId, isbn? }` → `{ found, hit }`: the full record for one product (description, narrators, runtime, genres). A store that declares `detailByIsbn` also answers a bare ISBN, which the host sends in both fields |
 | `fetchTitle` | The host injects `credentials` from `encrypted_secrets`. The plugin writes media under the work folder and returns a `PlainFetch` of **plain** files (DRM guests decrypt before returning): `mediaKind`, the carrier it fetched, which must be in its declared [`fetches`](#declaring-media); `files`, each `{ path, role, contentType?, title?, durationMs? }` with `role` `part` (ordered pieces), `whole` (the edition in one file, such as an M4B) or `cover`; `chapters`; and an optional `pdfUrl`. A reply lists `part`s or one `whole` file, never both, and at most one `cover`. The host acquires audio editions only today |
-| `purchaseHint` | Purchase link and, when `withPrice` is set, the live price of one title. `null` when the store does not sell it |
-| `purchaseHints` | The same for several titles in one call (`{ queries }`, one answer per query in order). The default in every SDK asks `purchaseHint` for each query, those with a product id first, and stops starting lookups after 4 s, answering `null` for the rest, so the host's batch gets what the store managed; a store whose catalog prices many products per request (Audible's `products?asins=` takes fifty, Chirp's GraphQL takes aliased ids) overrides it to make one request, so a page of Discover cards costs one call per store |
+| `purchaseHint` | Purchase link and, when `withPrice` is set, the live price of one title. `null` when the store does not sell it. `lookup` says how the host names the title (see [Price lookups](#price-lookups)) |
+| `purchaseHints` | The same for several titles in one call (`{ queries }`, one answer per query in order). The default in every SDK asks `purchaseHint` for each query, four at a time, those with a product id first, and stops starting lookups after 4 s, answering `null` for the rest, so the host's batch gets what the store managed; a store whose catalog prices many products per request (Audible's `products?asins=` takes fifty, Chirp's GraphQL takes aliased ids) overrides it to make one request, so a page of Discover cards costs one call per store |
+
+#### Price lookups
+
+Each `purchaseHint` query carries `lookup`, which says how to find the
+title:
+
+| `lookup` | The store should |
+| --- | --- |
+| `product` | Answer for its own `productId` alone |
+| `isbn` | Answer for that exact `isbn`, or `null`. Never a title match. Sent only to a store that declares `catalog.priceByIsbn` |
+| `asin` | Answer for that exact `asin`, or `null`, as for `isbn`. Sent only to a store that declares `catalog.priceByAsin` |
+| `title` | Search by `title` and `authors` and return every priced listing the search matched |
+| `unspecified` | Use any field, strongest first (older hosts) |
+
+A title search answers with records rather than a single pick: return
+`{ hint, records }` (TypeScript `PurchaseHintAnswer`; a dict of the same
+shape in Python; `PurchaseHintResult.records` in Rust) where each record
+is `{ record, hint }`, the listing's full `CatalogHit` and its prices.
+`hint` stays the store's own pick for hosts that ignore records. The host
+places each record in its library model by identifiers, credits and kinds,
+and keeps only the recording the card is about, so a store never has to
+tell a narration from a dramatisation of the same title. A bare hint is
+still accepted and carries no records.
+
+In Rust, a storefront returns records by overriding `purchase_hint_result`
+and `purchase_hints_results`. A store without a bulk price endpoint calls
+`purchase_hint_results_one_by_one` from `purchase_hints_results` to get the
+same four-at-a-time, 4 s default as `purchaseHints`. The default
+`purchase_hint_result` wraps `purchase_hint` and returns no records.
+
+The host asks each store the strongest way it declared: by the store's
+own product when the card names one, then by exact ISBN, then by exact
+ASIN, then by title (see
+[Discovery](../internals/discovery.md#store-links-and-pricing) for how
+it evaluates the answers).
 
 When the store answers **429**, return a `PluginError` with code
 `rate_limited` and, when the store sent `Retry-After`, `details.retryAfterMs`
@@ -1066,9 +1209,15 @@ and enrichment by declaring it:
   adds that store's edition. The lookups share a short time budget, so a
   slow store can't hold up a search.
 
-Both default to off. The first-party storefronts declare them as follows:
-Audible ranks its hits, Libro.fm answers ISBN lookups, and Chirp and
-GraphicAudio declare neither.
+- **Price lookup by identifier.** Set `catalog.priceByIsbn` and
+  `catalog.priceByAsin` in `describe()` when `purchaseHint` prices an exact
+  ISBN or ASIN (see [Price lookups](#price-lookups)). The host never sends
+  an identifier lookup a store has not declared.
+
+All default to off. The first-party storefronts declare them as follows:
+Audible ranks its hits and prices exact ASINs, Libro.fm answers ISBN detail
+lookups and prices exact ISBNs, and Chirp and GraphicAudio declare neither.
+All four answer title searches with records.
 
 #### Declaring media
 
@@ -1279,12 +1428,95 @@ is the complete fetcher. It holds the `*`
 [any public website](capabilities.md#network-rules) grant, because cover
 art lives on every catalog's own CDN.
 
+### Metadata file dialects
+
+Export `metadataFiles` to read, and optionally write, the metadata files
+that sit next to a book's audio: a `metadata.json` from another library
+manager, an OPF, an NFO, a `desc.txt`. Sidecar parsing lives in plugins,
+never in the host: the host finds the files, hands the bytes to the
+plugin that declared the dialect, and checks what comes back.
+
+Each dialect is a row under [`[metadata_files]`](manifest.md#metadata_files-metadata-file-dialects)
+in `plugin.toml`. The row names the files it claims, the fields the
+format carries and whether the plugin also writes it.
+
+The typed methods on `MetadataFiles` and `MetadataFilesEntrypoint` are:
+
+| Method | Notes |
+| --- | --- |
+| `health` | Liveness and readiness |
+| `parse` | `({ dialect, fileName, bytes })` → `MetadataFileRecord`. Read one file and say what it states about its edition |
+| `render` | `({ dialect, record, fields, existing, audioFiles })` → the new file's bytes (`Uint8Array`, or a string written as UTF-8). Set each field in `fields` to the record's value and keep the rest of `existing` as it was |
+
+A `MetadataFileRecord` lists in `present` every field the file states,
+including a field it states as empty. A field the file does not mention
+stays out of `present`: absent means unknown, not cleared. `creditRoles`
+does the same for credits: it names each role the file states, so a file
+that lists only narrators says nothing about authors.
+
+The host checks both directions:
+
+- `dialect` is one the plugin declared, `fileName` is a plain file name
+  (no path) of at most 255 bytes, and `bytes` is at most
+  `MAX_METADATA_FILE_BYTES` (256 KiB). A larger file is skipped rather
+  than sent. The cap keeps the whole call inside one bridge request (see
+  the [workerd bridge](../internals/workerd-bridge.md#post-invoke)).
+- A parsed record lists each field at most once, carries a value only for
+  a field in `present`, and states only fields and credit roles the
+  dialect declares. Labels are non-blank single lines of at most
+  `MAX_METADATA_FILE_TEXT_BYTES` (1024) bytes; `description` is at most
+  `MAX_METADATA_FILE_DESCRIPTION_BYTES` (64 KiB); each list holds at most
+  `MAX_METADATA_FILE_LIST_ENTRIES` (256) entries and `chapters` at most
+  `MAX_METADATA_FILE_CHAPTERS` (2000), in start order with no depth jump
+  of more than one. `publishedAt` is `YYYY`, `YYYY-MM` or `YYYY-MM-DD`.
+- `render` is sent only to a dialect with `writes = true`, only for fields
+  the dialect carries, and the answer is at most
+  `MAX_METADATA_FILE_BYTES`. `existing` is empty when the host creates the
+  file. `audioFiles` lists the edition's audio files in playback order,
+  each a plain file name with its running time in milliseconds (0 when
+  unknown, never past 2^53 - 1), at most `MAX_METADATA_AUDIO_FILES`
+  (4096) of them; it is empty when the host does not know them. Chapter
+  starts in `record` count from the start of the first file, so a format
+  that names its audio, such as a CUE sheet, can place each chapter in
+  its file. An empty answer means the dialect has nothing left to write; the
+  host decides whether to remove the file.
+- Throw `invalid_params` from `parse` for a file the dialect cannot read.
+  The host records the file as unreadable and moves on. Any reply that
+  breaks a rule above is refused as `internal`.
+
+```ts
+export class MetadataFiles extends MetadataFilesEntrypoint<Env> {
+  async parse(params: MetadataFileParseParams): Promise<MetadataFileRecord> {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(params.bytes).trim();
+    if (text === "") {
+      return { present: ["description"] };
+    }
+    return { present: ["description"], description: text };
+  }
+
+  async render(params: MetadataFileRenderParams): Promise<string> {
+    return params.record.description ?? "";
+  }
+}
+```
+
+The first-party `metadata_files` plugin
+(`crates/bookclerk-plugins/optional/metadata-files`) reads and writes OPF
+package documents, Kodi `album.nfo` files and CUE sheets, and reads Libation's catalog record without writing it. A format that belongs to one tool
+lives in that tool's plugin. The plugin's README lists what each record
+maps to.
+
+The host does not call the entrypoint yet beyond health probes. Finding
+the files, matching them to editions and writing changes back come with
+the metadata file sync work.
+
 ### Storage entrypoints
 
 Export `storage` (there is no `kind = "output"`). Guests implement
 [`Destination`](../../packages/plugin-sdk/src/plugin.ts) and
 `StorageEntrypoint`: `head`, `list` (paginated), streamed `get`, streamed
-`put`, and optional `copy`.
+`put`, optional `copy`, and the optional
+[intent operations](#intent-operations).
 
 - The host never reassembles a large object into `Bytes`, and never writes
   the full object to guest scratch and then `put_file`. S3 guests feed the
@@ -1294,6 +1526,128 @@ Export `storage` (there is no `kind = "output"`). Guests implement
   Destinations transfer media through `ByteSource` streams. Range,
   multipart and checkpoint work in issue #120 builds on this contract,
   without another public ABI redesign.
+
+#### Intent operations
+
+Beyond the required methods, a storage guest can take over operations the
+host would otherwise build from `head`, `list`, `copy`, `get`, `put` and
+`delete`. The host says what it wants and the guest chooses how. Each
+operation is optional: the guest declares it by accepting its feature in
+`rpcFeatures`, and the host runs its own fallback for every operation the
+guest did not declare. The fallback gives the same result when nothing else
+writes the same keys at the same time, but it may be slower (a copy and a
+delete instead of a rename) and it is not atomic: a concurrent writer can
+slip in between its steps. Where that matters, the guest declares the
+operation, or `storage.conditionalWrite`, and enforces it natively.
+
+| Feature | Method | What the guest does |
+| --- | --- | --- |
+| `storage.move` | `move(from, to, options)` | Moves one object. |
+| `storage.moveMany` | `moveMany(request)` | Moves explicit pairs, or one page of every object under a prefix. |
+| `storage.deleteMany` | `deleteMany(keys)` | Removes up to `maxBatchKeys` (256) objects. |
+| `storage.headMany` | `headMany(keys)` | Probes up to `maxBatchKeys` objects. |
+| `storage.conditionalWrite` | `put` with `ifMatch` / `ifNoneMatch` | Publishes only while the precondition holds, else fails with `conflict`. |
+| `storage.changes` | `changes(request)` | Returns keys changed since a cursor. |
+
+The rules every operation follows:
+
+- **Replies say what was honoured.** `MoveResult.atomic` and
+  `MoveManyPage.atomic` say whether the move was a rename no reader could
+  observe half done. A `list` page sets `signaturesIncluded` when it filled
+  in the signature fields `ListOptions.withSignatures` asked for, and
+  `modifiedSinceApplied` when it left out objects older than
+  `ListOptions.modifiedSinceMs`; a guest that ignores a hint returns the
+  unfiltered page and leaves the flag false.
+- **Long operations are paged and safe to repeat.** A prefix `moveMany`
+  returns at most `maxBatchKeys` outcomes and a `nextCursor`, and repeating
+  a page after a restart moves nothing twice. A `move` whose source is gone
+  and whose target exists succeeds with `alreadyMoved`.
+- **Batches answer per key.** `moveMany` with pairs and `deleteMany` return
+  one outcome per key, in the order sent; an outcome with an error code is
+  that key's failure, and the rest of the batch still counts. Deleting a
+  missing object is a success. `headMany` returns one probe per key, empty
+  for a missing object.
+- **Options only grow.** `MoveOptions`, `ListOptions` and `WriteOptions`
+  gain fields at new ordinals, and a zero value always means the old
+  behaviour.
+- **Preconditions are never dropped.** A request whose `ifMatch`,
+  `ifSourceMatch` or cursor cannot be read is refused rather than run
+  without it, and a granted destination (a `put` through a capability
+  handed to another plugin) refuses `ifMatch` / `ifNoneMatch` because that
+  channel cannot carry them yet.
+- **Prefix moves need disjoint prefixes.** The source and target of a
+  prefix `moveMany` may not contain each other, after `.` and empty path
+  segments are dropped and `\` is read as `/`, because a nested object could overwrite one that
+  has not moved yet.
+
+The platform `local` destination declares every operation: moves are
+renames, and on a local disk `noOverwrite`
+and `ifNoneMatch` publish through a hard link that fails when the target
+exists. `ifMatch`, and every condition on a network or FUSE mount, is
+checked just before the rename and reported as not atomic (see
+[Local filesystem](../server/output.md#local-filesystem)). Its `changes`
+feed comes from a file-system watcher when the instance's `watch` setting
+is on and the root is on a local disk; otherwise every page has `complete`
+false (see [Watching the folder](../server/output.md#watching-the-folder)).
+
+The optional `s3` destination declares the same set. It cannot see its
+bucket's settings when it is described, so it declares them for every store.
+Its `changes` feed drains the bucket's Amazon SQS notification queue when
+the instance's `notification_queue_url` setting names one, and otherwise
+every page has `complete` false (see
+[Following changes in the bucket](../server/output.md#following-changes-in-the-bucket)).
+It finds out once, on first use, which request kinds (plain upload,
+multipart completion, copy, part copy, delete) enforce their conditions
+(see
+[Moves and conditional writes](../server/output.md#moves-and-conditional-writes)).
+Where every request an operation sends is enforced, conditions go to S3
+with the request and the store decides them; a move is a pinned copy and a conditional delete, never
+atomic. Otherwise the guest runs the host's own algorithm for that
+operation and says `atomic: false`.
+
+The host checks every reply against the request before acting on it: the
+outcomes must name the keys it sent, in order, a prefix page may only name
+keys under the prefix and must advance its cursor, and a `changes` page
+stays within `maxChangesPage` (256) entries and a cursor of at most
+`maxChangesCursorBytes` (4 KiB). A reply that breaks a rule fails the
+operation with `internal`.
+
+Listing entries and probes can carry a change **signature**: an opaque
+backend-defined value (for example a local file's inode, size and times,
+or an S3 ETag and version id) that stays the same while the object is
+unchanged. The host uses it to skip re-reading files it already knows.
+`modifiedAtMs` and `versionId` ride alongside it.
+
+The host's own `move` fallback copies, probes the source again, and deletes
+it only when the probe shows it is still the object it copied (same etag,
+else same size and modification time); a source rewritten during the copy,
+or one the probe cannot vouch for, is kept and the move fails with
+`conflict`. Without etags the check is a heuristic: a rewrite of the same
+size within the same millisecond passes it. The ABI has no delete
+conditioned on an etag, so a rewrite between that probe and the delete can
+still be lost too. A guest that declares `storage.move` avoids both gaps. With `noOverwrite`,
+the fallback writes the target with `ifNoneMatch` when the guest declares
+`storage.conditionalWrite`, and otherwise checks for the target just before
+the copy (so `atomic` is false).
+
+`changes` is a hint, not a ledger. The first call, with an empty cursor,
+returns the current position and no changes. A feed drained from a queue
+treats a call's cursor as the receipt for the pages up to it: their
+messages are deleted then, and pages handed out after it are offered again,
+so a retried cursor gets those changes once more. Such a feed has one
+reader, so the host calls it from one place. A page with `complete` false
+means the guest may have missed changes since the cursor (a watcher
+restarted, a queue dropped messages), and the host backs it with a full
+listing. A change kind added after an SDK was built reads as `changed`. A scheduled listing stays the backstop either way.
+
+`liveWatch` says the running guest produces the feed itself, so stopping
+it would lose changes (a watcher, as opposed to a durable queue). While
+the latest page has both `complete` and `liveWatch` true, the host keeps
+the guest awake instead of stopping it when idle. A page without them, a
+`changes` error, or the guest exiting lets it sleep again. The host
+honours `liveWatch` only from the first-party storage plugins it starts on
+demand, which today means the `local` destination with `watch` on (see
+[decision 13](../adr/event-delivery-model.md#decision)).
 
 First-party S3 ships as `bookclerk-plugin-destination-s3`
 (`api_version = 3`). Its bucket, region, endpoint, prefix, naming

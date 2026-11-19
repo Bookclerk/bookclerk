@@ -41,6 +41,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
@@ -76,8 +77,20 @@ GENERATED_FILE = "generated.json"
 DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$")
 
 # Upper bound on the JSON payload of one create-tree call. Large trees are
-# written as a chain of trees, each based on the previous one.
-TREE_CHUNK_BYTES = 4 * 1024 * 1024
+# written as a chain of trees, each based on the previous one. GitHub answers
+# a create-tree call it cannot finish in about ten seconds with HTTP 422
+# ("Sorry, your request timed out"), even for payloads well under this.
+TREE_CHUNK_BYTES = 1024 * 1024
+# Text files larger than this (in bytes) are uploaded as blobs first and
+# referenced by id, rather than sent inline, so one create-tree call never
+# carries a large page. Smaller files stay inline to keep the number of
+# content-creating requests (which GitHub rate-limits separately) low.
+INLINE_TEXT_MAX_BYTES = 32 * 1024
+# Attempts at a create-tree or create-blob call that GitHub timed out or
+# failed with a server error, and the wait before the first retry (seconds,
+# doubled after each).
+WRITE_ATTEMPTS = 4
+RETRY_BACKOFF_S = 5.0
 # Commits on the docs `main` searched for a matching `Source-Commit:` trailer.
 TRAILER_SEARCH_PAGES = 5
 
@@ -305,6 +318,37 @@ def http_requester(token: str) -> Requester:
     return request
 
 
+def _message(data: Any) -> str:
+    """Return the ``message`` of a GitHub error body, or an empty string.
+
+    Args:
+        data: The decoded response body.
+
+    Returns:
+        The message, or ``""`` when the body has none.
+    """
+    message = data.get("message") if isinstance(data, dict) else None
+    return message if isinstance(message, str) else ""
+
+
+def _inline_text(data: bytes) -> str | None:
+    """Return a file's text when it is small enough to send inline.
+
+    Args:
+        data: File contents.
+
+    Returns:
+        The UTF-8 text, or None for a binary file or one larger than
+        :data:`INLINE_TEXT_MAX_BYTES`.
+    """
+    if len(data) > INLINE_TEXT_MAX_BYTES:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 class DocsRepo:
     """The docs repository, reached through a :data:`Requester`."""
 
@@ -321,9 +365,40 @@ class DocsRepo:
     def _call(self, method: str, path: str, body: Any = None, ok: tuple[int, ...] = (200, 201)) -> Any:
         status, data = self._request(method, f"/repos/{self.repo}{path}", body)
         if status not in ok:
-            detail = data.get("message") if isinstance(data, dict) else None
-            raise PublishError(f"{method} {path}: HTTP {status} {detail or ''}".rstrip())
+            raise PublishError(f"{method} {path}: HTTP {status} {_message(data)}".rstrip())
         return data
+
+    def _write(self, path: str, body: Any) -> Any:
+        """POST an object-creating request, retrying when GitHub times out.
+
+        Creating a blob or tree is idempotent (the id is the content's hash),
+        so a request GitHub timed out (HTTP 422 "timed out") or failed with a
+        5xx is sent again, up to :data:`WRITE_ATTEMPTS` times with doubling
+        waits from :data:`RETRY_BACKOFF_S`.
+
+        Args:
+            path: API path below the repository.
+            body: JSON body.
+
+        Returns:
+            The decoded response.
+
+        Raises:
+            PublishError: On any other failure, or once the attempts run out.
+        """
+        wait = RETRY_BACKOFF_S
+        for attempt in range(1, WRITE_ATTEMPTS + 1):
+            status, data = self._request("POST", f"/repos/{self.repo}{path}", body)
+            if status in (200, 201):
+                return data
+            detail = _message(data)
+            transient = status >= 500 or (status == 422 and "timed out" in detail)
+            if not transient or attempt == WRITE_ATTEMPTS:
+                raise PublishError(f"POST {path}: HTTP {status} {detail}".rstrip())
+            print(f"POST {path}: HTTP {status}, retrying in {wait:.0f} s ({attempt}/{WRITE_ATTEMPTS})", file=sys.stderr)
+            time.sleep(wait)
+            wait *= 2
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def branch_head(self, branch: str) -> str | None:
         """Return the commit a branch points at.
@@ -430,7 +505,7 @@ class DocsRepo:
         Returns:
             The blob id.
         """
-        out = self._call("POST", "/git/blobs", {"content": base64.b64encode(data).decode(), "encoding": "base64"})
+        out = self._write("/git/blobs", {"content": base64.b64encode(data).decode(), "encoding": "base64"})
         return validate_sha(out["sha"])
 
     def create_tree(self, base_tree: str, entries: list[dict[str, Any]]) -> str:
@@ -443,7 +518,7 @@ class DocsRepo:
         Returns:
             The new tree id.
         """
-        out = self._call("POST", "/git/trees", {"base_tree": base_tree, "tree": entries})
+        out = self._write("/git/trees", {"base_tree": base_tree, "tree": entries})
         return validate_sha(out["sha"])
 
     def create_commit(self, message: str, tree: str, parents: list[str]) -> str:
@@ -707,7 +782,8 @@ def now_utc() -> str:
 def tree_entries(files: list[LocalFile], remote: dict[str, tuple[str, str]], repo: DocsRepo) -> list[dict[str, Any]]:
     """Diff the built tree against the remote tree.
 
-    Text files are sent inline; other files are uploaded as blobs first.
+    Text files up to :data:`INLINE_TEXT_MAX_BYTES` are sent inline; larger
+    and binary files are uploaded as blobs first.
 
     Args:
         files: The built tree.
@@ -726,10 +802,11 @@ def tree_entries(files: list[LocalFile], remote: dict[str, tuple[str, str]], rep
         if current == ("100644", f.sha):
             continue
         entry: dict[str, Any] = {"path": f.path, "mode": "100644", "type": "blob"}
-        try:
-            entry["content"] = f.data.decode("utf-8")
-        except UnicodeDecodeError:
+        text = _inline_text(f.data)
+        if text is None:
             entry["sha"] = repo.create_blob(f.data)
+        else:
+            entry["content"] = text
         entries.append(entry)
     for path, (mode, _sha) in sorted(remote.items()):
         if path not in local_paths:
