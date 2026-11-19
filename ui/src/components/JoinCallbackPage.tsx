@@ -9,6 +9,7 @@ import {
   isSharedBranchJoined,
   joinErrorMessage,
   parseJoinCallback,
+  replacedCardSummary,
   type JoinCallback,
 } from "@/lib/join";
 
@@ -78,11 +79,7 @@ export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
           library: joined.library_name || joined.library.owner_origin,
           running: joined.running,
           connections: broughtConnectionsSummary(joined.connections),
-          replacedCard: joined.replaced_card
-            ? joined.replaced_card.library_signed_out
-              ? "Your library card for this library was signed out: its books now come through the branch."
-              : "Your library card for this library was dropped here, but the library could not be told; end its session from your session list there."
-            : null,
+          replacedCard: replacedCardSummary(joined.replaced_card),
         });
       })
       .catch((err: unknown) =>

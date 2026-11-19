@@ -16849,15 +16849,27 @@
             }
           },
           "409": {
-            "description": "This install joined that library as a branch meanwhile (`already_joined`).",
+            "description": "This install joined that library as a branch meanwhile (`already_joined`), or joined it again after a sign-in that replaces its branch started (`enrollment_changed`).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorDetail"
                 },
-                "example": {
-                  "detail": "this install already joined that library; its books are read through that link",
-                  "error": "already_joined"
+                "examples": {
+                  "already_joined": {
+                    "summary": "This install is already a branch of that library.",
+                    "value": {
+                      "detail": "this install already joined that library; its books are read through that link",
+                      "error": "already_joined"
+                    }
+                  },
+                  "enrollment_changed": {
+                    "summary": "The branch was replaced by a new join.",
+                    "value": {
+                      "detail": "this install joined the library again after the sign-in started; start again from the library list",
+                      "error": "enrollment_changed"
+                    }
+                  }
                 }
               }
             }
@@ -32920,15 +32932,21 @@
             "nullable": true
           },
           "replaced_card": {
-            "description": "Set when this install held a library card for the library: the\nbranch replaced it, and the card was signed out. Left out when there\nwas none.",
+            "description": "Set when this install held a library card for the library: the\nbranch replaced it. Whether the card is gone here and whether the\nlibrary ended its session are in [`ReplacedCard`]. Left out when\nthere was none.",
             "type": "object",
             "required": [
+              "card_removed",
               "library_signed_out"
             ],
             "properties": {
+              "card_removed": {
+                "type": "boolean",
+                "description": "Whether the card was dropped here. False when it could not be read\nor dropped: it is then still listed under Library cards, and the\nperson signs it out there. The branch join stands either way.",
+                "example": true
+              },
               "library_signed_out": {
                 "type": "boolean",
-                "description": "Whether the library ended the card's session too. False when it\ncould not be reached, or the card could not be dropped here (then\nit is still listed under Library cards).",
+                "description": "Whether the library ended the card's session too. False when it\ncould not be reached, or the card was not dropped here.",
                 "example": true
               }
             },
@@ -44406,12 +44424,18 @@
         "type": "object",
         "description": "The library card a branch join replaced.",
         "required": [
+          "card_removed",
           "library_signed_out"
         ],
         "properties": {
+          "card_removed": {
+            "type": "boolean",
+            "description": "Whether the card was dropped here. False when it could not be read\nor dropped: it is then still listed under Library cards, and the\nperson signs it out there. The branch join stands either way.",
+            "example": true
+          },
           "library_signed_out": {
             "type": "boolean",
-            "description": "Whether the library ended the card's session too. False when it\ncould not be reached, or the card could not be dropped here (then\nit is still listed under Library cards).",
+            "description": "Whether the library ended the card's session too. False when it\ncould not be reached, or the card was not dropped here.",
             "example": true
           }
         }

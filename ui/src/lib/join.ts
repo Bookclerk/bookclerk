@@ -205,9 +205,11 @@ export interface BranchJoined {
   connections?: BroughtConnectionsView | null;
   /**
    * Set when this server held a library card for the library: the branch
-   * replaced it, and the card was signed out.
+   * replaced it.
    */
   replaced_card?: {
+    /** Whether the card was dropped here; false leaves it under Library cards. */
+    card_removed: boolean;
     /** Whether the library ended the card's session too. */
     library_signed_out: boolean;
   } | null;
@@ -1387,4 +1389,22 @@ export function sharedBranchNodes(nodes: ConfigNodeView[]): ConfigNodeView[] {
     .sort(
       (a, b) => Number(b.this_node) - Number(a.this_node) || a.node_id.localeCompare(b.node_id),
     );
+}
+
+/**
+ * What to tell the person about the library card a branch join replaced.
+ *
+ * @param replaced - The join answer's `replaced_card`, if any.
+ * @returns A sentence, or `null` when no card was replaced.
+ */
+export function replacedCardSummary(replaced: BranchJoined["replaced_card"]): string | null {
+  if (!replaced) {
+    return null;
+  }
+  if (!replaced.card_removed) {
+    return "Your library card for this library could not be removed here; sign it out under Library cards.";
+  }
+  return replaced.library_signed_out
+    ? "Your library card for this library was signed out: its books now come through the branch."
+    : "Your library card for this library was dropped here, but the library could not be told; end its session from your session list there.";
 }

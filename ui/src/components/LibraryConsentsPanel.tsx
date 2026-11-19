@@ -391,7 +391,11 @@ function LinkRow({
       // The library sends the browser back to this server's /clerk/callback.
       window.location.assign(started.authorize_url);
     } catch (err) {
-      setNote(clerkErrorMessage(err, "Could not start the sign-in."));
+      setNote(
+        isApiError(err) && err.code === "not_found"
+          ? "This server is no longer a branch of that library, so there is no branch to swap for a card. Sign in with a library card from its address instead."
+          : clerkErrorMessage(err, "Could not start the sign-in."),
+      );
       setBusy(false);
     }
   }

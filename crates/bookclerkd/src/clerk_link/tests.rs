@@ -1595,6 +1595,7 @@ async fn a_card_becomes_a_branch_and_a_branch_becomes_a_card() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["replaced_card"]["card_removed"], true);
     assert_eq!(joined["replaced_card"]["library_signed_out"], true);
     assert!(list_clerk_links(&clerk_store).await.unwrap().is_empty());
     assert_eq!(card_sessions().await, 0, "the library ended the card");
@@ -1627,6 +1628,38 @@ async fn a_card_becomes_a_branch_and_a_branch_becomes_a_card() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{unknown}");
+
+    // A sign-in started for an enrollment the install has since replaced
+    // with a new join does not give the new branch up.
+    let (status, _, started) = call(
+        &clerk,
+        "POST",
+        "/api/config/clerk/start",
+        Some(json!({ "from_branch": library_id, "clerk_name": "Laptop" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    super::api::rejoin_pending_branches("an-earlier-node");
+    let back = consent(
+        &library_state,
+        member,
+        started["authorize_url"].as_str().unwrap(),
+    )
+    .await;
+    let (status, _, stale) = call(
+        &clerk,
+        "POST",
+        "/api/config/clerk/callback",
+        Some(json!({ "code": back["code"], "state": back["state"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+    assert_eq!(stale["error"], "enrollment_changed");
+    assert!(load_library_link(&clerk_store, &library_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .is_active());
 
     // The branch becomes a card: the library hands the card over, then
     // the branch is left and the library told.

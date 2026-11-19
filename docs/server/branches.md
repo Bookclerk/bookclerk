@@ -209,8 +209,10 @@ The exchange runs in five steps:
    link in `library_links`, and starts the link's client. A library card
    this install held for the library is signed out, as with
    `POST /api/config/clerk/sign-out`: the branch replaces it. The answer's
-   `replaced_card.library_signed_out` says whether the library ended the
-   card's session too. An invite join does the same.
+   `replaced_card.card_removed` says whether the card is gone here (if not,
+   it stays under Library cards and the branch join still stands), and
+   `replaced_card.library_signed_out` whether the library ended the card's
+   session too. An invite join does the same.
 
 `POST /api/config/join/start` `{ from_card }` (a library id instead of
 `address` and `fingerprint`) joins a library this install holds an active

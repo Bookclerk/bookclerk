@@ -226,8 +226,9 @@ pub struct BranchJoined {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connections: Option<BroughtConnectionsView>,
     /// Set when this install held a library card for the library: the
-    /// branch replaced it, and the card was signed out. Left out when there
-    /// was none.
+    /// branch replaced it. Whether the card is gone here and whether the
+    /// library ended its session are in [`ReplacedCard`]. Left out when
+    /// there was none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replaced_card: Option<ReplacedCard>,
 }
@@ -235,20 +236,29 @@ pub struct BranchJoined {
 /// The library card a branch join replaced.
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct ReplacedCard {
+    /// Whether the card was dropped here. False when it could not be read
+    /// or dropped: it is then still listed under Library cards, and the
+    /// person signs it out there. The branch join stands either way.
+    #[schema(example = true)]
+    pub card_removed: bool,
     /// Whether the library ended the card's session too. False when it
-    /// could not be reached, or the card could not be dropped here (then
-    /// it is still listed under Library cards).
+    /// could not be reached, or the card was not dropped here.
     #[schema(example = true)]
     pub library_signed_out: bool,
 }
 
 /// Replaces this install's library card for `library_id` with the branch
 /// just joined, if it holds one ([`crate::clerk_link::api::retire_card_for_branch`]).
-async fn replace_card(state: &Arc<AppState>, library_id: &str) -> Option<ReplacedCard> {
-    let store = state.library_snapshot().await;
-    crate::clerk_link::api::retire_card_for_branch(&store, library_id)
-        .await
-        .map(|library_signed_out| ReplacedCard { library_signed_out })
+///
+/// # Arguments
+///
+/// * `store` - the store the join recorded the branch in, so a database
+///   swap meanwhile cannot drop a card from another store than the branch's.
+async fn replace_card(
+    store: &bookclerk_library::LibraryStore,
+    library_id: &str,
+) -> Option<ReplacedCard> {
+    crate::clerk_link::api::retire_card_for_branch(store, library_id).await
 }
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
@@ -1118,7 +1128,7 @@ pub async fn post_join_callback(
         }
         None => None,
     };
-    let replaced_card = replace_card(&state, &link.parent_library_id).await;
+    let replaced_card = replace_card(&store, &link.parent_library_id).await;
     let running = super::start_link_now(&state, &link.parent_library_id).await;
     Json(JoinCompleted::Branch(BranchJoined {
         library: link_json(&link),
@@ -1371,11 +1381,12 @@ pub async fn post_join_invite(
 ) -> Response {
     let link_text = Zeroizing::new(body.link);
     let store = state.library_snapshot().await;
+    let join_store = store.clone();
     // The invite is spent once the library has it, and the node keys exist
     // only in this exchange, so the join runs on its own task: a slow
     // library, or a request cut short, does not drop it half way.
     let mut joining = tokio::spawn(async move {
-        let joined = join_library(&store, &link_text, env!("CARGO_PKG_VERSION")).await;
+        let joined = join_library(&join_store, &link_text, env!("CARGO_PKG_VERSION")).await;
         drop(link_text);
         joined
     });
@@ -1391,12 +1402,13 @@ pub async fn post_join_invite(
         Err(_) => {
             // Start the link's client once the join lands.
             let state = Arc::clone(&state);
+            let store = store.clone();
             // The page has already answered, so a join that fails after
             // all is reported in this daemon's log.
             tokio::spawn(async move {
                 match joining.await {
                     Ok(Ok(link)) => {
-                        replace_card(&state, &link.parent_library_id).await;
+                        replace_card(&store, &link.parent_library_id).await;
                         super::start_link_now(&state, &link.parent_library_id).await;
                     }
                     Ok(Err(err)) => {
@@ -1424,7 +1436,7 @@ pub async fn post_join_invite(
         }
         Err(err) => return join_failed(&err),
     };
-    let replaced_card = replace_card(&state, &link.parent_library_id).await;
+    let replaced_card = replace_card(&store, &link.parent_library_id).await;
     let running = super::start_link_now(&state, &link.parent_library_id).await;
     Json(BranchJoined {
         library: link_json(&link),
@@ -1468,7 +1480,7 @@ pub async fn post_join_leave(
     Json(body): Json<LeaveBody>,
 ) -> Response {
     let library_id = body.library_id.trim().to_string();
-    let leaving = tokio::spawn(async move { super::leave_link(&state, &library_id).await });
+    let leaving = tokio::spawn(async move { super::leave_link(&state, &library_id, None).await });
     let Ok(left) = leaving.await else {
         return join_error(
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -346,7 +346,10 @@ callback gets the card from the library first, then leaves the branch as
 `POST /api/config/join/leave` does, then seals the card. Both run on their
 own task, so a request cut short still finishes them. The answer's
 `left_branch.owner_notified` says whether the library was told. If the
-person doesn't approve the card, the branch stays.
+person doesn't approve the card, the branch stays. The sign-in remembers
+which enrollment it replaces: if this install left and joined the library
+again before the callback, the callback answers 409 `enrollment_changed`
+and keeps the new branch.
 
 The other way, a branch join of a library this install holds a card for
 signs the card out (see
