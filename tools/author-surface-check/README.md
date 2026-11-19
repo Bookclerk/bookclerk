@@ -16,7 +16,11 @@ negative cases silently compile.
 - `negative/` — depends on `bookclerk-plugin-sdk` and
   `bookclerk-plugin-abi` with **default features only**. Each file under
   `cases/` names one host-private symbol; the driver script swaps it into
-  `src/case.rs` and requires `cargo check` to **fail**.
+  `src/case.rs` and requires `cargo check` to **fail** with an
+  unreachable-symbol error (unresolved import, path, name or type, a
+  missing method, or a private item). A case that fails for any other
+  reason, such as a syntax error or a warning promoted to an error, fails
+  the check, so it can't hide a leak.
 
 Run locally:
 

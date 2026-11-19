@@ -34,15 +34,25 @@ trap restore_placeholder EXIT
 echo "== author-surface: negative harness control must compile =="
 cargo check --quiet --manifest-path "$NEGATIVE/Cargo.toml"
 
+# A case passes only when rustc rejects it for a symbol it cannot reach:
+# unresolved imports, paths, names or types (E0412, E0422, E0425, E0432,
+# E0433), a method the author-facing type does not have (E0599) or a private
+# item (E0603). Any other failure, such as a warning promoted to an error,
+# would hide a leak, so it fails the check too (#960).
+EXPECTED='error\[E0(412|422|425|432|433|599|603)\]'
 fail=0
 for case_file in "$NEGATIVE"/cases/*.rs; do
   name="$(basename "$case_file")"
   cp "$case_file" "$CASE_RS"
-  if cargo check --quiet --manifest-path "$NEGATIVE/Cargo.toml" 2>/dev/null; then
+  if output="$(cargo check --quiet --manifest-path "$NEGATIVE/Cargo.toml" 2>&1)"; then
     echo "FAIL: negative case compiled (host-private symbol leaked): $name" >&2
     fail=1
-  else
+  elif grep -Eq "$EXPECTED" <<<"$output"; then
     echo "ok (rejected): $name"
+  else
+    echo "FAIL: negative case failed for another reason than an unreachable symbol: $name" >&2
+    printf '%s\n' "$output" >&2
+    fail=1
   fi
 done
 
