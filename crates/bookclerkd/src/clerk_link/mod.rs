@@ -12,7 +12,7 @@
 //! - on each connection, on every `changed` frame naming the `library`
 //!   topic, and every [`READ_POLL`], it reads every page of the person's
 //!   books (`books` → `books.page`) into the window books rows
-//!   (`control_plane::window_books`), keyed by the library's library id,
+//!   (`control_plane::window_books`), keyed by the library id,
 //!   so "Your books in other libraries" merges them with those of window
 //!   links. Once the last page is in, the books the read no longer named
 //!   are dropped; a read cut short drops nothing.

@@ -10,7 +10,7 @@
 //! then downloads the files through [`CardCopy`] with the grant's token
 //! (sent to the granting library alone). Once the copy is downloaded,
 //! before the title is stored, it is recorded in `link_imports` under the
-//! library's library id (again harmlessly when already recorded), so a
+//! library id (again harmlessly when already recorded), so a
 //! clerk that later becomes a branch never shares the book back.
 //!
 //! A copy the library downloaded from another store than the title's is
@@ -73,14 +73,14 @@ impl GrantAsk {
 }
 
 /// Where the reader of each library card takes `copy.grant` asks, by the
-/// library's library id; only a reader whose socket is welcomed is here.
+/// library id; only a reader whose socket is welcomed is here.
 static READERS: LazyLock<Mutex<BTreeMap<String, mpsc::Sender<GrantAsk>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
 /// A connected reader's place in [`READERS`]; dropping it takes the reader
 /// out again (unless a newer reader of the same library replaced it).
 pub(super) struct Registered {
-    /// The library's library id.
+    /// The library id.
     library_id: String,
     /// The reader's own sender, to tell it from a newer one.
     asks: mpsc::Sender<GrantAsk>,

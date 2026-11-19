@@ -57,7 +57,7 @@ pub const DATABASE_ENV_OVERRIDES: &[&str] = &[
 /// A redeemed shared branch sign-in. `Debug` prints no secret.
 #[derive(Debug)]
 pub struct SharedBranchJoined {
-    /// The library's library id.
+    /// The library id.
     pub library_id: String,
     /// The node id the library recorded (`kind = shared`).
     pub node_id: String,

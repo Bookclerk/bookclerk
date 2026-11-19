@@ -211,7 +211,7 @@ async fn titles(store: &LibraryStore) -> Vec<String> {
 }
 
 /// Signs `clerk` in to `origin` as `member` through the card routes;
-/// answers the library's library id.
+/// answers the library id.
 async fn sign_in(
     clerk: &axum::Router,
     library_state: &Arc<AppState>,
@@ -616,7 +616,7 @@ async fn close(socket: &mut FakeSocket, code: u16) {
 }
 
 /// A clerk install holding an active card for the library at `origin`;
-/// answers its state, store and the library's library id.
+/// answers its state, store and the library id.
 async fn clerk_with_card(
     files: &tempfile::TempDir,
     origin: &str,

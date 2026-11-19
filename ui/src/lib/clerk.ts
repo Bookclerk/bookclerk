@@ -23,7 +23,7 @@ import { request, type LibraryInfoView } from "@/lib/join";
 
 /** A library this install holds (or held) a card for, without the card. */
 export interface ClerkCardView {
-  /** The library's library id: what the card is keyed by. */
+  /** The library id: what the card is keyed by. */
   library_id: string;
   /** The library's canonical origin (`https://library.example`). */
   origin: string;
@@ -63,7 +63,7 @@ export interface ClerkStarted {
 
 /** `POST /api/config/clerk/sign-out`. */
 export interface ClerkSignedOut {
-  /** The library's library id. */
+  /** The library id. */
   library_id: string;
   /**
    * Whether the library ended the card's session too. False when it could
@@ -148,7 +148,7 @@ export function finishClerkSignIn(callback: ClerkCallback): Promise<{ card: Cler
  * Signs this install out of a library: forgets the card here and ends its
  * session at the library when it can be reached.
  *
- * @param libraryId - The library's library id.
+ * @param libraryId - The library id.
  * @returns Whether the library ended the session too.
  */
 export function signOutClerkCard(libraryId: string): Promise<ClerkSignedOut> {
