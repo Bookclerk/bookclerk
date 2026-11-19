@@ -34,8 +34,8 @@ use crate::entities::{
     editions, embeddings, encrypted_secrets, event_deliveries, event_outbox_stats, expressions,
     holdings, ignored_titles, job_secret_handoffs, job_temp_paths, jobs, library_identity,
     library_links, link_imports, link_requests, listening_progress, listing_offers,
-    member_account_rules, node_credentials, node_enrollment_links, node_upload_sessions, nodes,
-    oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states, operator_sessions,
+    node_credentials, node_enrollment_links, node_upload_sessions, nodes, oidc_auth_codes,
+    oidc_clients, oidc_refresh_tokens, oidc_rp_states, operator_sessions, patron_controls,
     patron_scope_keys, patron_scopes, pending_joins, plugin_artifacts, plugin_cron_cursors,
     plugin_deployments, plugin_installs, plugin_instances, plugin_kv, plugin_placements,
     plugin_schemas, plugin_versions, portal_identities, portal_sessions, remote_plugin_consents,
@@ -208,7 +208,7 @@ macro_rules! copied_entities {
         $each!(user_work_tags);
         $each!(embeddings);
         $each!(user_preferences);
-        $each!(member_account_rules);
+        $each!(patron_controls);
         $each!(patron_scopes);
         $each!(patron_scope_keys);
         $each!(encrypted_secrets);

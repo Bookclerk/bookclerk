@@ -1432,6 +1432,14 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
             crate::patron_scopes::get_user_scope,
             crate::patron_scopes::put_user_scope
         ))
+        .routes(routes!(
+            crate::patron_scopes::get_default_controls,
+            crate::patron_scopes::put_default_controls
+        ))
+        .routes(routes!(
+            crate::patron_scopes::get_user_controls,
+            crate::patron_scopes::put_user_controls
+        ))
         .routes(routes!(auth::create_user_claim_ticket))
         .routes(routes!(auth::reset_user_password))
 }
@@ -5868,7 +5876,22 @@ async fn discover_recommendations(
             .iter()
             .flat_map(|shelf| shelf.items.iter().filter_map(|item| item.cover_url.clone())),
     );
+    if !caller_sees_prices(&state, &headers).await {
+        feed.hide_prices_and_links();
+    }
     Ok(Json(feed))
+}
+
+/// Whether the caller may see prices and store links (the "See prices
+/// and store links" member control). Discover answers and wishlist rows
+/// drop both for a patron it is off for.
+async fn caller_sees_prices(state: &AppState, headers: &HeaderMap) -> bool {
+    crate::patron_scopes::caller_may(
+        state,
+        headers,
+        bookclerk_library::control_plane::MemberControl::SeePrices,
+    )
+    .await
 }
 
 /// Resolves storefront price/availability for one title, forcing server-side preferred stores.
@@ -5896,6 +5919,9 @@ async fn discover_purchase_hints(
         .map_err(internal_err)?;
     let deadline = tokio::time::Instant::now() + bookclerk_discover::BATCH_DEADLINE;
     check_card_recording(&library, &sources, &body, &mut response, deadline).await;
+    if !caller_sees_prices(&state, &headers).await {
+        response.hide_prices_and_links();
+    }
     Ok(Json(response))
 }
 
@@ -5995,6 +6021,11 @@ async fn discover_purchase_hints_batch(
         let mut response = item.map_err(internal_err)?;
         check_card_recording(&library, &sources, query, &mut response, deadline).await;
         results.push(response);
+    }
+    if !caller_sees_prices(&state, &headers).await {
+        for response in &mut results {
+            response.hide_prices_and_links();
+        }
     }
     Ok(Json(PurchaseHintsBatchResponse { results }))
 }
@@ -6200,6 +6231,7 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
 )]
 async fn discover_catalog_search(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(q): Query<CatalogSearchQuery>,
 ) -> Result<Json<bookclerk_discover::CatalogSearchPage>, (StatusCode, String)> {
     // Wall budget for parallel multi-store search (each store capped ~7s;
@@ -6320,6 +6352,9 @@ async fn discover_catalog_search(
         &state,
         page.items.iter().filter_map(|hit| hit.cover_url.clone()),
     );
+    if !caller_sees_prices(&state, &headers).await {
+        page.hide_prices_and_links();
+    }
     Ok(Json(page))
 }
 
@@ -6355,10 +6390,14 @@ async fn list_wishlist(
         .list_wishlist(identity_id)
         .await
         .map_err(internal_err)?;
+    let sees_prices = caller_sees_prices(&state, &headers).await;
     for row in &mut rows {
         state
             .covers
             .decorate(row.cover_url.as_deref(), &mut row.cover_path);
+        if !sees_prices {
+            row.hide_prices_and_links();
+        }
     }
     Ok(Json(rows))
 }
@@ -6384,6 +6423,9 @@ async fn create_wishlist(
     state
         .covers
         .decorate(row.cover_url.as_deref(), &mut row.cover_path);
+    if !caller_sees_prices(&state, &headers).await {
+        row.hide_prices_and_links();
+    }
     Ok(Json(row))
 }
 
@@ -6452,6 +6494,9 @@ async fn delete_wishlist(
     state
         .covers
         .decorate(row.cover_url.as_deref(), &mut row.cover_path);
+    if !caller_sees_prices(&state, &headers).await {
+        row.hide_prices_and_links();
+    }
     Ok(Json(row))
 }
 

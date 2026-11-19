@@ -5,6 +5,9 @@
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use super::*;
+use crate::control_plane::{
+    member_control_overrides, set_member_control_overrides, AssignedControls, ControlOverrides,
+};
 use crate::entities::{account_links, account_shares, accounts};
 use crate::master_key::master_key_test_lock_async;
 use crate::models::{UserRole, UserStatus};
@@ -14,6 +17,23 @@ use crate::secrets::{
 use crate::store::LibraryStore;
 use crate::test_support::{sqlite, Profile};
 use bookclerk_node_proto::MAX_BUNDLE_ACCOUNTS;
+
+/// Overrides the "Link store accounts" member control of `user_id`.
+async fn allow_linking(
+    store: &LibraryStore,
+    user_id: i64,
+    allowed: bool,
+) -> crate::error::Result<AssignedControls> {
+    set_member_control_overrides(
+        store,
+        user_id,
+        ControlOverrides {
+            link_accounts: Some(allowed),
+            ..ControlOverrides::default()
+        },
+    )
+    .await
+}
 
 /// A storefront that declares `credentials = "shareable"`.
 const SHAREABLE: &str = "platform:bookclerk/bookclerk-plugin-source-libro#libro";
@@ -75,7 +95,7 @@ async fn secret_of(store: &LibraryStore, plugin_key: &str, account_id: &str) -> 
 }
 
 #[tokio::test]
-async fn the_operator_decides_per_member_and_no_rule_allows() {
+async fn the_link_accounts_control_decides_and_no_override_allows() {
     for profile in Profile::ALL {
         let kit = sqlite::memory(profile).await;
         let store = kit.store();
@@ -88,14 +108,8 @@ async fn the_operator_decides_per_member_and_no_rule_allows() {
             member_may_connect_accounts(store, sam.id).await.unwrap(),
             "{name}"
         );
-        assert!(
-            member_account_rules(store).await.unwrap().is_empty(),
-            "{name}"
-        );
 
-        set_member_may_connect_accounts(store, sam.id, false)
-            .await
-            .unwrap();
+        allow_linking(store, sam.id, false).await.unwrap();
         assert!(
             !member_may_connect_accounts(store, sam.id).await.unwrap(),
             "{name}"
@@ -111,14 +125,15 @@ async fn the_operator_decides_per_member_and_no_rule_allows() {
             "{name}"
         );
         assert_eq!(
-            member_account_rules(store).await.unwrap().get(&sam.id),
-            Some(&false),
+            member_control_overrides(store, sam.id)
+                .await
+                .unwrap()
+                .link_accounts,
+            Some(false),
             "{name}"
         );
 
-        set_member_may_connect_accounts(store, sam.id, true)
-            .await
-            .unwrap();
+        allow_linking(store, sam.id, true).await.unwrap();
         assert!(
             member_may_connect_accounts(store, sam.id).await.unwrap(),
             "{name}"
@@ -138,7 +153,7 @@ async fn the_operator_decides_per_member_and_no_rule_allows() {
             "{name}"
         );
         assert!(matches!(
-            set_member_may_connect_accounts(store, 9_999, true).await,
+            allow_linking(store, 9_999, true).await,
             Err(LibraryError::NotFound(_))
         ));
         assert_eq!(kit.refused_begins(), 0, "{name}");
@@ -373,9 +388,7 @@ async fn an_operator_who_refuses_the_member_stores_nothing() {
             .create_user(UserRole::Member, Some("Ana"), None)
             .await
             .unwrap();
-        set_member_may_connect_accounts(store, me.id, false)
-            .await
-            .unwrap();
+        allow_linking(store, me.id, false).await.unwrap();
         let report = import_carried_accounts(store, me.id, "library-x", &library)
             .await
             .unwrap();
@@ -667,9 +680,7 @@ async fn an_import_batch_stores_nothing_once_the_rule_is_turned_off() {
             .unwrap();
         // The import read the rule as allowed; the operator turns it off
         // before this account's batch runs.
-        set_member_may_connect_accounts(store, me.id, false)
-            .await
-            .unwrap();
+        allow_linking(store, me.id, false).await.unwrap();
         let peer = link_peer("library-x");
         let kept = carried_accounts::import_one(store, me.id, identity.id, &peer, &library[0])
             .await
@@ -698,9 +709,7 @@ async fn an_import_batch_stores_nothing_once_the_rule_is_turned_off() {
             "{name}"
         );
         // A person disabled meanwhile is stopped the same way.
-        set_member_may_connect_accounts(store, me.id, true)
-            .await
-            .unwrap();
+        allow_linking(store, me.id, true).await.unwrap();
         store
             .set_user_status(me.id, UserStatus::Disabled)
             .await

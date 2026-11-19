@@ -2654,6 +2654,319 @@ mod results_and_uploads {
         );
     }
 
+    /// Two filesystem stand-in destinations on the owner, `local` and
+    /// `s3`, rooted at `local_out` and `s3_out` and naming a title
+    /// `<author>/<title>/<title>` and `library/<asin>/<asin>`.
+    fn two_destinations(world: &Linked, local_out: &Path, s3_out: &Path) {
+        use crate::node_api::uploads::{set_test_destinations, TestDestination};
+        use bookclerk_config::{DestinationId, DestinationKeyStyle, DestinationNaming};
+
+        set_test_destinations(
+            world.owner_files.path(),
+            vec![
+                TestDestination {
+                    id: DestinationId::new("local").unwrap(),
+                    key_style: DestinationKeyStyle::Filesystem,
+                    root: local_out.to_path_buf(),
+                    naming: DestinationNaming {
+                        folder_template: Some("<author>/<title>".into()),
+                        file_template: Some("<title>".into()),
+                        ..DestinationNaming::default()
+                    },
+                },
+                TestDestination {
+                    id: DestinationId::new("s3").unwrap(),
+                    key_style: DestinationKeyStyle::ObjectStore,
+                    root: s3_out.to_path_buf(),
+                    naming: DestinationNaming {
+                        folder_template: Some("library/<asin>".into()),
+                        file_template: Some("<asin>".into()),
+                        ..DestinationNaming::default()
+                    },
+                },
+            ],
+        );
+    }
+
+    /// Stores a filter on the owner's destination `instance` that refuses
+    /// every book of the store account `account`.
+    async fn exclude_account(store: &LibraryStore, instance: &str, account: &str) {
+        use bookclerk_config::{DestinationFilter, FilterEffect, FilterField, FilterRule};
+
+        bookclerk_library::control_plane::set_destination_filter(
+            store,
+            &bookclerk_library::control_plane::ConfigActor::Operator {
+                id: "operator:test".into(),
+            },
+            instance,
+            DestinationFilter {
+                rules: vec![FilterRule {
+                    field: FilterField::Account,
+                    value: account.into(),
+                    effect: FilterEffect::Exclude,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Stored files under `dir`, without the metadata sidecars each
+    /// destination writes.
+    fn objects(dir: &Path) -> Vec<PathBuf> {
+        files_under(dir)
+            .into_iter()
+            .filter(|path| !path.to_string_lossy().ends_with(".bookclerk-meta.json"))
+            .collect()
+    }
+
+    /// A branch's acquire for the library writes each title only to the
+    /// destinations whose filter takes it: the plan lists that set per
+    /// title, and the destination that refuses the title gets nothing.
+    #[tokio::test]
+    async fn a_hosts_acquire_reaches_only_the_destinations_that_take_the_title() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        let s3_out = tempfile::tempdir().unwrap();
+        two_destinations(&world, local_out.path(), s3_out.path());
+        exclude_account(&world.owner, "s3", "riley-acct").await;
+        world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let payload: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        let guests = StubGuests {
+            payload: Arc::new(payload.clone()),
+            work: world.host_files.path().join("cluster-work"),
+            ..StubGuests::default()
+        };
+        let (_handle, _stop) = start(&world, guests.clone()).await;
+
+        let job_id = enqueue_acquire(&world.owner).await;
+        eventually("the host acquire to complete", || async {
+            job(&world.owner, &job_id).await.state == JobState::Succeeded
+        })
+        .await;
+        let local_files = objects(local_out.path());
+        assert_eq!(local_files.len(), 1, "{local_files:?}");
+        assert_eq!(std::fs::read(&local_files[0]).unwrap(), payload);
+        assert!(
+            objects(s3_out.path()).is_empty(),
+            "the destination that refuses the title gets nothing"
+        );
+    }
+
+    /// The owner's plan lists, for each title, the destinations whose
+    /// filter takes it, in the plan's order, beside every destination's
+    /// naming options.
+    #[tokio::test]
+    async fn the_plan_lists_each_titles_target_set() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        let s3_out = tempfile::tempdir().unwrap();
+        two_destinations(&world, local_out.path(), s3_out.path());
+        exclude_account(&world.owner, "s3", "riley-acct").await;
+        world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let (handle, _stop) = start(&world, StubGuests::default()).await;
+        let answer = handle
+            .request(Body::AcquirePlan { job_id, fence })
+            .await
+            .expect("the owner answers");
+        let Body::AcquireTargets {
+            targets,
+            destinations,
+        } = answer.body
+        else {
+            panic!("{answer:?}");
+        };
+        assert_eq!(
+            destinations
+                .iter()
+                .map(|d| d.id.as_str())
+                .collect::<Vec<_>>(),
+            ["local", "s3"]
+        );
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].destinations, Some(vec!["local".to_string()]));
+    }
+
+    /// A title no destination takes fails on the host before anything is
+    /// fetched or written, as a local acquire of it would.
+    #[tokio::test]
+    async fn a_title_no_destination_takes_fails_on_the_host() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        let s3_out = tempfile::tempdir().unwrap();
+        two_destinations(&world, local_out.path(), s3_out.path());
+        exclude_account(&world.owner, "local", "riley-acct").await;
+        exclude_account(&world.owner, "s3", "riley-acct").await;
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let guests = StubGuests {
+            work: world.host_files.path().join("cluster-work"),
+            ..StubGuests::default()
+        };
+        let (_handle, _stop) = start(&world, guests.clone()).await;
+
+        let job_id = enqueue_acquire(&world.owner).await;
+        eventually("the host acquire to fail", || async {
+            job(&world.owner, &job_id).await.state == JobState::Failed
+        })
+        .await;
+        assert!(objects(local_out.path()).is_empty());
+        assert!(objects(s3_out.path()).is_empty());
+        let row = world
+            .owner
+            .get_book_by_uuid(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            row.acquire_status,
+            bookclerk_library::AcquireStatus::Acquired
+        );
+    }
+
+    /// An upload that names a destination whose filter refuses the title is
+    /// refused at its grant, whatever the host asks.
+    #[tokio::test]
+    async fn a_grant_naming_a_destination_that_refuses_the_title_is_refused() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        let s3_out = tempfile::tempdir().unwrap();
+        two_destinations(&world, local_out.path(), s3_out.path());
+        exclude_account(&world.owner, "s3", "riley-acct").await;
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let (handle, _stop) = start(&world, StubGuests::default()).await;
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let mut file = local_file("Author/Title t1/Title t1.m4b", b"audio");
+        file.copies.push(bookclerk_node_proto::FileCopy {
+            destination: "s3".into(),
+            key: "library/t1/t1.m4b".into(),
+        });
+        let answer = handle
+            .request(Body::UploadGrant {
+                job_id: job_id.clone(),
+                fence,
+                holding_id: holding_of(&world.owner, &book.uuid).await,
+                primary_key: "Author/Title t1/Title t1.m4b".into(),
+                pdf_key: None,
+                files: vec![file],
+            })
+            .await
+            .expect("the owner answers");
+        assert!(
+            format!("{answer:?}").contains("destinations_changed"),
+            "{answer:?}"
+        );
+        assert!(objects(local_out.path()).is_empty());
+        assert!(objects(s3_out.path()).is_empty());
+    }
+
+    /// A filter edited after a title's upload was granted changes its
+    /// target set: its next file and its commit are refused, and what it
+    /// had received is deleted, so the title is never stored against the
+    /// filter now in force.
+    #[tokio::test]
+    async fn an_upload_is_refused_after_a_filter_edit() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let scope = local_scope("Author/Title t1");
+        let files = vec![
+            local_file("Author/Title t1/t1.m4b", b"audio"),
+            local_file("Author/Title t1/cover.jpg", b"jpeg"),
+        ];
+        let (upload_id, token, _) =
+            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+        let put = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
+        assert!(put.starts_with("HTTP/1.1 200"), "{put}");
+        exclude_account(&world.owner, "local", "riley-acct").await;
+        let second = put_raw(world.addr, &upload_id, &token, 1, b"jpeg").await;
+        assert!(second.starts_with("HTTP/1.1 422"), "{second}");
+        assert!(second.contains("destinations_changed"), "{second}");
+        assert!(
+            files_under(owner_out.path()).is_empty(),
+            "the refused title's received file is deleted"
+        );
+        let committed = commit_raw(world.addr, &upload_id, &token, "{}").await;
+        assert!(!committed.starts_with("HTTP/1.1 200"), "{committed}");
+    }
+
+    /// A commit is refused once a filter edited after the title's last
+    /// file refuses it, and what it received is deleted.
+    #[tokio::test]
+    async fn a_commit_is_refused_after_a_filter_edit() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let scope = local_scope("Author/Title t1");
+        let files = vec![local_file("Author/Title t1/t1.m4b", b"audio")];
+        let (upload_id, token, _) =
+            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+        let put = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
+        assert!(put.starts_with("HTTP/1.1 200"), "{put}");
+        exclude_account(&world.owner, "local", "riley-acct").await;
+        let committed = commit_raw(world.addr, &upload_id, &token, "{}").await;
+        assert!(committed.starts_with("HTTP/1.1 422"), "{committed}");
+        assert!(committed.contains("destinations_changed"), "{committed}");
+        assert!(
+            files_under(owner_out.path()).is_empty(),
+            "the refused title's received file is deleted"
+        );
+        let row = world
+            .owner
+            .get_book_by_uuid(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            row.acquire_status,
+            bookclerk_library::AcquireStatus::Acquired
+        );
+    }
+
     /// The manifest of a title acquired into two destinations: identical
     /// bytes cross once with a key per destination, a file only one
     /// destination has gets one copy, and the outbox backend's metadata
@@ -5520,4 +5833,82 @@ async fn the_grant_and_the_host_name_a_title_from_the_same_fields() {
     assert_eq!(naming(&granted), naming(&hosted));
     assert_eq!(hosted.book_uuid.as_deref(), Some(holding.as_str()));
     assert_eq!(granted.book_uuid.as_deref(), Some(row.uuid.as_str()));
+}
+
+/// A title's target set on the host is the plan's destinations its list
+/// names, in the plan's order, or every one without a list; an empty list
+/// or one that does not fit the plan fails the title.
+#[test]
+fn the_host_writes_a_title_only_to_its_target_set() {
+    use super::host_jobs::{target_set, HostDestination};
+    use bookclerk_node_proto::{AcquireTarget, PlanDestination};
+
+    let planned: Vec<PlanDestination> = ["local", "nas"]
+        .into_iter()
+        .map(|id| PlanDestination {
+            id: id.into(),
+            options: serde_json::to_value(bookclerk_source::DownloadOptions::default()).unwrap(),
+        })
+        .collect();
+    let parsed: Vec<HostDestination> = planned
+        .iter()
+        .cloned()
+        .map(|plan| HostDestination::from_plan(plan).unwrap())
+        .collect();
+    let target = |ids: Option<Vec<&str>>| -> AcquireTarget {
+        let mut value = serde_json::json!({
+            "holding_id": "b",
+            "plugin_key": "store",
+            "account_id": "a",
+            "title": {"product_id": "p", "source": "store", "marketplace": "us", "title": "T", "content_kind": "book"},
+        });
+        if let Some(ids) = ids {
+            value["destinations"] = serde_json::json!(ids);
+        }
+        serde_json::from_value(value).unwrap()
+    };
+    let ids = |set: Vec<HostDestination>| -> Vec<String> {
+        set.into_iter().map(|d| d.id.to_string()).collect()
+    };
+    assert_eq!(
+        ids(target_set(&target(None), &planned, &parsed).unwrap()),
+        ["local", "nas"]
+    );
+    assert_eq!(
+        ids(target_set(&target(Some(vec!["nas"])), &planned, &parsed).unwrap()),
+        ["nas"]
+    );
+    let none = target_set(&target(Some(vec![])), &planned, &parsed).unwrap_err();
+    assert!(
+        none.to_string().contains("no destination accepts"),
+        "{none}"
+    );
+    assert!(target_set(&target(Some(vec!["s3"])), &planned, &parsed).is_err());
+    assert!(target_set(&target(Some(vec!["nas", "local"])), &planned, &parsed).is_err());
+}
+
+/// An upload's destinations are taken from this node's in the grant's
+/// order; one no longer deployed (or named twice) gives none.
+#[test]
+fn an_uploads_destinations_come_back_in_grant_order_or_not_at_all() {
+    use crate::node_api::uploads::{destination_ids, granted_destinations, OwnerDestination};
+
+    let root = tempfile::tempdir().unwrap();
+    let deployed = || -> Vec<OwnerDestination> {
+        ["local", "nas", "s3"]
+            .into_iter()
+            .map(|id| OwnerDestination {
+                id: id.into(),
+                backend: Box::new(
+                    bookclerk_storage::LocalFsBackend::new(root.path().to_path_buf()).unwrap(),
+                ),
+                options: bookclerk_source::DownloadOptions::default(),
+            })
+            .collect()
+    };
+    let granted = |ids: &[&str]| -> Vec<String> { ids.iter().map(|id| id.to_string()).collect() };
+    let picked = granted_destinations(deployed(), &granted(&["s3", "local"])).unwrap();
+    assert_eq!(destination_ids(&picked), ["s3", "local"]);
+    assert!(granted_destinations(deployed(), &granted(&["r2"])).is_none());
+    assert!(granted_destinations(deployed(), &granted(&["nas", "nas"])).is_none());
 }

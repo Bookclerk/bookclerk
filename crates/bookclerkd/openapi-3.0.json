@@ -411,7 +411,8 @@
                   "authenticated": false,
                   "can_acquire": false,
                   "default_view": "discover",
-                  "elevated": false
+                  "elevated": false,
+                  "see_prices": false
                 }
               }
             }
@@ -1603,7 +1604,7 @@
         "tags": [
           "Users"
         ],
-        "summary": "Patch role/status/display/login, or the store-account rule, for a\nfirst-party user (provisioner).",
+        "summary": "Patch role/status/display/login/email for a first-party user\n(provisioner).",
         "operationId": "patch_user",
         "parameters": [
           {
@@ -1816,7 +1817,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "the patron scope could not be read or written"
+                  "error": "the patron's scope or controls could not be read or written"
                 }
               }
             }
@@ -1961,7 +1962,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "the patron scope could not be read or written"
+                  "error": "the patron's scope or controls could not be read or written"
                 }
               }
             }
@@ -2069,7 +2070,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "the patron scope could not be read or written"
+                  "error": "the patron's scope or controls could not be read or written"
                 }
               }
             }
@@ -2227,7 +2228,514 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "the patron scope could not be read or written"
+                  "error": "the patron's scope or controls could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
+    "/api/users/default-controls": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Reads the library's default member controls, which every Member\nfollows unless a control is set for them alone.",
+        "operationId": "get_default_controls",
+        "responses": {
+          "200": {
+            "description": "The default controls.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultControlsJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Owner or Administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "forbidden"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The controls could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the patron's scope or controls could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      },
+      "put": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Replaces the library's default member controls. Every Member follows\nthe change at once, except in the controls set for them alone;\nAdministrators do not follow the default.",
+        "operationId": "put_default_controls",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberControls"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The default controls after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultControlsJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body names a control that does not exist. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unknown field `fly`, expected one of `link_accounts`, `download`, `edit_metadata`, `upload`, `request_books`, `see_prices`"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Owner or Administrator. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "forbidden"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The default kept changing underneath the write; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "core.member_controls kept changing; retry"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: link_accounts: invalid type: integer `1`, expected a boolean at line 1 column 18"
+              }
+            }
+          },
+          "500": {
+            "description": "The controls could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the patron's scope or controls could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
+    "/api/users/{id}/controls": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Reads what a patron may do: the library's default, their own\noverrides, and what applies.",
+        "operationId": "get_user_controls",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User id.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The patron's controls.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserControlsJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not manage this user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "you may not manage this user"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "user 7 not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The controls could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the patron's scope or controls could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      },
+      "put": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Sets the controls that differ for one patron; every other control\nfollows the library's default for a Member and is allowed for an\nAdministrator.",
+        "description": "Nobody sets their own. An Owner may always do everything, so\noverrides stored for one only apply if their role changes. An\nAdministrator's overrides limit them while they stay an Administrator;\nonly an Owner or the operator sets those.",
+        "operationId": "put_user_controls",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User id.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutUserControls"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The patron's controls after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserControlsJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body names a control that does not exist. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unknown field `fly`, expected one of `link_accounts`, `download`, `edit_metadata`, `upload`, `request_books`, `see_prices`"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not manage this user, or tried to set their own controls. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "you may not set your own controls"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "user 7 not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The user's role changed since the caller was authorized for them; nothing was written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "user 7 became administrator while their controls were being set; read them again"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `overrides` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The controls could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the patron's scope or controls could not be read or written"
                 }
               }
             }
@@ -22389,8 +22897,14 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The caller's member controls turn requesting books off. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "this library's administrator hasn't allowed you to ask branches for books"
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
@@ -32126,7 +32640,8 @@
           "authenticated",
           "default_view",
           "can_acquire",
-          "elevated"
+          "elevated",
+          "see_prices"
         ],
         "properties": {
           "authenticated": {
@@ -32310,6 +32825,11 @@
               }
             },
             "nullable": true
+          },
+          "see_prices": {
+            "type": "boolean",
+            "description": "Whether the caller's \"See prices and store links\" member control\nallows prices and store links. The library already drops them from\nits answers when it does not; the app uses this to show no store\nlinks of its own either. Always true for the operator.",
+            "example": true
           }
         }
       },
@@ -34443,6 +34963,49 @@
           }
         }
       },
+      "ControlOverrides": {
+        "type": "object",
+        "description": "One patron's overrides: a value for some controls; the rest (an absent\nor `null` field) follow the library's default for a Member and are\nallowed for an Administrator.",
+        "properties": {
+          "link_accounts": {
+            "type": "boolean",
+            "description": "Overrides [`MemberControls::link_accounts`].",
+            "example": false,
+            "nullable": true
+          },
+          "download": {
+            "type": "boolean",
+            "description": "Overrides [`MemberControls::download`].",
+            "example": null,
+            "nullable": true
+          },
+          "edit_metadata": {
+            "type": "boolean",
+            "description": "Overrides [`MemberControls::edit_metadata`].",
+            "example": null,
+            "nullable": true
+          },
+          "upload": {
+            "type": "boolean",
+            "description": "Overrides [`MemberControls::upload`].",
+            "example": null,
+            "nullable": true
+          },
+          "request_books": {
+            "type": "boolean",
+            "description": "Overrides [`MemberControls::request_books`].",
+            "example": null,
+            "nullable": true
+          },
+          "see_prices": {
+            "type": "boolean",
+            "description": "Overrides [`MemberControls::see_prices`].",
+            "example": null,
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "CreatePluginInstance": {
         "type": "object",
         "description": "`POST /api/config/plugin-instances` body.",
@@ -34660,6 +35223,23 @@
             "type": "boolean",
             "description": "Update `[database].plugin` in config.toml after a successful copy.",
             "example": false
+          }
+        }
+      },
+      "DefaultControlsJson": {
+        "type": "object",
+        "description": "The library's default member controls as the control routes report\nthem.",
+        "required": [
+          "controls"
+        ],
+        "properties": {
+          "controls": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MemberControls"
+              }
+            ],
+            "description": "The controls every Member follows unless set for them alone.\nAdministrators do not follow it."
           }
         }
       },
@@ -37583,6 +38163,43 @@
           "print"
         ]
       },
+      "MemberControls": {
+        "type": "object",
+        "description": "A value for each control: the library's default, or what applies to\none user.",
+        "properties": {
+          "link_accounts": {
+            "type": "boolean",
+            "description": "May connect store accounts ([`MemberControl::LinkAccounts`]).",
+            "example": false
+          },
+          "download": {
+            "type": "boolean",
+            "description": "May take copies of the library's files ([`MemberControl::Download`]).",
+            "example": true
+          },
+          "edit_metadata": {
+            "type": "boolean",
+            "description": "May change metadata ([`MemberControl::EditMetadata`]).",
+            "example": true
+          },
+          "upload": {
+            "type": "boolean",
+            "description": "May upload books ([`MemberControl::Upload`]).",
+            "example": true
+          },
+          "request_books": {
+            "type": "boolean",
+            "description": "May ask branches for books ([`MemberControl::RequestBooks`]).",
+            "example": true
+          },
+          "see_prices": {
+            "type": "boolean",
+            "description": "May see prices and store links ([`MemberControl::SeePrices`]).",
+            "example": true
+          }
+        },
+        "additionalProperties": false
+      },
       "MembersBooksBody": {
         "type": "object",
         "description": "`PUT /api/config/branches/members-books` body: a branch, and whether\nthis library acquires all of its members' books.",
@@ -40175,12 +40792,6 @@
             "type": "string",
             "description": "Replacement email when present.",
             "example": "sam@example.com",
-            "nullable": true
-          },
-          "may_connect_accounts": {
-            "type": "boolean",
-            "description": "Whether the user may connect store accounts on this library, by\nhand or by bringing them from another library, when present.",
-            "example": false,
             "nullable": true
           }
         }
@@ -43568,6 +44179,24 @@
           }
         }
       },
+      "PutUserControls": {
+        "type": "object",
+        "description": "`PUT /api/users/{id}/controls` body.",
+        "required": [
+          "overrides"
+        ],
+        "properties": {
+          "overrides": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ControlOverrides"
+              }
+            ],
+            "description": "The controls set for this patron alone; an absent or `null`\ncontrol follows the library's default for a Member and is allowed\nfor an Administrator, so `{}` clears every override."
+          }
+        },
+        "additionalProperties": false
+      },
       "PutUserScope": {
         "type": "object",
         "description": "`PUT /api/users/{id}/scope` body.",
@@ -46824,6 +47453,60 @@
           }
         }
       },
+      "UserControlsJson": {
+        "type": "object",
+        "description": "A patron's member controls as the control routes report them.",
+        "required": [
+          "user_id",
+          "defaults",
+          "overrides",
+          "effective",
+          "applies",
+          "follows_default"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The user (`users.id`).",
+            "example": 7
+          },
+          "defaults": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MemberControls"
+              }
+            ],
+            "description": "The library's default, which Members follow."
+          },
+          "overrides": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ControlOverrides"
+              }
+            ],
+            "description": "The controls set for this patron alone; the others follow the\ndefault for a Member and are allowed for an Administrator."
+          },
+          "effective": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MemberControls"
+              }
+            ],
+            "description": "What applies to the user now: nothing for a disabled user,\neverything for an Owner, the overrides alone for an Administrator,\nand the default with the overrides applied for a Member."
+          },
+          "applies": {
+            "type": "boolean",
+            "description": "Whether controls can limit the user's role: false for an Owner, who\nmay always do everything.",
+            "example": true
+          },
+          "follows_default": {
+            "type": "boolean",
+            "description": "Whether the user follows the library's default: true for a Member,\nfalse for an Administrator, whom only controls set for them alone\nlimit (and only an Owner or the operator sets those).",
+            "example": true
+          }
+        }
+      },
       "UserCreatedResponse": {
         "type": "object",
         "description": "Body of `POST /api/users`: the new user and, when one was asked for,\nthe invite that lets them claim it.",
@@ -46943,7 +47626,7 @@
               "avatar_source",
               "sso_pictures",
               "integrations",
-              "may_connect_accounts",
+              "controls",
               "identities"
             ],
             "properties": {
@@ -47022,10 +47705,13 @@
                 },
                 "description": "Storefront and integration accounts linked to the user."
               },
-              "may_connect_accounts": {
-                "type": "boolean",
-                "description": "Whether the operator lets the user connect store accounts here, by\nhand or by bringing them from another library. True unless an\nadministrator turned it off for this user.",
-                "example": true
+              "controls": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/MemberControls"
+                  }
+                ],
+                "description": "What the user may do here (the member controls that apply to them;\nsee `GET /api/users/{id}/controls` for the default and overrides)."
               },
               "identities": {
                 "type": "array",

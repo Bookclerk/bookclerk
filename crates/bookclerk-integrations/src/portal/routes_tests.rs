@@ -103,11 +103,7 @@ impl ContentSource for StubSource {
                     .await
                     .unwrap();
             }
-            bookclerk_library::control_plane::set_member_may_connect_accounts(
-                library, *user_id, false,
-            )
-            .await
-            .unwrap();
+            allow_linking(library, *user_id, false).await;
         }
         Ok(SourceAccount {
             account_id,
@@ -536,9 +532,7 @@ async fn oauth_start_returns_the_login_url() {
 async fn a_member_the_operator_stopped_cannot_connect() {
     let (app, library, cookie) = harness(stores()).await;
     let member = library.list_users().await.unwrap()[0].id;
-    bookclerk_library::control_plane::set_member_may_connect_accounts(&library, member, false)
-        .await
-        .unwrap();
+    allow_linking(&library, member, false).await;
     let refused = json!({"error": "this library's administrator hasn't allowed you to connect store accounts here"});
     for (path, body) in [
         ("/sources/libro/login", Some(credentials())),
@@ -551,9 +545,7 @@ async fn a_member_the_operator_stopped_cannot_connect() {
     }
     assert!(library.list_accounts().await.unwrap().is_empty());
 
-    bookclerk_library::control_plane::set_member_may_connect_accounts(&library, member, true)
-        .await
-        .unwrap();
+    allow_linking(&library, member, true).await;
     let (status, _, answer) = call(
         &app,
         "POST",
@@ -617,9 +609,7 @@ async fn a_login_the_operator_stopped_midway_is_taken_back() {
     // The revoked row stays behind. A later login the operator stops the
     // same way finds it there, but the row was not in use, so the new
     // credential is taken back too.
-    bookclerk_library::control_plane::set_member_may_connect_accounts(&library, member, true)
-        .await
-        .unwrap();
+    allow_linking(&library, member, true).await;
     let (status, _, answer) = call(
         &app,
         "POST",
@@ -679,4 +669,18 @@ async fn a_refused_login_keeps_an_account_another_login_connected() {
         .await
         .unwrap()
         .is_some());
+}
+
+/// Overrides the "Link store accounts" member control of `user_id`.
+async fn allow_linking(library: &bookclerk_library::LibraryStore, user_id: i64, allowed: bool) {
+    bookclerk_library::control_plane::set_member_control_overrides(
+        library,
+        user_id,
+        bookclerk_library::control_plane::ControlOverrides {
+            link_accounts: Some(allowed),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
 }
