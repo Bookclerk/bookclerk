@@ -26,6 +26,7 @@ mod diagnostics;
 mod error;
 mod events;
 mod extras;
+mod install_id;
 mod isolation;
 mod jobs;
 mod journal;
@@ -40,6 +41,7 @@ mod overrides;
 mod path_limits;
 mod paths;
 mod pipeline_opts;
+mod placement;
 mod platform;
 mod plugins;
 mod redact;
@@ -58,7 +60,8 @@ pub use database::{
 };
 pub use desktop::graphical_session_available;
 pub use diagnostics::{
-    global as diagnostics_global, BufferedEvent, DiagnosticsHandle, UploadPayload,
+    global as diagnostics_global, BufferedEvent, DiagnosticsHandle, ProcessRole, UploadPayload,
+    SLOW_TARGET,
 };
 pub use error::{ConfigError, Result};
 pub use events::EventsConfig;
@@ -69,12 +72,16 @@ pub use extras::{
     windows_replacement_characters, FileTimestampMode, LameConfig, PathSanitizationMode,
     ReplacementRule, RECONCILE_WILDCARD,
 };
+pub use install_id::{
+    checkin_due, record_checkin, send_checkin, CheckIn, InstallId, CHECKIN_INTERVAL_MS,
+};
 pub use isolation::Isolation;
 pub use jobs::{JobsConcurrencyConfig, JobsConfig};
 pub use journal::{journald_available, os_log_available, OsLogFacility, OsLogLayer};
 pub use listen::ListenAddrs;
 pub use logging::{
-    init_tracing, init_tracing_with, strip_ansi_escapes, LogFormat, LoggingHandle, TracingOptions,
+    init_tracing, init_tracing_with, ring_filter, strip_ansi_escapes, LogFormat, LoggingHandle,
+    TracingOptions, RING_DEPENDENCY_LEVEL, RING_TRACE_TARGETS,
 };
 pub use media::MediaConfig;
 pub use naming_profile::{NamingProfile, NamingProfileTemplates, ResolvedNamingTemplates};
@@ -102,6 +109,10 @@ pub use paths::{
     resolve_config_path, resolve_files_dir, Paths, BOOKCLERK_CONFIG_ENV, BOOKCLERK_FILES_DIR_ENV,
 };
 pub use pipeline_opts::{ChapterJsonMode, OutputFormat};
+pub use placement::{
+    parse_destination_filter, DestinationFilter, FilterEffect, FilterError, FilterField,
+    FilterRule, PlacementFacts, PlacementMediaKind, MAX_FILTER_RULES, MAX_FILTER_VALUE_BYTES,
+};
 pub use platform::detect_distro;
 pub use plugins::{
     host_cpu_rate_max, node_logical_cpus, IntegrationsConfig, PluginRegistryEntry, PluginsConfig,

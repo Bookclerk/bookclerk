@@ -1,6 +1,6 @@
 # ADR: Logging and tracing
 
-- **Status:** Accepted; partly implemented (see [Status of the work](#status-of-the-work))
+- **Status:** Accepted; partly implemented (see [Status of the work](#status-of-the-work)); decision 2 amended 2026-11-19 (see [Amendment: what the ring keeps](#amendment-what-the-ring-keeps))
 - **Date:** 2026-10-24
 - **Related:** [Diagnostics](../server/diagnostics.md),
   [Operations](../server/operations.md)
@@ -41,12 +41,35 @@ These two audiences pull in opposite directions on how much to record.
    stderr and the OS facility covers the ring and uploads (see
    [Diagnostics → Redaction](../server/diagnostics.md#redaction--privacy)).
 
+## Amendment: what the ring keeps
+
+Reports from the hosted demo showed decision 2 failing in practice. The
+in-process HTTP/2 client traced every frame, so 186 of a report's 200
+events were protocol frames covering about 100 ms, and 18 of the 20
+warnings that triggered the report had been pushed out before it was sent.
+The ring now keeps:
+
+- Bookclerk's own targets (`bookclerk*`) at TRACE and above, as before;
+- every other target (dependencies) at INFO and above;
+- the last 64 warnings and errors in a ring of their own, merged into a
+  report's events in time order, so the events that triggered a report
+  are always in it;
+- the fields of the spans an event is inside, as `span.field`, except a
+  request's concrete path.
+
+Slow responses go to their own target (`bookclerk::slow`) and trigger, so
+a starved machine is not reported as a fault.
+
 ## Status of the work
 
 In place:
 
-- The ring buffer keeps every level through TRACE, while stderr and the OS
-  facility follow `BOOKCLERK_LOG` / `RUST_LOG`.
+- The ring buffer keeps Bookclerk's own events through TRACE and
+  dependencies' through INFO, plus the recent warnings and errors (see the
+  amendment above), while stderr and the OS facility follow
+  `BOOKCLERK_LOG` / `RUST_LOG`.
+- Events carry the fields of the spans they are in. The daemon's request
+  span names the method and route template.
 - The daemon writes JSON by default. The CLI writes `tracing`'s text format
   and is silent unless asked (`-v`).
 - Redaction covers every sink, and uploads are abandoned if a registered
@@ -56,9 +79,8 @@ In place:
 
 Not yet done:
 
-- Spans and trace or span ids on log events. Today the ring records events
-  only (time, level, target, message, fields), and the code has almost no
-  spans.
+- Trace or span ids on log events, and spans beyond the daemon's request
+  span. Today the code has almost no spans.
 - Syslog-style lines and a JSON log format switch for the CLI.
 - Changing the level of a running process.
 - An OTLP exporter.

@@ -8,7 +8,8 @@ use bookclerk_plugin_source_chirp::{
     ChirpClient, ChirpSource,
 };
 use bookclerk_storefront::{
-    CatalogSearchOpts, LoginOptions, PurchaseHintOpts, SourceError, DEFAULT_CATALOG_SEARCH_LIMIT,
+    CatalogSearchOpts, LoginOptions, PriceLookup, PurchaseHintOpts, SourceError,
+    DEFAULT_CATALOG_SEARCH_LIMIT,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -433,4 +434,104 @@ async fn search_with_a_zero_limit_returns_the_default_page() {
         .unwrap();
     assert_eq!(hits.len(), DEFAULT_CATALOG_SEARCH_LIMIT);
     assert_eq!(hits[0].title, "Title 0");
+}
+
+/// A title lookup answers every typeahead audiobook as a record, all priced
+/// in one aliased query with the pick, so the host can keep the card's own
+/// recording; the pick is still the first title match.
+#[tokio::test]
+async fn a_title_lookup_returns_priced_records_for_every_match() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(|req: &Request| match op_name(req).as_deref() {
+            Some("BookclerkTypeahead") => graphql_response(serde_json::json!({ "data": {
+                "typeahead": {
+                    "audiobooks": [
+                        {
+                            "id": "cast",
+                            "displayTitle": "The Sunlit Man (Dramatized Adaptation)",
+                            "displayAuthors": "Brandon Sanderson",
+                            "displayNarrators": "a full cast",
+                            "publisher": "GraphicAudio"
+                        },
+                        {
+                            "id": "narrated",
+                            "displayTitle": "The Sunlit Man",
+                            "displayAuthors": "Brandon Sanderson",
+                            "displayNarrators": "Joe Jameson",
+                            "url": "/audiobooks/narrated"
+                        },
+                        { "id": "narrated", "displayTitle": "The Sunlit Man" }
+                    ],
+                    "authors": []
+                }
+            }})),
+            Some("BookclerkAudiobookPricings") => {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let ids: Vec<&str> = ["/variables/id0", "/variables/id1", "/variables/id2"]
+                    .into_iter()
+                    .filter_map(|p| body.pointer(p).and_then(|v| v.as_str()))
+                    .collect();
+                assert_eq!(ids, ["narrated", "cast"], "each product priced once");
+                graphql_response(serde_json::json!({ "data": {
+                    "a0": { "id": "narrated", "currentProduct": {
+                        "id": "p1", "discountPrice": "$9.99", "discountedPriceCents": 999,
+                        "listingPrice": "$24.99", "isFreeListing": false
+                    }},
+                    "a1": { "id": "cast", "currentProduct": {
+                        "id": "p2", "discountPrice": "$14.99", "discountedPriceCents": 1499,
+                        "listingPrice": "$29.99", "isFreeListing": false
+                    }}
+                }}))
+            }
+            other => panic!("unexpected operation {other:?}"),
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    let answer = ChirpSource::with_graphql_url(server.uri())
+        .purchase_answer(&PurchaseHintOpts {
+            title: Some("The Sunlit Man".into()),
+            authors: Some("Brandon Sanderson".into()),
+            region: "us".into(),
+            with_price: true,
+            lookup: PriceLookup::Title,
+            ..PurchaseHintOpts::default()
+        })
+        .await
+        .unwrap();
+    let records: Vec<(String, Option<String>, Option<i64>)> = answer
+        .records
+        .iter()
+        .map(|p| {
+            (
+                p.record.product_id.clone(),
+                p.record.narrators(),
+                p.hint.price_cents,
+            )
+        })
+        .collect();
+    assert_eq!(
+        records,
+        vec![
+            (
+                "cast".to_string(),
+                Some("a full cast".to_string()),
+                Some(1499)
+            ),
+            (
+                "narrated".to_string(),
+                Some("Joe Jameson".to_string()),
+                Some(999)
+            ),
+        ]
+    );
+    let pick = answer.hint.unwrap();
+    assert_eq!(pick.product_id, "narrated");
+    assert_eq!(pick.price_cents, Some(999));
+    assert_eq!(
+        pick.url.as_deref(),
+        Some("https://www.chirpbooks.com/audiobooks/narrated")
+    );
 }

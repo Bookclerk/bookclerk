@@ -252,6 +252,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.destination_filter]
+crate = "bookclerk-config"
+boundary = "A storage destination's filter as an operator sends it: the body of PUT /api/config/plugin-instances/{id}/filter and the stored core.destination document"
+input_from = "operator"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.destination_id]
 crate = "bookclerk-config"
 boundary = "A destination id another node sends: an acquire plan's PlanDestination.id and upload records naming the owner's storage plugin instances"
@@ -347,6 +354,13 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-library"
 boundary = "A library operator's \"Acquire all of this branch's members' books\" choice, from PUT /api/config/branches/members-books"
 input_from = "Owner or operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.patron_scope_request]
+crate = "bookclerk-library"
+boundary = "A patron scope an Owner or Administrator sets, from PUT /api/users/default-scope and PUT /api/users/{id}/scope"
+input_from = "Owner, Administrator or operator"
 side = "host"
 artifacts = ["bookclerk"]
 

@@ -34,6 +34,7 @@ import {
 } from "./github.ts";
 import { parseIssueReportIds, reportIdOf } from "./report-ids.ts";
 import { summarizeReport } from "./signature.ts";
+import { endMuteReachedBy, endMutesReachedBy } from "./triage-state.ts";
 import { listPage, MAX_STORED_REPORT_CHARS, type B2Access } from "./storage.ts";
 import { normalizeVersion, parseSemver } from "../version-filter.ts";
 import type { DashboardEnv } from "../env.ts";
@@ -120,8 +121,11 @@ const REINDEX_FETCHES = 45;
 /** Names looked up per "already indexed?" query. */
 const LOOKUP_CHUNK = 90;
 
-/** D1 calls one listing page costs: two lookups and one write batch. */
-const REINDEX_PAGE_CALLS = Math.ceil(100 / LOOKUP_CHUNK) + 1;
+/**
+ * D1 calls one listing page costs: the lookups, one write batch, and the
+ * mute read and delete batch.
+ */
+const REINDEX_PAGE_CALLS = Math.ceil(100 / LOOKUP_CHUNK) + 3;
 
 /**
  * D1 calls a reindex request keeps for the route's writes afterwards (the
@@ -624,8 +628,10 @@ export async function syncIssueNow(
 }
 
 /**
- * Indexes a report `/submit` just stored. Failures are swallowed by the
- * caller: the upload already succeeded and the reindex can pick it up.
+ * Indexes a report `/submit` just stored, and ends a mute on its signature
+ * that lasted until its version (`endMuteReachedBy`). Failures are
+ * swallowed by the caller: the upload already succeeded and the reindex can
+ * pick it up.
  *
  * @param db - Database.
  * @param enriched - The object written to B2.
@@ -639,16 +645,19 @@ export async function indexSubmitted(
   objectKey: string,
   cap: number,
 ): Promise<"indexed" | "capped"> {
-  return indexReport(
+  const summary = await summarizeReport(enriched);
+  const outcome = await indexReport(
     db,
     {
       reportId: enriched.report_id,
       objectKey,
       receivedAt: enriched.received_at_unix_ms,
-      summary: await summarizeReport(enriched),
+      summary,
     },
     cap,
   );
+  if (outcome === "indexed") await endMuteReachedBy(db, summary.signature, summary.version);
+  return outcome;
 }
 
 /**
@@ -751,6 +760,11 @@ export async function reindexSlice(
       ),
       stateStatement(db, "reindex_cursor", start),
     ]);
+    // Recovered reports end version-bound mutes as /submit's do.
+    await endMutesReachedBy(
+      db,
+      rows.map((row) => ({ signature: row.summary.signature, version: row.summary.version })),
+    );
     indexed += rows.length;
     if (stoppedAt || done) break;
   }

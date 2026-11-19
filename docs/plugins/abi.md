@@ -1029,6 +1029,12 @@ and keeps only the recording the card is about, so a store never has to
 tell a narration from a dramatisation of the same title. A bare hint is
 still accepted and carries no records.
 
+In Rust, a storefront returns records by overriding `purchase_hint_result`
+and `purchase_hints_results`. A store without a bulk price endpoint calls
+`purchase_hint_results_one_by_one` from `purchase_hints_results` to get the
+same four-at-a-time, 4 s default as `purchaseHints`. The default
+`purchase_hint_result` wraps `purchase_hint` and returns no records.
+
 The host asks each store the strongest way it declared: by the store's
 own product when the card names one, then by exact ISBN, then by exact
 ASIN, then by title (see
@@ -1209,8 +1215,9 @@ and enrichment by declaring it:
   an identifier lookup a store has not declared.
 
 All default to off. The first-party storefronts declare them as follows:
-Audible ranks its hits, Libro.fm answers ISBN lookups, and Chirp and
-GraphicAudio declare neither. None declares price lookup by identifier yet.
+Audible ranks its hits and prices exact ASINs, Libro.fm answers ISBN detail
+lookups and prices exact ISBNs, and Chirp and GraphicAudio declare neither.
+All four answer title searches with records.
 
 #### Declaring media
 

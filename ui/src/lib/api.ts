@@ -1374,6 +1374,40 @@ export interface ListedUser {
   }[];
 }
 
+/** The book field a patron scope rule matches one value of. */
+export type ScopeField = "genre" | "series" | "author" | "narrator";
+
+/** Whether a patron scope rule lets matching books in or keeps them out. */
+export type RuleEffect = "include" | "exclude";
+
+/** One rule of a patron scope. */
+export interface ScopeRule {
+  /** The field the rule matches. */
+  field: ScopeField;
+  /** One value of the field, compared without case. */
+  value: string;
+  /** Include or exclude. */
+  effect: RuleEffect;
+}
+
+/** Which part of the library a patron sees. */
+export interface PatronScope {
+  /** Visibility rules; empty means every book is visible. */
+  rules: ScopeRule[];
+}
+
+/** A patron's scope as `GET`/`PUT /api/users/{id}/scope` report it. */
+export interface UserScope {
+  /** The user. */
+  user_id: number;
+  /** The scope that applies: their own, or the library default. */
+  scope: PatronScope;
+  /** True when the user has their own scope. */
+  own: boolean;
+  /** False for an Owner or Administrator, who always see everything. */
+  applies: boolean;
+}
+
 /**
  * Created / patched user response from RBAC provisioning APIs.
  */
@@ -1467,6 +1501,63 @@ export async function createUser(body: {
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Reads which part of the library a patron sees.
+ *
+ * @param id - The user.
+ * @returns The scope that applies and where it comes from.
+ */
+export async function getUserScope(id: number): Promise<UserScope> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/scope`, {
+    credentials: "include",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Gives a patron their own scope, or with `null` returns them to the
+ * library's default.
+ *
+ * @param id - The user.
+ * @param scope - Their own scope, or `null`.
+ * @returns The scope after the change.
+ */
+export async function putUserScope(id: number, scope: PatronScope | null): Promise<UserScope> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/scope`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scope }),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Reads the library's default patron scope.
+ *
+ * @returns The default.
+ */
+export async function getDefaultScope(): Promise<{ scope: PatronScope }> {
+  const res = await fetch("/api/users/default-scope", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Replaces the library's default patron scope.
+ *
+ * @param scope - The new default.
+ * @returns The default after the change.
+ */
+export async function putDefaultScope(scope: PatronScope): Promise<{ scope: PatronScope }> {
+  const res = await fetch("/api/users/default-scope", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(scope),
   });
   return parseJson(res);
 }

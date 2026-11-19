@@ -40,9 +40,10 @@ use super::write_batches::{CountedBatches, WriteBatches};
 use super::LibraryStore;
 use crate::control_plane::batch;
 use crate::entities::{
-    contributors, credits, edition_acquisitions, editions, expressions, holdings,
-    library_index_builds, library_work_facets, library_work_rows, series, series_entries,
-    store_listings, user_title_state, user_work_tags, works,
+    account_links, contributors, credits, edition_acquisitions, editions, expressions, holdings,
+    library_index_builds, library_work_facets, library_work_rows, patron_scope_keys,
+    portal_identities, series, series_entries, store_listings, user_title_state, user_work_tags,
+    works,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::AcquireStatus;
@@ -249,11 +250,78 @@ pub struct WorkPageQuery {
     pub account: Option<String>,
     /// Only works that pass this filter.
     pub filter: Option<WorkFilter>,
+    /// Only works inside this patron scope; `None` for a caller who sees
+    /// the whole library.
+    pub scope: Option<WorkScope>,
     /// Continue after this cursor.
     pub after: Option<WorkCursor>,
     /// Most rows to return; at least 1.
     pub limit: u64,
 }
+
+/// The part of the library a patron may see, as the page index applies it.
+///
+/// A work passes when one of the patron's own store accounts holds it, or
+/// when it matches no exclude value and, if there are include values,
+/// matches at least one of them. Values are [`facet_key`]s of the page
+/// index's facets.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkScope {
+    /// `(facet, key)` pairs a work must match one of; empty lets every
+    /// work through.
+    pub include: Vec<(WorkFacet, String)>,
+    /// `(facet, key)` pairs that hide a work, whatever `include` says.
+    pub exclude: Vec<(WorkFacet, String)>,
+    /// The patron (`users.id`) whose linked store accounts' books always
+    /// pass; `None` for a caller with no accounts of their own.
+    pub owner: Option<i64>,
+}
+
+impl WorkScope {
+    /// True when the scope hides nothing.
+    #[must_use]
+    pub fn sees_everything(&self) -> bool {
+        self.include.is_empty() && self.exclude.is_empty()
+    }
+
+    /// The scope's values as `(effect, facet, key)` rows, sorted and
+    /// without duplicates, as `patron_scope_keys` stores them.
+    fn key_rows(&self) -> BTreeSet<(&'static str, &'static str, &str)> {
+        let include = self
+            .include
+            .iter()
+            .map(|(facet, key)| (SCOPE_INCLUDE, facet.as_str(), key.as_str()));
+        let exclude = self
+            .exclude
+            .iter()
+            .map(|(facet, key)| (SCOPE_EXCLUDE, facet.as_str(), key.as_str()));
+        include.chain(exclude).collect()
+    }
+
+    /// Content id of the scope's include and exclude values: lowercase hex
+    /// SHA-256 over its `(effect, facet, key)` rows, sorted and without
+    /// duplicates, each field length-prefixed, so two
+    /// scopes share an id exactly when they hold the same values.
+    #[must_use]
+    pub fn key_set_id(&self) -> String {
+        use sha2::{Digest as _, Sha256};
+        let mut hash = Sha256::new();
+        for (effect, facet, key) in self.key_rows() {
+            for field in [effect, facet, key] {
+                let len = u64::try_from(field.len()).unwrap_or(u64::MAX);
+                hash.update(len.to_be_bytes());
+                hash.update(field.as_bytes());
+            }
+        }
+        hex::encode(hash.finalize())
+    }
+}
+
+/// `patron_scope_keys.effect` of an include value.
+const SCOPE_INCLUDE: &str = "include";
+
+/// `patron_scope_keys.effect` of an exclude value.
+const SCOPE_EXCLUDE: &str = "exclude";
 
 /// One row of the page index, as list views show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -533,6 +601,7 @@ pub(crate) fn build_work_row(
         length_minutes,
         purchased_at: purchased_at.to_string(),
         refreshed_at: refreshed_at.to_string(),
+        facets_ready: 0,
     })
 }
 
@@ -925,8 +994,8 @@ impl LibraryStore {
                             work_id, kind, title, sort_title, authors, sort_author, series, \
                             series_position, cover_edition_id, media_kinds, acquire_status, \
                             edition_count, holding_count, added_at, sort_series, length_minutes, \
-                            purchased_at, refreshed_at\
-                         ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? \
+                            purchased_at, refreshed_at, facets_ready\
+                         ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 \
                          WHERE EXISTS (SELECT 1 FROM works WHERE id = ?)",
                         insert,
                     ),
@@ -935,7 +1004,8 @@ impl LibraryStore {
                             authors = ?, sort_author = ?, series = ?, series_position = ?, \
                             cover_edition_id = ?, media_kinds = ?, acquire_status = ?, \
                             edition_count = ?, holding_count = ?, added_at = ?, sort_series = ?, \
-                            length_minutes = ?, purchased_at = ?, refreshed_at = ? \
+                            length_minutes = ?, purchased_at = ?, refreshed_at = ?, \
+                            facets_ready = 0 \
                          WHERE work_id = ? AND refreshed_at <= ?",
                         update,
                     ),
@@ -966,6 +1036,13 @@ impl LibraryStore {
                     ],
                 ))?;
             }
+            // Batches run in order, so this lands after every facet above;
+            // until it does, scoped patrons don't see the work.
+            plan.push(batch::exec(
+                "UPDATE library_work_rows SET facets_ready = 1 \
+                 WHERE work_id = ? AND refreshed_at = ?",
+                vec![batch::text(work_id), batch::text(refreshed_at)],
+            ))?;
         }
         let mut changed = 0;
         for (statements, counted) in plan.finish() {
@@ -1113,6 +1190,59 @@ impl LibraryStore {
         self.work_of_edition(&listing.edition_id).await
     }
 
+    /// Writes the `patron_scope_keys` rows of `scope`'s value set when they
+    /// are not all there yet, so the Library filter can join them.
+    ///
+    /// Rows are keyed by the set's content id and never change, so the
+    /// write is idempotent: one `INSERT OR IGNORE` per value, grouped into
+    /// as few batches as the database plugin's limits allow. A read finds
+    /// the rows already there after the first use of a scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the count fails, or the write
+    /// error.
+    pub(crate) async fn ensure_scope_keys(&self, scope: Option<&WorkScope>) -> Result<()> {
+        use sea_orm::PaginatorTrait as _;
+        let Some(scope) = scope.filter(|scope| !scope.sees_everything()) else {
+            return Ok(());
+        };
+        let key_set = scope.key_set_id();
+        let rows = scope.key_rows();
+        let stored = patron_scope_keys::Entity::find()
+            .filter(patron_scope_keys::Column::ScopeHash.eq(key_set.as_str()))
+            .count(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        if usize::try_from(stored).is_ok_and(|stored| stored >= rows.len()) {
+            return Ok(());
+        }
+        let mut batches = WriteBatches::new(self.db_capabilities(), "patron scope key");
+        let mut full = Vec::new();
+        for (effect, facet, key) in rows {
+            let statement = batch::exec(
+                "INSERT OR IGNORE INTO patron_scope_keys (scope_hash, effect, facet, key) \
+                 VALUES (?, ?, ?, ?)",
+                vec![
+                    batch::text(&key_set),
+                    batch::text(effect),
+                    batch::text(facet),
+                    batch::text(key),
+                ],
+            );
+            if let Some(done) = batches.push(statement)? {
+                full.push(done);
+            }
+        }
+        full.extend(batches.finish());
+        for statements in full {
+            let operation_id = format!("patron-scope-keys-{}", Uuid::new_v4().simple());
+            self.execute_host_batch(batch::request(&operation_id, statements))
+                .await?;
+        }
+        Ok(())
+    }
+
     /// The rows of `ids` that pass `query`'s filters, in the order of
     /// `ids` (a search's relevance order); `query`'s order, cursor and
     /// limit are not used. Unheld works and ids with no row are left out.
@@ -1131,6 +1261,7 @@ impl LibraryStore {
         query: &WorkPageQuery,
     ) -> Result<Vec<LibraryWorkRow>> {
         use library_work_rows::Column as C;
+        self.ensure_scope_keys(query.scope.as_ref()).await?;
         let mut found: HashMap<String, LibraryWorkRow> =
             find_chunked_paged::<library_work_rows::Entity, _>(self, ids, |part| {
                 filtered_rows(query)
@@ -1145,6 +1276,36 @@ impl LibraryStore {
         Ok(ids.iter().filter_map(|id| found.remove(id)).collect())
     }
 
+    /// Whether a work is inside a patron scope: its top-level work (the
+    /// show, for an episode) is a held work of the page index that passes
+    /// `scope`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn work_in_scope(&self, work_id: &str, scope: &WorkScope) -> Result<bool> {
+        use library_work_rows::Column as C;
+        self.ensure_scope_keys(Some(scope)).await?;
+        let top = works::Entity::find_by_id(work_id.to_string())
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .map_or_else(
+                || work_id.to_string(),
+                |work| work.parent_work_id.unwrap_or(work.id),
+            );
+        let query = WorkPageQuery {
+            scope: Some(scope.clone()),
+            ..WorkPageQuery::default()
+        };
+        Ok(filtered_rows(&query)
+            .filter(C::WorkId.eq(top))
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .is_some())
+    }
+
     /// One page of the values a facet has across the held works, by key.
     ///
     /// # Arguments
@@ -1153,6 +1314,8 @@ impl LibraryStore {
     /// * `after` - The `next` key of the previous page; `None` to start.
     /// * `limit` - Most values to return; at least 1, further capped at the
     ///   database's result-row limit.
+    /// * `scope` - Count only the works inside this patron scope; `None`
+    ///   for a caller who sees the whole library.
     ///
     /// # Errors
     ///
@@ -1162,6 +1325,7 @@ impl LibraryStore {
         of: FacetValuesOf,
         after: Option<&str>,
         limit: u64,
+        scope: Option<&WorkScope>,
     ) -> Result<FacetValuesPage> {
         /// One group of the read, decoded by column name.
         #[derive(Debug, sea_orm::FromQueryResult)]
@@ -1173,14 +1337,19 @@ impl LibraryStore {
             /// Works in the group.
             works: i64,
         }
+        self.ensure_scope_keys(scope).await?;
         let cap = self.result_row_cap();
         let limit = limit.max(1).min(cap);
         let probe = limit.saturating_add(1).min(cap);
         let held = || {
+            let mut held = Condition::all().add(library_work_rows::Column::HoldingCount.gt(0));
+            if let Some(scope) = scope {
+                held = held.add(scope_condition(scope));
+            }
             Query::select()
                 .column(library_work_rows::Column::WorkId)
                 .from(library_work_rows::Entity)
-                .and_where(library_work_rows::Column::HoldingCount.gt(0))
+                .cond_where(held)
                 .to_owned()
         };
         let mut groups = match of {
@@ -1192,6 +1361,9 @@ impl LibraryStore {
                     .column_as(F::Value.min(), "value")
                     .column_as(F::WorkId.count(), "works")
                     .filter(F::Facet.eq(facet.as_str()));
+                if scope.is_some_and(|scope| !scope.sees_everything()) {
+                    select = select.filter(F::WorkId.in_subquery(held()));
+                }
                 if let Some(after) = after {
                     select = select.filter(F::Key.gt(after));
                 }
@@ -1258,6 +1430,7 @@ impl LibraryStore {
     /// order, or [`LibraryError::Orm`] when the read fails.
     pub async fn library_works_page(&self, query: &WorkPageQuery) -> Result<WorkPage> {
         use library_work_rows::Column as C;
+        self.ensure_scope_keys(query.scope.as_ref()).await?;
         let cap = self.result_row_cap();
         let limit = query.limit.max(1).min(cap);
         // One row past the page tells whether another follows; an adapter
@@ -1413,7 +1586,69 @@ fn filtered_rows(query: &WorkPageQuery) -> sea_orm::Select<library_work_rows::En
     if let Some(filter) = &query.filter {
         select = select.filter(filter_condition(filter));
     }
+    if let Some(scope) = &query.scope {
+        select = select.filter(scope_condition(scope));
+    }
     select
+}
+
+/// The condition a [`WorkScope`] puts on `library_work_rows`; empty (no
+/// restriction) when the scope hides nothing.
+fn scope_condition(scope: &WorkScope) -> Condition {
+    use library_work_rows::Column as C;
+    if scope.sees_everything() {
+        return Condition::all();
+    }
+    let key_set = scope.key_set_id();
+    // A row whose facets are still being replaced could slip past an
+    // exclude rule, so a scope admits only rows with all their facets.
+    let mut permitted = Condition::all().add(C::FacetsReady.eq(1));
+    if !scope.include.is_empty() {
+        permitted =
+            permitted.add(C::WorkId.in_subquery(scope_works_subquery(&key_set, SCOPE_INCLUDE)));
+    }
+    if !scope.exclude.is_empty() {
+        permitted =
+            permitted.add(C::WorkId.not_in_subquery(scope_works_subquery(&key_set, SCOPE_EXCLUDE)));
+    }
+    match scope.owner {
+        None => permitted,
+        Some(user_id) => Condition::any()
+            .add(permitted)
+            .add(C::WorkId.in_subquery(owner_works_subquery(user_id))),
+    }
+}
+
+/// The works with any of a stored scope's values of one effect: the facet
+/// rows joined to `patron_scope_keys`, two binds whatever the rule count.
+///
+/// # Arguments
+///
+/// * `key_set` - [`WorkScope::key_set_id`] of a scope whose rows
+///   [`LibraryStore::ensure_scope_keys`] wrote.
+/// * `effect` - [`SCOPE_INCLUDE`] or [`SCOPE_EXCLUDE`].
+fn scope_works_subquery(key_set: &str, effect: &str) -> sea_orm::sea_query::SelectStatement {
+    use library_work_facets::Column as F;
+    use patron_scope_keys::Column as K;
+    use sea_orm::sea_query::ExprTrait as _;
+    Query::select()
+        .column((library_work_facets::Entity, F::WorkId))
+        .from(library_work_facets::Entity)
+        .inner_join(
+            patron_scope_keys::Entity,
+            Condition::all()
+                .add(
+                    Expr::col((patron_scope_keys::Entity, K::Facet))
+                        .equals((library_work_facets::Entity, F::Facet)),
+                )
+                .add(
+                    Expr::col((patron_scope_keys::Entity, K::Key))
+                        .equals((library_work_facets::Entity, F::Key)),
+                ),
+        )
+        .and_where(Expr::col((patron_scope_keys::Entity, K::ScopeHash)).eq(Expr::val(key_set)))
+        .and_where(Expr::col((patron_scope_keys::Entity, K::Effect)).eq(Expr::val(effect)))
+        .to_owned()
 }
 
 /// The condition a [`WorkFilter`] puts on `library_work_rows`.
@@ -1476,6 +1711,48 @@ fn filter_condition(filter: &WorkFilter) -> Condition {
 /// held editions, and the shows of held episodes.
 fn account_works_subquery(account: &str) -> sea_orm::sea_query::SelectStatement {
     use sea_orm::sea_query::ExprTrait as _;
+    held_works_subquery(
+        Condition::all()
+            .add(Expr::col((holdings::Entity, holdings::Column::AccountId)).eq(Expr::val(account))),
+    )
+}
+
+/// The top-level works a store account linked to `user_id` holds a
+/// listing of, through any of the user's portal identities: one bind
+/// whatever the number of accounts.
+fn owner_works_subquery(user_id: i64) -> sea_orm::sea_query::SelectStatement {
+    use sea_orm::sea_query::ExprTrait as _;
+    let mut select = held_works_subquery(
+        Condition::all().add(
+            Expr::col((portal_identities::Entity, portal_identities::Column::UserId))
+                .eq(Expr::val(user_id)),
+        ),
+    );
+    select
+        .inner_join(
+            account_links::Entity,
+            Condition::all()
+                .add(
+                    Expr::col((account_links::Entity, account_links::Column::PluginKey))
+                        .equals((holdings::Entity, holdings::Column::PluginKey)),
+                )
+                .add(
+                    Expr::col((account_links::Entity, account_links::Column::AccountId))
+                        .equals((holdings::Entity, holdings::Column::AccountId)),
+                ),
+        )
+        .inner_join(
+            portal_identities::Entity,
+            Expr::col((portal_identities::Entity, portal_identities::Column::Id))
+                .equals((account_links::Entity, account_links::Column::IdentityId)),
+        );
+    select
+}
+
+/// The top-level works of the holdings that pass `holding`: the works of
+/// the held editions, and the shows of held episodes.
+fn held_works_subquery(holding: Condition) -> sea_orm::sea_query::SelectStatement {
+    use sea_orm::sea_query::ExprTrait as _;
     Query::select()
         .expr(Expr::cust(
             "CASE WHEN works.parent_work_id IS NULL THEN works.id ELSE works.parent_work_id END",
@@ -1501,9 +1778,7 @@ fn account_works_subquery(account: &str) -> sea_orm::sea_query::SelectStatement 
             Expr::col((works::Entity, works::Column::Id))
                 .equals((expressions::Entity, expressions::Column::WorkId)),
         )
-        .and_where(
-            Expr::col((holdings::Entity, holdings::Column::AccountId)).eq(Expr::val(account)),
-        )
+        .cond_where(holding)
         .to_owned()
 }
 
@@ -1809,6 +2084,7 @@ mod tests {
             length_minutes: 0,
             purchased_at: String::new(),
             refreshed_at: "r".into(),
+            facets_ready: 1,
         };
         let row = LibraryWorkRow::from_model(model.clone()).unwrap();
         assert_eq!(row.kind, WorkKind::Podcast);

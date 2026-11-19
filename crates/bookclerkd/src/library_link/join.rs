@@ -1358,6 +1358,7 @@ fn branch_actor(actor: &bookclerk_library::control_plane::ConfigActor) -> String
     match actor {
         ConfigActor::LibraryOwner(owner) => format!("user:{}", owner.user_id()),
         ConfigActor::NodeOwner(owner) => format!("user:{}", owner.user_id()),
+        ConfigActor::PatronAdministrator(admin) => format!("user:{}", admin.user_id()),
         ConfigActor::Administrator { id } | ConfigActor::Member { id } => format!("user:{id}"),
         ConfigActor::Operator { .. } => "operator".to_string(),
         ConfigActor::Bootstrap => "bootstrap".to_string(),

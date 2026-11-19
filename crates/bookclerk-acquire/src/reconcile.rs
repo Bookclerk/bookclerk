@@ -774,6 +774,7 @@ pub(crate) fn request_from_title(
         cache_dir: PathBuf::new(),
         force: false,
         write_destinations: None,
+        placement: None,
         job_id: None,
         temp_quota_bytes: None,
         call_number: None,

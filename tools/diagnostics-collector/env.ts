@@ -38,6 +38,8 @@ export interface Env {
   TRIAGE_DAILY_NEURONS?: string;
   /** Reports the dashboard indexes per UTC day, as decimal text. */
   DASHBOARD_INDEX_DAILY_ROWS?: string;
+  /** Usage check-ins stored per UTC day, as decimal text (checkin.ts). */
+  CHECKIN_DAILY_ROWS?: string;
   /** Workers AI, as far as `/triage` uses it. */
   AI?: TextModel;
   /** KV namespace holding the daily triage neuron ledger. */

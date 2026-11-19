@@ -53,6 +53,7 @@ boundary extends it.
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the library socket | `bookclerk-node-proto::Frame` |
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
+| `destination_filter` | A storage destination's filter: the body of `PUT /api/config/plugin-instances/{id}/filter` and the stored `core.destination` document | `bookclerk-config::parse_destination_filter` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
@@ -71,6 +72,7 @@ boundary extends it.
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
 | `members_books_request` | A library operator's "Acquire all of this branch's members' books" choice, the body of `PUT /api/config/branches/members-books` | `bookclerk-library::control_plane::parse_members_books_request` |
+| `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
@@ -163,6 +165,17 @@ only that. The others check:
   byte, and that URL is the hash's picture on `www.gravatar.com` with
   nothing else in it. The shared oracle is `fuzz/oracles/cover_token.rs`,
   replayed from `bookclerk-cover`.
+- **`destination_filter`**: the input is the request body. It is accepted
+  exactly when an independent reading, built on `serde_json::Value` and a
+  separate scan for repeated keys, accepts it: an object with at most a
+  `rules` array, each rule an object of exactly `field`, `value` and
+  `effect`, no key repeated at any level, at most 64 rules, each value
+  trimmed, non-empty, at most 128 bytes and free of NUL, a `patron` value a
+  positive user id, a `media_kind` value `book` or `podcast`, and no rule
+  given twice. An accepted filter holds the oracle's rules in order,
+  survives a JSON round trip, and takes or refuses sample books exactly as
+  the oracle's reading does. The shared oracle is
+  `fuzz/oracles/destination_filter.rs`, replayed from `bookclerk-config`.
 - **`destination_id`**: the input is the id as received, read as UTF-8
   lossily. It is accepted exactly when it is 1 to 64 bytes, each a
   lowercase ASCII letter, a digit, `_` or `-`, checked byte by byte, so no
@@ -518,6 +531,19 @@ only that. The others check:
   and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/members_books_request.rs`, replayed from
   `bookclerk-library`.
+- **`patron_scope_request`**: the first byte picks the body (`d` for the
+  default scope, `u` for a user's) and the oracle reads the rest as an
+  untyped JSON value. A scope is accepted exactly when it is one object
+  with no repeated keys at any depth and at most the key `rules`, an array
+  of at most 16 rules, each exactly `field` (`genre`, `series`, `author` or
+  `narrator`), `value` (a string, 1 to 256 bytes once trimmed, no NUL) and
+  `effect` (`include` or `exclude`), with no two rules sharing field,
+  effect and lowercase trimmed value, and the trimmed rules come to at
+  most 1,024 bytes as compact JSON. A user's body is at most the key
+  `scope`, `null` or such a scope. The parser then returns the rules in
+  order with trimmed values, and otherwise refuses the body as `Invalid`.
+  The shared oracle is `fuzz/oracles/patron_scope_request.rs`, replayed
+  from `bookclerk-library`.
 - **`work_split_request`**: reads the body as an untyped JSON value. It
   is accepted exactly when it is one object with no repeated keys and
   exactly the key `expression_ids`, an array of strings each 1 to 64 bytes
@@ -947,6 +973,14 @@ The tests and corpora live in `tools/diagnostics-collector/`.
   - Test and corpus: `b2-error.fuzz.test.ts`, `corpus/b2_error/`.
   - Oracle: nothing, or exactly the body's own `code` when it is a 1–40
     character lowercase identifier.
+- **Usage check-in body** (`parseCheckin` in `checkin.ts`). It is the body
+  anyone can send to `POST /checkin`, and decides what a check-in row
+  stores and which install ID is hashed into the install key.
+  - Test and corpus: `checkin.fuzz.test.ts`, `corpus/checkin/`.
+  - Oracle: a check-in exactly when the body is at most 1,024 characters
+    of JSON naming an object with exactly the five fields, a lowercase
+    version-4 UUID checked by position, and version, platform and kind
+    tokens checked character by character.
 
 ### Member dashboard
 
@@ -964,7 +998,9 @@ In `dashboard/report-ids.ts`, `dashboard/signature.ts`,
 - **Stored-report summary** (`summarizeReport`) writes every report's index
   row. Corpus `corpus/signature/`. Oracle: level counts recounted, a
   signature exactly when an error or warning exists, bounded control-free
-  fields.
+  fields, the slowest `latency_ms` recomputed, an install key only when the
+  stored one is 64 lowercase hex characters, and a route only with a
+  signature.
 - **Event log** (`eventLog`) renders a report page's stored events. Corpus
   `corpus/signature/` (shared with the signature reader). Oracle: one row
   per event up to 500, level counts that add up to the rows, no event text
@@ -1048,6 +1084,8 @@ these oracles:
   lowercase hex oid;
 - a `fixed-in:<version>` label read only as a well-formed
   `MAJOR.MINOR.PATCH`, with optional prerelease and build;
+- label names for the close button read only from objects with a string
+  `name` of at most 100 characters;
 - releases decoded to the published non-draft entries with a plain tag
   name, oldest first;
 - a compare answer read as containing only for `identical` or `behind`,
@@ -1067,6 +1105,24 @@ In `dashboard/links.ts` and `dashboard/storage.ts`:
   viewing downloads, and where reindexing continues. Corpus
   `corpus/b2_list/`. Oracle: decoded to exactly the uploaded entries with a
   string name and id, without throwing.
+
+In `dashboard/triage-forms.ts`, tested in
+`tools/diagnostics-collector/triage-forms.fuzz.test.ts` against a form
+body split and percent-decoded by hand:
+
+- **Triage mark form** (`parseTriageMark`) decides which reports a member
+  marks seen or noise, or puts back in the queue. Corpus
+  `corpus/triage_form/`. Oracle: a known state and one to 40 distinct
+  lowercase UUIDs.
+- **Mute form** (`parseMuteAction`) decides which signature leaves the
+  triage queue and the ingest pull, why, and until when. Corpus
+  `corpus/mute_form/`. Oracle: a 16-hex signature, and for a mute a
+  trimmed, control-free reason of 1 to 200 characters and exactly one end
+  (1 to 365 days, or a release version).
+- **Owner close form** (`parseCloseAction`) decides which issue an owner
+  closes on GitHub and the fixed-in label it gets. Corpus
+  `corpus/close_form/`. Oracle: an issue number, and a release version
+  when closing as fixed.
 
 ### Website Worker
 

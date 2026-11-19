@@ -518,7 +518,8 @@ fn authorize_create(actor: &ConfigActor) -> Result<()> {
         | ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
         | ConfigActor::NodeOwner(_)
-        | ConfigActor::LibraryOwner(_) => Err(LibraryError::Forbidden(
+        | ConfigActor::LibraryOwner(_)
+        | ConfigActor::PatronAdministrator(_) => Err(LibraryError::Forbidden(
             "unauthorized configuration write: operator authority is required".into(),
         )),
     }

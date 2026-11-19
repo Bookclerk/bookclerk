@@ -347,6 +347,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "patron_scope_request"
+path = "fuzz_targets/patron_scope_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "work_split_request"
 path = "fuzz_targets/work_split_request.rs"
 test = false
@@ -370,6 +377,13 @@ bench = false
 [[bin]]
 name = "connections_request"
 path = "fuzz_targets/connections_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "destination_filter"
+path = "fuzz_targets/destination_filter.rs"
 test = false
 doc = false
 bench = false

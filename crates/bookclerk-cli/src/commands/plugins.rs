@@ -245,6 +245,43 @@ pub enum InstancesCommand {
         /// Plugin instance id.
         instance: String,
     },
+    /// Show or change which books a storage destination takes.
+    Filter {
+        #[command(subcommand)]
+        /// Nested get/set/clear action.
+        command: FilterCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+/// `plugins instances filter` subcommands.
+pub enum FilterCommand {
+    /// Show a destination's filter.
+    Get {
+        /// Plugin alias, PluginKey, or plugin instance id of the destination.
+        instance: String,
+    },
+    /// Replace a destination's filter. Each rule is `FIELD=VALUE`, where
+    /// FIELD is `patron` (a user id), `storefront` (a plugin alias such as
+    /// `audible`), `account` (a store account id) or `media_kind` (`book`
+    /// or `podcast`). With any `--include`, the destination takes only
+    /// books that match one; an `--exclude` always wins. Acquires that
+    /// start afterwards use the new filter.
+    Set {
+        /// Plugin alias, PluginKey, or plugin instance id of the destination.
+        instance: String,
+        /// Take books that match this rule (repeatable).
+        #[arg(long, value_name = "FIELD=VALUE")]
+        include: Vec<String>,
+        /// Refuse books that match this rule (repeatable).
+        #[arg(long, value_name = "FIELD=VALUE")]
+        exclude: Vec<String>,
+    },
+    /// Remove a destination's filter so it takes every book.
+    Clear {
+        /// Plugin alias, PluginKey, or plugin instance id of the destination.
+        instance: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2203,6 +2240,7 @@ async fn run_instances(
                 );
             })
         }
+        InstancesCommand::Filter { command } => run_filter(store, command, format).await,
         InstancesCommand::Delete { instance } => {
             let id = PluginInstanceId::parse(&instance)?;
             delete_plugin_instance(store, &cli_actor(), &id).await?;
@@ -2215,6 +2253,108 @@ async fn run_instances(
             )
         }
     }
+}
+
+/// Reads one `FIELD=VALUE` filter rule from the command line.
+///
+/// # Errors
+///
+/// Returns an error when the argument has no `=` or names an unknown field.
+fn filter_rule(
+    arg: &str,
+    effect: bookclerk_config::FilterEffect,
+) -> anyhow::Result<bookclerk_config::FilterRule> {
+    use bookclerk_config::FilterField;
+    let (field, value) = arg
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("a filter rule is FIELD=VALUE, not `{arg}`"))?;
+    let field = match field.trim() {
+        "patron" => FilterField::Patron,
+        "storefront" => FilterField::Storefront,
+        "account" => FilterField::Account,
+        "media_kind" => FilterField::MediaKind,
+        other => anyhow::bail!(
+            "unknown filter field `{other}`; use patron, storefront, account or media_kind"
+        ),
+    };
+    Ok(bookclerk_config::FilterRule {
+        field,
+        value: value.to_string(),
+        effect,
+    })
+}
+
+/// Prints a destination's filter, one rule per line.
+fn print_filter(instance: &PluginInstanceId, filter: &bookclerk_config::DestinationFilter) {
+    if filter.takes_everything() {
+        println!("destination {instance} takes every book");
+        return;
+    }
+    println!("destination {instance} filter:");
+    for rule in &filter.rules {
+        let effect = match rule.effect {
+            bookclerk_config::FilterEffect::Include => "include",
+            bookclerk_config::FilterEffect::Exclude => "exclude",
+        };
+        println!("  {effect} {}={}", rule.field.as_str(), rule.value);
+    }
+}
+
+/// `plugins instances filter` actions.
+async fn run_filter(
+    store: &LibraryStore,
+    command: FilterCommand,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    use bookclerk_config::{DestinationFilter, FilterEffect};
+    use bookclerk_library::control_plane::{destination_filter, set_destination_filter};
+    let (instance, filter) = match command {
+        FilterCommand::Get { instance } => {
+            let instance = resolve_instance(store, &instance).await?;
+            let filter = destination_filter(store, instance.id.as_str()).await?;
+            (instance, filter)
+        }
+        FilterCommand::Set {
+            instance,
+            include,
+            exclude,
+        } => {
+            let instance = resolve_instance(store, &instance).await?;
+            let rules = include
+                .iter()
+                .map(|arg| filter_rule(arg, FilterEffect::Include))
+                .chain(
+                    exclude
+                        .iter()
+                        .map(|arg| filter_rule(arg, FilterEffect::Exclude)),
+                )
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let stored = set_destination_filter(
+                store,
+                &cli_actor(),
+                instance.id.as_str(),
+                DestinationFilter { rules },
+            )
+            .await?;
+            (instance, stored.body.filter)
+        }
+        FilterCommand::Clear { instance } => {
+            let instance = resolve_instance(store, &instance).await?;
+            let stored = set_destination_filter(
+                store,
+                &cli_actor(),
+                instance.id.as_str(),
+                DestinationFilter::default(),
+            )
+            .await?;
+            (instance, stored.body.filter)
+        }
+    };
+    emit(
+        format,
+        &json!({ "plugin_instance_id": instance.id.to_string(), "filter": filter }),
+        || print_filter(&instance.id, &filter),
+    )
 }
 
 /// `plugins config` actions.
@@ -2548,6 +2688,111 @@ mod tests {
         assert!(err.contains("health check failed: health boom"), "{err}");
         assert!(err.contains("previous version restored"), "{err}");
         assert!(!err.contains("rollback also failed"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use bookclerk_config::{FilterEffect, FilterField};
+    use bookclerk_library::control_plane::{create_plugin_instance, destination_filter};
+    use bookclerk_library::LibraryStore;
+
+    use super::{cli_actor, filter_rule, run_filter, FilterCommand, OutputFormat};
+
+    #[test]
+    fn rules_are_read_as_field_equals_value() {
+        let rule = filter_rule("media_kind=podcast", FilterEffect::Exclude).unwrap();
+        assert_eq!(rule.field, FilterField::MediaKind);
+        assert_eq!(rule.value, "podcast");
+        assert_eq!(rule.effect, FilterEffect::Exclude);
+        for (arg, field) in [
+            ("patron=3", FilterField::Patron),
+            ("storefront=audible", FilterField::Storefront),
+            ("account=a=b", FilterField::Account),
+        ] {
+            assert_eq!(
+                filter_rule(arg, FilterEffect::Include).unwrap().field,
+                field
+            );
+        }
+        assert_eq!(
+            filter_rule("account=a=b", FilterEffect::Include)
+                .unwrap()
+                .value,
+            "a=b"
+        );
+        assert!(filter_rule("storefront", FilterEffect::Include).is_err());
+        assert!(filter_rule("genre=Kids", FilterEffect::Include).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_destination_filter_is_set_shown_and_cleared() {
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let instance = create_plugin_instance(&store, &cli_actor(), "s3", "Backup")
+            .await
+            .unwrap();
+        let id = instance.id.to_string();
+        run_filter(
+            &store,
+            FilterCommand::Set {
+                instance: id.clone(),
+                include: vec!["storefront=libro".into()],
+                exclude: vec!["media_kind=podcast".into()],
+            },
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap();
+        let stored = destination_filter(&store, &id).await.unwrap();
+        assert_eq!(stored.rules.len(), 2);
+        run_filter(
+            &store,
+            FilterCommand::Get {
+                instance: id.clone(),
+            },
+            OutputFormat::Json,
+        )
+        .await
+        .unwrap();
+        run_filter(
+            &store,
+            FilterCommand::Get {
+                instance: id.clone(),
+            },
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap();
+        // A rule the filter refuses changes nothing.
+        assert!(run_filter(
+            &store,
+            FilterCommand::Set {
+                instance: id.clone(),
+                include: vec!["patron=me".into()],
+                exclude: Vec::new(),
+            },
+            OutputFormat::Text,
+        )
+        .await
+        .is_err());
+        assert_eq!(destination_filter(&store, &id).await.unwrap(), stored);
+        run_filter(
+            &store,
+            FilterCommand::Clear {
+                instance: id.clone(),
+            },
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap();
+        assert!(destination_filter(&store, &id)
+            .await
+            .unwrap()
+            .takes_everything());
     }
 }
 

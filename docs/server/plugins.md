@@ -202,6 +202,7 @@ bookclerk plugins undeploy echo
 bookclerk plugins instances list --plugin s3
 bookclerk plugins instances create s3 --name "Backup bucket"
 bookclerk plugins instances create local --name "NAS disk" --node <node-id>   # node-local
+bookclerk plugins instances filter set <instance> --include storefront=libro   # which books a destination takes
 bookclerk plugins config get s3                         # defaults under the document
 bookclerk plugins config set s3 bucket my-audiobooks
 bookclerk plugins config set s3 secret_access_key --secret   # value read from stdin
@@ -215,6 +216,7 @@ The daemon offers the same operations to an operator session:
 | `GET` / `POST` | `/api/config/plugin-instances` (list; create `{plugin_key, display_name, node_id?}`) |
 | `DELETE` | `/api/config/plugin-instances/{id}` (no deployments left) |
 | `GET` / `PUT` | `/api/config/plugin-instances/{id}/config` (`{expected_revision, settings, secret_refs, secrets}`; `secrets` are sealed server-side) |
+| `GET` / `PUT` | `/api/config/plugin-instances/{id}/filter` (a storage destination's filter: `PUT` takes `{rules: [{field, value, effect}]}`, and both answer `{plugin_instance_id, revision, filter}` with the rules under `filter`; see [Output](output.md#choosing-which-books-a-destination-takes)) |
 | `PUT` | `/api/config/plugin-instances/{id}/deployments/{node_id}` (`{desired, expected_revision}`) |
 | `GET` | `/api/config/nodes`; `/api/config/plugins/{key}` carries the pinned schema |
 

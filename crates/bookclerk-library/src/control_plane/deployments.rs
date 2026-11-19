@@ -919,7 +919,8 @@ fn authorize_create(actor: &ConfigActor, desired: DesiredState) -> Result<()> {
         ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
         | ConfigActor::NodeOwner(_)
-        | ConfigActor::LibraryOwner(_) => false,
+        | ConfigActor::LibraryOwner(_)
+        | ConfigActor::PatronAdministrator(_) => false,
     };
     if allowed {
         Ok(())
@@ -937,7 +938,8 @@ fn authorize_replace(actor: &ConfigActor, desired: DesiredState) -> Result<()> {
         | ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
         | ConfigActor::NodeOwner(_)
-        | ConfigActor::LibraryOwner(_) => false,
+        | ConfigActor::LibraryOwner(_)
+        | ConfigActor::PatronAdministrator(_) => false,
     };
     if allowed {
         Ok(())
@@ -958,7 +960,8 @@ fn unauthorized_state(actor: &ConfigActor, desired: DesiredState) -> LibraryErro
         ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
         | ConfigActor::NodeOwner(_)
-        | ConfigActor::LibraryOwner(_) => unauthorized(),
+        | ConfigActor::LibraryOwner(_)
+        | ConfigActor::PatronAdministrator(_) => unauthorized(),
     }
 }
 

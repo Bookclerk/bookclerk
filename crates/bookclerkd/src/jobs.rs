@@ -847,8 +847,17 @@ pub async fn run_acquire(
     let paths = cfg.paths();
     paths.ensure_dirs()?;
     let library = state.library.read().await.clone();
-    let destinations =
-        bookclerk_plugin_host::build_acquire_destinations(&cfg, &*state.destinations.read().await)?;
+    // Filters are read before each title (below), not once per run.
+    let mut destinations = bookclerk_plugin_host::build_acquire_destinations(
+        &cfg,
+        &*state.destinations.read().await,
+        &std::collections::BTreeMap::new(),
+    )?;
+    let destination_ids: Vec<String> = destinations
+        .items
+        .iter()
+        .map(|dest| dest.id.as_str().to_string())
+        .collect();
     let storage = destinations.listing_backend()?;
     // The primary destination's options carry its naming overrides and
     // prefix, so match, layout, and acquire agree on keys.
@@ -940,6 +949,18 @@ pub async fn run_acquire(
         let content_source = registry
             .require_routed(&book.plugin_key, plugin_instance_id)
             .map_err(|err| anyhow::anyhow!("{err} (title {})", book.asin_or_isbn()))?;
+        // Each title is written only to the destinations whose filter takes
+        // it (`AcquireRequest::placement`). Filters are read now, so an edit
+        // made during a long run applies to the titles that start after it,
+        // and the set stays fixed through this title's retries. A stored
+        // filter that cannot be read fails the job rather than writing where
+        // it said not to.
+        let filters = bookclerk_library::control_plane::destination_filters(
+            &library,
+            destination_ids.iter().map(String::as_str),
+        )
+        .await?;
+        destinations.set_filters(&filters);
         let req = AcquireRequest {
             asin: book.product_id.clone(),
             book_uuid: book.book_uuid.clone(),
@@ -955,6 +976,16 @@ pub async fn run_acquire(
             cache_dir: cfg.download_cache_dir(),
             force: mode.force,
             write_destinations: None,
+            placement: Some(bookclerk_config::PlacementFacts {
+                patrons: library
+                    .users_linked_to_account(&book.plugin_key, &book.account_id)
+                    .await?,
+                storefront: book.source.clone(),
+                account: book.account_id.clone(),
+                media_kind: bookclerk_config::PlacementMediaKind::from_content_kind(
+                    book.content_kind,
+                ),
+            }),
             job_id: ctx.map(|c| c.fence.job_id.clone()),
             temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
             call_number: None,
@@ -1002,7 +1033,11 @@ pub async fn run_acquire(
                     break;
                 }
                 Err(err) => {
-                    if bad_book == BadBookAction::Retry && attempts < 2 {
+                    // No destination takes the book: a retry would find
+                    // the same filters.
+                    let placed =
+                        !matches!(err, bookclerk_acquire::AcquireError::NoDestinationAccepts);
+                    if placed && bad_book == BadBookAction::Retry && attempts < 2 {
                         warn!(asin = %book.asin_or_isbn(), error = %err, "acquire failed; retrying");
                         continue;
                     }

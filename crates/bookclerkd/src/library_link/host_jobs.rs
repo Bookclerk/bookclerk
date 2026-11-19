@@ -699,6 +699,7 @@ pub fn acquire_request(
         cache_dir: cfg.download_cache_dir(),
         force: false,
         write_destinations: None,
+        placement: None,
         job_id: None,
         temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
         call_number: None,
@@ -750,6 +751,8 @@ async fn acquire_into(
             id: destination.id.clone(),
             backend: Box::new(bookclerk_storage::LocalFsBackend::new(dir)?),
             options: destination.options.clone(),
+            // The owner chose these destinations for the title.
+            filter: bookclerk_config::DestinationFilter::default(),
         });
     }
     // The pipeline packages once and writes each destination under the

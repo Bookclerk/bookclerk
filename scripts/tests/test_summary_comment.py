@@ -152,13 +152,14 @@ class CorpusTests(unittest.TestCase):
         out = sc.render_summaries(load("normal.json"), DASHBOARD)
         self.assertEqual([r.issue for r in out], [412, 7])
         body = out[0].body
-        self.assertIn("**Diagnostics summary** · 3 reports from 2 installations · first seen 2026-10-11 · last seen 2026-10-14", body)
+        self.assertIn("**Diagnostics summary** · 3 reports · first seen 2026-10-11 · last seen 2026-10-14", body)
         self.assertIn("- Linked: 1 listed in this issue, 1 matched by error signature, 0 added by triage, 1 attached by members", body)
         self.assertIn("- Versions: 0.9.2 (2), 0.9.1 (1)", body)
         self.assertIn("- Platforms: linux x86_64 (2), windows x86_64 (1)", body)
         self.assertIn(f"- `{UUID_C}` · 0.9.2 · 2026-10-14 · [dashboard]({DASHBOARD}/reports/{UUID_C})", body)
         self.assertTrue(body.endswith("report contents are never posted here._\n"))
-        self.assertIn("1 report from 1 installation", out[1].body)
+        self.assertIn("**Diagnostics summary** · 1 report", out[1].body)
+        self.assertNotIn("installation", body + out[1].body, "reports carry no install identity")
         empty = sc.render_summaries(load("empty_summary.json"))[0].body
         self.assertIn("no report is linked to this issue at present", empty)
         self.assertNotIn("Linked:", empty)
@@ -180,7 +181,7 @@ class CorpusTests(unittest.TestCase):
         self.assertIn("- Platforms: unknown (1), unknown (1), linux x86_64 (1), unknown (2)", body)
         self.assertIn(f"- `{UUID_A}` · 0.9.2 · [dashboard](", body, "a bad time drops the date, not the row")
         self.assertIn(f"- `{UUID_C}` · unknown · [dashboard](", body, "a time out of range drops the date")
-        self.assertIn("3 reports from 0 installations\n", body)
+        self.assertIn("· 3 reports\n", body)
 
     def test_dashboard_origin_is_a_bare_https_origin(self) -> None:
         self.assertEqual(sc.dashboard_origin("https://Diagnostics.Bookclerk.app/"), "https://diagnostics.bookclerk.app")

@@ -1536,6 +1536,7 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
         "oidc_rp_states",
         "user_title_state",
         "member_account_rules",
+        "patron_scopes",
         "copy_grants",
     ] {
         let mut p = vec![j_i64(user_id)];
