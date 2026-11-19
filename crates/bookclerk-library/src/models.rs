@@ -191,7 +191,7 @@ pub struct UserSsoPicture {
     pub last_used_at: Option<DateTime<Utc>>,
 }
 
-/// First-party user role (`owner` | `administrator` | `host` | `member`).
+/// First-party user role (`owner` | `administrator` | `member`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum UserRole {
@@ -288,7 +288,7 @@ impl UserStatus {
 pub struct UserRecord {
     /// Surrogate primary key assigned by the database.
     pub id: i64,
-    /// First-party role (`owner`, `administrator`, `host`, or `member`).
+    /// First-party role (`owner`, `administrator`, or `member`).
     pub role: UserRole,
     /// Lifecycle status for the row (user, request, …).
     pub status: UserStatus,

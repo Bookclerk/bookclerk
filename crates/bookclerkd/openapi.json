@@ -41575,7 +41575,7 @@
           },
           "role": {
             "type": "string",
-            "description": "The user's role (`owner`, `administrator`, `host`, or `member`).",
+            "description": "The user's role (`owner`, `administrator`, or `member`).",
             "example": "member"
           }
         }
@@ -46016,7 +46016,7 @@
       },
       "UserRole": {
         "type": "string",
-        "description": "First-party user role (`owner` | `administrator` | `host` | `member`).",
+        "description": "First-party user role (`owner` | `administrator` | `member`).",
         "enum": [
           "owner",
           "administrator",

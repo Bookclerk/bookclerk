@@ -631,7 +631,7 @@ pub struct PortalSessionIssued {
     /// Always `true` on this success path.
     #[schema(example = true)]
     pub ok: bool,
-    /// The user's role (`owner`, `administrator`, `host`, or `member`).
+    /// The user's role (`owner`, `administrator`, or `member`).
     #[schema(example = "member")]
     pub role: String,
 }
