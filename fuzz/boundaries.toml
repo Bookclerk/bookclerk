@@ -259,6 +259,13 @@ input_from = "operator"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.output_copies]
+crate = "bookclerk-config"
+boundary = "A library's extra copies as an operator sends them: the copies array of PUT /api/config/domains/core.output and the stored core.output document"
+input_from = "operator"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.destination_id]
 crate = "bookclerk-config"
 boundary = "A destination id another node sends: an acquire plan's PlanDestination.id and upload records naming the owner's storage plugin instances"
