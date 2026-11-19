@@ -10,11 +10,12 @@
 //! rather than the typed body: a body is accepted exactly when it is one
 //! JSON object with no repeated keys, no keys besides `mode`,
 //! `downloads_per_day`, `min_gap_seconds` and `clear_cooldown`, a `mode`
-//! of `default`, `custom` or `unlimited`, `clear_cooldown` absent, `null`
-//! or a boolean, and the two numbers each absent, `null` or a whole number
-//! in range (1 to 10000 downloads, 0 to 86400 seconds); only `custom` may
-//! carry a number, and it needs at least one. A refused body is `Invalid`,
-//! never another error.
+//! of `default`, `custom` or `unlimited` (or absent or `null`, which only
+//! clears the cool-down: then no number and `clear_cooldown` true),
+//! `clear_cooldown` absent, `null` or a boolean, and the two numbers each
+//! absent, `null` or a whole number in range (1 to 10000 downloads, 0 to
+//! 86400 seconds); only `custom` may carry a number, and it needs at least
+//! one. A refused body is `Invalid`, never another error.
 
 use std::num::NonZeroU32;
 
@@ -92,6 +93,16 @@ fn expected(data: &[u8]) -> Option<PaceRequest> {
     let per_day = number(&fields, "downloads_per_day", 1, 10_000)?;
     let gap = number(&fields, "min_gap_seconds", 0, 86_400)?;
     let override_ = match fields.get("mode") {
+        // No mode only clears the cool-down: no number, and the clear set.
+        None | Some(Value::Null) => {
+            if per_day.is_some() || gap.is_some() || !clear_cooldown {
+                return None;
+            }
+            return Some(PaceRequest {
+                override_: None,
+                clear_cooldown,
+            });
+        }
         Some(Value::String(mode)) if mode == "default" || mode == "unlimited" => {
             if per_day.is_some() || gap.is_some() {
                 return None;
@@ -114,7 +125,7 @@ fn expected(data: &[u8]) -> Option<PaceRequest> {
         _ => return None,
     };
     Some(PaceRequest {
-        override_,
+        override_: Some(override_),
         clear_cooldown,
     })
 }

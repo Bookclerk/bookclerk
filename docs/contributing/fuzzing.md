@@ -58,6 +58,7 @@ boundary extends it.
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `audible_catalog` | Audible public catalog answers (search results and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
+| `throttle_reason` | A store's refusal text, which the `audible` guest reads from a refused license request to tell throttling (which pauses the whole account) from a plain refusal | `bookclerk-storefront::is_throttle_reason` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
@@ -582,6 +583,14 @@ only that. The others check:
   86400 seconds). Only `custom` may carry a number, and it needs at least
   one. Anything else is refused as `Invalid`. The shared oracle is
   `fuzz/oracles/pace_request.rs`, replayed from `bookclerk-library`.
+- **`throttle_reason`**: restates the throttle words byte by byte. Refusal
+  text is a throttle exactly when it contains `throttl`, `rate limit`,
+  `rate-limit`, `ratelimit`, `too many` or `429`, ignoring ASCII case;
+  changing the text's case never changes the answer, adding "Too Many
+  Requests" always makes it a throttle, and adding other limit wording
+  (a device or download limit) never makes a plain refusal one. The
+  shared oracle is `fuzz/oracles/throttle_reason.rs`, replayed from
+  `bookclerk-storefront`.
 - **`window_policy`**: restates the policy from the bytes. A request is
   refused as foreign exactly when its `Origin` is not byte for byte one of
   the two app origins, or when it has no `Origin`, is a write, and its

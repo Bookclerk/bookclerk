@@ -224,6 +224,11 @@ package = "bookclerk-audible-catalog"
 paths = ["fuzz/corpus/audible_catalog/**", "fuzz/oracles/audible_catalog.rs"]
 
 [[test_input]]
+package = "bookclerk-storefront"
+# The throttle classifier oracle is shared with the replay test through `#[path]`.
+paths = ["fuzz/corpus/throttle_reason/**", "fuzz/oracles/throttle_reason.rs"]
+
+[[test_input]]
 package = "bookclerk-plugin-source-graphicaudio"
 # The product page oracle is shared with the replay test through `#[path]`.
 paths = ["fuzz/corpus/graphicaudio_catalog/**", "fuzz/oracles/graphicaudio_catalog.rs"]

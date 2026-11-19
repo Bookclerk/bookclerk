@@ -207,9 +207,10 @@ impl PaceOverride {
 
     /// Rebuilds an override from its stored row.
     ///
-    /// An unknown mode or a custom row with values out of range (a row
+    /// An unknown mode or a custom row with any value out of range (a row
     /// written by something other than this crate) falls back to
-    /// [`Self::Default`], so a bad row never lifts the storefront's pace.
+    /// [`Self::Default`], so a bad row never lifts the storefront's pace;
+    /// a value that is absent leaves that limit unset.
     #[must_use]
     pub fn from_row(
         mode: &str,
@@ -218,12 +219,26 @@ impl PaceOverride {
     ) -> Self {
         let parsed = match mode {
             "unlimited" => Self::Unlimited,
-            "custom" => Self::Custom {
-                downloads_per_day: downloads_per_day
-                    .and_then(|n| u32::try_from(n).ok())
-                    .and_then(NonZeroU32::new),
-                min_gap_seconds: min_gap_seconds.and_then(|s| u32::try_from(s).ok()),
-            },
+            "custom" => {
+                // A present value that does not convert is a bad row, not an
+                // absent field: it must not leave the other limit alone.
+                let Ok(downloads_per_day) = downloads_per_day
+                    .map(|n| u32::try_from(n).ok().and_then(NonZeroU32::new).ok_or(()))
+                    .transpose()
+                else {
+                    return Self::Default;
+                };
+                let Ok(min_gap_seconds) = min_gap_seconds
+                    .map(|s| u32::try_from(s).map_err(|_| ()))
+                    .transpose()
+                else {
+                    return Self::Default;
+                };
+                Self::Custom {
+                    downloads_per_day,
+                    min_gap_seconds,
+                }
+            }
             _ => Self::Default,
         };
         if parsed.validate().is_ok() {
@@ -238,8 +253,9 @@ impl PaceOverride {
 /// `POST /api/portal/sources/{source}/connections/{account_id}/pace`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaceRequest {
-    /// The override to store.
-    pub override_: PaceOverride,
+    /// The override to store, or `None` for a request that only clears
+    /// the cool-down and leaves the stored pace as it is.
+    pub override_: Option<PaceOverride>,
     /// End the store's cool-down too.
     pub clear_cooldown: bool,
 }
@@ -249,8 +265,10 @@ pub struct PaceRequest {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PaceBody {
-    /// `default`, `custom` or `unlimited`.
-    mode: PaceMode,
+    /// `default`, `custom` or `unlimited`; absent to only clear the
+    /// cool-down.
+    #[serde(default)]
+    mode: Option<PaceMode>,
     /// Custom downloads per rolling 24 hours.
     #[serde(default)]
     downloads_per_day: Option<u32>,
@@ -281,7 +299,7 @@ struct ObjectBody(PaceBody);
 impl<'de> Deserialize<'de> for ObjectBody {
     /// Reads the body from a JSON object only.
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        crate::control_plane::from_object(deserializer, "a JSON object with a mode").map(Self)
+        crate::control_plane::from_object(deserializer, "a JSON object").map(Self)
     }
 }
 
@@ -292,8 +310,10 @@ impl<'de> Deserialize<'de> for ObjectBody {
 /// `unlimited`, optional `downloads_per_day` (1 to
 /// [`MAX_DOWNLOADS_PER_DAY`]) and `min_gap_seconds` (0 to
 /// [`MAX_MIN_GAP_SECONDS`]) that only `custom` may carry and that it needs
-/// at least one of, and an optional boolean `clear_cooldown`. No other
-/// key and no repeated key is accepted; `null` counts as absent.
+/// at least one of, and an optional boolean `clear_cooldown`. A body
+/// without `mode` only clears the cool-down: it carries no number and
+/// `clear_cooldown` must be `true`, and the stored pace is left alone. No
+/// other key and no repeated key is accepted; `null` counts as absent.
 ///
 /// # Errors
 ///
@@ -303,7 +323,24 @@ pub fn parse_pace_request(body: &[u8]) -> crate::error::Result<PaceRequest> {
     let invalid = |detail: String| crate::LibraryError::Invalid(format!("pace body: {detail}"));
     let ObjectBody(raw) =
         serde_json::from_slice::<ObjectBody>(body).map_err(|err| invalid(err.to_string()))?;
-    let override_ = match raw.mode {
+    let clear_cooldown = raw.clear_cooldown.unwrap_or(false);
+    let Some(mode) = raw.mode else {
+        if raw.downloads_per_day.is_some() || raw.min_gap_seconds.is_some() {
+            return Err(invalid(
+                "only a custom pace takes downloads_per_day or min_gap_seconds".into(),
+            ));
+        }
+        if !clear_cooldown {
+            return Err(invalid(
+                "a body without mode must set clear_cooldown to true".into(),
+            ));
+        }
+        return Ok(PaceRequest {
+            override_: None,
+            clear_cooldown,
+        });
+    };
+    let override_ = match mode {
         PaceMode::Default | PaceMode::Unlimited
             if raw.downloads_per_day.is_some() || raw.min_gap_seconds.is_some() =>
         {
@@ -327,8 +364,8 @@ pub fn parse_pace_request(body: &[u8]) -> crate::error::Result<PaceRequest> {
         .validate()
         .map_err(|err| invalid(err.to_string()))?;
     Ok(PaceRequest {
-        override_,
-        clear_cooldown: raw.clear_cooldown.unwrap_or(false),
+        override_: Some(override_),
+        clear_cooldown,
     })
 }
 
@@ -629,6 +666,27 @@ mod tests {
             PaceOverride::from_row("custom", Some(20_000), None),
             PaceOverride::Default
         );
+        // A present value that does not convert spoils the whole row, even
+        // when the other value is valid on its own.
+        assert_eq!(
+            PaceOverride::from_row("custom", Some(-1), Some(0)),
+            PaceOverride::Default
+        );
+        assert_eq!(
+            PaceOverride::from_row("custom", Some(0), Some(30)),
+            PaceOverride::Default
+        );
+        assert_eq!(
+            PaceOverride::from_row("custom", Some(5), Some(-3)),
+            PaceOverride::Default
+        );
+        assert_eq!(
+            PaceOverride::from_row("custom", None, Some(0)),
+            PaceOverride::Custom {
+                downloads_per_day: None,
+                min_gap_seconds: Some(0)
+            }
+        );
         assert_eq!(
             PaceOverride::from_row("custom", Some(5), Some(10)),
             PaceOverride::Custom {
@@ -665,10 +723,10 @@ mod tests {
         assert_eq!(
             ok,
             PaceRequest {
-                override_: PaceOverride::Custom {
+                override_: Some(PaceOverride::Custom {
                     downloads_per_day: NonZeroU32::new(20),
                     min_gap_seconds: None
-                },
+                }),
                 clear_cooldown: true
             }
         );
@@ -676,7 +734,15 @@ mod tests {
             parse_pace_request(br#"{"mode":"unlimited","min_gap_seconds":null}"#)
                 .expect("null is absent")
                 .override_,
-            PaceOverride::Unlimited
+            Some(PaceOverride::Unlimited)
+        );
+        // A body without mode only clears the cool-down.
+        assert_eq!(
+            parse_pace_request(br#"{"clear_cooldown":true}"#).expect("clear only"),
+            PaceRequest {
+                override_: None,
+                clear_cooldown: true
+            }
         );
         for bad in [
             &br#"{"mode":"custom"}"#[..],
@@ -687,6 +753,9 @@ mod tests {
             br#"{"mode":"fast"}"#,
             br#"{"mode":"default","extra":1}"#,
             br#"{"mode":"default","mode":"unlimited"}"#,
+            br#"{}"#,
+            br#"{"clear_cooldown":false}"#,
+            br#"{"clear_cooldown":true,"min_gap_seconds":5}"#,
             br#"[]"#,
         ] {
             assert!(

@@ -1627,8 +1627,49 @@ pub async fn commit_upload(
     let outcome = commit_upload_checked(store, upload_id, finish, limits).await?;
     if matches!(outcome, UploadCommit::Committed { .. }) {
         store_committed_probes(store, upload_id).await?;
+        if let Err(error) = record_committed_download(store, upload_id).await {
+            tracing::warn!(
+                upload_id,
+                error = %error,
+                "could not record a Host's download in the account's download history"
+            );
+        }
     }
     Ok(outcome)
+}
+
+/// Records a committed title upload in its account's download history, so
+/// a Host's store download counts toward the account's pace like one the
+/// library ran itself.
+///
+/// Hosts never run paced acquires, so the row counts as started by a
+/// person. The row id is `upload:<upload id>`, which makes a repeated
+/// commit insert nothing. A catalog upload, the job's closing upload and a
+/// title whose holding is gone record nothing.
+///
+/// # Errors
+///
+/// Returns an error when a read or the ledger write fails.
+async fn record_committed_download(store: &LibraryStore, upload_id: &str) -> Result<()> {
+    let Some(session) = load_upload(store, upload_id).await? else {
+        return Ok(());
+    };
+    if session.is_catalog() || session.holding_id.is_empty() {
+        return Ok(());
+    }
+    let Some(title) = store.acquire_title_of_holding(&session.holding_id).await? else {
+        return Ok(());
+    };
+    store
+        .record_account_download_once(
+            &format!("upload:{upload_id}"),
+            &title.plugin_key,
+            &title.account_id,
+            Utc::now(),
+            Some(&session.job_id),
+            crate::DownloadStarter::Person,
+        )
+        .await
 }
 
 /// [`commit_upload`] without the probes: every check, and the batch that

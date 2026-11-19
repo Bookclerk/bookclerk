@@ -69,7 +69,7 @@ impl AudibleError {
     /// * `message` - The full message for a plain refusal.
     #[must_use]
     pub fn license_refused(reason: &str, message: String) -> Self {
-        if is_throttle_reason(reason) {
+        if bookclerk_storefront::is_throttle_reason(reason) {
             Self::Throttled(message)
         } else {
             Self::License(message)
@@ -134,29 +134,10 @@ impl From<audible_rs::api::client::ApiError> for AudibleError {
     }
 }
 
-/// True when a license refusal's reason says the account is being
-/// throttled (rate limited) rather than not entitled.
-///
-/// Audible does not document a code for it, so this reads the words it
-/// uses (throttled, rate limit, too many requests, HTTP 429).
-#[must_use]
-pub fn is_throttle_reason(reason: &str) -> bool {
-    let reason = reason.to_ascii_lowercase();
-    [
-        "throttl",
-        "rate limit",
-        "rate-limit",
-        "ratelimit",
-        "too many",
-        "429",
-    ]
-    .iter()
-    .any(|needle| reason.contains(needle))
-}
-
 #[cfg(test)]
 mod throttle_tests {
-    use super::{is_throttle_reason, AudibleError};
+    use super::AudibleError;
+    use bookclerk_storefront::is_throttle_reason;
 
     #[test]
     fn throttle_words_are_recognised() {

@@ -58,6 +58,40 @@ impl From<SourceError> for bookclerk_plugin_abi::PluginError {
     }
 }
 
+/// Words a store uses when it refuses a request because the account is
+/// being throttled, lowercase.
+const THROTTLE_WORDS: [&str; 6] = [
+    "throttl",
+    "rate limit",
+    "rate-limit",
+    "ratelimit",
+    "too many",
+    "429",
+];
+
+/// True when a store's refusal text says the account is being throttled
+/// (rate limited) rather than refused outright.
+///
+/// Stores rarely give throttling a code of its own (Audible's license
+/// refusals do not), so this reads the words they use: throttled, rate
+/// limit, too many requests, HTTP 429. Case is ignored; any other text,
+/// including other limits such as a device or download limit, is not a
+/// throttle. A storefront that answers `true` returns
+/// [`SourceError::RateLimited`], which pauses the whole account.
+///
+/// # Arguments
+///
+/// * `reason` - The refusal text the store sent, untrusted.
+///
+/// # Returns
+///
+/// Whether the text contains one of the throttle words.
+#[must_use]
+pub fn is_throttle_reason(reason: &str) -> bool {
+    let reason = reason.to_ascii_lowercase();
+    THROTTLE_WORDS.iter().any(|word| reason.contains(word))
+}
+
 impl SourceError {
     /// [`Self::RateLimited`] from an HTTP status and `Retry-After` header,
     /// when the status is 429; otherwise `None`.

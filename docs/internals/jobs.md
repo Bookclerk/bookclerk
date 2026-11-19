@@ -589,16 +589,28 @@ holds across plugin instances and every node of the cluster.
   joined library then replaced (`AcquireResult::fetched_from_store`). A
   copy matched in storage or taken straight from a joined library is not
   counted, nor is a title no destination takes or one the
-  store refused with `rateLimited`. Rows older than two days are pruned
-  when the account records its next download.
+  store refused with `rateLimited`. A title a Host downloaded for a
+  hand-started acquire is recorded when the owner commits its upload
+  (`control_plane::commit_upload`), once per upload however often the
+  commit is repeated. A ledger write that fails is retried, and a paced
+  run that still cannot record a download holds that account rather than
+  download past a budget it cannot count; the job fails if rows are still
+  unwritten at its end. Backend migration copies the ledger with
+  `account_pace`, so a migrated library keeps its rolling window. Rows
+  older than two days are pruned when the account records its next
+  download.
 - **Where it runs.** A paced acquire is claimed only by a node that holds
   the library database (`control_plane::claimant_may_run`), like a forced
   or PDF-only one: a Host runs handed acquires without the library, so it
-  could neither check nor record the pace.
+  could not check the pace.
 - **Changing the pace.** Setting an account's pace or clearing its pause
   wakes every parked paced acquire that names that account or no account
   (`LibraryStore::wake_paced_acquires`), so it checks the new pace at once
-  instead of sleeping out the old deadline.
+  instead of sleeping out the old deadline. A pace body with no `mode` and
+  `clear_cooldown: true` only clears the pause and leaves the stored
+  override as it is. A run that parks checks each held account once more
+  after parking and wakes itself if a change made while it ran lets the
+  account download sooner.
 
 A paced run checks the account's pace before each title, while it holds
 the account's cluster semaphore, so no other node downloads on the account

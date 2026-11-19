@@ -996,6 +996,9 @@ async fn pace_view(
             ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
             ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
         )),
+        (status = 415, description = "The request did not declare an `application/json` body.", body = PortalErrorBody, examples(
+            ("not_json" = (summary = "No JSON Content-Type.", value = json!({"error": "the body must be sent as application/json"}))),
+        )),
     ),
 )]
 async fn set_connection_pace(
@@ -1005,6 +1008,14 @@ async fn set_connection_pace(
     body: axum::body::Bytes,
 ) -> Result<Json<PaceView>, PortalError> {
     let identity = require_identity(&state, &headers).await?;
+    let declared_json = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"));
+    if !declared_json {
+        return Err(PortalError::not_json());
+    }
     let request = bookclerk_library::pacing::parse_pace_request(&body)?;
     let library = state.library_snapshot().await;
     let links = library.list_account_links(identity.id).await?;
@@ -1014,9 +1025,11 @@ async fn set_connection_pace(
     }) else {
         return Err(PortalError::bad("account not linked to this identity"));
     };
-    library
-        .set_account_pace_override(&link.plugin_key, &link.account_id, &request.override_)
-        .await?;
+    if let Some(override_) = &request.override_ {
+        library
+            .set_account_pace_override(&link.plugin_key, &link.account_id, override_)
+            .await?;
+    }
     if request.clear_cooldown {
         library
             .clear_account_cooldown(&link.plugin_key, &link.account_id)
@@ -1036,18 +1049,34 @@ async fn set_connection_pace(
 // Read by the schema only; the route parses the bytes itself.
 #[allow(dead_code)]
 struct PaceRequestBody {
-    /// `default`, `custom` or `unlimited`.
+    /// `default`, `custom` or `unlimited`. Leave it out to only end the
+    /// cool-down (then `clear_cooldown` must be `true`) and keep the stored
+    /// pace.
     #[schema(example = "custom")]
-    mode: String,
-    /// Custom downloads per rolling 24 hours (1 to 10000); `custom` only.
-    #[schema(example = 20)]
+    mode: Option<PaceModeSchema>,
+    /// Custom downloads per rolling 24 hours; `custom` only.
+    #[schema(example = 20, minimum = 1, maximum = 10000)]
     downloads_per_day: Option<u32>,
-    /// Custom seconds between downloads (0 to 86400); `custom` only.
-    #[schema(example = 60)]
+    /// Custom seconds between downloads; `custom` only.
+    #[schema(example = 60, minimum = 0, maximum = 86400)]
     min_gap_seconds: Option<u32>,
     /// Also end a cool-down the store asked for.
     #[schema(example = false)]
     clear_cooldown: Option<bool>,
+}
+
+/// The `mode` of a [`PaceRequestBody`], for the API reference.
+#[derive(Debug, utoipa::ToSchema)]
+#[schema(rename_all = "snake_case")]
+// Read by the schema only; the route parses the bytes itself.
+#[allow(dead_code)]
+enum PaceModeSchema {
+    /// The storefront's declared pace.
+    Default,
+    /// The custom values in the same body.
+    Custom,
+    /// No budget and no gap (the store's cool-down still applies).
+    Unlimited,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -1367,6 +1396,14 @@ impl PortalError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: msg.into(),
+        }
+    }
+
+    /// Builds a 415 response for a body that is not declared as JSON.
+    fn not_json() -> Self {
+        Self {
+            status: StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            message: "the body must be sent as application/json".into(),
         }
     }
 

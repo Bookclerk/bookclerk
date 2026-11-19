@@ -1120,7 +1120,8 @@ const ACQUIRE_RANGES = [
  *
  * @param m - Manifest under validation.
  * @throws {Error} When a plugin without the `storefront` entrypoint declares
- *   the table, or a value is not a whole number in its range.
+ *   the table, the table names a field the host does not know, or a value is
+ *   not a whole number in its range.
  */
 function validateAcquire(m: Manifest): void {
   const acquire = m.acquire;
@@ -1130,6 +1131,13 @@ function validateAcquire(m: Manifest): void {
   const entrypoints = (m.entrypoints ?? []) as readonly string[];
   if (!entrypoints.includes("storefront")) {
     throw new Error("plugin.toml: `[acquire]` needs the `storefront` entrypoint");
+  }
+  const known: readonly string[] = ACQUIRE_RANGES.map(([field]) => field);
+  const unknown = Object.keys(acquire).filter((key) => !known.includes(key));
+  if (unknown.length > 0) {
+    throw new Error(
+      `plugin.toml: \`[acquire]\`: unknown field \`${unknown[0]}\` (expected ${known.join(", ")})`,
+    );
   }
   for (const [field, min, max] of ACQUIRE_RANGES) {
     const raw: unknown = acquire[field];

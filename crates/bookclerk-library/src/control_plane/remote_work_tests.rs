@@ -2053,6 +2053,17 @@ async fn a_committed_uploads_probe_is_kept_on_the_file_row() {
 /// marks the title acquired and publishes `book_acquired` but cannot
 /// finish the job; only the closing upload completes it and gives its
 /// permits back, and a repeat answers the same.
+/// How many downloads `account` has in its pace window now.
+async fn ledger_len(store: &LibraryStore, account: &str) -> usize {
+    store
+        .account_pace_state(PLUGIN, account, chrono::Utc::now())
+        .await
+        .unwrap()
+        .window
+        .starts
+        .len()
+}
+
 #[tokio::test]
 async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
     let _guard = master_key_test_lock_async().await;
@@ -2202,6 +2213,24 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
         UploadCommit::Committed {
             job_completed: false
         }
+    );
+    assert_eq!(
+        ledger_len(&w.store, "riley-acct").await,
+        1,
+        "the Host's download counts toward the account's pace"
+    );
+    assert_eq!(
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Committed {
+            job_completed: false
+        }
+    );
+    assert_eq!(
+        ledger_len(&w.store, "riley-acct").await,
+        1,
+        "a repeated commit records nothing more"
     );
     let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
     assert_eq!(book.acquire_status, crate::models::AcquireStatus::Acquired);

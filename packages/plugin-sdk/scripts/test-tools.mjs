@@ -495,6 +495,28 @@ function bindingMessage(manifest) {
   }
   console.log("ok own_user_agent validation");
 }
+// [acquire]: the host refuses fields it does not know, so the tools do too.
+{
+  const storefront = (acquire) => ({
+    ...bindingBase,
+    entrypoints: ["storefront"],
+    media: { works: ["book"], lists: ["audio"], fetches: ["audio"] },
+    acquire,
+  });
+  const cases = [
+    [storefront({}), ""],
+    [storefront({ downloads_per_day: 100, min_gap_seconds: 30 }), ""],
+    [storefront({ downloads_per_days: 100 }), "unknown field `downloads_per_days`"],
+  ];
+  for (const [manifest, needle] of cases) {
+    const message = bindingMessage(manifest);
+    if (needle ? !message.includes(needle) : message !== "") {
+      console.error("FAIL acquire", JSON.stringify(manifest), message);
+      process.exit(1);
+    }
+  }
+  console.log("ok acquire rejects unknown keys");
+}
 // [triggers] crons: shape, count and duplicates; a cron-only manifest is valid.
 {
   const cronOnly = { ...bindingBase, entrypoints: [] };

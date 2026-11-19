@@ -31438,7 +31438,7 @@
             }
           },
           "400": {
-            "description": "The body breaks a rule, or the account is not linked to this identity. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "The body breaks a rule, or the account is not linked to this identity.",
             "content": {
               "application/json": {
                 "schema": {
@@ -31458,12 +31458,6 @@
                     }
                   }
                 }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -31507,24 +31501,20 @@
             }
           },
           "415": {
-            "description": "The request did not declare a JSON body.",
+            "description": "The request did not declare an `application/json` body.",
             "content": {
-              "text/plain": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/PortalErrorBody"
                 },
-                "example": "Expected request with `Content-Type: application/json`"
-              }
-            }
-          },
-          "422": {
-            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `mode` at line 1 column 2"
+                "examples": {
+                  "not_json": {
+                    "summary": "No JSON Content-Type.",
+                    "value": {
+                      "error": "the body must be sent as application/json"
+                    }
+                  }
+                }
               }
             }
           },
@@ -39211,17 +39201,29 @@
           }
         }
       },
+      "PaceModeSchema": {
+        "type": "string",
+        "description": "The `mode` of a [`PaceRequestBody`], for the API reference.",
+        "enum": [
+          "default",
+          "custom",
+          "unlimited"
+        ]
+      },
       "PaceRequestBody": {
         "type": "object",
         "description": "Request body of the pace route, for the API reference (the route reads\nthe raw bytes with `bookclerk_library::pacing::parse_pace_request`).",
-        "required": [
-          "mode"
-        ],
         "properties": {
           "mode": {
-            "type": "string",
-            "description": "`default`, `custom` or `unlimited`.",
-            "example": "custom"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PaceModeSchema",
+                "description": "`default`, `custom` or `unlimited`. Leave it out to only end the\ncool-down (then `clear_cooldown` must be `true`) and keep the stored\npace."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "downloads_per_day": {
             "type": [
@@ -39229,9 +39231,10 @@
               "null"
             ],
             "format": "int32",
-            "description": "Custom downloads per rolling 24 hours (1 to 10000); `custom` only.",
+            "description": "Custom downloads per rolling 24 hours; `custom` only.",
             "example": 20,
-            "minimum": 0
+            "maximum": 10000,
+            "minimum": 1
           },
           "min_gap_seconds": {
             "type": [
@@ -39239,8 +39242,9 @@
               "null"
             ],
             "format": "int32",
-            "description": "Custom seconds between downloads (0 to 86400); `custom` only.",
+            "description": "Custom seconds between downloads; `custom` only.",
             "example": 60,
+            "maximum": 86400,
             "minimum": 0
           },
           "clear_cooldown": {

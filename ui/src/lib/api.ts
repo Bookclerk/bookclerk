@@ -461,8 +461,11 @@ export type PortalPaceMode = "default" | "custom" | "unlimited";
 
 /** Body of {@link portalSetConnectionPace}. */
 export interface PortalPaceChange {
-  /** `default`, `custom` or `unlimited`. */
-  mode: PortalPaceMode;
+  /**
+   * `default`, `custom` or `unlimited`. Leave it out to only end the
+   * cool-down (with `clear_cooldown: true`) and keep the stored pace.
+   */
+  mode?: PortalPaceMode;
   /** Custom downloads per rolling 24 hours (1 to 10000); `custom` only. */
   downloads_per_day?: number;
   /** Custom seconds between downloads (0 to 86400); `custom` only. */

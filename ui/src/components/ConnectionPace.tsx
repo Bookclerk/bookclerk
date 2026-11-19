@@ -16,86 +16,87 @@ import {
  * Downloads Bookclerk starts itself wait for the pace; downloads a person
  * starts are counted but never held.
  *
- * @param props - The connection, whether the page is busy, and a callback
- *   with the stored pace after a change.
+ * @param props - The connection, whether the page is busy (a save waits
+ *   for a page refresh to finish), a callback while a save is in flight (so
+ *   the page holds its refresh), and a callback with the stored pace after a
+ *   change.
  */
 export function ConnectionPace({
   connection,
   busy,
+  onSavingChange,
   onChanged,
 }: {
   connection: PortalConnection;
   busy: boolean;
+  onSavingChange: (saving: boolean) => void;
   onChanged: (pace: PortalPace) => void;
 }) {
   const pace = connection.pace;
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<PortalPaceMode>(pace.mode);
-  const [perDay, setPerDay] = useState(
-    String(pace.custom_downloads_per_day ?? pace.store_downloads_per_day ?? ""),
-  );
-  const [gap, setGap] = useState(
-    String(pace.custom_min_gap_seconds ?? pace.store_min_gap_seconds ?? ""),
-  );
+  const [perDay, setPerDay] = useState("");
+  const [gap, setGap] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const source = connection.plugin_key || connection.source;
 
-  async function save(e: FormEvent) {
-    e.preventDefault();
+  // The form starts from the pace as it stands when it opens, so a refresh
+  // since the page loaded is never saved back over; edits then stay put.
+  function toggle() {
+    if (!open) {
+      setMode(pace.mode);
+      setPerDay(String(pace.custom_downloads_per_day ?? pace.store_downloads_per_day ?? ""));
+      setGap(String(pace.custom_min_gap_seconds ?? pace.store_min_gap_seconds ?? ""));
+      setError(null);
+    }
+    setOpen((v) => !v);
+  }
+
+  async function send(
+    change: Parameters<typeof portalSetConnectionPace>[2],
+    failure: string,
+  ): Promise<boolean> {
     setSaving(true);
+    onSavingChange(true);
     setError(null);
     try {
-      const change =
-        mode === "custom"
-          ? {
-              mode,
-              ...(perDay.trim() ? { downloads_per_day: Number(perDay) } : {}),
-              ...(gap.trim() ? { min_gap_seconds: Number(gap) } : {}),
-            }
-          : { mode };
       onChanged(await portalSetConnectionPace(source, connection.account_id, change));
-      setOpen(false);
+      return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Saving the pace failed");
+      setError(err instanceof Error ? err.message : failure);
+      return false;
     } finally {
       setSaving(false);
+      onSavingChange(false);
     }
   }
 
-  async function clearCooldown() {
-    setSaving(true);
-    setError(null);
-    try {
-      onChanged(
-        await portalSetConnectionPace(source, connection.account_id, {
-          mode: pace.mode,
-          ...(pace.mode === "custom" && pace.custom_downloads_per_day !== null
-            ? { downloads_per_day: pace.custom_downloads_per_day }
-            : {}),
-          ...(pace.mode === "custom" && pace.custom_min_gap_seconds !== null
-            ? { min_gap_seconds: pace.custom_min_gap_seconds }
-            : {}),
-          clear_cooldown: true,
-        }),
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Clearing the cool-down failed");
-    } finally {
-      setSaving(false);
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    const change =
+      mode === "custom"
+        ? {
+            mode,
+            ...(perDay.trim() ? { downloads_per_day: Number(perDay) } : {}),
+            ...(gap.trim() ? { min_gap_seconds: Number(gap) } : {}),
+          }
+        : { mode };
+    if (await send(change, "Saving the pace failed")) {
+      setOpen(false);
     }
+  }
+
+  // Only the pause ends: the stored pace is left as it is on the server.
+  async function clearCooldown() {
+    await send({ clear_cooldown: true }, "Clearing the cool-down failed");
   }
 
   return (
     <div className="w-full space-y-2 pl-10">
       <div className="flex flex-wrap items-center gap-2">
         <p className="text-xs text-ink/60">{paceSummary(pace)}</p>
-        <Button
-          variant="ghost"
-          disabled={busy || saving}
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-        >
+        <Button variant="ghost" disabled={busy || saving} onClick={toggle} aria-expanded={open}>
           <Gauge className="h-4 w-4" />
           Change pace
         </Button>
@@ -144,7 +145,7 @@ export function ConnectionPace({
               onChange={(e) => setGap(e.target.value)}
             />
           </label>
-          <Button type="submit" disabled={saving}>
+          <Button type="submit" disabled={busy || saving}>
             Save
           </Button>
         </form>

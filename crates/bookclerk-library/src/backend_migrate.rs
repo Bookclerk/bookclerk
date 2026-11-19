@@ -7,15 +7,15 @@
 use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, TransactionTrait};
 
 use crate::entities::{
-    account_credential_revisions, account_links, account_pace, account_shares, accounts, books,
-    claim_tickets, contributors, credits, edition_acquisitions, edition_files, edition_identifiers,
-    editions, embeddings, encrypted_secrets, expressions, holdings, ignored_titles, job_temp_paths,
-    jobs, listening_progress, listing_offers, member_account_rules, oidc_auth_codes, oidc_clients,
-    oidc_refresh_tokens, oidc_rp_states, operator_sessions, patron_scope_keys, patron_scopes,
-    portal_identities, portal_sessions, resolution_conflicts, resolution_overrides, saved_filters,
-    security_audit_events, series, series_entries, store_listings, title_request_sources,
-    title_requests, user_invites, user_preferences, user_title_state, users, webauthn_challenges,
-    webauthn_credentials, work_identifiers, works,
+    account_credential_revisions, account_downloads, account_links, account_pace, account_shares,
+    accounts, books, claim_tickets, contributors, credits, edition_acquisitions, edition_files,
+    edition_identifiers, editions, embeddings, encrypted_secrets, expressions, holdings,
+    ignored_titles, job_temp_paths, jobs, listening_progress, listing_offers, member_account_rules,
+    oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states, operator_sessions,
+    patron_scope_keys, patron_scopes, portal_identities, portal_sessions, resolution_conflicts,
+    resolution_overrides, saved_filters, security_audit_events, series, series_entries,
+    store_listings, title_request_sources, title_requests, user_invites, user_preferences,
+    user_title_state, users, webauthn_challenges, webauthn_credentials, work_identifiers, works,
 };
 use crate::error::{LibraryError, Result};
 
@@ -104,8 +104,10 @@ pub async fn migrate_library_backend(
     // FK-safe order (users before portal_identities.user_id).
     copy!(users, "users");
     copy!(accounts, "accounts");
-    // The operator's pace overrides; the download ledger is transient.
+    // Pace overrides and cool-downs, and the download ledger, so the
+    // rolling daily budget still counts downloads made before the move.
     copy!(account_pace, "account_pace");
+    copy!(account_downloads, "account_downloads");
     copy!(portal_identities, "portal_identities");
     // Shows before their episodes (`works.parent_work_id`).
     summary
@@ -222,6 +224,7 @@ async fn dry_run_counts(
     count!(users, "users");
     count!(accounts, "accounts");
     count!(account_pace, "account_pace");
+    count!(account_downloads, "account_downloads");
     count!(portal_identities, "portal_identities");
     count!(works, "works");
     count!(work_identifiers, "work_identifiers");

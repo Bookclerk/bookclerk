@@ -946,9 +946,17 @@ pub async fn run_acquire(
     // hold a title's copy.
     let library_copies = crate::clerk_link::copies::acquire_copies(&library);
     // Accounts whose downloads must wait, keyed by (plugin key, account),
-    // with when each may download again and why.
-    let mut held: std::collections::BTreeMap<(String, String), (DateTime<Utc>, WaitReason)> =
+    // with when each may download again, why, and the declared pace (to
+    // look again after parking).
+    let mut held: std::collections::BTreeMap<
+        (String, String),
+        (DateTime<Utc>, WaitReason, AcquirePace),
+    > = std::collections::BTreeMap::new();
+    // Downloads whose ledger row could not be written yet, by account, with
+    // when each started; written again before that account's next title.
+    let mut unrecorded: std::collections::BTreeMap<(String, String), Vec<DateTime<Utc>>> =
         std::collections::BTreeMap::new();
+    let job_id = ctx.map(|c| c.fence.job_id.clone());
     let mut set_aside = 0u32;
     let starter = if mode.paced {
         DownloadStarter::Host
@@ -984,6 +992,40 @@ pub async fn run_acquire(
             .require_routed(&book.plugin_key, plugin_instance_id)
             .map_err(|err| anyhow::anyhow!("{err} (title {})", book.asin_or_isbn()))?;
         let declared_pace = content_source.acquire_pace();
+        // A download this run made on the account but could not record yet
+        // is written first; a paced run does not download on the account
+        // again while the ledger is short.
+        if let Some(starts) = unrecorded.get_mut(&account_key) {
+            let mut still = Vec::new();
+            for started_at in starts.drain(..) {
+                if !record_download(
+                    &library,
+                    &account_key,
+                    started_at,
+                    job_id.as_deref(),
+                    starter,
+                )
+                .await
+                {
+                    still.push(started_at);
+                }
+            }
+            *starts = still;
+            if !starts.is_empty() && mode.paced {
+                held.insert(
+                    account_key,
+                    (
+                        Utc::now()
+                            + chrono::Duration::from_std(PACE_SLEEP_IN_PLACE)
+                                .unwrap_or_else(|_| chrono::Duration::seconds(120)),
+                        WaitReason::Gap,
+                        declared_pace,
+                    ),
+                );
+                set_aside += 1;
+                continue;
+            }
+        }
         if mode.paced {
             match wait_for_pace(
                 &library,
@@ -1003,7 +1045,7 @@ pub async fn run_acquire(
                         reason = reason.phrase(),
                         "run_acquire: account must wait; its titles are set aside"
                     );
-                    held.insert(account_key, (until, reason));
+                    held.insert(account_key, (until, reason, declared_pace));
                     set_aside += 1;
                     continue;
                 }
@@ -1076,20 +1118,23 @@ pub async fn run_acquire(
                 )
                 .await
             };
-            // One download per title, however many attempts it takes.
+            // One download per title, however many attempts it takes. A
+            // row that cannot be written stays pending (`unrecorded`).
             if !counted && reached_store(&result) {
                 counted = true;
-                if let Err(err) = library
-                    .record_account_download(
-                        &book.plugin_key,
-                        &book.account_id,
-                        started_at,
-                        ctx.map(|c| c.fence.job_id.as_str()),
-                        starter,
-                    )
-                    .await
+                if !record_download(
+                    &library,
+                    &account_key,
+                    started_at,
+                    job_id.as_deref(),
+                    starter,
+                )
+                .await
                 {
-                    warn!(account = %book.account_id, error = %err, "could not record a download against the account's pace");
+                    unrecorded
+                        .entry(account_key.clone())
+                        .or_default()
+                        .push(started_at);
                 }
             }
             if let Err(bookclerk_acquire::AcquireError::Source(
@@ -1118,7 +1163,10 @@ pub async fn run_acquire(
                         book.account_id
                     );
                 }
-                held.insert(account_key.clone(), (until, WaitReason::Cooldown));
+                held.insert(
+                    account_key.clone(),
+                    (until, WaitReason::Cooldown, declared_pace),
+                );
                 set_aside += 1;
                 break;
             }
@@ -1160,7 +1208,21 @@ pub async fn run_acquire(
         }
     }
     let detail = format!("acquired={ok} matched={matched} failed={failed}");
-    if let Some((until, reason)) = held.values().min_by_key(|(until, _)| *until).copied() {
+    // Last chance for ledger rows that could not be written during the run:
+    // a download the ledger does not know would let the next run exceed
+    // the budget, so the run fails rather than end quietly short.
+    let mut lost = 0usize;
+    for (key, starts) in &unrecorded {
+        for started_at in starts {
+            if !record_download(&library, key, *started_at, job_id.as_deref(), starter).await {
+                lost += 1;
+            }
+        }
+    }
+    if lost > 0 {
+        anyhow::bail!("could not record {lost} download(s) against their account's pace; {detail}");
+    }
+    if let Some((until, reason, _)) = held.values().min_by_key(|(until, _, _)| *until).copied() {
         if let Some(scan_id) = index.scan_id() {
             let _ = library.storage_scan_delete(scan_id).await;
         }
@@ -1183,6 +1245,20 @@ pub async fn run_acquire(
         if !library.defer_job(&ctx.fence, until, &progress).await? {
             anyhow::bail!("could not park the acquire (lease fence lost)");
         }
+        // A pace change or a cleared pause that landed during the run found
+        // this job running, so its wake skipped it. Look again now that the
+        // job is pending: a change written before this read is seen here,
+        // and one written after it wakes the pending job itself.
+        for ((plugin_key, account_id), (_, _, declared)) in &held {
+            if let Some(sooner) =
+                pace_allows_before(&library, plugin_key, account_id, declared, until).await
+            {
+                info!(account = %account_id, %sooner, "the account's pace changed during the run; waking the parked acquire");
+                if let Err(err) = library.wake_paced_acquires(account_id).await {
+                    warn!(account = %account_id, error = %err, "could not wake the parked acquire");
+                }
+            }
+        }
         return Ok(format!("{JOB_SUSPENDED_DETAIL_PREFIX}{until} ({progress})"));
     }
     info!(
@@ -1201,6 +1277,69 @@ pub async fn run_acquire(
         let _ = library.storage_scan_delete(scan_id).await;
     }
     Ok(detail)
+}
+
+/// Writes one download to the account's ledger, trying three times.
+///
+/// # Returns
+///
+/// `true` once the row is written; `false` when every try failed (each
+/// failure is logged), so the caller keeps the download to write later.
+async fn record_download(
+    library: &bookclerk_library::LibraryStore,
+    (plugin_key, account_id): &(String, String),
+    started_at: DateTime<Utc>,
+    job_id: Option<&str>,
+    starter: DownloadStarter,
+) -> bool {
+    for attempt in 1..=3u32 {
+        match library
+            .record_account_download(plugin_key, account_id, started_at, job_id, starter)
+            .await
+        {
+            Ok(()) => return true,
+            Err(err) => {
+                warn!(account = %account_id, attempt, error = %err, "could not record a download against the account's pace");
+                if attempt < 3 {
+                    tokio::time::sleep(Duration::from_millis(200 * u64::from(attempt))).await;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// When an account's pace, read now, lets it download before `parked_until`.
+///
+/// # Returns
+///
+/// The earlier time (now, when it may download at once), or `None` when
+/// the pace still holds it until `parked_until` or later, or the state
+/// cannot be read (logged).
+async fn pace_allows_before(
+    library: &bookclerk_library::LibraryStore,
+    plugin_key: &str,
+    account_id: &str,
+    declared: &AcquirePace,
+    parked_until: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let now = Utc::now();
+    let state = match library
+        .account_pace_state(plugin_key, account_id, now)
+        .await
+    {
+        Ok(state) => state,
+        Err(err) => {
+            warn!(account = %account_id, error = %err, "could not read the account's pace after parking");
+            return None;
+        }
+    };
+    let pace = declared.with_override(&state.override_);
+    let ready = match decide(&pace, &state.window, state.cooldown_until, now) {
+        PaceVerdict::Go => now,
+        PaceVerdict::Wait { until, .. } => until,
+    };
+    (ready + chrono::Duration::seconds(1) < parked_until).then_some(ready)
 }
 
 /// Longest pace wait a run sleeps through in place; a longer one parks the
@@ -1622,6 +1761,44 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// After parking, a pace that changed during the run is noticed.
+    #[tokio::test]
+    async fn a_pace_change_during_the_run_is_seen_after_parking() {
+        use bookclerk_library::pacing::{AcquirePace, PaceOverride};
+        use std::num::NonZeroU32;
+
+        let store = test_store().await;
+        store
+            .upsert_account("audible", "a1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let pace = AcquirePace {
+            downloads_per_day: NonZeroU32::new(1),
+            min_gap: Duration::ZERO,
+            cooldown: Duration::from_secs(3600),
+        };
+        store
+            .record_account_download("audible", "a1", Utc::now(), None, DownloadStarter::Host)
+            .await
+            .unwrap();
+        let parked_until = Utc::now() + chrono::Duration::hours(23);
+        // Still one download against a budget of one: nothing sooner.
+        assert!(
+            pace_allows_before(&store, "audible", "a1", &pace, parked_until)
+                .await
+                .is_none()
+        );
+        // Lifted to no limit while the run was going: it may go now.
+        store
+            .set_account_pace_override("audible", "a1", &PaceOverride::Unlimited)
+            .await
+            .unwrap();
+        let sooner = pace_allows_before(&store, "audible", "a1", &pace, parked_until)
+            .await
+            .expect("sooner");
+        assert!(sooner <= Utc::now());
     }
 
     #[test]

@@ -723,6 +723,7 @@ const MANUAL_JSON_BODIES: &[&str] = &[
     "/api/node/v1/uploads/{upload_id}/commit",
     "/api/auth/clerk-consent",
     "/api/clerk/v1/token",
+    "/api/portal/sources/{source}/connections/{account_id}/pace",
 ];
 
 /// The three refusals axum's `Json` extractor writes before a handler
