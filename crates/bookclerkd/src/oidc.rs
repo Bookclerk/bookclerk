@@ -619,7 +619,10 @@ async fn token_refresh(
     };
     if let Some(req_client) = form.client_id.as_deref() {
         if req_client != client_id {
-            return Err(TokenError::invalid_client());
+            return Err(TokenError::new(
+                TokenErrorCode::InvalidGrant,
+                "The refresh token was issued to another client.",
+            ));
         }
     }
     // Confidential clients must present client_secret on refresh (client_secret_post).

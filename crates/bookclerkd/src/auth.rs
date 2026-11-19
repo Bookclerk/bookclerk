@@ -2029,6 +2029,11 @@ pub(crate) async fn caller_subject(
 /// Portal callers must resolve to their own prefs key. If the portal-identity
 /// lookup times out or fails after portal auth, this returns an error instead of
 /// falling back to [`OPERATOR_PREFS_KEY`].
+///
+/// # Errors
+///
+/// `CallerRefusal::Status` 401 when the portal session is gone, and
+/// `CallerRefusal::SessionCheckUnavailable` when it could not be checked.
 pub async fn prefs_subject_for_caller(
     state: &AppState,
     headers: &HeaderMap,
@@ -2485,7 +2490,7 @@ pub(crate) async fn resolve_card_in(
 
 /// Seconds a browser is told to wait before retrying when its session
 /// could not be checked.
-const SESSION_CHECK_RETRY_AFTER_SECS: u64 = 2;
+pub(crate) const SESSION_CHECK_RETRY_AFTER_SECS: u64 = 2;
 
 /// Machine slug of [`session_check_unavailable`]'s body.
 pub(crate) const SESSION_CHECK_UNAVAILABLE: &str = "session_check_unavailable";
@@ -3636,8 +3641,13 @@ pub async fn delete_user(
 ) -> Result<Response, CallerRefusal> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
+    // A lookup that did not answer is not "self": an operator still goes
+    // ahead, and a portal caller gets the session-check refusal from
+    // `authorize_provisioner`.
     let portal_self_id = optional_portal_identity(&library, &headers)
-        .await?
+        .await
+        .ok()
+        .flatten()
         .and_then(|identity| identity.user_id);
     let is_self = portal_self_id == Some(user_id);
     let target = library
@@ -4074,8 +4084,14 @@ pub async fn set_password(
     if password.is_empty() {
         return Err(StatusCode::BAD_REQUEST.into());
     }
-    let portal_uid = optional_portal_identity(&library, &headers)
-        .await?
+    // An operator naming `user_id` goes ahead when the portal lookup did
+    // not answer (`authorize_provisioner` refuses a portal caller then);
+    // self-service needs the lookup.
+    let portal = optional_portal_identity(&library, &headers).await;
+    let portal_uid = portal
+        .as_ref()
+        .ok()
+        .and_then(|identity| identity.as_ref())
         .and_then(|identity| identity.user_id);
     let (target_id, actor_s, self_service) = if let Some(uid) = body.user_id {
         if portal_uid == Some(uid) {
@@ -4095,7 +4111,10 @@ pub async fn set_password(
     } else if let Some(uid) = portal_uid {
         (uid, format!("user:{uid}"), true)
     } else {
-        return Err(StatusCode::UNAUTHORIZED.into());
+        return Err(match portal {
+            Err(refusal) => refusal,
+            Ok(_) => StatusCode::UNAUTHORIZED.into(),
+        });
     };
     if self_service {
         let existing_hash = library
@@ -5644,6 +5663,42 @@ pub(crate) mod tests {
             let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(body["error"], SESSION_CHECK_UNAVAILABLE, "{method} {uri}");
         }
+        // A browser navigating to the provider step-up gets the branded
+        // page, still with `Retry-After`.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/oidc/elevate?provider=p")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(res.headers().contains_key(header::RETRY_AFTER));
+        assert!(res.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"));
+        // The operator token still deletes a user while the portal lookup
+        // fails, even with a stale portal cookie in the request.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri("/api/users/999999")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::AUTHORIZATION, "Bearer op-token-handler-503")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

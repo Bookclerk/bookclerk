@@ -1170,7 +1170,10 @@ fn add_session_check_refusal(op: &mut Operation) {
     };
     // A route that names the refusal in its own words but declares no
     // body (a handler checking the session itself) is the refusal alone.
-    let alone = response.content.is_empty()
+    let alone = !response
+        .content
+        .keys()
+        .any(|media| media.starts_with("application/json"))
         && response
             .description
             .contains(crate::auth::SESSION_CHECK_UNAVAILABLE);

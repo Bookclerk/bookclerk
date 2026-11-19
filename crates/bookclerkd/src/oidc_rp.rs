@@ -1213,7 +1213,9 @@ async fn login_start(
             (crate::http_error::ErrorJson = "application/json"),
             (String = "text/html"),
         )),
-        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", headers(("Retry-After" = u64, description = "Seconds to wait before asking again.")), content(
+            (String = "text/html"),
+        )),
     ),
 )]
 async fn elevate_start(
@@ -1222,7 +1224,25 @@ async fn elevate_start(
     Query(q): Query<ProviderQuery>,
 ) -> Result<Response, CallerRefusal> {
     let library = state.library_snapshot().await;
-    let identity = require_portal_identity(&library, &headers).await?;
+    let identity = match require_portal_identity(&library, &headers).await {
+        Ok(identity) => identity,
+        // A browser reaches this route by navigating, so it gets the
+        // branded page (with `Retry-After`) rather than a JSON body.
+        Err(CallerRefusal::SessionCheckUnavailable)
+            if !crate::http_error::wants_json(&headers, "/api/auth/oidc/elevate") =>
+        {
+            let mut page = crate::http_error::document_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                crate::auth::SESSION_CHECK_UNAVAILABLE_MESSAGE,
+            );
+            page.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from(crate::auth::SESSION_CHECK_RETRY_AFTER_SECS),
+            );
+            return Ok(page);
+        }
+        Err(refusal) => return Err(refusal),
+    };
     let (role, _, user, _) = resolve_portal_caller_identity(&library, &identity).await;
     if role != "owner" {
         return Err(StatusCode::FORBIDDEN.into());
