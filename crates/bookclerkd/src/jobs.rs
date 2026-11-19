@@ -91,6 +91,23 @@ impl std::fmt::Display for JobUnroutable {
 
 impl std::error::Error for JobUnroutable {}
 
+/// A job failure another attempt cannot fix, so the job fails without
+/// going back to the queue whatever attempts it has left.
+///
+/// A hand-started acquire that the store asked to slow down returns it:
+/// a retry would ask the store again during the cool-down the job just
+/// recorded, and only a new request from a person may do that.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobFailedForGood(pub String);
+
+impl std::fmt::Display for JobFailedForGood {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for JobFailedForGood {}
+
 /// Types a requirement-resolution failure for admission callers.
 ///
 /// [`bookclerk_library::LibraryError::Conflict`] from
@@ -1161,12 +1178,15 @@ pub async fn run_acquire(
                     "the store asked to slow down; downloads on this account pause"
                 );
                 if !mode.paced {
-                    anyhow::bail!(
+                    // Final: a retry of this unpaced job would ask the
+                    // store again through the cool-down; only a new request
+                    // from a person may.
+                    return Err(JobFailedForGood(format!(
                         "{} asked to slow down downloads on account {} until {until}; \
                          acquired={ok} matched={matched} failed={failed}",
-                        book.source,
-                        book.account_id
-                    );
+                        book.source, book.account_id
+                    ))
+                    .into());
                 }
                 held.insert(
                     account_key.clone(),

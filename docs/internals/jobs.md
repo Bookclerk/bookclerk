@@ -583,7 +583,8 @@ holds across plugin instances and every node of the cluster.
   set aside like any other when the wait is long. An acquire a person starts in the
   web app or CLI leaves `paced` unset: its downloads count against the
   budget but are never held, and when the store answers `rateLimited` the
-  job records the cool-down and stops with the store's answer instead of
+  job records the cool-down and fails for good with the store's answer
+  (it does not go back to the queue for another attempt) instead of
   retrying into the throttle. `paced` is part of the dedup key, so a
   hand-started acquire is never folded into a waiting automatic one.
 - **Ledger.** Every title Bookclerk may have fetched from the store is a
