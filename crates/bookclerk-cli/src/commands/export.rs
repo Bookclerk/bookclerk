@@ -75,11 +75,39 @@ pub struct ExportRow {
     /// The person's tags for the work, comma separated; `None` without a
     /// person or when they set none.
     pub tags: Option<String>,
-    /// Whether the person finished the work; `false` without a person.
-    pub is_finished: bool,
+    /// Whether the person finished the work; `None` without a person, so
+    /// the cell is empty (JSON `null`) rather than claiming "unfinished".
+    pub is_finished: Option<bool>,
 }
 
 impl ExportRow {
+    /// The row of account title `title`, with no work or per-person state
+    /// yet.
+    fn of(title: AcquireTitle) -> Self {
+        Self {
+            holding_id: title.holding_id,
+            edition_id: title.edition_id,
+            work_id: None,
+            source: title.source,
+            account_id: title.account_id,
+            marketplace: title.marketplace,
+            product_id: title.product_id,
+            asin: title.asin,
+            isbn: title.isbn,
+            title: title.title,
+            subtitle: title.subtitle,
+            authors: title.authors,
+            narrators: title.narrators,
+            series: title.series,
+            series_index: title.series_index,
+            acquire_status: title.status.as_str().to_string(),
+            pdf_status: title.pdf_status.as_str().to_string(),
+            storage_key: title.storage_key,
+            tags: None,
+            is_finished: None,
+        }
+    }
+
     /// The id the title is exported under: its ASIN, else its ISBN, else
     /// its store product id.
     fn label(&self) -> &str {
@@ -102,7 +130,11 @@ impl ExportRow {
             &self.pdf_status,
             self.storage_key.as_deref().unwrap_or(""),
             self.tags.as_deref().unwrap_or(""),
-            if self.is_finished { "true" } else { "false" },
+            match self.is_finished {
+                Some(true) => "true",
+                Some(false) => "false",
+                None => "",
+            },
         ]
     }
 
@@ -150,7 +182,7 @@ pub fn export_json(path: &Path, rows: &[ExportRow]) -> anyhow::Result<()> {
 }
 
 /// Writes rows to an `.xlsx` workbook with the same columns as CSV
-/// (`is_finished` as a boolean cell).
+/// (`is_finished` as a boolean cell, blank without a person).
 ///
 /// # Errors
 ///
@@ -167,7 +199,9 @@ pub fn export_xlsx(path: &Path, rows: &[ExportRow]) -> anyhow::Result<()> {
         for (col, cell) in (0u16..).zip(row.cells()).take(COLUMNS.len() - 1) {
             worksheet.write(r, col, cell)?;
         }
-        worksheet.write(r, 10, row.is_finished)?;
+        if let Some(finished) = row.is_finished {
+            worksheet.write(r, 10, finished)?;
+        }
     }
     workbook.save(path)?;
     Ok(())
@@ -194,65 +228,52 @@ pub async fn load_rows(
     ids: &[String],
     user: Option<&UserRecord>,
 ) -> anyhow::Result<Vec<ExportRow>> {
-    let mut titles: Vec<AcquireTitle> = Vec::new();
+    let mut rows: Vec<ExportRow> = Vec::new();
     let mut after: Option<String> = None;
     loop {
         let page = store
             .acquire_titles_page(account, after.as_deref(), EXPORT_PAGE)
             .await?;
-        titles.extend(page.titles);
+        rows.extend(page.titles.into_iter().filter_map(|title| {
+            let book_uuid = title.book_uuid.clone();
+            let row = ExportRow::of(title);
+            (ids.is_empty() || ids.iter().any(|id| row.matches(id, book_uuid.as_deref())))
+                .then_some(row)
+        }));
         match page.next {
             Some(next) => after = Some(next),
             None => break,
         }
     }
+    // Works and the person's state are read only for the titles kept.
     let works = store
-        .works_of_editions(titles.iter().map(|t| t.edition_id.clone()).collect())
+        .works_of_editions(rows.iter().map(|row| row.edition_id.clone()).collect())
         .await?;
     let states: HashMap<String, (Option<String>, bool)> = match user {
-        Some(user) => store
-            .user_title_states(&[user.id])
-            .await?
-            .into_iter()
-            .map(|state| (state.work_id, (state.tags, state.is_finished)))
-            .collect(),
+        Some(user) => {
+            let work_ids: Vec<String> = works.values().cloned().collect();
+            store
+                .user_title_states_of_works(user.id, &work_ids)
+                .await?
+                .into_iter()
+                .map(|state| (state.work_id, (state.tags, state.is_finished)))
+                .collect()
+        }
         None => HashMap::new(),
     };
-    Ok(titles
-        .into_iter()
-        .filter_map(|title| {
-            let book_uuid = title.book_uuid.clone();
-            let work_id = works.get(&title.edition_id).cloned();
-            let (tags, is_finished) = work_id
+    for row in &mut rows {
+        row.work_id = works.get(&row.edition_id).cloned();
+        if user.is_some() {
+            let (tags, finished) = row
+                .work_id
                 .as_ref()
                 .and_then(|work| states.get(work).cloned())
                 .unwrap_or((None, false));
-            let row = ExportRow {
-                holding_id: title.holding_id,
-                edition_id: title.edition_id,
-                work_id,
-                source: title.source,
-                account_id: title.account_id,
-                marketplace: title.marketplace,
-                product_id: title.product_id,
-                asin: title.asin,
-                isbn: title.isbn,
-                title: title.title,
-                subtitle: title.subtitle,
-                authors: title.authors,
-                narrators: title.narrators,
-                series: title.series,
-                series_index: title.series_index,
-                acquire_status: title.status.as_str().to_string(),
-                pdf_status: title.pdf_status.as_str().to_string(),
-                storage_key: title.storage_key,
-                tags: tags.filter(|tags| !tags.is_empty()),
-                is_finished,
-            };
-            (ids.is_empty() || ids.iter().any(|id| row.matches(id, book_uuid.as_deref())))
-                .then_some(row)
-        })
-        .collect())
+            row.tags = tags.filter(|tags| !tags.is_empty());
+            row.is_finished = Some(finished);
+        }
+    }
+    Ok(rows)
 }
 
 /// Writes `rows` to `path` in the format the flags or the extension pick
@@ -357,14 +378,21 @@ mod tests {
         assert_eq!(all[0].acquire_status, "acquired");
         assert_eq!(all[0].storage_key.as_deref(), Some("a/First.m4b"));
         assert_eq!(all[1].acquire_status, "not_acquired");
-        assert!(all.iter().all(|row| row.tags.is_none() && !row.is_finished));
+        assert!(all
+            .iter()
+            .all(|row| row.tags.is_none() && row.is_finished.is_none()));
 
         let mut view = load_rows(&store, None, &[], Some(&riley)).await.unwrap();
         view.sort_by(|a, b| a.product_id.cmp(&b.product_id));
         assert_eq!(view.len(), 2, "a person's view lists the whole library");
         assert_eq!(view[0].tags.as_deref(), Some("favourite,re-listen"));
-        assert!(view[0].is_finished);
-        assert!(view[1].tags.is_none() && !view[1].is_finished);
+        assert_eq!(view[0].is_finished, Some(true));
+        assert!(view[1].tags.is_none());
+        assert_eq!(
+            view[1].is_finished,
+            Some(false),
+            "a person's view says unfinished"
+        );
 
         let other = load_rows(&store, Some("other"), &[], Some(&riley))
             .await
@@ -406,6 +434,24 @@ mod tests {
         let xlsx_path = dir.path().join("library.xlsx");
         write_export(&xlsx_path, &rows, false, false, false).unwrap();
         assert!(std::fs::metadata(&xlsx_path).unwrap().len() > 0);
+
+        // Without a person the finished cell is empty, not "false".
+        let whole = load_rows(&store, Some("acct"), &[], None).await.unwrap();
+        let whole_csv = dir.path().join("whole.csv");
+        write_export(&whole_csv, &whole, false, false, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&whole_csv).unwrap().lines().nth(1),
+            Some("B0EXPORT01,acct,First,,,,acquired,not_acquired,a/First.m4b,,")
+        );
+        let whole_json = dir.path().join("whole.json");
+        write_export(&whole_json, &whole, false, false, false).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&whole_json).unwrap()).unwrap();
+        assert!(parsed[0]["is_finished"].is_null());
+        assert!(parsed[0]["tags"].is_null());
+        let whole_xlsx = dir.path().join("whole.xlsx");
+        write_export(&whole_xlsx, &whole, false, false, false).unwrap();
+        assert!(std::fs::metadata(&whole_xlsx).unwrap().len() > 0);
 
         let fallback = dir.path().join("library.txt");
         write_export(&fallback, &rows, false, false, false).unwrap();

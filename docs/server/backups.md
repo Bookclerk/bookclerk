@@ -208,7 +208,8 @@ by `--csv`, `--json`, `--xlsx` or the file's extension, CSV otherwise).
 `bookclerk library export` is the same command.
 
 - Without `--user` the file lists the whole library, and the `tags` and
-  `is_finished` columns are empty, because those belong to each person.
+  `is_finished` columns are empty (`null` in JSON), because those belong to
+  each person.
 - With `--user <login name or id>` the file lists the same titles with
   that person's own tags and finished flags.
 - `--account` keeps one store account's titles, and ids after the flags
