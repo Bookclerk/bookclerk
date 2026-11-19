@@ -1635,12 +1635,11 @@ jobs:
           name: ci-plan
           path: ${{ runner.temp }}/ci-plan
 
-      # The image ships Node.js and the browsers but no Python, which the
-      # plan scripts need.
-      - name: Install Python
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends python3
+      # The image ships Node.js, Python and the browsers. Its root user
+      # doesn't own the runner's checkout, and git refuses a repository with
+      # another owner, which the plan scripts read.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Validate CI plan
         run: python3 scripts/ci-exec.py validate

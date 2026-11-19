@@ -774,9 +774,9 @@ host change that breaks the window. Windows and macOS don't run it yet.
 The web app's Storybook stories, each checked with axe-core and compared
 with a baseline screenshot at two viewports in light and dark. The job runs
 inside the Playwright image pinned by digest, so every run renders with the
-same browser and fonts, and needs no Rust toolchain. It installs Python for
-the plan scripts, builds Storybook and runs the checks in about two minutes,
-and uploads the `ui-visual` artifact.
+same browser and fonts, and needs no Rust toolchain (the image already has
+the Python the plan scripts need). It builds Storybook, runs the checks and
+uploads the `ui-visual` artifact.
 
 Only a change under `ui/` selects it, not a change to the host that serves
 `ui/dist`. Baselines live in a separate repository, named by
