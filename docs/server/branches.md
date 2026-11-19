@@ -746,8 +746,9 @@ title, and the host fails it without fetching anything.
    fence about once a second.
 3. **Commit.** The host sends `POST /api/node/v1/uploads/{upload_id}/commit`.
    One canonical batch, gated on the live fence, marks the title
-   acquired, publishes `book_acquired`, and (for the job's last title)
-   completes the job.
+   acquired, records a stored copy of the edition on each destination
+   the primary audio was written to (`edition_copies`), publishes
+   `book_acquired`, and (for the job's last title) completes the job.
 
 A destination sees the end of its stream only after the whole body
 matched. A mismatch, a lost fence or a broken connection ends every
