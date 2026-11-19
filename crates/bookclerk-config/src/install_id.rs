@@ -95,12 +95,13 @@ impl InstallId {
     ///
     /// Returns an error when the file cannot be read or written.
     pub fn load_or_create(files_dir: &Path) -> std::io::Result<Self> {
+        let _lock = lock_id(files_dir)?;
         match std::fs::read_to_string(id_path(files_dir)) {
             Ok(text) => match Self::parse(&text) {
                 Some(id) => Ok(id),
-                None => Self::reset(files_dir),
+                None => Self::reset_locked(files_dir),
             },
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Self::reset(files_dir),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Self::reset_locked(files_dir),
             Err(err) => Err(err),
         }
     }
@@ -116,6 +117,12 @@ impl InstallId {
     ///
     /// Returns an error when the file cannot be written.
     pub fn reset(files_dir: &Path) -> std::io::Result<Self> {
+        let _lock = lock_id(files_dir)?;
+        Self::reset_locked(files_dir)
+    }
+
+    /// [`Self::reset`] for a caller that already holds the ID lock.
+    fn reset_locked(files_dir: &Path) -> std::io::Result<Self> {
         let id = Self::generate()?;
         write_atomically(&id_path(files_dir), id.as_str())?;
         if let Err(err) = std::fs::remove_file(files_dir.join(CHECKIN_STAMP_FILE)) {
@@ -125,6 +132,21 @@ impl InstallId {
         }
         Ok(id)
     }
+}
+
+/// Takes the exclusive lock on `install-id.lock`, held until the returned
+/// file drops. The daemon's check-in, an upload and a CLI run can all load
+/// the ID at once; under the lock only the first creates it and the rest
+/// read what it wrote, so one install never gets two IDs.
+fn lock_id(files_dir: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::create_dir_all(files_dir)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(files_dir.join(format!("{INSTALL_ID_FILE}.lock")))?;
+    file.lock()?;
+    Ok(file)
 }
 
 /// Path of the ID file.
@@ -229,6 +251,22 @@ pub fn send_checkin(config: &DiagnosticsConfig, checkin: &CheckIn) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_loads_agree_on_one_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let ids: Vec<String> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..16)
+                .map(|_| s.spawn(|| InstallId::load_or_create(dir.path()).unwrap()))
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap().as_str().to_string())
+                .collect()
+        });
+        let on_disk = InstallId::load_or_create(dir.path()).unwrap();
+        assert!(ids.iter().all(|id| id == on_disk.as_str()), "{ids:?}");
+    }
 
     #[test]
     fn generated_ids_parse_and_differ() {
