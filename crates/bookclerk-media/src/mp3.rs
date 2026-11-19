@@ -1,10 +1,10 @@
 //! Native MP3 re-encode via Symphonia (decode) + LAME (encode).
 
 use std::fs::File;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
-use mp3lame_encoder::{Builder, DualPcm, Encoder, FlushNoGap, InterleavedPcm};
+use mp3lame_encoder::{Builder, DualPcm, Encoder, FlushGap, MonoPcm};
 use symphonia::core::audio::GenericAudioBufferRef;
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::codecs::CodecParameters;
@@ -241,7 +241,7 @@ pub fn encode_to_mp3_native(
     // at minimum one whole MP3 frame.
     mp3_chunk.reserve(mp3lame_encoder::max_required_buffer_size(0));
     encoder
-        .flush_to_vec::<FlushNoGap>(&mut mp3_chunk)
+        .flush_to_vec::<FlushGap>(&mut mp3_chunk)
         .map_err(|err| MediaError::Native(format!("lame flush: {err:?}")))?;
     if !mp3_chunk.is_empty() {
         write_output_within_budget(
@@ -251,6 +251,7 @@ pub fn encode_to_mp3_native(
             max_output_bytes,
         )?;
     }
+    write_lame_tag(&encoder, &mut out_file)?;
     out_file.sync_all()?;
 
     let expected_rate = max_sample_rate
@@ -423,7 +424,9 @@ fn encode_pcm_chunk(
     out.reserve(mp3lame_encoder::max_required_buffer_size(pcm.len()));
     if channels == 1 {
         encoder
-            .encode_to_vec(InterleavedPcm(pcm), out)
+            // One channel goes in as `MonoPcm`: `InterleavedPcm` counts
+            // samples as stereo pairs, so mono audio came out half as long.
+            .encode_to_vec(MonoPcm(pcm), out)
             .map_err(|err| MediaError::Native(format!("lame encode: {err:?}")))?;
     } else {
         let frames = pcm.len() / 2;
@@ -498,6 +501,32 @@ fn append_pcm_i16(
     }
 }
 
+/// Fills the Xing/Info frame LAME reserved at the start of `out_file` with
+/// the finished stream's frame count, so readers get an exact running time
+/// for variable bit rate output instead of estimating it from the opening.
+///
+/// LAME writes no ID3 tag here, so the reserved frame is the first bytes of
+/// the file. A no-op when the encoder reserved no frame.
+///
+/// # Errors
+///
+/// Returns an error when LAME cannot build the frame or the file cannot be
+/// written.
+fn write_lame_tag(encoder: &Encoder, out_file: &mut File) -> Result<()> {
+    let size = encoder.lame_tag_size();
+    if size == 0 {
+        return Ok(());
+    }
+    let mut bytes = Vec::with_capacity(size);
+    encoder
+        .lame_tag_encode_to_vec(&mut bytes)
+        .ok_or_else(|| MediaError::Native("lame tag frame not built".into()))?;
+    out_file.seek(SeekFrom::Start(0))?;
+    out_file.write_all(&bytes)?;
+    out_file.seek(SeekFrom::End(0))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,6 +591,19 @@ mod tests {
         assert!(
             size > 1_000,
             "encoded MP3 is implausibly small: {size} bytes"
+        );
+        let record =
+            bookclerk_tags::read_all(&std::fs::read(&encoded).expect("read mp3")).expect("tags");
+        let duration = record.duration.expect("running time");
+        assert_eq!(
+            duration.precision,
+            bookclerk_tags::DurationPrecision::Exact,
+            "the LAME Info/Xing frame states the frame count"
+        );
+        assert!(
+            duration.ms.abs_diff(2_000) < 100,
+            "running time {} ms for 2 s of audio",
+            duration.ms
         );
     }
 
