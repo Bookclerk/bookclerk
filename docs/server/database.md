@@ -668,7 +668,7 @@ collection deletes unreferenced objects.
 Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `accounts`, `books`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
-`operator_sessions`, `account_links`, `member_account_rules`, `patron_scopes`,
+`operator_sessions`, `account_links`, `patron_controls`, `patron_scopes`,
 `patron_scope_keys`, `account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `discover_candidates`, `discover_store_calls`,
 `discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
@@ -679,9 +679,11 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `plugin_databases` and `bookclerk_schema_migrations`, plus the library
 model tables below.
 
-`member_account_rules` holds the operator's per-member rule on store
-accounts: a row with `may_connect = 0` stops that user from connecting
-store accounts here, and no row allows it. `patron_scopes` holds a
+`patron_controls` holds the member controls an Administrator set for one
+Member, as JSON naming only the controls that differ from the library's
+default (the `core.member_controls` configuration document); a Member
+with no row follows the default for every control (see
+[Sharing](../guide/sharing.md#limit-what-a-patron-may-do)). `patron_scopes` holds a
 Member's own patron scope as JSON; a Member with no row follows the
 library's default scope (see [Sharing](../guide/sharing.md#limit-what-a-patron-sees)). `patron_scope_keys`
 holds a scope's include and exclude values as rows, keyed by a hash of

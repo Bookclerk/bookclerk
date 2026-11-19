@@ -34,6 +34,7 @@ mod keeper;
 mod leases;
 mod link_imports;
 mod live;
+mod member_controls;
 mod node_queue;
 mod node_status;
 mod output;
@@ -97,10 +98,9 @@ pub use cache::{
 pub use carried_accounts::{
     account_share_peers, accounts_to_carry, accounts_to_carry_where, branch_person,
     identity_may_connect_accounts, import_carried_accounts, import_offered_accounts, link_peer,
-    member_account_rules, member_accounts, member_may_connect_accounts, node_peer,
-    record_accounts_sent, record_accounts_sent_to, revoke_unlinked_account,
-    set_member_may_connect_accounts, withdraw_person_account, CarriedImport, MemberAccount,
-    Withdrawn, SHARE_RECEIVED, SHARE_SENT,
+    member_accounts, member_may_connect_accounts, node_peer, record_accounts_sent,
+    record_accounts_sent_to, revoke_unlinked_account, withdraw_person_account, CarriedImport,
+    MemberAccount, Withdrawn, SHARE_RECEIVED, SHARE_SENT,
 };
 pub use catalog_lookup::{
     answer_questions, ask_branches, branch_listing_key, branch_listings_for_works,
@@ -211,6 +211,14 @@ pub(crate) use live::{
     bump, bump_if_any, bump_if_stamped, bump_on, exec_bumped_via, sea_exec, sea_probe, Bump,
 };
 pub use live::{changed_topics, live_revisions, LiveRevision, LiveRevisions, LiveTopic};
+pub use member_controls::{
+    assigned_member_controls, default_member_controls, effective_controls,
+    load_default_member_controls, member_control_overrides, parse_member_controls,
+    parse_user_controls_request, role_follows_default_controls, role_has_controls,
+    set_default_member_controls, set_member_control_overrides, set_member_control_overrides_for,
+    user_may, AssignedControls, ControlOverrides, MemberControl, MemberControls, PutUserControls,
+    MEMBER_CONTROLS_NAMESPACE,
+};
 pub use node_queue::{
     is_node_consumer_id, is_valid_node_id, node_consumer_id, node_queue_name, publish_node_message,
     publish_to_all_nodes, NodeMessage, NODE_CONSUMER_PREFIX,

@@ -589,7 +589,8 @@ node, typically a node's own `local` output.
   placement, are refused.
 - It adds to the library's outputs on that node, rather than replacing
   them. Acquires a branch node uploads reach every destination deployed on
-  the shared node that received them, node-local ones included.
+  the shared node that received them whose filter takes the book,
+  node-local ones included.
 
 ### Running on branch nodes
 

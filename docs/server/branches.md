@@ -248,21 +248,25 @@ accounts and which of them would travel.
   as it is, and one
   that came without a secret is not added. The join's answer counts what
   was added, already there, taken, or not kept.
-- **The branch operator's rule.** Each operator decides per member
-  whether they may connect store accounts there (**Settings → User
-  Management**, `PATCH /api/users/{id}` with `may_connect_accounts`). The
-  rule is on by default, and nobody can change their own. A member it is off for adds nothing from a join,
+- **The branch operator's rule.** Each operator decides whether members
+  may connect store accounts there with the **Link store accounts**
+  member control, for every member or one (**Settings → User
+  Management**, `PUT /api/users/default-controls` and
+  `PUT /api/users/{id}/controls`; see
+  [Sharing](../guide/sharing.md#limit-what-a-patron-may-do)). It is on
+  by default and nobody can change their own. An Owner or the operator
+  can turn it off for one Administrator too; Owners are never limited. A member it is off for adds nothing from a join,
   and the connect routes answer `403`. A sign-in that finishes after the
-  rule was turned off is not linked, and an account it newly stored (or
-  found revoked) is revoked again and its secrets deleted. That cleanup,
-  an allowed sign-in's link and a revoke of the same store account each
-  take the account's write lock (`bookclerk_slots`) first, so an allowed
-  sign-in of the same account either links before the cleanup (which then
-  keeps it) or finds its credentials gone and asks the member to sign in
-  again. A join already adding accounts when
-  the rule is turned off (or the member is disabled) stops: each account
-  is added in its own batch that checks the rule again, and the ones not
-  yet added count as not kept.
+  control was turned off is not linked, and an account it newly stored
+  (or found revoked) is revoked again and its secrets deleted. That
+  cleanup, an allowed sign-in's link and a revoke of the same store
+  account each take the account's write lock (`bookclerk_slots`) first,
+  so an allowed sign-in of the same account either links before the
+  cleanup (which then keeps it) or finds its credentials gone and asks the
+  member to sign in again. A join already adding accounts when the control
+  is turned off (or the member is disabled) stops: each account is added
+  in its own batch that checks the member's controls again, and the ones
+  not yet added count as not kept.
 
 ### Adding connections later, and disconnecting everywhere
 
@@ -722,10 +726,17 @@ node would be trusted to claim.
 Files stream **through** the owner to its destinations. Nothing is staged
 on a shared node's disk.
 
+Each title goes only to the destinations whose filter takes it (see
+[Choosing which books a destination takes](output.md#choosing-which-books-a-destination-takes)).
+The owner's `acquire.targets` answer lists, for each title, the ids of
+those destinations in `destinations`. An empty list means none takes the
+title, and the host fails it without fetching anything.
+
 1. **Grant.** The host sends `upload.grant` over the node socket, with
    the title's holding id from the plan and a manifest. The manifest lists each distinct file content once (`size`,
    `sha256`, `content_type`), with a list of **copies**, one
-   `{destination, key}` per owner destination. An audio file the host
+   `{destination, key}` per destination the title goes to, and no
+   other. An audio file the host
    could probe also carries `probe` (`bitrate_kbps`, `lossless`,
    `source_store`), which the owner keeps on the file's row once the
    upload commits (see [What a stored file's row
@@ -735,7 +746,11 @@ on a shared node's disk.
 2. **Send.** The host sends
    `PUT /api/node/v1/uploads/{upload_id}/files/{n}` per file, with
    `Authorization: Bookclerk-Upload <token>`. The owner tees the body,
-   chunk by chunk, into every destination under that destination's key.
+   chunk by chunk, into each of those destinations under that
+   destination's key. If the title's destinations change before the
+   commit (one is deployed or undeployed, or a filter is edited), the
+   upload is refused with `destinations_changed` and the title fails on
+   the host.
    It checks the size and SHA-256 as it streams, and re-checks the job's
    fence about once a second.
 3. **Commit.** The host sends `POST /api/node/v1/uploads/{upload_id}/commit`.
@@ -905,7 +920,7 @@ bookclerk plugins deploy <instance_id> --node <node_id>
 node, or handing it to the scheduler (`--replicas`), is refused.
 
 Uploads reach every destination deployed on the shared node that granted
-them, node-local ones included.
+them whose filter takes the title, node-local ones included.
 
 ## Branches of branches
 
