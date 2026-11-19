@@ -187,6 +187,16 @@ pub use store::{
     },
     listening::{ListeningIdentifiers, ListeningMatch, ListeningProgressWrite},
     overrides::{ConflictCursor, PinOutcome, ResolutionConflict, MAX_CONFLICT_PAGE},
+    playback::{
+        reaches_end, Bookmark, NewPlaybackSession, PlaybackChange, PlaybackEdition, PlaybackEvent,
+        PlaybackMs, PlaybackProgress, PlaybackProgressEdit, PlaybackSession, PlaybackSync,
+        PlayerKind, ProgressCursor, MAX_BOOKMARKS_PER_EDITION, MAX_BOOKMARK_TITLE_BYTES,
+        MAX_PLAYBACK_MS, MAX_PLAYER_NAME_BYTES,
+    },
+    playback_request::{
+        parse_playback_sync_request, parse_track_path, PlaybackSyncBody, TrackPath,
+        MAX_PLAYBACK_SYNC_BYTES, MAX_PLAYBACK_TRACKS,
+    },
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
     prefer_enrichment_source,

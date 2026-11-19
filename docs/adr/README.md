@@ -49,6 +49,10 @@ a later change supersedes one, its **Status** says so.
   instance is a destination with its own template and filter,
   opportunistic change feeds and host-held webhooks.
 
+- [Playback](playback.md): playback is a host feature with one core
+  (progress, sessions, one rights check, one stream route) that the web
+  player, the desktop window and app-compatible clients share.
+
 ## Adding a record
 
 A new architecture decision gets a new file here, listed above and in

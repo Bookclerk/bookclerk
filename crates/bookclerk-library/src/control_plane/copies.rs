@@ -621,6 +621,146 @@ pub async fn authorize_copy(
     }))
 }
 
+/// One audio file a player streams for an edition, on one destination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaybackTrack {
+    /// Storage key on the destination.
+    pub key: String,
+    /// Media type of the file, once probed.
+    pub content_type: Option<String>,
+    /// Average bitrate in kilobits per second, once probed.
+    pub bitrate_kbps: Option<u32>,
+    /// True for a lossless encoding; false also for a file not probed.
+    pub lossless: bool,
+}
+
+/// What a person may play of one edition ([`plan_playback`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaybackPlan {
+    /// The listener.
+    pub person: i64,
+    /// The edition.
+    pub edition_id: String,
+    /// The edition's tracks on each destination that holds its primary
+    /// audio, by destination id: the primary audio first, then its other
+    /// parts in key order. A track's place in its list is its stream
+    /// index. Chapter files of a title also stored whole are left out,
+    /// since they repeat the primary audio.
+    pub destinations: BTreeMap<String, Vec<PlaybackTrack>>,
+    /// Per destination, the digest of the file rows the list was made
+    /// from: a play session stores it, and [`authorize_playback`]
+    /// compares it.
+    digests: BTreeMap<String, String>,
+}
+
+impl PlaybackPlan {
+    /// The digest of the edition's file rows on `destination`, or `None`
+    /// when the destination does not hold the edition.
+    #[must_use]
+    pub fn digest(&self, destination: &str) -> Option<&str> {
+        self.digests.get(destination).map(String::as_str)
+    }
+}
+
+/// Decides whether `person` may play this library's copy of
+/// `edition_id`, and lists its tracks: the one check behind the playback
+/// manifest, a new play session and every stream request.
+///
+/// The edition must be one the person may take (`visible_to`, the same
+/// rule a copy grant uses, so the Download permission of patron scopes
+/// lands here too) and one this library has acquired, with its primary
+/// audio recorded on at least one destination. Whether the person's
+/// patron scope shows them the work at all is the caller's check
+/// ([`crate::LibraryStore::work_in_scope`]).
+///
+/// # Arguments
+///
+/// * `store` - The library.
+/// * `person` - The listener (`users.id`).
+/// * `edition_id` - The edition.
+///
+/// # Returns
+///
+/// The plan, or `None` for "you may not" and "there is no copy" alike.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn plan_playback(
+    store: &LibraryStore,
+    person: i64,
+    edition_id: &str,
+) -> Result<Option<PlaybackPlan>> {
+    if visible_to(person, titles_of_edition(store, edition_id).await?).is_empty() {
+        return Ok(None);
+    }
+    let Some(plan) = edition_plan(store, person, edition_id).await? else {
+        return Ok(None);
+    };
+    let destinations: BTreeMap<String, Vec<PlaybackTrack>> = plan
+        .destinations
+        .into_iter()
+        .map(|(destination, files)| {
+            let tracks = files
+                .into_iter()
+                .filter(|file| matches!(file.file.role, CopyRole::Audio | CopyRole::Part))
+                .map(|file| PlaybackTrack {
+                    key: file.key,
+                    content_type: file.file.content_type,
+                    bitrate_kbps: file
+                        .file
+                        .probe
+                        .as_ref()
+                        .and_then(|probe| probe.bitrate_kbps),
+                    lossless: file.file.probe.is_some_and(|probe| probe.lossless),
+                })
+                .collect();
+            (destination, tracks)
+        })
+        .collect();
+    Ok(Some(PlaybackPlan {
+        person,
+        edition_id: plan.edition_id,
+        destinations,
+        digests: plan.digests,
+    }))
+}
+
+/// The tracks a play session may still stream, or `None`.
+///
+/// Read afresh on every stream request: the person must still be allowed
+/// the edition ([`plan_playback`]), and the edition's files on
+/// `destination` must be the ones the session's `files_digest` was made
+/// from, so a replaced file ends the session's streams instead of
+/// splicing two encodings.
+///
+/// # Arguments
+///
+/// * `store` - The library.
+/// * `person` - The session's listener.
+/// * `edition_id` - The session's edition.
+/// * `destination` - The destination the session streams from.
+/// * `files_digest` - The digest the session stored when it opened.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn authorize_playback(
+    store: &LibraryStore,
+    person: i64,
+    edition_id: &str,
+    destination: &str,
+    files_digest: &str,
+) -> Result<Option<Vec<PlaybackTrack>>> {
+    let Some(mut plan) = plan_playback(store, person, edition_id).await? else {
+        return Ok(None);
+    };
+    if plan.digest(destination) != Some(files_digest) {
+        return Ok(None);
+    }
+    Ok(plan.destinations.remove(destination))
+}
+
 #[cfg(test)]
 #[path = "copies_tests.rs"]
 mod tests;

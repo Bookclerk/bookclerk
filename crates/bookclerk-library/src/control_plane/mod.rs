@@ -123,8 +123,9 @@ pub use connections_request::{
     AddConnectionsRequest, DisconnectBody, DisconnectRequest, MAX_ADD_CONNECTIONS,
 };
 pub use copies::{
-    authorize_copy, open_copy, plan_copy, CopyDownload, CopyHolder, CopyListing, CopyPlan,
-    CopyPlanFile, CopyPlanned, OpenedCopy, COPY_TOKEN_TTL_SECS,
+    authorize_copy, authorize_playback, open_copy, plan_copy, plan_playback, CopyDownload,
+    CopyHolder, CopyListing, CopyPlan, CopyPlanFile, CopyPlanned, OpenedCopy, PlaybackPlan,
+    PlaybackTrack, COPY_TOKEN_TTL_SECS,
 };
 pub use cron_fires::{
     claim_cron_fire, ensure_cron_cursor, load_cron_cursor, CronCursor, CronFireClaim,

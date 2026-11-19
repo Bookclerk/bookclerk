@@ -364,6 +364,13 @@ input_from = "Administrator, Owner or operator"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.playback_request]
+crate = "bookclerk-library"
+boundary = "A player's progress report and stream path, from POST /api/playback/sessions/{id}/sync, .../close and GET /api/playback/sessions/{id}/tracks/{n}"
+input_from = "any signed-in patron"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.connections_request]
 crate = "bookclerk-library"
 boundary = "A branch Owner's store connections to add to one library, or one to disconnect, from POST /api/config/join/connections and POST /api/config/join/connections/disconnect"

@@ -261,7 +261,9 @@ function validateQueueName(field: string, name: unknown): void {
  * model; `edition_acquire_changed` when an edition's acquire state moves to
  * anything but acquired;
  * `wishlist_changed` and `listening_synced` by the library when a wishlist
- * entry or someone's listening changes). Plugins consume them but cannot declare them under `[[events.producers]]`.
+ * entry or someone's listening changes; `playback_started`,
+ * `playback_progress` and `playback_finished` by the built-in player).
+ * Plugins consume them but cannot declare them under `[[events.producers]]`.
  */
 export const HOST_EVENT_TYPES: ReadonlySet<string> = new Set([
   "book_acquired",
@@ -272,6 +274,9 @@ export const HOST_EVENT_TYPES: ReadonlySet<string> = new Set([
   "holding_removed",
   "wishlist_changed",
   "listening_synced",
+  "playback_started",
+  "playback_progress",
+  "playback_finished",
 ]);
 
 /** Event type grammar: snake_case `[a-z][a-z0-9_]*`, as the host checks it. */

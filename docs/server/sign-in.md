@@ -592,7 +592,7 @@ See [Libraries and branches](cluster-hosts.md).
 The web app keeps one WebSocket open: `GET /api/live`, subprotocol
 `bookclerk-live.v1`. It names topics whose data changed: `library`,
 `jobs`, `deliveries`, `nodes`, `config`, `consents`, `clusters`,
-`users` and `discover`. Status, Library, Discover, Settings → Nodes,
+`users`, `discover` and `playback`. Status, Library, Discover, Settings → Nodes,
 User Management and Settings → Library re-read their data when told.
 
 - The socket carries topic names only.

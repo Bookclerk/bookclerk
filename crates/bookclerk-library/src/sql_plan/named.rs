@@ -220,7 +220,7 @@ fn append_live_bump(
             bump_if_stamped(topic, now).map_err(|err| DbErr::Custom(err.to_string()))?
         }
         // No change stamp to test; no named operation writes these today.
-        LiveTopic::Config | LiveTopic::Clusters => bump(topic),
+        LiveTopic::Config | LiveTopic::Clusters | LiveTopic::Playback => bump(topic),
     };
     plan.statements.push(SqlStmt {
         sql: bump.sql,
@@ -1538,6 +1538,9 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
         "member_account_rules",
         "patron_scopes",
         "copy_grants",
+        "playback_progress",
+        "playback_sessions",
+        "bookmarks",
     ] {
         let mut p = vec![j_i64(user_id)];
         p.extend(allow_p.clone());

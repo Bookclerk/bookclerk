@@ -112,6 +112,8 @@ paths = [
     "fuzz/oracles/patron_scope_request.rs",
     "fuzz/corpus/work_split_request/**",
     "fuzz/oracles/work_split_request.rs",
+    "fuzz/corpus/playback_request/**",
+    "fuzz/oracles/playback_request.rs",
     "fuzz/corpus/sharing_request/**",
     "fuzz/oracles/sharing_request.rs",
     "fuzz/corpus/connections_request/**",
