@@ -173,6 +173,8 @@ paths = [
     "fuzz/oracles/destination_filter.rs",
     "fuzz/corpus/destination_id/**",
     "fuzz/oracles/destination_id.rs",
+    "fuzz/corpus/diagnostics_submit_reply/**",
+    "fuzz/oracles/diagnostics_submit_reply.rs",
 ]
 
 [[test_input]]

@@ -242,6 +242,10 @@ async fn cli_main() -> ExitCode {
     bookclerk_media::init_pool_from_config(&config.media);
     if let Some(paths) = config.paths.as_ref() {
         bookclerk_plugin_host::retry_abandoned_acl_journals(&paths.files_dir);
+        // Reports a failing command sends join the install's report history.
+        if let Some(diag) = bookclerk_config::diagnostics_global() {
+            diag.set_files_dir(&paths.files_dir);
+        }
     }
 
     let format = early

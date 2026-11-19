@@ -198,12 +198,27 @@ Set in `wrangler.toml` `[vars]`:
 | --- | --- | --- |
 | `MAX_LIVE_SESSIONS` | 20 | Sessions running at once (also the container `max_instances`) |
 | `DAILY_BUDGET_HOURS` | 40 | Visitor-hours reserved per UTC day; unused time is refunded |
-| `SESSION_MINUTES` | 30 | Length of one session |
+| `SESSION_MINUTES` | 30 | Length of one session, at most 1440 (one day) |
 | `SESSIONS_PER_HOUR` | 3 | Sessions one IP may start per hour |
 | `SIGNINS_PER_SESSION` | 5 | Store sign-in starts per session |
 | `SIGNINS_PER_DAY` | 10 | Store sign-in starts per IP per day |
 
 IP addresses are stored only as a keyed hash that changes every day.
+
+## Usage reports
+
+With the `USAGE` service binding (`wrangler.toml`), the Worker reports each
+run to the diagnostics collector as it happens: its start, the moment the
+visitor's copy first answers (the startup time) and its stop with the end
+reason (`src/usage.ts`). The binding names the collector's `DemoRuns`
+entrypoint, a private Worker-to-Worker link with no public route, so the
+collector Worker `bookclerk-diagnostics` must be deployed first. Each event
+names the run by a random run ID made when the session is admitted (the
+`run_id` column), never the session id, the address hash or the cookie.
+A report never holds a visitor up: a failure, or an answer slower than two
+seconds, is logged and dropped. The dashboard's Demo page shows live runs
+and the daily trends (see
+[`docs/server/diagnostics.md`](../../docs/server/diagnostics.md#hosted-demo-runs)).
 
 ## Deploying
 

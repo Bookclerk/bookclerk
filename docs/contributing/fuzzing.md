@@ -56,6 +56,7 @@ boundary extends it.
 | `destination_filter` | A storage destination's filter: the body of `PUT /api/config/plugin-instances/{id}/filter` and the stored `core.destination` document | `bookclerk-config::parse_destination_filter` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
+| `diagnostics_submit_reply` | The diagnostics collector's reply to an uploaded report, whose `report_id` joins the install's report history | `bookclerk-config::parse_submit_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `audible_catalog` | Audible public catalog answers (search results and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
@@ -188,6 +189,13 @@ only that. The others check:
   digits whose number, read digit by digit with overflow detection, lies in
   the key's documented range, and the parser returns that number. The
   shared oracle is `fuzz/oracles/cache_settings.rs`, replayed from
+  `bookclerk-config`.
+- **`diagnostics_submit_reply`**: a reply longer than 4096 bytes is
+  refused. Otherwise it is accepted exactly when, read independently as a
+  JSON value, it is an object whose `report_id` is a string that is a
+  lowercase hyphenated version-4 UUID, checked group by group, and the
+  parser returns that string unchanged. The shared oracle is
+  `fuzz/oracles/diagnostics_submit_reply.rs`, replayed from
   `bookclerk-config`.
 - **`cover_wire`**: the first byte picks the request or the reply decoder.
   An accepted frame re-encodes to exactly its own bytes, and an accepted
@@ -981,6 +989,18 @@ The tests and corpora live in `tools/diagnostics-collector/`.
     of JSON naming an object with exactly the five fields, a lowercase
     version-4 UUID checked by position, and version, platform and kind
     tokens checked character by character.
+- **Hosted demo run event** (`parseDemoRunEvent` in `demo-runs.ts`). It is
+  the value the demo Worker passes to the collector's `DemoRuns`
+  entrypoint over its service binding (no public route), and decides what
+  a `demo_runs` row stores.
+  - Test and corpus: `demo-runs.fuzz.test.ts`, `corpus/demo_run/`.
+  - Oracle: an event exactly when the value is an object with exactly its
+    kind's keys, a lowercase version-4 UUID checked group by group, a
+    version of `[0-9A-Za-z._+-]` checked character by character, whole
+    times from 2020 to 2100 with the hard stop after the start and at most
+    six hours later, a whole startup of 0 to 600 seconds, a stop between
+    the start and a day after the hard stop, and one of the demo's six end
+    reasons.
 
 ### Member dashboard
 

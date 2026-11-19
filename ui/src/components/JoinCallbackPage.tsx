@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DiagnosticsSetupStep } from "@/components/DiagnosticsSettings";
 import { JoinShell } from "@/components/JoinShell";
 import { Button } from "@/components/ui/button";
 import { isApiError } from "@/lib/api";
@@ -41,12 +42,17 @@ export interface JoinCallbackPageProps {
  * shared branch's missing database plugin or D1 token, once fixed), or a request
  * that got no answer at all, can offer Try again.
  *
+ * After a branch join it asks the diagnostics sharing choices, as the
+ * first-install setup does after an invite join, before "Connected".
+ *
  * For a shared branch join (`connection=shared_branch`) the daemon receives the library's
  * database settings and keys sealed to this node, writes them as its own,
  * and restarts; this page only says so (no key ever reaches the browser).
+ * A shared branch uses the library's settings, so it gets no diagnostics step.
  */
 export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
   const [phase, setPhase] = useState<Phase>({ kind: "working" });
+  const [diagnosticsDone, setDiagnosticsDone] = useState(false);
   // One redeem per page load (StrictMode runs effects twice).
   const sent = useRef(false);
 
@@ -159,6 +165,22 @@ export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
         <Button type="button" onClick={() => window.location.assign("/")}>
           Open the library
         </Button>
+      </JoinShell>
+    );
+  }
+
+  if (!diagnosticsDone) {
+    return (
+      <JoinShell
+        title="Help improve Bookclerk"
+        lead={
+          <>
+            This server is now a branch of <strong>{phase.library}</strong>. Choose what it may
+            share with the Bookclerk maintainers. Nothing is shared unless you turn it on.
+          </>
+        }
+      >
+        <DiagnosticsSetupStep continueLabel="Continue" onDone={() => setDiagnosticsDone(true)} />
       </JoinShell>
     );
   }

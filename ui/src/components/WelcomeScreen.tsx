@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ClerkSignInForm } from "@/components/ClerkCardsPanel";
+import { DiagnosticsSetupStep } from "@/components/DiagnosticsSettings";
 import { JoinShell } from "@/components/JoinShell";
 import { JoinWizard } from "@/components/JoinWizard";
 import { Button } from "@/components/ui/button";
@@ -19,7 +20,8 @@ export interface WelcomeScreenProps {
 
 /**
  * First start of a fresh install (operator only): start a new library, or
- * join an existing one as a branch.
+ * join an existing one as a branch. Either way the install then asks what
+ * diagnostics it may share (both switches start off) before carrying on.
  *
  * In the desktop window joining comes first: the window opens on signing
  * in to the library with a library card (the library's address, then
@@ -36,6 +38,35 @@ export function WelcomeScreen({
 }: WelcomeScreenProps) {
   const [joining, setJoining] = useState(desktop);
   const [joinedTo, setJoinedTo] = useState<string | null>(null);
+  const [startingNew, setStartingNew] = useState(false);
+  const [diagnosticsDone, setDiagnosticsDone] = useState(false);
+
+  if (startingNew) {
+    return (
+      <JoinShell
+        title="Help improve Bookclerk"
+        lead="Choose what this server may share with the Bookclerk maintainers. Nothing is shared unless you turn it on."
+      >
+        <DiagnosticsSetupStep continueLabel="Continue to set up the Owner" onDone={onStartNew} />
+      </JoinShell>
+    );
+  }
+
+  if (joinedTo && !diagnosticsDone) {
+    return (
+      <JoinShell
+        title="Help improve Bookclerk"
+        lead={
+          <>
+            This server is now a branch of <strong>{joinedTo}</strong>. Choose what it may share
+            with the Bookclerk maintainers. Nothing is shared unless you turn it on.
+          </>
+        }
+      >
+        <DiagnosticsSetupStep continueLabel="Continue" onDone={() => setDiagnosticsDone(true)} />
+      </JoinShell>
+    );
+  }
 
   if (joinedTo) {
     return (
@@ -63,7 +94,7 @@ export function WelcomeScreen({
       >
         <ClerkSignInForm defaultName={defaultBranchName ?? ""} />
         <div className="mt-6 border-t border-ink/10 pt-4">
-          <Button type="button" variant="secondary" onClick={onStartNew}>
+          <Button type="button" variant="secondary" onClick={() => setStartingNew(true)}>
             Host a library on this computer instead
           </Button>
         </div>
@@ -92,7 +123,7 @@ export function WelcomeScreen({
         <button
           type="button"
           className="space-y-1 rounded-md border border-ink/15 bg-paper p-4 text-left transition-colors hover:border-teal hover:bg-teal/5"
-          onClick={onStartNew}
+          onClick={() => setStartingNew(true)}
         >
           <span className="block font-semibold text-ink">Start a new library</span>
           <span className="block text-sm text-ink/60">

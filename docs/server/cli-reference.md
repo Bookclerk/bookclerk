@@ -1973,6 +1973,7 @@ Commands:
 - [`bookclerk diagnostics show`](#bookclerk-diagnostics-show): Print recent diagnostics ring-buffer events
 - [`bookclerk diagnostics upload`](#bookclerk-diagnostics-upload): Upload the current diagnostics ring (requires share_reports + collector URL)
 - [`bookclerk diagnostics reset-id`](#bookclerk-diagnostics-reset-id): Replace this install's random usage ID (diagnostics.share_usage) with a new one
+- [`bookclerk diagnostics reports`](#bookclerk-diagnostics-reports): List the diagnostics reports this install sent, newest first
 
 ### `bookclerk diagnostics show`
 
@@ -2007,6 +2008,20 @@ The next check-in then counts as a new install. Restart the daemon so its report
 ```text
 bookclerk diagnostics reset-id [OPTIONS]
 ```
+
+### `bookclerk diagnostics reports`
+
+List the diagnostics reports this install sent, newest first.
+
+Each report ID is what the collector stored and what the GitHub issue for it mentions: search the issues for it, or give it to a maintainer.
+
+```text
+bookclerk diagnostics reports [OPTIONS]
+```
+
+Options:
+
+- `-n, --limit <LIMIT>`: Max reports to print (0 = all that are kept) (default `20`)
 
 ## `bookclerk version`
 

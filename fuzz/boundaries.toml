@@ -273,6 +273,13 @@ input_from = "operator"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.diagnostics_submit_reply]
+crate = "bookclerk-config"
+boundary = "the diagnostics collector's reply to an uploaded report, whose report_id joins the install's report history"
+input_from = "diagnostics collector"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.clerk_authorization]
 crate = "bookclerk-node-proto"
 boundary = "A clerk's library card, the Authorization: Bookclerk-Clerk header value"

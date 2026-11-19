@@ -256,6 +256,7 @@ const TAGS: &[(&str, &str, &str)] = &[
     ("Settings", "/api/settings", "Daemon settings and user preferences."),
     ("Settings", "/api/preferences", "Daemon settings and user preferences."),
     ("Settings", "/api/database", "Daemon settings and user preferences."),
+    ("Settings", "/api/diagnostics", "Daemon settings and user preferences."),
     ("Plugins", "/api/plugins", "Plugin packages, instances, consent and deployment."),
     ("Plugins", "/api/config/plugins", "Plugin packages, instances, consent and deployment."),
     ("Plugins", "/api/config/plugin-instances", "Plugin packages, instances, consent and deployment."),

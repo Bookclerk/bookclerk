@@ -152,14 +152,18 @@ class CorpusTests(unittest.TestCase):
         out = sc.render_summaries(load("normal.json"), DASHBOARD)
         self.assertEqual([r.issue for r in out], [412, 7])
         body = out[0].body
-        self.assertIn("**Diagnostics summary** · 3 reports · first seen 2026-10-11 · last seen 2026-10-14", body)
+        self.assertIn("**Diagnostics summary** · 3 reports · 2 installs · first seen 2026-10-11 · last seen 2026-10-14", body)
         self.assertIn("- Linked: 1 listed in this issue, 1 matched by error signature, 0 added by triage, 1 attached by members", body)
         self.assertIn("- Versions: 0.9.2 (2), 0.9.1 (1)", body)
         self.assertIn("- Platforms: linux x86_64 (2), windows x86_64 (1)", body)
         self.assertIn(f"- `{UUID_C}` · 0.9.2 · 2026-10-14 · [dashboard]({DASHBOARD}/reports/{UUID_C})", body)
         self.assertTrue(body.endswith("report contents are never posted here._\n"))
         self.assertIn("**Diagnostics summary** · 1 report", out[1].body)
-        self.assertNotIn("installation", body + out[1].body, "reports carry no install identity")
+        self.assertIn("· 1 report · 1 install ·", out[1].body)
+        keyless = load("normal.json")["issues"][0] | {"installs": 0}
+        self.assertNotIn("install", sc.render_summaries([keyless])[0].body, "no install key, no count")
+        partial = sc.render_summaries(load("installs.json"))[0].body
+        self.assertIn("· 5 reports · at least 2 installs ·", partial, "reports without a key make it a floor")
         empty = sc.render_summaries(load("empty_summary.json"))[0].body
         self.assertIn("no report is linked to this issue at present", empty)
         self.assertNotIn("Linked:", empty)

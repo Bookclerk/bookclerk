@@ -2925,6 +2925,49 @@ export async function patchSettings(body: {
   return parseJson<SettingsResponse>(res);
 }
 
+/** One diagnostics report this install sent (`GET /api/diagnostics/reports`). */
+export interface DiagnosticsReport {
+  /** The collector's ID for the report; the GitHub issue filed for it mentions this ID. */
+  report_id: string;
+  /** Why it was sent: `crash`, `error_burst`, `slow_burst`, `job_failed`, `cli_error`, …. */
+  trigger: string;
+  /** The Bookclerk version that sent it. */
+  version: string;
+  /** When the collector accepted it, Unix milliseconds. */
+  sent_at_unix_ms: number;
+}
+
+/**
+ * Lists the diagnostics reports this install sent (operator only).
+ *
+ * @returns Reports, newest first (the install keeps the last 200).
+ */
+export async function fetchDiagnosticsReports(): Promise<DiagnosticsReport[]> {
+  const res = await fetch("/api/diagnostics/reports", { credentials: "include" });
+  const body = await parseJson<{ reports: DiagnosticsReport[] }>(res);
+  return body.reports;
+}
+
+/**
+ * Saves the install's diagnostics sharing choices (`diagnostics.share_reports`
+ * and `diagnostics.share_usage`). The daemon applies them without a restart.
+ *
+ * @param shareReports - Upload redacted reports after crashes and error bursts.
+ * @param shareUsage - Send the weekly anonymous check-in and tag reports with the install ID.
+ * @returns The settings view after the write.
+ */
+export async function saveDiagnosticsSharing(
+  shareReports: boolean,
+  shareUsage: boolean,
+): Promise<SettingsResponse> {
+  return patchSettings({
+    settings: [
+      { key: "diagnostics.share_reports", value: String(shareReports) },
+      { key: "diagnostics.share_usage", value: String(shareUsage) },
+    ],
+  });
+}
+
 /**
  * Redeems a claim ticket into a portal user session.
  *
