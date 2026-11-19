@@ -24,7 +24,7 @@ use std::io::Cursor;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use symphonia::core::audio::GenericAudioBufferRef;
+use symphonia::core::audio::{Channels, GenericAudioBufferRef};
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::codecs::registry::CodecRegistry;
 use symphonia::core::codecs::CodecParameters;
@@ -71,15 +71,123 @@ pub(crate) struct OpenedAudio {
     /// The audio track decoded; packets of other tracks are skipped.
     pub(crate) track_id: u32,
     /// The decoded sample rate in Hz: the first audible packet's, else the
-    /// track's stated rate. Packets at another rate are skipped.
+    /// track's stated rate. A later packet at another rate ends the decode
+    /// with an error.
     pub(crate) sample_rate: u32,
     /// The decoded channel count, at least 1: the first audible packet's,
     /// else the track's stated count (1 when it states none).
     pub(crate) channels: usize,
-    /// The first audible packet's PCM, interleaved with [`Self::channels`]
-    /// channels, decoded while priming and handed out first by
-    /// [`Self::decode_each`]. A caller that seeks ignores it.
-    pub(crate) primed: Vec<i16>,
+    /// The first audible packet, decoded while priming and handed out
+    /// first by [`Self::decode_each`]. A caller that seeks ignores it.
+    pub(crate) primed: Primed,
+}
+
+/// The PCM of the packet a stream was primed with.
+#[derive(Default)]
+pub(crate) struct Primed {
+    /// Interleaved samples, in the source layout.
+    pcm: Vec<i16>,
+    /// How the source layout folds to mono or stereo.
+    downmix: Downmix,
+}
+
+/// How a source channel layout folds to one or two output channels.
+///
+/// One and two channels mix as before: mono is the mean of
+/// the pair, stereo copies them, and a mono source is duplicated. Wider
+/// layouts are mixed from every channel by its position: left channels go
+/// left, right channels go right, centre channels go to both at -3 dB and
+/// LFE is dropped. Each side is normalised by its total weight, so the mix
+/// never clips. A layout with no positions (discrete channels) averages
+/// every channel into both sides, so no channel is lost.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct Downmix {
+    /// `(left, right)` weight of each source channel, in plane order; empty
+    /// for a mono or stereo source, which needs no weights.
+    weights: Vec<(f32, f32)>,
+    /// Source channels per frame, at least 1.
+    channels: usize,
+}
+
+/// Bits of Symphonia's channel positions that sit on the left.
+const LEFT_POSITION_BITS: [u32; 9] = [0, 4, 6, 9, 12, 15, 19, 22, 24];
+/// Bits of Symphonia's channel positions that sit on the right.
+const RIGHT_POSITION_BITS: [u32; 9] = [1, 5, 7, 10, 14, 17, 20, 23, 25];
+/// Bits of Symphonia's LFE positions, which carry no speech.
+const LFE_POSITION_BITS: [u32; 2] = [3, 18];
+/// Gain of a centre channel on each side (-3 dB).
+const CENTRE_GAIN: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
+impl Downmix {
+    /// The downmix for a source with `channels`.
+    pub(crate) fn for_channels(channels: &Channels) -> Self {
+        let count = channels.count().max(1);
+        if count <= 2 {
+            return Self {
+                weights: Vec::new(),
+                channels: count,
+            };
+        }
+        let weights = match channels {
+            Channels::Positioned(positions) => (0..u32::BITS)
+                .filter(|bit| positions.bits() & (1 << bit) != 0)
+                .map(|bit| {
+                    if LEFT_POSITION_BITS.contains(&bit) {
+                        (1.0, 0.0)
+                    } else if RIGHT_POSITION_BITS.contains(&bit) {
+                        (0.0, 1.0)
+                    } else if LFE_POSITION_BITS.contains(&bit) {
+                        (0.0, 0.0)
+                    } else {
+                        (CENTRE_GAIN, CENTRE_GAIN)
+                    }
+                })
+                .collect(),
+            // Discrete, ambisonic and labelled channels carry no speaker
+            // position, so every channel feeds both sides equally. Symphonia
+            // marks `Channels` non-exhaustive; a future layout lands here too.
+            _ => vec![(1.0, 1.0); count],
+        };
+        Self {
+            weights,
+            channels: count,
+        }
+    }
+
+    /// Source channels per frame.
+    pub(crate) fn channels(&self) -> usize {
+        self.channels
+    }
+
+    /// The `(left, right)` mix of one wide frame, each normalised by its
+    /// side's total weight (an all-zero side takes the other side's mix).
+    fn mix_wide(&self, frame: &[i16]) -> (i16, i16) {
+        let (mut left, mut right, mut wl, mut wr) = (0f32, 0f32, 0f32, 0f32);
+        for (sample, (l, r)) in frame.iter().zip(&self.weights) {
+            let sample = f32::from(*sample);
+            left += sample * l;
+            right += sample * r;
+            wl += l;
+            wr += r;
+        }
+        let side = |sum: f32, weight: f32| (weight > 0.0).then(|| sum / weight);
+        let (left, right) = match (side(left, wl), side(right, wr)) {
+            (Some(l), Some(r)) => (l, r),
+            (Some(l), None) => (l, l),
+            (None, Some(r)) => (r, r),
+            // Only LFE channels: nothing to keep but silence.
+            (None, None) => (0.0, 0.0),
+        };
+        (to_i16(left), to_i16(right))
+    }
+}
+
+/// Rounds a mixed sample into the i16 range.
+#[allow(clippy::cast_possible_truncation)] // Clamped to the i16 range first.
+fn to_i16(sample: f32) -> i16 {
+    sample
+        .round()
+        .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
 }
 
 /// The codec registry the decode front uses: Symphonia's enabled decoders,
@@ -150,7 +258,7 @@ pub(crate) fn open_audio(source: Box<dyn MediaSource>, seek_index: bool) -> Resu
         track_id: track.id,
         sample_rate,
         channels,
-        primed: Vec::new(),
+        primed: Primed::default(),
     };
     opened.prime()?;
     Ok(opened)
@@ -224,12 +332,12 @@ impl OpenedAudio {
             if !(1..=MAX_SAMPLE_RATE_HZ).contains(&rate) {
                 continue;
             }
-            let channels = buf.spec().channels().count().max(1);
-            let mut primed = Vec::new();
-            buf.copy_to_vec_interleaved(&mut primed);
+            let downmix = Downmix::for_channels(buf.spec().channels());
+            let mut pcm = Vec::new();
+            buf.copy_to_vec_interleaved(&mut pcm);
             self.sample_rate = rate;
-            self.channels = channels;
-            self.primed = primed;
+            self.channels = downmix.channels();
+            self.primed = Primed { pcm, downmix };
             return Ok(());
         }
     }
@@ -272,8 +380,8 @@ impl OpenedAudio {
         let mut interleaved = Vec::new();
         let mut decoded_any = false;
         let primed = std::mem::take(&mut self.primed);
-        if !primed.is_empty() {
-            mix_interleaved(&primed, self.channels, out_channels, &mut pcm);
+        if !primed.pcm.is_empty() {
+            mix_interleaved(&primed.pcm, &primed.downmix, out_channels, &mut pcm);
             decoded_any = true;
             on_pcm(&pcm)?;
         }
@@ -284,11 +392,7 @@ impl OpenedAudio {
                 NextPcm::Skipped => continue,
                 NextPcm::End => break,
             };
-            // A packet at another rate cannot join this stream without
-            // resampling; it is skipped like a corrupt one.
-            if buf.frames() > 0 && buf.spec().rate() != rate {
-                continue;
-            }
+            same_rate(rate, buf.spec().rate(), buf.frames())?;
             pcm.clear();
             append_pcm_i16(&buf, out_channels, &mut interleaved, &mut pcm);
             if !pcm.is_empty() {
@@ -298,6 +402,33 @@ impl OpenedAudio {
         }
         Ok(decoded_any)
     }
+}
+
+/// Checks that a decoded packet keeps the stream's sample rate.
+///
+/// A packet at another rate cannot join the stream without resampling, and
+/// dropping it would cut audio out of a conversion that then reports
+/// success, so the decode fails instead. Symphonia's MPEG audio reader
+/// already skips frames whose header disagrees with the stream; the case
+/// left is a decoder changing its output rate, such as AAC whose SBR
+/// extension first appears after the stream starts.
+///
+/// # Arguments
+///
+/// * `stream_rate` - The rate the stream was primed at, in Hz.
+/// * `packet_rate` - The rate of the decoded packet, in Hz.
+/// * `frames` - Frames in the packet; an empty packet is not checked.
+///
+/// # Errors
+///
+/// [`MediaError::Native`] naming both rates when they differ.
+fn same_rate(stream_rate: u32, packet_rate: u32, frames: usize) -> Result<()> {
+    if frames > 0 && packet_rate != stream_rate {
+        return Err(MediaError::Native(format!(
+            "sample rate changed mid-stream ({stream_rate} Hz to {packet_rate} Hz)"
+        )));
+    }
+    Ok(())
 }
 
 /// Decodes a whole media file held in memory to PCM, the path the
@@ -354,36 +485,38 @@ pub(crate) fn append_pcm_i16(
     let need = frames.saturating_mul(in_channels);
     interleaved.resize(need, 0);
     buf.copy_to_slice_interleaved(&mut interleaved[..need]);
-    mix_interleaved(&interleaved[..need], in_channels, out_channels, dst);
+    let downmix = Downmix::for_channels(buf.spec().channels());
+    mix_interleaved(&interleaved[..need], &downmix, out_channels, dst);
 }
 
-/// Appends interleaved PCM with `in_channels` channels to `dst` with
-/// `out_channels` channels (1 or 2), mixing from the first two source
-/// channels: mono is their mean, stereo copies them (a mono source is
-/// duplicated). A trailing partial frame is dropped.
+/// Appends interleaved PCM in the source layout `downmix` describes to
+/// `dst` with `out_channels` channels (1 or 2) ([`Downmix`]). A trailing
+/// partial frame is dropped.
 pub(crate) fn mix_interleaved(
     src: &[i16],
-    in_channels: usize,
+    downmix: &Downmix,
     out_channels: u16,
     dst: &mut Vec<i16>,
 ) {
-    let in_channels = in_channels.max(1);
+    let in_channels = downmix.channels().max(1);
     let out_ch = usize::from(out_channels.clamp(1, 2));
     if out_ch == in_channels {
         dst.extend_from_slice(&src[..src.len() - src.len() % in_channels]);
         return;
     }
-    let mix_channels = in_channels.min(2);
     dst.reserve((src.len() / in_channels).saturating_mul(out_ch));
     for frame in src.chunks_exact(in_channels) {
-        if out_ch == 1 {
-            let sum: i32 = frame.iter().take(mix_channels).map(|s| i32::from(*s)).sum();
-            // The mean of at most two i16 values fits an i16.
-            let mean = sum / if mix_channels > 1 { 2 } else { 1 };
-            dst.push(i16::try_from(mean).unwrap_or(i16::MAX));
+        let (left, right) = if in_channels > 2 {
+            downmix.mix_wide(frame)
         } else {
             let left = frame[0];
-            let right = if mix_channels > 1 { frame[1] } else { left };
+            (left, frame.get(1).copied().unwrap_or(left))
+        };
+        if out_ch == 1 {
+            // The mean of two i16 values fits an i16.
+            let mean = (i32::from(left) + i32::from(right)) / 2;
+            dst.push(i16::try_from(mean).unwrap_or(i16::MAX));
+        } else {
             dst.push(left);
             dst.push(right);
         }
@@ -393,6 +526,7 @@ pub(crate) fn mix_interleaved(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use symphonia::core::audio::Position;
 
     /// A short MP3 encoded from a tone by the crate's own encoder.
     fn tone_mp3(dir: &Path, channels: u16) -> std::path::PathBuf {
@@ -529,18 +663,59 @@ mod tests {
 
     #[test]
     fn mix_interleaved_folds_and_widens() {
+        let discrete = |n| Downmix::for_channels(&Channels::Discrete(n));
         let mut dst = Vec::new();
-        mix_interleaved(&[10, 20, 30, 40, 50], 2, 1, &mut dst);
+        mix_interleaved(&[10, 20, 30, 40, 50], &discrete(2), 1, &mut dst);
         assert_eq!(dst, [15, 35]);
         dst.clear();
-        mix_interleaved(&[7, 8], 1, 2, &mut dst);
+        mix_interleaved(&[7, 8], &discrete(1), 2, &mut dst);
         assert_eq!(dst, [7, 7, 8, 8]);
         dst.clear();
-        mix_interleaved(&[1, 2, 3, 4, 5, 6, 7], 3, 2, &mut dst);
-        assert_eq!(dst, [1, 2, 4, 5]);
+        // Discrete wide channels all reach both sides.
+        mix_interleaved(&[3, 6, 9, 0, 0, 30, 7], &discrete(3), 2, &mut dst);
+        assert_eq!(dst, [6, 6, 10, 10]);
         dst.clear();
-        mix_interleaved(&[1, 2, 3], 2, 2, &mut dst);
+        mix_interleaved(&[1, 2, 3], &discrete(2), 2, &mut dst);
         assert_eq!(dst, [1, 2]);
+    }
+
+    #[test]
+    fn a_wide_layout_keeps_its_centre_channel() {
+        // 5.1 in plane order: FL, FR, FC, LFE, RL, RR. Speech only in the
+        // centre must survive both output modes.
+        let layout = Channels::Positioned(
+            Position::FRONT_LEFT
+                | Position::FRONT_RIGHT
+                | Position::FRONT_CENTER
+                | Position::LFE1
+                | Position::REAR_LEFT
+                | Position::REAR_RIGHT,
+        );
+        let downmix = Downmix::for_channels(&layout);
+        let centre_only = [0, 0, 12_000, 0, 0, 0];
+        let mut stereo = Vec::new();
+        mix_interleaved(&centre_only, &downmix, 2, &mut stereo);
+        assert!(stereo.iter().all(|s| *s > 3_000), "{stereo:?}");
+        assert_eq!(stereo[0], stereo[1]);
+        let mut mono = Vec::new();
+        mix_interleaved(&centre_only, &downmix, 1, &mut mono);
+        assert!(mono[0] > 3_000, "{mono:?}");
+        // LFE alone carries nothing; left stays left.
+        let mut out = Vec::new();
+        mix_interleaved(&[0, 0, 0, 30_000, 0, 0], &downmix, 2, &mut out);
+        assert_eq!(out, [0, 0]);
+        out.clear();
+        mix_interleaved(&[i16::MAX, 0, 0, 0, i16::MAX, 0], &downmix, 2, &mut out);
+        assert!(out[0] > 10_000 && out[1] == 0, "{out:?}");
+    }
+
+    #[test]
+    fn a_rate_change_mid_stream_fails_the_decode() {
+        assert!(same_rate(44_100, 44_100, 1024).is_ok());
+        // A packet with no frames carries no rate worth checking.
+        assert!(same_rate(44_100, 22_050, 0).is_ok());
+        let err = same_rate(22_050, 44_100, 2048).expect_err("rate change");
+        assert!(err.to_string().contains("22050 Hz to 44100 Hz"), "{err}");
     }
 
     #[test]

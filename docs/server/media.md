@@ -46,9 +46,15 @@ It reads these files:
 | WAV, AIFF, CAF | PCM, IMA ADPCM |
 
 Every AAC profile decodes through FDK: AAC-LC, HE-AAC, HE-AAC v2 and
-xHE-AAC (USAC). Surround is folded to stereo. An HE-AAC book is reported
-and converted at the rate it plays at, not the half rate an MP4 header
-states for it. Opus, Vorbis, E-AC-3 and AC-4 aren't read yet.
+xHE-AAC (USAC). An HE-AAC book is reported and converted at the rate it
+plays at, not the half rate an MP4 header states for it. Opus, Vorbis,
+E-AC-3 and AC-4 aren't read yet.
+
+Surround is folded to stereo by speaker position: left speakers go left,
+right speakers go right, centre and rear-centre speakers go to both sides
+at -3 dB, and the LFE channel is left out. Channels with no position go to
+both sides equally. A file whose sample rate changes partway through fails
+to convert rather than losing the audio after the change.
 
 The worker writes AAC-LC M4B and MP3, and writes tags, covers and
 chapters into MP4 and MP3 files. Every M4B it writes is faststart: the
@@ -56,9 +62,11 @@ sample table comes before the audio, so a player can start the book from
 its first bytes.
 
 When an output re-encodes or repackages audio, the acquire takes another
-store's copy from a library only if the worker reads its kind of file
-and codec. The list it checks is `bookclerk_media::capabilities`, the
-same one this table describes.
+store's copy from a library only if the worker reads its kind of file and
+the tag reader names its codec. That means AAC or ALAC in MP4, MP3, and
+FLAC. WAV, AIFF, CAF and ADTS files decode, but a copy in one of them
+isn't taken, because its codec isn't recorded. The lists the acquire
+checks are in `bookclerk_media::capabilities`.
 
 Tagging any other container, such as FLAC, fails with a message naming it,
 and the acquire stores the file without the new tags. Files kept as

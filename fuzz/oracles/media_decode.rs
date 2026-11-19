@@ -38,7 +38,7 @@ struct Decoded {
 /// Decodes `data` to `out`, checking each chunk's shape.
 fn decode(data: &[u8], out: OutChannels) -> Option<Decoded> {
     let mut frames = 0u64;
-    let mut samples = Vec::new();
+    let mut hash = FNV_OFFSET;
     let format = decode_pcm_bytes(data.to_vec(), out, |format, pcm| {
         let channels = usize::from(format.channels);
         assert!(
@@ -48,7 +48,7 @@ fn decode(data: &[u8], out: OutChannels) -> Option<Decoded> {
         assert!(!pcm.is_empty(), "empty chunk handed to the encoder");
         assert_eq!(pcm.len() % channels, 0, "chunk is not whole frames");
         frames += u64::try_from(pcm.len() / channels).expect("frames fit");
-        samples.extend_from_slice(pcm);
+        hash = hash_samples_from(hash, pcm);
         Ok(())
     })
     .ok()?;
@@ -63,7 +63,7 @@ fn decode(data: &[u8], out: OutChannels) -> Option<Decoded> {
     Some(Decoded {
         format,
         frames,
-        hash: hash_samples(&samples),
+        hash,
     })
 }
 
@@ -122,7 +122,15 @@ fn plain_wav(data: &[u8]) -> Option<(PcmFormat, Vec<i16>)> {
 
 /// FNV-1a over `samples` in order, as [`decode`] hashes them.
 fn hash_samples(samples: &[i16]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    hash_samples_from(FNV_OFFSET, samples)
+}
+
+/// FNV-1a 64-bit offset basis, the hash of no samples.
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// Continues an FNV-1a hash from `hash` over `samples`' little-endian bytes,
+/// so a decode can hash chunk by chunk without keeping them.
+fn hash_samples_from(mut hash: u64, samples: &[i16]) -> u64 {
     for sample in samples {
         for byte in sample.to_le_bytes() {
             hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
