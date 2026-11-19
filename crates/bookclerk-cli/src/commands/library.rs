@@ -4,7 +4,7 @@ use bookclerk_acquire::{
     convert_book, match_storage_to_library, AcquireRequest, ConvertRequest, MatchStorageOptions,
 };
 use bookclerk_config::{AudioQuality, Config};
-use bookclerk_library::{AcquireStatus, LibraryStore};
+use bookclerk_library::{AcquireStatus, AcquireTitle, LibraryStore};
 use bookclerk_plugin_host::HostControlPlane;
 use bookclerk_search::WorkSearchIndex;
 use bookclerk_source::{source_scope, DownloadOptions, FetchOptions};
@@ -358,7 +358,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             let options = destinations.primary_destination().options.clone();
             let registry = sources(&host).await?;
 
-            let books = store.list_books(account.as_deref()).await?;
+            let books = library_titles(&store, account.as_deref()).await?;
             let filter_ids: Vec<String> = asin.into_iter().chain(isbn).chain(asins).collect();
             let (targets, foreign): (Vec<_>, Vec<_>) = books
                 .into_iter()
@@ -369,8 +369,8 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     if pdf {
                         force || b.pdf_status != AcquireStatus::Acquired
                     } else {
-                        (force || b.acquire_status != AcquireStatus::Acquired)
-                            && bookclerk_library::is_downloadable(&b.content_kind)
+                        (force || b.status != AcquireStatus::Acquired)
+                            && bookclerk_library::is_downloadable(b.content_kind)
                             && (cfg.library.download_episodes || b.content_kind != "episode")
                     }
                 })
@@ -395,8 +395,8 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
 
             for book in targets {
                 let req = AcquireRequest {
-                    asin: book.download_product_id().to_string(),
-                    book_uuid: Some(book.uuid.clone()),
+                    asin: book.product_id.clone(),
+                    book_uuid: book.book_uuid.clone(),
                     source: book.source.clone(),
                     account_id: book.account_id.clone(),
                     title: book.title.clone(),
@@ -423,7 +423,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 } else {
                     key
                 };
-                println!("{}\t{}", book.asin_or_isbn(), key);
+                println!("{}\t{}", title_label(&book), key);
             }
             Ok(())
         }
@@ -652,26 +652,8 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             let filter: Vec<String> = asins.into_iter().map(|a| a.to_ascii_uppercase()).collect();
             // One title per edition: the one that acquired it, whose status
             // write moves the edition's key.
-            let mut targets = Vec::new();
-            for book in store.list_books(account.as_deref()).await? {
-                if !(filter.is_empty() || filter.iter().any(|a| title_id_matches(&book, a))) {
-                    continue;
-                }
-                let Some(title) = store
-                    .acquire_title(
-                        &book.plugin_key,
-                        &book.account_id,
-                        &book.marketplace,
-                        &book.product_id,
-                    )
-                    .await?
-                else {
-                    continue;
-                };
-                if title.status == AcquireStatus::Acquired && title.acquired_here() {
-                    targets.push(title);
-                }
-            }
+            let targets =
+                convert_targets(library_titles(&store, account.as_deref()).await?, &filter);
             if targets.is_empty() {
                 eprintln!("nothing to convert");
                 return Ok(());
@@ -728,20 +710,9 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             }
         },
         LibraryCommand::List { account, status } => {
-            let books = store.list_books(account.as_deref()).await?;
-            for book in books {
-                if let Some(filter) = &status {
-                    if book.acquire_status.as_str() != filter.as_str() {
-                        continue;
-                    }
-                }
-                println!(
-                    "{}\t{}\t{}\t{}",
-                    book.asin_or_isbn(),
-                    book.acquire_status.as_str(),
-                    book.title,
-                    book.storage_key.as_deref().unwrap_or("-")
-                );
+            let titles = library_titles(&store, account.as_deref()).await?;
+            for line in list_lines(&titles, status.as_deref()) {
+                println!("{line}");
             }
             Ok(())
         }
@@ -1024,11 +995,7 @@ async fn resolve_license_target(
     id: &str,
     account: Option<&str>,
 ) -> anyhow::Result<(String, String)> {
-    let books = store.list_books(None).await?;
-    let matches: Vec<_> = books
-        .into_iter()
-        .filter(|b| title_id_matches(b, id))
-        .collect();
+    let matches = store.acquire_titles_named(None, id).await?;
 
     if matches.is_empty() {
         let Some(account) = account else {
@@ -1045,7 +1012,7 @@ async fn resolve_license_target(
         .or_else(|| matches.first())
         .expect("matches non-empty");
 
-    let license_asin = book.audible_asin().ok_or_else(|| {
+    let license_asin = book.asin.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
             "title {id} has no Audible ASIN (source={}); enrich via ISBN or use an Audible library id",
             book.source
@@ -1063,12 +1030,13 @@ async fn resolve_license_target(
     // Libro (or other) row with an enriched ASIN — find an Audible account that
     // owns the same ASIN, otherwise require --account.
     let audible_owners: Vec<_> = store
-        .list_books(None)
+        .acquire_titles_named(None, license_asin)
         .await?
         .into_iter()
         .filter(|b| {
             b.source.eq_ignore_ascii_case("audible")
-                && b.audible_asin()
+                && b.asin
+                    .as_deref()
                     .is_some_and(|a| a.eq_ignore_ascii_case(license_asin))
         })
         .collect();
@@ -1088,9 +1056,80 @@ async fn resolve_license_target(
     }
 }
 
-/// Whether `id` matches the book's UUID, product id, ISBN, or ASIN (case-insensitive).
-fn title_id_matches(book: &bookclerk_library::BookRecord, id: &str) -> bool {
-    id.eq_ignore_ascii_case(&book.uuid)
+/// Every title the library's store accounts hold (all of them, or those of
+/// `account`), walked in keyset pages
+/// ([`LibraryStore::acquire_titles_page`]).
+///
+/// # Errors
+///
+/// Returns the store's read error.
+async fn library_titles(
+    store: &LibraryStore,
+    account: Option<&str>,
+) -> anyhow::Result<Vec<AcquireTitle>> {
+    let mut titles = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let page = store
+            .acquire_titles_page(account, after.as_deref(), 64)
+            .await?;
+        titles.extend(page.titles);
+        match page.next {
+            Some(next) => after = Some(next),
+            None => return Ok(titles),
+        }
+    }
+}
+
+/// The `library list` lines of `titles`: label, audio state, title and
+/// storage key, tab separated, keeping only titles in state `status` when
+/// one is given.
+fn list_lines(titles: &[AcquireTitle], status: Option<&str>) -> Vec<String> {
+    titles
+        .iter()
+        .filter(|title| status.is_none_or(|status| title.status.as_str() == status))
+        .map(|title| {
+            format!(
+                "{}\t{}\t{}\t{}",
+                title_label(title),
+                title.status.as_str(),
+                title.title,
+                title.storage_key.as_deref().unwrap_or("-")
+            )
+        })
+        .collect()
+}
+
+/// The titles `library convert` converts: one per acquired edition, the
+/// title whose acquire wrote the edition's audio state (so its status write
+/// moves the edition's key), narrowed to those `filter` names when it is
+/// not empty.
+fn convert_targets(titles: Vec<AcquireTitle>, filter: &[String]) -> Vec<AcquireTitle> {
+    titles
+        .into_iter()
+        .filter(|title| filter.is_empty() || filter.iter().any(|id| title_id_matches(title, id)))
+        .filter(|title| title.status == AcquireStatus::Acquired && title.acquired_here())
+        .collect()
+}
+
+/// The id a title is printed under: its ASIN, else its ISBN, else its
+/// store product id.
+fn title_label(title: &AcquireTitle) -> &str {
+    title
+        .asin
+        .as_deref()
+        .or(title.isbn.as_deref())
+        .unwrap_or(title.product_id.as_str())
+}
+
+/// Whether `id` matches the title's holding id, library row id, product id,
+/// ISBN, or ASIN (case-insensitive).
+fn title_id_matches(book: &AcquireTitle, id: &str) -> bool {
+    id.eq_ignore_ascii_case(&book.holding_id)
+        || book
+            .book_uuid
+            .as_ref()
+            .is_some_and(|uuid| id.eq_ignore_ascii_case(uuid))
         || id.eq_ignore_ascii_case(&book.product_id)
         || book
             .isbn
@@ -1147,5 +1186,153 @@ async fn instance_audio_quality(
             tracing::warn!(error = %err, "instance document unreadable; using high quality");
             AudioQuality::High
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bookclerk_library::NewBook;
+
+    /// A library with two Audible titles on one account (the first
+    /// acquired) and a Libro.fm title whose enriched ASIN another Audible
+    /// account owns.
+    async fn library() -> LibraryStore {
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("sqlite memory"),
+        );
+        store
+            .upsert_account("audible", "acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        store
+            .upsert_account("audible", "owner", "us", None, true, "audible")
+            .await
+            .unwrap();
+        store
+            .upsert_account("libro", "libro-acct", "us", None, true, "libro")
+            .await
+            .unwrap();
+        for (product, title) in [("B0LIST0001", "First"), ("B0LIST0002", "Second")] {
+            store
+                .upsert_book(&NewBook::minimal(product, "acct", "us", title))
+                .await
+                .unwrap();
+        }
+        store
+            .set_acquire_status(
+                "B0LIST0001",
+                "acct",
+                AcquireStatus::Acquired,
+                Some("a/First.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .upsert_book(&NewBook::minimal("B0SHARED01", "owner", "us", "Shared"))
+            .await
+            .unwrap();
+        store
+            .upsert_book(&NewBook {
+                asin: Some("B0SHARED01".into()),
+                isbn: Some("9780000000001".into()),
+                plugin_key: "libro".into(),
+                source: "libro".into(),
+                ..NewBook::minimal("9780000000001", "libro-acct", "us", "Shared")
+            })
+            .await
+            .unwrap();
+        store
+    }
+
+    /// The titles are walked in pages, listed under their label with their
+    /// state and key, and narrowed by state.
+    #[tokio::test]
+    async fn list_reads_every_title_and_filters_by_state() {
+        let store = library().await;
+        let titles = library_titles(&store, Some("acct")).await.unwrap();
+        let mut lines = list_lines(&titles, None);
+        lines.sort();
+        assert_eq!(
+            lines,
+            vec![
+                "B0LIST0001\tacquired\tFirst\ta/First.m4b".to_string(),
+                "B0LIST0002\tnot_acquired\tSecond\t-".to_string(),
+            ]
+        );
+        assert_eq!(
+            list_lines(&titles, Some("acquired")),
+            vec!["B0LIST0001\tacquired\tFirst\ta/First.m4b".to_string()]
+        );
+        assert_eq!(library_titles(&store, None).await.unwrap().len(), 4);
+    }
+
+    /// Convert takes the acquired title, by any id that names it.
+    #[tokio::test]
+    async fn convert_takes_the_acquired_title_by_any_id() {
+        let store = library().await;
+        let titles = library_titles(&store, None).await.unwrap();
+        let all = convert_targets(titles.clone(), &[]);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].product_id, "B0LIST0001");
+        let holding = all[0].holding_id.clone();
+        for id in [holding, "b0list0001".to_string()] {
+            assert_eq!(convert_targets(titles.clone(), &[id]).len(), 1);
+        }
+        assert!(convert_targets(titles, &["B0LIST0002".into()]).is_empty());
+    }
+
+    /// A title is labelled by ASIN, else ISBN, else product id.
+    #[tokio::test]
+    async fn titles_are_labelled_by_their_strongest_id() {
+        let store = library().await;
+        let mut title = library_titles(&store, Some("libro-acct"))
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(title_label(&title), "B0SHARED01");
+        assert!(title_id_matches(&title, "9780000000001"));
+        title.asin = None;
+        assert_eq!(title_label(&title), "9780000000001");
+        title.isbn = None;
+        assert_eq!(title_label(&title), title.product_id.as_str());
+    }
+
+    /// A license is fetched for an Audible title's account, for a Libro.fm
+    /// title through the Audible account that owns its ASIN, and for an
+    /// unscanned ASIN only with an explicit account.
+    #[tokio::test]
+    async fn license_targets_resolve_to_an_audible_account() {
+        let store = library().await;
+        assert_eq!(
+            resolve_license_target(&store, "B0LIST0002", None)
+                .await
+                .unwrap(),
+            ("acct".to_string(), "B0LIST0002".to_string())
+        );
+        assert_eq!(
+            resolve_license_target(&store, "B0LIST0002", Some("other"))
+                .await
+                .unwrap(),
+            ("other".to_string(), "B0LIST0002".to_string())
+        );
+        assert_eq!(
+            resolve_license_target(&store, "9780000000001", None)
+                .await
+                .unwrap(),
+            ("owner".to_string(), "B0SHARED01".to_string())
+        );
+        assert!(resolve_license_target(&store, "B0MISSING1", None)
+            .await
+            .is_err());
+        assert_eq!(
+            resolve_license_target(&store, "B0MISSING1", Some("acct"))
+                .await
+                .unwrap(),
+            ("acct".to_string(), "B0MISSING1".to_string())
+        );
     }
 }
