@@ -94,4 +94,20 @@ impl LibroSource {
     ) -> bookclerk_storefront::Result<Option<SourcePurchaseHint>> {
         crate::catalog::purchase_hint(&self.base_url, opts).await
     }
+
+    /// Resolves the storefront price and link for a title, with every
+    /// for-sale listing a title search found (see
+    /// [`crate::catalog::purchase_answer`]).
+    ///
+    /// # Errors
+    ///
+    /// Only when Libro.fm asks to slow down; other failed lookups are
+    /// treated as no match, so an empty answer can also mean the store
+    /// could not be reached.
+    pub async fn purchase_answer(
+        &self,
+        opts: &PurchaseHintOpts,
+    ) -> bookclerk_storefront::Result<bookclerk_storefront::PricedAnswer> {
+        crate::catalog::purchase_answer(&self.base_url, opts).await
+    }
 }

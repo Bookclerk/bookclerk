@@ -5,11 +5,12 @@
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::{manifest_capabilities, manifest_media};
 use bookclerk_plugin_sdk::{
-    serve, Bindings, Brand, CatalogCapabilities, CatalogDetailParams, CatalogHit,
-    ContentSource as ContentSourceRole, DatabaseBinding, Entrypoints, ExpandCandidatesParams,
-    FetchTitleParams, HealthOk, Invocation, ListDealsParams, LoginParams, LoginResult, PlainFetch,
-    PluginDescribe, PluginError, PluginMigration, PluginWorker, PortalAuthMode, PurchaseHint,
-    PurchaseHintParams, ScalarLimits, ScanPage, ScanParams, SearchCatalogParams,
+    purchase_hint_results_one_by_one, serve, Bindings, Brand, CatalogCapabilities,
+    CatalogDetailParams, CatalogHit, ContentSource as ContentSourceRole, DatabaseBinding,
+    Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
+    LoginParams, LoginResult, PlainFetch, PluginDescribe, PluginError, PluginMigration,
+    PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams, PurchaseHintResult,
+    PurchaseHintsParams, ScalarLimits, ScanPage, ScanParams, SearchCatalogParams,
     FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_scan_delta::SCAN_STATE_BINDING;
@@ -53,7 +54,9 @@ impl PluginWorker for GraphicAudioRoot {
                     "https://www.google.com/s2/favicons?domain=graphicaudio.com&sz=128".into(),
                 ),
             }),
-            // GraphicAudio has no catalog detail lookup.
+            // GraphicAudio has no catalog detail lookup by ISBN, and its search
+            // knows no ISBN or ASIN, so prices come from title searches with
+            // records.
             catalog: CatalogCapabilities {
                 detail_by_isbn: false,
                 price_by_isbn: false,
@@ -204,6 +207,29 @@ impl ContentSourceRole for GraphicAudioContentSource {
             .await
             .map(|hint| hint.map(Into::into))
             .map_err(PluginError::from)
+    }
+
+    /// A title search answers every matching listing, read from its product
+    /// page, as a priced record.
+    async fn purchase_hint_result(
+        &self,
+        params: PurchaseHintParams,
+    ) -> Result<PurchaseHintResult, PluginError> {
+        let source = bookclerk_plugin_source_graphicaudio::GraphicAudioSource::new();
+        source
+            .purchase_answer(&PurchaseHintOpts::from(params))
+            .await
+            .map(PurchaseHintResult::from)
+            .map_err(PluginError::from)
+    }
+
+    /// GraphicAudio has no bulk price endpoint: each query is answered as
+    /// [`Self::purchase_hint_result`] does, a few at a time.
+    async fn purchase_hints_results(
+        &self,
+        params: PurchaseHintsParams,
+    ) -> Result<Vec<PurchaseHintResult>, PluginError> {
+        purchase_hint_results_one_by_one(self, params).await
     }
 
     /// GraphicAudio has no public deals feed, so the shelf is always empty.
