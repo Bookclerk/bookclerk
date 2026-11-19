@@ -1238,6 +1238,7 @@ Options:
 - `-p, --path <PATH>`: Destination classic Libation Files directory (required)
 - `--force`: Overwrite an existing destination directory
 - `--dry-run`: Report only; do not write
+- `--user <USER>`: Write this person's tags, ratings and finished flags (login name or user id); without it they are empty
 
 ### `bookclerk export library`
 
