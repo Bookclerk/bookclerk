@@ -681,6 +681,10 @@ mod tests {
             PaceOverride::Default
         );
         assert_eq!(
+            PaceOverride::from_row("custom", Some(5), Some(86_401)),
+            PaceOverride::Default
+        );
+        assert_eq!(
             PaceOverride::from_row("custom", None, Some(0)),
             PaceOverride::Custom {
                 downloads_per_day: None,

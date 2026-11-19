@@ -113,12 +113,14 @@ impl From<audible_rs::api::client::ApiError> for AudibleError {
             } if error_code == "000307" => Self::NoAaxcAsset { asin, message },
             ApiError::LicenseRejected {
                 asin,
+                status,
                 error_code,
                 message,
                 request_id,
-                ..
             } => {
-                let reason = format!("{error_code} {message}");
+                // An HTTP 429 is a throttle whatever the body says; the
+                // status joins the words so the classifier sees it.
+                let reason = format!("{} {error_code} {message}", status.as_u16());
                 Self::license_refused(
                     &reason,
                     format!(
@@ -153,5 +155,20 @@ mod throttle_tests {
     fn a_throttled_refusal_is_its_own_error() {
         assert!(AudibleError::license_refused("throttled", "x".into()).is_throttled());
         assert!(!AudibleError::license_refused("not owned", "x".into()).is_throttled());
+    }
+
+    #[test]
+    fn a_429_license_answer_is_a_throttle_whatever_its_text() {
+        use audible_rs::api::client::ApiError;
+        use bookclerk_plugin_sdk::http::StatusCode;
+        let rejected = |status: StatusCode| ApiError::LicenseRejected {
+            asin: "B000000000".into(),
+            status,
+            error_code: String::new(),
+            message: String::new(),
+            request_id: "-".into(),
+        };
+        assert!(AudibleError::from(rejected(StatusCode::TOO_MANY_REQUESTS)).is_throttled());
+        assert!(!AudibleError::from(rejected(StatusCode::FORBIDDEN)).is_throttled());
     }
 }

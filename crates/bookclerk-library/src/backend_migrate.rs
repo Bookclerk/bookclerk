@@ -297,6 +297,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_download_ledger_copies_so_the_pace_window_survives() {
+        let source = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap();
+        let dest = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap();
+        accounts::ActiveModel {
+            id: Set(1),
+            plugin_key: Set("path:file:///tmp/store#store".into()),
+            account_id: Set("acct".into()),
+            marketplace: Set("us".into()),
+            label: Set(None),
+            scan_enabled: Set(1),
+            source: Set("store".into()),
+            connection_status: Set("active".into()),
+            created_at: Set("2026-01-01T00:00:00Z".into()),
+            updated_at: Set("2026-01-01T00:00:00Z".into()),
+        }
+        .insert(&source)
+        .await
+        .unwrap();
+        for (id, paced) in [("d1", 1), ("d2", 0)] {
+            account_downloads::ActiveModel {
+                id: Set(id.into()),
+                plugin_key: Set("path:file:///tmp/store#store".into()),
+                account_id: Set("acct".into()),
+                started_at_ms: Set(1_767_225_600_000),
+                job_id: Set(None),
+                paced: Set(paced),
+            }
+            .insert(&source)
+            .await
+            .unwrap();
+        }
+        let summary = migrate_library_backend(
+            &source,
+            &dest,
+            &BackendMigrateOptions {
+                dry_run: false,
+                force: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary.tables["account_downloads"], 2);
+        let copied = account_downloads::Entity::find().all(&dest).await.unwrap();
+        assert_eq!(copied.len(), 2, "the destination keeps the rolling window");
+        assert!(copied
+            .iter()
+            .any(|row| row.id == "d1" && row.paced == 1 && row.account_id == "acct"));
+    }
+
+    #[tokio::test]
     async fn episodes_stored_before_their_show_still_copy() {
         let source = bookclerk_plugin_database_sqlite::open_memory()
             .await

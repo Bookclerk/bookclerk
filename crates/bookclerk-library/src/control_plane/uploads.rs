@@ -1613,7 +1613,9 @@ pub(super) fn commit_trust_gate(
 /// re-checked just before. A key another title or an acquire took since
 /// the grant refuses the commit (`key_taken`) and records nothing. A repeat
 /// of a commit that already landed answers [`UploadCommit::Committed`]
-/// again without writing.
+/// again without writing. A title's commit also records the store
+/// download in its account's pace ledger (`account_downloads`), in the same
+/// batch.
 ///
 /// # Errors
 ///
@@ -1627,49 +1629,8 @@ pub async fn commit_upload(
     let outcome = commit_upload_checked(store, upload_id, finish, limits).await?;
     if matches!(outcome, UploadCommit::Committed { .. }) {
         store_committed_probes(store, upload_id).await?;
-        if let Err(error) = record_committed_download(store, upload_id).await {
-            tracing::warn!(
-                upload_id,
-                error = %error,
-                "could not record a Host's download in the account's download history"
-            );
-        }
     }
     Ok(outcome)
-}
-
-/// Records a committed title upload in its account's download history, so
-/// a Host's store download counts toward the account's pace like one the
-/// library ran itself.
-///
-/// Hosts never run paced acquires, so the row counts as started by a
-/// person. The row id is `upload:<upload id>`, which makes a repeated
-/// commit insert nothing. A catalog upload, the job's closing upload and a
-/// title whose holding is gone record nothing.
-///
-/// # Errors
-///
-/// Returns an error when a read or the ledger write fails.
-async fn record_committed_download(store: &LibraryStore, upload_id: &str) -> Result<()> {
-    let Some(session) = load_upload(store, upload_id).await? else {
-        return Ok(());
-    };
-    if session.is_catalog() || session.holding_id.is_empty() {
-        return Ok(());
-    }
-    let Some(title) = store.acquire_title_of_holding(&session.holding_id).await? else {
-        return Ok(());
-    };
-    store
-        .record_account_download_once(
-            &format!("upload:{upload_id}"),
-            &title.plugin_key,
-            &title.account_id,
-            Utc::now(),
-            Some(&session.job_id),
-            crate::DownloadStarter::Person,
-        )
-        .await
 }
 
 /// [`commit_upload`] without the probes: every check, and the batch that
@@ -1808,6 +1769,31 @@ async fn commit_upload_checked(
         binds,
     )];
     if let Some(title) = &title {
+        // The title's store download counts toward its account's pace, in
+        // the same batch as the commit so the two never part. Hosts never
+        // run paced acquires (`claimant_may_run`), so the row is a person's.
+        // The id is the upload's, and the gate holds only for the statement
+        // batch that committed it, so a repeated commit records nothing.
+        let mut binds = vec![
+            text(&format!("upload:{upload_id}")),
+            text(&title.plugin_key),
+            text(&title.account_id),
+            batch::int(Utc::now().timestamp_millis()),
+            text(&fence.job_id),
+            text(&title.plugin_key),
+            text(&title.account_id),
+        ];
+        binds.extend(gate());
+        statements.push(exec(
+            &format!(
+                "INSERT OR IGNORE INTO account_downloads \
+                   (id, plugin_key, account_id, started_at_ms, job_id, paced) \
+                 SELECT ?, ?, ?, ?, ?, 0 \
+                  WHERE EXISTS (SELECT 1 FROM accounts WHERE plugin_key = ? AND account_id = ?) \
+                    AND {gate_sql}"
+            ),
+            binds,
+        ));
         if let Some(model) = &model {
             let mut binds = vec![text(&session.primary_key), text(&now), text(&model.uuid)];
             binds.extend(gate());

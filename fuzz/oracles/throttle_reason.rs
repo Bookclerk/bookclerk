@@ -15,7 +15,7 @@
 //! - flipping the text's ASCII case never changes the answer;
 //! - adding "Too Many Requests" to any text makes it a throttle;
 //! - adding other limit wording ("device limit reached", "download limit")
-//!   to a text that is not a throttle keeps it not a throttle.
+//!   after a `.` to a text that is not a throttle keeps it not a throttle.
 
 use bookclerk_storefront::is_throttle_reason;
 
@@ -30,11 +30,13 @@ const THROTTLE_WORDS: [&[u8]; 6] = [
     b"429",
 ];
 
-/// Wording about limits that are not throttling.
+/// Wording about limits that are not throttling. Each is added after a
+/// `.`, which no throttle word contains, so no word can form across the
+/// join (text ending in "rate" followed by " Limit" would).
 const OTHER_LIMITS: [&str; 3] = [
-    " device limit reached",
-    " download limit",
-    " Limit exceeded for this title",
+    "device limit reached",
+    "download limit",
+    "Limit exceeded for this title",
 ];
 
 /// Whether `text` contains `word`, comparing ASCII letters without case.
@@ -80,7 +82,7 @@ pub fn check(data: &[u8]) {
     if !throttled {
         for other in OTHER_LIMITS {
             assert!(
-                !is_throttle_reason(&format!("{text}{other}")),
+                !is_throttle_reason(&format!("{text}.{other}")),
                 "{other:?} after {text:?} was taken for a throttle"
             );
         }

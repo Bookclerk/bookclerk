@@ -590,9 +590,9 @@ holds across plugin instances and every node of the cluster.
   copy matched in storage or taken straight from a joined library is not
   counted, nor is a title no destination takes or one the
   store refused with `rateLimited`. A title a Host downloaded for a
-  hand-started acquire is recorded when the owner commits its upload
-  (`control_plane::commit_upload`), once per upload however often the
-  commit is repeated. A ledger write that fails is retried, and a paced
+  hand-started acquire is recorded in the same batch that commits its
+  upload on the owner (`control_plane::commit_upload`), so the two never
+  part, and once per upload however often the commit is repeated. A ledger write that fails is retried, and a paced
   run that still cannot record a download holds that account rather than
   download past a budget it cannot count; the job fails if rows are still
   unwritten at its end. Backend migration copies the ledger with

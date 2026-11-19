@@ -241,65 +241,13 @@ impl LibraryStore {
         job_id: Option<&str>,
         starter: DownloadStarter,
     ) -> Result<()> {
-        let id = uuid::Uuid::new_v4().to_string();
-        self.insert_account_download(&id, plugin_key, account_id, started_at, job_id, starter)
-            .await
-    }
-
-    /// Records a download under a caller-chosen id, so recording the same
-    /// download again inserts nothing. Used for a Host's committed upload,
-    /// whose commit may be answered more than once.
-    ///
-    /// # Arguments
-    ///
-    /// * `download_id` - A stable id for this download, such as
-    ///   `upload:<upload id>`.
-    /// * `plugin_key` - The account's plugin.
-    /// * `account_id` - The account.
-    /// * `started_at` - When the download started.
-    /// * `job_id` - The acquire job that ran it, if any.
-    /// * `starter` - Whether the host or a person started it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the batch fails.
-    pub async fn record_account_download_once(
-        &self,
-        download_id: &str,
-        plugin_key: &str,
-        account_id: &str,
-        started_at: DateTime<Utc>,
-        job_id: Option<&str>,
-        starter: DownloadStarter,
-    ) -> Result<()> {
-        self.insert_account_download(
-            download_id,
-            plugin_key,
-            account_id,
-            started_at,
-            job_id,
-            starter,
-        )
-        .await
-    }
-
-    /// Prunes the account's old ledger rows and inserts the row `id`, unless
-    /// a row with that id exists, in one batch.
-    async fn insert_account_download(
-        &self,
-        id: &str,
-        plugin_key: &str,
-        account_id: &str,
-        started_at: DateTime<Utc>,
-        job_id: Option<&str>,
-        starter: DownloadStarter,
-    ) -> Result<()> {
         let started_ms = started_at.timestamp_millis();
         let prune_before = started_ms.saturating_sub(millis(LEDGER_RETENTION));
         let paced = match starter {
             DownloadStarter::Host => 1,
             DownloadStarter::Person => 0,
         };
+        let id = uuid::Uuid::new_v4().to_string();
         let operation_id = format!("account-download-{id}");
         self.execute_host_batch(batch::request(
             &operation_id,
@@ -320,7 +268,7 @@ impl LibraryStore {
                          SELECT ?, ?, ?, ?, ?, ? WHERE 1 = 1{ACCOUNT_EXISTS}"
                     ),
                     vec![
-                        batch::text(id),
+                        batch::text(&id),
                         batch::text(plugin_key),
                         batch::text(account_id),
                         batch::int(started_ms),
