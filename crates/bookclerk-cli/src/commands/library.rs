@@ -357,7 +357,12 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             let cfg = config;
             let destinations = crate::registry::destinations(&host).await?;
             let destinations =
-                bookclerk_plugin_host::build_acquire_destinations(cfg, &destinations)?;
+                // A dry run plans the primary's keys; nothing is placed.
+                bookclerk_plugin_host::build_acquire_destinations(
+                    cfg,
+                    &destinations,
+                    &std::collections::BTreeMap::new(),
+                )?;
             // The primary destination's options carry its naming overrides
             // and prefix, so the planned keys match what an acquire writes.
             let options = destinations.primary_destination().options.clone();
@@ -414,6 +419,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     cache_dir: cfg.download_cache_dir(),
                     force,
                     write_destinations: None,
+                    placement: None,
                     job_id: None,
                     temp_quota_bytes: None,
                     library_id: None,
@@ -1149,7 +1155,12 @@ async fn storage_and_options_for_host(
     config: &Config,
 ) -> anyhow::Result<(Box<dyn StorageBackend>, DownloadOptions)> {
     let destinations = crate::registry::destinations(host).await?;
-    let acquire = bookclerk_plugin_host::build_acquire_destinations(config, &destinations)?;
+    // Match and layout passes read every destination; nothing is placed.
+    let acquire = bookclerk_plugin_host::build_acquire_destinations(
+        config,
+        &destinations,
+        &std::collections::BTreeMap::new(),
+    )?;
     let options = acquire.primary_destination().options.clone();
     let storage = acquire.into_listing_backend()?;
     Ok((storage, options))

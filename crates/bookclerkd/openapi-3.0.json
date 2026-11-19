@@ -6395,6 +6395,298 @@
         "x-bookclerk-access": "The operator (token or session) only."
       }
     },
+    "/api/config/plugin-instances/{id}/filter": {
+      "get": {
+        "tags": [
+          "Plugins"
+        ],
+        "summary": "`GET /api/config/plugin-instances/{id}/filter`: which books the storage\ndestination takes.",
+        "operationId": "get_destination_filter",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin instance id of the destination.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The destination's filter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationFilterResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The id is not a plugin instance id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid plugin instance id: expected a UUID"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The filter could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid core.destination: destination filter: unknown field `genre`"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      },
+      "put": {
+        "tags": [
+          "Plugins"
+        ],
+        "summary": "`PUT /api/config/plugin-instances/{id}/filter`: replaces which books the\nstorage destination takes. Acquires that start afterwards use it; files\nalready stored stay where they are.",
+        "description": "Operator principal only. The route is mounted on the operator router.",
+        "operationId": "put_destination_filter",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin instance id of the destination.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DestinationFilter"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The filter after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationFilterResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The filter is invalid. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid: a patron rule takes a user id, not `me`"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The filter kept changing underneath the write.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the filter of destination 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b kept changing; retry"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: rules: invalid type: integer `1`, expected a sequence at line 1 column 10"
+              }
+            }
+          },
+          "500": {
+            "description": "The filter could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
     "/api/config/plugin-instances/{id}/deployments/{node_id}": {
       "put": {
         "tags": [
@@ -34750,6 +35042,51 @@
           "unplaced"
         ]
       },
+      "DestinationFilter": {
+        "type": "object",
+        "description": "Which books one destination takes.",
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FilterRule"
+            },
+            "description": "Filter rules, at most 64. Empty means the destination takes every\nbook.",
+            "maxItems": 64
+          }
+        },
+        "additionalProperties": false
+      },
+      "DestinationFilterResponse": {
+        "type": "object",
+        "description": "`GET` and `PUT /api/config/plugin-instances/{id}/filter` body: which\nbooks a storage destination takes.",
+        "required": [
+          "plugin_instance_id",
+          "revision",
+          "filter"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "The destination's plugin instance id.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Revision of the destination's `core.destination` document; `0` when\nnone was written, so the destination takes every book.",
+            "example": 2
+          },
+          "filter": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DestinationFilter"
+              }
+            ],
+            "description": "The filter; no rules take every book."
+          }
+        }
+      },
       "DisconnectBody": {
         "type": "object",
         "description": "`POST /api/config/join/connections/disconnect` body.",
@@ -35931,6 +36268,57 @@
           "published"
         ],
         "example": "now"
+      },
+      "FilterEffect": {
+        "type": "string",
+        "description": "Whether a [`FilterRule`] lets matching books in or keeps them out.",
+        "enum": [
+          "include",
+          "exclude"
+        ]
+      },
+      "FilterField": {
+        "type": "string",
+        "description": "The book field a [`FilterRule`] matches one value of.",
+        "enum": [
+          "patron",
+          "storefront",
+          "account",
+          "media_kind"
+        ]
+      },
+      "FilterRule": {
+        "type": "object",
+        "description": "One rule of a destination filter: a field, one value of it, and its\neffect.",
+        "required": [
+          "field",
+          "value",
+          "effect"
+        ],
+        "properties": {
+          "field": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/FilterField"
+              }
+            ],
+            "description": "The field the rule matches."
+          },
+          "value": {
+            "type": "string",
+            "description": "The value: a user id for `patron`, `book` or `podcast` for\n`media_kind`, otherwise 1 to 128 bytes of text.",
+            "example": "audible"
+          },
+          "effect": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/FilterEffect"
+              }
+            ],
+            "description": "Include or exclude."
+          }
+        },
+        "additionalProperties": false
       },
       "GuestReservation": {
         "type": "object",
