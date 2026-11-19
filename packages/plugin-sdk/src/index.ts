@@ -197,6 +197,7 @@ export type {
   QueueOutcome,
   QueueRetryOptions,
   WireEventBatch,
+  PurchaseHintAnswer,
   WireQueueBatch,
   WriteOptions,
 } from "./plugin.js";

@@ -1271,6 +1271,24 @@
             "kind": "bool"
           },
           "offset": 0
+        },
+        {
+          "name": "priceByIsbn",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 1
+        },
+        {
+          "name": "priceByAsin",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 2
         }
       ]
     },
@@ -11597,6 +11615,36 @@
         }
       ]
     },
+    "PricedRecord": {
+      "name": "PricedRecord",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "record",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "CatalogHit"
+          },
+          "offset": 0
+        },
+        {
+          "name": "hint",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "PurchaseHint"
+          },
+          "offset": 1
+        }
+      ]
+    },
     "ProgressSink.report$Params": {
       "name": "ProgressSink.report$Params",
       "file": "plugin.capnp",
@@ -11931,6 +11979,16 @@
             "kind": "bool"
           },
           "offset": 0
+        },
+        {
+          "name": "lookup",
+          "codeOrder": 7,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "PriceLookup"
+          },
+          "offset": 1
         }
       ]
     },
@@ -11968,7 +12026,7 @@
       "name": "PurchaseHintResult",
       "file": "plugin.capnp",
       "dataWords": 1,
-      "pointerCount": 1,
+      "pointerCount": 2,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -11990,6 +12048,19 @@
             "name": "PurchaseHint"
           },
           "offset": 0
+        },
+        {
+          "name": "records",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "PricedRecord"
+            }
+          },
+          "offset": 1
         }
       ]
     },
@@ -15236,6 +15307,17 @@
         "unspecified",
         "password",
         "oauth"
+      ]
+    },
+    "PriceLookup": {
+      "name": "PriceLookup",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "unspecified",
+        "product",
+        "isbn",
+        "asin",
+        "title"
       ]
     },
     "ResolvedSqlType": {

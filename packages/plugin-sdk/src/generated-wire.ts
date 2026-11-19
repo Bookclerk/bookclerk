@@ -4406,11 +4406,15 @@ export const CatalogCapabilitiesCodec: StructCodec<T.CatalogCapabilities> = {
   write(s, v, caps) {
     void caps;
     s.setBool(0, v.detailByIsbn ?? false);
+    s.setBool(1, v.priceByIsbn ?? false);
+    s.setBool(2, v.priceByAsin ?? false);
   },
   read(s, caps) {
     void caps;
     return {
       detailByIsbn: s.getBool(0),
+      priceByIsbn: s.getBool(1),
+      priceByAsin: s.getBool(2),
     };
   },
 };
@@ -5949,12 +5953,14 @@ export const PurchaseHintParamsCodec: StructCodec<T.PurchaseHintParams> = {
     }
     s.setText(5, v.region ?? "");
     s.setBool(0, v.withPrice ?? false);
+    s.setUint16(1, ord(A.PRICE_LOOKUPS, v.lookup ?? A.PRICE_LOOKUPS[0]!, "PriceLookup"));
   },
   read(s, caps) {
     void caps;
     const out: T.PurchaseHintParams = {
       region: s.getText(5),
       withPrice: s.getBool(0),
+      lookup: fromOrd(A.PRICE_LOOKUPS, s.getUint16(1), "PriceLookup"),
     };
     const productIdValue = s.getText(0);
     if (!(productIdValue === "")) {
@@ -6438,23 +6444,55 @@ export const PurchaseHintCodec: StructCodec<T.PurchaseHint> = {
 };
 
 /**
- * Wire codec for `PurchaseHintResult` (1 data words, 1 pointers).
+ * Wire codec for `PurchaseHintResult` (1 data words, 2 pointers).
  *
  * @internal
  */
 export const PurchaseHintResultCodec: StructCodec<T.PurchaseHintResult> = {
   dataWords: 1,
-  pointerCount: 1,
+  pointerCount: 2,
   write(s, v, caps) {
     s.setBool(0, v.found ?? false);
     if (v.hint != null) {
       PurchaseHintCodec.write(s.initStruct(0, 3, 7), v.hint, caps);
+    }
+    {
+      const list = v.records ?? [];
+      const items = s.initStructList(1, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        PricedRecordCodec.write(items[i]!, list[i]!, caps);
+      }
     }
   },
   read(s, caps) {
     return {
       found: s.getBool(0),
       hint: PurchaseHintCodec.read(s.getStruct(0, 3, 7), caps),
+      records: s.getStructList(1, 0, 2).map((item) => PricedRecordCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `PricedRecord` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const PricedRecordCodec: StructCodec<T.PricedRecord> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    if (v.record != null) {
+      CatalogHitCodec.write(s.initStruct(0, 6, 17), v.record, caps);
+    }
+    if (v.hint != null) {
+      PurchaseHintCodec.write(s.initStruct(1, 3, 7), v.hint, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      record: CatalogHitCodec.read(s.getStruct(0, 6, 17), caps),
+      hint: PurchaseHintCodec.read(s.getStruct(1, 3, 7), caps),
     };
   },
 };
@@ -6472,7 +6510,7 @@ export const PurchaseHintReplyCodec: StructCodec<T.PurchaseHintReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          PurchaseHintResultCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+          PurchaseHintResultCodec.write(s.initStruct(0, 1, 2), v.value, caps);
         }
         break;
       case "err":
@@ -6489,7 +6527,7 @@ export const PurchaseHintReplyCodec: StructCodec<T.PurchaseHintReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: PurchaseHintResultCodec.read(s.getStruct(0, 1, 1), caps) };
+        return { kind: "ok", value: PurchaseHintResultCodec.read(s.getStruct(0, 1, 2), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -6533,7 +6571,7 @@ export const PurchaseHintsResultCodec: StructCodec<T.PurchaseHintsResult> = {
   write(s, v, caps) {
     {
       const list = v.results ?? [];
-      const items = s.initStructList(0, list.length, 1, 1);
+      const items = s.initStructList(0, list.length, 1, 2);
       for (let i = 0; i < items.length; i++) {
         PurchaseHintResultCodec.write(items[i]!, list[i]!, caps);
       }
@@ -6541,7 +6579,7 @@ export const PurchaseHintsResultCodec: StructCodec<T.PurchaseHintsResult> = {
   },
   read(s, caps) {
     return {
-      results: s.getStructList(0, 1, 1).map((item) => PurchaseHintResultCodec.read(item, caps)),
+      results: s.getStructList(0, 1, 2).map((item) => PurchaseHintResultCodec.read(item, caps)),
     };
   },
 };

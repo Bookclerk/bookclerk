@@ -1184,8 +1184,20 @@ async fn a_grant_is_answered_in_order_and_a_copy_of_another_edition_ends_the_ses
     drop(copy);
     assert!(!bookclerk_config::contains_registered_secret("dG9rZW4"));
 
-    // A copy from another store is passed over.
-    assert!(copies.copy_of(listing("B0GRANT001")).await.is_none());
+    // A copy from another store is offered when no library has one from
+    // the title's own, with what the library says of it, so the acquire
+    // can compare it with its own download.
+    let other = copies
+        .copy_of(listing("B0GRANT001"))
+        .await
+        .expect("a copy from another store is offered");
+    assert_eq!(other.source_store(), Some("libro"));
+    let probe = other.probe();
+    assert_eq!(probe.content_type, "audio/mp4");
+    assert_eq!(probe.bitrate_kbps, Some(64));
+    assert!(!probe.lossless);
+    assert_eq!(probe.source_store.as_deref(), Some("libro"));
+    drop(other);
     assert!(reader_of("fake-grants").is_some());
 
     assert!(copies.copy_of(listing("B0GRANT001")).await.is_none());

@@ -120,6 +120,9 @@ CatalogSort = Literal["relevance", "popularity", "rating", "title", "author"]
 CatalogField = Literal["any", "author", "narrator", "series", "genre"]
 """Catalog search facet restricting which field the query matches."""
 
+PriceLookup = Literal["unspecified", "product", "isbn", "asin", "title"]
+"""How a purchase-hint query names the title to price."""
+
 Abridgement = Literal["unknown", "unabridged", "abridged"]
 """Whether an edition is abridged."""
 
@@ -3052,9 +3055,17 @@ class CatalogCapabilities(TypedDict):
             `productId` and `isbn`) to a full bibliographic record. Catalog search then
             asks this store to fill description, narrators, runtime and genres on lean
             result rows from any store that carry an ISBN.
+        priceByIsbn: True when `purchaseHint` / `purchaseHints` price a query by its
+            exact ISBN (`lookup = isbn`): the answer is the store's listing of that ISBN
+            or not found, never a title match. The host then prices a card at this store
+            by the ISBNs of the card's recording before searching by title.
+        priceByAsin: True when `purchaseHint` / `purchaseHints` price a query by its
+            exact ASIN (`lookup = asin`), as `priceByIsbn` does for ISBNs.
     """
 
     detailByIsbn: bool
+    priceByIsbn: bool
+    priceByAsin: bool
 
 
 class Brand(TypedDict):
@@ -4033,6 +4044,8 @@ class PurchaseHintParams(TypedDict):
         isbn: ISBN when known. Omitted when absent (wire zero value).
         region: Storefront region / marketplace code.
         withPrice: When true, guests should include live price fields when available.
+        lookup: How the host asks the store to find the title. `unspecified` (an older
+            host) leaves the guest free to use any field, as before.
     """
 
     productId: NotRequired[str]
@@ -4042,6 +4055,7 @@ class PurchaseHintParams(TypedDict):
     isbn: NotRequired[str]
     region: str
     withPrice: bool
+    lookup: PriceLookup
 
 
 class ListDealsParams(TypedDict):
@@ -4290,9 +4304,26 @@ class PurchaseHintResult(TypedDict):
     Attributes:
         found: False when the guest could not resolve the title (`hint` is empty).
         hint: Purchase hint when `found`.
+        records: Every priced listing a title search matched (`lookup = title`), each
+            with its full catalog record, so the host can tell recordings apart by
+            identifiers, credits and kinds rather than by title. Empty for other lookups
+            and for guests that do not return records; `hint` then stays the answer.
     """
 
     found: bool
+    hint: PurchaseHint
+    records: list[PricedRecord]
+
+
+class PricedRecord(TypedDict):
+    """One priced listing returned by a title search.
+
+    Attributes:
+        record: The listing's catalog record: identifiers, credits, kinds, language.
+        hint: Its purchase link and prices, as `PurchaseHint` carries them.
+    """
+
+    record: CatalogHit
     hint: PurchaseHint
 
 
@@ -7288,6 +7319,7 @@ __all__ = [
     "FetchedFileRole",
     "CatalogSort",
     "CatalogField",
+    "PriceLookup",
     "Abridgement",
     "MetadataField",
     "DbType",
@@ -7524,6 +7556,7 @@ __all__ = [
     "CatalogDetailReply",
     "PurchaseHint",
     "PurchaseHintResult",
+    "PricedRecord",
     "PurchaseHintReplyOk",
     "PurchaseHintReplyErr",
     "PurchaseHintReply",

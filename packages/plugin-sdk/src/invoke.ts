@@ -38,6 +38,7 @@ import type {
   PluginError as WirePluginError,
   PluginMigration as WirePluginMigration,
   PurchaseHint,
+  PurchaseHintResult,
   QueueResult,
   SocketMessageOk,
   SourceAccount,
@@ -60,6 +61,7 @@ import type {
   NamedStub,
   ObjectMetadata,
   PluginMigration,
+  PurchaseHintAnswer,
   QueueOutcome,
 } from "./plugin.js";
 
@@ -229,6 +231,26 @@ function withoutParams<P, R>(
 }
 
 const asList = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
+
+/**
+ * One `purchaseHint` answer as the wire's `PurchaseHintResult`: a bare
+ * hint, `null`, or a {@link PurchaseHintAnswer} with title-search records.
+ *
+ * @param value - What the plugin's method returned for one query.
+ * @returns `found`, the hint and any records.
+ */
+function hintResult(value: unknown): PurchaseHintResult {
+  if (value != null && typeof value === "object" && "records" in value) {
+    const answer = value as PurchaseHintAnswer;
+    return {
+      found: answer.hint != null,
+      // The wire leaves `hint` unset when not found.
+      hint: (answer.hint ?? undefined) as PurchaseHint,
+      records: Array.isArray(answer.records) ? answer.records : [],
+    };
+  }
+  return { found: value != null, hint: (value ?? undefined) as PurchaseHint, records: [] };
+}
 
 const okHits = (value: unknown) => okValue({ hits: asList<CatalogHit>(value) });
 /**
@@ -624,7 +646,7 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       "purchaseHint",
       W.ContentSourcePurchaseHintParamsCodec,
       W.ContentSourcePurchaseHintResultsCodec,
-      (value) => okValue({ found: value != null, hint: (value ?? undefined) as PurchaseHint }),
+      (value) => okValue(hintResult(value)),
     ),
     purchaseHints: withParams(
       "storefront",
@@ -633,10 +655,7 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       W.ContentSourcePurchaseHintsResultsCodec,
       (value) =>
         okValue({
-          results: asList<PurchaseHint | null>(value).map((hint) => ({
-            found: hint != null,
-            hint: (hint ?? undefined) as PurchaseHint,
-          })),
+          results: asList<PurchaseHint | PurchaseHintAnswer | null>(value).map(hintResult),
         }),
     ),
     listDeals: withParams(

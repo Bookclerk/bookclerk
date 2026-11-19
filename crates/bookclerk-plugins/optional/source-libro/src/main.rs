@@ -46,6 +46,8 @@ impl PluginWorker for LibroRoot {
             // search uses it to fill lean rows from every store.
             catalog: CatalogCapabilities {
                 detail_by_isbn: true,
+                price_by_isbn: false,
+                price_by_asin: false,
             },
             ..PluginDescribe::default()
         })

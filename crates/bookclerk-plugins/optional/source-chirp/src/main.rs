@@ -46,6 +46,8 @@ impl PluginWorker for ChirpRoot {
             // Chirp has no catalog detail lookup.
             catalog: CatalogCapabilities {
                 detail_by_isbn: false,
+                price_by_isbn: false,
+                price_by_asin: false,
             },
             ..PluginDescribe::default()
         })

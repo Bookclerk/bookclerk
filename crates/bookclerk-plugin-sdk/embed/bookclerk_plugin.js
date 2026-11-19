@@ -52,6 +52,7 @@ var CREDIT_LEVELS = ["roleDefault", "work", "expression", "edition"];
 var FETCHED_FILE_ROLES = ["unspecified", "part", "whole", "cover"];
 var CATALOG_SORTS = ["relevance", "popularity", "rating", "title", "author"];
 var CATALOG_FIELDS = ["any", "author", "narrator", "series", "genre"];
+var PRICE_LOOKUPS = ["unspecified", "product", "isbn", "asin", "title"];
 var ABRIDGEMENTS = ["unknown", "unabridged", "abridged"];
 var METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration"];
 var DB_TYPES = ["unspecified", "bool", "int64", "float64", "text", "bytes"];
@@ -3467,12 +3468,14 @@ var PurchaseHintParamsCodec = {
     }
     s.setText(5, v.region ?? "");
     s.setBool(0, v.withPrice ?? false);
+    s.setUint16(1, ord(PRICE_LOOKUPS, v.lookup ?? PRICE_LOOKUPS[0], "PriceLookup"));
   },
   read(s, caps) {
     void caps;
     const out = {
       region: s.getText(5),
-      withPrice: s.getBool(0)
+      withPrice: s.getBool(0),
+      lookup: fromOrd(PRICE_LOOKUPS, s.getUint16(1), "PriceLookup")
     };
     const productIdValue = s.getText(0);
     if (!(productIdValue === "")) {
@@ -3901,17 +3904,43 @@ var PurchaseHintCodec = {
 };
 var PurchaseHintResultCodec = {
   dataWords: 1,
-  pointerCount: 1,
+  pointerCount: 2,
   write(s, v, caps) {
     s.setBool(0, v.found ?? false);
     if (v.hint != null) {
       PurchaseHintCodec.write(s.initStruct(0, 3, 7), v.hint, caps);
     }
+    {
+      const list = v.records ?? [];
+      const items = s.initStructList(1, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        PricedRecordCodec.write(items[i], list[i], caps);
+      }
+    }
   },
   read(s, caps) {
     return {
       found: s.getBool(0),
-      hint: PurchaseHintCodec.read(s.getStruct(0, 3, 7), caps)
+      hint: PurchaseHintCodec.read(s.getStruct(0, 3, 7), caps),
+      records: s.getStructList(1, 0, 2).map((item) => PricedRecordCodec.read(item, caps))
+    };
+  }
+};
+var PricedRecordCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    if (v.record != null) {
+      CatalogHitCodec.write(s.initStruct(0, 6, 17), v.record, caps);
+    }
+    if (v.hint != null) {
+      PurchaseHintCodec.write(s.initStruct(1, 3, 7), v.hint, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      record: CatalogHitCodec.read(s.getStruct(0, 6, 17), caps),
+      hint: PurchaseHintCodec.read(s.getStruct(1, 3, 7), caps)
     };
   }
 };
@@ -3923,7 +3952,7 @@ var PurchaseHintReplyCodec = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          PurchaseHintResultCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+          PurchaseHintResultCodec.write(s.initStruct(0, 1, 2), v.value, caps);
         }
         break;
       case "err":
@@ -3940,7 +3969,7 @@ var PurchaseHintReplyCodec = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: PurchaseHintResultCodec.read(s.getStruct(0, 1, 1), caps) };
+        return { kind: "ok", value: PurchaseHintResultCodec.read(s.getStruct(0, 1, 2), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -3972,7 +4001,7 @@ var PurchaseHintsResultCodec = {
   write(s, v, caps) {
     {
       const list = v.results ?? [];
-      const items = s.initStructList(0, list.length, 1, 1);
+      const items = s.initStructList(0, list.length, 1, 2);
       for (let i = 0; i < items.length; i++) {
         PurchaseHintResultCodec.write(items[i], list[i], caps);
       }
@@ -3980,7 +4009,7 @@ var PurchaseHintsResultCodec = {
   },
   read(s, caps) {
     return {
-      results: s.getStructList(0, 1, 1).map((item) => PurchaseHintResultCodec.read(item, caps))
+      results: s.getStructList(0, 1, 2).map((item) => PurchaseHintResultCodec.read(item, caps))
     };
   }
 };
@@ -9969,6 +9998,18 @@ function withoutParams(stub, method, params, results, ok) {
   });
 }
 var asList = (value) => Array.isArray(value) ? value : [];
+function hintResult(value) {
+  if (value != null && typeof value === "object" && "records" in value) {
+    const answer = value;
+    return {
+      found: answer.hint != null,
+      // The wire leaves `hint` unset when not found.
+      hint: answer.hint ?? void 0,
+      records: Array.isArray(answer.records) ? answer.records : []
+    };
+  }
+  return { found: value != null, hint: value ?? void 0, records: [] };
+}
 var okHits = (value) => okValue({ hits: asList(value) });
 var okRecords = (value) => {
   if (!Array.isArray(value)) {
@@ -10179,12 +10220,9 @@ var METHODS = {
     loginComplete: withParams("storefront", "loginComplete", ContentSourceLoginCompleteParamsCodec, ContentSourceLoginCompleteResultsCodec, okPass),
     searchCatalog: withParams("storefront", "searchCatalog", ContentSourceSearchCatalogParamsCodec, ContentSourceSearchCatalogResultsCodec, okHits),
     expandCandidates: withParams("storefront", "expandCandidates", ContentSourceExpandCandidatesParamsCodec, ContentSourceExpandCandidatesResultsCodec, okHits),
-    purchaseHint: withParams("storefront", "purchaseHint", ContentSourcePurchaseHintParamsCodec, ContentSourcePurchaseHintResultsCodec, (value) => okValue({ found: value != null, hint: value ?? void 0 })),
+    purchaseHint: withParams("storefront", "purchaseHint", ContentSourcePurchaseHintParamsCodec, ContentSourcePurchaseHintResultsCodec, (value) => okValue(hintResult(value))),
     purchaseHints: withParams("storefront", "purchaseHints", ContentSourcePurchaseHintsParamsCodec, ContentSourcePurchaseHintsResultsCodec, (value) => okValue({
-      results: asList(value).map((hint) => ({
-        found: hint != null,
-        hint: hint ?? void 0
-      }))
+      results: asList(value).map(hintResult)
     })),
     listDeals: withParams("storefront", "listDeals", ContentSourceListDealsParamsCodec, ContentSourceListDealsResultsCodec, okHits),
     health: withoutParams("storefront", "health", ContentSourceHealthParamsCodec, ContentSourceHealthResultsCodec, okHealth),
@@ -11948,8 +11986,16 @@ var StorefrontEntrypoint = class extends NamedEntrypoint {
   /**
    * Purchase link / price hint; `null` when the title is unknown.
    *
-   * @param _params - Title identifiers.
-   * @returns Hint or `null`.
+   * `params.lookup` says how the host names the title: `"isbn"` or
+   * `"asin"` (sent only when `describe().catalog` declares `priceByIsbn` /
+   * `priceByAsin`) want that exact edition or `null`, never a title match;
+   * `"product"` names the store's own product; `"title"` asks for a search
+   * by title and authors, answered best with a {@link PurchaseHintAnswer}
+   * listing every priced result; `"unspecified"` (older hosts) leaves the
+   * choice to the store.
+   *
+   * @param _params - Title identifiers and how to look the title up.
+   * @returns Hint, an answer with title-search records, or `null`.
    */
   purchaseHint(_params) {
     return Promise.reject(unsupported("purchaseHint"));
@@ -11965,7 +12011,7 @@ var StorefrontEntrypoint = class extends NamedEntrypoint {
    * long) when the store asks to slow down, so the host leaves it alone.
    *
    * @param params - The titles to price, in order.
-   * @returns One hint or `null` per query.
+   * @returns One hint, answer with records, or `null` per query.
    */
   async purchaseHints(params) {
     const started = Date.now();

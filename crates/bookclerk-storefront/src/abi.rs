@@ -16,7 +16,8 @@ use bookclerk_plugin_abi as abi;
 
 use crate::types::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, ExpandSeed, LoginOptions,
-    PlainAudioPart, PlainFetch, PurchaseHintOpts, SourceAccount, SourcePurchaseHint,
+    PlainAudioPart, PlainFetch, PricedAnswer, PricedListing, PurchaseHintOpts, SourceAccount,
+    SourcePurchaseHint,
 };
 
 /// `limit` sent for the host's `ContentSource::list_deals` when the caller omits one.
@@ -285,6 +286,23 @@ impl From<abi::PurchaseHint> for SourcePurchaseHint {
     }
 }
 
+impl From<abi::PurchaseHintResult> for PricedAnswer {
+    /// A guest's answer: the hint when `found`, plus its title-search records.
+    fn from(result: abi::PurchaseHintResult) -> Self {
+        Self {
+            hint: result.found.then(|| SourcePurchaseHint::from(result.hint)),
+            records: result
+                .records
+                .into_iter()
+                .map(|priced| PricedListing {
+                    record: CatalogHit::from(priced.record),
+                    hint: SourcePurchaseHint::from(priced.hint),
+                })
+                .collect(),
+        }
+    }
+}
+
 impl From<CatalogSearchSort> for abi::CatalogSort {
     /// Host-only re-rank modes (`price`, `length`) have no upstream sort; they
     /// travel as `relevance` and the host re-ranks the merged result.
@@ -414,6 +432,7 @@ impl From<&PurchaseHintOpts> for abi::PurchaseHintParams {
             isbn: opts.isbn.clone(),
             region: opts.region.clone(),
             with_price: opts.with_price,
+            lookup: opts.lookup,
         }
     }
 }
@@ -428,6 +447,7 @@ impl From<abi::PurchaseHintParams> for PurchaseHintOpts {
             isbn: params.isbn,
             region: params.region,
             with_price: params.with_price,
+            lookup: params.lookup,
         }
     }
 }
@@ -599,6 +619,59 @@ mod tests {
     }
 
     #[test]
+    fn purchase_hint_result_keeps_title_records() {
+        let priced = |id: &str, label: &str| abi::PricedRecord {
+            record: abi::CatalogHit {
+                product_id: id.into(),
+                title: "Tom &amp; Jerry".into(),
+                ..Default::default()
+            },
+            hint: abi::PurchaseHint {
+                product_id: id.into(),
+                price_label: Some(label.into()),
+                ..Default::default()
+            },
+        };
+        let answer = PricedAnswer::from(abi::PurchaseHintResult {
+            found: true,
+            hint: abi::PurchaseHint {
+                product_id: "narrated".into(),
+                ..Default::default()
+            },
+            records: vec![priced("narrated", "&#36;10"), priced("cast", "$20")],
+        })
+        .decode_html_entities();
+        assert_eq!(
+            answer.hint.map(|hint| hint.product_id).as_deref(),
+            Some("narrated")
+        );
+        let records: Vec<(String, String, Option<String>)> = answer
+            .records
+            .into_iter()
+            .map(|p| (p.record.product_id, p.record.title, p.hint.price_label))
+            .collect();
+        assert_eq!(
+            records,
+            vec![
+                (
+                    "narrated".to_string(),
+                    "Tom & Jerry".to_string(),
+                    Some("$10".to_string())
+                ),
+                (
+                    "cast".to_string(),
+                    "Tom & Jerry".to_string(),
+                    Some("$20".to_string())
+                ),
+            ]
+        );
+
+        let missing = PricedAnswer::from(abi::PurchaseHintResult::default());
+        assert!(missing.hint.is_none());
+        assert!(missing.records.is_empty());
+    }
+
+    #[test]
     fn catalog_sort_and_field_map_both_ways() {
         for sort in [
             abi::CatalogSort::Relevance,
@@ -649,6 +722,7 @@ mod tests {
             isbn: Some("9780000000000".into()),
             region: "uk".into(),
             with_price: true,
+            lookup: abi::PriceLookup::Isbn,
         };
         let back = PurchaseHintOpts::from(abi::PurchaseHintParams::from(&opts));
         assert_eq!(format!("{back:?}"), format!("{opts:?}"));

@@ -12,10 +12,10 @@ use crate::generated::{
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MetadataChapters,
     MetadataChaptersParams, MetadataFileParseParams, MetadataFileParsed, MetadataFileRenderParams,
     MetadataFileRendered, MetadataLookupParams, MetadataRecord, MetadataSearchParams, PlainFetch,
-    PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintsParams,
-    RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams,
-    SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo, SocketMessage, SocketMessageOk,
-    SourceAccount,
+    PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintResult,
+    PurchaseHintsParams, RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams,
+    SearchCatalogParams, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo,
+    SocketMessage, SocketMessageOk, SourceAccount,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
@@ -80,6 +80,20 @@ async fn purchase_hints_one_by_one<S: ContentSource + ?Sized>(
         out[i] = hint;
     }
     Ok(out)
+}
+
+/// A bare hint as a [`PurchaseHintResult`] with no records.
+///
+/// # Arguments
+///
+/// * `hint` - The store's answer; `None` when it did not find the title.
+#[must_use]
+pub fn hint_result(hint: Option<PurchaseHint>) -> PurchaseHintResult {
+    PurchaseHintResult {
+        found: hint.is_some(),
+        hint: hint.unwrap_or_default(),
+        records: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -499,6 +513,34 @@ pub trait ContentSource {
         params: PurchaseHintsParams,
     ) -> Result<Vec<Option<PurchaseHint>>> {
         purchase_hints_one_by_one(self, params, PURCHASE_HINTS_BUDGET).await
+    }
+
+    /// [`Self::purchase_hint`] with the priced records a title search
+    /// matched (`PurchaseHintResult.records`), for a host that asked with
+    /// `lookup = title`.
+    ///
+    /// The default wraps [`Self::purchase_hint`] and returns no records, so
+    /// the host falls back to the bare hint. A guest that can tell its
+    /// search results apart (identifiers, credits, kinds) overrides this
+    /// and [`Self::purchase_hints_results`].
+    async fn purchase_hint_result(&self, params: PurchaseHintParams) -> Result<PurchaseHintResult> {
+        Ok(hint_result(self.purchase_hint(params).await?))
+    }
+
+    /// [`Self::purchase_hints`] with each query's priced records, as
+    /// [`Self::purchase_hint_result`] gives them for one query.
+    ///
+    /// The default wraps [`Self::purchase_hints`] and returns no records.
+    async fn purchase_hints_results(
+        &self,
+        params: PurchaseHintsParams,
+    ) -> Result<Vec<PurchaseHintResult>> {
+        Ok(self
+            .purchase_hints(params)
+            .await?
+            .into_iter()
+            .map(hint_result)
+            .collect())
     }
 
     /// Current storefront deals.

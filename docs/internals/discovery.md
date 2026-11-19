@@ -767,10 +767,33 @@ as a **membership** signal: linked stores are compared at member price; other
 stores at list / non-member price; the shelf shows the global cheapest of those
 effective prices. Client-supplied `preferred_sources` are ignored.
 
-A store answers a price lookup by searching its catalog, and its answer
-carries only a product id, a title and prices, so a title search can return
-another recording of the book (a full-cast dramatisation for a narration).
-Before answering, the purchase-hint routes and the wishlist's own price
+Each store is asked about a card the strongest way it supports
+(`store_query_opts` in `bookclerk-discover`):
+
+1. By the product the card already names at that store (`lookup = product`).
+2. By the card's exact ISBN, when the store declares `catalog.priceByIsbn`.
+3. By the card's exact ASIN, when the store declares `catalog.priceByAsin`.
+4. Otherwise by title and authors (`lookup = title`).
+
+A title search can match another recording of the book (a full-cast
+dramatisation for a narration), so a store answers it with **records**:
+every priced listing the search found, each with its full catalog record
+(see [Price lookups](../plugins/abi.md#price-lookups)). The host stores the
+records in the [shared listing pool](#shared-listing-pool), which resolves
+each one into a recording, and keeps a record's price only when the record
+carries the card's ISBN or ASIN or the pool placed it in the same
+expression as the card's own store editions. Titles are never compared, and
+the store's own pick is not used. Placing the records shares the batch's
+deadline; when it fails or runs out, only records that carry the card's
+ISBN or ASIN price it, and the answer is marked `incomplete` and not
+cached, so the card asks again. An exact ISBN or ASIN answer is the card's edition
+and is kept as is. A store that answers a title search with one bare hint
+and no records (a guest from before records) is kept only when the hint's
+title and authors match the card's, as before. The single-title route
+prices its card through the same batch path.
+
+A bare hint can still name another recording than the card's. Before
+answering, the purchase-hint routes and the wishlist's own price
 lookup drop every price whose product the
 [shared listing pool](#shared-listing-pool) places only in another
 expression (recording) than the card's own store editions
@@ -788,8 +811,8 @@ resolved prices.
 
 A page of cards is priced with **one call per store**: the batch route
 sends every visible card's query to each deployed store's `purchaseHints`
-entrypoint together, with the product id the card already knows for that
-store, so Audible prices up to fifty titles in one catalog request and
+entrypoint together, each asked the strongest way the store supports (see
+above), so Audible prices up to fifty titles in one catalog request and
 Chirp prices a page in one aliased GraphQL query; Libro.fm and GraphicAudio
 have no bulk endpoint, so the SDK's default `purchaseHints` looks their
 titles up four at a time inside the guest. Audible and Chirp resolve

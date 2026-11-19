@@ -370,8 +370,10 @@ file's quality yet: storefronts may declare a file's format and quality,
 and the media worker probes each file and records it. The probe is in
 place: each audio file's row holds its media type, bitrate, whether it is
 lossless and the store it came from, written by the acquire that stored
-it or carried by the upload that delivered it. The comparison is not: it
-will follow one rule for where a copy comes from. When a library already
+it or carried by the upload that delivered it. The comparison follows
+one rule for where a copy comes from, and an install's own acquire
+applies it (a library does not yet replace its own copy with a better
+one a host uploads). When a library already
 holds a copy of the edition from the same store, another install of that
 library takes the library's copy whatever its format, and the media
 worker converts it to the format that install prefers. When the

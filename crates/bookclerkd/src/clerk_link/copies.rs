@@ -13,13 +13,16 @@
 //! library id (again harmlessly when already recorded), so a
 //! clerk that later becomes a branch never shares the book back.
 //!
-//! A copy the library downloaded from another store than the title's is
-//! passed over and the next library asked, as the pipeline would not use
-//! it; with none left the title comes from its store. A library whose
-//! reader is not connected now is not waited for.
+//! A copy a library downloaded from the title's own store is preferred.
+//! A copy from another store is offered only when no library has one from
+//! the title's own, and the pipeline then keeps the better of that copy
+//! and its own store download. A copy whose store the library does not
+//! know is never offered. A library whose reader is not connected now is
+//! not waited for.
 //!
 //! [`acquire_copies`] is what this install's acquires ask: the libraries
-//! it joined as a branch first, then those it holds a card for.
+//! it joined as a branch first, then those it holds a card for, with a
+//! copy from the title's own store preferred over both.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -33,7 +36,7 @@ use bookclerk_acquire::{
 use bookclerk_library::control_plane::{
     list_clerk_links, record_copy_taken_from_link, ClerkLink, TakenCopy,
 };
-use bookclerk_library::LibraryStore;
+use bookclerk_library::{FileProbe, LibraryStore};
 use bookclerk_node_client::{fetch_copy_file, CopyFetchError, OwnerEndpoint};
 use bookclerk_node_proto::{ClerkCopy, COPY_AUTH_SCHEME};
 use tokio::sync::{mpsc, oneshot};
@@ -135,7 +138,8 @@ impl CardCopies {
 }
 
 /// Asks the libraries this install joined as a branch, then those it holds
-/// a library card for; the first copy offered is taken.
+/// a library card for. A copy from the title's own store is preferred;
+/// without one, the first copy from another store is offered.
 struct InstallCopies {
     /// The branch links.
     links: LinkCopies,
@@ -146,9 +150,19 @@ struct InstallCopies {
 #[async_trait::async_trait]
 impl LibraryCopies for InstallCopies {
     async fn copy_of(&self, listing: LibraryCopyListing<'_>) -> Option<Box<dyn LibraryCopy>> {
-        match self.links.copy_of(listing).await {
-            Some(copy) => Some(copy),
-            None => self.cards.copy_of(listing).await,
+        let from_link = self.links.copy_of(listing).await;
+        if from_link
+            .as_ref()
+            .is_some_and(|copy| from_store(copy.source_store(), listing.store))
+        {
+            return from_link;
+        }
+        // No branch link has a copy from the title's own store: a card's
+        // copy is preferred only when it is from that store.
+        match (from_link, self.cards.copy_of(listing).await) {
+            (Some(_), Some(card)) if from_store(card.source_store(), listing.store) => Some(card),
+            (Some(link), _) => Some(link),
+            (None, card) => card,
         }
     }
 }
@@ -200,6 +214,10 @@ impl LibraryCopies for CardCopies {
                 return None;
             }
         };
+        // A copy from another store only replaces the store download when
+        // it is the better one, so it is offered only when no library has
+        // a copy from the title's own store.
+        let mut other_store: Option<CardCopy> = None;
         for link in links.into_iter().filter(ClerkLink::is_active) {
             let Some(reader) = reader_of(&link.library_id) else {
                 continue;
@@ -218,13 +236,14 @@ impl LibraryCopies for CardCopies {
             let Some(granted) = ask_grant(&reader, listing).await else {
                 continue;
             };
-            // A copy from another store would not be used; another
-            // library may hold one from this listing's store.
-            if !from_store(granted.copy.source_store.as_deref(), listing.store) {
+            let same_store = from_store(granted.copy.source_store.as_deref(), listing.store);
+            // A copy whose store the library does not know is never
+            // offered, and one other-store copy is enough.
+            if !same_store && (granted.copy.source_store.is_none() || other_store.is_some()) {
                 continue;
             }
             bookclerk_config::register_secret(granted.token.expose());
-            return Some(Box::new(CardCopy {
+            let copy = CardCopy {
                 files: granted.files.iter().map(listed).collect(),
                 granted,
                 endpoint,
@@ -234,9 +253,13 @@ impl LibraryCopies for CardCopies {
                 account_id: listing.account_id.to_string(),
                 marketplace: listing.marketplace.to_string(),
                 product_id: listing.product_id.to_string(),
-            }));
+            };
+            if same_store {
+                return Some(Box::new(copy));
+            }
+            other_store = Some(copy);
         }
-        None
+        other_store.map(|copy| Box::new(copy) as Box<dyn LibraryCopy>)
     }
 }
 
@@ -275,6 +298,16 @@ impl Drop for CardCopy {
 impl LibraryCopy for CardCopy {
     fn source_store(&self) -> Option<&str> {
         self.granted.copy.source_store.as_deref()
+    }
+
+    fn probe(&self) -> FileProbe {
+        let copy = &self.granted.copy;
+        FileProbe {
+            content_type: copy.content_type.clone(),
+            bitrate_kbps: copy.bitrate_kbps,
+            lossless: copy.lossless,
+            source_store: copy.source_store.clone(),
+        }
     }
 
     fn files(&self) -> &[LibraryCopyFile] {

@@ -2088,10 +2088,14 @@ already processed.
   their grants.
 - **The taker's own acquire uses the copy.** A branch asks during the
   acquire of its own title, before the store fetch, and takes the copy
-  only when the library downloaded it from the title's own store; a copy
-  from another store leaves the store fetch as it was, and so does a
-  book the library holds as several audio files (the grant does not
-  state their playing order). The downloaded audio and cover, and the
+  when the library downloaded it from the title's own store. A copy from
+  another store is compared once with the taker's own store download
+  (`FileProbe::is_better_than`: lossless over lossy, then bitrate) and
+  replaces it only when the taker's own probe of the downloaded copy
+  agrees with the library's; the stored file's row then names the store
+  the audio came from. A book the library holds as several audio files
+  leaves the store fetch as it was (the grant does not state their
+  playing order). The downloaded audio and cover, and the
   companion PDF when the taker keeps PDFs, enter the acquire pipeline
   where a store fetch would
   (`bookclerk-acquire`'s `LibraryCopies`), so conversion, naming, tagging,
