@@ -10,7 +10,7 @@ use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware;
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::{ErrorResponse, IntoResponse, Response};
 use axum::routing::get;
 use axum::Json;
 use axum::Router;
@@ -5124,11 +5124,18 @@ async fn discover_status_for_caller(
     state: &AppState,
     headers: &HeaderMap,
     queue: bool,
-) -> Result<(bookclerk_library::DiscoverSubject, DiscoverStatusResponse), (StatusCode, String)> {
+) -> Result<(bookclerk_library::DiscoverSubject, DiscoverStatusResponse), ErrorResponse> {
     let library = state.library_snapshot().await;
     let (subject_key, _) = auth::prefs_subject_for_caller(state, headers)
         .await
-        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
+        .map_err(|refusal| {
+            refusal.answer(|status| {
+                (
+                    status,
+                    status.canonical_reason().unwrap_or("error").to_string(),
+                )
+            })
+        })?;
     let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
         .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
     // A feed that does not decode (another release wrote it) counts as
@@ -5177,7 +5184,7 @@ async fn discover_status_for_caller(
 async fn discover_refresh(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<DiscoverStatusResponse>, (StatusCode, String)> {
+) -> Result<Json<DiscoverStatusResponse>, ErrorResponse> {
     let (subject, _) = discover_status_for_caller(&state, &headers, false).await?;
     // A fetch already waiting absorbs the request, so a duplicate counts as
     // queued; a full queue or a failed admission is reported.
@@ -5195,7 +5202,8 @@ async fn discover_refresh(
             return Err((
                 StatusCode::TOO_MANY_REQUESTS,
                 "job queue is full".to_string(),
-            ))
+            )
+                .into())
         }
     }
     let (_, status) = discover_status_for_caller(&state, &headers, false).await?;
@@ -5219,7 +5227,7 @@ async fn discover_refresh(
 async fn discover_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<DiscoverStatusResponse>, (StatusCode, String)> {
+) -> Result<Json<DiscoverStatusResponse>, ErrorResponse> {
     let (_, status) = discover_status_for_caller(&state, &headers, true).await?;
     Ok(Json(status))
 }
@@ -5778,7 +5786,7 @@ struct CatalogSearchQuery {
 async fn discover_recommendations(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<bookclerk_discover::DiscoverFeed>, (StatusCode, String)> {
+) -> Result<Json<bookclerk_discover::DiscoverFeed>, ErrorResponse> {
     let library = state.library_snapshot().await;
 
     // Nothing to recommend from: answer at once, queue nothing.
@@ -5799,7 +5807,14 @@ async fn discover_recommendations(
 
     let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers)
         .await
-        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
+        .map_err(|refusal| {
+            refusal.answer(|status| {
+                (
+                    status,
+                    status.canonical_reason().unwrap_or("error").to_string(),
+                )
+            })
+        })?;
     let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
         .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
     let disabled_shelves = library
@@ -6875,11 +6890,18 @@ where
 async fn get_preferences(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<PreferencesResponse>, (StatusCode, String)> {
+) -> Result<Json<PreferencesResponse>, ErrorResponse> {
     const PREFERENCES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers)
         .await
-        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
+        .map_err(|refusal| {
+            refusal.answer(|status| {
+                (
+                    status,
+                    status.canonical_reason().unwrap_or("error").to_string(),
+                )
+            })
+        })?;
     let library = state.library_snapshot().await;
     let prefs = timeout(
         PREFERENCES_TIMEOUT,
@@ -6889,7 +6911,7 @@ async fn get_preferences(
     .map_err(|_| {
         (
             StatusCode::GATEWAY_TIMEOUT,
-            "preferences lookup timed out".into(),
+            "preferences lookup timed out".to_string(),
         )
     })?
     .map_err(internal_err)?;
@@ -6915,11 +6937,18 @@ async fn patch_preferences(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<PatchPreferencesBody>,
-) -> Result<Json<PreferencesResponse>, (StatusCode, String)> {
+) -> Result<Json<PreferencesResponse>, ErrorResponse> {
     const PREFERENCES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers)
         .await
-        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
+        .map_err(|refusal| {
+            refusal.answer(|status| {
+                (
+                    status,
+                    status.canonical_reason().unwrap_or("error").to_string(),
+                )
+            })
+        })?;
     let library = state.library_snapshot().await;
     let current = timeout(
         PREFERENCES_TIMEOUT,
@@ -6929,7 +6958,7 @@ async fn patch_preferences(
     .map_err(|_| {
         (
             StatusCode::GATEWAY_TIMEOUT,
-            "preferences lookup timed out".into(),
+            "preferences lookup timed out".to_string(),
         )
     })?
     .map_err(internal_err)?;
@@ -6987,7 +7016,7 @@ async fn patch_preferences(
     .map_err(|_| {
         (
             StatusCode::GATEWAY_TIMEOUT,
-            "preferences update timed out".into(),
+            "preferences update timed out".to_string(),
         )
     })?
     .map_err(internal_err)?;

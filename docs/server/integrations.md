@@ -528,7 +528,7 @@ Discovery document: `GET /.well-known/openid-configuration`.
 | Endpoint | Notes |
 | --- | --- |
 | `/oidc/authorize` | Authorization code with PKCE (`S256`). Needs a user's session; the operator Bearer is refused |
-| `/oidc/token` | `authorization_code` and `refresh_token` |
+| `/oidc/token` | `authorization_code` and `refresh_token`. Errors are RFC 6749 JSON (`{"error": "invalid_grant", "error_description": "…"}`) |
 | `/oidc/userinfo` | Takes a Bearer access token |
 | `/oidc/revoke` | Revokes a refresh token |
 

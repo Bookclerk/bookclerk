@@ -22,8 +22,9 @@ use crate::api::AppState;
 use crate::auth::{authorize_provisioner, Provisioner};
 use crate::http_error::ErrorMessage;
 
-/// Error answer of the scope routes: a status and an `error` message.
-type ScopeError = (StatusCode, Json<ErrorMessage>);
+/// Error answer of the scope routes: a status and an `error` message, or
+/// the session-check refusal.
+type ScopeError = axum::response::ErrorResponse;
 
 /// A patron's scope as the scope routes report it.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -59,11 +60,12 @@ fn failed(route: &str, err: &LibraryError) -> ScopeError {
             "the patron scope could not be read or written",
         )),
     )
+        .into()
 }
 
 /// An answer with only a status and a message.
 fn refused(status: StatusCode, message: impl std::fmt::Display) -> ScopeError {
-    (status, Json(ErrorMessage::new(message)))
+    (status, Json(ErrorMessage::new(message))).into()
 }
 
 /// Maps a library error to the route's answer: 400 for a scope outside its
@@ -83,14 +85,16 @@ async fn provisioner(state: &AppState, headers: &HeaderMap) -> Result<Provisione
     let library = state.library_snapshot().await;
     authorize_provisioner(state, &auth, headers, &library)
         .await
-        .map_err(|status| {
-            refused(
-                status,
-                status
-                    .canonical_reason()
-                    .unwrap_or("refused")
-                    .to_lowercase(),
-            )
+        .map_err(|refusal| {
+            refusal
+                .answer(|status| {
+                    let message = status
+                        .canonical_reason()
+                        .unwrap_or("refused")
+                        .to_lowercase();
+                    (status, Json(ErrorMessage::new(message)))
+                })
+                .into()
         })
 }
 
@@ -147,6 +151,7 @@ fn user_scope_json(user: &bookclerk_library::UserRecord, assigned: AssignedScope
         (status = 403, description = "The caller may not manage this user.", body = ErrorMessage, example = json!({"error": "you may not manage this user"})),
         (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
         (status = 500, description = "The scope could not be read.", body = ErrorMessage, example = json!({"error": "the patron scope could not be read or written"})),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub(crate) async fn get_user_scope(
@@ -183,6 +188,7 @@ pub(crate) async fn get_user_scope(
         (status = 403, description = "The caller may not manage this user, or tried to set their own scope.", body = ErrorMessage, example = json!({"error": "you may not set your own scope"})),
         (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
         (status = 500, description = "The scope could not be written.", body = ErrorMessage, example = json!({"error": "the patron scope could not be read or written"})),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub(crate) async fn put_user_scope(
@@ -229,6 +235,7 @@ pub(crate) async fn put_user_scope(
         (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
         (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage, example = json!({"error": "forbidden"})),
         (status = 500, description = "The scope could not be read.", body = ErrorMessage, example = json!({"error": "the patron scope could not be read or written"})),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub(crate) async fn get_default_scope(
@@ -258,6 +265,7 @@ pub(crate) async fn get_default_scope(
         (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage, example = json!({"error": "forbidden"})),
         (status = 409, description = "The default kept changing underneath the write; retry.", body = ErrorMessage, example = json!({"error": "core.patron_scope kept changing; retry"})),
         (status = 500, description = "The scope could not be written.", body = ErrorMessage, example = json!({"error": "the patron scope could not be read or written"})),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub(crate) async fn put_default_scope(

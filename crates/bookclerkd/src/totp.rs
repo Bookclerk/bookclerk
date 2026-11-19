@@ -24,9 +24,9 @@ use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::auth::{
-    authorize_operator_bearer_only, issue_portal_session, require_operator_or_recent_owner,
-    require_recent_portal_reauth, resolve_operator_session, timed_portal_identity_from_headers,
-    ClientIp,
+    authorize_operator_bearer_only, issue_portal_session, optional_portal_identity,
+    require_operator_or_recent_owner, require_portal_identity, require_recent_portal_reauth,
+    resolve_operator_session, CallerRefusal, ClientIp,
 };
 
 /// Pending enroll secret name (replaced on confirm).
@@ -216,20 +216,23 @@ fn qr_svg(otpauth: &str) -> Result<String, StatusCode> {
 }
 
 /// Resolves the signed-in user from the portal session.
+///
+/// # Errors
+///
+/// 401 when nobody is signed in, 500 when the user cannot be read, and
+/// the session-check 503 when the session could not be checked.
 async fn require_user(
     state: &AppState,
     headers: &HeaderMap,
-) -> Result<bookclerk_library::UserRecord, StatusCode> {
+) -> Result<bookclerk_library::UserRecord, CallerRefusal> {
     let library = state.library_snapshot().await;
-    let identity = timed_portal_identity_from_headers(&library, headers)
-        .await
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let identity = require_portal_identity(&library, headers).await?;
     let user_id = identity.user_id.ok_or(StatusCode::UNAUTHORIZED)?;
-    library
+    Ok(library
         .get_user(user_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::UNAUTHORIZED)
+        .ok_or(StatusCode::UNAUTHORIZED)?)
 }
 
 /// Whether this host requires a passkey or TOTP for password login.
@@ -380,12 +383,13 @@ struct ReauthBody {
         (status = 200, description = "Whether TOTP is on for the caller.", body = TotpStatus),
         (status = 401, description = "The caller is not signed in."),
         (status = 500, description = "The user could not be read."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 async fn totp_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<TotpStatus>, StatusCode> {
+) -> Result<Json<TotpStatus>, CallerRefusal> {
     let user = require_user(&state, &headers).await?;
     Ok(Json(TotpStatus {
         enabled: user.totp_enabled,
@@ -404,16 +408,17 @@ async fn totp_status(
         (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout."),
         (status = 409, description = "TOTP is already on."),
         (status = 500, description = "The secret could not be sealed and stored, or the library could not be read."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 async fn enroll_begin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<ReauthBody>,
-) -> Result<Json<TotpEnrollment>, StatusCode> {
+) -> Result<Json<TotpEnrollment>, CallerRefusal> {
     let user = require_user(&state, &headers).await?;
     if user.totp_enabled {
-        return Err(StatusCode::CONFLICT);
+        return Err(StatusCode::CONFLICT.into());
     }
     require_recent_portal_reauth(&state, &headers, user.id, body.current_password.as_deref())
         .await?;
@@ -457,20 +462,21 @@ struct EnrollFinish {
         )),
         (status = 409, description = "TOTP is already on."),
         (status = 500, description = "The pending secret could not be read, or the enrollment could not be confirmed."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 async fn enroll_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<EnrollFinish>,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, CallerRefusal> {
     let user = require_user(&state, &headers).await?;
     if user.totp_enabled {
-        return Err(StatusCode::CONFLICT);
+        return Err(StatusCode::CONFLICT.into());
     }
     let library = state.library_snapshot().await;
     let Some(secret) = load_totp_secret(&library, user.id, TOTP_PENDING).await? else {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     };
     let account = totp_account_label(&user);
     let totp = totp_from_secret(&secret, &account)?;
@@ -503,13 +509,14 @@ async fn enroll_finish(
         (status = 401, description = "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong."),
         (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout."),
         (status = 500, description = "The library could not be read or written."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 async fn disable_totp(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<ReauthBody>,
-) -> Result<Json<crate::auth::OkResponse>, StatusCode> {
+) -> Result<Json<crate::auth::OkResponse>, CallerRefusal> {
     let user = require_user(&state, &headers).await?;
     require_recent_portal_reauth(&state, &headers, user.id, body.current_password.as_deref())
         .await?;
@@ -716,7 +723,7 @@ async fn put_mfa_policy(
 ) -> Result<Json<MfaPolicy>, Response> {
     require_operator_or_recent_owner(&state, &headers, body.current_password.as_deref())
         .await
-        .map_err(mfa_policy_gate_error)?;
+        .map_err(|refusal| refusal.answer(mfa_policy_gate_error))?;
     let auth = state.auth_snapshot().await;
     let operator_recovery = authorize_operator_bearer_only(&auth, &headers)
         || resolve_operator_session(&state, &auth, &headers)
@@ -724,7 +731,10 @@ async fn put_mfa_policy(
             .is_some_and(|op| op.impersonating_user_id.is_none());
     if !operator_recovery {
         let library = state.library_snapshot().await;
-        if let Some(identity) = timed_portal_identity_from_headers(&library, &headers).await {
+        let identity = optional_portal_identity(&library, &headers)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        if let Some(identity) = identity {
             if let Some(user_id) = identity.user_id {
                 if enrollment_blocks(&state, &library, user_id, "/api/auth/mfa-policy").await {
                     return Err(crate::auth::json_auth_error(
