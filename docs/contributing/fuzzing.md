@@ -58,7 +58,7 @@ boundary extends it.
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `diagnostics_submit_reply` | The diagnostics collector's reply to an uploaded report, whose `report_id` joins the install's report history | `bookclerk-config::parse_submit_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
-| `audible_catalog` | Audible public catalog answers (search results and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
+| `audible_catalog` | Audible public catalog answers (search results, titles looked up by ASIN and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
@@ -357,7 +357,9 @@ only that. The others check:
   frame version, and serializes and parses back to an equal frame (unless
   its serialized text grows past the limit, as `1e9` written out does). Every
   call number in `acquire.targets` is 1 to 16 ASCII letters and digits,
-  checked byte by byte. A `catalog.ask` or `catalog.found` that passes
+  checked byte by byte, and every target whose destination list passes
+  its validator names only destinations its plan lists, each once and in
+  the plan's order. A `catalog.ask` or `catalog.found` that passes
   its validator names at most 100 works, each once, by plain correlation
   keys; its identifiers are plain ASCII with a marketplace exactly on an
   ASIN, and each answer lists 1 to 8 distinct editions with a title. A
@@ -386,7 +388,9 @@ only that. The others check:
   character or drive prefix), each at most 1 TiB, exactly one of them the
   primary audio. The `copy_*` seeds' names say whether the receiver takes
   the frame, and the replay test checks each against its name. Seeds cover `accounts.update`, `accounts.updated`,
-  `scan.removed`, `scan.pass_end` and a `work` frame with scan tokens. The shared oracle is `fuzz/oracles/node_frame.rs`,
+  `scan.removed`, `scan.pass_end`, a `work` frame with scan tokens, and
+  `acquire.targets` with a destination subset, an empty list and a list
+  that does not fit its plan. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
   has the bundle version and names the library and node it was opened
