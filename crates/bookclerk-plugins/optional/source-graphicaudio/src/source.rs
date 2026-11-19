@@ -175,7 +175,8 @@ impl GraphicAudioSource {
     /// query's words, in alphabetical order) is not taken: the page is asked
     /// again with the last word dropped (an author's name usually trails the
     /// title), up to three requests in all, and answers nothing when every
-    /// attempt gets the listing. A later page first settles the query on
+    /// attempt gets the listing. Each answer is judged by the words sent for
+    /// it, and a shortened query with no telling words left is not sent. A later page first settles the query on
     /// page 1 the same way, then asks for that page with it, and answers
     /// nothing when that page looks like the listing. An author or narrator
     /// search is sent once and taken as it comes: grid titles never carry a
@@ -212,26 +213,33 @@ impl GraphicAudioSource {
             let Some(kept) = words.len().checked_sub(attempt).filter(|n| *n > 0) else {
                 break;
             };
-            let q = words[..kept].join(" ");
+            let sent = &words[..kept];
+            // A shortened query left with no telling words cannot be
+            // judged, so its answer could be the listing taken as matches.
+            if attempt > 0 && telling_words(sent).is_empty() {
+                break;
+            }
+            let q = sent.join(" ");
             let Some(found) = self.search_page(&http, &q, 1).await else {
                 return Ok(Vec::new());
             };
-            if names_a_person || !looks_like_fallback_listing(&found, &words) {
-                settled = Some((q, found));
+            // Judge each answer by the words actually sent.
+            if names_a_person || !looks_like_fallback_listing(&found, sent) {
+                settled = Some((sent, found));
                 break;
             }
             tracing::debug!(query = %q, "graphicaudio search answered with the catalog listing");
         }
-        let Some((q, first)) = settled else {
+        let Some((sent, first)) = settled else {
             return Ok(Vec::new());
         };
         let products = if page == 1 {
             first
         } else {
-            let Some(found) = self.search_page(&http, &q, page).await else {
+            let Some(found) = self.search_page(&http, &sent.join(" "), page).await else {
                 return Ok(Vec::new());
             };
-            if !names_a_person && looks_like_fallback_listing(&found, &words) {
+            if !names_a_person && looks_like_fallback_listing(&found, sent) {
                 return Ok(Vec::new());
             }
             found

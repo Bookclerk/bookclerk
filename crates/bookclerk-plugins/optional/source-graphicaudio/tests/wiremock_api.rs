@@ -607,6 +607,51 @@ async fn search_drops_punctuation_and_a_trailing_author_for_the_catalog_listing(
     );
 }
 
+/// A shortened query's answer is judged by the words sent for it: six
+/// Mistborn parts in title order answer "Mistborn Brandon" even though
+/// each holds only one of the full query's three telling words.
+#[tokio::test]
+async fn a_shortened_query_is_judged_by_its_own_words() {
+    let server = MockServer::start().await;
+    mount_grid(&server, "Mistborn Brandon Sanderson", CATALOG_LISTING, 1).await;
+    let parts = [
+        "Mistborn 1: The Final Empire 1 of 3",
+        "Mistborn 1: The Final Empire 2 of 3",
+        "Mistborn 1: The Final Empire 3 of 3",
+        "Mistborn 2: The Well of Ascension 1 of 3",
+        "Mistborn 2: The Well of Ascension 2 of 3",
+        "Mistborn 2: The Well of Ascension 3 of 3",
+    ];
+    mount_grid(&server, "Mistborn Brandon", &parts, 1).await;
+    let hits = GraphicAudioSource::new()
+        .with_store_url(server.uri())
+        .search_catalog(&CatalogSearchOpts {
+            query: "Mistborn Brandon Sanderson".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), parts.len(), "{hits:?}");
+}
+
+/// A shortened query left with only common or short words is not sent, so
+/// the listing it would get is never taken for matches.
+#[tokio::test]
+async fn a_shortened_query_without_telling_words_is_not_sent() {
+    let server = MockServer::start().await;
+    mount_grid(&server, "The Sanderson", CATALOG_LISTING, 1).await;
+    mount_grid(&server, "The", CATALOG_LISTING, 0).await;
+    let hits = GraphicAudioSource::new()
+        .with_store_url(server.uri())
+        .search_catalog(&CatalogSearchOpts {
+            query: "The Sanderson".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(hits.is_empty(), "{hits:?}");
+}
+
 /// When every shorter query still gets the catalog listing, the search
 /// stops after its attempts and answers nothing rather than the listing. An
 /// author search is sent once and its answer kept, since grid titles carry

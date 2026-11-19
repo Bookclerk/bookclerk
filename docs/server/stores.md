@@ -282,7 +282,9 @@ the running time, the genre, the review score and the price.
 The store's search answers a query it can't match, such as one with a
 colon or an author's name, with an alphabetical list of its whole catalog.
 The plugin sends the query as plain words, and when the answer still looks
-like that list it tries again without the last word, up to three searches.
+like that list it tries again without the last word, up to three searches,
+judging each answer by the words it sent. It stops early when only common
+or short words would be left.
 If every search gets the list, the plugin returns no results rather than
 the list. A later page of results uses the search that worked on page 1,
 and comes back empty when that page is the list. Author and narrator
