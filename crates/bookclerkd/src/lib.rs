@@ -217,9 +217,15 @@ fn init_logging(config: &Config, syslog_identifier: &str, role: ProcessRole) {
 /// How often the check-in thread looks whether a weekly check-in is due.
 const CHECKIN_POLL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
-/// With `diagnostics.share_usage` on (and not a demo copy), loads the
-/// install's random ID, attaches it to diagnostics uploads and starts a
-/// thread that sends the weekly check-in (see `docs/server/diagnostics.md`).
+/// Points the diagnostics handle at the files directory (so accepted
+/// reports join the install's report history) and, unless this is a demo
+/// copy, starts the thread that sends the weekly check-in while
+/// `diagnostics.share_usage` is on (see `docs/server/diagnostics.md`).
+///
+/// The thread reads the live setting on every pass, so turning usage
+/// sharing on or off in Settings takes effect without a restart. The
+/// install's random ID is loaded (or created) the first time the setting is
+/// on, never before.
 ///
 /// # Arguments
 ///
@@ -231,49 +237,82 @@ fn start_usage_checkins(
     diagnostics: &bookclerk_config::DiagnosticsHandle,
     role: ProcessRole,
 ) {
-    if !config.diagnostics.share_usage || config.diagnostics.demo {
+    let files_dir = config.paths().files_dir.clone();
+    diagnostics.set_files_dir(&files_dir);
+    if config.diagnostics.demo {
         return;
     }
-    let files_dir = config.paths().files_dir.clone();
-    let id = match bookclerk_config::InstallId::load_or_create(&files_dir) {
-        Ok(id) => id,
-        Err(err) => {
-            tracing::warn!(error = %err, "usage check-ins off: the install ID could not be read or written");
-            return;
-        }
-    };
-    diagnostics.set_install_id(&id);
+    if config.diagnostics.share_usage {
+        tracing::info!(
+            "diagnostics.share_usage=true — a weekly anonymous check-in goes to the collector"
+        );
+    }
     let settings = config.diagnostics.clone();
-    let checkin = bookclerk_config::CheckIn {
-        install_id: id.as_str().to_string(),
-        version: env!("CARGO_PKG_VERSION").into(),
-        os: std::env::consts::OS.into(),
-        arch: std::env::consts::ARCH.into(),
-        kind: role.as_str().into(),
-    };
-    tracing::info!(
-        "diagnostics.share_usage=true — a weekly anonymous check-in goes to the collector"
-    );
+    let handle = diagnostics.clone();
     let spawned = std::thread::Builder::new()
         .name("bookclerk-checkin".into())
-        .spawn(move || loop {
-            let now = unix_now_ms();
-            if bookclerk_config::checkin_due(&files_dir, now) {
-                match bookclerk_config::send_checkin(&settings, &checkin) {
-                    Ok(()) => {
-                        if let Err(err) = bookclerk_config::record_checkin(&files_dir, now) {
-                            tracing::warn!(error = %err, "usage check-in sent but not recorded");
-                        }
-                    }
-                    Err(err) => {
-                        tracing::debug!(error = %err, "usage check-in not sent; retrying later")
-                    }
+        .spawn(move || {
+            let mut checkin: Option<bookclerk_config::CheckIn> = None;
+            loop {
+                if handle.share_usage() {
+                    checkin_pass(&files_dir, &settings, &handle, role, &mut checkin);
                 }
+                std::thread::sleep(CHECKIN_POLL);
             }
-            std::thread::sleep(CHECKIN_POLL);
         });
     if let Err(err) = spawned {
         tracing::warn!(error = %err, "usage check-ins off: the thread could not start");
+    }
+}
+
+/// One pass of the check-in thread while usage sharing is on: loads the
+/// install ID on first use, then sends the check-in when one is due.
+///
+/// # Arguments
+///
+/// * `files_dir` - The Bookclerk files directory.
+/// * `settings` - Diagnostics settings (collector URL).
+/// * `diagnostics` - The process's diagnostics handle, which gets the ID.
+/// * `role` - Reported as the check-in's kind.
+/// * `checkin` - The check-in body, built on the first pass that has an ID.
+fn checkin_pass(
+    files_dir: &std::path::Path,
+    settings: &bookclerk_config::DiagnosticsConfig,
+    diagnostics: &bookclerk_config::DiagnosticsHandle,
+    role: ProcessRole,
+    checkin: &mut Option<bookclerk_config::CheckIn>,
+) {
+    if checkin.is_none() {
+        let id = match bookclerk_config::InstallId::load_or_create(files_dir) {
+            Ok(id) => id,
+            Err(err) => {
+                tracing::warn!(error = %err, "usage check-in skipped: the install ID could not be read or written");
+                return;
+            }
+        };
+        diagnostics.set_install_id(&id);
+        *checkin = Some(bookclerk_config::CheckIn {
+            install_id: id.as_str().to_string(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            os: std::env::consts::OS.into(),
+            arch: std::env::consts::ARCH.into(),
+            kind: role.as_str().into(),
+        });
+    }
+    let Some(body) = checkin.as_ref() else {
+        return;
+    };
+    let now = unix_now_ms();
+    if !bookclerk_config::checkin_due(files_dir, now) {
+        return;
+    }
+    match bookclerk_config::send_checkin(settings, body) {
+        Ok(()) => {
+            if let Err(err) = bookclerk_config::record_checkin(files_dir, now) {
+                tracing::warn!(error = %err, "usage check-in sent but not recorded");
+            }
+        }
+        Err(err) => tracing::debug!(error = %err, "usage check-in not sent; retrying later"),
     }
 }
 

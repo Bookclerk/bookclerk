@@ -72,20 +72,8 @@ impl InstallId {
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         let t = text.trim();
-        let bytes = t.as_bytes();
-        if bytes.len() != 36 {
+        if !crate::report_history::is_v4_uuid(t) {
             return None;
-        }
-        for (i, b) in bytes.iter().enumerate() {
-            let ok = match i {
-                8 | 13 | 18 | 23 => *b == b'-',
-                14 => *b == b'4',
-                19 => matches!(b, b'8' | b'9' | b'a' | b'b'),
-                _ => b.is_ascii_digit() || (b'a'..=b'f').contains(b),
-            };
-            if !ok {
-                return None;
-            }
         }
         Some(Self(t.to_string()))
     }

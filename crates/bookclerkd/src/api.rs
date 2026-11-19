@@ -1218,6 +1218,7 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::cluster_link::join::post_join_invite))
         .routes(routes!(crate::cluster_link::join::post_join_leave))
         .routes(routes!(get_settings, patch_settings))
+        .routes(routes!(get_diagnostics_reports))
         .routes(routes!(get_plugin_consent, post_plugin_consent))
         .routes(routes!(get_plugin_logo))
         .routes(routes!(migrate_database))
@@ -2213,6 +2214,15 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
 
     bookclerk_plugin_host::reconcile_host_overlay_authority(&new_cfg);
 
+    // Report and usage sharing follow Settings without a restart; a demo copy
+    // never checks in, so its usage flag stays as it started.
+    if let Some(diagnostics) = bookclerk_config::diagnostics_global() {
+        diagnostics.set_sharing(
+            new_cfg.diagnostics.share_reports,
+            new_cfg.diagnostics.share_usage && !new_cfg.diagnostics.demo,
+        );
+    }
+
     // Bring the enrolled deployment set up now rather than on the next tick.
     if let Err(err) = crate::config_authority::reconcile_deployments(state).await {
         tracing::warn!(error = %err, "deployment reconcile after reload failed");
@@ -2449,6 +2459,8 @@ fn allowed_setting_key(key: &str) -> bool {
             | "daemon.auth.require_second_factor"
             | "library.auto_acquire"
             | "library.scan_interval_minutes"
+            | "diagnostics.share_reports"
+            | "diagnostics.share_usage"
             | "jobs.max_pending"
             | "jobs.lease_seconds"
             | "jobs.max_attempts"
@@ -2543,6 +2555,13 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
         "library.auto_acquire" | "daemon.auth.enabled" | "daemon.auth.require_second_factor" => {
             match value.trim().to_ascii_lowercase().as_str() {
                 "1" | "true" | "yes" | "on" | "0" | "false" | "no" | "off" => Ok(value.to_string()),
+                _ => Err(format!("{key} must be a boolean value")),
+            }
+        }
+        "diagnostics.share_reports" | "diagnostics.share_usage" => {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => Ok("true".into()),
+                "0" | "false" | "no" | "off" => Ok("false".into()),
                 _ => Err(format!("{key} must be a boolean value")),
             }
         }
@@ -2646,6 +2665,14 @@ fn current_settings_snapshot(config: &Config) -> std::collections::BTreeMap<Stri
     settings.insert(
         "library.scan_interval_minutes".into(),
         config.library.scan_interval_minutes.to_string(),
+    );
+    settings.insert(
+        "diagnostics.share_reports".into(),
+        config.diagnostics.share_reports.to_string(),
+    );
+    settings.insert(
+        "diagnostics.share_usage".into(),
+        config.diagnostics.share_usage.to_string(),
     );
     settings.insert(
         "jobs.max_pending".into(),
@@ -3798,6 +3825,72 @@ async fn post_plugin_consent(
         limits,
         host_user_agent: bookclerk_plugin_manifest::host_user_agent(),
     }))
+}
+
+/// One diagnostics report this install sent.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct DiagnosticsReportView {
+    /// The collector's ID for the report (a UUID). The GitHub issue filed
+    /// for it mentions this ID; search the issues for it or give it to a
+    /// maintainer.
+    #[schema(example = "0e9ced79-df3c-4dae-872b-2e5772b06e69")]
+    report_id: String,
+    /// Why it was sent: `crash`, `error_burst`, `slow_burst`, `job_failed`,
+    /// `cli_error`, `cli_manual`, ….
+    #[schema(example = "error_burst")]
+    trigger: String,
+    /// The Bookclerk version that sent it.
+    version: String,
+    /// When the collector accepted it, Unix milliseconds.
+    sent_at_unix_ms: u64,
+}
+
+/// Body of `GET /api/diagnostics/reports`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct DiagnosticsReportsResponse {
+    /// Sent reports, newest first (the last 200 are kept).
+    reports: Vec<DiagnosticsReportView>,
+}
+
+/// Lists the diagnostics reports this install sent, newest first, with
+/// the IDs the collector gave them.
+#[utoipa::path(
+    get,
+    path = "/api/diagnostics/reports",
+    responses(
+        (status = 200, description = "The install's sent reports, newest first.", body = DiagnosticsReportsResponse),
+    ),
+)]
+async fn get_diagnostics_reports(
+    State(state): State<Arc<AppState>>,
+) -> Json<DiagnosticsReportsResponse> {
+    let files_dir = state
+        .config
+        .read()
+        .await
+        .paths
+        .as_ref()
+        .map(|p| p.files_dir.clone());
+    let reports = match files_dir {
+        Some(dir) => {
+            tokio::task::spawn_blocking(move || bookclerk_config::load_report_history(&dir))
+                .await
+                .unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+    Json(DiagnosticsReportsResponse {
+        reports: reports
+            .into_iter()
+            .rev()
+            .map(|r| DiagnosticsReportView {
+                report_id: r.report_id.as_str().to_string(),
+                trigger: r.trigger,
+                version: r.version,
+                sent_at_unix_ms: r.sent_at_unix_ms,
+            })
+            .collect(),
+    })
 }
 
 /// Returns file-backed and runtime-effective Settings plus per-plugin groups.
@@ -7004,9 +7097,9 @@ mod tests {
         allowed_setting_key, apply_database_enable_updates, build_approved_grant,
         build_database_settings_group, current_settings_snapshot,
         database_backends_requiring_grant, normalize_disabled_shelves, normalize_setting_value,
-        stamp_settings_occupancy, validate_daemon_listen, validate_daemon_listen_against_auth,
-        InviteLinkError, PluginGrantOverride, RequestOutcome, NOTED_MS, SLOW_ROUTED_MS,
-        SLOW_UNROUTED_MS,
+        settings_authority, stamp_settings_occupancy, validate_daemon_listen,
+        validate_daemon_listen_against_auth, InviteLinkError, PluginGrantOverride, RequestOutcome,
+        SettingsAuthority, NOTED_MS, SLOW_ROUTED_MS, SLOW_UNROUTED_MS,
     };
     use bookclerk_config::{Config, ListenAddrs};
 
@@ -8712,6 +8805,76 @@ tcp = {tcp}
         let live = state.config.read().await;
         assert_eq!(live.events.retention_days, requested);
         assert_eq!(live.events_revision, Some(loaded.revision));
+    }
+
+    #[test]
+    fn diagnostics_sharing_is_a_settings_toggle() {
+        for key in ["diagnostics.share_reports", "diagnostics.share_usage"] {
+            assert!(allowed_setting_key(key));
+            assert!(matches!(settings_authority(key), SettingsAuthority::File));
+            assert_eq!(normalize_setting_value(key, " On ").as_deref(), Ok("true"));
+            assert_eq!(normalize_setting_value(key, "0").as_deref(), Ok("false"));
+            assert!(normalize_setting_value(key, "sometimes").is_err());
+        }
+        let mut cfg = Config::default();
+        cfg.diagnostics.share_usage = true;
+        let snapshot = current_settings_snapshot(&cfg);
+        assert_eq!(
+            snapshot
+                .get("diagnostics.share_reports")
+                .map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            snapshot.get("diagnostics.share_usage").map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_reports_list_newest_first() {
+        use axum::extract::State;
+        use bookclerk_library::LibraryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = bookclerk_config::Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        let store = LibraryStore::from_connection(db);
+        let state = std::sync::Arc::new(crate::config_authority::control_plane_test_state(
+            store, cfg,
+        ));
+        let empty = super::get_diagnostics_reports(State(state.clone())).await;
+        assert!(empty.0.reports.is_empty());
+        for n in 1..=2_u64 {
+            bookclerk_config::record_report(
+                dir.path(),
+                bookclerk_config::ReportRecord {
+                    report_id: bookclerk_config::ReportId::parse(&format!(
+                        "0e9ced79-df3c-4dae-872b-2e5772b0000{n}"
+                    ))
+                    .unwrap(),
+                    trigger: "crash".into(),
+                    version: "1".into(),
+                    sent_at_unix_ms: n,
+                },
+            )
+            .unwrap();
+        }
+        let listed = super::get_diagnostics_reports(State(state)).await;
+        assert_eq!(
+            listed
+                .0
+                .reports
+                .iter()
+                .map(|r| r.report_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "0e9ced79-df3c-4dae-872b-2e5772b00002",
+                "0e9ced79-df3c-4dae-872b-2e5772b00001"
+            ]
+        );
     }
 
     #[tokio::test]

@@ -8,6 +8,7 @@
 use bookclerk_tls::ureq;
 use std::collections::VecDeque;
 use std::panic::{self, PanicHookInfo};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -231,6 +232,14 @@ struct DiagnosticsInner {
     /// The install's random ID, set once the files directory is known and
     /// only when `share_usage` is on.
     install_id: OnceLock<String>,
+    /// Live `diagnostics.share_reports`: starts from the config and follows
+    /// Settings changes on reload ([`DiagnosticsHandle::set_sharing`]).
+    share_reports: AtomicBool,
+    /// Live `diagnostics.share_usage`, like `share_reports`.
+    share_usage: AtomicBool,
+    /// The files directory, once known, where accepted reports are recorded
+    /// (`diagnostics/reports.json`, see [`crate::record_report`]).
+    files_dir: OnceLock<PathBuf>,
 }
 
 impl DiagnosticsHandle {
@@ -241,6 +250,8 @@ impl DiagnosticsHandle {
         role: ProcessRole,
     ) -> Self {
         let capacity = config.ring_buffer_capacity.max(1) as usize;
+        let share_reports = AtomicBool::new(config.share_reports);
+        let share_usage = AtomicBool::new(config.share_usage);
         Self {
             inner: Arc::new(DiagnosticsInner {
                 config,
@@ -252,6 +263,9 @@ impl DiagnosticsHandle {
                 uploads_attempted: AtomicU64::new(0),
                 role,
                 install_id: OnceLock::new(),
+                share_reports,
+                share_usage,
+                files_dir: OnceLock::new(),
             }),
         }
     }
@@ -259,7 +273,40 @@ impl DiagnosticsHandle {
     /// Whether automatic upload is configured and ready (token/url present).
     #[must_use]
     pub fn upload_enabled(&self) -> bool {
-        self.inner.config.upload_ready()
+        self.inner.share_reports.load(Ordering::Relaxed)
+            && !self.inner.config.effective_collector_url().is_empty()
+    }
+
+    /// Whether the weekly usage check-in and the install ID are on right now
+    /// (`diagnostics.share_usage`, following Settings changes).
+    #[must_use]
+    pub fn share_usage(&self) -> bool {
+        self.inner.share_usage.load(Ordering::Relaxed)
+    }
+
+    /// Applies new `diagnostics.share_reports` / `share_usage` values without
+    /// a restart (the daemon calls it after a config reload).
+    ///
+    /// # Arguments
+    ///
+    /// * `share_reports` - Whether reports are uploaded from now on.
+    /// * `share_usage` - Whether uploads carry the install ID and the
+    ///   check-in runs from now on.
+    pub fn set_sharing(&self, share_reports: bool, share_usage: bool) {
+        self.inner
+            .share_reports
+            .store(share_reports, Ordering::Relaxed);
+        self.inner.share_usage.store(share_usage, Ordering::Relaxed);
+    }
+
+    /// Tells the handle where the files directory is, so accepted reports
+    /// are recorded in the install's report history. The first call wins.
+    ///
+    /// # Arguments
+    ///
+    /// * `files_dir` - The Bookclerk files directory.
+    pub fn set_files_dir(&self, files_dir: &Path) {
+        let _ = self.inner.files_dir.set(files_dir.to_path_buf());
     }
 
     /// Snapshot of the in-memory diagnostics ring (newest last).
@@ -282,7 +329,7 @@ impl DiagnosticsHandle {
     ///
     /// * `id` - The install ID ([`crate::InstallId`]).
     pub fn set_install_id(&self, id: &crate::InstallId) {
-        if self.inner.config.share_usage {
+        if self.share_usage() {
             let _ = self.inner.install_id.set(id.as_str().to_string());
         }
     }
@@ -495,7 +542,10 @@ impl DiagnosticsHandle {
         let payload = UploadPayload {
             trigger: trigger.to_string(),
             deployment: self.deployment().to_string(),
-            install_id: self.inner.install_id.get().cloned(),
+            install_id: self
+                .share_usage()
+                .then(|| self.inner.install_id.get().cloned())
+                .flatten(),
             version: self.inner.version.clone(),
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
@@ -521,9 +571,38 @@ impl DiagnosticsHandle {
         }
         self.inner.upload_in_flight.store(false, Ordering::SeqCst);
 
-        if let Err(err) = result {
-            // Avoid tracing recursion from the upload path.
-            eprintln!("bookclerk: diagnostics upload failed ({trigger}): {err}");
+        // Avoid tracing recursion from the upload path: report on stderr.
+        match result {
+            Ok(reply) => self.remember_report(trigger, &reply),
+            Err(err) => eprintln!("bookclerk: diagnostics upload failed ({trigger}): {err}"),
+        }
+    }
+
+    /// Records an accepted report in the install's report history.
+    ///
+    /// # Arguments
+    ///
+    /// * `trigger` - Why the report was sent.
+    /// * `reply` - The collector's reply body.
+    fn remember_report(&self, trigger: &str, reply: &[u8]) {
+        let report_id = match crate::parse_submit_reply(reply) {
+            Ok(id) => id,
+            Err(err) => {
+                eprintln!("bookclerk: diagnostics report sent but not recorded: {err}");
+                return;
+            }
+        };
+        let Some(files_dir) = self.inner.files_dir.get() else {
+            return;
+        };
+        let record = crate::ReportRecord {
+            report_id,
+            trigger: trigger.to_string(),
+            version: self.inner.version.clone(),
+            sent_at_unix_ms: unix_now_ms(),
+        };
+        if let Err(err) = crate::record_report(files_dir, record) {
+            eprintln!("bookclerk: diagnostics report sent but not recorded: {err}");
         }
     }
 }
@@ -575,13 +654,18 @@ fn sanitize_event_for_upload(mut event: BufferedEvent) -> BufferedEvent {
 
 /// POSTs the JSON payload; fail-closed if a registered secret is still visible after redaction.
 ///
+/// # Returns
+///
+/// The collector's reply body, read up to [`crate::MAX_SUBMIT_REPLY_BYTES`]
+/// plus one byte so an overlong reply is still refused by the parser.
+///
 /// # Errors
 ///
 /// Returns an error when serialization, redaction checks, or the HTTP request fails.
 fn post_http_payload(
     config: &DiagnosticsConfig,
     payload: &UploadPayload,
-) -> Result<String, String> {
+) -> Result<Vec<u8>, String> {
     use crate::redact::contains_registered_secret;
 
     let body = serde_json::to_string(payload).map_err(|e| e.to_string())?;
@@ -596,7 +680,7 @@ fn post_http_payload(
     if url.is_empty() {
         return Err("diagnostics collector_url is empty".into());
     }
-    ureq::post(&url)
+    let mut response = ureq::post(&url)
         .header("Content-Type", "application/json")
         .header(
             "User-Agent",
@@ -607,7 +691,15 @@ fn post_http_payload(
         .build()
         .send(body.as_str())
         .map_err(|e| format!("diagnostics collector upload failed: {e}"))?;
-    Ok(url)
+    let limit = u64::try_from(crate::MAX_SUBMIT_REPLY_BYTES + 1).unwrap_or(u64::MAX);
+    // The report is stored once the collector answered; a reply that cannot
+    // be read only costs the history entry.
+    Ok(response
+        .body_mut()
+        .with_config()
+        .limit(limit)
+        .read_to_vec()
+        .unwrap_or_default())
 }
 
 /// Wall-clock Unix milliseconds, or `0` if the clock is before the epoch.
@@ -891,6 +983,116 @@ mod tests {
             "expected redaction marker in body: {captured}"
         );
         assert_eq!(handle.uploads_attempted(), 1);
+    }
+
+    /// Accepts one HTTP request on a loopback port, reads it whole and
+    /// answers with `reply` (a full HTTP response).
+    fn serve_once(reply: String) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                if let Some(end) = find_header_end(&raw) {
+                    let headers = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+                    let len = headers
+                        .lines()
+                        .find_map(|l| l.trim().strip_prefix("content-length:").map(str::trim))
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if raw.len() >= end + len {
+                        break;
+                    }
+                }
+            }
+            let _ = stream.write_all(reply.as_bytes());
+        });
+        (addr, server)
+    }
+
+    #[test]
+    fn an_accepted_report_lands_in_the_history() {
+        let id = "0e9ced79-df3c-4dae-872b-2e5772b06e69";
+        let body = format!(r#"{{"ok":true,"report_id":"{id}","received_at_unix_ms":1}}"#);
+        let (addr, server) = serve_once(format!(
+            "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let handle = DiagnosticsHandle::new(
+            DiagnosticsConfig {
+                share_reports: true,
+                collector_url: format!("http://{addr}"),
+                ..DiagnosticsConfig::default()
+            },
+            "0.0.0-test",
+            ProcessRole::Daemon,
+        );
+        handle.set_files_dir(dir.path());
+        push_test_event(&handle, "ERROR", "boom");
+        handle.upload_blocking("crash");
+        server.join().unwrap();
+        let rows = crate::load_report_history(dir.path());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].report_id.as_str(), id);
+        assert_eq!(rows[0].trigger, "crash");
+        assert_eq!(rows[0].version, "0.0.0-test");
+    }
+
+    #[test]
+    fn a_reply_without_a_report_id_records_nothing() {
+        let (addr, server) =
+            serve_once("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n".into());
+        let dir = tempfile::tempdir().unwrap();
+        let handle = DiagnosticsHandle::new(
+            DiagnosticsConfig {
+                share_reports: true,
+                collector_url: format!("http://{addr}"),
+                ..DiagnosticsConfig::default()
+            },
+            "0.0.0-test",
+            ProcessRole::Daemon,
+        );
+        handle.set_files_dir(dir.path());
+        push_test_event(&handle, "ERROR", "boom");
+        handle.upload_blocking("crash");
+        server.join().unwrap();
+        assert_eq!(handle.uploads_attempted(), 1);
+        assert!(crate::load_report_history(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn sharing_follows_set_sharing() {
+        let handle = DiagnosticsHandle::new(
+            DiagnosticsConfig {
+                collector_url: "http://127.0.0.1:9".into(),
+                ..DiagnosticsConfig::default()
+            },
+            "0.0.0-test",
+            ProcessRole::Daemon,
+        );
+        assert!(!handle.upload_enabled());
+        assert!(!handle.share_usage());
+        handle.set_sharing(true, true);
+        assert!(handle.upload_enabled());
+        assert!(handle.share_usage());
+        let id = crate::InstallId::generate().unwrap();
+        handle.set_install_id(&id);
+        assert_eq!(
+            handle.inner.install_id.get().map(String::as_str),
+            Some(id.as_str())
+        );
+        handle.set_sharing(false, false);
+        assert!(!handle.upload_enabled());
+        assert!(!handle.share_usage());
     }
 
     #[test]

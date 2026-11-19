@@ -9613,6 +9613,77 @@
         "x-bookclerk-access": "The operator (token or session) only."
       }
     },
+    "/api/diagnostics/reports": {
+      "get": {
+        "tags": [
+          "Settings"
+        ],
+        "summary": "Lists the diagnostics reports this install sent, newest first, with\nthe IDs the collector gave them.",
+        "operationId": "get_diagnostics_reports",
+        "responses": {
+          "200": {
+            "description": "The install's sent reports, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticsReportsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
     "/api/plugins/{id}/consent": {
       "get": {
         "tags": [
@@ -33820,6 +33891,54 @@
           "placed",
           "unplaced"
         ]
+      },
+      "DiagnosticsReportView": {
+        "type": "object",
+        "description": "One diagnostics report this install sent.",
+        "required": [
+          "report_id",
+          "trigger",
+          "version",
+          "sent_at_unix_ms"
+        ],
+        "properties": {
+          "report_id": {
+            "type": "string",
+            "description": "The collector's ID for the report (a UUID). The GitHub issue filed\nfor it mentions this ID; search the issues for it or give it to a\nmaintainer.",
+            "example": "0e9ced79-df3c-4dae-872b-2e5772b06e69"
+          },
+          "trigger": {
+            "type": "string",
+            "description": "Why it was sent: `crash`, `error_burst`, `slow_burst`, `job_failed`,\n`cli_error`, `cli_manual`, ….",
+            "example": "error_burst"
+          },
+          "version": {
+            "type": "string",
+            "description": "The Bookclerk version that sent it."
+          },
+          "sent_at_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the collector accepted it, Unix milliseconds.",
+            "minimum": 0
+          }
+        }
+      },
+      "DiagnosticsReportsResponse": {
+        "type": "object",
+        "description": "Body of `GET /api/diagnostics/reports`.",
+        "required": [
+          "reports"
+        ],
+        "properties": {
+          "reports": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticsReportView"
+            },
+            "description": "Sent reports, newest first (the last 200 are kept)."
+          }
+        }
       },
       "DisconnectBody": {
         "type": "object",
