@@ -145,6 +145,10 @@ impl AcquireDestinations {
                 .filter(|dest| dest.filter.accepts_copy(&copy))
                 .map(|dest| {
                     let mut options = dest.options.for_copy(&copy);
+                    // Every copy's request carries the library's copy list,
+                    // whatever this destination's own options hold, so
+                    // packaging decides alike for every copy.
+                    options.copies.clone_from(&main.options.copies);
                     if index > 0 {
                         let folder = options.naming_templates().folder;
                         options.folder_template = Some(format!("{}/{folder}", copy.label()));

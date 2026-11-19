@@ -373,8 +373,11 @@ bookclerk plugins instances filter set <instance> --include format=mp3
 The main output keeps the usual names. Every other copy goes under a
 folder of its own at the top of the destination, named after the copy:
 `mp3 64k-mono/Title [1a2b3c4d]/`. That folder name is short, so the
-limits on path lengths shorten the book's own folders before it, and two
-copies never share a name. Give each destination one copy with filters
+limits on path lengths shorten the book's own folders before it. If two
+copies would still land in one folder (a destination template that
+repeats a copy's name, or a path limit so tight it shortens two names
+alike), the acquire stops with an error before it stores anything. Give
+each destination one copy with filters
 when a player scans the whole destination, so it doesn't see the book
 twice.
 

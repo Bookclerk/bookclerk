@@ -1316,6 +1316,7 @@ async fn store_copies(
     fetch: PlainFetch,
     library_pdf: Option<&Path>,
 ) -> Result<AcquireResult> {
+    check_copy_folders(library, copies, req).await?;
     let mut result: Option<AcquireResult> = None;
     let several = copies.len() > 1;
     for (at, target) in copies.iter().enumerate() {
@@ -1363,6 +1364,50 @@ async fn store_copies(
         }
     }
     result.ok_or(AcquireError::NoDestinationAccepts)
+}
+
+/// Refuses an acquire whose copies would share a folder: two copies whose
+/// planned title folders meet, on one destination or across several.
+///
+/// Each copy beside the main output sits under a folder named after it,
+/// so this holds unless a destination's own template copies a label, or a
+/// tight path limit shortens two labels alike. Two copies sharing a folder
+/// would overwrite each other's files, and the library could no longer
+/// tell the main copy's files from another copy's by their key, so the
+/// acquire stops before anything is stored.
+///
+/// # Errors
+///
+/// Returns [`AcquireError::Other`] naming the folder and both copies.
+async fn check_copy_folders(
+    library: &LibraryStore,
+    copies: &[CopyTarget],
+    req: &AcquireRequest,
+) -> Result<()> {
+    if copies.len() < 2 {
+        return Ok(());
+    }
+    let mut owners: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for (at, target) in copies.iter().enumerate() {
+        for dest in &target.destinations.items {
+            let mut copy_req = req.clone();
+            copy_req.options = dest.options.clone();
+            for folder in planned_title_folders(library, &copy_req).await {
+                let owner = *owners.entry(folder.clone()).or_insert(at);
+                if owner != at {
+                    return Err(AcquireError::Other(anyhow::anyhow!(
+                        "the copies {} and {} would share the folder `{folder}` \
+                         (destination {}); give the destinations templates or path \
+                         limits that keep each copy's folder apart",
+                        copies[owner].copy,
+                        target.copy,
+                        dest.id
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// True when every copy the request makes keeps the files as the store
@@ -5426,6 +5471,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn copies_that_would_share_a_folder_are_refused_before_storing() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut destinations = title_named_destinations(&tmp.path().join("local"), puts.clone());
+        destinations.items[0].options.copies = vec![output_copy("mp3:128k")];
+        let plan = destinations.copy_plan();
+        // A destination template that already names the label, as the
+        // main copy's folder: the extra copy's folder would be the same.
+        let label = plan[1].1.items[0].options.folder_template.clone().unwrap();
+        let mut copies: Vec<CopyTarget> = plan
+            .into_iter()
+            .map(|(copy, destinations)| CopyTarget { copy, destinations })
+            .collect();
+        copies[0].destinations.items[0].options.folder_template = Some(label);
+        let job = job_id(&store).await;
+        let mut req = edition_req(&cache, job, "B00SAME", "user-1", &uuid);
+        req.options = destinations.primary_destination().options.clone();
+        let fetch = PlainFetch {
+            parts: Vec::new(),
+            m4b_path: None,
+            cover_path: None,
+            chapters: Vec::new(),
+            pdf_url: None,
+        };
+        let err = store_copies(&store, &copies, &req, tmp.path(), fetch, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("would share the folder"), "{err}");
+        assert_eq!(puts.load(Ordering::SeqCst), 0, "nothing is stored");
+
+        copies.truncate(1);
+        check_copy_folders(&store, &copies, &req).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn each_copy_is_stored_and_recorded_as_its_own() {
         let store = test_store().await;
         let uuid = edition_book(&store, "B00COPY", "user-1", "Twin", None).await;
@@ -5474,6 +5558,11 @@ mod tests {
                 dest.options.folder_template.as_deref(),
                 Some("mp3_chapters 64k-mono/<title> [<library id>]"),
                 "a copy other than the main output gets a folder of its own"
+            );
+            assert_eq!(
+                dest.options.copies,
+                [output_copy("mp3_chapters:64k-mono")],
+                "every copy request carries the library's copy list"
             );
         }
         assert_eq!(
