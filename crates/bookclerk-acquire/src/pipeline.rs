@@ -954,6 +954,14 @@ async fn sync_missing_destinations(
         });
     }
 
+    // The stored media is the main output's copy; a destination whose copy
+    // rules refuse it (one that takes only an extra copy) is not given it.
+    let main = destinations
+        .primary_destination()
+        .options
+        .copies_to_make()
+        .into_iter()
+        .next();
     let mut written = Vec::new();
     for (id, target_key) in missing {
         let dest = destinations.destination(id).ok_or_else(|| {
@@ -962,6 +970,12 @@ async fn sync_missing_destinations(
                 id
             ))
         })?;
+        if main
+            .as_ref()
+            .is_some_and(|copy| !dest.filter.accepts_copy(copy))
+        {
+            continue;
+        }
         bookclerk_storage::transfer_object(
             source.backend.as_ref(),
             source_key,
@@ -1360,13 +1374,7 @@ async fn store_copies(
                 }
             }
         }
-        match result.as_mut() {
-            None => result = Some(stored),
-            Some(first) => {
-                first.written_keys.push(stored.storage_key);
-                first.written_keys.extend(stored.written_keys);
-            }
-        }
+        fold_copy_result(&mut result, stored);
     }
     if several {
         if let Err(err) = tokio::fs::remove_dir_all(work_dir).await {
@@ -1378,6 +1386,29 @@ async fn store_copies(
         }
     }
     result.ok_or(AcquireError::NoDestinationAccepts)
+}
+
+/// Folds one stored copy's result into the acquire's: the first copy that
+/// writes a key names the acquire, and every other key it writes joins its
+/// written keys. A copy whose destinations were all skipped writes no key,
+/// so it never names the acquire over a copy that did.
+fn fold_copy_result(result: &mut Option<AcquireResult>, stored: AcquireResult) {
+    match result.as_mut() {
+        None => *result = Some(stored),
+        // A copy whose destinations were all skipped writes no key; the
+        // first copy that does write names the acquire instead.
+        Some(first) if first.storage_key.is_empty() && !stored.storage_key.is_empty() => {
+            let mut stored = stored;
+            stored.written_keys.append(&mut first.written_keys);
+            *first = stored;
+        }
+        Some(first) => {
+            if !stored.storage_key.is_empty() {
+                first.written_keys.push(stored.storage_key);
+            }
+            first.written_keys.extend(stored.written_keys);
+        }
+    }
 }
 
 /// Refuses an acquire whose copies would share a folder: two copies whose
@@ -5495,6 +5526,72 @@ mod tests {
                 effect,
             }],
         }
+    }
+
+    #[tokio::test]
+    async fn sync_skips_a_destination_that_refuses_the_main_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut destinations = title_named_destinations(&tmp.path().join("local"), puts.clone());
+        destinations.items[0].options.copies = vec![output_copy("mp3_chapters:64k-mono")];
+        let mut phone = title_named_destinations(&tmp.path().join("phone"), puts.clone())
+            .items
+            .remove(0);
+        phone.id = DestinationId::new("phone").unwrap();
+        phone.filter = format_filter("mp3_chapters", bookclerk_config::FilterEffect::Include);
+        destinations.items.push(phone);
+        let local = destinations.items[0].id.clone();
+        destinations.items[0]
+            .backend
+            .put(
+                "Book/Book.m4b",
+                bytes::Bytes::from_static(b"audio"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        let journal = tmp.path().join("journal");
+        let missing = [(
+            DestinationId::new("phone").unwrap(),
+            "Book/Book.m4b".to_string(),
+        )];
+        let written =
+            sync_missing_destinations(&destinations, &local, "Book/Book.m4b", &missing, &journal)
+                .await
+                .unwrap();
+        assert!(written.is_empty(), "the phone takes only the MP3 copy");
+
+        destinations.items[1].filter = bookclerk_config::DestinationFilter::default();
+        let written =
+            sync_missing_destinations(&destinations, &local, "Book/Book.m4b", &missing, &journal)
+                .await
+                .unwrap();
+        assert_eq!(
+            written.len(),
+            1,
+            "a destination taking every copy is synced"
+        );
+    }
+
+    #[test]
+    fn the_first_copy_that_writes_names_the_acquire() {
+        let stored = |key: &str, written: &[&str]| AcquireResult {
+            asin: "B00TEST".into(),
+            storage_key: key.into(),
+            written_keys: written.iter().map(|key| (*key).to_string()).collect(),
+            matched_existing: false,
+            from_library: false,
+        };
+        let mut result = None;
+        fold_copy_result(&mut result, stored("", &["skipped.json"]));
+        fold_copy_result(&mut result, stored("mp3/a.mp3", &["mp3/b.mp3"]));
+        fold_copy_result(&mut result, stored("m4b/a.m4b", &[]));
+        let result = result.unwrap();
+        assert_eq!(result.storage_key, "mp3/a.mp3");
+        assert_eq!(
+            result.written_keys,
+            ["mp3/b.mp3", "skipped.json", "m4b/a.m4b"]
+        );
     }
 
     #[test]

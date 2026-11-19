@@ -400,7 +400,7 @@ When some destinations already have a title and others don't,
 
 | Policy | What happens |
 | --- | --- |
-| `sync_missing` (default) | Copies from a destination that has the title to those that don't, without downloading again. This happens while the title is acquired; a title that is already stored is not copied to a destination whose filter now takes it |
+| `sync_missing` (default) | Copies from a destination that has the title to those that don't, without downloading again. This happens while the title is acquired; a title that is already stored is not copied to a destination whose filter now takes it. It copies the main output's copy only, so a destination whose copy rules refuse that copy gets nothing |
 | `refetch_missing` | Downloads and encodes again, and writes only to the destinations missing the title |
 | `refetch_all` | Downloads and encodes again, and writes to every destination |
 

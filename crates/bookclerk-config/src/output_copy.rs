@@ -291,15 +291,72 @@ impl utoipa::PartialSchema for CopyQuality {
 impl utoipa::ToSchema for CopyQuality {}
 
 /// One copy of every acquired book: a format at a quality.
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, utoipa::ToSchema,
-)]
+///
+/// It reads only from an object of exactly `format` and `quality`: an
+/// array of the two values, which serde's derive would also take, is
+/// refused, so the reader matches the documented shape.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OutputCopy {
     /// The copy's format.
     pub format: CopyFormat,
     /// The copy's quality.
     pub quality: CopyQuality,
+}
+
+impl<'de> Deserialize<'de> for OutputCopy {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// The two fields an output copy object holds.
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "snake_case")]
+        enum Field {
+            /// `format`.
+            Format,
+            /// `quality`.
+            Quality,
+        }
+
+        /// Reads an output copy from a map only.
+        struct CopyVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for CopyVisitor {
+            type Value = OutputCopy;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an object with `format` and `quality`")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<OutputCopy, A::Error> {
+                let mut format = None;
+                let mut quality = None;
+                while let Some(field) = map.next_key::<Field>()? {
+                    match field {
+                        Field::Format => {
+                            if format.is_some() {
+                                return Err(serde::de::Error::duplicate_field("format"));
+                            }
+                            format = Some(map.next_value()?);
+                        }
+                        Field::Quality => {
+                            if quality.is_some() {
+                                return Err(serde::de::Error::duplicate_field("quality"));
+                            }
+                            quality = Some(map.next_value()?);
+                        }
+                    }
+                }
+                Ok(OutputCopy {
+                    format: format.ok_or_else(|| serde::de::Error::missing_field("format"))?,
+                    quality: quality.ok_or_else(|| serde::de::Error::missing_field("quality"))?,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(CopyVisitor)
+    }
 }
 
 /// Why a copy list was refused.
