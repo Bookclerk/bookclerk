@@ -38,8 +38,11 @@ cargo check --quiet --manifest-path "$NEGATIVE/Cargo.toml"
 # unresolved imports, paths, names or types (E0412, E0422, E0425, E0432,
 # E0433), a method the author-facing type does not have (E0599) or a private
 # item (E0603). Any other failure, such as a warning promoted to an error,
-# would hide a leak, so it fails the check too (#960).
-EXPECTED='error\[E0(412|422|425|432|433|599|603)\]'
+# would hide a leak, so it fails the check too (#960), even next to an
+# expected error.
+EXPECTED='^error\[E0(412|422|425|432|433|599|603)\]'
+# Cargo's own summary lines are not diagnostics about the case.
+SUMMARY='^error: (could not compile|aborting due to)'
 fail=0
 for case_file in "$NEGATIVE"/cases/*.rs; do
   name="$(basename "$case_file")"
@@ -47,7 +50,9 @@ for case_file in "$NEGATIVE"/cases/*.rs; do
   if output="$(cargo check --quiet --manifest-path "$NEGATIVE/Cargo.toml" 2>&1)"; then
     echo "FAIL: negative case compiled (host-private symbol leaked): $name" >&2
     fail=1
-  elif grep -Eq "$EXPECTED" <<<"$output"; then
+  elif diagnostics="$(grep -E '^error(\[E[0-9]+\])?:' <<<"$output" | grep -Ev "$SUMMARY")" &&
+    grep -Eq "$EXPECTED" <<<"$diagnostics" &&
+    ! grep -Evq "$EXPECTED" <<<"$diagnostics"; then
     echo "ok (rejected): $name"
   else
     echo "FAIL: negative case failed for another reason than an unreachable symbol: $name" >&2

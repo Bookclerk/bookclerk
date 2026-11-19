@@ -18,9 +18,10 @@ negative cases silently compile.
   `cases/` names one host-private symbol; the driver script swaps it into
   `src/case.rs` and requires `cargo check` to **fail** with an
   unreachable-symbol error (unresolved import, path, name or type, a
-  missing method, or a private item). A case that fails for any other
-  reason, such as a syntax error or a warning promoted to an error, fails
-  the check, so it can't hide a leak.
+  missing method, or a private item) and no other error. A case that
+  fails for any other reason, such as a syntax error or a warning promoted
+  to an error, fails the check even next to an expected error, so it can't
+  hide a leak.
 
 Run locally:
 
