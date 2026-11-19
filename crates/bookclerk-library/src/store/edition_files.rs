@@ -496,7 +496,33 @@ impl LibraryStore {
         owner: &FileOwner,
         role: FileRole,
     ) -> Result<bool> {
+        self.record_edition_copy_file(destination, key, owner, role, None)
+            .await
+    }
+
+    /// [`Self::record_edition_file`] for a file of one library copy
+    /// (`output.copies`): the row also names the copy's format and quality,
+    /// or none when `copy` is `None`.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the key is now `owner`'s; `false` when another live
+    /// edition holds it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a write fails.
+    pub async fn record_edition_copy_file(
+        &self,
+        destination: &str,
+        key: &str,
+        owner: &FileOwner,
+        role: FileRole,
+        copy: Option<&bookclerk_config::OutputCopy>,
+    ) -> Result<bool> {
         let now = now_str();
+        let copy_format = copy.map(|copy| copy.format.as_str().to_string());
+        let copy_quality = copy.map(|copy| copy.quality.to_string());
         edition_files::Entity::insert(edition_files::ActiveModel {
             destination: Set(destination.to_string()),
             storage_key: Set(key.to_string()),
@@ -509,6 +535,8 @@ impl LibraryStore {
             source_store: Set(None),
             probed_at: Set(None),
             sha256: Set(None),
+            copy_format: Set(copy_format.clone()),
+            copy_quality: Set(copy_quality.clone()),
             writer: Set(ACQUIRE_WRITER.to_string()),
             written_at: Set(now.clone()),
         })
@@ -560,6 +588,11 @@ impl LibraryStore {
             .col_expr(
                 edition_files::Column::Sha256,
                 Expr::value(Option::<String>::None),
+            )
+            .col_expr(edition_files::Column::CopyFormat, Expr::value(copy_format))
+            .col_expr(
+                edition_files::Column::CopyQuality,
+                Expr::value(copy_quality),
             )
             .col_expr(edition_files::Column::Writer, Expr::value(ACQUIRE_WRITER))
             .col_expr(edition_files::Column::WrittenAt, Expr::value(now))
@@ -642,6 +675,8 @@ impl LibraryStore {
                 source_store: Set(None),
                 probed_at: Set(None),
                 sha256: Set(sha256.map(str::to_string)),
+                copy_format: Set(None),
+                copy_quality: Set(None),
                 writer: Set(writer.to_string()),
                 written_at: Set(now.clone()),
             })
@@ -734,6 +769,14 @@ impl LibraryStore {
             )
             .col_expr(
                 edition_files::Column::ProbedAt,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::CopyFormat,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::CopyQuality,
                 Expr::value(Option::<String>::None),
             )
             .col_expr(edition_files::Column::Writer, Expr::value(writer))
@@ -994,6 +1037,30 @@ impl LibraryStore {
                 bitrate_kbps: row.bitrate_kbps.and_then(|kbps| u32::try_from(kbps).ok()),
                 lossless: row.lossless != 0,
                 source_store: row.source_store,
+            })
+        }))
+    }
+
+    /// The library copy (`output.copies`) the file at `key` on
+    /// `destination` belongs to; `None` when the key is unrecorded, belongs
+    /// to no one copy, or names a copy this build cannot read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn edition_file_copy(
+        &self,
+        destination: &str,
+        key: &str,
+    ) -> Result<Option<bookclerk_config::OutputCopy>> {
+        let row = edition_files::Entity::find_by_id((destination.to_string(), key.to_string()))
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(row.and_then(|row| {
+            Some(bookclerk_config::OutputCopy {
+                format: bookclerk_config::CopyFormat::parse(row.copy_format.as_deref()?)?,
+                quality: bookclerk_config::CopyQuality::parse(row.copy_quality.as_deref()?)?,
             })
         }))
     }

@@ -283,10 +283,19 @@ is a list of rules, each a field, one value and include or exclude:
 | `storefront` | A storefront plugin's alias, such as `audible` or `libro` (case does not matter) |
 | `account` | A store account's id at its store |
 | `media_kind` | `book` or `podcast` (a podcast episode is a podcast) |
+| `format` | A copy's format: `m4b`, `mp3`, `mp3_chapters` or `original` (see [Keeping several copies](#keeping-several-copies)) |
+| `quality` | A copy's quality, such as `original`, `64k-mono` or `v2` |
 
 With no include rule, the destination takes every book the exclude rules
 allow. With any include rule, it takes only books that match at least one.
 An exclude rule always wins.
+
+`format` and `quality` rules choose copies, not books. The other rules
+decide whether a destination takes a book; then the `format` and
+`quality` rules decide which of the library's copies of it the
+destination receives, by the same include and exclude logic among
+themselves. A destination with no `format` or `quality` rule receives
+every copy.
 
 1. Find the destination's instance id with
    `bookclerk plugins instances list`.
@@ -317,6 +326,61 @@ this book", before anything is downloaded.
 > For now filters apply to acquires that run on the library itself. A
 > branch that acquires for the library still writes to every destination
 > the library names; that changes in a later release.
+
+## Keeping several copies
+
+A library can keep more than one copy of every book: the main output
+(`output.format`), plus up to eight more in other formats or at other
+qualities. A small MP3 for an old player beside the M4B is the usual
+case. List the extra copies in `output.copies`, each written
+`format:quality`:
+
+```sh
+bookclerk config set output.copies "mp3:64k-mono,mp3_chapters:v4"
+```
+
+| Format | Output | Qualities |
+| --- | --- | --- |
+| `m4b` | One M4B with tags and chapters (`enriched_m4b`) | `original` |
+| `mp3` | One MP3 (`single_mp3`) | A bitrate or a VBR level |
+| `mp3_chapters` | One MP3 per chapter (`split_mp3_by_chapter`) | A bitrate or a VBR level |
+| `original` | The store's files as delivered (`none`) | `original` |
+
+A quality is `original` (the store's audio, repackaged without
+re-encoding), a constant bitrate from `8k` to `320k`, or a LAME VBR level
+from `v0` (best) to `v9`. A bitrate or VBR level may end in `-mono` to mix
+the copy down to one channel. The main output is a copy too: an M4B or
+as-delivered output is `original`, and an MP3 output takes its quality
+from the `output.lame` settings. A copy may not repeat another or the
+main output.
+
+Each acquire downloads the book once and makes every copy from that
+download, main output first. Every destination receives each copy its
+filter takes (see
+[Choosing which books a destination takes](#choosing-which-books-a-destination-takes)).
+For example, to send only the MP3 copy to a bucket a phone syncs from:
+
+```sh
+bookclerk plugins instances filter set <instance> --include format=mp3
+```
+
+The first copy a destination receives keeps the usual names. A further
+copy on the same destination goes in a folder of its own, named after the
+copy: `Title [1a2b3c4d] (mp3 64k-mono)/`. Give each destination one copy
+with filters when a player scans the folder, so it doesn't see the book
+twice.
+
+Each copy's files are recorded on the edition with the copy's format and
+quality, beside the probe of each audio file (see
+[Media](media.md)). The main output's file is the one the library records
+as the title's storage key, and the only one offered to a branch that
+asks for the library's copy.
+
+> [!NOTE]
+> Copies are made when a book is acquired. A copy added to
+> `output.copies` later is not made for books already stored. When a book
+> no destination receives any copy of is acquired, the acquire fails at
+> once with "no destination accepts this book".
 
 ## Several destinations
 
@@ -413,6 +477,7 @@ or list your own `output.replacement_characters`.
 ```toml
 [output]
 format = "enriched_m4b"   # single_mp3 | split_mp3_by_chapter | …
+copies = []               # extra copies, see "Keeping several copies"
 download_cover = true
 download_pdf = true
 create_cue = true

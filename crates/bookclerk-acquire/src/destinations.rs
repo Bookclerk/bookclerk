@@ -1,8 +1,10 @@
 //! Destination-specific storage backends for one acquire operation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use bookclerk_config::{DestinationFilter, DestinationId, MultiDestinationMode, PlacementFacts};
+use bookclerk_config::{
+    DestinationFilter, DestinationId, MultiDestinationMode, OutputCopy, PlacementFacts,
+};
 use bookclerk_source::DownloadOptions;
 use bookclerk_storage::{FanoutBackend, StorageBackend};
 
@@ -109,6 +111,68 @@ impl AcquireDestinations {
             primary,
             multi_destination: self.multi_destination,
         })
+    }
+
+    /// The copies of each book this acquire makes and the destinations
+    /// that receive each, in order: the main output's copy first, then
+    /// `output.copies` (see [`bookclerk_source::DownloadOptions::copies_to_make`],
+    /// read from the primary destination's options). A destination
+    /// receives a copy when its filter's copy rules take it
+    /// ([`DestinationFilter::accepts_copy`]). A copy no destination takes
+    /// is left out.
+    ///
+    /// Each destination's options package the copy
+    /// ([`bookclerk_source::DownloadOptions::for_copy`]). A destination
+    /// that already receives an earlier copy keeps this one in a folder of
+    /// its own, its folder template followed by the copy's label in
+    /// parentheses (`Title [ID] (mp3 64k-mono)`), so two copies never share
+    /// a folder or a key; the first copy a destination receives keeps the
+    /// plain names. Each copy's primary destination is the set's primary
+    /// when it receives the copy, else the first that does.
+    #[must_use]
+    pub fn copy_plan(&self) -> Vec<(OutputCopy, AcquireDestinations)> {
+        let Some(main) = self.items.first().map(|_| self.primary_destination()) else {
+            return Vec::new();
+        };
+        let mut served: BTreeSet<DestinationId> = BTreeSet::new();
+        let mut plan = Vec::new();
+        for copy in main.options.copies_to_make() {
+            let items: Vec<AcquireDestination> = self
+                .items
+                .iter()
+                .filter(|dest| dest.filter.accepts_copy(&copy))
+                .map(|dest| {
+                    let mut options = dest.options.for_copy(&copy);
+                    if !served.insert(dest.id.clone()) {
+                        let folder = options.naming_templates().folder;
+                        options.folder_template = Some(format!("{folder} ({})", copy.label()));
+                    }
+                    AcquireDestination {
+                        id: dest.id.clone(),
+                        backend: dest.backend.clone_box(),
+                        options,
+                        filter: dest.filter.clone(),
+                    }
+                })
+                .collect();
+            let Some(first) = items.first().map(|dest| dest.id.clone()) else {
+                continue;
+            };
+            let primary = if items.iter().any(|dest| dest.id == self.primary) {
+                self.primary.clone()
+            } else {
+                first
+            };
+            plan.push((
+                copy,
+                AcquireDestinations {
+                    items,
+                    primary,
+                    multi_destination: self.multi_destination,
+                },
+            ));
+        }
+        plan
     }
 
     /// Clone destination backends into a listing/match storage handle.

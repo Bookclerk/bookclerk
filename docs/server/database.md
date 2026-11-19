@@ -742,7 +742,12 @@ library holds as works, expressions and editions:
   was never probed (it is not audio, the media worker was unavailable, or
   it was stored before probes were recorded), and the other four columns
   are then empty too. See [What a stored file's row
-  says](media.md#what-a-stored-files-row-says).
+  says](media.md#what-a-stored-files-row-says). An audio file an acquire
+  writes also names the library copy it belongs to (`copy_format`, such
+  as `m4b` or `mp3`, and `copy_quality`, such as `original` or
+  `64k-mono`; see [Keeping several
+  copies](output.md#keeping-several-copies)); both are empty for
+  sidecars, the PDF and uploads.
 - `edition_acquisitions`: each edition's acquire state (status, primary
   storage key, last error) and the account holding (`holding_id`) whose
   title's write set it, written with the title's own status. Only that

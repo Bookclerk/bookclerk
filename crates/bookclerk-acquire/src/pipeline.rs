@@ -36,7 +36,7 @@ use crate::naming::{
     NamingContext,
 };
 use crate::reconcile::{find_existing_for_request, StorageIndex};
-use crate::record::recording_destinations;
+use crate::record::{recording_copy_destinations, recording_destinations};
 use crate::split::split_audio_by_chapters;
 
 /// Request to acquire a single title.
@@ -241,7 +241,32 @@ pub async fn acquire_book_indexed(
         &req.source,
         req.library_copies.stored_from(),
     );
-    acquire_book_recorded(library, &recorded, req, index, source).await
+    let copies: Vec<CopyTarget> = destinations
+        .copy_plan()
+        .into_iter()
+        .map(|(copy, targets)| CopyTarget {
+            destinations: recording_copy_destinations(
+                library,
+                &targets,
+                owner.as_ref(),
+                &req.source,
+                req.library_copies.stored_from(),
+                &copy,
+            ),
+            copy,
+        })
+        .collect();
+    acquire_book_recorded(library, &recorded, &copies, req, index, source).await
+}
+
+/// One copy of the book an acquire makes (`output.copies`) and the
+/// destinations that receive it, each recording its audio as that copy's
+/// ([`AcquireDestinations::copy_plan`]).
+struct CopyTarget {
+    /// The copy.
+    copy: bookclerk_config::OutputCopy,
+    /// The destinations that receive it, with options that package it.
+    destinations: AcquireDestinations,
 }
 
 /// The target set of `req`: the destinations whose filter takes the book
@@ -288,6 +313,7 @@ fn pin_library_id(req: &mut AcquireRequest, owner: Option<&FileOwner>) {
 async fn acquire_book_recorded(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
+    copies: &[CopyTarget],
     mut req: AcquireRequest,
     mut index: Option<&mut StorageIndex>,
     source: &dyn ContentSource,
@@ -314,6 +340,11 @@ async fn acquire_book_recorded(
              use split_mp3_by_chapter or single_mp3",
             req.options.split_mp3_max_mb
         )));
+    }
+    if copies.is_empty() {
+        // Some destination takes the book, but every one refuses every
+        // copy the library makes.
+        return Err(AcquireError::NoDestinationAccepts);
     }
 
     if !req.force && !req.options.overwrite_existing {
@@ -461,7 +492,7 @@ async fn acquire_book_recorded(
         )
         .await?;
 
-    let result = match run_pipeline(library, destinations, &req, source).await {
+    let result = match run_pipeline(library, copies, &req, source).await {
         Ok(result) => {
             if let Some(idx) = index.as_mut() {
                 idx.insert_key(result.storage_key.clone());
@@ -1179,7 +1210,7 @@ async fn planned_plain_part_storage_key(
 /// Marks the title as downloading, then fetches and stores it from the content source.
 async fn run_pipeline(
     library: &LibraryStore,
-    destinations: &AcquireDestinations,
+    copies: &[CopyTarget],
     req: &AcquireRequest,
     source: &dyn ContentSource,
 ) -> Result<AcquireResult> {
@@ -1193,13 +1224,14 @@ async fn run_pipeline(
         )
         .await?;
 
-    run_source_pipeline(library, destinations, req, source).await
+    run_source_pipeline(library, copies, req, source).await
 }
 
-/// Fetches the title into the acquire cache and stores the resulting plain audio.
+/// Fetches the title into the acquire cache once and stores each copy the
+/// library makes of it ([`store_copies`]).
 async fn run_source_pipeline(
     library: &LibraryStore,
-    destinations: &AcquireDestinations,
+    copies: &[CopyTarget],
     req: &AcquireRequest,
     source: &dyn ContentSource,
 ) -> Result<AcquireResult> {
@@ -1240,9 +1272,9 @@ async fn run_source_pipeline(
     enforce_work_dir_quota(library, req, &work_dir).await?;
 
     let result = run_stage_enforcing_quota(library, req, &work_dir, async {
-        store_plain_fetch(
+        store_copies(
             library,
-            destinations,
+            copies,
             req,
             &work_dir,
             fetch,
@@ -1262,6 +1294,85 @@ async fn run_source_pipeline(
 /// Name of the directory, inside an acquire's scratch directory, that a
 /// library's copy is downloaded into.
 const LIBRARY_COPY_DIR: &str = "library-copy";
+
+/// Packages and stores each copy of the fetched title, in order, from the
+/// one download in `work_dir` ([`store_plain_fetch`] per copy, against the
+/// copy's own destinations and options).
+///
+/// With one copy (the default), the copy is made in `work_dir` itself, as
+/// before copies existed. With several, each is made in its own
+/// subdirectory, removed once stored, so the download stays for the next
+/// copy. The result is the first copy's, with every copy's written keys:
+/// the first copy's primary key is the title's.
+///
+/// # Errors
+///
+/// Returns the first copy's failure; copies already stored stay stored.
+async fn store_copies(
+    library: &LibraryStore,
+    copies: &[CopyTarget],
+    req: &AcquireRequest,
+    work_dir: &Path,
+    fetch: PlainFetch,
+    library_pdf: Option<&Path>,
+) -> Result<AcquireResult> {
+    let mut result: Option<AcquireResult> = None;
+    let several = copies.len() > 1;
+    for (at, target) in copies.iter().enumerate() {
+        let mut copy_req = req.clone();
+        copy_req.options = target.destinations.primary_destination().options.clone();
+        let copy_dir = if several {
+            let dir = work_dir.join(format!("copy-{at}"));
+            tokio::fs::create_dir_all(&dir).await?;
+            dir
+        } else {
+            work_dir.to_path_buf()
+        };
+        tracing::info!(
+            id = %status_key(req),
+            copy = %target.copy,
+            destinations = target.destinations.len(),
+            "storing a copy"
+        );
+        // Boxed: the packaging future is large, and an acquire already runs
+        // deep in its caller's stack.
+        let stored = Box::pin(store_plain_fetch(
+            library,
+            &target.destinations,
+            &copy_req,
+            &copy_dir,
+            fetch.clone(),
+            library_pdf,
+        ))
+        .await?;
+        match result.as_mut() {
+            None => result = Some(stored),
+            Some(first) => {
+                first.written_keys.push(stored.storage_key);
+                first.written_keys.extend(stored.written_keys);
+            }
+        }
+    }
+    if several {
+        if let Err(err) = tokio::fs::remove_dir_all(work_dir).await {
+            tracing::warn!(
+                path = %work_dir.display(),
+                error = %err,
+                "failed to clean acquire cache dir"
+            );
+        }
+    }
+    result.ok_or(AcquireError::NoDestinationAccepts)
+}
+
+/// True when every copy the request makes keeps the files as the store
+/// delivered them (`original`), so nothing is decoded or repackaged.
+fn keeps_delivered(req: &AcquireRequest) -> bool {
+    req.options
+        .copies_to_make()
+        .iter()
+        .all(|copy| copy.format == bookclerk_config::CopyFormat::Original)
+}
 
 /// A copy a library offered of the request's title.
 struct OfferedCopy {
@@ -1373,7 +1484,7 @@ enum CopyCover {
 /// reads lossy MP4 and MP3 audio only. The encoding itself is checked on
 /// the downloaded file ([`output_can_decode`]).
 fn output_can_use(req: &AcquireRequest, probe: &FileProbe) -> bool {
-    req.options.is_noop_output()
+    keeps_delivered(req)
         || (!probe.lossless && matches!(probe.content_type.as_str(), "audio/mp4" | "audio/mpeg"))
 }
 
@@ -1382,7 +1493,7 @@ fn output_can_use(req: &AcquireRequest, probe: &FileProbe) -> bool {
 /// only what the media worker decodes (AAC and MP3).
 fn output_can_decode(req: &AcquireRequest, codec: Option<bookclerk_tags::AudioCodec>) -> bool {
     use bookclerk_tags::AudioCodec;
-    if req.options.is_noop_output() {
+    if keeps_delivered(req) {
         return true;
     }
     match codec {
@@ -5248,6 +5359,258 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    /// A copy from its `format:quality` name.
+    fn output_copy(raw: &str) -> bookclerk_config::OutputCopy {
+        bookclerk_config::OutputCopy::parse(raw).unwrap()
+    }
+
+    /// A filter of one rule on a copy's format.
+    fn format_filter(
+        value: &str,
+        effect: bookclerk_config::FilterEffect,
+    ) -> bookclerk_config::DestinationFilter {
+        bookclerk_config::DestinationFilter {
+            rules: vec![bookclerk_config::FilterRule {
+                field: bookclerk_config::FilterField::Format,
+                value: value.into(),
+                effect,
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn each_copy_is_stored_and_recorded_as_its_own() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00COPY", "user-1", "Twin", None).await;
+        let owner = store.file_owner_of_book(&uuid).await.unwrap().unwrap();
+        let id = short_id(&store, &uuid).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let local_puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let phone_puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // The library keeps the store's files and an MP3 copy per chapter;
+        // `local` takes every copy, `phone` only the MP3 one.
+        let mut destinations =
+            title_named_destinations(&tmp.path().join("local"), local_puts.clone());
+        destinations.items[0].options.copies = vec![output_copy("mp3_chapters:64k-mono")];
+        let mut phone = title_named_destinations(&tmp.path().join("phone"), phone_puts.clone())
+            .items
+            .remove(0);
+        phone.id = DestinationId::new("phone").unwrap();
+        phone.filter = format_filter("mp3_chapters", bookclerk_config::FilterEffect::Include);
+        destinations.items.push(phone);
+
+        let plan = destinations.copy_plan();
+        let shape: Vec<(String, Vec<&str>)> = plan
+            .iter()
+            .map(|(copy, targets)| {
+                (
+                    copy.to_string(),
+                    targets.items.iter().map(|dest| dest.id.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("original:original".to_string(), vec!["local"]),
+                ("mp3_chapters:64k-mono".to_string(), vec!["local", "phone"]),
+            ]
+        );
+        let mp3 = &plan[1].1;
+        assert_eq!(mp3.primary.as_str(), "local");
+        assert!(mp3.items[0].options.wants_split_by_chapter());
+        assert_eq!(mp3.items[0].options.lame.bitrate_kbps, 64);
+        assert_eq!(
+            mp3.items[0].options.folder_template.as_deref(),
+            Some("<title> [<library id>] (mp3_chapters 64k-mono)"),
+            "a destination's second copy gets a folder of its own"
+        );
+        assert_eq!(
+            mp3.items[1].options.folder_template.as_deref(),
+            Some("<title> [<library id>]"),
+            "a destination's first copy keeps the plain names"
+        );
+
+        let copies: Vec<CopyTarget> = plan
+            .into_iter()
+            .map(|(copy, targets)| CopyTarget {
+                destinations: recording_copy_destinations(
+                    &store,
+                    &targets,
+                    Some(&owner),
+                    "audible",
+                    &crate::library_copies::StoredFrom::default(),
+                    &copy,
+                ),
+                copy,
+            })
+            .collect();
+        let job = job_id(&store).await;
+        let mut req = edition_req(&cache, job, "B00COPY", "user-1", &uuid);
+        req.options = destinations.primary_destination().options.clone();
+        pin_library_id(&mut req, Some(&owner));
+        let work_dir = cache.join("acquire").join(&uuid);
+        tokio::fs::create_dir_all(&work_dir).await.unwrap();
+        let mut parts = Vec::new();
+        for n in 1..=2 {
+            let path = work_dir.join(format!("part{n}.mp3"));
+            tokio::fs::write(&path, format!("part {n}")).await.unwrap();
+            parts.push(bookclerk_source::PlainAudioPart {
+                path,
+                title: Some(format!("Chapter {n}")),
+                duration_ms: Some(1_000),
+            });
+        }
+        let fetch = PlainFetch {
+            parts,
+            m4b_path: None,
+            cover_path: None,
+            chapters: Vec::new(),
+            pdf_url: None,
+        };
+
+        let result = store_copies(&store, &copies, &req, &work_dir, fetch, None)
+            .await
+            .unwrap();
+        let plain = format!("Twin [{id}]/");
+        let copy_folder = format!("Twin [{id}] (mp3_chapters 64k-mono)/");
+        assert!(
+            result.storage_key.starts_with(&plain),
+            "the main copy names the title: {}",
+            result.storage_key
+        );
+        assert_eq!(local_puts.load(Ordering::SeqCst), 4, "two parts per copy");
+        assert_eq!(phone_puts.load(Ordering::SeqCst), 2, "the MP3 copy only");
+        assert!(
+            result
+                .written_keys
+                .iter()
+                .any(|key| key.starts_with(&copy_folder)),
+            "{:?}",
+            result.written_keys
+        );
+        assert_eq!(
+            store
+                .edition_file_copy("local", &result.storage_key)
+                .await
+                .unwrap(),
+            Some(output_copy("original:original"))
+        );
+        let mut local_copy_keys = 0;
+        for entry in walk(&tmp.path().join("local")) {
+            let key = entry
+                .strip_prefix(tmp.path().join("local"))
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if key.starts_with(&copy_folder) && !key.ends_with(".json") {
+                local_copy_keys += 1;
+                assert_eq!(
+                    store.edition_file_copy("local", &key).await.unwrap(),
+                    Some(output_copy("mp3_chapters:64k-mono")),
+                    "{key}"
+                );
+            }
+        }
+        assert_eq!(local_copy_keys, 2);
+        let phone_keys: Vec<String> = walk(&tmp.path().join("phone"))
+            .into_iter()
+            .map(|path| {
+                path.strip_prefix(tmp.path().join("phone"))
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .filter(|key| !key.ends_with(".json"))
+            .collect();
+        assert_eq!(phone_keys.len(), 2, "{phone_keys:?}");
+        for key in &phone_keys {
+            assert!(key.starts_with(&plain), "{key}");
+            assert_eq!(
+                store.edition_file_copy("phone", key).await.unwrap(),
+                Some(output_copy("mp3_chapters:64k-mono"))
+            );
+        }
+        assert!(!work_dir.exists(), "the scratch copies are cleaned up");
+    }
+
+    /// Every file under `root`, recursively.
+    fn walk(root: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    out.push(path);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[tokio::test]
+    async fn a_book_whose_every_copy_is_refused_fails_before_it_is_fetched() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00NOCOPY", "user-1", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut destinations = title_named_destinations(&tmp.path().join("dest"), puts.clone());
+        destinations.items[0].filter =
+            format_filter("mp3", bookclerk_config::FilterEffect::Include);
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let mut req = edition_req(&cache, job, "B00NOCOPY", "user-1", &uuid);
+        req.placement = Some(audible_placement());
+        let err = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AcquireError::NoDestinationAccepts), "{err}");
+        assert_eq!(fetches.load(Ordering::SeqCst), 0);
+        assert_eq!(puts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_library_with_one_copy_names_it_on_the_files_it_writes() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00ONE", "user-1", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&tmp.path().join("dest"), puts.clone());
+        let source = CountingSource {
+            fetches: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let req = edition_req(&cache, job, "B00ONE", "user-1", &uuid);
+        let result = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        let id = short_id(&store, &uuid).await;
+        assert!(result.storage_key.starts_with(&format!("Twin [{id}]/")));
+        assert_eq!(puts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store
+                .edition_file_copy("local", &result.storage_key)
+                .await
+                .unwrap(),
+            Some(output_copy("original:original"))
+        );
     }
 
     #[tokio::test]

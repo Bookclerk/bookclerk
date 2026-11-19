@@ -29,6 +29,11 @@ destination a filter: for example, podcasts only in one place, or one
 person's books in their own folder (see
 [Choosing which books a destination takes](../server/output.md#choosing-which-books-a-destination-takes)).
 
+The library can also keep each book in more than one format, such as an
+M4B for the shelf and a small MP3 for an old player, and send each copy
+to the places that want it (see
+[Keeping several copies](../server/output.md#keeping-several-copies)).
+
 ## How files are named
 
 **Settings → Output** sets how folders and files are named. Pick a

@@ -478,8 +478,10 @@ multi_destination = "sync_missing"
 ```
 
 The shared output table is the second settings domain in the database,
-`core.output`: one document every host applies. It holds the format,
-Widevine and CDM provider, naming profile and templates, sidecars, cover
+`core.output`: one document every host applies. It holds the format and
+the extra copies of each book (`copies`, see
+[Keeping several copies](output.md#keeping-several-copies)), Widevine
+and CDM provider, naming profile and templates, sidecars, cover
 and chapter options, LAME settings, timestamps, path sanitization and
 replacement rules, file name length, and the multi-destination policy.
 
@@ -502,8 +504,10 @@ It follows the same rules as `core.events`:
 - **Checks.** Writes need the operator, and are checked before any SQL:
   `cover_size` is `native` or 1 to 10000, `chapter_layout` is `tree`,
   `flat` or `both`, `split_mp3_max_mb` is 1 to 10240, templates are at
-  most 1 KiB without control characters, and there are at most 128
-  replacement rules. A lost revision is a conflict and changes nothing.
+  most 1 KiB without control characters, there are at most 128
+  replacement rules, and there are at most 8 extra copies, each with a
+  quality its format takes and none repeated. A lost revision is a
+  conflict and changes nothing.
 - **Applying.** Running hosts apply a new revision when the
   `configuration.changed` wakeup reaches their node queue (with the
   60-second backstop). An acquire or convert already running keeps the
@@ -512,6 +516,7 @@ It follows the same rules as `core.events`:
 ```sh
 bookclerk config get output.naming_profile
 bookclerk config set output.format single_mp3
+bookclerk config set output.copies "mp3:64k-mono"
 bookclerk config set output.replacement_characters '[{"find":":","replace":"-"}]'
 ```
 

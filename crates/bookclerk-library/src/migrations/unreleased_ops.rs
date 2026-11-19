@@ -1560,6 +1560,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // `probed_at`) and the storefront the copy came from (`source_store`)
     // decide whether a later copy of the same edition replaces it, and tell
     // a branch what the library's copy is before it asks for it.
+    // `copy_format` and `copy_quality` name the library copy
+    // (`output.copies`) an acquire wrote an audio file for (`m4b` /
+    // `original`, `mp3` / `64k-mono`); both are null for files that belong
+    // to no one copy (sidecars, the PDF) and for uploads.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS edition_files (
         destination TEXT NOT NULL,
@@ -1573,6 +1577,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         source_store TEXT,
         probed_at TEXT,
         sha256 TEXT,
+        copy_format TEXT CHECK (copy_format IN ('m4b', 'mp3', 'mp3_chapters', 'original')),
+        copy_quality TEXT,
         writer TEXT NOT NULL,
         written_at TEXT NOT NULL,
         PRIMARY KEY (destination, storage_key)
