@@ -283,8 +283,8 @@ is a list of rules, each a field, one value and include or exclude:
 | `storefront` | A storefront plugin's alias, such as `audible` or `libro` (case does not matter) |
 | `account` | A store account's id at its store |
 | `media_kind` | `book` or `podcast` (a podcast episode is a podcast) |
-| `format` | A copy's format: `m4b`, `mp3`, `mp3_chapters` or `original` (see [Keeping several copies](#keeping-several-copies)) |
-| `quality` | A copy's quality, such as `original`, `64k-mono` or `v2` |
+| `format` | A copy's format: `m4b`, `mp3`, `mp3_chapters` or `original` (see [Keeping several copies](#keeping-several-copies); case does not matter) |
+| `quality` | A copy's quality, such as `original`, `64k-mono` or `v2` (case does not matter) |
 
 With no include rule, the destination takes every book the exclude rules
 allow. With any include rule, it takes only books that match at least one.

@@ -170,13 +170,11 @@ impl CopyQuality {
                 return None;
             }
             Rate::Kbps(kbps)
-        } else if let Some(level) = rate.strip_prefix('v') {
-            match level.as_bytes() {
+        } else {
+            match rate.strip_prefix('v')?.as_bytes() {
                 [digit @ b'0'..=b'9'] => Rate::Vbr(digit - b'0'),
                 _ => return None,
             }
-        } else {
-            return None;
         };
         Some(Self { rate, mono })
     }

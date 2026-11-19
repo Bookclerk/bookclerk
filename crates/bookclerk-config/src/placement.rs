@@ -229,9 +229,10 @@ impl FilterRule {
     /// effect is not considered, and a book rule never matches a copy.
     #[must_use]
     pub fn matches_copy(&self, copy: &OutputCopy) -> bool {
+        let value = self.value.trim();
         match self.field {
-            FilterField::Format => CopyFormat::parse(&self.value) == Some(copy.format),
-            FilterField::Quality => CopyQuality::parse(&self.value).as_ref() == Some(&copy.quality),
+            FilterField::Format => CopyFormat::parse(value) == Some(copy.format),
+            FilterField::Quality => CopyQuality::parse(value).as_ref() == Some(&copy.quality),
             FilterField::Patron
             | FilterField::Storefront
             | FilterField::Account
@@ -685,6 +686,17 @@ mod tests {
             assert_eq!(FilterField::parse(field.as_str()), Some(field));
         }
         assert_eq!(FilterField::parse("Format"), None);
+        // The strict reader's name table agrees with `ALL`.
+        for field in FilterField::ALL {
+            let read: FilterField =
+                serde_json::from_str(&format!("\"{}\"", field.as_str())).unwrap();
+            assert_eq!(read, field);
+            assert_eq!(
+                serde_json::to_string(&field).unwrap(),
+                format!("\"{}\"", field.as_str())
+            );
+        }
+        assert!(serde_json::from_str::<FilterField>("\"genre\"").is_err());
         assert_eq!(FilterField::Format.as_str(), "format");
         assert_eq!(FilterField::Quality.as_str(), "quality");
         assert!(FilterField::Quality.is_copy_field());
