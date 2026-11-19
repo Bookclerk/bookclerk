@@ -161,17 +161,31 @@ fn playable_here<'a>(
     })
 }
 
-/// The media type to state for a track: the probe's when it is one a
-/// header can carry, else one read from the key's extension, else
-/// `application/octet-stream`.
+/// The media types a track is stated as; the stream route's document
+/// lists exactly these.
+const TRACK_MEDIA_TYPES: [&str; 7] = [
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/aac",
+    "audio/flac",
+    "audio/ogg",
+    "audio/wav",
+    "application/octet-stream",
+];
+
+/// The media type to state for a track: the probe's when it is one of
+/// [`TRACK_MEDIA_TYPES`], else one read from the key's extension, else
+/// `application/octet-stream`. Never a value taken from stored data as
+/// is.
 fn track_content_type(track: &PlaybackTrack) -> HeaderValue {
-    let probed = track
-        .content_type
-        .as_deref()
-        .filter(|value| value.starts_with("audio/") || value.starts_with("video/"))
-        .and_then(|value| HeaderValue::from_str(value).ok());
-    if let Some(probed) = probed {
-        return probed;
+    let probed = track.content_type.as_deref().and_then(|probed| {
+        let essence = probed.split(';').next().unwrap_or_default().trim();
+        TRACK_MEDIA_TYPES
+            .iter()
+            .find(|known| known.eq_ignore_ascii_case(essence))
+    });
+    if let Some(known) = probed {
+        return HeaderValue::from_static(known);
     }
     let extension = track
         .key
@@ -185,8 +199,7 @@ fn track_content_type(track: &PlaybackTrack) -> HeaderValue {
         "mp3" => "audio/mpeg",
         "aac" => "audio/aac",
         "flac" => "audio/flac",
-        "ogg" | "oga" => "audio/ogg",
-        "opus" => "audio/ogg; codecs=opus",
+        "ogg" | "oga" | "opus" => "audio/ogg",
         "wav" => "audio/wav",
         _ => "application/octet-stream",
     })
@@ -720,8 +733,24 @@ pub(crate) async fn post_session_close(
         ("Range" = Option<String>, Header, description = "One byte range (`bytes=A-B`, `bytes=A-` or `bytes=-N`); anything else reads the whole file."),
     ),
     responses(
-        (status = 200, description = "The whole track.", body = crate::openapi::BinaryBody, content_type = "audio/mp4"),
-        (status = 206, description = "The requested byte range, with `Content-Range`.", body = crate::openapi::BinaryBody, content_type = "audio/mp4"),
+        (status = 200, description = "The whole track.", content(
+            (crate::openapi::BinaryBody = "audio/mp4"),
+            (crate::openapi::BinaryBody = "audio/mpeg"),
+            (crate::openapi::BinaryBody = "audio/aac"),
+            (crate::openapi::BinaryBody = "audio/flac"),
+            (crate::openapi::BinaryBody = "audio/ogg"),
+            (crate::openapi::BinaryBody = "audio/wav"),
+            (crate::openapi::BinaryBody = "application/octet-stream"),
+        )),
+        (status = 206, description = "The requested byte range, with `Content-Range`.", content(
+            (crate::openapi::BinaryBody = "audio/mp4"),
+            (crate::openapi::BinaryBody = "audio/mpeg"),
+            (crate::openapi::BinaryBody = "audio/aac"),
+            (crate::openapi::BinaryBody = "audio/flac"),
+            (crate::openapi::BinaryBody = "audio/ogg"),
+            (crate::openapi::BinaryBody = "audio/wav"),
+            (crate::openapi::BinaryBody = "application/octet-stream"),
+        )),
         (status = 403, description = "The session has no library user.", body = ErrorMessage, example = json!({"error": "this session has no library user to keep listening state for"})),
         (status = 404, description = "No such session of the caller's (`unknown_session`), or the index names no track of it (`unknown_track`).", body = ErrorMessage, example = json!({"error": "unknown_track"})),
         (status = 409, description = "The session no longer streams (`session_ended`): it was closed, sat a day without a report, the caller may no longer play the edition, or the edition's files changed. Open a new session.", body = ErrorMessage, example = json!({"error": "session_ended"})),
