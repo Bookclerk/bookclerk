@@ -175,10 +175,11 @@ impl GraphicAudioSource {
     /// query's words, in alphabetical order) is not taken: the page is asked
     /// again with the last word dropped (an author's name usually trails the
     /// title), up to three requests in all, and answers nothing when every
-    /// attempt gets the listing. Every page runs the same steps, so a later
-    /// page asks what page 1 settled on. An author or narrator search is sent
-    /// once and taken as it comes: grid titles never carry a person's name,
-    /// so the listing check cannot judge it.
+    /// attempt gets the listing. A later page first settles the query on
+    /// page 1 the same way, then asks for that page with it, and answers
+    /// nothing when that page looks like the listing. An author or narrator
+    /// search is sent once and taken as it comes: grid titles never carry a
+    /// person's name, so the listing check cannot judge it.
     ///
     /// # Errors
     ///
@@ -203,32 +204,61 @@ impl GraphicAudioSource {
             opts.field,
             Some(CatalogSearchField::Author | CatalogSearchField::Narrator)
         );
-        let mut products = Vec::new();
+        // Settle the query on page 1: the listing check needs the first page
+        // of answers, since a later page of a real search may hold none of
+        // the query's words either.
+        let mut settled = None;
         for attempt in 0..SEARCH_MAX_ATTEMPTS {
             let Some(kept) = words.len().checked_sub(attempt).filter(|n| *n > 0) else {
                 break;
             };
             let q = words[..kept].join(" ");
-            let found =
-                match crate::catalog::search_catalog_page(&http, &self.store_url, &q, page).await {
-                    Ok(p) => p,
-                    Err(err) => {
-                        tracing::debug!(error = %err, "graphicaudio catalog search failed");
-                        return Ok(Vec::new());
-                    }
-                };
+            let Some(found) = self.search_page(&http, &q, 1).await else {
+                return Ok(Vec::new());
+            };
             if names_a_person || !looks_like_fallback_listing(&found, &words) {
-                products = found;
+                settled = Some((q, found));
                 break;
             }
             tracing::debug!(query = %q, "graphicaudio search answered with the catalog listing");
         }
+        let Some((q, first)) = settled else {
+            return Ok(Vec::new());
+        };
+        let products = if page == 1 {
+            first
+        } else {
+            let Some(found) = self.search_page(&http, &q, page).await else {
+                return Ok(Vec::new());
+            };
+            if !names_a_person && looks_like_fallback_listing(&found, &words) {
+                return Ok(Vec::new());
+            }
+            found
+        };
         Ok(products
             .into_iter()
             .take(limit)
             .filter(|p| !p.product_id.trim().is_empty())
             .map(|p| ga_catalog_hit(&p, String::from("search")))
             .collect())
+    }
+
+    /// One page of the store's search for `q`, or `None` (logged) when the
+    /// request or its parse fails.
+    async fn search_page(
+        &self,
+        http: &bookclerk_plugin_sdk::http::Client,
+        q: &str,
+        page: u32,
+    ) -> Option<Vec<MagentoCatalogProduct>> {
+        match crate::catalog::search_catalog_page(http, &self.store_url, q, page).await {
+            Ok(found) => Some(found),
+            Err(err) => {
+                tracing::debug!(error = %err, "graphicaudio catalog search failed");
+                None
+            }
+        }
     }
 
     /// The full catalog record of one product, read from its product page.

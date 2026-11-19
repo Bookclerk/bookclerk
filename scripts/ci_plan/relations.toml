@@ -123,6 +123,12 @@ paths = [
 package = "bookclerk-window-policy"
 paths = ["fuzz/corpus/window_policy/**", "fuzz/oracles/window_policy.rs"]
 
+# The title-meta query and fill-plan oracle, shared the same way with the
+# bookclerk-discover replay test.
+[[test_input]]
+package = "bookclerk-discover"
+paths = ["fuzz/corpus/title_meta_fill/**", "fuzz/oracles/title_meta_fill.rs"]
+
 # The mux peer oracle is shared the same way with the plugin-sdk replay test.
 [[test_input]]
 package = "bookclerk-plugin-sdk"

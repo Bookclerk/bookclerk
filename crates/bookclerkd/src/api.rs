@@ -6137,25 +6137,8 @@ async fn discover_title_meta_batch(
 fn validate_title_meta_query(
     body: &bookclerk_discover::TitleMetaQuery,
 ) -> Result<(), (StatusCode, String)> {
-    if body.store_editions.len() > bookclerk_discover::TITLE_META_MAX_STORE_EDITIONS {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "at most {} store editions per title-meta query",
-                bookclerk_discover::TITLE_META_MAX_STORE_EDITIONS
-            ),
-        ));
-    }
-    if body.title.trim().is_empty()
-        && body.asin.as_deref().unwrap_or("").trim().is_empty()
-        && body.isbn.as_deref().unwrap_or("").trim().is_empty()
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "title, asin, or isbn is required".into(),
-        ));
-    }
-    Ok(())
+    bookclerk_discover::check_title_meta_query(body)
+        .map_err(|problem| (StatusCode::BAD_REQUEST, problem.to_string()))
 }
 
 /// Storefronts the caller is associated with (portal links, or all operator accounts).

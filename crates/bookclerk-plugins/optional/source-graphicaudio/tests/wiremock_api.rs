@@ -645,30 +645,50 @@ async fn search_answers_nothing_when_every_attempt_gets_the_catalog_listing() {
     assert_eq!(by_author.len(), 2, "{by_author:?}");
 }
 
-/// A later page runs the same steps as page 1, so it asks the shortened
-/// query page 1 settled on.
+/// Mounts page `p` (2 or later) of the search answer for exactly `q`,
+/// expecting `calls` requests.
+async fn mount_later_page(server: &MockServer, q: &str, p: &str, titles: &[&str], calls: u64) {
+    Mock::given(method("GET"))
+        .and(path("/catalogsearch/result/"))
+        .and(query_param("q", q))
+        .and(query_param("p", p))
+        .respond_with(ResponseTemplate::new(200).set_body_string(grid(server, titles)))
+        .expect(calls)
+        .mount(server)
+        .await;
+}
+
+/// A later page settles the query on page 1 first, then asks for that page
+/// with the shortened query page 1 settled on; the full query's later page
+/// is never asked, even when it would hold a matching title.
 #[tokio::test]
 async fn a_later_page_asks_the_query_page_one_settled_on() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/catalogsearch/result/"))
-        .and(query_param("q", "Mistborn Sanderson"))
-        .and(query_param("p", "2"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(grid(&server, CATALOG_LISTING)))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/catalogsearch/result/"))
-        .and(query_param("q", "Mistborn"))
-        .and(query_param("p", "2"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(grid(&server, &["Mistborn 3: The Hero of Ages 1 of 3"])),
-        )
-        .expect(1)
-        .mount(&server)
-        .await;
+    mount_later_page(
+        &server,
+        "Mistborn Sanderson",
+        "2",
+        &["Mistborn 2: The Well of Ascension 1 of 3"],
+        0,
+    )
+    .await;
+    mount_later_page(
+        &server,
+        "Mistborn",
+        "2",
+        &["Mistborn 3: The Hero of Ages 1 of 3"],
+        1,
+    )
+    .await;
+    // Page 1 asks carry no `p`; the later-page mocks above need one.
+    mount_grid(&server, "Mistborn Sanderson", CATALOG_LISTING, 1).await;
+    mount_grid(
+        &server,
+        "Mistborn",
+        &["Mistborn 1: The Final Empire 1 of 3"],
+        1,
+    )
+    .await;
     let hits = GraphicAudioSource::new()
         .with_store_url(server.uri())
         .search_catalog(&CatalogSearchOpts {
@@ -680,6 +700,31 @@ async fn a_later_page_asks_the_query_page_one_settled_on() {
         .unwrap();
     let titles: Vec<&str> = hits.iter().map(|h| h.title.as_str()).collect();
     assert_eq!(titles, vec!["Mistborn 3: The Hero of Ages 1 of 3"]);
+}
+
+/// A later page that looks like the catalog listing answers nothing, even
+/// when page 1 matched.
+#[tokio::test]
+async fn a_later_page_that_is_the_catalog_listing_answers_nothing() {
+    let server = MockServer::start().await;
+    mount_later_page(&server, "Mistborn", "3", CATALOG_LISTING, 1).await;
+    mount_grid(
+        &server,
+        "Mistborn",
+        &["Mistborn 1: The Final Empire 1 of 3"],
+        1,
+    )
+    .await;
+    let hits = GraphicAudioSource::new()
+        .with_store_url(server.uri())
+        .search_catalog(&CatalogSearchOpts {
+            query: "Mistborn".into(),
+            page: 3,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(hits.is_empty(), "{hits:?}");
 }
 
 /// A catalog detail lookup reads the product page into a full record; a

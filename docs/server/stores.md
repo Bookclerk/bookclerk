@@ -284,8 +284,9 @@ colon or an author's name, with an alphabetical list of its whole catalog.
 The plugin sends the query as plain words, and when the answer still looks
 like that list it tries again without the last word, up to three searches.
 If every search gets the list, the plugin returns no results rather than
-the list. Author and narrator searches are sent once and kept as they
-come.
+the list. A later page of results uses the search that worked on page 1,
+and comes back empty when that page is the list. Author and narrator
+searches are sent once and kept as they come.
 
 > [!NOTE]
 > A ZIP purchase also unlocks the app and the browser player. An

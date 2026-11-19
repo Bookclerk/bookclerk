@@ -457,7 +457,8 @@ fn isbn_like(raw: &str) -> bool {
 }
 
 /// One storefront catalog-detail lookup a title-meta fill can make.
-enum StoreLookup {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FillLookup {
     /// The store's own product id for an edition it listed
     /// (`detailByProductId`).
     Product(String),
@@ -465,33 +466,113 @@ enum StoreLookup {
     Isbn(String),
 }
 
-/// The catalog-detail lookups that can fill `query`, in the order to try
-/// them: each listing store that declared `detailByProductId` by its own
-/// product id (in the query's edition order, at most
-/// [`STORE_FILL_MAX_PRODUCT_LOOKUPS`]), then each store that declared
-/// `detailByIsbn` by the title's ISBN (in registry order), skipping a store
-/// already asked for that same id. Capped at [`STORE_FILL_MAX_LOOKUPS`].
-/// Reads only the declared capabilities, so no guest is woken to plan.
-fn store_fill_plan(
+impl FillLookup {
+    /// The id this lookup asks the store for (a product id or an ISBN).
+    #[must_use]
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Product(id) | Self::Isbn(id) => id,
+        }
+    }
+}
+
+/// What a store declared about catalog-detail lookups, as a title-meta fill
+/// plan reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FillStoreLookups {
+    /// The store's plugin key; two lookups for the same key and id are one.
+    pub plugin_key: String,
+    /// The store declared `detailByProductId`.
+    pub by_product_id: bool,
+    /// The store declared `detailByIsbn`.
+    pub by_isbn: bool,
+}
+
+/// Why a title-meta query was refused before any lookup ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleMetaQueryProblem {
+    /// The query named more than [`TITLE_META_MAX_STORE_EDITIONS`] store
+    /// editions.
+    TooManyStoreEditions,
+    /// The query's title, ASIN and ISBN are all blank.
+    NothingToLookUp,
+}
+
+impl std::fmt::Display for TitleMetaQueryProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooManyStoreEditions => write!(
+                f,
+                "at most {TITLE_META_MAX_STORE_EDITIONS} store editions per title-meta query"
+            ),
+            Self::NothingToLookUp => f.write_str("title, asin, or isbn is required"),
+        }
+    }
+}
+
+/// Checks a title-meta query from a client before it is resolved.
+///
+/// # Errors
+///
+/// Returns [`TitleMetaQueryProblem::TooManyStoreEditions`] when the query
+/// names more than [`TITLE_META_MAX_STORE_EDITIONS`] editions, and
+/// [`TitleMetaQueryProblem::NothingToLookUp`] when its title, ASIN and ISBN
+/// are all blank.
+pub fn check_title_meta_query(
     query: &TitleMetaQuery,
-    sources: &SourceRegistry,
-) -> Vec<(Arc<dyn ContentSource>, StoreLookup)> {
-    let mut plan: Vec<(Arc<dyn ContentSource>, StoreLookup)> = Vec::new();
+) -> std::result::Result<(), TitleMetaQueryProblem> {
+    if query.store_editions.len() > TITLE_META_MAX_STORE_EDITIONS {
+        return Err(TitleMetaQueryProblem::TooManyStoreEditions);
+    }
+    let blank = |v: Option<&str>| v.unwrap_or("").trim().is_empty();
+    if query.title.trim().is_empty() && blank(query.asin.as_deref()) && blank(query.isbn.as_deref())
+    {
+        return Err(TitleMetaQueryProblem::NothingToLookUp);
+    }
+    Ok(())
+}
+
+/// Plans the catalog-detail lookups that can fill `query`, in the order to
+/// try them.
+///
+/// Each listing store that declared `detailByProductId` comes first, by its
+/// own product id (in the query's edition order, at most two), then each
+/// store in `isbn_stores` that declared `detailByIsbn`, by the title's ISBN
+/// (or an ISBN-shaped ASIN). A store already asked for the same id is
+/// skipped, and the plan holds at most three lookups. Reads only declared
+/// capabilities, so no guest is woken to plan.
+///
+/// # Arguments
+///
+/// * `query` - The title-meta query, already checked.
+/// * `resolve` - Finds the store an edition names by its source id.
+/// * `isbn_stores` - The stores that may be asked by ISBN, in order.
+/// * `lookups` - What a store declared.
+///
+/// # Returns
+///
+/// The stores to ask, each with the lookup to make.
+pub fn plan_title_meta_fill<S>(
+    query: &TitleMetaQuery,
+    resolve: impl Fn(&str) -> Option<S>,
+    isbn_stores: impl IntoIterator<Item = S>,
+    lookups: impl Fn(&S) -> FillStoreLookups,
+) -> Vec<(S, FillLookup)> {
+    let mut plan: Vec<(S, FillLookup)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for edition in &query.store_editions {
         let product_id = edition.product_id.trim();
         if product_id.is_empty() {
             continue;
         }
-        let Some(store) = sources.get(edition.source.trim()) else {
+        let Some(store) = resolve(edition.source.trim()) else {
             continue;
         };
-        if !store.answers_catalog_detail_by_product_id()
-            || !seen.insert((store.plugin_key().to_string(), product_id.to_string()))
-        {
+        let declared = lookups(&store);
+        if !declared.by_product_id || !seen.insert((declared.plugin_key, product_id.to_string())) {
             continue;
         }
-        plan.push((store, StoreLookup::Product(product_id.to_string())));
+        plan.push((store, FillLookup::Product(product_id.to_string())));
         if plan.len() == STORE_FILL_MAX_PRODUCT_LOOKUPS {
             break;
         }
@@ -509,19 +590,37 @@ fn store_fill_plan(
                 .filter(|s| isbn_like(s))
         });
     if let Some(isbn) = isbn {
-        for store in sources
-            .routed()
-            .into_iter()
-            .filter(|store| store.answers_catalog_detail_by_isbn())
-        {
+        for store in isbn_stores {
+            if plan.len() >= STORE_FILL_MAX_LOOKUPS {
+                break;
+            }
+            let declared = lookups(&store);
             // A store whose product ids are ISBNs was just asked this one.
-            if seen.insert((store.plugin_key().to_string(), isbn.to_string())) {
-                plan.push((store, StoreLookup::Isbn(isbn.to_string())));
+            if declared.by_isbn && seen.insert((declared.plugin_key, isbn.to_string())) {
+                plan.push((store, FillLookup::Isbn(isbn.to_string())));
             }
         }
     }
     plan.truncate(STORE_FILL_MAX_LOOKUPS);
     plan
+}
+
+/// The title-meta fill plan over the registry's stores (see
+/// [`plan_title_meta_fill`]).
+fn store_fill_plan(
+    query: &TitleMetaQuery,
+    sources: &SourceRegistry,
+) -> Vec<(Arc<dyn ContentSource>, FillLookup)> {
+    plan_title_meta_fill(
+        query,
+        |id| sources.get(id),
+        sources.routed(),
+        |store| FillStoreLookups {
+            plugin_key: store.plugin_key().to_string(),
+            by_product_id: store.answers_catalog_detail_by_product_id(),
+            by_isbn: store.answers_catalog_detail_by_isbn(),
+        },
+    )
 }
 
 /// Gap-fills a sparse result from the storefronts' catalog details, in the
@@ -543,13 +642,13 @@ async fn fill_from_source_catalog(
 }
 
 /// Runs a fill plan in order and returns the first record found.
-async fn fill_in_order(plan: Vec<(Arc<dyn ContentSource>, StoreLookup)>) -> Option<TitleMeta> {
+async fn fill_in_order(plan: Vec<(Arc<dyn ContentSource>, FillLookup)>) -> Option<TitleMeta> {
     for (store, lookup) in plan {
         let (result, key) = match &lookup {
-            StoreLookup::Product(product_id) => {
+            FillLookup::Product(product_id) => {
                 (store.catalog_detail(product_id).await, product_id.as_str())
             }
-            StoreLookup::Isbn(isbn) => (store.catalog_detail_by_isbn(isbn).await, isbn.as_str()),
+            FillLookup::Isbn(isbn) => (store.catalog_detail_by_isbn(isbn).await, isbn.as_str()),
         };
         match result {
             Ok(Some(hit)) => return Some(TitleMeta::from_catalog_hit(hit)),
@@ -988,12 +1087,12 @@ mod tests {
     }
 
     /// The lookups a plan makes, as `<store>:<product>` or `<store>:isbn:<v>`.
-    fn plan_ids(plan: &[(Arc<dyn ContentSource>, StoreLookup)]) -> Vec<String> {
+    fn plan_ids(plan: &[(Arc<dyn ContentSource>, FillLookup)]) -> Vec<String> {
         plan.iter()
             .map(|(store, lookup)| match lookup {
-                StoreLookup::Product(pid) if store.id() == "graphicaudio" => pid.clone(),
-                StoreLookup::Product(pid) => format!("{}:{pid}", store.id()),
-                StoreLookup::Isbn(isbn) => format!("{}:isbn:{isbn}", store.id()),
+                FillLookup::Product(pid) if store.id() == "graphicaudio" => pid.clone(),
+                FillLookup::Product(pid) => format!("{}:{pid}", store.id()),
+                FillLookup::Isbn(isbn) => format!("{}:isbn:{isbn}", store.id()),
             })
             .collect()
     }
