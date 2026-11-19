@@ -41,6 +41,7 @@ import {
   readWorks,
 } from "@/lib/libraryWorks";
 import { canChangeBranchSharing } from "@/lib/join";
+import { isDesktopWindow } from "@/lib/desktop";
 import { useLiveRefresh } from "@/lib/live";
 import { playableEdition } from "@/lib/playTarget";
 import { playWork } from "@/lib/webPlayer";
@@ -349,7 +350,9 @@ export function LibraryPage({
   );
 
   // The operator token is no library user, so it has nothing to play as.
-  const isLibraryUser = role != null && role !== "operator";
+  // The desktop window cannot stream by `Range` over its custom scheme; it
+  // gets its own player, so the web one stays out of it.
+  const canListen = role != null && role !== "operator" && !isDesktopWindow();
 
   async function onScan() {
     setBusyKey("scan");
@@ -547,7 +550,7 @@ export function LibraryPage({
           {/* On a window: the books the libraries it joined hold for its person. */}
           {canChangeBranchSharing(role) ? <WindowBooksSection query={debouncedQ} /> : null}
           {/* Only on the unfiltered library: a search is for finding something else. */}
-          {isLibraryUser && !debouncedQ && appliedFacet === "all" ? <ContinueListening /> : null}
+          {canListen && !debouncedQ && appliedFacet === "all" ? <ContinueListening /> : null}
           <div className="animate-[rowIn_500ms_ease-out] bg-card shadow-[inset_0_1px_0_rgba(11,53,83,0.06)]">
             {works.length === 0 && !loaded ? (
               <div className="flex justify-center px-4 py-16" role="status">
@@ -567,7 +570,7 @@ export function LibraryPage({
                   busy={busyKey !== null}
                   showAcquire={canAcquire}
                   onOpen={setSelected}
-                  onPlay={isLibraryUser ? (w) => void onPlayWork(w) : undefined}
+                  onPlay={canListen ? (w) => void onPlayWork(w) : undefined}
                   onAcquire={(w) => void onAcquireWork(w)}
                 />
               ))
@@ -589,7 +592,7 @@ export function LibraryPage({
           }}
           onAcquire={() => void onAcquireWork(selected, selectedDetail)}
           onPlay={
-            isLibraryUser && playableEdition(selectedDetail)
+            canListen && playableEdition(selectedDetail)
               ? () => void onPlayWork(selected, selectedDetail)
               : undefined
           }

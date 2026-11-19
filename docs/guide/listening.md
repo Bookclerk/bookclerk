@@ -87,7 +87,9 @@ page, so another device is at most a few seconds behind.
   convert it while playing. M4B and MP3 files play in every current
   browser.
 - **There is no Play button.** The operator account is not a person in
-  the library and has nothing to play as. Sign in as yourself.
+  the library and has nothing to play as. Sign in as yourself. The
+  desktop window does not have the player yet; open Bookclerk in a
+  browser to listen.
 
 ## Next steps
 
