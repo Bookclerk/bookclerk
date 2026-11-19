@@ -1,0 +1,897 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  approveLibraryConsent,
+  isApiError,
+  listLibraryConsents,
+  revokeLibraryConsent,
+  type LibraryLinkView,
+  type RemoteConsentState,
+  type RemoteConsentView,
+  type RemoteGrantView,
+} from "@/lib/api";
+import { JoinWizard } from "@/components/JoinWizard";
+import {
+  fetchBranchSharing,
+  fetchJoinStatus,
+  jobShareSummary,
+  joinErrorMessage,
+  leaveLibrary,
+  MAX_OFFERED_JOB_CAP,
+  setBranchJobCap,
+  setBranchSharing,
+  setLinkKeepCopies,
+  setMembersListing,
+  type BranchWorkSettings,
+} from "@/lib/join";
+import { backoffDelay, useLiveRefresh } from "@/lib/live";
+import { domainLabel } from "@/lib/networkGrant";
+import { cn } from "@/lib/utils";
+
+/** Poll interval while the live socket is down. */
+const REFRESH_MS = 15_000;
+
+const STATE_LABEL: Record<RemoteConsentState, string> = {
+  consented: "Approved",
+  awaiting_host_consent: "Awaiting approval",
+  awaiting_host_reapproval: "Asks for more",
+  invalid_grant: "Invalid request",
+};
+
+function StateBadge({ state }: { state: RemoteConsentState }) {
+  return (
+    <Badge
+      className={cn(
+        "normal-case tracking-normal",
+        state === "consented"
+          ? "bg-teal/10 text-ink/70"
+          : state === "invalid_grant"
+            ? "bg-brick/10 text-brick"
+            : "bg-fold text-ink/80",
+      )}
+    >
+      {STATE_LABEL[state] ?? state}
+    </Badge>
+  );
+}
+
+/** A library's name for the sharing settings: the host of its address. */
+function libraryLabel(origin: string): string {
+  try {
+    return new URL(origin).host || origin;
+  } catch {
+    return origin;
+  }
+}
+
+/**
+ * The settings of one library this server is a branch of: the two sharing
+ * settings (branches of branches, both on by default), whether members'
+ * books are listed when it asks what this branch can supply (on by
+ * default) and whose work it takes (only its owner's by default).
+ */
+function SharingSettings({ link, onSaved }: { link: LibraryLinkView; onSaved: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const share = link.share_books ?? true;
+  const include = link.include_branches ?? true;
+  const listMembers = link.list_members_books ?? true;
+  const workForMembers = link.work_for_members ?? false;
+  const keepMemberCopies = link.keep_member_copies ?? false;
+
+  // Each save sends only the work settings the user changed, so a sharing
+  // change never writes back values another session has since changed.
+  async function save(nextShare: boolean, nextInclude: boolean, work?: BranchWorkSettings) {
+    setBusy(true);
+    setError(null);
+    try {
+      await setBranchSharing(link.library_id, nextShare, nextInclude, work);
+      onSaved();
+    } catch (err) {
+      setError(joinErrorMessage(err, "Could not save."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveListing(next: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      await setMembersListing(link, next);
+      onSaved();
+    } catch (err) {
+      setError(joinErrorMessage(err, "Could not save."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="w-full space-y-2 pt-1">
+      <label className="flex items-start gap-3 text-sm text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={share}
+          disabled={busy}
+          onChange={(e) => void save(e.target.checked, include)}
+        />
+        <span>
+          <span className="block font-medium">
+            Share this branch&apos;s books with {libraryLabel(link.owner_origin)}
+          </span>
+          <span className="block text-xs text-ink/55">
+            The library gets each book&apos;s details and files, as its owner&apos;s. No store
+            account or user of this server is sent. When off, nothing new is sent; books the library
+            already has stay there.
+          </span>
+        </span>
+      </label>
+      <label className="flex items-start gap-3 text-sm text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={include}
+          disabled={busy || !share}
+          onChange={(e) => void save(share, e.target.checked)}
+        />
+        <span>
+          <span className="block font-medium">Include books from my own branches</span>
+          <span className="block text-xs text-ink/55">
+            Books this server&apos;s own branches shared with it are passed on as this
+            branch&apos;s. The library never learns about those branches.
+          </span>
+        </span>
+      </label>
+      <label className="flex items-start gap-3 text-sm text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={listMembers}
+          disabled={busy}
+          onChange={(e) => void saveListing(e.target.checked)}
+        />
+        <span>
+          <span className="block font-medium">
+            List my members&apos; books to {libraryLabel(link.owner_origin)}
+          </span>
+          <span className="block text-xs text-ink/55">
+            When {libraryLabel(link.owner_origin)} asks about a title, it hears that this branch can
+            supply it if one of your members has it. Your own books are always listed, and each
+            member can keep theirs out in their account settings. Turning this off can take up to
+            two days to reach the library.
+          </span>
+        </span>
+      </label>
+      <label className="flex items-start gap-3 text-sm text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={workForMembers}
+          disabled={busy}
+          onChange={(e) =>
+            void save(share, include, {
+              workForMembers: e.target.checked,
+              // Copies follow the work: turning it off turns them off too.
+              ...(e.target.checked ? {} : { keepMemberCopies: false }),
+            })
+          }
+        />
+        <span>
+          <span className="block font-medium">
+            Download for other members of {libraryLabel(link.owner_origin)}
+          </span>
+          <span className="block text-xs text-ink/55">
+            When off, this server downloads only the books of the person who joined it to the
+            library. When on, it also takes downloads for the library&apos;s other members, where
+            the library trusts it to.
+          </span>
+        </span>
+      </label>
+      <label className="flex items-start gap-3 text-sm text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={keepMemberCopies}
+          disabled={busy || !workForMembers}
+          onChange={(e) => void save(share, include, { keepMemberCopies: e.target.checked })}
+        />
+        <span>
+          <span className="block font-medium">Keep copies of other members&apos; books</span>
+          <span className="block text-xs text-ink/55">
+            Books downloaded here for other members also go to this server&apos;s own outputs. When
+            off, they go only to the library.
+          </span>
+        </span>
+      </label>
+      <JobCap link={link} busy={busy} onSaved={onSaved} />
+      {error ? (
+        <p className="text-xs font-medium text-brick" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * "Keep copies on this computer" for one library this server is a branch
+ * of. On by default; off leaves the library's copies of your books there.
+ * The branch takes the library's work and shows its books either way.
+ */
+function KeepCopiesSetting({ link, onSaved }: { link: LibraryLinkView; onSaved: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const keepCopies = link.keep_copies ?? true;
+  const library = libraryLabel(link.owner_origin);
+
+  async function save(next: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      await setLinkKeepCopies(link, next);
+      onSaved();
+    } catch (err) {
+      setError(joinErrorMessage(err, "Could not save."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="w-full space-y-2 pt-1">
+      <label className="flex items-start gap-3 text-sm text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={keepCopies}
+          disabled={busy}
+          onChange={(e) => void save(e.target.checked)}
+        />
+        <span>
+          <span className="block font-medium">Keep copies on this computer</span>
+          <span className="block text-xs text-ink/55">
+            {keepCopies
+              ? `Your books in ${library} are copied to this server's own storage. Turn off to leave them in ${library} only.`
+              : `Off: your books stay in ${library} only. This server still runs ${library}'s work and shows its books in Library.`}
+          </span>
+        </span>
+      </label>
+      {error ? (
+        <p className="text-xs font-medium text-brick" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * How much of this computer one library may use: an equal share after this
+ * server's own work (the default), a cap, or none.
+ */
+function JobCap({
+  link,
+  busy,
+  onSaved,
+}: {
+  link: LibraryLinkView;
+  busy: boolean;
+  onSaved: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const cap = link.max_jobs ?? null;
+  const options = Array.from({ length: MAX_OFFERED_JOB_CAP + 1 }, (_, n) => n);
+  if (cap !== null && !options.includes(cap)) options.push(cap);
+
+  async function save(raw: string) {
+    setSaving(true);
+    setError(null);
+    try {
+      await setBranchJobCap(link.library_id, raw === "" ? null : Number(raw));
+      onSaved();
+    } catch (err) {
+      setError(joinErrorMessage(err, "Could not save."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const id = `job-cap-${link.library_id}`;
+  return (
+    <div className="flex flex-wrap items-start gap-3 text-sm text-ink">
+      <span className="min-w-0 flex-1">
+        <label htmlFor={id} className="block font-medium">
+          Work for {libraryLabel(link.owner_origin)} on this computer
+        </label>
+        <span className="block text-xs text-ink/55">
+          This server&apos;s own work comes first; the libraries it is a branch of share the rest
+          equally. {jobShareSummary(cap, link.job_share)}.
+        </span>
+        {error ? (
+          <span className="block text-xs font-medium text-brick" role="alert">
+            {error}
+          </span>
+        ) : null}
+      </span>
+      <select
+        id={id}
+        className="h-8 rounded border border-ink/15 bg-paper px-2 text-sm"
+        value={cap === null ? "" : String(cap)}
+        disabled={busy || saving}
+        onChange={(e) => void save(e.target.value)}
+      >
+        <option value="">Equal share</option>
+        {options.map((n) => (
+          <option key={n} value={String(n)}>
+            {n === 0 ? "None" : n === 1 ? "Up to 1 job" : `Up to ${n} jobs`}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function LinkRow({
+  link,
+  onLeft,
+  canLeave,
+}: {
+  link: LibraryLinkView;
+  onLeft: () => void;
+  /** Leave library is the operator's; an Owner sees only the sharing settings. */
+  canLeave: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  async function onLeave() {
+    if (
+      !window.confirm(
+        `Leave ${link.owner_origin}? This server stops running its work, its branch keys are deleted, and the library is told. Joining again needs a new sign-in or invite.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setNote(null);
+    try {
+      const left = await leaveLibrary(link.library_id);
+      setNote(
+        left.owner_notified
+          ? null
+          : "Left. The library could not be told; remove this branch there.",
+      );
+      onLeft();
+    } catch (err) {
+      setNote(joinErrorMessage(err, "Could not leave the library."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <li className="flex flex-wrap items-center gap-2 px-4 py-3 text-sm">
+      <span className="font-semibold text-ink">{link.owner_origin}</span>
+      <span className="break-all font-mono text-[11px] text-ink/45">{link.library_id}</span>
+      <Badge
+        className={cn(
+          "normal-case tracking-normal",
+          link.state === "active" ? "bg-teal/10 text-ink/70" : "bg-brick/10 text-brick",
+        )}
+      >
+        {link.state === "active" ? "Active" : link.state === "left" ? "Left" : "Revoked"}
+      </Badge>
+      {link.pinned ? (
+        <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">
+          Pinned certificate
+        </Badge>
+      ) : null}
+      <span className="text-xs text-ink/55">
+        node <span className="font-mono">{link.node_id}</span> · joined{" "}
+        {new Date(link.enrolled_at).toLocaleString()}
+      </span>
+      {link.state === "active" && canLeave ? (
+        <Button
+          type="button"
+          variant="danger"
+          className="ml-auto h-8"
+          disabled={busy}
+          onClick={() => void onLeave()}
+        >
+          Leave library
+        </Button>
+      ) : null}
+      {link.state === "active" ? <KeepCopiesSetting link={link} onSaved={onLeft} /> : null}
+      {link.state === "active" ? <SharingSettings link={link} onSaved={onLeft} /> : null}
+      {note ? (
+        <p className="w-full text-xs font-medium text-brick" role="status">
+          {note}
+        </p>
+      ) : null}
+    </li>
+  );
+}
+
+/** Read-only lines of a grant that cannot be narrowed here. */
+function GrantFacts({ grant }: { grant: RemoteGrantView }) {
+  const facts: string[] = [];
+  if (grant.tcp?.length) {
+    facts.push(`TCP: ${grant.tcp.map((t) => `${t.host}:${t.ports.join(",")}`).join(", ")}`);
+  }
+  if (grant.addressCidrs?.length) facts.push(`Addresses: ${grant.addressCidrs.join(", ")}`);
+  if (grant.allowUndeclaredPublicRedirects) {
+    facts.push("Redirects: may follow redirects to public hosts it did not declare");
+  }
+  if (grant.ownUserAgentHosts?.length) {
+    const reason = grant.ownUserAgentReason ? ` (${grant.ownUserAgentReason})` : "";
+    facts.push(
+      `Asks to send its own User-Agent instead of Bookclerk's to: ${grant.ownUserAgentHosts.join(", ")}${reason}`,
+    );
+  }
+  if (grant.jobs?.length) facts.push(`Jobs: ${grant.jobs.join(", ")}`);
+  if (grant.entrypoints?.length) facts.push(`Entrypoints: ${grant.entrypoints.join(", ")}`);
+  if (grant.producers?.length) facts.push(`Sends to queues: ${grant.producers.join(", ")}`);
+  if (grant.consumers?.length) {
+    facts.push(`Consumes: ${grant.consumers.map((c) => JSON.stringify(c)).join(", ")}`);
+  }
+  if (grant.compatibilityFlags?.length) {
+    facts.push(`Compatibility flags: ${grant.compatibilityFlags.join(", ")}`);
+  }
+  if (grant.memoryMib) facts.push(`Memory: ${grant.memoryMib} MiB`);
+  if (grant.cpuRatePercent) facts.push(`CPU: ${grant.cpuRatePercent}%`);
+  if (grant.cpuMs) facts.push(`CPU time: ${grant.cpuMs} ms per call`);
+  if (grant.subrequests) facts.push(`Subrequests: ${grant.subrequests} per call`);
+  if (grant.extraProcesses) facts.push(`Extra processes: ${grant.extraProcesses}`);
+  if (grant.diskMib) facts.push(`Disk: ${grant.diskMib} MiB`);
+  return (
+    <div className="space-y-1 text-xs text-ink/55">
+      {facts.length > 0 ? (
+        <ul className="space-y-0.5">
+          {facts.map((fact) => (
+            <li key={fact}>{fact}</li>
+          ))}
+        </ul>
+      ) : null}
+      {/* Everything Approve grants, so nothing it widens goes unseen. */}
+      <details>
+        <summary className="cursor-pointer">Full request</summary>
+        <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
+          {JSON.stringify(grant, null, 2)}
+        </pre>
+      </details>
+    </div>
+  );
+}
+
+function ConsentRow({
+  row,
+  onChanged,
+  onSessionExpired,
+}: {
+  row: RemoteConsentView;
+  onChanged: () => Promise<void>;
+  onSessionExpired: () => void;
+}) {
+  const requested = row.requested_grant ?? {};
+  const domains = requested.domains ?? [];
+  const bindings = requested.bindings ?? [];
+  const ownAgentHosts = requested.ownUserAgentHosts ?? [];
+  const networked = Boolean(requested.networkMode && requested.networkMode !== "deny");
+  const [deniedDomains, setDeniedDomains] = useState<Set<string>>(new Set());
+  const [deniedBindings, setDeniedBindings] = useState<Set<string>>(new Set());
+  const [deniedOwnAgents, setDeniedOwnAgents] = useState<Set<string>>(new Set());
+  const [denyNetwork, setDenyNetwork] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // A new request (another version or archive, or more asked for) starts unnarrowed.
+  const requestKey = `${row.request_digest}|${JSON.stringify(requested)}`;
+  useEffect(() => {
+    setDeniedDomains(new Set());
+    setDeniedBindings(new Set());
+    setDeniedOwnAgents(new Set());
+    setDenyNetwork(false);
+    setError(null);
+  }, [requestKey]);
+
+  function toggle(set: Set<string>, value: string, on: boolean): Set<string> {
+    const next = new Set(set);
+    if (on) next.add(value);
+    else next.delete(value);
+    return next;
+  }
+
+  async function run(action: () => Promise<unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      await onChanged();
+    } catch (err) {
+      if (isApiError(err) && err.status === 401) {
+        onSessionExpired();
+        return;
+      }
+      // 409 carries the refusal's reason (the request changed, a domain not asked for).
+      setError(err instanceof Error ? err.message : "Request failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const approved = row.grant != null;
+  return (
+    <li className="space-y-3 px-4 py-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-semibold text-ink">{requested.pluginId ?? row.plugin_key}</span>
+        <span className="font-mono text-[11px] text-ink/60">{row.requested_version}</span>
+        <StateBadge state={row.state} />
+        <span className="break-all font-mono text-[11px] text-ink/45">{row.plugin_key}</span>
+      </div>
+      <p className="text-xs text-ink/55">
+        From library <span className="font-mono">{row.library_id}</span>
+        {approved && row.approved_version
+          ? ` · approved ${row.approved_version}${row.approved_by ? ` by ${row.approved_by}` : ""}`
+          : ""}
+      </p>
+      {row.requested_artifact ? (
+        <p className="break-all text-xs text-ink/55">
+          Archive <span className="font-mono">{row.requested_artifact.url}</span> · sha256{" "}
+          <span className="font-mono">{row.requested_artifact.archive_sha256}</span>
+        </p>
+      ) : null}
+
+      {row.pending && row.pending.length > 1 ? (
+        <div
+          role="note"
+          className="rounded-md border border-brick/30 bg-brick/5 px-3 py-2 text-xs text-ink/75"
+        >
+          <p className="font-semibold text-ink">Changed since your approval</p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            {row.pending.slice(1).map((line) => (
+              <li key={line} className="break-words">
+                {line.trim()}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {row.state !== "consented" ? (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <fieldset className="space-y-1" disabled={busy}>
+            <legend className="text-xs font-medium text-ink/70">
+              Network ({requested.networkMode ?? "deny"})
+            </legend>
+            {networked ? (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={denyNetwork}
+                  onChange={(e) => setDenyNetwork(e.target.checked)}
+                />
+                Deny all network access
+              </label>
+            ) : null}
+            {domains.length === 0 ? (
+              <p className="text-xs text-ink/50">No domains requested.</p>
+            ) : (
+              domains.map((domain) => (
+                <label key={domain} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    disabled={denyNetwork}
+                    checked={denyNetwork || deniedDomains.has(domain)}
+                    onChange={(e) =>
+                      setDeniedDomains((set) => toggle(set, domain, e.target.checked))
+                    }
+                  />
+                  <span className="text-ink/45">Deny</span>
+                  <span className="font-mono text-[12px]">{domainLabel(domain)}</span>
+                </label>
+              ))
+            )}
+          </fieldset>
+          <fieldset className="space-y-1" disabled={busy}>
+            <legend className="text-xs font-medium text-ink/70">Bindings</legend>
+            {bindings.length === 0 ? (
+              <p className="text-xs text-ink/50">No bindings requested.</p>
+            ) : (
+              bindings.map((binding) => (
+                <label key={binding} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={deniedBindings.has(binding)}
+                    onChange={(e) =>
+                      setDeniedBindings((set) => toggle(set, binding, e.target.checked))
+                    }
+                  />
+                  <span className="text-ink/45">Deny</span>
+                  <span className="font-mono text-[12px]">{binding}</span>
+                </label>
+              ))
+            )}
+          </fieldset>
+          {ownAgentHosts.length > 0 ? (
+            <fieldset className="space-y-1" disabled={busy}>
+              <legend className="text-xs font-medium text-ink/70">
+                Own User-Agent instead of Bookclerk&apos;s
+              </legend>
+              {ownAgentHosts.map((host) => (
+                <label key={host} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    disabled={denyNetwork}
+                    checked={denyNetwork || deniedOwnAgents.has(host)}
+                    onChange={(e) =>
+                      setDeniedOwnAgents((set) => toggle(set, host, e.target.checked))
+                    }
+                  />
+                  <span className="text-ink/45">Deny</span>
+                  <span className="font-mono text-[12px]">{host}</span>
+                </label>
+              ))}
+            </fieldset>
+          ) : null}
+        </div>
+      ) : null}
+      <GrantFacts grant={requested} />
+      {approved && row.grant ? (
+        <p className="text-xs text-ink/55">
+          Granted now: network {row.grant.networkMode ?? "deny"}
+          {row.grant.domains?.length ? ` (${row.grant.domains.map(domainLabel).join(", ")})` : ""};
+          bindings {row.grant.bindings?.length ? row.grant.bindings.join(", ") : "none"}
+          {row.grant.ownUserAgentHosts?.length
+            ? `; own User-Agent on ${row.grant.ownUserAgentHosts.join(", ")}`
+            : ""}
+        </p>
+      ) : null}
+
+      {error ? (
+        <p className="text-sm font-medium text-brick" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        {row.state !== "consented" ? (
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={busy || row.state === "invalid_grant"}
+            onClick={() =>
+              void run(() =>
+                approveLibraryConsent({
+                  library_id: row.library_id,
+                  plugin_key: row.plugin_key,
+                  request_digest: row.request_digest,
+                  deny_domains: denyNetwork ? [] : [...deniedDomains],
+                  deny_bindings: [...deniedBindings],
+                  deny_own_user_agent_hosts: denyNetwork ? [] : [...deniedOwnAgents],
+                  deny_network: denyNetwork,
+                }),
+              )
+            }
+          >
+            {row.state === "awaiting_host_reapproval"
+              ? `Approve ${row.requested_version}`
+              : "Approve"}
+          </Button>
+        ) : null}
+        {approved ? (
+          <Button
+            type="button"
+            variant="danger"
+            disabled={busy}
+            onClick={() => void run(() => revokeLibraryConsent(row.library_id, row.plugin_key))}
+          >
+            Revoke
+          </Button>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+/** Props for {@link LibraryConsentsPanel}. */
+export interface LibraryConsentsPanelProps {
+  /** Called on a 401 so the page can sign out. */
+  onSessionExpired: () => void;
+  /**
+   * An Owner (not the operator): only the libraries joined and their two
+   * sharing settings; joining, leaving and plugin requests stay the
+   * operator's.
+   */
+  sharingOnly?: boolean;
+}
+
+/**
+ * Settings → Library: this install as a branch of libraries (owner
+ * libraries). It lists the libraries joined, with Leave library, offers
+ * Join a library (the sign-in wizard, or a pasted branch invite), and shows
+ * each library plugin's request to run here. The operator approves a
+ * request (optionally without some domains, bindings, or the network) or
+ * revokes it. An Owner sees only the libraries and their sharing settings.
+ *
+ * @param props - See {@link LibraryConsentsPanelProps}.
+ * @returns The panel.
+ */
+export function LibraryConsentsPanel({
+  onSessionExpired,
+  sharingOnly = false,
+}: LibraryConsentsPanelProps) {
+  const [libraries, setLibraries] = useState<LibraryLinkView[] | null>(null);
+  const [consents, setConsents] = useState<RemoteConsentView[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [joining, setJoining] = useState(false);
+  const [joinedTo, setJoinedTo] = useState<string | null>(null);
+  const [defaultBranchName, setDefaultBranchName] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (!joining) return;
+    void fetchJoinStatus()
+      .then((status) => setDefaultBranchName(status.default_branch_name))
+      .catch(() => {
+        /* the wizard works without a suggested name */
+      });
+  }, [joining]);
+  // Failed loads in a row; drives the retry below.
+  const [failures, setFailures] = useState(0);
+  const expired = useRef(onSessionExpired);
+  useEffect(() => {
+    expired.current = onSessionExpired;
+  }, [onSessionExpired]);
+
+  const refresh = useCallback(async () => {
+    try {
+      if (sharingOnly) {
+        const body = await fetchBranchSharing();
+        setLibraries(body.libraries);
+        setConsents([]);
+      } else {
+        const body = await listLibraryConsents();
+        setLibraries(body.libraries);
+        setConsents(body.consents);
+      }
+      setLoadError(null);
+      setFailures(0);
+    } catch (err) {
+      if (isApiError(err) && err.status === 401) {
+        expired.current();
+        return;
+      }
+      setLoadError(err instanceof Error ? err.message : "Failed to load libraries");
+      setFailures((n) => n + 1);
+    }
+  }, [sharingOnly]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+  // Consents, and the links themselves (a join, leave or revoke).
+  // A slow poll while the socket is up too: a change stamped by an owner
+  // node whose clock runs behind does not move the revision the socket
+  // compares.
+  useLiveRefresh(["consents", "libraries"], refresh, {
+    pollMs: REFRESH_MS,
+    openPollMs: 60_000,
+  });
+  // With the socket open nothing polls, so a failed load would sit on its
+  // error until the next consent or library change: retry it with backoff.
+  useEffect(() => {
+    if (failures === 0) return;
+    const timer = setTimeout(() => void refresh(), backoffDelay(failures - 1, Math.random()));
+    return () => clearTimeout(timer);
+  }, [failures, refresh]);
+
+  const pending = consents.filter((row) => row.state !== "consented");
+  const approved = consents.filter((row) => row.state === "consented");
+
+  return (
+    <section className="space-y-6">
+      <div className="space-y-1">
+        <h2 className="text-lg font-semibold text-ink">Library</h2>
+        {sharingOnly ? (
+          <p className="text-sm text-ink/55">
+            Libraries this server is a branch of, and what it shares with each. Joining, leaving and
+            approving a library's plugins are done by the server's operator.
+          </p>
+        ) : (
+          <p className="text-sm text-ink/55">
+            Libraries this server is a branch of. A library's plugin runs here only after you
+            approve what it asks for; you can leave out domains, bindings, or the network, and a
+            later version that asks for more waits for approval again. Revoking stops its jobs here
+            and hands them back to the library.
+          </p>
+        )}
+      </div>
+      {sharingOnly ? null : joinedTo ? (
+        <p className="text-sm font-medium text-ink" role="status">
+          {`Connected to ${joinedTo}. Its plugin requests appear below.`}
+        </p>
+      ) : null}
+      {sharingOnly ? null : joining ? (
+        <div className="space-y-3 rounded-md border border-ink/10 bg-card p-4">
+          <h3 className="text-sm font-semibold text-ink">Join a library</h3>
+          <JoinWizard
+            defaultBranchName={defaultBranchName}
+            onJoined={(origin) => {
+              setJoining(false);
+              setJoinedTo(origin);
+              void refresh();
+            }}
+            onCancel={() => setJoining(false)}
+          />
+        </div>
+      ) : (
+        <Button type="button" variant="secondary" onClick={() => setJoining(true)}>
+          Join a library
+        </Button>
+      )}
+      {loadError ? (
+        <p className="text-sm font-medium text-brick" role="alert">
+          {loadError}
+        </p>
+      ) : null}
+      {libraries == null ? (
+        <p className="text-sm text-ink/50">Loading…</p>
+      ) : (
+        <>
+          {libraries.length === 0 ? (
+            <p className="text-sm text-ink/50">This server is not a branch of any library.</p>
+          ) : (
+            <ul className="divide-y divide-ink/10 bg-card">
+              {libraries.map((link) => (
+                <LinkRow
+                  key={link.library_id}
+                  link={link}
+                  onLeft={() => void refresh()}
+                  canLeave={!sharingOnly}
+                />
+              ))}
+            </ul>
+          )}
+          {sharingOnly ? null : (
+            <div className="space-y-2">
+              <h3 className="text-sm font-semibold text-ink">
+                Waiting for you{pending.length ? ` (${pending.length})` : ""}
+              </h3>
+              {pending.length === 0 ? (
+                <p className="text-sm text-ink/50">No requests waiting.</p>
+              ) : (
+                <ul className="divide-y divide-ink/10 bg-card">
+                  {pending.map((row) => (
+                    <ConsentRow
+                      key={`${row.library_id}|${row.plugin_key}`}
+                      row={row}
+                      onChanged={refresh}
+                      onSessionExpired={onSessionExpired}
+                    />
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          {approved.length ? (
+            <div className="space-y-2">
+              <h3 className="text-sm font-semibold text-ink">Approved</h3>
+              <ul className="divide-y divide-ink/10 bg-card">
+                {approved.map((row) => (
+                  <ConsentRow
+                    key={`${row.library_id}|${row.plugin_key}`}
+                    row={row}
+                    onChanged={refresh}
+                    onSessionExpired={onSessionExpired}
+                  />
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}

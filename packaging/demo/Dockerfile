@@ -40,7 +40,7 @@
 #     through them, and writes through the library code of this commit,
 #     never raw SQL. bookclerkd then stores Sam's Discover shelves, and
 #     `--bake-finish` strips everything a container must make for itself
-#     (master.key and the cluster secret fingerprint, the covers URL key,
+#     (master.key and the library secret fingerprint, the covers URL key,
 #     leases, plugin sessions). The build fails if any of it is left.
 #   - boot.sh copies that template into the container's empty files dir and
 #     execs bookclerkd, which mints this container's own key. Without a

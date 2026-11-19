@@ -285,9 +285,34 @@ class ScenarioTests(unittest.TestCase):
 
     def test_ui_only(self) -> None:
         p = plan("ui/src/App.tsx")
-        self.assertEqual(sorted(p.checks), ["api_docs", "lint", "ui"])
+        self.assertEqual(sorted(p.checks), ["api_docs", "lint", "ui", "ui_visual"])
         self.assertEqual(p.params("api_docs"), {"rust_packages": [], "typescript": False, "ui": True, "python": False})
-        self.assertEqual({j for j, on in p.jobs.items() if on}, {"check"})
+        self.assertEqual({j for j, on in p.jobs.items() if on}, {"check", "ui-visual"})
+
+    def test_ui_visual_follows_spa_sources_not_the_host(self) -> None:
+        """Stories render the SPA's sources; a host change alone renders nothing new."""
+        for path in ("ui/src/components/ui/button.tsx", "ui/.storybook/preview.tsx", "ui/visual/stories.spec.ts"):
+            with self.subTest(path=path):
+                self.assertTrue(plan(path).selected("ui_visual"))
+        p = plan("crates/bookclerkd/src/lib.rs")
+        self.assertTrue(p.selected("ui"))
+        self.assertFalse(p.selected("ui_visual"))
+
+    def test_ui_visual_records_then_compares_with_baselines(self) -> None:
+        p = plan("ui/src/App.tsx")
+        record = ["npm", "run", "test:visual", "--", "--update-snapshots=all"]
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CI_VISUAL_BASELINES", None)
+            cmds = [c for key, c in planned_commands(artifact(p), "ui_visual", CTX) if not key]
+            self.assertEqual(cmds[-2].argv, record)
+            self.assertTrue(cmds[-2].env["VISUAL_BASELINES_DIR"].endswith("baselines"))
+            self.assertEqual(cmds[-1].argv[0], "touch")
+            self.assertTrue(cmds[-1].argv[1].endswith("record-complete"))
+        with mock.patch.dict(os.environ, {"CI_VISUAL_BASELINES": "/b"}):
+            cmds = [c for key, c in planned_commands(artifact(p), "ui_visual", CTX) if not key]
+            self.assertEqual([cmds[-3].argv, cmds[-1].argv], [record, ["npm", "run", "test:visual"]])
+            self.assertEqual(cmds[-1].env["VISUAL_BASELINES_DIR"], "/b")
+            self.assertNotEqual(cmds[-3].env["VISUAL_OUTPUT_DIR"], cmds[-1].env["VISUAL_OUTPUT_DIR"])
 
     def test_cli_only_binary_package_uses_tests_target_selection(self) -> None:
         p = plan("crates/bookclerk-cli/src/main.rs")
@@ -301,7 +326,7 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(
             check_argv(p, "release"), [["cargo", "build", "--release", "-p", "bookclerk-cli"]]
         )
-        # cluster_secret_startup launches the jailed sqlite guest through workerd.
+        # library_secret_startup launches the jailed sqlite guest through workerd.
         self.assertEqual(
             p.prereqs("rust_test"),
             [
@@ -1412,7 +1437,7 @@ class DesktopTests(unittest.TestCase):
 
 
 class WindowsClusterTests(unittest.TestCase):
-    """windows-latest run of cluster_secret_startup and the identity library tests."""
+    """windows-latest run of library_secret_startup and the identity library tests."""
 
     def test_paths_select_the_job_and_keep_guest_prerequisites(self) -> None:
         for path in RELATIONS.windows_cluster_paths:
@@ -1427,7 +1452,7 @@ class WindowsClusterTests(unittest.TestCase):
                         {
                             "kind": "build",
                             "why": [
-                                "cluster_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd"
+                                "library_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd"
                             ],
                             "packages": [
                                 "bookclerk-plugin-database-sqlite",
@@ -1437,7 +1462,7 @@ class WindowsClusterTests(unittest.TestCase):
                         },
                         {
                             "kind": "ensure_workerd",
-                            "why": ["cluster_secret_startup spawns through pinned workerd"],
+                            "why": ["library_secret_startup spawns through pinned workerd"],
                         },
                     ],
                 )
@@ -1455,7 +1480,7 @@ class WindowsClusterTests(unittest.TestCase):
                 {
                     "kind": "build",
                     "why": [
-                        "cluster_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd"
+                        "library_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd"
                     ],
                     "packages": [
                         "bookclerk-plugin-database-sqlite",
@@ -1465,7 +1490,7 @@ class WindowsClusterTests(unittest.TestCase):
                 },
                 {
                     "kind": "ensure_workerd",
-                    "why": ["cluster_secret_startup spawns through pinned workerd"],
+                    "why": ["library_secret_startup spawns through pinned workerd"],
                 },
             ],
         )
@@ -1476,7 +1501,7 @@ class WindowsClusterTests(unittest.TestCase):
         self.assertFalse(p.jobs["windows-cluster"])
 
     def test_commands_preserve_the_cli_target_and_identity_filters(self) -> None:
-        p = plan("crates/bookclerk-cli/tests/cluster_secret_startup.rs")
+        p = plan("crates/bookclerk-cli/tests/library_secret_startup.rs")
         art = artifact(p)
         for os_name, exe in (("Linux", "workerd"), ("Windows", "workerd.exe")):
             with self.subTest(os=os_name):
@@ -1528,7 +1553,7 @@ class WindowsClusterTests(unittest.TestCase):
                             "-p",
                             "bookclerk-library",
                             "--lib",
-                            "copied_identity_rejects_a_different_cluster",
+                            "copied_identity_rejects_a_different_library",
                             "--",
                             "--nocapture",
                         ],
@@ -1538,7 +1563,7 @@ class WindowsClusterTests(unittest.TestCase):
                             "-p",
                             "bookclerk-cli",
                             "--test",
-                            "cluster_secret_startup",
+                            "library_secret_startup",
                             "--",
                             "--nocapture",
                         ],

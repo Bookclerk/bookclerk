@@ -315,6 +315,10 @@ JOB_CHECKS: dict[str, tuple[str, ...]] = {
     # Worker tests, its Lighthouse and axe-core audit, and the diagnostics
     # collector's tests and the hosted demo Worker's tests. No Rust toolchain.
     "site": ("site_test", "site_audit", "collector_test", "demo_test"),
+    # The SPA's Storybook stories checked with axe-core and compared with
+    # baseline screenshots, inside the pinned Playwright image. No Rust
+    # toolchain (docs/contributing/ui/visual-testing.md).
+    "ui-visual": ("ui_visual",),
 }
 CHECK_JOB = {check: job for job, checks in JOB_CHECKS.items() for check in checks}
 ALL_CHECKS = tuple(CHECK_JOB)
@@ -1200,6 +1204,9 @@ def _select_checks(
         ui_why.append(f"{UI_HOST_PACKAGE} serves ui/dist")
     if ui_why:
         _select(plan, "ui", ui_why)
+    if surf.ui:
+        # Only the SPA's own sources change what a story renders.
+        _select(plan, "ui_visual", [f"path {p}" for p in surf.ui])
 
     doc_pkgs = plan.doc_packages()
     if doc_pkgs or surf.ts_sdk or surf.ui or surf.python_sdk:
@@ -1454,7 +1461,7 @@ def _expand_prereqs(
             plan,
             "windows_cluster",
             "build",
-            "cluster_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd",
+            "library_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd",
             packages=[
                 "bookclerk-plugin-database-sqlite",
                 "bookclerk-jail",
@@ -1465,7 +1472,7 @@ def _expand_prereqs(
             plan,
             "windows_cluster",
             "ensure_workerd",
-            "cluster_secret_startup spawns through pinned workerd",
+            "library_secret_startup spawns through pinned workerd",
         )
 
 

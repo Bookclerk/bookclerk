@@ -15,11 +15,11 @@ use crate::entities::{bookclerk_receipts, configuration_documents};
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
-/// Cluster scope instance. There is one cluster document per namespace.
-pub const CLUSTER_SCOPE_ID: &str = "singleton";
+/// Library scope instance. There is one library document per namespace.
+pub const LIBRARY_SCOPE_ID: &str = "singleton";
 
-/// Scope type stored for cluster documents.
-pub const CLUSTER_SCOPE_TYPE: &str = "cluster";
+/// Scope type stored for library documents.
+pub const LIBRARY_SCOPE_TYPE: &str = "library";
 
 /// Scope type stored for node documents.
 pub const NODE_SCOPE_TYPE: &str = "node";
@@ -53,7 +53,7 @@ pub enum ConfigActor {
         /// Stable audit id (`cli`, `operator`, …).
         id: String,
     },
-    /// Portal administrator. Cannot write cluster or node configuration.
+    /// Portal administrator. Cannot write library or node configuration.
     Administrator {
         /// User id recorded if a write is attempted.
         id: String,
@@ -75,11 +75,11 @@ pub enum ConfigActor {
     /// document only. Built by [`super::verify_node_owner`], which checks
     /// `nodes.owner_user_id`, so a caller cannot claim a node it does not own.
     NodeOwner(VerifiedNodeOwner),
-    /// An active portal Owner. Writes the cluster's host-enrollment switch
+    /// An active portal Owner. Writes the library's host-enrollment switch
     /// (`core.host_enrollment`) only; every other document stays an
-    /// operator write. Built by [`super::verify_cluster_owner`], which reads
+    /// operator write. Built by [`super::verify_library_owner`], which reads
     /// the user's stored role and status.
-    ClusterOwner(VerifiedClusterOwner),
+    LibraryOwner(VerifiedLibraryOwner),
     /// An active portal Owner or Administrator. Writes the library's
     /// default patron scope (`core.patron_scope`) only. Built by
     /// [`super::verify_patron_administrator`], which reads the user's
@@ -89,16 +89,16 @@ pub enum ConfigActor {
 
 /// Proof that a user was an active Owner when the write was authorized.
 ///
-/// Only [`super::verify_cluster_owner`] constructs one.
+/// Only [`super::verify_library_owner`] constructs one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerifiedClusterOwner {
+pub struct VerifiedLibraryOwner {
     /// Owner's user id.
     pub(super) user_id: i64,
     /// Audit id (`owner:<user_id>`).
     pub(super) audit: String,
 }
 
-impl VerifiedClusterOwner {
+impl VerifiedLibraryOwner {
     /// Owner's user id.
     #[must_use]
     pub fn user_id(&self) -> i64 {
@@ -161,7 +161,7 @@ impl ConfigActor {
             Self::Bootstrap => "bootstrap",
             Self::Scheduler => "scheduler",
             Self::NodeOwner(owner) => &owner.audit,
-            Self::ClusterOwner(owner) => &owner.audit,
+            Self::LibraryOwner(owner) => &owner.audit,
             Self::PatronAdministrator(admin) => &admin.audit,
         }
     }
@@ -171,14 +171,14 @@ impl ConfigActor {
         match self {
             Self::Operator { .. } | Self::Bootstrap => true,
             Self::NodeOwner(owner) => owner.covers(key),
-            Self::ClusterOwner(_) => {
-                key.scope_type == CLUSTER_SCOPE_TYPE
-                    && key.scope_id == CLUSTER_SCOPE_ID
+            Self::LibraryOwner(_) => {
+                key.scope_type == LIBRARY_SCOPE_TYPE
+                    && key.scope_id == LIBRARY_SCOPE_ID
                     && key.namespace == super::HOST_ENROLLMENT_NAMESPACE
             }
             Self::PatronAdministrator(_) => {
-                key.scope_type == CLUSTER_SCOPE_TYPE
-                    && key.scope_id == CLUSTER_SCOPE_ID
+                key.scope_type == LIBRARY_SCOPE_TYPE
+                    && key.scope_id == LIBRARY_SCOPE_ID
                     && key.namespace == super::PATRON_SCOPE_NAMESPACE
             }
             Self::Administrator { .. } | Self::Member { .. } | Self::Scheduler => false,
@@ -203,7 +203,7 @@ impl VerifiedNodeOwner {
 /// Address of one configuration document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentKey {
-    /// `cluster`, `node`, or `plugin_instance`.
+    /// `library`, `node`, or `plugin_instance`.
     pub scope_type: String,
     /// `singleton`, a node id, or a plugin instance id.
     pub scope_id: String,
@@ -212,12 +212,12 @@ pub struct DocumentKey {
 }
 
 impl DocumentKey {
-    /// Cluster-scoped domain.
+    /// Library-scoped domain.
     #[must_use]
-    pub fn cluster(namespace: &str) -> Self {
+    pub fn library(namespace: &str) -> Self {
         Self {
-            scope_type: CLUSTER_SCOPE_TYPE.to_string(),
-            scope_id: CLUSTER_SCOPE_ID.to_string(),
+            scope_type: LIBRARY_SCOPE_TYPE.to_string(),
+            scope_id: LIBRARY_SCOPE_ID.to_string(),
             namespace: namespace.to_string(),
         }
     }
@@ -653,7 +653,7 @@ pub async fn replace_document(
         .await?
         .ok_or_else(|| LibraryError::not_found(EntityKind::Configuration, &key.namespace))?;
     if stored.write_operation_id == operation_id || stored.revision == receipt.revision {
-        // Cluster settings and instance documents both land here; every node
+        // Library settings and instance documents both land here; every node
         // re-reads what it runs on the next pass.
         super::node_queue::notify_all_nodes(
             store,

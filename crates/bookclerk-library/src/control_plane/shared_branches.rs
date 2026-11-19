@@ -17,10 +17,10 @@ use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use serde::Serialize;
 
 use super::batch;
-use super::cluster_links::CLUSTER_LINK_LEFT;
 use super::enrollment::EnrollmentActor;
 use super::identity::{list_nodes, load_node, NodeKind, NodeRecord};
-use crate::entities::{accounts, cluster_links, editions, users};
+use super::library_links::LIBRARY_LINK_LEFT;
+use crate::entities::{accounts, editions, library_links, users};
 use crate::error::{LibraryError, Result};
 use crate::models::{UserRole, UserStatus};
 use crate::store::LibraryStore;
@@ -86,8 +86,8 @@ pub async fn library_contents(store: &LibraryStore) -> Result<LibraryContents> {
             .count(db)
             .await
             .map_err(LibraryError::Orm)?,
-        libraries_joined: cluster_links::Entity::find()
-            .filter(cluster_links::Column::State.ne(CLUSTER_LINK_LEFT))
+        libraries_joined: library_links::Entity::find()
+            .filter(library_links::Column::State.ne(LIBRARY_LINK_LEFT))
             .count(db)
             .await
             .map_err(LibraryError::Orm)?,

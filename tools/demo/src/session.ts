@@ -15,6 +15,7 @@ import { Container } from "@cloudflare/containers";
 import type { Env, PortalHandoff, SessionApi } from "./env.ts";
 import { finish, recordStartup } from "./limits.ts";
 import { timed } from "./timing.ts";
+import { readyEvent, reportRun, stopEvent } from "./usage.ts";
 import {
   type ContainerCall,
   enableDemoPlugins,
@@ -283,14 +284,16 @@ export class DemoSession extends Container<Env> implements SessionApi {
       if (meta.openedAt !== undefined) {
         // Only feeds the pages' estimate: a failure here must not reach the
         // catch below, which tears a session down.
-        await recordStartup(this.env.DB, {
+        const recorded = await recordStartup(this.env.DB, {
           id: meta.id,
           seconds: (Date.now() - meta.openedAt) / 1000,
         }).catch((err: unknown) => {
           console.error(
             `demo session ${meta.id} could not record its startup time: ${String(err)}`,
           );
+          return null;
         });
+        await reportRun(this.env, readyEvent(recorded));
       }
     } catch (err) {
       if (!(await this.stillStarting())) {
@@ -416,13 +419,15 @@ export class DemoSession extends Container<Env> implements SessionApi {
     if (meta && meta.state !== "failed") await this.setState("ended");
     await this.retryDestroy(0);
     if (meta) {
-      await finish(this.env.DB, {
+      const now = Math.floor(Date.now() / 1000);
+      const ended = await finish(this.env.DB, {
         id: meta.id,
-        now: Math.floor(Date.now() / 1000),
+        now,
         reason,
         revoked: result.revoked,
         failed: result.failed,
       });
+      await reportRun(this.env, stopEvent(ended, now, reason));
     }
   }
 
@@ -486,13 +491,15 @@ export class DemoSession extends Container<Env> implements SessionApi {
     if (meta && (meta.state === "ready" || meta.state === "starting")) {
       await this.ctx.storage.delete("secrets");
       await this.setState("ended");
-      await finish(this.env.DB, {
+      const now = Math.floor(Date.now() / 1000);
+      const ended = await finish(this.env.DB, {
         id: meta.id,
-        now: Math.floor(Date.now() / 1000),
+        now,
         reason: "stopped",
         revoked: 0,
         failed: 0,
       });
+      await reportRun(this.env, stopEvent(ended, now, "stopped"));
     }
   }
 }

@@ -41,7 +41,7 @@ const DENIED_VERBS: &[&str] = &[
     "BEGIN",
     "CALL",
     "CHECKPOINT",
-    "CLUSTER",
+    "LIBRARY",
     "COMMENT",
     "COMMIT",
     "COPY",

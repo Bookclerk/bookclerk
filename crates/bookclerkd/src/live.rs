@@ -24,7 +24,7 @@
 //! Administrator gets `library`, `jobs`, `deliveries`, `nodes`, `users`
 //! and `discover`; any other user gets `library`, `nodes` and `discover`
 //! (the routes behind them are scoped to the caller; `discover` says only
-//! that someone's stored shelves changed, and each page re-reads its own). `config`, `consents` and `clusters`
+//! that someone's stored shelves changed, and each page re-reads its own). `config`, `consents` and `libraries`
 //! are operator only.
 //!
 //! **Frames** (server to client, JSON text):

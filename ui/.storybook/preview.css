@@ -1,0 +1,10 @@
+/*
+ * A full-screen story (a page) gets the viewport's height, as the app's
+ * `#root` does, so a page that centres itself vertically renders as in the
+ * app. Padded stories (components) keep their own height.
+ */
+html:has(body.sb-main-fullscreen),
+body.sb-main-fullscreen,
+body.sb-main-fullscreen #storybook-root {
+  height: 100%;
+}

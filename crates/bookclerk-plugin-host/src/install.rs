@@ -1,4 +1,4 @@
-//! Installing and materializing cluster versions.
+//! Installing and materializing library versions.
 //!
 //! Installing resolves and verifies a package once (archive digest,
 //! `plugin.toml`, executable, payload-root digest) and records a
@@ -434,7 +434,7 @@ pub async fn materialize_version(
     materialize_from(store, files_dir, version, ArtifactOrigin::Local).await
 }
 
-/// [`materialize_version`] for a version an owner cluster deploys to this
+/// [`materialize_version`] for a version a library deploys to this
 /// host: a `blob:` archive is read from the library as usual (the caller
 /// fetched it over the owner link and checked its digest), and any other
 /// URL is fetched only as an owner `https:` URL
@@ -469,7 +469,7 @@ pub async fn materialize_owner_version(
 enum ArtifactOrigin {
     /// This node's operator or registry ([`fetch_artifact`]).
     Local,
-    /// An owner cluster, on a branch node ([`fetch_owner_artifact`]).
+    /// A library, on a branch node ([`fetch_owner_artifact`]).
     Owner,
 }
 

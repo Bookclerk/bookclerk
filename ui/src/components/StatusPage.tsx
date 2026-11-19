@@ -4,11 +4,11 @@ import { AppTopBar } from "@/components/AppTopBar";
 import { NodeMeters } from "@/components/NodesPanel";
 import { Badge } from "@/components/ui/badge";
 import {
-  fetchClusterStatus,
+  fetchLibraryStatus,
   isApiError,
   signOut,
   type AuthRole,
-  type ClusterStatusResponse,
+  type LibraryStatusResponse,
   type ConfigNodeView,
 } from "@/lib/api";
 import { useLiveRefresh } from "@/lib/live";
@@ -16,7 +16,7 @@ import { age, cores, ownerName, size } from "@/lib/nodeFormat";
 import { cn, pageWidthClass } from "@/lib/utils";
 
 /**
- * How often the page re-reads cluster status while the live socket is
+ * How often the page re-reads library status while the live socket is
  * down (nodes report every 15 s).
  */
 const REFRESH_MS = 15_000;
@@ -84,7 +84,7 @@ function NodeCard({ node }: { node: ConfigNodeView }) {
 }
 
 /**
- * Cluster status: health every node administrator may see (nodes live,
+ * Library status: health every node administrator may see (nodes live,
  * committed capacity, active jobs, delivery backlog) and the nodes the
  * caller may see. An operator sees every node; a Host, Administrator, or
  * Owner signed in to the portal sees the nodes they own.
@@ -100,21 +100,21 @@ export function StatusPage({
   nav: AppNavProps;
   role?: AuthRole;
 }) {
-  const [status, setStatus] = useState<ClusterStatusResponse | null>(null);
+  const [status, setStatus] = useState<LibraryStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const logout = useRef(onLogout);
   logout.current = onLogout;
 
   const refresh = useCallback(async () => {
     try {
-      setStatus(await fetchClusterStatus());
+      setStatus(await fetchLibraryStatus());
       setError(null);
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
         logout.current();
         return;
       }
-      setError(err instanceof Error ? err.message : "Failed to load cluster status");
+      setError(err instanceof Error ? err.message : "Failed to load library status");
     }
   }, []);
 
@@ -131,7 +131,7 @@ export function StatusPage({
     onLogout();
   }
 
-  const cluster = status?.cluster;
+  const library = status?.library;
   const owned = status?.capabilities.scope === "owned";
   return (
     <div className="flex h-full flex-col">
@@ -145,47 +145,47 @@ export function StatusPage({
           <div className="space-y-1">
             <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">Status</h1>
             <p className="text-sm text-ink/60">
-              Cluster health from every node's heartbeat.{" "}
+              Library health from every node's heartbeat.{" "}
               {owned
                 ? "Below are the nodes you own; change their budgets in Settings → Nodes."
                 : "Change budgets, labels, and owners in Settings → Nodes."}
             </p>
           </div>
           {error ? <p className="text-sm text-brick">{error}</p> : null}
-          {cluster == null || status == null ? (
+          {library == null || status == null ? (
             <p className="text-sm text-ink/50">Loading status…</p>
           ) : (
             <>
               <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <Stat
                   label="Nodes"
-                  value={`${cluster.live} / ${cluster.nodes} live`}
+                  value={`${library.live} / ${library.nodes} live`}
                   detail={[
-                    cluster.drained > 0 ? `${cluster.drained} drained` : null,
-                    cluster.branch_nodes > 0 ? `${cluster.branch_nodes} branch node(s)` : null,
+                    library.drained > 0 ? `${library.drained} drained` : null,
+                    library.branch_nodes > 0 ? `${library.branch_nodes} branch node(s)` : null,
                   ]
                     .filter(Boolean)
                     .join(" · ")}
                 />
                 <Stat
                   label="CPU committed"
-                  value={`${cores(cluster.cpu_reserved_millicores)} / ${cores(
-                    cluster.cpu_budget_millicores,
+                  value={`${cores(library.cpu_reserved_millicores)} / ${cores(
+                    library.cpu_budget_millicores,
                   )} cores`}
-                  detail={`${cluster.running_guests} guest(s) running`}
+                  detail={`${library.running_guests} guest(s) running`}
                 />
                 <Stat
                   label="Memory committed"
-                  value={`${size(cluster.memory_reserved_bytes)} / ${size(
-                    cluster.memory_budget_bytes,
+                  value={`${size(library.memory_reserved_bytes)} / ${size(
+                    library.memory_budget_bytes,
                   )}`}
                 />
                 <Stat
                   label="Work"
-                  value={`${cluster.active_jobs} job(s)`}
-                  detail={`${cluster.deliveries.pending} deliveries pending${
-                    cluster.deliveries.dead_letter > 0
-                      ? ` · ${cluster.deliveries.dead_letter} dead-lettered`
+                  value={`${library.active_jobs} job(s)`}
+                  detail={`${library.deliveries.pending} deliveries pending${
+                    library.deliveries.dead_letter > 0
+                      ? ` · ${library.deliveries.dead_letter} dead-lettered`
                       : ""
                   }`}
                 />

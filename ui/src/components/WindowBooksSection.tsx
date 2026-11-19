@@ -106,7 +106,7 @@ export function WindowBooksSection({ query = "" }: { query?: string }) {
   }, [load]);
   // Poll every minute while the live socket is down (a proxy without
   // WebSocket forwarding), so books the window reader stores still show.
-  useLiveRefresh(["clusters"], load, { pollMs: 60_000, openPollMs: 300_000 });
+  useLiveRefresh(["libraries"], load, { pollMs: 60_000, openPollMs: 300_000 });
 
   if (!view) return null;
   const libraries = windowLibraries(view);

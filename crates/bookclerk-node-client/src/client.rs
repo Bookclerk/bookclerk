@@ -4,7 +4,7 @@
 //!
 //! 1. Dial under the transport policy ([`crate::OwnerEndpoint`]).
 //! 2. `hello` (listing every fence this host still holds), `challenge`,
-//!    `auth`: the challenge must name the cluster this host enrolled into,
+//!    `auth`: the challenge must name the library this host enrolled into,
 //!    or nothing is signed; the signature covers the origin this host
 //!    dialed. `welcome` carries the connection's owner box key.
 //! 3. When the hello listed fences, the owner's `resumed` says which are
@@ -65,7 +65,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use bookclerk_library::control_plane::{
-    ClusterLink, ClusterLinkKeys, NodeHeartbeat, NodeSampler, NODE_HEARTBEAT_INTERVAL,
+    LibraryLink, LibraryLinkKeys, NodeHeartbeat, NodeSampler, NODE_HEARTBEAT_INTERVAL,
 };
 use bookclerk_node_proto::{
     claimed_problem, decode_nonce, open_instance_secrets, open_secrets, open_upload_token,
@@ -173,10 +173,10 @@ impl HeartbeatSource for NodeSampler {
 
 /// What one client connects with.
 pub struct HostClientConfig {
-    /// The active cluster link.
-    pub link: ClusterLink,
+    /// The active library link.
+    pub link: LibraryLink,
     /// Its node keys.
-    pub keys: ClusterLinkKeys,
+    pub keys: LibraryLinkKeys,
     /// This host's Bookclerk version.
     pub software_version: String,
     /// This process's incarnation (a plain id).
@@ -324,8 +324,8 @@ pub struct OfferedAccounts {
 pub(crate) struct Shared {
     /// Where the owner is.
     endpoint: OwnerEndpoint,
-    /// Owner cluster id the host enrolled into.
-    cluster_id: String,
+    /// Library id the host enrolled into.
+    library_id: String,
     /// This host's node id there.
     node_id: String,
     /// This process's incarnation.
@@ -889,16 +889,16 @@ impl HostClientHandle {
         self.shared.held_fences()
     }
 
-    /// The node id this host has in the owner cluster.
+    /// The node id this host has in the library.
     #[must_use]
     pub fn node_id(&self) -> &str {
         &self.shared.node_id
     }
 
-    /// The owner cluster id.
+    /// The parent library id.
     #[must_use]
-    pub fn cluster_id(&self) -> &str {
-        &self.shared.cluster_id
+    pub fn library_id(&self) -> &str {
+        &self.shared.library_id
     }
 
     /// Sets the plugin keys this host's operator consents to. Claims carry
@@ -953,7 +953,7 @@ impl HostClientHandle {
 
     /// Offers the branch person's store `accounts` to the library ("Add my
     /// connections to *library*"): seals them to the live connection's
-    /// owner box key, bound to the cluster and this node, and answers the
+    /// owner box key, bound to the library and this node, and answers the
     /// library's report.
     ///
     /// # Errors
@@ -972,7 +972,7 @@ impl HostClientHandle {
             .ok_or(OwnerCallError::Unavailable)?;
         let bundle = AccountBundle {
             v: ACCOUNT_BUNDLE_VERSION,
-            cluster_id: self.shared.cluster_id.clone(),
+            library_id: self.shared.library_id.clone(),
             node_id: self.shared.node_id.clone(),
             accounts,
         };
@@ -1026,7 +1026,7 @@ impl HostClientHandle {
             .ok_or(OwnerCallError::Unavailable)?;
         let bundle = AccountBundle {
             v: ACCOUNT_BUNDLE_VERSION,
-            cluster_id: self.shared.cluster_id.clone(),
+            library_id: self.shared.library_id.clone(),
             node_id: self.shared.node_id.clone(),
             accounts: vec![account],
         };
@@ -1120,7 +1120,7 @@ impl HostClientHandle {
         let authorization = sign_artifact_request(
             &shared.sign_key,
             &ArtifactRequest {
-                cluster_id: &shared.cluster_id,
+                library_id: &shared.library_id,
                 node_id: &shared.node_id,
                 owner_origin: shared.endpoint.origin(),
                 archive_sha256,
@@ -1150,7 +1150,7 @@ pub struct CatalogSession {
     pub fence: i64,
     /// Resume after this cursor (empty: from the start).
     pub cursor: String,
-    /// The library's ancestry, its own cluster id first.
+    /// The library's ancestry, its own library id first.
     pub ancestry: Vec<String>,
     /// The library node's destination ids, the primary first.
     pub destinations: Vec<String>,
@@ -1453,7 +1453,7 @@ impl HostClientHandle {
         })?;
         register_value_for_redaction(token.expose());
         Ok(Some(crate::GrantedCopy::new(
-            shared.cluster_id.clone(),
+            shared.library_id.clone(),
             copy_id,
             expires_in_secs,
             copy,
@@ -1477,7 +1477,7 @@ impl HostClientHandle {
         index: usize,
         dest: &std::path::Path,
     ) -> Result<(), crate::CopyFetchError> {
-        if !copy.granted_by(&self.shared.cluster_id) {
+        if !copy.granted_by(&self.shared.library_id) {
             return Err(crate::CopyFetchError::OtherLibrary);
         }
         let file = copy
@@ -1623,7 +1623,7 @@ enum SessionEnd {
     Failed(String),
 }
 
-/// The host side of the node API for one cluster link.
+/// The host side of the node API for one library link.
 pub struct HostClient<R: HostJobRunner> {
     /// Shared state.
     shared: Arc<Shared>,
@@ -1655,7 +1655,7 @@ impl<R: HostJobRunner> HostClient<R> {
         let (wakes, _) = broadcast::channel(WAKE_BUFFER);
         let shared = Arc::new(Shared {
             endpoint,
-            cluster_id: config.link.owner_cluster_id.clone(),
+            library_id: config.link.parent_library_id.clone(),
             node_id: config.link.remote_node_id.clone(),
             incarnation: config.incarnation,
             software_version: config.software_version,
@@ -1726,15 +1726,15 @@ impl<R: HostJobRunner> HostClient<R> {
                 SessionEnd::Revoked => {
                     tracing::error!(
                         node_id = %self.shared.node_id,
-                        cluster_id = %self.shared.cluster_id,
-                        "the owner revoked this branch node; stopping the cluster link"
+                        library_id = %self.shared.library_id,
+                        "the owner revoked this branch node; stopping the library link"
                     );
                     return ClientExit::Revoked;
                 }
                 SessionEnd::Served => backoff = timing.backoff_min,
                 SessionEnd::Failed(reason) => {
                     tracing::warn!(
-                        cluster_id = %self.shared.cluster_id,
+                        library_id = %self.shared.library_id,
                         origin = %self.shared.endpoint.origin(),
                         %reason,
                         "owner connection failed"
@@ -1790,14 +1790,14 @@ impl<R: HostJobRunner> HostClient<R> {
         let hello_at = tokio::time::Instant::now();
         send(&mut socket, &hello).await?;
         let challenge = next_handshake_frame(&mut socket).await?;
-        let Body::Challenge { nonce, cluster_id } = challenge.body else {
+        let Body::Challenge { nonce, library_id } = challenge.body else {
             return Err(SessionEnd::Failed("expected a challenge".into()));
         };
-        if cluster_id != shared.cluster_id {
-            // Never sign a challenge for another cluster.
+        if library_id != shared.library_id {
+            // Never sign a challenge for another library.
             close(&mut socket, CLOSE_PROTOCOL).await;
             return Err(SessionEnd::Failed(
-                "the owner answered for another cluster".into(),
+                "the owner answered for another library".into(),
             ));
         }
         let Some(nonce) = decode_nonce(&nonce) else {
@@ -1806,7 +1806,7 @@ impl<R: HostJobRunner> HostClient<R> {
         let sig = sign_auth(
             &shared.sign_key,
             &AuthContext {
-                cluster_id: &shared.cluster_id,
+                library_id: &shared.library_id,
                 node_id: &shared.node_id,
                 incarnation: &shared.incarnation,
                 nonce: &nonce,
@@ -1817,13 +1817,13 @@ impl<R: HostJobRunner> HostClient<R> {
         let welcome = next_handshake_frame(&mut socket).await?;
         let Body::Welcome {
             node_id,
-            cluster_id,
+            library_id,
             box_key,
         } = welcome.body
         else {
             return Err(SessionEnd::Failed("expected a welcome".into()));
         };
-        if node_id != shared.node_id || cluster_id != shared.cluster_id {
+        if node_id != shared.node_id || library_id != shared.library_id {
             close(&mut socket, CLOSE_PROTOCOL).await;
             return Err(SessionEnd::Failed("the welcome names another node".into()));
         }
@@ -1899,9 +1899,9 @@ impl<R: HostJobRunner> HostClient<R> {
         shared.connections.send_modify(|count| *count += 1);
         tracing::info!(
             node_id = %shared.node_id,
-            cluster_id = %shared.cluster_id,
+            library_id = %shared.library_id,
             serial = conn.serial,
-            "connected to the owner cluster"
+            "connected to the library"
         );
         let end = read_loop(shared, stream, &conn).await;
         shared.conn.send_if_modified(|live| {

@@ -13,12 +13,12 @@
 - **Related:** [Control plane](control-plane.md) (H-4 branches, branches of
   branches), [Event delivery model](event-delivery-model.md),
   [Library data model](library-data-model.md),
-  [Libraries and branches](../server/cluster-hosts.md)
+  [Libraries and branches](../server/branches.md)
 
 ## Context
 
 One install can join several libraries as a branch. Each active
-`cluster_links` row already gets its own client, consent list and catalog
+`library_links` row already gets its own client, consent list and catalog
 sync, and the join cycle check takes the union of every link's ancestry.
 What the earlier records did not settle is how those links relate to each
 other and to the branch's own library:
@@ -68,7 +68,7 @@ explicitly for a copy.
   branch operator's consent for that link.
 - Their host-managed state lives in a subtree per library,
   `plugin-state/link-<32 hex>/<PluginKey fs-id>/`, where the leaf is the
-  first 128 bits of the SHA-256 of the library's cluster id. The branch's
+  first 128 bits of the SHA-256 of the library id. The branch's
   own guests keep `plugin-state/<PluginKey fs-id>/`. So no guest shares a
   `HOME` or `TMPDIR` with another library's copy of the same plugin.
 - The read-only plugin code cache stays shared, because it is
@@ -141,7 +141,7 @@ take all of it.
   drained branch has none.
 - The branch's own work comes first: each job its own workers run takes a
   slot.
-- The slots left are dealt out one at a time, in cluster id order, to each
+- The slots left are dealt out one at a time, in library id order, to each
   joined library still under its cap. Shares are equal; a capped library's
   unused slots go to the others. The branch's operator or an Owner sets the
   cap per library (0 to 16, or none).

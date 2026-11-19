@@ -19,7 +19,7 @@ const APP_PATHS = new Set([
   "/library",
   "/wishlist",
   "/accounts",
-  "/cluster",
+  "/library-status",
   "/settings",
   "/invite",
   // Join a library: the library's consent page, and the joining install's
@@ -111,7 +111,7 @@ export function viewFromPath(pathname: string): AppView | null {
       return "wishlist";
     case "/accounts":
       return "accounts";
-    case "/cluster":
+    case "/library-status":
       return "status";
     case "/settings":
       return "settings";
@@ -138,7 +138,7 @@ export function pathForView(view: AppView): string {
       return "/accounts";
     case "status":
       // `/status` is the daemon's legacy JSON status route.
-      return "/cluster";
+      return "/library-status";
     case "settings":
       return "/settings";
   }

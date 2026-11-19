@@ -4,7 +4,7 @@
 //! [`create_pending_join`] keeps everything the joining daemon must not
 //! hand to the browser: the PKCE verifier and the node's Ed25519 and X25519
 //! private keys are sealed with this install's DEK into one
-//! `encrypted_secrets` row (`kind = cluster_join`), and the `pending_joins`
+//! `encrypted_secrets` row (`kind = library_join`), and the `pending_joins`
 //! row stores only `hash_token(state)` and the public facts of the join.
 //! [`open_pending_join`] reads the row when the browser comes back with the
 //! owner's code and the same `state`, and [`finish_pending_join`] deletes it
@@ -19,7 +19,7 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use zeroize::Zeroizing;
 
 use super::batch;
-use super::cluster_links::{decode_spki_pin, ClusterLinkKeys};
+use super::library_links::{decode_spki_pin, LibraryLinkKeys};
 use crate::entities::pending_joins;
 use crate::error::{LibraryError, Result};
 use crate::secrets::{
@@ -55,8 +55,8 @@ pub struct NewPendingJoin {
     pub owner_origin: String,
     /// SPKI pin the operator confirmed for a self-signed owner.
     pub spki_pin: Option<String>,
-    /// Owner cluster id `GET /api/node/v1/info` reported.
-    pub owner_cluster_id: String,
+    /// Library id `GET /api/node/v1/info` reported.
+    pub parent_library_id: String,
     /// Library name the owner reported.
     pub library_name: String,
     /// Name this install joins as.
@@ -75,8 +75,8 @@ pub struct PendingJoin {
     pub owner_origin: String,
     /// Confirmed SPKI pin.
     pub spki_pin: Option<String>,
-    /// Owner cluster id.
-    pub owner_cluster_id: String,
+    /// Library id.
+    pub parent_library_id: String,
     /// Library name.
     pub library_name: String,
     /// Branch name.
@@ -94,7 +94,7 @@ impl From<pending_joins::Model> for PendingJoin {
         Self {
             owner_origin: row.owner_origin,
             spki_pin: row.spki_pin,
-            owner_cluster_id: row.owner_cluster_id,
+            parent_library_id: row.parent_library_id,
             library_name: row.library_name,
             branch_name: row.branch_name,
             redirect_uri: row.redirect_uri,
@@ -111,7 +111,7 @@ pub struct TakenJoin {
     /// The PKCE verifier.
     pub verifier: Zeroizing<String>,
     /// The node keys generated for the join.
-    pub keys: ClusterLinkKeys,
+    pub keys: LibraryLinkKeys,
 }
 
 impl std::fmt::Debug for TakenJoin {
@@ -143,7 +143,7 @@ pub async fn create_pending_join(
     join: &NewPendingJoin,
     state: &str,
     verifier: &str,
-    keys: &ClusterLinkKeys,
+    keys: &LibraryLinkKeys,
 ) -> Result<PendingJoin> {
     purge_expired_pending_joins(store).await?;
     let origin = bookclerk_node_proto::canonical_origin(&join.owner_origin)
@@ -173,8 +173,8 @@ pub async fn create_pending_join(
     plaintext.extend_from_slice(verifier.as_bytes());
     let record = build_sealed_record(
         &plaintext,
-        secret_kind::CLUSTER_JOIN,
-        &join.owner_cluster_id,
+        secret_kind::LIBRARY_JOIN,
+        &join.parent_library_id,
         secret_account_type::OPERATOR,
         &state_hash,
         PENDING_JOIN_SECRET_NAME,
@@ -230,14 +230,14 @@ pub async fn create_pending_join(
                 ),
                 batch::exec(
                     "INSERT INTO pending_joins (\
-                        state_hash, owner_origin, spki_pin, owner_cluster_id, library_name, \
+                        state_hash, owner_origin, spki_pin, parent_library_id, library_name, \
                         branch_name, redirect_uri, allow_shared_branch, created_at, expires_at\
                      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     vec![
                         batch::text(&state_hash),
                         batch::text(&origin),
                         batch::text_opt(join.spki_pin.as_deref()),
-                        batch::text(&join.owner_cluster_id),
+                        batch::text(&join.parent_library_id),
                         batch::text(join.library_name.trim()),
                         batch::text(join.branch_name.trim()),
                         batch::text(&join.redirect_uri),
@@ -284,8 +284,8 @@ pub async fn open_pending_join(store: &LibraryStore, state: &str) -> Result<Opti
     }
     let Some(record) = get_secret(
         store.db(),
-        secret_kind::CLUSTER_JOIN,
-        Some(&row.owner_cluster_id),
+        secret_kind::LIBRARY_JOIN,
+        Some(&row.parent_library_id),
         secret_account_type::OPERATOR,
         Some(&state_hash),
         PENDING_JOIN_SECRET_NAME,
@@ -304,7 +304,7 @@ pub async fn open_pending_join(store: &LibraryStore, state: &str) -> Result<Opti
     let mut box_secret = [0u8; KEY_LEN];
     sign_seed.copy_from_slice(&plaintext[..KEY_LEN]);
     box_secret.copy_from_slice(&plaintext[KEY_LEN..2 * KEY_LEN]);
-    let keys = ClusterLinkKeys::from_bytes(&sign_seed, &box_secret);
+    let keys = LibraryLinkKeys::from_bytes(&sign_seed, &box_secret);
     zeroize::Zeroize::zeroize(&mut sign_seed);
     zeroize::Zeroize::zeroize(&mut box_secret);
     let verifier = std::str::from_utf8(&plaintext[2 * KEY_LEN..])
@@ -339,8 +339,8 @@ pub async fn finish_pending_join(store: &LibraryStore, state: &str) -> Result<bo
     // refused when opened (its secret is gone) and purged after its TTL.
     delete_secret(
         store.db(),
-        secret_kind::CLUSTER_JOIN,
-        Some(&row.owner_cluster_id),
+        secret_kind::LIBRARY_JOIN,
+        Some(&row.parent_library_id),
         secret_account_type::OPERATOR,
         Some(&state_hash),
         PENDING_JOIN_SECRET_NAME,
@@ -390,8 +390,8 @@ pub async fn purge_expired_pending_joins(store: &LibraryStore) -> Result<u64> {
     for row in expired {
         delete_secret(
             store.db(),
-            secret_kind::CLUSTER_JOIN,
-            Some(&row.owner_cluster_id),
+            secret_kind::LIBRARY_JOIN,
+            Some(&row.parent_library_id),
             secret_account_type::OPERATOR,
             Some(&row.state_hash),
             PENDING_JOIN_SECRET_NAME,
@@ -426,7 +426,7 @@ mod tests {
         NewPendingJoin {
             owner_origin: "HTTPS://Owner.Example:443".into(),
             spki_pin: None,
-            owner_cluster_id: "cluster-1".into(),
+            parent_library_id: "library-1".into(),
             library_name: "owner.example".into(),
             branch_name: "den".into(),
             redirect_uri: "http://localhost:8787/join/callback".into(),
@@ -445,7 +445,7 @@ mod tests {
         for profile in crate::test_support::Profile::ALL {
             let kit = crate::test_support::sqlite::memory(profile).await;
             let store = kit.store();
-            let keys = ClusterLinkKeys::generate();
+            let keys = LibraryLinkKeys::generate();
             let state = "s".repeat(43);
             let stored = create_pending_join(store, &new_join(), &state, "verifier-1", &keys)
                 .await
@@ -455,7 +455,7 @@ mod tests {
             assert_eq!(kit.batch_sizes(), [3], "{}", profile.name());
             // A lost reply leaves the whole batch applied: the row and its
             // sealed material are both there for the next step.
-            let again = ClusterLinkKeys::generate();
+            let again = LibraryLinkKeys::generate();
             let state2 = "u".repeat(43);
             kit.lose_next_replies(1);
             let err = create_pending_join(store, &new_join(), &state2, "verifier-2", &again)
@@ -467,7 +467,7 @@ mod tests {
             assert_eq!(taken.keys.sign_public_key(), again.sign_public_key());
             let first = take_pending_join(store, &state).await.unwrap().unwrap();
             assert_eq!(first.verifier.as_str(), "verifier-1");
-            let secrets = crate::secrets::list_secrets(store.db(), secret_kind::CLUSTER_JOIN)
+            let secrets = crate::secrets::list_secrets(store.db(), secret_kind::LIBRARY_JOIN)
                 .await
                 .unwrap();
             assert_eq!(
@@ -484,7 +484,7 @@ mod tests {
         let _lock = master_key_test_lock_async().await;
         let dir = tempfile::tempdir().unwrap();
         let store = store_in(dir.path()).await;
-        let keys = ClusterLinkKeys::generate();
+        let keys = LibraryLinkKeys::generate();
         let state = "s".repeat(43);
         let stored = create_pending_join(&store, &new_join(), &state, "verifier-1", &keys)
             .await
@@ -506,7 +506,7 @@ mod tests {
         assert_eq!(taken.keys.box_public_key(), keys.box_public_key());
         assert!(!format!("{taken:?}").contains("verifier-1"));
         assert!(take_pending_join(&store, &state).await.unwrap().is_none());
-        let secrets = crate::secrets::list_secrets(store.db(), secret_kind::CLUSTER_JOIN)
+        let secrets = crate::secrets::list_secrets(store.db(), secret_kind::LIBRARY_JOIN)
             .await
             .unwrap();
         assert!(secrets.is_empty(), "the sealed material goes with the row");
@@ -523,7 +523,7 @@ mod tests {
             &new_join(),
             &state,
             "v",
-            &ClusterLinkKeys::generate(),
+            &LibraryLinkKeys::generate(),
         )
         .await
         .unwrap();
@@ -543,7 +543,7 @@ mod tests {
             &new_join(),
             &again,
             "v",
-            &ClusterLinkKeys::generate(),
+            &LibraryLinkKeys::generate(),
         )
         .await
         .unwrap();
@@ -557,7 +557,7 @@ mod tests {
             .unwrap();
         assert_eq!(purge_expired_pending_joins(&store).await.unwrap(), 1);
         assert!(
-            crate::secrets::list_secrets(store.db(), secret_kind::CLUSTER_JOIN)
+            crate::secrets::list_secrets(store.db(), secret_kind::LIBRARY_JOIN)
                 .await
                 .unwrap()
                 .is_empty()
@@ -566,7 +566,7 @@ mod tests {
         let mut bad = new_join();
         bad.branch_name = "a\nb".into();
         assert!(matches!(
-            create_pending_join(&store, &bad, &again, "v", &ClusterLinkKeys::generate()).await,
+            create_pending_join(&store, &bad, &again, "v", &LibraryLinkKeys::generate()).await,
             Err(LibraryError::Invalid(_))
         ));
     }

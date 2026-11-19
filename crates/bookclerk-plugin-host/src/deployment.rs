@@ -446,7 +446,7 @@ async fn reconcile_one(
 
     // The active installed version names what runs; a host-local tree (a
     // platform guest, a development tree) is used only for a plugin with no
-    // cluster install.
+    // library install.
     let mut active = match load_active_version(store, &instance.plugin_key).await {
         Ok(active) => active,
         Err(err) => {
@@ -468,7 +468,7 @@ async fn reconcile_one(
                 note(DeploymentStatus::Error, "not installed".into(), None).await;
                 return Ok(());
             };
-            // An operator-placed package becomes a cluster install from this
+            // An operator-placed package becomes a library install from this
             // node; every node placed on it then materializes the same
             // digest. The consent the operator approved for the key rides on
             // the installed version.

@@ -1,4 +1,4 @@
-//! `/api/config/plugins`: plugins installed in the cluster.
+//! `/api/config/plugins`: plugins installed in the library.
 //!
 //! `GET` lists installed plugins with their versions; `POST` installs a
 //! version from a registry coordinate or an operator-placed package

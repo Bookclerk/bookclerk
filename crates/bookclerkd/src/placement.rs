@@ -1,7 +1,7 @@
 //! The placement scheduler: turns `plugin_placements` intent into
 //! deployments.
 //!
-//! Every daemon runs this loop, but only the one holding the cluster's
+//! Every daemon runs this loop, but only the one holding the library's
 //! `scheduler` lease acts; the others find the lease held and wait. The
 //! holder renews it on every pass, so a dead holder's lease expires and the
 //! next daemon to try takes over with a larger fencing token. A pass runs on
@@ -273,8 +273,8 @@ mod tests {
                 put(crate::config_authority::put_node_runtime),
             )
             .route(
-                "/api/cluster/status",
-                get(crate::config_authority::get_cluster_status),
+                "/api/library-status",
+                get(crate::config_authority::get_library_status),
             )
             .route(
                 "/api/config/nodes/{node_id}/owner",
@@ -308,8 +308,8 @@ mod tests {
         .unwrap()
         .node
         .node_id;
-        // A second node in the same cluster, owned by nobody. Every node
-        // shares the cluster's `master.key`.
+        // A second node in the same library, owned by nobody. Every node
+        // shares the library's `master.key`.
         std::fs::copy(
             bookclerk_library::master_key_path(files_path),
             bookclerk_library::master_key_path(other.path()),
@@ -430,14 +430,14 @@ mod tests {
             assert_eq!(status, StatusCode::FORBIDDEN, "{node}: {refused}");
         }
 
-        // Cluster status counts every node but details only the owned one.
-        let (status, cluster) = send(&owner, "GET", "/api/cluster/status", Value::Null).await;
-        assert_eq!(status, StatusCode::OK, "{cluster}");
-        assert_eq!(cluster["cluster"]["nodes"], 2);
-        assert_eq!(cluster["nodes"].as_array().unwrap().len(), 1);
-        assert_eq!(cluster["nodes"][0]["node_id"], json!(mine));
-        let (_, cluster) = send(&operator, "GET", "/api/cluster/status", Value::Null).await;
-        assert_eq!(cluster["nodes"].as_array().unwrap().len(), 2);
+        // Library status counts every node but details only the owned one.
+        let (status, library) = send(&owner, "GET", "/api/library-status", Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{library}");
+        assert_eq!(library["library"]["nodes"], 2);
+        assert_eq!(library["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(library["nodes"][0]["node_id"], json!(mine));
+        let (_, library) = send(&operator, "GET", "/api/library-status", Value::Null).await;
+        assert_eq!(library["nodes"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

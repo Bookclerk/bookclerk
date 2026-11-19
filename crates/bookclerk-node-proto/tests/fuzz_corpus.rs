@@ -133,7 +133,7 @@ fn node_account_bundle_corpus_keeps_every_invariant() {
         bundle_oracle::check(&data);
         let parsed = bookclerk_node_proto::parse_account_bundle(
             &data,
-            bundle_oracle::CLUSTER_ID,
+            bundle_oracle::LIBRARY_ID,
             bundle_oracle::NODE_ID,
         );
         if parsed.is_ok() {
