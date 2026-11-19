@@ -6131,10 +6131,21 @@ async fn discover_title_meta_batch(
     Ok(Json(TitleMetaBatchResponse { results }))
 }
 
-/// Rejects a title-metadata query that has no title, ASIN, or ISBN.
+/// Rejects a title-metadata query that has no title, ASIN, or ISBN, or that
+/// names more than [`bookclerk_discover::TITLE_META_MAX_STORE_EDITIONS`]
+/// store editions.
 fn validate_title_meta_query(
     body: &bookclerk_discover::TitleMetaQuery,
 ) -> Result<(), (StatusCode, String)> {
+    if body.store_editions.len() > bookclerk_discover::TITLE_META_MAX_STORE_EDITIONS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "at most {} store editions per title-meta query",
+                bookclerk_discover::TITLE_META_MAX_STORE_EDITIONS
+            ),
+        ));
+    }
     if body.title.trim().is_empty()
         && body.asin.as_deref().unwrap_or("").trim().is_empty()
         && body.isbn.as_deref().unwrap_or("").trim().is_empty()

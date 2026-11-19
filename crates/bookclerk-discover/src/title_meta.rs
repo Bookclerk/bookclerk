@@ -2,10 +2,12 @@
 //!
 //! Prefer a metadata-provider record (the Audnexus plugin) when an ASIN is
 //! known; otherwise try a confident Audible catalog match from
-//! title/author/ISBN. When those miss or stay sparse (common
-//! for Libro.fm ISBN-only hits), fill gaps via source [`ContentSource::catalog_detail`]
-//! (Libro explore details or product HTML JSON-LD). Used by Discover, Wishlist,
-//! and Library detail views (commerce links stay on a separate purchase-hints path).
+//! title/author/ISBN. When those miss or stay sparse (common for storefront
+//! search hits), fill gaps from the stores' own catalog details: first the
+//! stores that listed the title and declared `detailByProductId`, by the
+//! product ids they gave it, then the stores that declared `detailByIsbn`, by
+//! the title's ISBN. Used by Discover, Wishlist, and Library detail views
+//! (commerce links stay on a separate purchase-hints path).
 //!
 //! Community ratings come from a separate Audible catalog `rating` request so
 //! bulk Discover expand stays lean. Written reviews are loaded on demand via
@@ -19,9 +21,10 @@ use bookclerk_enrich::{
     lookup_by_metadata, public_http_client, CatalogReview, CatalogReviewsSort, Enrichment,
     MatchQuery, MetadataProviders, DEFAULT_ENRICH_MIN_CONFIDENCE,
 };
-use bookclerk_source::{CatalogHit, SourceRegistry};
+use bookclerk_source::{CatalogHit, ContentSource, SourceRegistry};
 
 use crate::error::Result;
+use crate::identity::StoreEdition;
 use crate::ttl_cache::{cache_key, TtlCache};
 
 /// Process-wide TTL cache of resolved title-meta payloads (6 hours, 512 entries).
@@ -63,7 +66,22 @@ pub struct TitleMetaQuery {
     #[serde(default = "default_region")]
     #[schema(example = "us")]
     pub region: String,
+    /// Store editions that listed this title (the search hit's or card's
+    /// `store_editions`), at most 16. A sparse record is filled from each of
+    /// these stores that declared `detailByProductId`, by the product id it
+    /// gave the title, before the stores that declared `detailByIsbn` are
+    /// asked by ISBN.
+    #[serde(default)]
+    pub store_editions: Vec<StoreEdition>,
 }
+
+/// Most store editions one title-meta query may name; the API rejects more
+/// (keep [`TitleMetaQuery::store_editions`]'s doc in step).
+pub const TITLE_META_MAX_STORE_EDITIONS: usize = 16;
+
+/// Most storefront catalog-detail lookups one title-meta fill makes, so a
+/// query naming many editions cannot fan out across every guest.
+const STORE_FILL_MAX_LOOKUPS: usize = 3;
 
 /// Marketplace default (`us`) when a title-meta or reviews query omits `region`.
 fn default_region() -> String {
@@ -430,12 +448,42 @@ fn isbn_like(raw: &str) -> bool {
     }
 }
 
-/// Gap-fills sparse Audible/Audnexus results via Libro `catalog_detail` keyed by ISBN.
-async fn fill_from_source_catalog(
+/// One storefront catalog-detail lookup a title-meta fill can make.
+enum StoreLookup {
+    /// The store's own product id for an edition it listed
+    /// (`detailByProductId`).
+    Product(String),
+    /// The title's ISBN (`detailByIsbn`).
+    Isbn(String),
+}
+
+/// The catalog-detail lookups that can fill `query`, in the order to try
+/// them: each listing store that declared `detailByProductId` by its own
+/// product id (in the query's edition order), then each store that declared
+/// `detailByIsbn` by the title's ISBN (in registry order). Capped at
+/// [`STORE_FILL_MAX_LOOKUPS`]. Reads only the declared capabilities, so no
+/// guest is woken to plan.
+fn store_fill_plan(
     query: &TitleMetaQuery,
-    sources: Option<&SourceRegistry>,
-) -> Option<TitleMeta> {
-    let sources = sources?;
+    sources: &SourceRegistry,
+) -> Vec<(Arc<dyn ContentSource>, StoreLookup)> {
+    let mut plan: Vec<(Arc<dyn ContentSource>, StoreLookup)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for edition in &query.store_editions {
+        let product_id = edition.product_id.trim();
+        if product_id.is_empty() {
+            continue;
+        }
+        let Some(store) = sources.get(edition.source.trim()) else {
+            continue;
+        };
+        if !store.answers_catalog_detail_by_product_id()
+            || !seen.insert((store.plugin_key().to_string(), product_id.to_string()))
+        {
+            continue;
+        }
+        plan.push((store, StoreLookup::Product(product_id.to_string())));
+    }
     let isbn = query
         .isbn
         .as_deref()
@@ -447,23 +495,56 @@ async fn fill_from_source_catalog(
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| isbn_like(s))
-        })?;
-    // Libro.fm is the ISBN-keyed storefront; other sources use different ids.
-    let libro = sources.get("libro")?;
-    match libro.catalog_detail(isbn).await {
-        Ok(Some(hit)) => Some(TitleMeta::from_catalog_hit(hit)),
-        Ok(None) => None,
-        Err(err) => {
-            tracing::debug!(isbn, error = %err, "title-meta libro catalog_detail failed");
-            None
+        });
+    if let Some(isbn) = isbn {
+        for store in sources
+            .routed()
+            .into_iter()
+            .filter(|store| store.answers_catalog_detail_by_isbn())
+        {
+            plan.push((store, StoreLookup::Isbn(isbn.to_string())));
         }
     }
+    plan.truncate(STORE_FILL_MAX_LOOKUPS);
+    plan
+}
+
+/// Gap-fills a sparse result from the storefronts' catalog details, in the
+/// order [`store_fill_plan`] gives; the first record found wins, and a store
+/// that fails is skipped.
+async fn fill_from_source_catalog(
+    query: &TitleMetaQuery,
+    sources: Option<&SourceRegistry>,
+) -> Option<TitleMeta> {
+    for (store, lookup) in store_fill_plan(query, sources?) {
+        let (result, key) = match &lookup {
+            StoreLookup::Product(product_id) => {
+                (store.catalog_detail(product_id).await, product_id.as_str())
+            }
+            StoreLookup::Isbn(isbn) => (store.catalog_detail_by_isbn(isbn).await, isbn.as_str()),
+        };
+        match result {
+            Ok(Some(hit)) => return Some(TitleMeta::from_catalog_hit(hit)),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::debug!(
+                    source = %store.id(),
+                    key,
+                    error = %err,
+                    "title-meta catalog_detail failed"
+                );
+            }
+        }
+    }
+    None
 }
 
 /// Resolve public metadata for a title detail dialog.
 ///
 /// When `sources` is provided, sparse Audible/Audnexus results are gap-filled
-/// from storefront [`bookclerk_source::ContentSource::catalog_detail`] (Libro ISBN details).
+/// from storefront [`bookclerk_source::ContentSource::catalog_detail`]: the
+/// listing stores that declared `detailByProductId`, then the stores that
+/// declared `detailByIsbn`.
 ///
 /// # Arguments
 ///
@@ -485,13 +566,20 @@ pub async fn resolve_title_meta(
 ) -> Result<Option<TitleMeta>> {
     let region = query.region.trim();
     let region = if region.is_empty() { "us" } else { region };
+    let editions: Vec<String> = query
+        .store_editions
+        .iter()
+        .map(|ed| format!("{}:{}", ed.source.trim(), ed.product_id.trim()))
+        .collect();
+    let editions = editions.join(",");
     let key = cache_key(&[
-        "title-meta-v9",
+        "title-meta-v10",
         region,
         query.asin.as_deref().unwrap_or(""),
         query.isbn.as_deref().unwrap_or(""),
         query.title.as_str(),
         query.authors.as_deref().unwrap_or(""),
+        editions.as_str(),
     ]);
     if let Some(cached) = title_meta_cache().get(&key) {
         return Ok(cached);
@@ -751,4 +839,130 @@ pub async fn resolve_title_meta_batch(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog_search::tests::DetailStore;
+
+    /// A detail store with the given declarations, its canned record, and
+    /// its call log.
+    fn store(
+        id: &'static str,
+        by_isbn: bool,
+        by_product_id: bool,
+        description: &str,
+    ) -> (Arc<dyn ContentSource>, Arc<std::sync::Mutex<Vec<String>>>) {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store = DetailStore {
+            id,
+            by_isbn,
+            by_product_id,
+            answer: Some(CatalogHit {
+                product_id: format!("{id}-1"),
+                title: "Mistborn".into(),
+                description: Some(description.into()),
+                ..CatalogHit::default()
+            }),
+            fails: false,
+            calls: calls.clone(),
+            listed: Vec::new(),
+        };
+        (Arc::new(store), calls)
+    }
+
+    /// A query for "Mistborn" naming `editions` and carrying `isbn`.
+    fn query(editions: &[(&str, &str)], isbn: Option<&str>) -> TitleMetaQuery {
+        TitleMetaQuery {
+            title: "Mistborn".into(),
+            authors: None,
+            asin: None,
+            isbn: isbn.map(str::to_string),
+            narrators: None,
+            length_minutes: None,
+            region: "us".into(),
+            store_editions: editions
+                .iter()
+                .map(|(source, pid)| StoreEdition::new(*source, *pid))
+                .collect(),
+        }
+    }
+
+    /// The listing store answers by its own product id before any ISBN
+    /// store is asked, whichever plugin id it has.
+    #[tokio::test]
+    async fn the_listing_store_fills_by_its_own_product_id_first() {
+        let (listing, listing_calls) = store("graphicaudio", false, true, "From GA.");
+        let (isbn_store, isbn_calls) = store("libro", true, false, "From Libro.");
+        let mut registry = SourceRegistry::new();
+        registry.register(listing);
+        registry.register(isbn_store);
+
+        let meta = fill_from_source_catalog(
+            &query(&[("graphicaudio", "1716")], Some("9780000000001")),
+            Some(&registry),
+        )
+        .await
+        .expect("filled");
+        assert_eq!(meta.description.as_deref(), Some("From GA."));
+        assert_eq!(*listing_calls.lock().unwrap(), vec!["product:1716"]);
+        assert!(isbn_calls.lock().unwrap().is_empty());
+    }
+
+    /// A listing store that declared no product lookup is never asked; the
+    /// ISBN store answers instead.
+    #[tokio::test]
+    async fn an_undeclared_listing_store_is_skipped_for_the_isbn_store() {
+        let (chirp, chirp_calls) = store("chirp", false, false, "From Chirp.");
+        let (isbn_store, isbn_calls) = store("libro", true, false, "From Libro.");
+        let mut registry = SourceRegistry::new();
+        registry.register(chirp);
+        registry.register(isbn_store);
+
+        let meta = fill_from_source_catalog(
+            &query(&[("chirp", "c-1")], Some("9780000000001")),
+            Some(&registry),
+        )
+        .await
+        .expect("filled");
+        assert_eq!(meta.description.as_deref(), Some("From Libro."));
+        assert!(chirp_calls.lock().unwrap().is_empty());
+        assert_eq!(*isbn_calls.lock().unwrap(), vec!["isbn:9780000000001"]);
+
+        // Without an ISBN or a declared listing store nothing is asked.
+        assert!(
+            fill_from_source_catalog(&query(&[("chirp", "c-1")], None), Some(&registry))
+                .await
+                .is_none()
+        );
+        assert_eq!(isbn_calls.lock().unwrap().len(), 1);
+    }
+
+    /// Many editions, repeats and unknown stores still make at most
+    /// [`STORE_FILL_MAX_LOOKUPS`] lookups.
+    #[test]
+    fn the_fill_plan_is_deduplicated_and_capped() {
+        let (listing, _) = store("graphicaudio", false, true, "From GA.");
+        let mut registry = SourceRegistry::new();
+        registry.register(listing);
+        let editions = [
+            ("graphicaudio", "1"),
+            ("graphicaudio", " 1 "),
+            ("unknown", "x"),
+            ("graphicaudio", ""),
+            ("graphicaudio", "2"),
+            ("graphicaudio", "3"),
+            ("graphicaudio", "4"),
+        ];
+        let plan = store_fill_plan(&query(&editions, None), &registry);
+        let ids: Vec<String> = plan
+            .iter()
+            .map(|(_, lookup)| match lookup {
+                StoreLookup::Product(pid) => pid.clone(),
+                StoreLookup::Isbn(isbn) => format!("isbn:{isbn}"),
+            })
+            .collect();
+        assert_eq!(ids, vec!["1", "2", "3"]);
+    }
 }

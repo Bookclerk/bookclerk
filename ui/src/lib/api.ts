@@ -4217,7 +4217,29 @@ export type TitleMetaQuery = {
   narrators?: string | null;
   length_minutes?: number | null;
   region?: string;
+  /**
+   * Store editions that listed the title. The server fills a sparse record
+   * from the stores that answer their own product ids before asking ISBN
+   * stores.
+   */
+  store_editions?: StoreEdition[] | null;
 };
+
+/** Most store editions the server accepts on one title-meta query. */
+const TITLE_META_MAX_STORE_EDITIONS = 16;
+
+/**
+ * The store editions a title-meta query sends: the first
+ * {@link TITLE_META_MAX_STORE_EDITIONS} with a source and product id.
+ *
+ * @param body - The title-meta query.
+ * @returns The editions to send, possibly empty.
+ */
+function titleMetaEditions(body: TitleMetaQuery): StoreEdition[] {
+  return (body.store_editions ?? [])
+    .filter((edition) => edition.source.trim() !== "" && edition.product_id.trim() !== "")
+    .slice(0, TITLE_META_MAX_STORE_EDITIONS);
+}
 
 function titleMetaClientKey(body: TitleMetaQuery): string {
   return [
@@ -4226,10 +4248,14 @@ function titleMetaClientKey(body: TitleMetaQuery): string {
     body.asin ?? "",
     body.isbn ?? "",
     body.region ?? "us",
+    titleMetaEditions(body)
+      .map((edition) => `${edition.source}:${edition.product_id}`)
+      .join(","),
   ].join("|");
 }
 
 function serializeTitleMetaQuery(body: TitleMetaQuery) {
+  const storeEditions = titleMetaEditions(body);
   return {
     title: body.title,
     authors: body.authors ?? undefined,
@@ -4238,6 +4264,7 @@ function serializeTitleMetaQuery(body: TitleMetaQuery) {
     narrators: body.narrators ?? undefined,
     length_minutes: body.length_minutes ?? undefined,
     region: body.region ?? "us",
+    store_editions: storeEditions.length > 0 ? storeEditions : undefined,
   };
 }
 

@@ -91,6 +91,6 @@ pub use shelves::{
 };
 pub use title_meta::{
     resolve_title_meta, resolve_title_meta_batch, resolve_title_reviews, TitleMeta, TitleMetaQuery,
-    TitleReview, TitleReviewsPage, TitleReviewsQuery,
+    TitleReview, TitleReviewsPage, TitleReviewsQuery, TITLE_META_MAX_STORE_EDITIONS,
 };
 pub use wish_pool::{pool_wish_editions, PooledEdition, MAX_WISH_EDITIONS};

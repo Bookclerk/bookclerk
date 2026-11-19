@@ -484,6 +484,8 @@ async fn a_429_on_a_product_page_reaches_the_host_and_other_failures_do_not() {
     assert!(failed.price_cents.is_none());
 }
 
+/// The search is built from the instance settings document, so its
+/// `store_url` override reaches the mock as it does for scans and fetches.
 #[tokio::test]
 async fn search_with_a_zero_limit_returns_the_default_page() {
     let server = MockServer::start().await;
@@ -508,7 +510,7 @@ async fn search_with_a_zero_limit_returns_the_default_page() {
         .respond_with(ResponseTemplate::new(200).set_body_string(html))
         .mount(&server)
         .await;
-    let source = GraphicAudioSource::new().with_store_url(server.uri());
+    let source = GraphicAudioSource::from_config(&serde_json::json!({ "store_url": server.uri() }));
     let hits = source
         .search_catalog(&CatalogSearchOpts {
             query: "title".into(),
@@ -519,6 +521,114 @@ async fn search_with_a_zero_limit_returns_the_default_page() {
         .unwrap();
     assert_eq!(hits.len(), DEFAULT_CATALOG_SEARCH_LIMIT);
     assert_eq!(hits[0].title, "Title 0");
+}
+
+/// A search results grid listing `titles` (product ids from 9000).
+fn grid(server: &MockServer, titles: &[&str]) -> String {
+    let items: String = titles
+        .iter()
+        .enumerate()
+        .map(|(i, title)| {
+            format!(
+                r#"<li class="item product product-item">
+                  <a href="{base}/p-{i}.html" class="product">
+                    <h2 class="product name product-item-name">{title}</h2>
+                  </a>
+                  <div class="price" data-product-id="{id}"></div>
+                </li>"#,
+                base = server.uri(),
+                id = 9000 + i
+            )
+        })
+        .collect();
+    format!(r#"<ol class="products list items product-items">{items}</ol>"#)
+}
+
+/// Mounts the search answer for exactly `q`, expecting `calls` requests.
+async fn mount_grid(server: &MockServer, q: &str, titles: &[&str], calls: u64) {
+    Mock::given(method("GET"))
+        .and(path("/catalogsearch/result/"))
+        .and(query_param("q", q))
+        .respond_with(ResponseTemplate::new(200).set_body_string(grid(server, titles)))
+        .expect(calls)
+        .mount(server)
+        .await;
+}
+
+/// The catalog's alphabetical listing, which the store sends for a query it
+/// cannot match.
+const CATALOG_LISTING: &[&str] = &["1632", "A Call to Arms", "Abaddon's Gate"];
+
+/// A query with punctuation and an author's name goes out as plain words;
+/// when the store answers with its catalog listing, the search asks again
+/// without the trailing word and returns the real matches.
+#[tokio::test]
+async fn search_drops_punctuation_and_a_trailing_author_for_the_catalog_listing() {
+    let server = MockServer::start().await;
+    mount_grid(
+        &server,
+        "Mistborn The Final Empire Sanderson",
+        CATALOG_LISTING,
+        1,
+    )
+    .await;
+    mount_grid(
+        &server,
+        "Mistborn The Final Empire",
+        &[
+            "Mistborn 1: The Final Empire 1 of 3",
+            "Mistborn 1: The Final Empire 2 of 3",
+        ],
+        1,
+    )
+    .await;
+    let source = GraphicAudioSource::new().with_store_url(server.uri());
+    let hits = source
+        .search_catalog(&CatalogSearchOpts {
+            query: "Mistborn: The Final Empire Sanderson".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let titles: Vec<&str> = hits.iter().map(|h| h.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        vec![
+            "Mistborn 1: The Final Empire 1 of 3",
+            "Mistborn 1: The Final Empire 2 of 3"
+        ]
+    );
+}
+
+/// When every shorter query still gets the catalog listing, the search
+/// stops after its attempts and answers nothing rather than the listing; an
+/// author search is not shortened.
+#[tokio::test]
+async fn search_answers_nothing_when_every_attempt_gets_the_catalog_listing() {
+    let server = MockServer::start().await;
+    mount_grid(&server, "Final Empire Sanderson Novel", CATALOG_LISTING, 1).await;
+    mount_grid(&server, "Final Empire Sanderson", CATALOG_LISTING, 1).await;
+    mount_grid(&server, "Final Empire", CATALOG_LISTING, 1).await;
+    mount_grid(&server, "Brandon Sanderson", CATALOG_LISTING, 1).await;
+    let source = GraphicAudioSource::new().with_store_url(server.uri());
+    let hits = source
+        .search_catalog(&CatalogSearchOpts {
+            query: "Final Empire, Sanderson (Novel)".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(hits.is_empty(), "{hits:?}");
+
+    let by_author = source
+        .search_catalog(&CatalogSearchOpts {
+            query: "Brandon Sanderson".into(),
+            field: Some(bookclerk_storefront::CatalogSearchField::Author),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(by_author.is_empty(), "{by_author:?}");
 }
 
 /// A catalog detail lookup reads the product page into a full record; a
