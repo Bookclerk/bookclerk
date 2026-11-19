@@ -1001,6 +1001,16 @@ The tests and corpora live in `tools/diagnostics-collector/`.
     of JSON naming an object with exactly the five fields, a lowercase
     version-4 UUID checked by position, and version, platform and kind
     tokens checked character by character.
+- **Diagnostics report body** (`parseSubmit` in `submit.ts`). It is the
+  body anyone can send to `POST /submit`, read under the 256 KiB cap while
+  it streams (`readCapped`), and decides what report is stored in B2.
+  - Test and corpus: `submit.fuzz.test.ts`, `corpus/submit/`.
+  - Oracle: a report exactly when the body is JSON naming an object whose
+    trigger (1–64 characters), version (at most 64, not all whitespace)
+    and OS (at most 64) are strings, whose `archived_at_unix_ms` is absent
+    or a number, and whose `events` is an array of at most 500 objects
+    with no string `message`, `level` or `target` over 8,000, 32 or 256
+    characters. An admitted report equals the parsed body.
 - **Hosted demo run event** (`parseDemoRunEvent` in `demo-runs.ts`). It is
   the value the demo Worker passes to the collector's `DemoRuns`
   entrypoint over its service binding (no public route), and decides what

@@ -13,7 +13,7 @@ fallback).
 
 | Method | Path | Who | Auth |
 |--------|------|-----|------|
-| `POST` | `/submit` | Bookclerk clients | none (validated + secret heuristics) |
+| `POST` | `/submit` | Bookclerk clients | none (body capped at 256 KiB while it streams, then validated + secret heuristics) |
 | `POST` | `/checkin` | Bookclerk clients that share usage | none (strict body, daily cap; see [Share usage](../../docs/server/diagnostics.md#share-usage)) |
 | `GET` | `/report?since=<ms>&after=<name>[&unfiled=1]` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `POST` | `/triage` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
