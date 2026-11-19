@@ -1182,7 +1182,9 @@ async fn run_source_pipeline(
 
     let offer = offered_copy(library, req).await;
     let taken = match &offer {
-        Some(offer) if offer.same_store => take_library_copy(library, req, &work_dir, offer).await,
+        Some(offer) if offer.same_store => {
+            take_library_copy(library, req, &work_dir, offer, CopyCover::Take).await
+        }
         Some(_) | None => None,
     };
     let (fetch, library_pdf, from_library) = match taken {
@@ -1290,6 +1292,7 @@ async fn take_library_copy(
     req: &AcquireRequest,
     work_dir: &Path,
     offer: &OfferedCopy,
+    cover: CopyCover,
 ) -> Option<LibraryFetch> {
     let budget = remaining_temp_budget(library, req, work_dir).await.ok()?;
     // A job's budget is for the whole work directory, which already holds
@@ -1305,6 +1308,7 @@ async fn take_library_copy(
         // carries the store's own PDF.
         pdf: offer.same_store && req.options.download_pdf,
         mp4_audio_only: req.options.wants_split_by_chapter(),
+        skip_cover: matches!(cover, CopyCover::Skip),
     };
     let taken = match fetch_library_copy(offer.copy.as_ref(), &dir, budget, &media, wants).await {
         Ok(taken) => taken,
@@ -1324,6 +1328,26 @@ async fn take_library_copy(
     // A copy from another store is recorded by the caller, once this
     // install's own probe of the file agrees that it is the better copy.
     Some(taken)
+}
+
+/// Whether an acquire downloads the cover of a library's copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopyCover {
+    /// The acquire has no cover of its own.
+    Take,
+    /// The acquire keeps its own store download's cover.
+    Skip,
+}
+
+/// True when this install can store audio like `probe` under the
+/// request's output options.
+///
+/// Output that keeps the files as delivered stores anything. Every other
+/// output decodes or repackages the audio in the media worker, which
+/// reads lossy MP4 and MP3 audio only.
+fn output_can_use(req: &AcquireRequest, probe: &FileProbe) -> bool {
+    req.options.is_noop_output()
+        || (!probe.lossless && matches!(probe.content_type.as_str(), "audio/mp4" | "audio/mpeg"))
 }
 
 /// Records the offered copy as taken, before anything of it is stored: a
@@ -1392,7 +1416,8 @@ async fn probe_scratch_audio(media: &bookclerk_media::MediaPool, path: &Path) ->
 ///
 /// The library's copy is downloaded only when the library's own probe says
 /// it is better, and replaces the store download only when this install's
-/// probe of the downloaded file agrees. In every other case (equal copies,
+/// probe of the downloaded file agrees and the request's output can use
+/// that kind of audio ([`output_can_use`]). In every other case (equal copies,
 /// a download that cannot be probed, a copy that does not arrive or cannot
 /// be recorded as taken) the store download is kept.
 async fn replace_with_better_copy(
@@ -1409,15 +1434,21 @@ async fn replace_with_better_copy(
     let Some(own_probe) = probe_scratch_audio(&media, &own_audio).await else {
         return Compared::Own(own);
     };
-    if !offer.copy.probe().is_better_than(&own_probe) {
+    let said = offer.copy.probe();
+    if !said.is_better_than(&own_probe) || !output_can_use(req, &said) {
         tracing::debug!(
             id = %status_key(req),
             copy_store = %offer.store,
-            "the library's copy from another store is no better; keeping the store's download"
+            "the library's copy from another store is no better, or this output cannot use it; keeping the store's download"
         );
         return Compared::Own(own);
     }
-    let Some(taken) = take_library_copy(library, req, work_dir, offer).await else {
+    let cover = if own.cover_path.is_some() {
+        CopyCover::Skip
+    } else {
+        CopyCover::Take
+    };
+    let Some(taken) = take_library_copy(library, req, work_dir, offer, cover).await else {
         return Compared::Own(own);
     };
     let dir = work_dir.join(LIBRARY_COPY_DIR);
@@ -1425,11 +1456,24 @@ async fn replace_with_better_copy(
         Some(path) => probe_scratch_audio(&media, path).await,
         None => None,
     };
-    if !theirs.is_some_and(|theirs| theirs.is_better_than(&own_probe)) {
+    if !theirs
+        .is_some_and(|theirs| theirs.is_better_than(&own_probe) && output_can_use(req, &theirs))
+    {
         tracing::warn!(
             id = %status_key(req),
             copy_store = %offer.store,
             "the library's copy is not the better copy it was said to be; keeping the store's download"
+        );
+        remove_library_copy(&dir).await;
+        return Compared::Own(own);
+    }
+    // Both downloads are in scratch now. If another job took the room
+    // meanwhile, the copy goes and the store's download stays.
+    if let Err(err) = enforce_work_dir_quota(library, req, work_dir).await {
+        tracing::warn!(
+            id = %status_key(req),
+            error = %err,
+            "no scratch room for the library's copy; keeping the store's download"
         );
         remove_library_copy(&dir).await;
         return Compared::Own(own);
@@ -1447,7 +1491,7 @@ async fn replace_with_better_copy(
     }
     req.library_copies.stored_from().set(&offer.store);
     // Only the audio is replaced: the store's cover stays, and the
-    // library's stands in when the store sent none.
+    // library's (downloaded only then) stands in when the store sent none.
     let mut better = taken.fetch;
     if own.cover_path.is_some() {
         better.cover_path = own.cover_path;
@@ -3999,7 +4043,7 @@ mod tests {
         work_dir: &Path,
     ) -> Option<LibraryFetch> {
         let offer = offered_copy(store, req).await?;
-        take_library_copy(store, req, work_dir, &offer).await
+        take_library_copy(store, req, work_dir, &offer, CopyCover::Take).await
     }
 
     /// A request for `uuid` that asks `copies` before the store and reads
@@ -4362,7 +4406,9 @@ mod tests {
             let mut copy = MemoryCopy::new(Some("libro"), vec![(name, FileRole::Audio, audio)]);
             copy.claims = claims;
             let (fetched, taken) = (copy.fetched.clone(), copy.taken.clone());
-            let req = copy_req(&cache, job.clone(), "B00CMP", &uuid, OneCopy::of(copy));
+            let mut req = copy_req(&cache, job.clone(), "B00CMP", &uuid, OneCopy::of(copy));
+            // Files are kept as delivered, so a FLAC copy can be stored.
+            req.options.format = bookclerk_config::OutputFormat::None;
             (req, fetched, taken)
         };
 
@@ -4409,7 +4455,9 @@ mod tests {
                 ],
             );
             copy.claims = (Some(700), true);
-            let req = copy_req(&cache, job.clone(), "B00CMP", &uuid, OneCopy::of(copy));
+            let copy_fetches = copy.fetched.clone();
+            let mut req = copy_req(&cache, job.clone(), "B00CMP", &uuid, OneCopy::of(copy));
+            req.options.format = bookclerk_config::OutputFormat::None;
             let offer = offered_copy(&store, &req).await.unwrap();
             let mut own_fetch = own(&work_dir);
             if !own_cover {
@@ -4423,7 +4471,10 @@ mod tests {
             let cover = better.cover_path.unwrap();
             if own_cover {
                 assert_eq!(cover, work_dir.join("own.jpg"));
+                // The library's cover is not even downloaded.
+                assert_eq!(copy_fetches.load(Ordering::SeqCst), 1);
             } else {
+                assert_eq!(copy_fetches.load(Ordering::SeqCst), 2);
                 assert!(cover.starts_with(work_dir.join(LIBRARY_COPY_DIR)));
                 assert_eq!(std::fs::read(&cover).unwrap(), b"png");
             }
@@ -4474,6 +4525,19 @@ mod tests {
         assert_eq!(taken.load(Ordering::SeqCst), 0);
         assert!(work_dir.join("own.mp3").exists());
 
+        // A lossless copy is not downloaded when the output repackages
+        // the audio: the media worker could not decode it.
+        let (mut req, fetched, _) = compare((Some(700), true), tagged_flac(), "Twin.flac");
+        req.options.format = bookclerk_config::OutputFormat::EnrichedM4b;
+        let offer = offered_copy(&store, &req).await.unwrap();
+        let own_fetch = own(&work_dir);
+        assert!(matches!(
+            replace_with_better_copy(&store, &req, &work_dir, &offer, own_fetch).await,
+            Compared::Own(_)
+        ));
+        assert_eq!(fetched.load(Ordering::SeqCst), 0);
+        assert!(work_dir.join("own.mp3").exists());
+
         // A better copy that cannot be recorded as taken is not used.
         let mut copy = MemoryCopy::new(
             Some("libro"),
@@ -4481,7 +4545,8 @@ mod tests {
         );
         copy.claims = (Some(700), true);
         copy.refuses_taken = true;
-        let req = copy_req(&cache, job.clone(), "B00CMP", &uuid, OneCopy::of(copy));
+        let mut req = copy_req(&cache, job.clone(), "B00CMP", &uuid, OneCopy::of(copy));
+        req.options.format = bookclerk_config::OutputFormat::None;
         let offer = offered_copy(&store, &req).await.unwrap();
         let own_fetch = own(&work_dir);
         assert!(matches!(

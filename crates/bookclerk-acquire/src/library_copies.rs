@@ -277,8 +277,8 @@ const COVER_EXTS: [&str; 3] = ["jpg", "jpeg", "png"];
 const PDF_EXTS: [&str; 1] = ["pdf"];
 
 /// The files of a copy an acquire downloads, in download order: the one
-/// audio file, then the first cover, then (when `want_pdf`) the first
-/// companion PDF.
+/// audio file, then the first cover (unless [`CopyWants::skip_cover`]),
+/// then (when [`CopyWants::pdf`]) the first companion PDF.
 ///
 /// Only a copy held as **one** audio file is taken. A book the library
 /// holds as several audio files (parts, or one file per chapter) is not:
@@ -319,7 +319,7 @@ pub(crate) fn plan_files(files: &[LibraryCopyFile], wants: CopyWants) -> Option<
         match file.role {
             FileRole::Audio | FileRole::Part | FileRole::Chapter => return None,
             FileRole::Cover => {
-                if cover.is_none() && file.size > 0 {
+                if !wants.skip_cover && cover.is_none() && file.size > 0 {
                     cover = known_ext(&file.name, &COVER_EXTS).map(|ext| TakenFile {
                         index,
                         kind: Taken::Cover,
@@ -355,6 +355,9 @@ pub(crate) struct CopyWants {
     /// audio only, and a single file in another container is not
     /// repackaged first, so only a copy whose audio is MP4 is taken.
     pub mp4_audio_only: bool,
+    /// The acquire already has a cover (its own store download's), so
+    /// the copy's cover is not taken.
+    pub skip_cover: bool,
 }
 
 /// A library's copy downloaded into scratch.
@@ -586,6 +589,7 @@ pub(crate) mod tests {
     const PDF: CopyWants = CopyWants {
         pdf: true,
         mp4_audio_only: false,
+        skip_cover: false,
     };
 
     /// A listed file of `size` bytes.
@@ -667,6 +671,19 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
             [(0, Taken::OtherAudio, "mp3"), (1, Taken::Cover, "png")]
         );
+        // An acquire that keeps its own cover takes the audio alone.
+        let own_cover = CopyWants {
+            skip_cover: true,
+            ..PDF
+        };
+        assert_eq!(
+            plan_files(&mp3, own_cover)
+                .unwrap()
+                .iter()
+                .map(|f| (f.index, f.kind))
+                .collect::<Vec<_>>(),
+            [(0, Taken::OtherAudio)]
+        );
     }
 
     #[test]
@@ -676,6 +693,7 @@ pub(crate) mod tests {
         let split = CopyWants {
             pdf: false,
             mp4_audio_only: true,
+            skip_cover: false,
         };
         for name in ["Book.mp3", "Book.flac"] {
             let files = [listed(name, FileRole::Audio, 1)];

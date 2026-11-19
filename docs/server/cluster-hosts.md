@@ -825,7 +825,10 @@ library it joined, in turn, for the copy of that listing.
   downloads the library's copy too, probes it itself, and stores it in
   place of its own download only when its own probe agrees. Otherwise it
   keeps its own, as it does when the two don't fit in the acquire's
-  scratch budget together. The comparison runs once, in that acquire. The stored
+  scratch budget together. A lossless copy (FLAC or ALAC) is taken only
+  by a branch whose output keeps files as delivered: every other output
+  repackages the audio, and the media worker decodes lossy MP4 and MP3
+  audio only. The comparison runs once, in that acquire. The stored
   file's row names the store the audio really came from, and the cover
   and companion PDF of the branch's own download are kept (the library's
   cover is used only when the store sent none).
