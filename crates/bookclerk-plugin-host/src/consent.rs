@@ -2407,9 +2407,14 @@ pub fn validate_approved_grant(
 /// Returns [`PluginError`] when the draft fails [`validate_approved_grant`]
 /// (for example a stored addition is no longer a valid pattern).
 pub fn reapprove_grant(existing: &PluginGrant, requested: &PluginGrant) -> Result<PluginGrant> {
-    let (added_domains, denied_domains) = classified_operator_network(existing, requested);
-    let (added_tcp, denied_tcp) = classified_operator_tcp(existing, requested);
-    let (added_cidrs, denied_cidrs) = classified_operator_cidrs(existing, requested);
+    // Additions are what the stored grant holds beyond what the version it
+    // approved declared, so destinations an upgrade drops leave with it
+    // instead of turning into operator additions. Grants that never recorded
+    // that version's request fall back to the new one.
+    let baseline = approved_request(existing, requested);
+    let (added_domains, denied_domains) = classified_operator_network(existing, &baseline);
+    let (added_tcp, denied_tcp) = classified_operator_tcp(existing, &baseline);
+    let (added_cidrs, denied_cidrs) = classified_operator_cidrs(existing, &baseline);
     let mut draft = requested.clone();
     draft.domains = requested
         .domains
@@ -2453,6 +2458,28 @@ pub fn reapprove_grant(existing: &PluginGrant, requested: &PluginGrant) -> Resul
             .collect()
     });
     validate_approved_grant(&draft, requested)
+}
+
+/// The request the stored grant was approved against: its recorded
+/// `manifest_*` sets, each falling back to `requested`'s when the grant
+/// recorded none.
+///
+/// # Arguments
+///
+/// * `existing` - The stored grant.
+/// * `requested` - The current package's request.
+fn approved_request(existing: &PluginGrant, requested: &PluginGrant) -> PluginGrant {
+    let mut baseline = requested.clone();
+    if !existing.manifest_domains.is_empty() {
+        baseline.manifest_domains = existing.manifest_domains.clone();
+    }
+    if !existing.manifest_tcp.is_empty() {
+        baseline.manifest_tcp = existing.manifest_tcp.clone();
+    }
+    if !existing.manifest_cidrs.is_empty() {
+        baseline.manifest_cidrs = existing.manifest_cidrs.clone();
+    }
+    baseline
 }
 
 /// Clamps an optional CPU budget through [`WorkerdLimits::effective`].
@@ -5137,6 +5164,36 @@ reason = "  App API contract.  "
         assert!(!grant.address_cidrs.contains("192.168.0.0/16"));
         assert!(grant.address_cidrs.contains("172.16.0.0/12"));
         assert!(grant.address_cidrs.contains("10.0.0.0/8"));
+    }
+
+    #[test]
+    fn reapproving_drops_destinations_the_new_version_no_longer_asks_for() {
+        let before = network_request(
+            &["old.example"],
+            &[("old-db.example", &[5432])],
+            &["10.0.0.0/8"],
+        );
+        let stored = validate_approved_grant(&before, &before).unwrap();
+        let after = network_request(
+            &["new.example"],
+            &[("new-db.example", &[5432])],
+            &["172.16.0.0/12"],
+        );
+
+        let grant = reapprove_grant(&stored, &after).unwrap();
+        assert_eq!(grant.domains, ["new.example".to_string()].into());
+        assert!(grant.operator_added_domains.is_empty());
+        assert_eq!(
+            grant.tcp,
+            [TcpGrant {
+                host: "new-db.example".into(),
+                ports: vec![5432],
+            }]
+            .into()
+        );
+        assert!(grant.operator_added_tcp.is_empty());
+        assert_eq!(grant.address_cidrs, ["172.16.0.0/12".to_string()].into());
+        assert!(grant.operator_added_cidrs.is_empty());
     }
 
     #[test]
