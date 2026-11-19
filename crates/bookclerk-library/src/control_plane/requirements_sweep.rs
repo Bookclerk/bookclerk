@@ -37,12 +37,12 @@
 //!
 //! A grace period on a wall-clock stamp was chosen over counting consecutive
 //! unsettled sweeps because sweeps run both on a timer and on every
-//! deployment wakeup, so a count would expire faster on a busy cluster.
+//! deployment wakeup, so a count would expire faster on a busy library.
 //!
 //! Every write is a compare-and-swap on `state = 'pending'` and the lease
 //! generation, which it bumps ([`LibraryStore::rewrite_pending_job_payload`],
 //! [`LibraryStore::fail_pending_job`]); a job claimed meanwhile is left alone.
-//! The daemon runs the sweep under the [`REQUIREMENTS_SWEEP_LEASE`] cluster
+//! The daemon runs the sweep under the [`REQUIREMENTS_SWEEP_LEASE`] library
 //! lease so one node sweeps at a time.
 
 use std::collections::BTreeMap;
@@ -59,7 +59,7 @@ use crate::error::Result;
 use crate::models::{JobKind, JobPayload, JobRecord};
 use crate::store::LibraryStore;
 
-/// Cluster lease the daemon holds while it sweeps.
+/// Library lease the daemon holds while it sweeps.
 pub const REQUIREMENTS_SWEEP_LEASE: &str = "jobs:requirements-sweep";
 
 /// Lease length; the holder renews it on every pass.

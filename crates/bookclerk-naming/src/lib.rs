@@ -69,16 +69,16 @@ pub enum NamingError {
     /// The template string could not be parsed.
     Parse(String),
     /// Neither the folder template nor both file templates always write
-    /// `<library id>` ([`require_library_id`]).
-    MissingLibraryId,
+    /// `<call number>` ([`require_call_number`]).
+    MissingCallNumber,
 }
 
 impl std::fmt::Display for NamingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NamingError::Parse(msg) => write!(f, "template parse error: {msg}"),
-            NamingError::MissingLibraryId => f.write_str(
-                "naming templates must include <library id> in the folder template, \
+            NamingError::MissingCallNumber => f.write_str(
+                "naming templates must include <call number> in the folder template, \
                  or in both the file and chapter file templates, so two editions of \
                  a book never share a path",
             ),
@@ -286,31 +286,31 @@ pub fn property_tag_names() -> &'static [(&'static str, bool)] {
     tags::property_tags()
 }
 
-/// A `<library id>` value no metadata produces, used to see whether a
+/// A `<call number>` value no metadata produces, used to see whether a
 /// template always writes the tag.
-const LIBRARY_ID_PROBE: &str = "0libraryid0";
+const CALL_NUMBER_PROBE: &str = "0callnumber0";
 
-/// True when `template` writes `<library id>` for every title: the tag
+/// True when `template` writes `<call number>` for every title: the tag
 /// must sit outside every conditional. A conditional on another field
 /// (`<has series->…<-has>`, `<!has series->…<-has>`) can be false for some
 /// title, so a tag inside one does not count, whatever a sample title
 /// renders.
-fn always_writes_library_id(template: &str) -> Result<bool> {
+fn always_writes_call_number(template: &str) -> Result<bool> {
     let book = BookContext {
-        library_id: String::from(LIBRARY_ID_PROBE),
+        call_number: String::from(CALL_NUMBER_PROBE),
         ..BookContext::default()
     };
     Ok(engine::always_writes_property(
         &Template::parse(template)?.inner,
-        "libraryid",
+        "callnumber",
         &book,
-        LIBRARY_ID_PROBE,
+        CALL_NUMBER_PROBE,
     ))
 }
 
 /// Checks that templates name every edition apart: the folder template, or
 /// both the file and the chapter-file templates, always write
-/// `<library id>`. Two editions of a title (an abridged and an unabridged
+/// `<call number>`. Two editions of a title (an abridged and an unabridged
 /// recording, two narrators' readings) would otherwise share one path.
 ///
 /// # Arguments
@@ -320,13 +320,13 @@ fn always_writes_library_id(template: &str) -> Result<bool> {
 ///
 /// # Errors
 ///
-/// Returns [`NamingError::MissingLibraryId`] when no such placement holds,
+/// Returns [`NamingError::MissingCallNumber`] when no such placement holds,
 /// and [`NamingError::Parse`] when a template does not parse.
-pub fn require_library_id(folder: &str, file: &str, chapter_file: &str) -> Result<()> {
-    if always_writes_library_id(folder)?
-        || (always_writes_library_id(file)? && always_writes_library_id(chapter_file)?)
+pub fn require_call_number(folder: &str, file: &str, chapter_file: &str) -> Result<()> {
+    if always_writes_call_number(folder)?
+        || (always_writes_call_number(file)? && always_writes_call_number(chapter_file)?)
     {
         return Ok(());
     }
-    Err(NamingError::MissingLibraryId)
+    Err(NamingError::MissingCallNumber)
 }

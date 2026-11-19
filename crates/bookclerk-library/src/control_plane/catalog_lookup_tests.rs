@@ -29,7 +29,7 @@ async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) {
     let now = Utc::now().to_rfc3339();
     nodes::ActiveModel {
         node_id: Set(node_id.into()),
-        cluster_id: Set("cluster".into()),
+        library_id: Set("library".into()),
         created_at: Set(now.clone()),
         incarnation: Set("test".into()),
         heartbeat_at: Set(now.clone()),

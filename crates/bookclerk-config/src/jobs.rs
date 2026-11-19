@@ -14,7 +14,7 @@ pub const DEFAULT_RETENTION_DAYS: u64 = 7;
 pub const DEFAULT_TEMP_QUOTA_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Default network-class concurrency (one-at-a-time on a small VPS).
 pub const DEFAULT_NETWORK_CONCURRENCY: u32 = 1;
-/// Default cluster-wide running jobs per required plugin instance.
+/// Default library-wide running jobs per required plugin instance.
 pub const DEFAULT_PLUGIN_INSTANCE_CONCURRENCY: u32 = 1;
 
 /// `[jobs]` — durable queue admission, leases, and resource-class concurrency.
@@ -35,15 +35,15 @@ pub struct JobsConfig {
     pub concurrency: JobsConcurrencyConfig,
 }
 
-/// Per-resource-class worker counts and cluster-wide job semaphores.
+/// Per-resource-class worker counts and library-wide job semaphores.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct JobsConcurrencyConfig {
     /// Scan / acquire / listening-sync workers on this node (default 1),
-    /// and the cluster-wide number of running network jobs (the
+    /// and the library-wide number of running network jobs (the
     /// `jobs:network` semaphore).
     pub network: u32,
-    /// Cluster-wide running jobs that require one plugin instance (the
+    /// Library-wide running jobs that require one plugin instance (the
     /// `plugin-instance:<id>` semaphore; default 1).
     pub plugin_instance: u32,
 }

@@ -1,6 +1,6 @@
-//! Named cluster leases: singletons over the shared database.
+//! Named library leases: singletons over the shared database.
 //!
-//! A lease is one `cluster_leases` row: a holder (a node id, or a process
+//! A lease is one `library_leases` row: a holder (a node id, or a process
 //! id for schema migration), a fencing token, and an expiry in Unix
 //! milliseconds. Acquiring a free or expired lease bumps the token (even
 //! for the holder that let it expire); renewing a held one keeps it. Every
@@ -29,7 +29,7 @@ use sea_orm::{
     ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder,
 };
 
-use crate::entities::cluster_leases;
+use crate::entities::library_leases;
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
@@ -50,9 +50,9 @@ pub const RECORD_RETENTION_LEASE: &str = "maintenance.records";
 /// [`crate::apply_host_schema_with_batch_opts`]).
 pub const MIGRATION_LEASE: &str = "schema.migrate";
 
-/// A held cluster lease.
+/// A held library lease.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClusterLease {
+pub struct LibraryLease {
     /// Lease name.
     pub name: String,
     /// Holder (a node id).
@@ -63,7 +63,7 @@ pub struct ClusterLease {
     pub expires_at_ms: i64,
 }
 
-impl ClusterLease {
+impl LibraryLease {
     /// True when the lease has not expired at `now_ms`.
     #[must_use]
     pub fn is_held_at(&self, now_ms: i64) -> bool {
@@ -93,7 +93,7 @@ pub async fn acquire_lease(
     name: &str,
     holder: &str,
     ttl: Duration,
-) -> Result<Option<ClusterLease>> {
+) -> Result<Option<LibraryLease>> {
     acquire_lease_on(store.db(), name, holder, ttl).await
 }
 
@@ -108,29 +108,29 @@ pub async fn acquire_lease_on<C: ConnectionTrait>(
     name: &str,
     holder: &str,
     ttl: Duration,
-) -> Result<Option<ClusterLease>> {
+) -> Result<Option<LibraryLease>> {
     let now_ms = Utc::now().timestamp_millis();
     let expires_at_ms = expiry_after(ttl);
     let renewed_at = Utc::now().to_rfc3339();
-    let lease = |token| ClusterLease {
+    let lease = |token| LibraryLease {
         name: name.to_string(),
         holder: holder.to_string(),
         token,
         expires_at_ms,
     };
-    let Some(row) = cluster_leases::Entity::find_by_id(name.to_string())
+    let Some(row) = library_leases::Entity::find_by_id(name.to_string())
         .one(db)
         .await
         .map_err(LibraryError::Orm)?
     else {
-        let model = cluster_leases::ActiveModel {
+        let model = library_leases::ActiveModel {
             name: Set(name.to_string()),
             holder: Set(holder.to_string()),
             token: Set(1),
             expires_at_ms: Set(expires_at_ms),
             renewed_at: Set(renewed_at),
         };
-        return match cluster_leases::Entity::insert(model).exec(db).await {
+        return match library_leases::Entity::insert(model).exec(db).await {
             Ok(_) => Ok(Some(lease(1))),
             // A concurrent first acquire inserted the row; this one lost.
             Err(err) => match load_lease_on(db, name).await? {
@@ -149,20 +149,20 @@ pub async fn acquire_lease_on<C: ConnectionTrait>(
     } else {
         return Ok(None);
     };
-    let res = cluster_leases::Entity::update_many()
+    let res = library_leases::Entity::update_many()
         .col_expr(
-            cluster_leases::Column::Holder,
+            library_leases::Column::Holder,
             Expr::value(holder.to_string()),
         )
-        .col_expr(cluster_leases::Column::Token, Expr::value(token))
+        .col_expr(library_leases::Column::Token, Expr::value(token))
         .col_expr(
-            cluster_leases::Column::ExpiresAtMs,
+            library_leases::Column::ExpiresAtMs,
             Expr::value(expires_at_ms),
         )
-        .col_expr(cluster_leases::Column::RenewedAt, Expr::value(renewed_at))
-        .filter(cluster_leases::Column::Name.eq(name))
-        .filter(cluster_leases::Column::Holder.eq(row.holder))
-        .filter(cluster_leases::Column::Token.eq(row.token))
+        .col_expr(library_leases::Column::RenewedAt, Expr::value(renewed_at))
+        .filter(library_leases::Column::Name.eq(name))
+        .filter(library_leases::Column::Holder.eq(row.holder))
+        .filter(library_leases::Column::Token.eq(row.token))
         .exec(db)
         .await
         .map_err(LibraryError::Orm)?;
@@ -181,9 +181,9 @@ pub async fn acquire_lease_on<C: ConnectionTrait>(
 /// Returns an error when the write fails.
 pub async fn renew_lease(
     store: &LibraryStore,
-    lease: &ClusterLease,
+    lease: &LibraryLease,
     ttl: Duration,
-) -> Result<Option<ClusterLease>> {
+) -> Result<Option<LibraryLease>> {
     renew_lease_on(store.db(), lease, ttl).await
 }
 
@@ -194,28 +194,28 @@ pub async fn renew_lease(
 /// Returns an error when the write fails.
 pub async fn renew_lease_on<C: ConnectionTrait>(
     db: &C,
-    lease: &ClusterLease,
+    lease: &LibraryLease,
     ttl: Duration,
-) -> Result<Option<ClusterLease>> {
+) -> Result<Option<LibraryLease>> {
     let now_ms = Utc::now().timestamp_millis();
     let expires_at_ms = expiry_after(ttl);
-    let res = cluster_leases::Entity::update_many()
+    let res = library_leases::Entity::update_many()
         .col_expr(
-            cluster_leases::Column::ExpiresAtMs,
+            library_leases::Column::ExpiresAtMs,
             Expr::value(expires_at_ms),
         )
         .col_expr(
-            cluster_leases::Column::RenewedAt,
+            library_leases::Column::RenewedAt,
             Expr::value(Utc::now().to_rfc3339()),
         )
-        .filter(cluster_leases::Column::Name.eq(lease.name.as_str()))
-        .filter(cluster_leases::Column::Holder.eq(lease.holder.as_str()))
-        .filter(cluster_leases::Column::Token.eq(lease.token))
-        .filter(cluster_leases::Column::ExpiresAtMs.gt(now_ms))
+        .filter(library_leases::Column::Name.eq(lease.name.as_str()))
+        .filter(library_leases::Column::Holder.eq(lease.holder.as_str()))
+        .filter(library_leases::Column::Token.eq(lease.token))
+        .filter(library_leases::Column::ExpiresAtMs.gt(now_ms))
         .exec(db)
         .await
         .map_err(LibraryError::Orm)?;
-    Ok((res.rows_affected == 1).then(|| ClusterLease {
+    Ok((res.rows_affected == 1).then(|| LibraryLease {
         expires_at_ms,
         ..lease.clone()
     }))
@@ -229,7 +229,7 @@ pub async fn renew_lease_on<C: ConnectionTrait>(
 /// # Errors
 ///
 /// Returns an error when the write fails.
-pub async fn release_lease(store: &LibraryStore, lease: &ClusterLease) -> Result<()> {
+pub async fn release_lease(store: &LibraryStore, lease: &LibraryLease) -> Result<()> {
     release_lease_on(store.db(), lease).await
 }
 
@@ -238,12 +238,12 @@ pub async fn release_lease(store: &LibraryStore, lease: &ClusterLease) -> Result
 /// # Errors
 ///
 /// Returns an error when the write fails.
-pub async fn release_lease_on<C: ConnectionTrait>(db: &C, lease: &ClusterLease) -> Result<()> {
-    cluster_leases::Entity::update_many()
-        .col_expr(cluster_leases::Column::ExpiresAtMs, Expr::value(0_i64))
-        .filter(cluster_leases::Column::Name.eq(lease.name.as_str()))
-        .filter(cluster_leases::Column::Holder.eq(lease.holder.as_str()))
-        .filter(cluster_leases::Column::Token.eq(lease.token))
+pub async fn release_lease_on<C: ConnectionTrait>(db: &C, lease: &LibraryLease) -> Result<()> {
+    library_leases::Entity::update_many()
+        .col_expr(library_leases::Column::ExpiresAtMs, Expr::value(0_i64))
+        .filter(library_leases::Column::Name.eq(lease.name.as_str()))
+        .filter(library_leases::Column::Holder.eq(lease.holder.as_str()))
+        .filter(library_leases::Column::Token.eq(lease.token))
         .exec(db)
         .await
         .map_err(LibraryError::Orm)?;
@@ -255,7 +255,7 @@ pub async fn release_lease_on<C: ConnectionTrait>(db: &C, lease: &ClusterLease) 
 /// # Errors
 ///
 /// Returns an error when the read fails.
-pub async fn load_lease(store: &LibraryStore, name: &str) -> Result<Option<ClusterLease>> {
+pub async fn load_lease(store: &LibraryStore, name: &str) -> Result<Option<LibraryLease>> {
     load_lease_on(store.db(), name).await
 }
 
@@ -264,8 +264,8 @@ pub async fn load_lease(store: &LibraryStore, name: &str) -> Result<Option<Clust
 /// # Errors
 ///
 /// Returns an error when the read fails.
-pub async fn load_lease_on<C: ConnectionTrait>(db: &C, name: &str) -> Result<Option<ClusterLease>> {
-    Ok(cluster_leases::Entity::find_by_id(name.to_string())
+pub async fn load_lease_on<C: ConnectionTrait>(db: &C, name: &str) -> Result<Option<LibraryLease>> {
+    Ok(library_leases::Entity::find_by_id(name.to_string())
         .one(db)
         .await
         .map_err(LibraryError::Orm)?
@@ -277,9 +277,9 @@ pub async fn load_lease_on<C: ConnectionTrait>(db: &C, name: &str) -> Result<Opt
 /// # Errors
 ///
 /// Returns an error when the read fails.
-pub async fn list_leases(store: &LibraryStore) -> Result<Vec<ClusterLease>> {
-    Ok(cluster_leases::Entity::find()
-        .order_by_asc(cluster_leases::Column::Name)
+pub async fn list_leases(store: &LibraryStore) -> Result<Vec<LibraryLease>> {
+    Ok(library_leases::Entity::find()
+        .order_by_asc(library_leases::Column::Name)
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?
@@ -288,9 +288,9 @@ pub async fn list_leases(store: &LibraryStore) -> Result<Vec<ClusterLease>> {
         .collect())
 }
 
-/// Maps a `cluster_leases` row to a [`ClusterLease`].
-fn lease_from_row(row: cluster_leases::Model) -> ClusterLease {
-    ClusterLease {
+/// Maps a `library_leases` row to a [`LibraryLease`].
+fn lease_from_row(row: library_leases::Model) -> LibraryLease {
+    LibraryLease {
         name: row.name,
         holder: row.holder,
         token: row.token,
@@ -305,7 +305,7 @@ pub struct LeaseFence<'a> {
     /// Store the lease lives in.
     store: &'a LibraryStore,
     /// The lease as of the last successful check.
-    lease: ClusterLease,
+    lease: LibraryLease,
     /// How far each check extends the lease.
     ttl: Duration,
 }
@@ -313,13 +313,13 @@ pub struct LeaseFence<'a> {
 impl<'a> LeaseFence<'a> {
     /// A fence for a lease acquired with `ttl`.
     #[must_use]
-    pub fn new(store: &'a LibraryStore, lease: ClusterLease, ttl: Duration) -> Self {
+    pub fn new(store: &'a LibraryStore, lease: LibraryLease, ttl: Duration) -> Self {
         Self { store, lease, ttl }
     }
 
     /// The lease as of the last successful check.
     #[must_use]
-    pub fn lease(&self) -> &ClusterLease {
+    pub fn lease(&self) -> &LibraryLease {
         &self.lease
     }
 

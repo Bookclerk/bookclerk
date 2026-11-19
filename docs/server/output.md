@@ -344,13 +344,13 @@ you need to:
 [output]
 naming_profile = "audiobookshelf"
 # folder_template = "<first author>/<title short>"
-# file_template = "<title> [<library id>]"
+# file_template = "<title> [<call number>]"
 ```
 
 | Profile | Layout |
 | --- | --- |
-| `audiobookshelf` (default) | `Author/Series/1 - Title/Title [library id].m4b`, or `Author/Title/Title [library id].m4b` outside a series, which Audiobookshelf scans as author, series and book |
-| `classic` | Libation's desktop defaults with the library id added: `<title short> [<id>] [<library id>]` |
+| `audiobookshelf` (default) | `Author/Series/1 - Title/Title [call number].m4b`, or `Author/Title/Title [call number].m4b` outside a series, which Audiobookshelf scans as author, series and book |
+| `classic` | Libation's desktop defaults with the call number added: `<title short> [<id>] [<call number>]` |
 
 Each destination can override the naming too, with its own
 `naming_profile`, `folder_template`, `file_template` and
@@ -367,11 +367,11 @@ bookclerk config template preview <asin>
 
 Replace `<asin>` with a book's ASIN.
 
-### The library id
+### The call number
 
-Every template set must include `<library id>`: in the folder template,
+Every template set must include `<call number>`: in the folder template,
 or in both the file and the chapter file templates. The tag must be
-written for every book, so a `<library id>` inside any condition
+written for every book, so a `<call number>` inside any condition
 (`<has series->…<-has>`, or `<!has series->…<-has>`) doesn't count. It is a short id for the
 edition, such as `1a2b3c4d`, so two editions of a book (an abridged and an
 unabridged recording, two narrators' readings) never share a path, while
@@ -398,7 +398,7 @@ because the same edition bought from two stores has two product ids, and
 not every book has an ISBN or ASIN.
 
 Files you already have keep their names: storage matching marks them
-acquired where they are, whether or not their path has a library id.
+acquired where they are, whether or not their path has a call number.
 
 Copies of one edition on several accounts (the same book bought twice)
 share their files. The edition is downloaded once, and every account's
@@ -436,6 +436,13 @@ If a sidecar file fails, Bookclerk logs it and still keeps the audio.
 
 With `fixup_metadata` on, an M4B also records which Bookclerk version
 tagged it, in the freeform item `----:app.bookclerk:TOOL`.
+
+`fixup_metadata` also embeds the chapters: as a chapter track in an M4B,
+and as ID3 `CHAP` frames listed by one `CTOC` frame in a single MP3, which
+Audiobookshelf and most players read. Each chapter ends where the next one
+starts and the last ends with the audio. A file that already carries
+chapters keeps them, unless Bookclerk overlays Audible's chapter list on a
+book from another store.
 
 Audible's own options (Widevine, xHE-AAC, brand trim) are on the
 [Stores](stores.md#audible) page.

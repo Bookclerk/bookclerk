@@ -33,6 +33,14 @@ SIGNINS_PER_DAY = "10"
 binding = "DB"
 migrations_dir = "migrations"
 
+# Live usage: each run's start, ready and stop go to the diagnostics
+# Worker's DemoRuns entrypoint (src/usage.ts), a private link with no
+# public route. Without the binding the demo sends nothing.
+[[services]]
+binding = "USAGE"
+service = "bookclerk-diagnostics"
+entrypoint = "DemoRuns"
+
 # The launch and waiting pages' styles and scripts, served under /_demo/
 # without running the Worker. Every other path reaches the Worker.
 [assets]

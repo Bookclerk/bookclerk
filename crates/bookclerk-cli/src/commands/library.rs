@@ -422,8 +422,8 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     placement: None,
                     job_id: None,
                     temp_quota_bytes: None,
-                    library_id: None,
-                    parent_library_id: None,
+                    call_number: None,
+                    parent_call_number: None,
                     // Only plans the storage key; nothing is fetched.
                     metadata: bookclerk_acquire::AcquireMetadata::default(),
                     library_copies: bookclerk_acquire::LibraryCopySource::default(),
@@ -947,7 +947,7 @@ async fn list_all_accounts(
 ///
 /// A storefront deployed on this host wins (alias, PluginKey, or instance
 /// id). Otherwise the needle may name a PluginKey or display alias already
-/// recorded on an account row: the plugin can be deployed on another cluster
+/// recorded on an account row: the plugin can be deployed on another library
 /// host, and account rows belong to the plugin key, not to a host.
 async fn account_plugin_key(
     store: &LibraryStore,

@@ -8,7 +8,7 @@ import { BranchesPanel } from "@/components/BranchesPanel";
 import { canChangeBranchSharing } from "@/lib/join";
 import { SharedBranchesPanel } from "@/components/SharedBranchesPanel";
 import { ClerkCardsPanel } from "@/components/ClerkCardsPanel";
-import { ClusterConsentsPanel } from "@/components/ClusterConsentsPanel";
+import { LibraryConsentsPanel } from "@/components/LibraryConsentsPanel";
 import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
 import { OutputSettingsPanel } from "@/components/OutputSettingsPanel";
@@ -19,6 +19,7 @@ import {
   type PluginConsentGrantDraft,
 } from "@/components/PluginConsentDialog";
 import { CpuCoresSlider } from "@/components/CpuCoresSlider";
+import { DiagnosticsReportsList, DiagnosticsSharingFields } from "@/components/DiagnosticsSettings";
 import { SettingsTableEditor } from "@/components/SettingsTableEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -70,7 +71,7 @@ const DEFAULT_DAEMON_PORT = "8787";
 
 type ListenExposure = "localhost" | "all" | "custom";
 type ListenRow = { host: string; port: string };
-/** A Settings section. `clusters` is shown as "Library" (this server as a branch). */
+/** A Settings section. `libraries` is shown as "Library" (this server as a branch). */
 export type SettingsTab =
   | "account"
   | "users"
@@ -81,7 +82,7 @@ export type SettingsTab =
   | "nodes"
   | "branches"
   | "shared_branches"
-  | "clusters";
+  | "libraries";
 
 const ISOLATION_OPTIONS = [
   ["required", "Required"],
@@ -423,6 +424,8 @@ export function SettingsPage({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [daemonAuthEnabled, setDaemonAuthEnabled] = useState(true);
   const [autoAcquire, setAutoAcquire] = useState(false);
+  const [shareReports, setShareReports] = useState(false);
+  const [shareUsage, setShareUsage] = useState(false);
   const [pluginsIsolation, setPluginsIsolation] = useState("required");
   const [mediaIsolation, setMediaIsolation] = useState("required");
   const [jailMemoryMiB, setJailMemoryMiB] = useState("");
@@ -445,6 +448,8 @@ export function SettingsPage({
     daemonListen: string;
     daemonAuthEnabled: boolean;
     autoAcquire: boolean;
+    shareReports: boolean;
+    shareUsage: boolean;
     pluginsIsolation: string;
     mediaIsolation: string;
     jailMemoryMiB: string;
@@ -547,7 +552,7 @@ export function SettingsPage({
     ) {
       setActiveTab("account");
     }
-    if (!showLibrary && activeTab === "clusters") {
+    if (!showLibrary && activeTab === "libraries") {
       setActiveTab("account");
     }
     if (!showNodes && activeTab === "nodes") {
@@ -689,6 +694,12 @@ export function SettingsPage({
     if (autoAcquire !== operatorBaseline.autoAcquire) {
       return true;
     }
+    if (
+      shareReports !== operatorBaseline.shareReports ||
+      shareUsage !== operatorBaseline.shareUsage
+    ) {
+      return true;
+    }
     if (pluginsIsolation !== operatorBaseline.pluginsIsolation) {
       return true;
     }
@@ -721,6 +732,8 @@ export function SettingsPage({
     operatorBaseline,
     pluginValues,
     pluginsIsolation,
+    shareReports,
+    shareUsage,
   ]);
 
   const refresh = useCallback(async () => {
@@ -749,6 +762,8 @@ export function SettingsPage({
         setAdvancedOpen(exposure === "custom");
         setDaemonAuthEnabled(nextSettings.settings["daemon.auth.enabled"] === "true");
         setAutoAcquire(nextSettings.settings["library.auto_acquire"] === "true");
+        setShareReports(nextSettings.settings["diagnostics.share_reports"] === "true");
+        setShareUsage(nextSettings.settings["diagnostics.share_usage"] === "true");
         setPluginsIsolation(nextSettings.settings["plugins.isolation"] ?? "required");
         setMediaIsolation(nextSettings.settings["media.isolation"] ?? "required");
         setJailMemoryMiB(nextSettings.settings["plugins.jail.memory_mib"] ?? "");
@@ -765,6 +780,8 @@ export function SettingsPage({
               : listenListFromExposure(exposure, rows[0]?.port ?? DEFAULT_DAEMON_PORT),
           daemonAuthEnabled: nextSettings.settings["daemon.auth.enabled"] === "true",
           autoAcquire: nextSettings.settings["library.auto_acquire"] === "true",
+          shareReports: nextSettings.settings["diagnostics.share_reports"] === "true",
+          shareUsage: nextSettings.settings["diagnostics.share_usage"] === "true",
           pluginsIsolation: nextSettings.settings["plugins.isolation"] ?? "required",
           mediaIsolation: nextSettings.settings["media.isolation"] ?? "required",
           jailMemoryMiB: nextSettings.settings["plugins.jail.memory_mib"] ?? "",
@@ -893,6 +910,8 @@ export function SettingsPage({
           { key: "daemon.listen", value: nextListen },
           { key: "daemon.auth.enabled", value: String(daemonAuthEnabled) },
           { key: "library.auto_acquire", value: String(autoAcquire) },
+          { key: "diagnostics.share_reports", value: String(shareReports) },
+          { key: "diagnostics.share_usage", value: String(shareUsage) },
           { key: "plugins.isolation", value: pluginsIsolation },
           { key: "media.isolation", value: mediaIsolation },
           { key: "plugins.jail.memory_mib", value: jailMemoryMiB.trim() },
@@ -934,6 +953,8 @@ export function SettingsPage({
           : listenListFromExposure(exposure, rows[0]?.port ?? DEFAULT_DAEMON_PORT),
       daemonAuthEnabled: next.settings["daemon.auth.enabled"] === "true",
       autoAcquire: next.settings["library.auto_acquire"] === "true",
+      shareReports: next.settings["diagnostics.share_reports"] === "true",
+      shareUsage: next.settings["diagnostics.share_usage"] === "true",
       pluginsIsolation: next.settings["plugins.isolation"] ?? "required",
       mediaIsolation: next.settings["media.isolation"] ?? "required",
       jailMemoryMiB: next.settings["plugins.jail.memory_mib"] ?? "",
@@ -1007,7 +1028,7 @@ export function SettingsPage({
    * Flips this node's deployment of an instance and reloads the snapshot.
    *
    * The write is immediate (not part of the Save form): enablement is a
-   * cluster fact, not a draft value.
+   * library fact, not a draft value.
    */
   async function setDeployment(plugin: PluginSettingsGroup, desired: "present" | "absent") {
     const instanceId = plugin.plugin_instance_id;
@@ -1438,14 +1459,14 @@ export function SettingsPage({
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={activeTab === "clusters"}
+                  aria-selected={activeTab === "libraries"}
                   className={cn(
                     "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                    activeTab === "clusters"
+                    activeTab === "libraries"
                       ? "bg-ink text-paper shadow-sm"
                       : "text-ink/60 hover:text-ink",
                   )}
-                  onClick={() => selectTab("clusters")}
+                  onClick={() => selectTab("libraries")}
                 >
                   Library
                 </button>
@@ -1553,9 +1574,9 @@ export function SettingsPage({
             <OutputSettingsPanel onSessionExpired={onSessionExpired} />
           ) : null}
 
-          {activeTab === "clusters" && showLibrary ? (
+          {activeTab === "libraries" && showLibrary ? (
             <div className="space-y-10">
-              <ClusterConsentsPanel
+              <LibraryConsentsPanel
                 onSessionExpired={onSessionExpired}
                 sharingOnly={!showOperatorChrome}
               />
@@ -1786,6 +1807,33 @@ export function SettingsPage({
                           checked={autoAcquire}
                           onChange={setAutoAcquire}
                         />
+                      </div>
+                    </section>
+
+                    <section className="space-y-3">
+                      <div className="space-y-1">
+                        <h2 className="text-lg font-semibold text-ink">Diagnostics</h2>
+                        <p className="text-sm text-ink/55">
+                          What this install shares with the Bookclerk maintainers. Both are off
+                          until you turn them on.
+                        </p>
+                      </div>
+                      <div className="divide-y divide-ink/10 bg-card px-3">
+                        <DiagnosticsSharingFields
+                          idPrefix="settings"
+                          shareReports={shareReports}
+                          shareUsage={shareUsage}
+                          onChange={(reports, usage) => {
+                            setShareReports(reports);
+                            setShareUsage(usage);
+                          }}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <h3 className="text-sm font-semibold text-ink">Reports sent</h3>
+                      </div>
+                      <div className="bg-card px-3">
+                        <DiagnosticsReportsList />
                       </div>
                     </section>
 
@@ -2036,7 +2084,7 @@ export function SettingsPage({
                                           aria-label={`${plugin.display_name?.trim() || plugin.id} ${instanceGroup ? "deployed" : "enabled"}`}
                                           title={
                                             plugin.placement
-                                              ? "Placed by the cluster scheduler; change its placement instead"
+                                              ? "Placed by the library scheduler; change its placement instead"
                                               : undefined
                                           }
                                           checked={enabled}

@@ -1,8 +1,8 @@
-//! `bookclerk nodes`: the cluster's nodes, their placement labels, their
+//! `bookclerk nodes`: the library's nodes, their placement labels, their
 //! owners, and branch-node enrollment links.
 //!
 //! Reads and writes the library database directly, like `plugins`. Label
-//! changes wake the cluster scheduler through every node's queue.
+//! changes wake the library scheduler through every node's queue.
 //!
 //! An enrollment link's secret is printed once, inside the link's URL
 //! fragment, and never logged or written anywhere else.
@@ -48,12 +48,12 @@ pub enum NodesCommand {
         #[arg(long)]
         label: Option<String>,
         /// Disk space, in bytes, this node's image caches may use,
-        /// overriding the cluster's `cache.budget_bytes` (16 MiB to 1 TiB).
-        #[arg(long, value_name = "BYTES", conflicts_with = "cluster_cache_budget")]
+        /// overriding the library's `cache.budget_bytes` (16 MiB to 1 TiB).
+        #[arg(long, value_name = "BYTES", conflicts_with = "library_cache_budget")]
         cache_budget: Option<u64>,
-        /// Drop this node's cache budget override and follow the cluster's.
+        /// Drop this node's cache budget override and follow the library's.
         #[arg(long)]
-        cluster_cache_budget: bool,
+        library_cache_budget: bool,
     },
     /// Add or remove placement labels on a node (`nas`, `zone=eu`).
     Label {
@@ -320,7 +320,7 @@ pub async fn run(
             undrain,
             label,
             cache_budget,
-            cluster_cache_budget,
+            library_cache_budget,
         } => {
             let node_id = node.unwrap_or_else(|| this_node.clone());
             load_node(store, &node_id).await?;
@@ -347,7 +347,7 @@ pub async fn run(
                     if cache_budget.is_some() {
                         runtime.cache_budget_bytes = cache_budget;
                     }
-                    if cluster_cache_budget {
+                    if library_cache_budget {
                         runtime.cache_budget_bytes = None;
                     }
                 },
@@ -360,7 +360,7 @@ pub async fn run(
             });
             emit(format, &payload, || {
                 let cache = document.body.cache_budget_bytes.map_or_else(
-                    || "the cluster's".to_string(),
+                    || "the library's".to_string(),
                     |bytes| format!("{bytes} bytes"),
                 );
                 println!(

@@ -2,8 +2,8 @@
 """Renders the summary comment the ingest run keeps on each diagnostics issue.
 
 The collector's ``GET /issues/summaries`` answers, for every issue whose
-figures changed since the last run, how many reports the issue tracks, how
-they were linked, when the first and last arrived, the versions and platforms seen and the newest reports. This module
+figures changed since the last run, how many reports the issue tracks and
+from how many installs, how they were linked, when the first and last arrived, the versions and platforms seen and the newest reports. This module
 turns each into one Markdown comment, marked on its first line so the run
 finds and edits the same comment next time (editing notifies nobody), and
 hands back the fingerprint the collector gave, which the run echoes to
@@ -185,6 +185,10 @@ def render_summary(entry: object, dashboard: str | None) -> Rendered | None:
         lines.append("**Diagnostics summary** · no report is linked to this issue at present")
     else:
         head = f"**Diagnostics summary** · {_plural(reports, 'report')}"
+        installs = _count(entry.get("installs")) or 0
+        if installs > 0:
+            some = (_count(entry.get("unattributed")) or 0) > 0
+            head += f" · {'at least ' if some else ''}{_plural(installs, 'install')}"
         if first:
             head += f" · first seen {first}"
         if last:

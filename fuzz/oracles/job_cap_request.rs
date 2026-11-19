@@ -7,9 +7,9 @@
 //! for one library ([`parse_job_cap_request`]). The invariant, checked
 //! against this file's own reading of the bytes as an untyped JSON value
 //! rather than the typed body: a body is accepted exactly when it is one
-//! JSON object with no repeated keys and no keys besides `cluster_id` (a
+//! JSON object with no repeated keys and no keys besides `library_id` (a
 //! string) and `max_jobs` (`null` or a whole number from 0 to 16), both
-//! present. An accepted body yields the trimmed `cluster_id` and that cap;
+//! present. An accepted body yields the trimmed `library_id` and that cap;
 //! a refused one is `Invalid`, never another error.
 
 use bookclerk_library::control_plane::parse_job_cap_request;
@@ -61,11 +61,11 @@ pub fn check(data: &[u8]) -> bool {
             );
             false
         }
-        Expected::Accepted(cluster_id, cap) => {
+        Expected::Accepted(library_id, cap) => {
             let request = got.unwrap_or_else(|err| {
                 panic!("{:?} refused: {err:?}", String::from_utf8_lossy(data))
             });
-            assert_eq!(request.cluster_id, cluster_id);
+            assert_eq!(request.library_id, library_id);
             assert_eq!(request.max_jobs.map(|cap| cap.jobs()), cap);
             true
         }
@@ -85,11 +85,11 @@ fn expected(data: &[u8]) -> Expected {
     }
     if fields
         .keys()
-        .any(|key| key != "cluster_id" && key != "max_jobs")
+        .any(|key| key != "library_id" && key != "max_jobs")
     {
         return Expected::Refused;
     }
-    let Some(Value::String(cluster_id)) = fields.get("cluster_id") else {
+    let Some(Value::String(library_id)) = fields.get("library_id") else {
         return Expected::Refused;
     };
     let cap = match fields.get("max_jobs") {
@@ -100,7 +100,7 @@ fn expected(data: &[u8]) -> Expected {
         },
         _ => return Expected::Refused,
     };
-    Expected::Accepted(cluster_id.trim().to_string(), cap)
+    Expected::Accepted(library_id.trim().to_string(), cap)
 }
 
 /// True when the top-level JSON object in `data` writes a key twice.

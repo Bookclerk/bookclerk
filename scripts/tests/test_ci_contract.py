@@ -669,7 +669,13 @@ class WorkflowContractTests(unittest.TestCase):
             if name == FAIL_FAST_JOB:
                 continue
             steps = job["steps"]
-            checkout = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("actions/checkout@")]
+            # Checkouts of this repository; another repository's (the public
+            # visual baselines) holds no code the sealed bump changes.
+            checkout = [
+                i
+                for i, s in enumerate(steps)
+                if str(s.get("uses", "")).startswith("actions/checkout@") and "repository" not in s.get("with", {})
+            ]
             self.assertEqual(len(checkout), 1, name)
             # The plan job first refuses a private-head call without a commit id.
             offset = 2 if name == "plan" else 1

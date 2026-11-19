@@ -8,9 +8,9 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "window_books")]
 pub struct Model {
-    /// The library (owner cluster id) that holds it.
+    /// The library (parent library id) that holds it.
     #[sea_orm(primary_key, auto_increment = false)]
-    pub owner_cluster_id: String,
+    pub parent_library_id: String,
     /// The store's plain id (`audible`, `libro`, ...).
     #[sea_orm(primary_key, auto_increment = false)]
     pub store: String,

@@ -16,7 +16,7 @@ pub enum PluginError {
     /// Callers match this variant instead of the message text.
     #[error("{0}")]
     InstanceSelection(String),
-    /// The request conflicts with cluster state (an alias owned by another
+    /// The request conflicts with library state (an alias owned by another
     /// plugin, a version installed with different content).
     #[error("{0}")]
     Conflict(String),

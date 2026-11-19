@@ -1,7 +1,7 @@
 //! Node placement for node-local storage scans.
 //!
 //! The id is the node id in `node-identity.json` under the files directory,
-//! the same id the node registers with the cluster. A scan of local bytes is
+//! the same id the node registers with the library. A scan of local bytes is
 //! adopted only when this id matches the checkpoint. Object stores leave
 //! placement unset and stay portable.
 
@@ -58,7 +58,7 @@ mod tests {
         assert_eq!(read_node_id(dir.path()), None);
         std::fs::write(
             dir.path().join("node-identity.json"),
-            r#"{"v":1,"node_id":"node-1","cluster_id":"c"}"#,
+            r#"{"v":1,"node_id":"node-1","library_id":"c"}"#,
         )
         .unwrap();
         assert_eq!(read_node_id(dir.path()).as_deref(), Some("node-1"));

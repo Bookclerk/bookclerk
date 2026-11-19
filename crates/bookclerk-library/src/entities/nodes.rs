@@ -2,15 +2,15 @@
 
 use sea_orm::entity::prelude::*;
 
-/// Row shape for one Bookclerk node in the cluster.
+/// Row shape for one Bookclerk node in the library.
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "nodes")]
 pub struct Model {
     /// Stable node identifier. Not derived from hostname.
     #[sea_orm(primary_key, auto_increment = false)]
     pub node_id: String,
-    /// Cluster this node enrolled into.
-    pub cluster_id: String,
+    /// Library this node enrolled into.
+    pub library_id: String,
     /// RFC 3339 timestamp of the first successful registration.
     pub created_at: String,
     /// Latest process incarnation observed for this node.

@@ -99,7 +99,7 @@ fn clerk_topic(topic: LiveTopic) -> Option<ClerkTopic> {
         | LiveTopic::Nodes
         | LiveTopic::Config
         | LiveTopic::Consents
-        | LiveTopic::Clusters
+        | LiveTopic::Libraries
         | LiveTopic::Users => None,
     }
 }

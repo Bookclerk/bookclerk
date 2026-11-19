@@ -274,7 +274,7 @@ pub fn resolve_master_key_detailed(
 
 /// SHA-256 hex fingerprint of the unwrapped DEK.
 ///
-/// This identifies the cluster secret root. It is not a password hash: the
+/// This identifies the library secret root. It is not a password hash: the
 /// passphrase, when set, is stretched with Argon2id before it unwraps this
 /// key. Wrapping changes the file bytes and leaves this fingerprint stable.
 #[must_use]
@@ -344,7 +344,7 @@ pub fn wrap_master_key(files_dir: &Path, password: &str) -> Result<MasterKey> {
     let path = master_key_path(files_dir);
     if !path.is_file() {
         return Err(LibraryError::Other(anyhow::anyhow!(
-            "master key file {} does not exist — open the library on a new cluster to mint it",
+            "master key file {} does not exist — open the library on a new library to mint it",
             path.display()
         )));
     }

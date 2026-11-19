@@ -733,7 +733,7 @@ pub async fn resolve_instance_bindings(
     })
 }
 
-/// Seals one instance secret with the cluster DEK.
+/// Seals one instance secret with the library DEK.
 ///
 /// The plaintext is not written to `configuration_documents` or `configuration_audit`.
 ///

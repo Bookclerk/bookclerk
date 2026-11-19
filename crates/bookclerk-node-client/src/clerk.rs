@@ -103,8 +103,8 @@ pub struct ClerkRedeem<'a> {
     pub origin: &'a str,
     /// The pin confirmed for a self-signed library.
     pub spki_pin: Option<&'a str>,
-    /// The cluster id the library's info reported; the answer must match.
-    pub cluster_id: &'a str,
+    /// The library id the library's info reported; the answer must match.
+    pub library_id: &'a str,
     /// The library's name from its info.
     pub library_name: &'a str,
     /// The code from the redirect.
@@ -167,7 +167,7 @@ pub async fn redeem_clerk_code(
         .ok_or_else(|| JoinError::Record("malformed library card answer".into()))?;
     bookclerk_config::register_secret(&parsed.token);
     let card = LibraryCard::new(parsed.token).map_err(|err| JoinError::Record(err.to_string()))?;
-    if parsed.cluster_id != redeem.cluster_id {
+    if parsed.library_id != redeem.library_id {
         return Err(JoinError::Record(
             "the library answered for another library".into(),
         ));
@@ -175,7 +175,7 @@ pub async fn redeem_clerk_code(
     let link = record_clerk_link(
         store,
         &NewClerkLink {
-            library_cluster_id: parsed.cluster_id,
+            library_id: parsed.library_id,
             origin: endpoint.origin().to_string(),
             spki_pin: redeem.spki_pin.map(str::to_string),
             library_name: redeem.library_name.to_string(),
@@ -191,7 +191,7 @@ pub async fn redeem_clerk_code(
         reason: err.to_string(),
     })?;
     tracing::info!(
-        cluster_id = %link.library_cluster_id,
+        library_id = %link.library_id,
         origin = %link.origin,
         pinned = link.spki_pin.is_some(),
         "signed in to the library with a library card"
@@ -207,7 +207,7 @@ mod tests {
     fn library() -> InspectedLibrary {
         InspectedLibrary {
             info: serde_json::from_value::<OwnerInfo>(serde_json::json!({
-                "cluster_id": "lib-1",
+                "library_id": "lib-1",
                 "library_name": "library.example",
                 "origin": "https://library.example",
                 "transport": "tls",

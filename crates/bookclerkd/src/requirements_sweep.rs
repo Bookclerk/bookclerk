@@ -12,7 +12,7 @@
 //! before dropping a retired instance or failing the job as `unroutable`)
 //! live in `control_plane::sweep_job_requirements`.
 //!
-//! Every daemon runs the loop, but only the one holding the cluster's
+//! Every daemon runs the loop, but only the one holding the library's
 //! [`REQUIREMENTS_SWEEP_LEASE`] sweeps; the holder renews it on each pass and
 //! a dead holder's lease expires to the next daemon. A pass runs on a
 //! deployment or install wakeup on this node, after a scheduler pass that

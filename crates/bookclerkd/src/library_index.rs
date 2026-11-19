@@ -5,11 +5,11 @@
 //! (see [`bookclerk_library::LibraryStore::library_works_page`]). Two pieces
 //! keep it current:
 //!
-//! - **Event consumer.** The daemon registers one cluster-wide consumer,
+//! - **Event consumer.** The daemon registers one library-wide consumer,
 //!   [`LIBRARY_INDEX_CONSUMER_ID`], on the durable outbox for the library
 //!   model's events ([`INDEX_EVENT_TYPES`]). Every node registers the same
 //!   id, so the catalog collapses them into one subscriber and each event
-//!   is handled once in the cluster. An edition event refreshes the
+//!   is handled once in the library. An edition event refreshes the
 //!   edition's work, a holding event the work of its listing, and
 //!   `book_acquired` the work of its edition (or title), and
 //!   `edition_acquire_changed` the work of its edition.

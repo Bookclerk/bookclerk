@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Storybook build and the visual checks (docs/contributing/ui/visual-testing.md)
+storybook-static/
+visual/baselines/
+visual-results/

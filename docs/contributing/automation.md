@@ -150,6 +150,7 @@ GitHub App as [Dependabot auto-merge](#dependabot-auto-merge), not
 | `cla.yml` | Signature commits on the `cla-signatures` branch, the only writer its ruleset allows; the check's pull request comment and `Bookclerk CLA` check run ([CLA check](licensing.md#the-cla-check)) |
 | `maintainer-review.yml` | The `Maintainer review` check run and the `touches-ci-or-build` label ([maintainer review](#maintainer-review)) |
 | `signed-commits.yml` | The `Signed commits` check run and the pull request comment on how to sign ([signed commits](#signed-commits)) |
+| `visual-baselines.yml` | Pending sets and `approved/*` tags on the `bookclerk-visual-baselines` repository; the review comment and the approved lock on a pull request's branch; reads `visual-reviewers` membership ([visual baselines](ui/visual-testing.md#baselines)) |
 
 The probes share `.github/actions/api-drift-report`:
 

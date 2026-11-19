@@ -13,8 +13,8 @@ use sea_orm::{ActiveModelTrait, ActiveValue::Set};
 
 use super::*;
 use crate::control_plane::{
-    leave_cluster_link, record_cluster_link, set_cluster_link_keep_copies, ClusterLinkKeys,
-    NewClusterLink,
+    leave_library_link, record_library_link, set_library_link_keep_copies, LibraryLinkKeys,
+    NewLibraryLink,
 };
 use crate::entities::node_credentials;
 use crate::master_key::master_key_test_lock_async;
@@ -37,7 +37,7 @@ pub(crate) async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) 
     let now = Utc::now().to_rfc3339();
     nodes::ActiveModel {
         node_id: Set(node_id.into()),
-        cluster_id: Set("cluster".into()),
+        library_id: Set("library".into()),
         created_at: Set(now.clone()),
         incarnation: Set("test".into()),
         heartbeat_at: Set(now.clone()),
@@ -330,8 +330,8 @@ async fn many_books_page_out_within_every_profiles_limits() {
 
         // The same store as a reading branch: every page stored, merged and kept by
         // a complete read, all within the profile's limits.
-        crate::entities::cluster_links::ActiveModel {
-            owner_cluster_id: Set("lib".into()),
+        crate::entities::library_links::ActiveModel {
+            parent_library_id: Set("lib".into()),
             owner_origin: Set("https://lib.example".into()),
             remote_node_id: Set("node-lib".into()),
             spki_pin: Set(None),
@@ -351,8 +351,8 @@ async fn many_books_page_out_within_every_profiles_limits() {
         .await
         .unwrap();
         // A second link: listing the links pages too.
-        crate::entities::cluster_links::ActiveModel {
-            owner_cluster_id: Set("other".into()),
+        crate::entities::library_links::ActiveModel {
+            parent_library_id: Set("other".into()),
             owner_origin: Set("https://other.example".into()),
             remote_node_id: Set("node-other".into()),
             spki_pin: Set(None),
@@ -480,16 +480,16 @@ fn asin(value: &str) -> LookupIdentifier {
     }
 }
 
-async fn link(store: &LibraryStore, cluster: &str) {
-    record_cluster_link(
+async fn link(store: &LibraryStore, library: &str) {
+    record_library_link(
         store,
-        &NewClusterLink {
-            owner_cluster_id: cluster.into(),
-            owner_origin: format!("https://{cluster}.example"),
-            remote_node_id: format!("node-{cluster}"),
+        &NewLibraryLink {
+            parent_library_id: library.into(),
+            owner_origin: format!("https://{library}.example"),
+            remote_node_id: format!("node-{library}"),
             spki_pin: None,
         },
-        &ClusterLinkKeys::generate(),
+        &LibraryLinkKeys::generate(),
     )
     .await
     .unwrap();
@@ -511,10 +511,10 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
     link(&store, "beta").await;
     link(&store, "gamma").await;
     // Keeping copies off changes nothing about the view.
-    assert!(set_cluster_link_keep_copies(&store, "gamma", false)
+    assert!(set_library_link_keep_copies(&store, "gamma", false)
         .await
         .unwrap());
-    assert!(!set_cluster_link_keep_copies(&store, "nowhere", false)
+    assert!(!set_library_link_keep_copies(&store, "nowhere", false)
         .await
         .unwrap());
 
@@ -579,7 +579,7 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
     let libraries: Vec<&str> = shared
         .editions
         .iter()
-        .map(|e| e.owner_cluster_id.as_str())
+        .map(|e| e.parent_library_id.as_str())
         .collect();
     assert_eq!(libraries, vec!["alpha", "beta"]);
     assert_eq!(shared.editions[0].owner_origin, "https://alpha.example");
@@ -604,7 +604,7 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
     assert_eq!(titles, vec!["Gamma", "No identifiers", "Shared"]);
 
     // Leaving beta hides its books; the daemon then drops its rows.
-    leave_cluster_link(&store, "beta", None).await.unwrap();
+    leave_library_link(&store, "beta", None).await.unwrap();
     let titles: Vec<String> = window_view(&store)
         .await
         .unwrap()
@@ -1052,8 +1052,8 @@ async fn an_edition_wider_than_a_cell_is_kept_whole_under_every_profile() {
         let store = crate::test_support::sqlite::memory(profile)
             .await
             .into_store();
-        crate::entities::cluster_links::ActiveModel {
-            owner_cluster_id: Set("lib".into()),
+        crate::entities::library_links::ActiveModel {
+            parent_library_id: Set("lib".into()),
             owner_origin: Set("https://lib.example".into()),
             remote_node_id: Set("node-lib".into()),
             spki_pin: Set(None),
@@ -1093,7 +1093,7 @@ async fn an_edition_wider_than_a_cell_is_kept_whole_under_every_profile() {
         // A write cut short (pieces in, its row never pointed at them)
         // leaves the row on its previous version.
         window_book_parts::ActiveModel {
-            owner_cluster_id: Set("lib".into()),
+            parent_library_id: Set("lib".into()),
             store: Set("audible".into()),
             marketplace: Set("us".into()),
             product_id: Set("B0WIDE0001".into()),
@@ -1145,7 +1145,7 @@ fn json_is_cut_on_character_boundaries_and_joined_in_order() {
     assert!(pieces.iter().all(|p| p.len() <= 4));
     assert_eq!(pieces.concat(), json);
     let part = |seq: i64, body: &str| window_book_parts::Model {
-        owner_cluster_id: "lib".into(),
+        parent_library_id: "lib".into(),
         store: "audible".into(),
         marketplace: "us".into(),
         product_id: "B0X".into(),

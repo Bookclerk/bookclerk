@@ -9,7 +9,7 @@
 //! Aliases are unique within **one host plugin namespace** (`$BOOKCLERK_FILES_DIR`),
 //! conceptually `(NodeId, alias) → PluginKey`. A future stable `NodeId` may
 //! be persisted locally (for example `$FILES_DIR/host.json`) for shared-database
-//! placement; this crate does not implement NodeId, cluster inventory, or
+//! placement; this crate does not implement NodeId, library inventory, or
 //! database advisory locks. Two hosts with distinct files dirs may install the
 //! same alias and PluginKey independently.
 //!
@@ -577,7 +577,7 @@ pub enum PluginProvenance {
     LocalDevelopment,
     /// Receipt exists but the immutable payload no longer matches.
     Modified,
-    /// Materialized from a cluster install: the payload-root digest of the
+    /// Materialized from a library install: the payload-root digest of the
     /// cached tree matched the `plugin_versions` row the node trusts.
     Installed,
 }

@@ -694,7 +694,7 @@ fn top_level_tokens(t: &str) -> Vec<(usize, usize)> {
 /// # Arguments
 ///
 /// * `template` - The parsed template.
-/// * `canon` - The canonical tag name to look for (`libraryid`).
+/// * `canon` - The canonical tag name to look for (`callnumber`).
 /// * `book` - A context whose `canon` value is `probe`.
 /// * `probe` - The value the tag must write.
 pub(crate) fn always_writes_property(

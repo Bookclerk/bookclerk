@@ -57,7 +57,7 @@ impl<'de> Deserialize<'de> for MembersBooksBody {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
-        let fields: MembersBooksFields = super::cluster_links::from_object(
+        let fields: MembersBooksFields = super::library_links::from_object(
             deserializer,
             "a JSON object with node_id and acquire",
         )?;
