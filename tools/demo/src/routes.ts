@@ -161,6 +161,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/config/plugin-instances/{id}/config", "allow"],
   ["PUT", "/api/config/plugin-instances/{id}/config", "deny"],
   ["PUT", "/api/config/plugin-instances/{id}/deployments/{node_id}", "deny"],
+  ["GET", "/api/config/plugin-instances/{id}/filter", "allow"],
+  ["PUT", "/api/config/plugin-instances/{id}/filter", "deny"],
   ["PUT", "/api/config/plugin-instances/{id}/placement", "deny"],
   ["DELETE", "/api/config/plugin-instances/{id}/placement", "deny"],
   ["GET", "/api/config/plugins", "allow"],
