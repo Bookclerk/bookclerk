@@ -187,8 +187,8 @@ node, and a pass every 60 seconds catches a missed one.
 - Retention and the in-flight cap apply on the next dispatcher tick. The
   number of local delivery tasks is fixed at process start.
 
-The shared `[output]` table follows the same model; see
-[Output (shared)](#output-shared). `[library]`, `[jobs]`, media, plugins
+`core.output`, which the `[output]` table seeds, is stored and applied
+the same way; see [Output (shared)](#output-shared). `[library]`, `[jobs]`, media, plugins
 and diagnostics are still TOML and environment settings.
 
 ### Retention and concurrency
@@ -526,11 +526,14 @@ bookclerk config set output.replacement_characters '[{"find":":","replace":"-"}]
   `output_revision`. Send that back as `expected_output_revision`; a stale
   value returns 409 and writes nothing. The web app always sends it.
 - `output.revision` under `effective` is the revision this host has
-  applied, which can lag until the host's next wakeup.
+  applied, which can lag until the host's next wakeup. The `output.*`
+  values under `effective` are that applied revision's values, so they
+  can differ from `settings` until then.
 - A request mixing `output.*` with `events.*` or file-backed keys is
   rejected before anything is written.
 
-The web app edits this document in **Settings → Output**.
+The web app edits this document in **Settings → Output**. The fields
+lock while a save is in flight, then show the saved revision.
 
 ### What stays per host
 

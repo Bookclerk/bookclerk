@@ -202,6 +202,32 @@ After editing the config (or running `bookclerk plugins deploy <id>`):
    bookclerk config database migrate --from sqlite --to postgres --apply
    ```
 
+The copy moves the whole library, not only the catalog. The destination
+opens as the same library, at the same configuration revisions:
+
+- the library identity, every configuration document (`core.output`,
+  `core.events`, `core.cache`, the patron scope default, sign-in policy
+  and plugin settings) with its revision, audit and change rows;
+- plugin versions, stored plugin archives, instances, default instances,
+  deployments and placements;
+- nodes and their credentials, enrollment links, links to other libraries
+  and the books they share;
+- queued jobs and events, and the receipts that make retried operations
+  safe.
+
+Nothing is seeded again from `config.toml`. The copy leaves behind only
+what Bookclerk rebuilds or rewrites on its own: Discover shelves and
+caches, the library page index, in-progress storage scans, maintenance
+leases, node heartbeats, live subscriber registrations and observed
+deployment state.
+
+> [!NOTE]
+> Plugin database bindings are not copied. Each one is a separate
+> database that belongs to the old adapter; the new adapter provisions an
+> empty one when the plugin next runs. Before you switch, list the old
+> ones with `bookclerk plugins db list` and drop any you no longer need
+> with `bookclerk plugins db drop`.
+
 Daemon operators can instead `POST /api/database/migrate` with JSON
 `{ "from": "sqlite", "to": "postgres", "dry_run": false, "apply": true }`.
 When `apply` is true, the daemon writes `[database].plugin` and **reopens

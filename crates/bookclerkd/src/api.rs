@@ -3964,6 +3964,13 @@ async fn get_settings(
         Err(err) => tracing::warn!(error = %err, "core.cache unavailable for settings"),
     }
     let mut effective = settings.clone();
+    // `effective` is what this host runs: `output.*` comes from the applied
+    // `cfg.output` (reported with `output.revision` below), not from the
+    // stored document, which can be a revision ahead until the next wakeup.
+    insert_output_settings(
+        &mut effective,
+        &bookclerk_library::control_plane::OutputSettingsV1::from_seed_lenient(&cfg.output).0,
+    );
     effective.insert("daemon.auth.enabled".into(), auth.enabled.to_string());
     effective.insert("daemon.listen".into(), cfg.daemon.listen.join_comma());
     effective.insert("node.id".into(), node_id.clone());
@@ -8978,6 +8985,81 @@ tcp = {tcp}
         }
         let unchanged = load_cache_settings(&store).await.unwrap().expect("stored");
         assert_eq!(unchanged.revision, stored.revision);
+    }
+
+    /// After another host commits a newer `core.output`, `settings` shows
+    /// the stored document while `effective` keeps the values this host has
+    /// applied, next to the revision they came from.
+    #[tokio::test]
+    async fn effective_output_values_are_the_applied_revision() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        use axum::extract::State;
+        use bookclerk_config::NamingProfile;
+        use bookclerk_library::control_plane::{
+            bootstrap_control_plane, overlay_core_documents, replace_output, ConfigActor,
+            OutputReplace,
+        };
+        use bookclerk_library::LibraryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[daemon]\nlisten = \"127.0.0.1:8787\"\n",
+        )
+        .unwrap();
+        let mut cfg = bookclerk_config::Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = LibraryStore::from_connection(db);
+        let session =
+            bootstrap_control_plane(&store, dir.path(), &dir.path().join("cache"), None, &cfg)
+                .await
+                .unwrap();
+        overlay_core_documents(&mut cfg, &session);
+        let applied = session.output.body.naming_profile;
+        let other = match applied {
+            NamingProfile::Audiobookshelf => NamingProfile::Classic,
+            NamingProfile::Classic => NamingProfile::Audiobookshelf,
+        };
+        let state = std::sync::Arc::new(crate::config_authority::control_plane_test_state(
+            store.clone(),
+            cfg,
+        ));
+
+        // Another host commits the next revision; this one has not reconciled.
+        let mut body = session.output.body.clone();
+        body.naming_profile = other;
+        let OutputReplace::Applied(stored) = replace_output(
+            &store,
+            &ConfigActor::Operator {
+                id: "operator".into(),
+            },
+            session.output.revision,
+            &body,
+            "other-host-output",
+        )
+        .await
+        .unwrap() else {
+            panic!("output replace did not apply");
+        };
+
+        let spelled = |profile: NamingProfile| profile.as_str().to_string();
+        let got = super::get_settings(State(state)).await.unwrap().0;
+        assert_eq!(got.output_revision, Some(stored.revision));
+        assert_eq!(
+            got.settings.get("output.naming_profile"),
+            Some(&spelled(other))
+        );
+        assert_eq!(
+            got.effective.get("output.naming_profile"),
+            Some(&spelled(applied))
+        );
+        assert_eq!(
+            got.effective.get("output.revision"),
+            Some(&session.output.revision.to_string())
+        );
     }
 
     #[tokio::test]

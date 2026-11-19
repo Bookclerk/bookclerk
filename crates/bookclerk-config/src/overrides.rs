@@ -174,10 +174,12 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
             config.diagnostics.share_usage = parse_bool(v).unwrap_or(false);
         }
         "output.bad_book_action" => {
-            config.output.bad_book_action = match v {
-                "Abort" => BadBookAction::Abort,
-                "Retry" => BadBookAction::Retry,
-                "Ignore" => BadBookAction::Ignore,
+            // The serde form is lowercase (`abort`); older docs wrote
+            // `Abort`, so case is ignored.
+            config.output.bad_book_action = match v.to_ascii_lowercase().as_str() {
+                "abort" => BadBookAction::Abort,
+                "retry" => BadBookAction::Retry,
+                "ignore" => BadBookAction::Ignore,
                 _ => BadBookAction::Ask,
             };
         }
@@ -648,7 +650,135 @@ mod tests {
         assert_eq!(bad("Abort"), BadBookAction::Abort);
         assert_eq!(bad("Retry"), BadBookAction::Retry);
         assert_eq!(bad("Ignore"), BadBookAction::Ignore);
+        assert_eq!(bad("abort"), BadBookAction::Abort);
+        assert_eq!(bad(" RETRY "), BadBookAction::Retry);
+        assert_eq!(bad("ignore"), BadBookAction::Ignore);
+        assert_eq!(bad("ask"), BadBookAction::Ask);
         assert_eq!(bad("Bogus"), BadBookAction::Ask);
+    }
+
+    /// The spelling the config file and the API write for an enum value
+    /// (its serde form).
+    fn serde_spelling<T: serde::Serialize>(value: T) -> String {
+        match serde_json::to_value(value).unwrap() {
+            serde_json::Value::String(s) => s,
+            other => panic!("not a string enum: {other}"),
+        }
+    }
+
+    /// Every enum override accepts the spelling `config.toml` and the API
+    /// use for each value, so an override never silently falls back to the
+    /// default.
+    #[test]
+    fn enum_overrides_accept_their_serde_spelling() {
+        use crate::{MultiDestinationMode, NamingProfile};
+        let with = |k: &str, v: &str| {
+            let mut config = Config::default();
+            apply_setting_overrides(&mut config, &[(k, v)]);
+            config
+        };
+        for value in [
+            BadBookAction::Ask,
+            BadBookAction::Abort,
+            BadBookAction::Retry,
+            BadBookAction::Ignore,
+        ] {
+            let spelled = serde_spelling(value);
+            assert_eq!(
+                with("output.bad_book_action", &spelled)
+                    .output
+                    .bad_book_action,
+                value,
+                "{spelled}"
+            );
+        }
+        for value in [
+            FileTimestampMode::Now,
+            FileTimestampMode::Purchased,
+            FileTimestampMode::Published,
+        ] {
+            let spelled = serde_spelling(value);
+            assert_eq!(
+                with("output.creation_time", &spelled).output.creation_time,
+                value,
+                "{spelled}"
+            );
+            assert_eq!(
+                with("output.last_write_time", &spelled)
+                    .output
+                    .last_write_time,
+                value,
+                "{spelled}"
+            );
+        }
+        for value in [
+            PathSanitizationMode::Auto,
+            PathSanitizationMode::Windows,
+            PathSanitizationMode::Posix,
+            PathSanitizationMode::S3,
+            PathSanitizationMode::None,
+        ] {
+            let spelled = serde_spelling(value);
+            assert_eq!(
+                with("output.path_sanitization", &spelled)
+                    .output
+                    .path_sanitization,
+                value,
+                "{spelled}"
+            );
+        }
+        for value in [
+            MultiDestinationMode::SyncMissing,
+            MultiDestinationMode::RefetchMissing,
+            MultiDestinationMode::RefetchAll,
+        ] {
+            let spelled = serde_spelling(value);
+            assert_eq!(
+                with("output.multi_destination", &spelled)
+                    .output
+                    .multi_destination,
+                value,
+                "{spelled}"
+            );
+        }
+        for value in [NamingProfile::Classic, NamingProfile::Audiobookshelf] {
+            let spelled = serde_spelling(value);
+            assert_eq!(
+                with("output.naming_profile", &spelled)
+                    .output
+                    .naming_profile,
+                value,
+                "{spelled}"
+            );
+        }
+        for value in [
+            ChapterJsonMode::Off,
+            ChapterJsonMode::Flat,
+            ChapterJsonMode::Tree,
+            ChapterJsonMode::Both,
+        ] {
+            let spelled = serde_spelling(value);
+            assert_eq!(
+                with("output.chapter_json", &spelled).output.chapter_json,
+                value,
+                "{spelled}"
+            );
+        }
+        for value in [
+            OutputFormat::EnrichedM4b,
+            OutputFormat::SingleMp3,
+            OutputFormat::SplitMp3ByChapter,
+            OutputFormat::SplitMp3BySize,
+            OutputFormat::Opus,
+            OutputFormat::None,
+        ] {
+            let spelled = serde_spelling(value);
+            assert_eq!(
+                with("output.format", &spelled).output.format,
+                value,
+                "{spelled}"
+            );
+        }
     }
 
     #[test]
