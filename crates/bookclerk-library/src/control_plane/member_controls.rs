@@ -493,7 +493,9 @@ pub async fn set_member_control_overrides(
     let Some(user) = store.get_user(user_id).await? else {
         return Err(LibraryError::not_found(EntityKind::User, user_id));
     };
-    set_member_control_overrides_for(store, &user, overrides).await
+    set_member_control_overrides_for(store, &user, overrides)
+        .await
+        .map(|(_, assigned)| assigned)
 }
 
 /// Replaces the overrides of `user`, as the caller read them when it
@@ -507,6 +509,12 @@ pub async fn set_member_control_overrides(
 /// Administrator, say) stops it rather than letting it through under the
 /// old authorization.
 ///
+/// # Returns
+///
+/// The user as read after the write, with the controls that apply to them
+/// computed from that same record, so a caller describing both never mixes
+/// two roles.
+///
 /// # Errors
 ///
 /// Returns [`LibraryError::Conflict`] when the user did not have the role
@@ -517,7 +525,7 @@ pub async fn set_member_control_overrides_for(
     store: &LibraryStore,
     user: &UserRecord,
     overrides: ControlOverrides,
-) -> Result<AssignedControls> {
+) -> Result<(UserRecord, AssignedControls)> {
     let user_id = user.id;
     let role = user.role.as_str();
     let same_role = "EXISTS (SELECT 1 FROM users WHERE id = ? AND role = ?)";
@@ -596,7 +604,8 @@ pub async fn set_member_control_overrides_for(
             "user {user_id} is no longer {role} as their controls were read; read them again"
         )));
     }
-    assigned_member_controls(store, &current).await
+    let assigned = assigned_member_controls(store, &current).await?;
+    Ok((current, assigned))
 }
 
 /// The stored state one decision on a control was made from, which a host

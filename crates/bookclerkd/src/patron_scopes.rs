@@ -432,7 +432,7 @@ pub(crate) async fn put_user_controls(
     }
     // Guarded on the role the authorization above read, so a promotion
     // since then stops the write.
-    let assigned = set_member_control_overrides_for(&library, &user, body.overrides)
+    let (current, assigned) = set_member_control_overrides_for(&library, &user, body.overrides)
         .await
         .map_err(|err| match err {
             LibraryError::Conflict(message) => refused(StatusCode::CONFLICT, message),
@@ -448,13 +448,8 @@ pub(crate) async fn put_user_controls(
             )),
         )
         .await;
-    // `assigned` comes from the user as they are now; describe that role
-    // too, should it have changed since the write.
-    let current = library
-        .get_user(user_id)
-        .await
-        .map_err(|err| library_error(ROUTE, err))?
-        .unwrap_or(user);
+    // `current` is the record `assigned` was computed from, so the role
+    // the answer describes and the controls it reports always agree.
     Ok(Json(user_controls_json(&current, assigned)))
 }
 
