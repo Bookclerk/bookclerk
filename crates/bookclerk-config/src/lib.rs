@@ -41,6 +41,7 @@ mod overrides;
 mod path_limits;
 mod paths;
 mod pipeline_opts;
+mod placement;
 mod platform;
 mod plugins;
 mod redact;
@@ -109,6 +110,10 @@ pub use paths::{
     resolve_config_path, resolve_files_dir, Paths, BOOKCLERK_CONFIG_ENV, BOOKCLERK_FILES_DIR_ENV,
 };
 pub use pipeline_opts::{ChapterJsonMode, OutputFormat};
+pub use placement::{
+    parse_destination_filter, DestinationFilter, FilterEffect, FilterError, FilterField,
+    FilterRule, PlacementFacts, PlacementMediaKind, MAX_FILTER_RULES, MAX_FILTER_VALUE_BYTES,
+};
 pub use platform::detect_distro;
 pub use plugins::{
     host_cpu_rate_max, node_logical_cpus, IntegrationsConfig, PluginRegistryEntry, PluginsConfig,

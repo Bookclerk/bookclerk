@@ -35,6 +35,46 @@ open the person's actions in **User Management** and send a new one.
 Each person connects their own store accounts on **Accounts**. Their books
 join the shared library; their passwords stay theirs.
 
+## Limit what a patron sees
+
+An Owner or Administrator can limit which books a Member or Host sees, for
+example to keep a child to the children's shelf. This is their **patron
+scope**. Owners and Administrators always see the whole library.
+
+As with other changes to a person, an Administrator can set the scope of
+a Member, while a Host's scope takes an Owner or the operator. Anyone who
+can set scopes can edit the library's default.
+
+A scope is a list of rules. Each rule names a field (genre, series, author
+or narrator), one value of it, and whether it **shows only** books with
+that value or **hides** them:
+
+- With no rules, every book is visible.
+- With any "show only" rule, a book needs to match at least one of them.
+- A "hide" rule always wins.
+- Values match without case, so `kids` matches `Kids`.
+- A scope holds up to 16 rules, fewer when their values are long.
+
+Books a person holds through their own store accounts are always visible
+to them, whatever their scope says.
+
+To set scopes:
+
+1. Open **Settings → User Management**.
+2. With no one selected, edit **Default patron scope**. Everyone without a
+   scope of their own sees this; out of the box it has no rules.
+3. To give one person their own, select them, choose **Own scope** under
+   **What this patron sees**, add rules, and save. **Follow the library's
+   default** returns them to the default.
+
+A scope applies to the Library page: the list, search, filter menus, book
+pages and covers. Discover, the wishlist, downloads and library cards do
+not apply it yet.
+
+From the command line, `bookclerk users scope get` and
+`bookclerk users scope set` do the same (see the
+[CLI reference](../server/cli-reference.md)).
+
 ## Audiobookshelf
 
 If your household listens with [Audiobookshelf](https://www.audiobookshelf.org/),

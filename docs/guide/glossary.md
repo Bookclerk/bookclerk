@@ -32,6 +32,8 @@ The words Bookclerk uses, in plain language.
   account.
 - **Passkey**: A way to sign in with your phone, computer or security key
   instead of a password.
+- **Patron scope**: Which books a Member or Host sees. See
+  [Limit what a patron sees](sharing.md#limit-what-a-patron-sees).
 
 ## Behind the scenes
 

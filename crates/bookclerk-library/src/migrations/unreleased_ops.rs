@@ -277,6 +277,29 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     )",
     ),
+    // A Member's own patron scope (`crate::patron_scope`). No row means
+    // the Member follows the library's default scope document.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS patron_scopes (
+        user_id INTEGER PRIMARY KEY,
+        scope_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    )",
+    ),
+    // The include and exclude values of a patron scope as rows, keyed by
+    // the content id of the value set (`crate::WorkScope::key_set_id`), so
+    // the Library filter joins them with a fixed number of binds whatever
+    // the rule count. Rows are written once per value set and never change.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS patron_scope_keys (
+        scope_hash TEXT NOT NULL,
+        effect TEXT NOT NULL CHECK (effect IN ('include', 'exclude')),
+        facet TEXT NOT NULL,
+        key TEXT NOT NULL,
+        PRIMARY KEY (scope_hash, effect, facet, key)
+    )",
+    ),
     // Where a store account travelled with its person: `sent` to a branch
     // (`peer = node:<node_id>`) or `received` from a library this install
     // joined (`peer = link:<cluster_id>`). Read to disconnect an account
@@ -1617,7 +1640,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // `sort_series`, `length_minutes` and `purchased_at` are sort keys:
     // series then position (works with no series last), the longest held
     // edition's runtime (0 when unknown) and the newest purchase time
-    // (empty when no store reported one).
+    // (empty when no store reported one). `facets_ready` is 1 once every
+    // `library_work_facets` row of this refresh is written: a patron scope
+    // admits only such rows, so a half-written refresh hides the work
+    // rather than slipping it past an exclude rule.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS library_work_rows (
         work_id TEXT PRIMARY KEY NOT NULL REFERENCES works(id) ON DELETE CASCADE,
@@ -1637,7 +1663,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         sort_series TEXT NOT NULL,
         length_minutes INTEGER NOT NULL,
         purchased_at TEXT NOT NULL,
-        refreshed_at TEXT NOT NULL
+        refreshed_at TEXT NOT NULL,
+        facets_ready INTEGER NOT NULL DEFAULT 0
     )",
     ),
     MigrationOp::Schema(

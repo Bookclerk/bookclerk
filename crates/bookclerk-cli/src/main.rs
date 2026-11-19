@@ -139,6 +139,12 @@ enum Commands {
         /// Nested `nodes` verb (list, set, label).
         command: commands::nodes::NodesCommand,
     },
+    /// The library's people: patron scopes.
+    Users {
+        #[command(subcommand)]
+        /// Nested `users` verb (scope).
+        command: commands::users::UsersCommand,
+    },
     /// Plugin-owned queues on the outbox: counters, consumers, messages.
     Queues {
         #[command(subcommand)]
@@ -397,6 +403,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         Commands::Nodes { command } => commands::nodes::run(command, &config, format).await,
         Commands::Clusters { command } => commands::clusters::run(command, &config, format).await,
         Commands::Queues { command } => commands::queues::run(command, &config, format).await,
+        Commands::Users { command } => commands::users::run(command, &config, format).await,
         Commands::Login => commands::daemon_cmd::run_login(&config, format).await,
         Commands::Diagnostics { command } => {
             commands::diagnostics_cmd::run(command, &config, format)

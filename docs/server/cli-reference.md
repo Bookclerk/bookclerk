@@ -38,6 +38,7 @@ These options work with every command. Some commands have their own option of th
 - [`bookclerk events`](#bookclerk-events): Durable domain-event outbox and deliveries
 - [`bookclerk clusters`](#bookclerk-clusters): Owner clusters this install hosts for, and consent to their plugins
 - [`bookclerk nodes`](#bookclerk-nodes): Cluster nodes: liveness, capacity, budgets, and placement labels
+- [`bookclerk users`](#bookclerk-users): The library's people: patron scopes
 - [`bookclerk queues`](#bookclerk-queues): Plugin-owned queues on the outbox: counters, consumers, messages
 - [`bookclerk login`](#bookclerk-login): Print a loopback operator sign-in URL (requires a running daemon)
 - [`bookclerk diagnostics`](#bookclerk-diagnostics): Diagnostics ring buffer and opt-in upload
@@ -744,6 +745,7 @@ Commands:
 - [`bookclerk plugins instances list`](#bookclerk-plugins-instances-list): List instances with their deployments on every node
 - [`bookclerk plugins instances create`](#bookclerk-plugins-instances-create): Create another instance of a plugin that has a pinned schema
 - [`bookclerk plugins instances delete`](#bookclerk-plugins-instances-delete): Delete an instance that has no deployment on any node
+- [`bookclerk plugins instances filter`](#bookclerk-plugins-instances-filter): Show or change which books a storage destination takes
 
 #### `bookclerk plugins instances list`
 
@@ -785,6 +787,61 @@ bookclerk plugins instances delete [OPTIONS] <INSTANCE>
 Arguments:
 
 - `<INSTANCE>`: Plugin instance id
+
+#### `bookclerk plugins instances filter`
+
+Show or change which books a storage destination takes
+
+```text
+bookclerk plugins instances filter [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk plugins instances filter get`](#bookclerk-plugins-instances-filter-get): Show a destination's filter
+- [`bookclerk plugins instances filter set`](#bookclerk-plugins-instances-filter-set): Replace a destination's filter. Each rule is `FIELD=VALUE`, where FIELD is `patron` (a user id), `storefront` (a plugin alias such as `audible`), `account` (a store account id) or `media_kind` (`book` or `podcast`). With any `--include`, the destination takes only books that match one; an `--exclude` always wins. Acquires that start afterwards use the new filter
+- [`bookclerk plugins instances filter clear`](#bookclerk-plugins-instances-filter-clear): Remove a destination's filter so it takes every book
+
+##### `bookclerk plugins instances filter get`
+
+Show a destination's filter
+
+```text
+bookclerk plugins instances filter get [OPTIONS] <INSTANCE>
+```
+
+Arguments:
+
+- `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id of the destination
+
+##### `bookclerk plugins instances filter set`
+
+Replace a destination's filter. Each rule is `FIELD=VALUE`, where FIELD is `patron` (a user id), `storefront` (a plugin alias such as `audible`), `account` (a store account id) or `media_kind` (`book` or `podcast`). With any `--include`, the destination takes only books that match one; an `--exclude` always wins. Acquires that start afterwards use the new filter
+
+```text
+bookclerk plugins instances filter set [OPTIONS] <INSTANCE>
+```
+
+Arguments:
+
+- `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id of the destination
+
+Options:
+
+- `--include <FIELD=VALUE>`: Take books that match this rule (repeatable)
+- `--exclude <FIELD=VALUE>`: Refuse books that match this rule (repeatable)
+
+##### `bookclerk plugins instances filter clear`
+
+Remove a destination's filter so it takes every book
+
+```text
+bookclerk plugins instances filter clear [OPTIONS] <INSTANCE>
+```
+
+Arguments:
+
+- `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id of the destination
 
 ### `bookclerk plugins config`
 
@@ -1801,6 +1858,66 @@ bookclerk nodes revoke [OPTIONS] <NODE>
 Arguments:
 
 - `<NODE>`: Branch node id
+
+## `bookclerk users`
+
+The library's people: patron scopes
+
+```text
+bookclerk users [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk users scope`](#bookclerk-users-scope): Read or set which part of the library a patron sees
+
+### `bookclerk users scope`
+
+Read or set which part of the library a patron sees
+
+```text
+bookclerk users scope [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk users scope get`](#bookclerk-users-scope-get): Print a patron's scope, or the library's default
+- [`bookclerk users scope set`](#bookclerk-users-scope-set): Replace a patron's scope, or the library's default. With no `--include` or `--exclude`, the scope hides nothing
+
+#### `bookclerk users scope get`
+
+Print a patron's scope, or the library's default
+
+```text
+bookclerk users scope get [OPTIONS] [USER]
+```
+
+Arguments:
+
+- `[USER]`: Login name or user id
+
+Options:
+
+- `--default`: The library's default scope, which patrons without their own follow
+
+#### `bookclerk users scope set`
+
+Replace a patron's scope, or the library's default. With no `--include` or `--exclude`, the scope hides nothing
+
+```text
+bookclerk users scope set [OPTIONS] [USER]
+```
+
+Arguments:
+
+- `[USER]`: Login name or user id
+
+Options:
+
+- `--default`: Set the library's default scope instead of one patron's
+- `--include <FIELD=VALUE>`: Show only books with this value (`genre=Kids`); fields are genre, series, author and narrator. Repeatable: a book needs one
+- `--exclude <FIELD=VALUE>`: Hide books with this value, whatever `--include` says. Repeatable
+- `--follow-default`: Drop the patron's own scope so they follow the library's default
 
 ## `bookclerk queues`
 

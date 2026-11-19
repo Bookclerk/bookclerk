@@ -1764,6 +1764,500 @@
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
+    "/api/users/default-scope": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Reads the library's default scope, which patrons without their own\nfollow.",
+        "operationId": "get_default_scope",
+        "responses": {
+          "200": {
+            "description": "The default scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultScopeJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Owner or Administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "forbidden"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The scope could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the patron scope could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      },
+      "put": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Replaces the library's default scope. Every patron without their own\nscope follows the change at once.",
+        "operationId": "put_default_scope",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatronScope"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The default scope after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultScopeJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The scope is invalid. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid patron scope: a scope holds at most 64 rules"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Owner or Administrator. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "forbidden"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The default kept changing underneath the write; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "core.patron_scope kept changing; retry"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: rules: invalid type: integer `1`, expected a sequence at line 1 column 10"
+              }
+            }
+          },
+          "500": {
+            "description": "The scope could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the patron scope could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
+    "/api/users/{id}/scope": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Reads which part of the library a patron sees.",
+        "operationId": "get_user_scope",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User id.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The patron's scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserScopeJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not manage this user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "you may not manage this user"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "user 7 not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The scope could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the patron scope could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      },
+      "put": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Gives a patron their own scope, or returns them to the library's\ndefault with `\"scope\": null`.",
+        "description": "Nobody sets their own scope. Owners and Administrators always see the\nwhole library, so a scope stored for one only applies if their role\nchanges to Member or Host.",
+        "operationId": "put_user_scope",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User id.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutUserScope"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The patron's scope after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserScopeJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The scope is invalid. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid patron scope: a scope rule needs a value"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not manage this user, or tried to set their own scope. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "you may not set your own scope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "user 7 not found"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: invalid type: null, expected struct PutUserScope at line 1 column 4"
+              }
+            }
+          },
+          "500": {
+            "description": "The scope could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the patron scope could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
     "/api/users/{id}/claim-ticket": {
       "post": {
         "tags": [
@@ -5874,6 +6368,298 @@
                 },
                 "example": {
                   "error": "document revision 8 was saved but secret `api_token` was not stored (the secret store refused the write); submit the secret again"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
+    "/api/config/plugin-instances/{id}/filter": {
+      "get": {
+        "tags": [
+          "Plugins"
+        ],
+        "summary": "`GET /api/config/plugin-instances/{id}/filter`: which books the storage\ndestination takes.",
+        "operationId": "get_destination_filter",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin instance id of the destination.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The destination's filter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationFilterResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The id is not a plugin instance id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid plugin instance id: expected a UUID"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The filter could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid core.destination: destination filter: unknown field `genre`"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      },
+      "put": {
+        "tags": [
+          "Plugins"
+        ],
+        "summary": "`PUT /api/config/plugin-instances/{id}/filter`: replaces which books the\nstorage destination takes. Acquires that start afterwards use it; files\nalready stored stay where they are.",
+        "description": "Operator principal only. The route is mounted on the operator router.",
+        "operationId": "put_destination_filter",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin instance id of the destination.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DestinationFilter"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The filter after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationFilterResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The filter is invalid. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid: a patron rule takes a user id, not `me`"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The filter kept changing underneath the write.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the filter of destination 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b kept changing; retry"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: rules: invalid type: integer `1`, expected a sequence at line 1 column 10"
+              }
+            }
+          },
+          "500": {
+            "description": "The filter could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
                 }
               }
             }
@@ -34243,6 +35029,23 @@
           }
         }
       },
+      "DefaultScopeJson": {
+        "type": "object",
+        "description": "The library's default scope as the scope routes report it.",
+        "required": [
+          "scope"
+        ],
+        "properties": {
+          "scope": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PatronScope"
+              }
+            ],
+            "description": "The scope patrons without their own follow."
+          }
+        }
+      },
       "DeliveryBacklog": {
         "type": "object",
         "description": "Event delivery backlog across the cluster.",
@@ -34309,6 +35112,51 @@
           "placed",
           "unplaced"
         ]
+      },
+      "DestinationFilter": {
+        "type": "object",
+        "description": "Which books one destination takes.",
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FilterRule"
+            },
+            "description": "Filter rules, at most 64. Empty means the destination takes every\nbook.",
+            "maxItems": 64
+          }
+        },
+        "additionalProperties": false
+      },
+      "DestinationFilterResponse": {
+        "type": "object",
+        "description": "`GET` and `PUT /api/config/plugin-instances/{id}/filter` body: which\nbooks a storage destination takes.",
+        "required": [
+          "plugin_instance_id",
+          "revision",
+          "filter"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "The destination's plugin instance id.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Revision of the destination's `core.destination` document; `0` when\nnone was written, so the destination takes every book.",
+            "example": 2
+          },
+          "filter": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DestinationFilter"
+              }
+            ],
+            "description": "The filter; no rules take every book."
+          }
+        }
       },
       "DiagnosticsReportView": {
         "type": "object",
@@ -35541,6 +36389,57 @@
           "published"
         ],
         "example": "now"
+      },
+      "FilterEffect": {
+        "type": "string",
+        "description": "Whether a [`FilterRule`] lets matching books in or keeps them out.",
+        "enum": [
+          "include",
+          "exclude"
+        ]
+      },
+      "FilterField": {
+        "type": "string",
+        "description": "The book field a [`FilterRule`] matches one value of.",
+        "enum": [
+          "patron",
+          "storefront",
+          "account",
+          "media_kind"
+        ]
+      },
+      "FilterRule": {
+        "type": "object",
+        "description": "One rule of a destination filter: a field, one value of it, and its\neffect.",
+        "required": [
+          "field",
+          "value",
+          "effect"
+        ],
+        "properties": {
+          "field": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/FilterField"
+              }
+            ],
+            "description": "The field the rule matches."
+          },
+          "value": {
+            "type": "string",
+            "description": "The value: a user id for `patron`, `book` or `podcast` for\n`media_kind`, otherwise 1 to 128 bytes of text.",
+            "example": "audible"
+          },
+          "effect": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/FilterEffect"
+              }
+            ],
+            "description": "Include or exclude."
+          }
+        },
+        "additionalProperties": false
       },
       "GuestReservation": {
         "type": "object",
@@ -39298,6 +40197,21 @@
         ],
         "example": "auto"
       },
+      "PatronScope": {
+        "type": "object",
+        "description": "Which part of the library a patron sees.",
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScopeRule"
+            },
+            "description": "Visibility rules, at most 16 and 1,024 bytes as JSON. Empty means\nevery book is visible.",
+            "maxItems": 16
+          }
+        },
+        "additionalProperties": false
+      },
       "PinBody": {
         "type": "object",
         "description": "Body of `PUT /api/library/listings/{id}/pin`.",
@@ -42654,6 +43568,29 @@
           }
         }
       },
+      "PutUserScope": {
+        "type": "object",
+        "description": "`PUT /api/users/{id}/scope` body.",
+        "properties": {
+          "scope": {
+            "description": "The patron's own scope, or `null` to return them to the library's\ndefault.",
+            "type": "object",
+            "properties": {
+              "rules": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ScopeRule"
+                },
+                "description": "Visibility rules, at most 16 and 1,024 bytes as JSON. Empty means\nevery book is visible.",
+                "maxItems": 16
+              }
+            },
+            "additionalProperties": false,
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "QueueDetail": {
         "allOf": [
           {
@@ -43498,6 +44435,14 @@
           }
         }
       },
+      "RuleEffect": {
+        "type": "string",
+        "description": "Whether a [`ScopeRule`] lets matching books in or keeps them out.",
+        "enum": [
+          "include",
+          "exclude"
+        ]
+      },
       "ScanPlanResponse": {
         "type": "object",
         "description": "Result of a planned scan or acquire: [`ActionResponse`] plus every job id.",
@@ -43589,6 +44534,49 @@
           "compatible": true,
           "state": "frozen@12+a1b2c3d4"
         }
+      },
+      "ScopeField": {
+        "type": "string",
+        "description": "The book field a [`ScopeRule`] matches one value of.",
+        "enum": [
+          "genre",
+          "series",
+          "author",
+          "narrator"
+        ]
+      },
+      "ScopeRule": {
+        "type": "object",
+        "description": "One rule of a scope: a field, one value of it, and its effect.",
+        "required": [
+          "field",
+          "value",
+          "effect"
+        ],
+        "properties": {
+          "field": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ScopeField"
+              }
+            ],
+            "description": "The field the rule matches."
+          },
+          "value": {
+            "type": "string",
+            "description": "The value, compared without case and surrounding space (1 to 256\nbytes).",
+            "example": "Kids"
+          },
+          "effect": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RuleEffect"
+              }
+            ],
+            "description": "Include or exclude."
+          }
+        },
+        "additionalProperties": false
       },
       "SessionView": {
         "oneOf": [
@@ -46131,6 +47119,42 @@
           "host",
           "member"
         ]
+      },
+      "UserScopeJson": {
+        "type": "object",
+        "description": "A patron's scope as the scope routes report it.",
+        "required": [
+          "user_id",
+          "scope",
+          "own",
+          "applies"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The user (`users.id`).",
+            "example": 7
+          },
+          "scope": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PatronScope"
+              }
+            ],
+            "description": "The scope that applies to them: their own, or the library's default."
+          },
+          "own": {
+            "type": "boolean",
+            "description": "True when an Administrator gave them this scope; false when they\nfollow the library's default.",
+            "example": false
+          },
+          "applies": {
+            "type": "boolean",
+            "description": "Whether the scope applies to the user's role: false for an Owner or\nAdministrator, who always see the whole library.",
+            "example": true
+          }
+        }
       },
       "UserSsoPictureSummary": {
         "type": "object",

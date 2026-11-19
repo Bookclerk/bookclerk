@@ -163,6 +163,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/config/plugin-instances/{id}/config", "allow"],
   ["PUT", "/api/config/plugin-instances/{id}/config", "deny"],
   ["PUT", "/api/config/plugin-instances/{id}/deployments/{node_id}", "deny"],
+  ["GET", "/api/config/plugin-instances/{id}/filter", "allow"],
+  ["PUT", "/api/config/plugin-instances/{id}/filter", "deny"],
   ["PUT", "/api/config/plugin-instances/{id}/placement", "deny"],
   ["DELETE", "/api/config/plugin-instances/{id}/placement", "deny"],
   ["GET", "/api/config/plugins", "allow"],
@@ -252,6 +254,11 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/users/{id}/avatar", "allow"],
   ["POST", "/api/users/{id}/claim-ticket", "deny"],
   ["POST", "/api/users/{id}/reset-password", "deny"],
+  // Patron scopes: readable, never changed.
+  ["GET", "/api/users/default-scope", "allow"],
+  ["PUT", "/api/users/default-scope", "deny"],
+  ["GET", "/api/users/{id}/scope", "allow"],
+  ["PUT", "/api/users/{id}/scope", "deny"],
 
   // The host as an OpenID provider, and the legacy unprefixed routes.
   ["GET", "/.well-known/openid-configuration", "deny"],
