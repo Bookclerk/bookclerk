@@ -4717,25 +4717,51 @@ mod results_and_uploads {
         assert_eq!(grants().await, asked + 1);
 
         // A copy the library downloaded from another store than the
-        // title's is granted but passed over, so a library asked after
-        // this one still gets its turn.
-        assert!(world
-            .owner
-            .set_edition_file_probe(
-                "local",
-                KEY,
-                &owner_of,
-                &bookclerk_library::FileProbe {
-                    content_type: "audio/mp4".into(),
-                    bitrate_kbps: Some(64),
-                    lossless: false,
-                    source_store: Some("elsewhere".into()),
-                },
-            )
+        // title's is offered with what the library's probe found, so the
+        // acquire can compare it with its own download. It is offered
+        // only because no library has a copy from the title's own store.
+        let reprobe = |source_store: Option<&'static str>| {
+            let owner_of = owner_of.clone();
+            let owner = world.owner.clone();
+            async move {
+                assert!(owner
+                    .set_edition_file_probe(
+                        "local",
+                        KEY,
+                        &owner_of,
+                        &bookclerk_library::FileProbe {
+                            content_type: "audio/mp4".into(),
+                            bitrate_kbps: Some(64),
+                            lossless: false,
+                            source_store: source_store.map(str::to_string),
+                        },
+                    )
+                    .await
+                    .unwrap());
+            }
+        };
+        reprobe(Some("elsewhere")).await;
+        let other = copies
+            .copy_of(listing("t1"))
             .await
-            .unwrap());
-        assert!(copies.copy_of(listing("t1")).await.is_none());
+            .expect("a copy from another store is offered for comparison");
+        assert_eq!(other.source_store(), Some("elsewhere"));
+        let probe = other.probe();
+        assert_eq!(
+            (
+                probe.content_type.as_str(),
+                probe.bitrate_kbps,
+                probe.lossless
+            ),
+            ("audio/mp4", Some(64), false)
+        );
         assert_eq!(grants().await, asked + 2);
+
+        // A copy whose store the library does not know is granted but
+        // never offered: there is nothing to say whose download it is.
+        reprobe(None).await;
+        assert!(copies.copy_of(listing("t1")).await.is_none());
+        assert_eq!(grants().await, asked + 3);
     }
 
     /// A branch takes the copy its library already holds: `copy.grant`

@@ -260,7 +260,8 @@ library never sends work on it.
 Answers come in the order the frames were asked.
 
 A clerk asks for a copy when one of its own acquires wants that edition,
-and takes it only when the library downloaded it from the same store (see
+and takes it when the library downloaded it from the same store, or when
+it is better than the clerk's own download from another store (see
 [When a branch takes the copy](cluster-hosts.md#when-a-branch-takes-the-copy),
 which a clerk follows too). The clerk keeps the token only while the
 acquire runs and keeps it out of its own logs.

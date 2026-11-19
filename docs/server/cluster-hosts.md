@@ -816,11 +816,25 @@ library it joined, in turn, for the copy of that listing.
 - **Split by chapter: MP4 audio only.** A branch whose output is split
   into chapter files takes the library's copy only when it is an M4B,
   M4A or MP4 file; otherwise it fetches from the store.
-- **Another store: the branch fetches its own.** When the library's copy
-  came from a different store, or the library doesn't know where it came
-  from, that library is passed over and the next one is asked. When no
-  library has a copy from the title's store, the branch downloads from
-  its own store as usual.
+- **Another store: the better copy is kept.** When no library has a copy
+  from the title's store but one has a copy of the same edition from a
+  different store, the branch downloads from its own store first,
+  probes that download and asks its libraries again (a store download
+  can outlast the hour a library's answer is good for). If the library's probe says its copy is better
+  (lossless beats lossy, then the higher bitrate wins), the branch
+  downloads the library's copy too, probes it itself, and stores it in
+  place of its own download only when its own probe agrees. Otherwise it
+  keeps its own, as it does when the two don't fit in the acquire's
+  scratch budget together. A lossless copy (FLAC or ALAC) is taken only
+  by a branch whose output keeps files as delivered: every other output
+  repackages the audio, and the media worker decodes AAC and MP3
+  audio only (so a copy in another encoding, such as Opus, is not taken
+  by such a branch either). The comparison runs once, in that acquire. The stored
+  file's row names the store the audio really came from, and the cover
+  and companion PDF of the branch's own download are kept (the library's
+  cover is used only when the store sent none).
+- **Unknown store: the branch fetches its own.** A copy whose store the
+  library doesn't know is never offered.
 - **Any problem: the store.** If the copy doesn't arrive whole, is larger
   than the acquire's scratch budget, or holds audio the media worker
   can't read, the branch removes what it downloaded and fetches from the
@@ -1228,9 +1242,11 @@ shared stay in the library, marked as from a branch that left (see
   joined.
 - A branch takes a library's copy only for a title its own scan found on
   a store account connected to the branch, and only when the library's
-  copy came from the same store. It doesn't yet compare a copy from
-  another store with its own download, and it doesn't take a book the
-  library holds as several audio files. A clerk works the same way.
+  copy came from the same store or is better than the branch's own
+  download. It doesn't take a book the library holds as several audio
+  files, and it doesn't compare again after the title is acquired, so a
+  better copy the library gets later isn't picked up. A clerk works the
+  same way.
 - A clerk always takes a library's copy when it can: there is no setting
   per library card to turn it off.
 - The library's name is the host of its public origin. There is no
