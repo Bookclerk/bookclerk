@@ -143,7 +143,13 @@ fn oracle_read(body: &[u8]) -> Option<Vec<OracleRule>> {
             return None;
         }
         let ok = match field {
-            "patron" => value.parse::<i64>().is_ok_and(|id| id > 0),
+            // A positive user id in canonical decimal: digits only, no
+            // leading zero, within i64.
+            "patron" => {
+                value.bytes().all(|b| b.is_ascii_digit())
+                    && !value.starts_with('0')
+                    && value.parse::<i64>().is_ok()
+            }
             "media_kind" => {
                 value.eq_ignore_ascii_case("book") || value.eq_ignore_ascii_case("podcast")
             }

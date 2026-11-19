@@ -236,7 +236,12 @@ impl DestinationFilter {
             }
             match rule.field {
                 FilterField::Patron => {
-                    if !value.parse::<i64>().is_ok_and(|id| id > 0) {
+                    // Canonical decimal only, so `01` and `+1` are not a
+                    // second spelling of rule `1`.
+                    if !value
+                        .parse::<i64>()
+                        .is_ok_and(|id| id > 0 && id.to_string() == value)
+                    {
                         return Err(FilterError(format!(
                             "a patron rule takes a user id, not `{value}`"
                         )));
@@ -565,6 +570,8 @@ mod tests {
             br#"{"rules":[{"field":{"storefront":null},"value":"a","effect":"include"}]}"#,
             br#"{"rules":[{"field":"genre","value":"a","effect":"include"}]}"#,
             br#"{"rules":[{"field":"patron","value":"0","effect":"include"}]}"#,
+            br#"{"rules":[{"field":"patron","value":"01","effect":"include"}]}"#,
+            br#"{"rules":[{"field":"patron","value":"+1","effect":"include"}]}"#,
             br#"{"rules":[{"field":"patron","value":"me","effect":"include"}]}"#,
             br#"{"rules":[{"field":"media_kind","value":"ebook","effect":"include"}]}"#,
             br#"{"rules":[{"field":"account","value":"  ","effect":"include"}]}"#,
