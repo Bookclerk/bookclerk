@@ -108,6 +108,8 @@ paths = [
     "fuzz/oracles/branch_request.rs",
     "fuzz/corpus/members_books_request/**",
     "fuzz/oracles/members_books_request.rs",
+    "fuzz/corpus/patron_scope_request/**",
+    "fuzz/oracles/patron_scope_request.rs",
     "fuzz/corpus/work_split_request/**",
     "fuzz/oracles/work_split_request.rs",
     "fuzz/corpus/sharing_request/**",

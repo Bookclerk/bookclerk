@@ -28,7 +28,7 @@ use axum::Json;
 use bookclerk_library::{
     Abridgement, AcquireStatus, EditionDetail, EditionListing, Entitlement, ExpressionKind,
     FacetValuesOf, HoldingHolder, LibraryWorkRow, ListingHolding, MediaKind, UserTitleState,
-    WorkCursor, WorkDetail, WorkFacet, WorkFilter, WorkKind, WorkPageQuery, WorkSort,
+    WorkCursor, WorkDetail, WorkFacet, WorkFilter, WorkKind, WorkPageQuery, WorkScope, WorkSort,
 };
 use bookclerk_search::{SearchError, WorkSearchIndex};
 use serde::{Deserialize, Serialize};
@@ -571,6 +571,95 @@ async fn caller_user_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
         .and_then(|identity| identity.user_id)
 }
 
+/// The patron scope filter of the caller: `None` for the operator, an
+/// Owner or Administrator, or a patron whose scope hides nothing.
+///
+/// Only a caller positively identified as the operator, or as a user whose
+/// stored role is never scoped, sees the whole library. A session linked to
+/// no user (or to a user that no longer exists) gets the library default.
+///
+/// The caller, their user and their scope are read from `library`, the
+/// handle the route then reads its rows from, so a database reload between
+/// the two cannot pair one store's scope with another's rows.
+///
+/// # Errors
+///
+/// A 500 when the caller, the user or their scope cannot be read, and a
+/// 401 when the session ended since it was admitted: the library fails
+/// closed rather than show a patron books outside their scope.
+async fn caller_scope(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    headers: &HeaderMap,
+    route: &str,
+) -> Result<Option<WorkScope>, WorksError> {
+    let user_id = match crate::auth::caller_subject(state, library, headers).await {
+        crate::auth::CallerSubject::Operator => return Ok(None),
+        crate::auth::CallerSubject::Person(user_id) => user_id,
+        crate::auth::CallerSubject::SignedOut => {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorMessage::new("sign in again")),
+            ))
+        }
+        crate::auth::CallerSubject::Unavailable => {
+            tracing::error!(route, "the caller could not be identified");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage::new("the library could not be read")),
+            ));
+        }
+    };
+    let user = match user_id {
+        Some(user_id) => library
+            .get_user(user_id)
+            .await
+            .map_err(|err| read_failed(route, &err))?,
+        None => None,
+    };
+    match user {
+        Some(user) => bookclerk_library::control_plane::work_scope_for_user(library, &user)
+            .await
+            .map_err(|err| read_failed(route, &err)),
+        None => bookclerk_library::control_plane::default_work_scope(library)
+            .await
+            .map_err(|err| read_failed(route, &err)),
+    }
+}
+
+/// Refuses a work outside the caller's scope with the same 404 an unknown
+/// work gets, so a patron cannot tell a hidden book from a missing one.
+///
+/// # Errors
+///
+/// A 404 when the work is outside `scope`, a 500 when it cannot be read.
+async fn require_in_scope(
+    library: &bookclerk_library::LibraryStore,
+    scope: Option<&WorkScope>,
+    work_id: &str,
+    kind: bookclerk_library::EntityKind,
+    id: &str,
+    route: &str,
+) -> Result<(), WorksError> {
+    let Some(scope) = scope else {
+        return Ok(());
+    };
+    if library
+        .work_in_scope(work_id, scope)
+        .await
+        .map_err(|err| read_failed(route, &err))?
+    {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorMessage::new(
+                bookclerk_library::LibraryError::not_found(kind, id),
+            )),
+        ))
+    }
+}
+
 /// Logs a failed read and returns the 500 answer.
 fn read_failed(route: &str, err: &bookclerk_library::LibraryError) -> WorksError {
     tracing::error!(error = %err, route, "library works read failed");
@@ -706,8 +795,13 @@ struct SearchCursor {
 /// a cursor is refused under other filters.
 fn search_filter_key(filters: &WorkPageQuery) -> String {
     format!(
-        "{:?}|{:?}|{:?}|{:?}|{:?}",
-        filters.media_kind, filters.kind, filters.status, filters.account, filters.filter
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        filters.media_kind,
+        filters.kind,
+        filters.status,
+        filters.account,
+        filters.filter,
+        filters.scope
     )
 }
 
@@ -803,6 +897,7 @@ where
 /// 500 when the index or the library cannot be read.
 async fn search_page(
     state: &AppState,
+    library: &bookclerk_library::LibraryStore,
     q: &str,
     cursor: Option<&str>,
     filters: &WorkPageQuery,
@@ -839,7 +934,7 @@ async fn search_page(
                 )
             }
         })?;
-    let library = state.library_snapshot().await;
+    let library = library.clone();
     let limit = usize::try_from(filters.limit).unwrap_or(usize::MAX);
     let (rows, used) = fill_search_page(
         &window.ids,
@@ -895,6 +990,7 @@ pub(crate) async fn list_works(
         _ => None,
     };
     let filter = work_filter(query.facet, query.value.as_deref(), user_id)?;
+    let library = state.library_snapshot().await;
     let mut filters = WorkPageQuery {
         sort: query.sort.unwrap_or_default().into(),
         media_kind: query.media_kind.map(Into::into),
@@ -902,12 +998,12 @@ pub(crate) async fn list_works(
         status: query.status,
         account: query.account.filter(|a| !a.is_empty()),
         filter,
+        scope: caller_scope(&state, &library, &headers, "GET /api/library/works").await?,
         after: None,
         limit: query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT),
     };
-    let library = state.library_snapshot().await;
     let (rows, next_cursor) = match query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-        Some(q) => search_page(&state, q, cursor, &filters).await?,
+        Some(q) => search_page(&state, &library, q, cursor, &filters).await?,
         None => {
             if let Some(token) = cursor {
                 filters.after =
@@ -978,6 +1074,16 @@ pub(crate) async fn get_work(
                 )),
             )
         })?;
+    let scope = caller_scope(&state, &library, &headers, "GET /api/library/works/{id}").await?;
+    require_in_scope(
+        &library,
+        scope.as_ref(),
+        &detail.id,
+        bookclerk_library::EntityKind::Work,
+        &id,
+        "GET /api/library/works/{id}",
+    )
+    .await?;
     let user_id = caller_user_id(&state, &headers).await;
     let user_state = match user_id {
         Some(user_id) => library
@@ -1286,10 +1392,10 @@ pub(crate) async fn list_facet_values(
             ))
         }
     };
-    let page = state
-        .library_snapshot()
-        .await
-        .library_facet_values(of, after.as_deref(), limit)
+    let library = state.library_snapshot().await;
+    let scope = caller_scope(&state, &library, &headers, ROUTE).await?;
+    let page = library
+        .library_facet_values(of, after.as_deref(), limit, scope.as_ref())
         .await
         .map_err(|err| read_failed(ROUTE, &err))?;
     Ok(Json(FacetValuesJson {
@@ -1319,16 +1425,17 @@ pub(crate) async fn list_facet_values(
 )]
 pub(crate) async fn get_edition_cover(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Response, WorksError> {
     const ROUTE: &str = "GET /api/library/editions/{id}/cover";
     let library = state.library_snapshot().await;
-    if library
+    let scope = caller_scope(&state, &library, &headers, ROUTE).await?;
+    let Some(work_id) = library
         .work_of_edition(&id)
         .await
         .map_err(|err| read_failed(ROUTE, &err))?
-        .is_none()
-    {
+    else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorMessage::new(
@@ -1338,7 +1445,16 @@ pub(crate) async fn get_edition_cover(
                 ),
             )),
         ));
-    }
+    };
+    require_in_scope(
+        &library,
+        scope.as_ref(),
+        &work_id,
+        bookclerk_library::EntityKind::Edition,
+        &id,
+        ROUTE,
+    )
+    .await?;
     let no_cover = || {
         (
             StatusCode::NOT_FOUND,

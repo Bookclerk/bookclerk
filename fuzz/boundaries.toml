@@ -350,6 +350,13 @@ input_from = "Owner or operator"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.patron_scope_request]
+crate = "bookclerk-library"
+boundary = "A patron scope an Owner or Administrator sets, from PUT /api/users/default-scope and PUT /api/users/{id}/scope"
+input_from = "Owner, Administrator or operator"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.work_split_request]
 crate = "bookclerk-library"
 boundary = "An Administrator's choice of expressions to move out of a wrongly merged work, from POST /api/library/works/{id}/split"

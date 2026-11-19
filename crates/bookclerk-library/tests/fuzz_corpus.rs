@@ -336,6 +336,29 @@ fn fuzz_corpus_members_books_request_replays() {
     assert!(refused > 0, "every members_books_request seed was accepted");
 }
 
+/// The `patron_scope_request` oracle, shared with the fuzz target: a
+/// patron scope body is accepted exactly when it has the documented shape
+/// and its rules are within bounds and distinct.
+#[path = "../../../fuzz/oracles/patron_scope_request.rs"]
+mod patron_scope_request_oracle;
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_patron_scope_request_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("patron_scope_request") {
+        if patron_scope_request_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(accepted > 0, "no patron_scope_request seed was accepted");
+    assert!(refused > 0, "every patron_scope_request seed was accepted");
+}
+
 /// The `work_split_request` oracle, shared with the fuzz target: a split
 /// body is accepted exactly when it has the documented shape and 1 to 12
 /// distinct ids of 1 to 64 bytes.
