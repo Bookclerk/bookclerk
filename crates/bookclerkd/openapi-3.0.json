@@ -9981,7 +9981,7 @@
                 },
                 "examples": {
                   "enrollment_disabled": {
-                    "summary": "The library has host enrollment switched off.",
+                    "summary": "The library has branch enrollment switched off.",
                     "value": {
                       "detail": "This library isn't accepting new branches",
                       "error": "enrollment_disabled"
@@ -14077,7 +14077,7 @@
         "tags": [
           "Library"
         ],
-        "summary": "`POST /api/config/node-invites`: mint an enrollment link. Any user may\nmint one for themselves while host enrollment is on; the operator or an\nOwner may mint for any active user.",
+        "summary": "`POST /api/config/node-invites`: mint an enrollment link. Any user may\nmint one for themselves while branch enrollment is on; the operator or an\nOwner may mint for any active user.",
         "description": "# Arguments\n\n* `caller` - Who is asking; decides whose links they may mint.\n* `body` - Owner, lifetime, and label of the new link.\n\n# Returns\n\n`{link, url}`; the secret appears once, in `url`.\n\n# Errors\n\nReturns 503 `node_api_pin_unavailable` in `self_signed` mode while the\ncertificate's SPKI pin cannot be read (nothing is minted), and an error\nresponse when the library refuses the mint.",
         "operationId": "post_node_invite",
         "requestBody": {
@@ -14159,7 +14159,7 @@
             }
           },
           "403": {
-            "description": "The user may not mint a link for that user, host enrollment is off, the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The user may not mint a link for that user, branch enrollment is off, the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14167,9 +14167,9 @@
                 },
                 "examples": {
                   "enrollment_disabled": {
-                    "summary": "Host enrollment is switched off.",
+                    "summary": "Branch enrollment is switched off.",
                     "value": {
-                      "error": "host enrollment is disabled for this library"
+                      "error": "branch enrollment is disabled for this library"
                     }
                   },
                   "mfa_enrollment_required": {
@@ -14790,7 +14790,7 @@
                 },
                 "examples": {
                   "enrollment_disabled": {
-                    "summary": "This library has host enrollment switched off.",
+                    "summary": "This library has branch enrollment switched off.",
                     "value": {
                       "detail": "this library isn't accepting new branches",
                       "error": "enrollment_disabled"
@@ -15792,7 +15792,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "core.host_enrollment kept changing; retry"
+                  "error": "core.branch_enrollment kept changing; retry"
                 }
               }
             }
@@ -18419,21 +18419,21 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
-    "/api/config/host-enrollment": {
+    "/api/config/branch-enrollment": {
       "get": {
         "tags": [
-          "Library"
+          "Configuration"
         ],
-        "summary": "`GET /api/config/host-enrollment`: whether branch nodes may enroll.",
+        "summary": "`GET /api/config/branch-enrollment`: whether branch nodes may enroll.",
         "description": "# Returns\n\n`{enabled, revision}`; `revision` is `null` while the default (enabled)\napplies.\n\n# Errors\n\nReturns an error response when the switch cannot be read.",
-        "operationId": "get_host_enrollment",
+        "operationId": "get_branch_enrollment",
         "responses": {
           "200": {
             "description": "Whether branch nodes may enroll.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HostEnrollment"
+                  "$ref": "#/components/schemas/BranchEnrollment"
                 }
               }
             }
@@ -18546,16 +18546,16 @@
       },
       "put": {
         "tags": [
-          "Library"
+          "Configuration"
         ],
-        "summary": "`PUT /api/config/host-enrollment`: turn host enrollment on or off. The\noperator may always; a user only while the stored role is an active\nOwner.",
+        "summary": "`PUT /api/config/branch-enrollment`: turn branch enrollment on or off. The\noperator may always; a user only while the stored role is an active\nOwner.",
         "description": "# Arguments\n\n* `caller` - Who is asking; a user's role is read from the database.\n* `body` - The new switch value.\n\n# Returns\n\n`{enabled, revision}` as stored.\n\n# Errors\n\nReturns 403 when the caller is neither the operator nor an active Owner,\nand an error response when the switch cannot be written.",
-        "operationId": "put_host_enrollment",
+        "operationId": "put_branch_enrollment",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PutHostEnrollment"
+                "$ref": "#/components/schemas/PutBranchEnrollment"
               }
             }
           },
@@ -18567,7 +18567,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HostEnrollment"
+                  "$ref": "#/components/schemas/BranchEnrollment"
                 }
               }
             }
@@ -18640,7 +18640,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "core.host_enrollment kept changing; retry"
+                  "error": "core.branch_enrollment kept changing; retry"
                 }
               }
             }
@@ -36195,6 +36195,27 @@
           }
         }
       },
+      "BranchEnrollment": {
+        "type": "object",
+        "description": "The branch-enrollment switch.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether branch nodes may enroll into this library.",
+            "example": true
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Stored revision; `null` while the default (enabled) applies.",
+            "example": 3,
+            "nullable": true
+          }
+        }
+      },
       "BranchJoinSetting": {
         "type": "object",
         "description": "JSON body after `PUT /api/config/branches`.",
@@ -36348,6 +36369,16 @@
             "example": "branch"
           }
         }
+      },
+      "BranchRelationship": {
+        "type": "string",
+        "description": "How a node relates to the library, as people are told: a shared branch\nserves the library from its database, and a branch with its own\ndatabase is a remote branch when it reports a public address (it is a\ncore branch other installs can reach) and a local branch when it does\nnot.",
+        "enum": [
+          "shared_branch",
+          "remote_branch",
+          "local_branch"
+        ],
+        "example": "remote_branch"
       },
       "BranchRequestBody": {
         "type": "object",
@@ -39741,27 +39772,6 @@
           }
         }
       },
-      "HostEnrollment": {
-        "type": "object",
-        "description": "The host-enrollment switch.",
-        "required": [
-          "enabled"
-        ],
-        "properties": {
-          "enabled": {
-            "type": "boolean",
-            "description": "Whether branch nodes may enroll into this library.",
-            "example": true
-          },
-          "revision": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Stored revision; `null` while the default (enabled) applies.",
-            "example": 3,
-            "nullable": true
-          }
-        }
-      },
       "ImpersonateRequest": {
         "type": "object",
         "description": "JSON body naming the first-party user to impersonate.",
@@ -41737,6 +41747,12 @@
             "description": "When the node's last cache sweep finished, in Unix milliseconds.",
             "example": 1793212800000,
             "nullable": true
+          },
+          "public_origin": {
+            "type": "string",
+            "description": "The address other installs reach this branch at, as it last\nreported it; `null` for a local branch and for a shared node. A\nbranch with one is a remote branch of this library.",
+            "example": "https://branch.example",
+            "nullable": true
           }
         }
       },
@@ -41757,7 +41773,8 @@
           "live",
           "runtime",
           "this_node",
-          "kind"
+          "kind",
+          "relationship"
         ],
         "properties": {
           "node_id": {
@@ -41983,6 +42000,12 @@
                 "description": "When the node's last cache sweep finished, in Unix milliseconds.",
                 "example": 1793212800000,
                 "nullable": true
+              },
+              "public_origin": {
+                "type": "string",
+                "description": "The address other installs reach this branch at, as it last\nreported it; `null` for a local branch and for a shared node. A\nbranch with one is a remote branch of this library.",
+                "example": "https://branch.example",
+                "nullable": true
               }
             },
             "nullable": true
@@ -41998,7 +42021,15 @@
                 "$ref": "#/components/schemas/NodeKind"
               }
             ],
-            "description": "`owner` for a node sharing this library, `host` for an enrolled\nhost."
+            "description": "`shared` for a node sharing this library's database, `branch` for an\nenrolled branch."
+          },
+          "relationship": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BranchRelationship"
+              }
+            ],
+            "description": "How the node relates to this library: `shared_branch` (shares its\ndatabase), `remote_branch` (a branch reporting a public address in\nits heartbeat, `status.public_origin`) or `local_branch` (a branch\nwith none)."
           },
           "owner_user_id": {
             "type": "integer",
@@ -42009,7 +42040,7 @@
           },
           "share_books": {
             "type": "boolean",
-            "description": "A branch's sharing setting, as it last reported it; `null` for an\nshared node.",
+            "description": "A branch's sharing setting, as it last reported it; `null` for a\nshared node.",
             "example": true,
             "nullable": true
           },
@@ -43465,7 +43496,7 @@
           },
           "enrollment": {
             "type": "boolean",
-            "description": "Whether the library lets new branches join (`core.host_enrollment`).",
+            "description": "Whether the library lets new branches join (`core.branch_enrollment`).",
             "example": true
           },
           "spki_fingerprint": {
@@ -47224,6 +47255,21 @@
           }
         }
       },
+      "PutBranchEnrollment": {
+        "type": "object",
+        "description": "`PUT /api/config/branch-enrollment` body.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether branch nodes may enroll into this library.",
+            "example": true
+          }
+        },
+        "additionalProperties": false
+      },
       "PutBranches": {
         "type": "object",
         "description": "`PUT /api/config/branches` body.",
@@ -47233,7 +47279,7 @@
         "properties": {
           "enrollment": {
             "type": "boolean",
-            "description": "\"Let new branches join\" (`core.host_enrollment.enabled`).",
+            "description": "\"Let new branches join\" (`core.branch_enrollment.enabled`).",
             "example": true
           }
         },
@@ -47277,21 +47323,6 @@
             "minimum": 0
           }
         }
-      },
-      "PutHostEnrollment": {
-        "type": "object",
-        "description": "`PUT /api/config/host-enrollment` body.",
-        "required": [
-          "enabled"
-        ],
-        "properties": {
-          "enabled": {
-            "type": "boolean",
-            "description": "Whether branch nodes may enroll into this library.",
-            "example": true
-          }
-        },
-        "additionalProperties": false
       },
       "PutNodeLabels": {
         "type": "object",

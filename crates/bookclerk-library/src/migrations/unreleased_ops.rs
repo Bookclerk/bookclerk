@@ -1435,7 +1435,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         online_since_ms INTEGER NOT NULL,
         cache_bytes INTEGER,
         cache_budget_bytes INTEGER,
-        cache_swept_ms INTEGER
+        cache_swept_ms INTEGER,
+        public_origin TEXT
     )",
     ),
     MigrationOp::Schema(super::LIBRARY_LEASES_DDL),

@@ -278,9 +278,9 @@ async fn a_disable_after_the_switch_read_mints_nothing() {
     let (store, _dir) = library().await;
     let riley = user(&store, UserRole::Member, "Riley").await;
     // The mint read the switch as enabled, then a disable committed.
-    let seen = load_host_enrollment(&store).await.unwrap();
+    let seen = load_branch_enrollment(&store).await.unwrap();
     assert!(seen.body.enabled);
-    set_host_enrollment_enabled(&store, &config_operator(), false)
+    set_branch_enrollment_enabled(&store, &config_operator(), false)
         .await
         .unwrap();
     let row = super::enrollment::NewLink {
@@ -303,14 +303,14 @@ async fn a_disable_after_the_switch_read_mints_nothing() {
         .is_none());
 
     // Re-enabling bumps the revision, so the stale read still mints nothing.
-    set_host_enrollment_enabled(&store, &config_operator(), true)
+    set_branch_enrollment_enabled(&store, &config_operator(), true)
         .await
         .unwrap();
     let inserted = super::enrollment::insert_link_while_switch_holds(&store, &seen, &row)
         .await
         .unwrap();
     assert!(!inserted);
-    let current = load_host_enrollment(&store).await.unwrap();
+    let current = load_branch_enrollment(&store).await.unwrap();
     assert!(
         super::enrollment::insert_link_while_switch_holds(&store, &current, &row)
             .await
@@ -325,7 +325,7 @@ async fn disabling_enrollment_refuses_mint_and_redeem() {
     let riley = user(&store, UserRole::Member, "Riley").await;
     let owner = user(&store, UserRole::Owner, "Olive").await;
     let admin = user(&store, UserRole::Administrator, "Ada").await;
-    let defaults = load_host_enrollment(&store).await.unwrap();
+    let defaults = load_branch_enrollment(&store).await.unwrap();
     assert!(defaults.body.enabled);
     assert_eq!(defaults.revision, None);
     let minted = mint_enrollment_link(&store, &operator(), riley, "", None)
@@ -337,13 +337,13 @@ async fn disabling_enrollment_refuses_mint_and_redeem() {
         id: riley.to_string(),
     };
     assert_forbidden(
-        &set_host_enrollment_enabled(&store, &member_actor, false)
+        &set_branch_enrollment_enabled(&store, &member_actor, false)
             .await
             .unwrap_err(),
     );
     assert_forbidden(&verify_library_owner(&store, admin).await.unwrap_err());
     let owner_actor = verify_library_owner(&store, owner).await.unwrap();
-    let off = set_host_enrollment_enabled(&store, &owner_actor, false)
+    let off = set_branch_enrollment_enabled(&store, &owner_actor, false)
         .await
         .unwrap();
     assert!(!off.body.enabled);
@@ -375,7 +375,7 @@ async fn disabling_enrollment_refuses_mint_and_redeem() {
             .unwrap_err(),
     );
 
-    let on = set_host_enrollment_enabled(&store, &config_operator(), true)
+    let on = set_branch_enrollment_enabled(&store, &config_operator(), true)
         .await
         .unwrap();
     assert!(on.body.enabled);

@@ -30,8 +30,9 @@ the older names:
 | Library | Library (`libraries`) |
 | The library's own daemons, shared branches included | Shared nodes (`kind = shared`) |
 | Branch | Branch node (`nodes`, `kind = branch`) |
+| Remote branch, local branch, shared branch | `relationship` on each node: `remote_branch`, `local_branch` or `shared_branch` |
 | Branch invite | Enrollment link |
-| "Let new branches join" | `core.host_enrollment` |
+| "Let new branches join" | `core.branch_enrollment` |
 
 The design record is
 [ADR: Control plane](../adr/control-plane.md#branch-node-enrollment-and-transport)
@@ -75,7 +76,7 @@ same wizard.
 To stop new branches joining from the command line:
 
 ```sh
-bookclerk config set host_enrollment.enabled false
+bookclerk config set branch_enrollment.enabled false
 ```
 
 Turning it off stops new sign-ins and invites. Branches already joined
@@ -97,6 +98,26 @@ A branch's node appears among the nodes (`bookclerk nodes list`,
 Revoke a branch at any time from **Settings → Nodes** or with
 `bookclerk nodes revoke <node_id>`. Its socket closes with 4403 and it
 stops dialing.
+
+### Remote and local branches
+
+Each heartbeat a branch sends carries its own `integrations.public_origin`
+when its operator set one. The library keeps it when it is a plain
+`http` or `https` origin (no path, query or user) of at most 255 bytes,
+and shows it as the branch's `status.public_origin`:
+
+- A branch that reports an address is a **remote branch**: a core branch
+  other installs can reach.
+- A branch that reports none, or one the library does not keep, is a
+  **local branch**.
+- The library's own daemons, shared branches included, are **shared
+  branches** whatever they report.
+
+**Status**, **Settings → Nodes**, `GET /api/config/nodes` (`relationship`)
+and `bookclerk nodes list` show the label. It follows the latest heartbeat,
+so a branch that sets or clears its address changes label within one
+heartbeat, without joining again. A remote branch and a local branch are
+trusted, and work, the same way.
 
 ### Branch invites
 

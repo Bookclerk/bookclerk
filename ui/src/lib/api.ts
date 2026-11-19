@@ -2637,7 +2637,15 @@ export interface NodeStatusView {
   running_guests: number;
   /** Recent online fraction in parts per million (decays over about a day). */
   availability_ppm: number;
+  /**
+   * The address other installs reach a branch at, as its heartbeat last
+   * reported it; null for a local branch and for a shared node.
+   */
+  public_origin?: string | null;
 }
+
+/** How a node relates to the library. */
+export type BranchRelationship = "shared_branch" | "remote_branch" | "local_branch";
 
 /** One library node as `GET /api/config/nodes` returns it. */
 export interface ConfigNodeView {
@@ -2655,8 +2663,13 @@ export interface ConfigNodeView {
   software_version?: string;
   /** True for the node serving this request. */
   this_node: boolean;
-  /** `owner` (shares the database) or `host` (its own database, enrolled to contribute). */
+  /** `shared` (shares the database) or `branch` (its own database, enrolled to contribute). */
   kind: "shared" | "branch";
+  /**
+   * `shared_branch` (shares the database), `remote_branch` (a branch that
+   * reports a public address) or `local_branch` (a branch with none).
+   */
+  relationship: BranchRelationship;
   /** User who administers this node, when one is assigned. */
   owner: { user_id: number; display_name: string | null; role: string } | null;
 }

@@ -12,7 +12,7 @@ import {
   type ConfigNodeView,
 } from "@/lib/api";
 import { useLiveRefresh } from "@/lib/live";
-import { age, cores, ownerName, size } from "@/lib/nodeFormat";
+import { age, cores, ownerName, relationshipLabel, size } from "@/lib/nodeFormat";
 import { cn, pageWidthClass } from "@/lib/utils";
 
 /**
@@ -59,9 +59,12 @@ function NodeCard({ node }: { node: ConfigNodeView }) {
         {!node.runtime.schedulable ? (
           <Badge className="bg-brick/10 text-brick normal-case tracking-normal">Drained</Badge>
         ) : null}
-        {node.kind === "branch" ? (
-          <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">Branch</Badge>
-        ) : null}
+        <Badge
+          className="bg-ink/5 text-ink/60 normal-case tracking-normal"
+          title={status?.public_origin ?? undefined}
+        >
+          {relationshipLabel(node.relationship)}
+        </Badge>
         {node.owner ? (
           <span className="text-xs text-ink/55">Owned by {ownerName(node.owner)}</span>
         ) : null}

@@ -12,7 +12,7 @@ Bookclerk keeps settings in three places:
   or `BOOKCLERK_CONFIG`). The annotated template is
   [`config/config.example.toml`](../../config/config.example.toml).
 - **The library database**, for settings every host shares:
-  `core.events`, `core.output`, `core.cache`, host enrollment, and every
+  `core.events`, `core.output`, `core.cache`, branch enrollment, and every
   plugin's settings.
 - **Bootstrap files** the process needs before it can open the database;
   see [Bootstrap files](#bootstrap-files).
@@ -241,20 +241,20 @@ design is in
 
 ### Let hosts join
 
-Host enrollment is a library-wide document, `core.host_enrollment`, and
+Branch enrollment is a library-wide document, `core.branch_enrollment`, and
 it is on by default. In the web app it is **Settings → Branches → Let new
 branches join**.
 
 - The operator turns it off with the CLI:
 
   ```sh
-  bookclerk config get host_enrollment.enabled
-  bookclerk config set host_enrollment.enabled false
+  bookclerk config get branch_enrollment.enabled
+  bookclerk config set branch_enrollment.enabled false
   ```
 
 - An Owner (or the operator) can use
-  `PUT /api/config/host-enrollment` with `{"enabled": false}`.
-- Any signed-in user can read it with `GET /api/config/host-enrollment`.
+  `PUT /api/config/branch-enrollment` with `{"enabled": false}`.
+- Any signed-in user can read it with `GET /api/config/branch-enrollment`.
 
 While it is on, a branch can join with a sign-in (**Join a library**).
 
