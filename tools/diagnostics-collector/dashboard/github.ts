@@ -410,6 +410,21 @@ export async function closeIssue(
   const base = `${API}/repos/${cfg.owner}/${cfg.repo}/issues/${issue}`;
   const headers = { ...apiHeaders(token), "Content-Type": "application/json" };
   if (fixedIn !== null) {
+    // A reopened issue can still carry an earlier fixing version; the sync
+    // reads the first `fixed-in:` label, so only the new one may stay.
+    const listed = await gh(`${base}/labels?per_page=100`, { headers });
+    if (!listed.ok) throw new Error(`label list failed: HTTP ${listed.status}`);
+    const stale = labelNames(await listed.json().catch(() => null)).filter(
+      (name) => name.startsWith(FIXED_IN_LABEL) && name !== `${FIXED_IN_LABEL}${fixedIn}`,
+    );
+    for (const name of stale) {
+      const gone = await gh(`${base}/labels/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+        headers,
+      });
+      if (!gone.ok && gone.status !== 404)
+        throw new Error(`label removal failed: HTTP ${gone.status}`);
+    }
     const res = await gh(`${base}/labels`, {
       method: "POST",
       headers,
@@ -436,6 +451,23 @@ export function clearTokenCache(): void {
 // ---------------------------------------------------------------------------
 // Response decoders: sans-IO, so the fuzzer drives the same code as the
 // requests above. None of them throws.
+
+/**
+ * Label names from an issue's label list (`GET …/issues/{n}/labels`).
+ *
+ * @param data - Decoded JSON (any value).
+ * @returns The names that are strings, in order; empty for anything else.
+ */
+export function labelNames(data: unknown): string[] {
+  if (!Array.isArray(data)) return [];
+  const out: string[] = [];
+  for (const item of data) {
+    const name: unknown =
+      item !== null && typeof item === "object" ? (item as Record<string, unknown>)["name"] : null;
+    if (typeof name === "string" && name.length <= 100) out.push(name);
+  }
+  return out;
+}
 
 /** A GitHub login: letters, digits and hyphens, at most 39. */
 const LOGIN = /^[A-Za-z0-9-]{1,39}$/;

@@ -1050,6 +1050,8 @@ these oracles:
   lowercase hex oid;
 - a `fixed-in:<version>` label read only as a well-formed
   `MAJOR.MINOR.PATCH`, with optional prerelease and build;
+- label names for the close button read only from objects with a string
+  `name` of at most 100 characters;
 - releases decoded to the published non-draft entries with a plain tag
   name, oldest first;
 - a compare answer read as containing only for `identical` or `behind`,

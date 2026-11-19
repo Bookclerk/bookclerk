@@ -31,6 +31,8 @@
 //   fixed-in lookup compares against release tags.
 // - fixedInLabel reads an issue's labels (people with triage rights can add
 //   them); its result overrides the version an issue was fixed in.
+// - labelNames reads the same label list for the owner's close button; its
+//   result decides which earlier `fixed-in:` labels are removed.
 // - decodeReleases and decodeCompare read GitHub's release list and compare
 //   answers; their results decide which release an issue's fix is recorded
 //   under, and so which reports count as regressions.
@@ -66,6 +68,7 @@ import {
   decodeIssue,
   decodeReleases,
   fixedInLabel,
+  labelNames,
   parseIssueNotify,
   parseSummaryDone,
   parseAttachRequest,
@@ -1653,6 +1656,17 @@ describe("GitHub REST decoding", () => {
           fixedInLabel(data),
           expectedFixedIn(data),
           `labels ${n}: ${text.slice(0, 300)}`,
+        );
+        // labelNames: the string `name` (at most 100 characters) of each
+        // object, in order.
+        assert.deepEqual(
+          labelNames(data),
+          Array.isArray(data)
+            ? data
+                .map((l: unknown) => (isObj(l) && typeof l.name === "string" ? l.name : null))
+                .filter((x): x is string => x !== null && x.length <= 100)
+            : [],
+          `label names ${n}: ${text.slice(0, 300)}`,
         );
       }
     }

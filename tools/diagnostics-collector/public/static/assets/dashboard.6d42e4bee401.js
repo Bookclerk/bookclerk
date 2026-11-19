@@ -12,7 +12,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Event-log level toggles show and hide rows by level.
   const log = document.getElementById("log");
-  for (const button of document.querySelectorAll(".lvl-toggle")) {
+  for (const button of document.querySelectorAll(".lvl-toggle[data-level]")) {
     if (button.getAttribute("aria-pressed") !== "true")
       log?.classList.add(`hide-${button.dataset.level}`);
     button.addEventListener("click", () => {

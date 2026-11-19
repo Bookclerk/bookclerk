@@ -729,8 +729,9 @@ Owners get two buttons on an open issue's page, posting to
 `/admin/close-issue`:
 
 - **Close as not planned** closes the issue on GitHub with that reason.
-- **Close as fixed in** takes a version, adds the `fixed-in:<version>`
-  label (which the sync reads as the issue's
+- **Close as fixed in** takes a version, removes any other `fixed-in:`
+  label (a reopened issue can carry an earlier one), adds the
+  `fixed-in:<version>` label (which the sync reads as the issue's
   [fixed-in version](#fixed-in-version-and-regressions)), then closes the
   issue as completed.
 

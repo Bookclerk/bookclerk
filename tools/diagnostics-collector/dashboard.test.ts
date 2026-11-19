@@ -4487,6 +4487,14 @@ describe("triage state, mutes and owner close", () => {
     gh = scriptGitHub([
       ...appRoutes(null),
       [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/issues/412/labels",
+        () => Response.json([{ name: "fixed-in:0.9.0" }, { name: "diagnostics" }]),
+      ],
+      [
+        "DELETE https://api.github.com/repos/Bookclerk/bookclerk/issues/412/labels/",
+        () => Response.json([]),
+      ],
+      [
         "POST https://api.github.com/repos/Bookclerk/bookclerk/issues/412/labels",
         () => Response.json([]),
       ],
@@ -4510,9 +4518,14 @@ describe("triage state, mutes and owner close", () => {
     assert.deepEqual(
       writes.map((c) => [c.method, c.body]),
       [
+        ["DELETE", null],
         ["POST", { labels: ["fixed-in:0.9.1"] }],
         ["PATCH", { state: "closed", state_reason: "completed" }],
       ],
+    );
+    assert.ok(
+      writes[0]?.url.endsWith("/issues/412/labels/fixed-in%3A0.9.0"),
+      "the earlier fixing version's label is removed",
     );
     const tokenAsk = gh.calls.find((c) => c.url.endsWith("/access_tokens"));
     assert.deepEqual(tokenAsk?.body?.["permissions"], { issues: "write" });
