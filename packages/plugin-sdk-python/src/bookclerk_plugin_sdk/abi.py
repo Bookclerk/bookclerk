@@ -134,6 +134,11 @@ PriceLookup = Literal["unspecified", "product", "isbn", "asin", "title"]
 Abridgement = Literal["unknown", "unabridged", "abridged"]
 """Whether an edition is abridged."""
 
+Explicitness = Literal["unknown", "clean", "explicit"]
+"""Whether an edition is marked as explicit (adult) content. A patron scope
+can hide explicit editions; `unknown` and `clean` editions stay visible.
+"""
+
 MetadataField = Literal[
     "title",
     "subtitle",
@@ -150,6 +155,7 @@ MetadataField = Literal[
     "series",
     "chapters",
     "duration",
+    "explicitness",
 ]
 """A field of a `MetadataFileRecord`. Dialects declare in the manifest which
 fields their format carries; a parsed record lists the ones its file
@@ -3887,6 +3893,7 @@ class ScanBook(TypedDict):
             known. Omitted when absent (wire zero value).
         categories: Category / genre labels as a single string when known. Omitted when
             absent (wire zero value).
+        explicitness: Whether the storefront marks the edition explicit (adult) content.
     """
 
     accountId: str
@@ -3908,6 +3915,7 @@ class ScanBook(TypedDict):
     publishedAt: NotRequired[str]
     purchasedAt: NotRequired[str]
     categories: NotRequired[str]
+    explicitness: Explicitness
 
 
 class ScanPage(TypedDict):
@@ -4353,6 +4361,7 @@ class CatalogHit(TypedDict):
             when the store has one. 0 means unranked. Catalog search merges stores by it
             for relevance and popularity sorts and puts unranked hits after ranked ones.
             Other catalog methods leave it 0. Omitted when absent (wire zero value).
+        explicitness: Whether the storefront marks the edition explicit (adult) content.
     """
 
     productId: str
@@ -4381,6 +4390,7 @@ class CatalogHit(TypedDict):
     seriesEntries: list[SeriesEntry]
     parentProductId: NotRequired[str]
     rankHint: NotRequired[int]
+    explicitness: Explicitness
 
 
 class CatalogHits(TypedDict):
@@ -5750,6 +5760,8 @@ class MetadataFileRecord(TypedDict):
         chapters: Chapter layout in pre-order (see `MetadataChapter`); at most
             `maxMetadataFileChapters`, starts never decreasing.
         durationMs: Running time in milliseconds. Omitted when absent (wire zero value).
+        explicitness: Whether the edition is explicit (adult) content; `unknown` when
+            the file does not say.
     """
 
     present: list[MetadataField]
@@ -5769,6 +5781,7 @@ class MetadataFileRecord(TypedDict):
     seriesEntries: list[SeriesEntry]
     chapters: list[MetadataChapter]
     durationMs: NotRequired[int]
+    explicitness: Explicitness
 
 
 class MetadataFileParseParams(TypedDict):
@@ -7796,6 +7809,7 @@ __all__ = [
     "CatalogField",
     "PriceLookup",
     "Abridgement",
+    "Explicitness",
     "MetadataField",
     "NotificationSeverity",
     "NotificationAudience",

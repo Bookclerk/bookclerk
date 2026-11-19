@@ -273,6 +273,10 @@ pub struct CatalogHit {
     /// for unabridged; `None` when unknown.
     #[serde(default)]
     pub is_abridged: Option<bool>,
+    /// `Some(true)` when the storefront marks the edition explicit (adult)
+    /// content; `Some(false)` when it marks it clean; `None` when unknown.
+    #[serde(default)]
+    pub is_explicit: Option<bool>,
     /// Kind of work the hit is.
     #[serde(default)]
     pub work_kind: crate::records::WorkKind,

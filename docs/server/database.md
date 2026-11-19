@@ -810,7 +810,8 @@ library holds as works, expressions and editions:
   ([Metadata gap-fill](../internals/discovery.md#metadata-gap-fill-open-library-compliance));
 - `store_listings` (one per plugin, marketplace and product, with the
   store's own text for it: synopsis, cover, credits as printed, series and
-  the store's own series or show product id, ratings; a scan fills it from
+  the store's own series or show product id, ratings, and `is_explicit`
+  when the store marks the edition as explicit or clean; a scan fills it from
   the title it lists, writing only a field that changed; a cover in a
   store's text also becomes the cover of the edition the listing sells
   when that edition has none, so the first store to report one sets it),

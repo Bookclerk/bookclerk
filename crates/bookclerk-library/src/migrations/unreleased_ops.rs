@@ -487,6 +487,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         rating_overall REAL,
         rating_count INTEGER,
         is_abridged INTEGER,
+        is_explicit INTEGER,
         observed_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,

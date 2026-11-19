@@ -215,6 +215,26 @@ describe("abs_metadata_json", () => {
     });
   });
 
+  test("reads and writes the explicit flag", () => {
+    const flag = (value: string): string =>
+      parseFile("abs_metadata_json", utf8(`{"explicit":${value}}`)).explicitness;
+    assert.equal(flag("true"), "explicit");
+    assert.equal(flag('"false"'), "clean");
+    assert.equal(flag("null"), "unknown");
+    assert.deepEqual(parseFile("abs_metadata_json", utf8('{"explicit":1}')).present, [
+      "explicitness",
+    ]);
+    const written = renderFile(
+      "abs_metadata_json",
+      new Uint8Array(),
+      record({ explicitness: "explicit" }),
+      ["explicitness"],
+    );
+    assert.deepEqual(JSON.parse(str(written)), { explicit: true });
+    const cleared = renderFile("abs_metadata_json", written, record(), ["explicitness"]);
+    assert.equal(str(cleared), "{}\n");
+  });
+
   test("lets a legacy nested value win, as Audiobookshelf does", () => {
     const parsed = parseFile("abs_metadata_json", seed("abs_metadata_json/seed_01.json"));
     assert.equal(parsed.title, "Legacy Title");

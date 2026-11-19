@@ -173,6 +173,9 @@ pub struct CatalogProduct {
     pub rating_overall: Option<f64>,
     /// Count of star ratings (`rating.num_ratings`) when present.
     pub rating_count: Option<i64>,
+    /// Audible's adult flag (`is_adult_product`, in `product_attrs`):
+    /// `Some(true)` for explicit content, `None` when the reply omits it.
+    pub is_explicit: Option<bool>,
 }
 
 /// Search the public Audible catalog by title/author; returns ASINs (relevance order).
@@ -1258,6 +1261,7 @@ fn parse_catalog_product(p: &Value) -> Option<CatalogProduct> {
         price_label,
         rating_overall,
         rating_count,
+        is_explicit: p.get("is_adult_product").and_then(Value::as_bool),
     })
 }
 
@@ -1916,6 +1920,26 @@ mod tests {
             ]
         );
         assert!(genre_roots_from_catalog_product(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn the_adult_flag_reads_as_explicit() {
+        let product = |extra: serde_json::Value| {
+            let mut p = serde_json::json!({"asin": "B0BOOK0001", "title": "T"});
+            if let (Some(p), Some(extra)) = (p.as_object_mut(), extra.as_object()) {
+                p.extend(extra.clone());
+            }
+            parse_catalog_product(&p).unwrap().is_explicit
+        };
+        assert_eq!(
+            product(serde_json::json!({"is_adult_product": true})),
+            Some(true)
+        );
+        assert_eq!(
+            product(serde_json::json!({"is_adult_product": false})),
+            Some(false)
+        );
+        assert_eq!(product(serde_json::json!({})), None);
     }
 
     #[test]

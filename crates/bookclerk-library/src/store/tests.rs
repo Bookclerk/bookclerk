@@ -9156,6 +9156,54 @@ async fn a_scanned_title_fills_its_listings_store_text_under_every_profile() {
 }
 
 #[tokio::test]
+async fn a_scan_keeps_the_stores_explicit_flag_on_the_listing_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        store
+            .upsert_account("audible", "acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let title = |asin: &str, is_explicit: Option<bool>| ScannedTitle {
+            is_explicit,
+            ..ScannedTitle::from(NewBook::minimal(asin, "acct", "us", asin))
+        };
+        let flag = |asin: &'static str| async move {
+            crate::entities::store_listings::Entity::find()
+                .filter(crate::entities::store_listings::Column::ProductId.eq(asin))
+                .one(store.db())
+                .await
+                .unwrap()
+                .expect("listing")
+                .is_explicit
+        };
+        store
+            .upsert_scanned_titles(&[
+                title("B0ADULT01", Some(true)),
+                title("B0CLEAN01", Some(false)),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(flag("B0ADULT01").await, Some(1), "{}", profile.name());
+        assert_eq!(flag("B0CLEAN01").await, Some(0), "{}", profile.name());
+
+        // A later scan that leaves the flag out keeps the stored one.
+        store
+            .upsert_scanned_titles(&[title("B0ADULT01", None)])
+            .await
+            .unwrap();
+        assert_eq!(flag("B0ADULT01").await, Some(1), "{}", profile.name());
+
+        // One title at a time stores it too.
+        store
+            .upsert_scanned_title(&title("B0ADULT02", Some(true)))
+            .await
+            .unwrap();
+        assert_eq!(flag("B0ADULT02").await, Some(1), "{}", profile.name());
+    }
+}
+
+#[tokio::test]
 async fn a_scanned_page_writes_store_text_only_when_it_changes_under_every_profile() {
     for profile in crate::test_support::Profile::ALL {
         let kit = crate::test_support::sqlite::memory(profile).await;
@@ -9239,6 +9287,7 @@ fn listing_text_changes_only_for_a_set_field_that_differs() {
         rating_overall: Some(4.5),
         rating_count: None,
         is_abridged: Some(0),
+        is_explicit: None,
         observed_at: String::new(),
         created_at: String::new(),
         updated_at: String::new(),
@@ -9260,6 +9309,10 @@ fn listing_text_changes_only_for_a_set_field_that_differs() {
         },
         crate::ListingDetail {
             length_minutes: Some(61),
+            ..crate::ListingDetail::default()
+        },
+        crate::ListingDetail {
+            is_explicit: Some(true),
             ..crate::ListingDetail::default()
         },
         crate::ListingDetail {
