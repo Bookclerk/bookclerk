@@ -155,7 +155,9 @@ Workerd egress is matched by the shared `EgressPolicy` and
   `169.254.169.254`; neither ever passes as an undeclared public redirect.
   A `connect()` host is first rewritten the way the URL parser rewrites a
   fetch host, and one with `%`, `@` or other URL syntax is refused, so
-  the gate and the socket agree on which host it is. The bridge and
+  the gate and the socket agree on which host it is. A label starting
+  `xn--` must be valid Punycode for a non-ASCII label, checked by the
+  bridge itself because URL parsers differ on it. The bridge and
   `EgressPolicy` are fuzzed against each other (`egress_bridge`).
 - **Resolved addresses.** Permission is enforced against the resolved IP
   (`public` plus explicit CIDRs in workerd `network.allow`). DNS

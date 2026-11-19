@@ -81,12 +81,37 @@ for (const { seed, policy, probes: list } of seeds) {
     probes += 1;
     const label = `${seed} ${JSON.stringify(p.host)}:${p.port}`;
     // The Rust model of the URL parser and of `canonicalSocketHost` is the
-    // one the vectors were written with; both must match the real ones.
-    if (fetchHost(p.host) !== p.fetch) {
-      fail(label, "fetch hostname", { node: fetchHost(p.host), rust: p.fetch });
+    // one the vectors were written with; both must match the real ones,
+    // except that a newer parser may accept a raw host the model refuses
+    // (IDNA rules for `xn--` labels changed between Node releases). Such a
+    // host reaches the gate as written, so the gate is held to the Rust
+    // policy's verdicts on the raw host instead.
+    const node = fetchHost(p.host);
+    const socket = gate.canonicalSocketHost(p.host);
+    const lenient = (seen, modelled) =>
+      modelled == null && seen != null && seen === p.host.toLowerCase();
+    const lenientFetch = lenient(node, p.fetch);
+    const lenientSocket = lenient(socket, p.socket);
+    if (node !== p.fetch && !lenientFetch) {
+      fail(label, "fetch hostname", { node, rust: p.fetch });
     }
-    if (gate.canonicalSocketHost(p.host) !== p.socket) {
-      fail(label, "socket hostname", { js: gate.canonicalSocketHost(p.host), rust: p.socket });
+    if (socket !== p.socket && !lenientSocket) {
+      fail(label, "socket hostname", { js: socket, rust: p.socket });
+    }
+    if (lenientFetch || lenientSocket) {
+      const wide = {
+        initial: lenientFetch && gate.allowsInitial(node, policy),
+        redirect: lenientFetch && gate.allowsRedirect(node, p.hop, policy, maxRedirects),
+        tcp: lenientSocket && gate.allowsTcp(socket, p.port, policy),
+      };
+      for (const key of ["initial", "redirect", "tcp"]) {
+        if (wide[key] && !p.rust_raw[key]) {
+          fail(label, `${key} wider than Rust on a host only Node parses`, {
+            wide,
+            rust: p.rust_raw,
+          });
+        }
+      }
     }
     const js = {
       initial: p.fetch != null && gate.allowsInitial(p.fetch, policy),
@@ -96,7 +121,7 @@ for (const { seed, policy, probes: list } of seeds) {
     for (const key of ["initial", "redirect", "tcp"]) {
       if (js[key] && !p.rust[key]) fail(label, `${key} wider than Rust`, { js, rust: p.rust });
     }
-    if (js.tcp && !p.rust_raw_tcp) fail(label, "tcp wider than Rust on the raw host", p);
+    if (js.tcp && !p.rust_raw.tcp) fail(label, "tcp wider than Rust on the raw host", p);
     if (p.exact) {
       if (js.initial !== p.rust.initial || js.redirect !== p.rust.redirect) {
         fail(label, "fetch verdicts differ on a hostname", { js, rust: p.rust });

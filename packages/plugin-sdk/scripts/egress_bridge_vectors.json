@@ -21,7 +21,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -35,7 +39,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -49,7 +57,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -63,7 +75,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -77,7 +93,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -91,7 +111,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -105,7 +129,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -119,7 +147,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -133,7 +165,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -147,7 +183,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -161,7 +201,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -175,7 +219,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -189,7 +237,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -203,7 +255,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -217,7 +273,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -231,7 +291,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -245,7 +309,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -259,7 +327,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -273,7 +345,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -287,7 +363,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -301,7 +381,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -315,7 +399,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -329,7 +417,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -343,7 +435,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -357,7 +453,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -371,7 +471,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -385,7 +489,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -399,7 +507,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -413,7 +525,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -427,7 +543,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -441,7 +561,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -455,7 +579,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -469,7 +597,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -483,7 +615,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -497,7 +633,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -511,7 +651,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -525,7 +669,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -539,7 +687,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -553,7 +705,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -567,7 +723,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -581,7 +741,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -595,7 +759,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -609,7 +777,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -623,8 +795,84 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
+      },
+      {
+        "host": "xn--a-ecp.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--abc-.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--bcher-kva.example.com",
+        "fetch": "xn--bcher-kva.example.com",
+        "socket": "xn--bcher-kva.example.com",
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--ls8h.example.com",
+        "fetch": "xn--ls8h.example.com",
+        "socket": "xn--ls8h.example.com",
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
+        "exact": true
       },
       {
         "host": "xn--zz.example.com",
@@ -637,7 +885,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       }
     ]
@@ -661,7 +913,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -675,7 +931,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -689,7 +949,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -703,7 +967,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -717,7 +985,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -731,7 +1003,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -745,7 +1021,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -759,7 +1039,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -773,7 +1057,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -787,7 +1075,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -801,7 +1093,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -815,7 +1111,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -829,7 +1129,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -843,7 +1147,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -857,7 +1165,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -871,7 +1183,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -885,7 +1201,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -899,7 +1219,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -913,7 +1237,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -927,7 +1255,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -941,7 +1273,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -955,7 +1291,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -969,7 +1309,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -983,7 +1327,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -997,7 +1345,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1011,7 +1363,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -1025,7 +1381,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1039,7 +1399,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1053,7 +1417,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1067,7 +1435,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1081,7 +1453,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1095,7 +1471,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1109,7 +1489,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1123,7 +1507,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1137,7 +1525,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1151,7 +1543,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1165,7 +1561,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -1179,7 +1579,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -1193,7 +1597,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -1207,7 +1615,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -1221,7 +1633,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -1235,7 +1651,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -1249,7 +1669,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -1263,8 +1687,84 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
+      },
+      {
+        "host": "xn--a-ecp.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--abc-.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--bcher-kva.example.com",
+        "fetch": "xn--bcher-kva.example.com",
+        "socket": "xn--bcher-kva.example.com",
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--ls8h.example.com",
+        "fetch": "xn--ls8h.example.com",
+        "socket": "xn--ls8h.example.com",
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": true
       },
       {
         "host": "xn--zz.example.com",
@@ -1277,7 +1777,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       }
     ]
@@ -1317,7 +1821,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -1331,7 +1839,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -1345,7 +1857,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1359,7 +1875,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1373,7 +1893,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1387,7 +1911,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1401,7 +1929,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1415,7 +1947,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1429,7 +1965,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1443,7 +1983,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1457,7 +2001,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1471,7 +2019,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1485,7 +2037,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1499,7 +2055,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1513,7 +2073,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1527,7 +2091,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1541,7 +2109,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1555,7 +2127,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1569,7 +2145,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1583,7 +2163,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1597,7 +2181,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1611,7 +2199,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1625,7 +2217,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1639,7 +2235,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1653,7 +2253,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1667,7 +2271,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1681,7 +2289,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1695,7 +2307,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1709,7 +2325,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1723,7 +2343,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1737,7 +2361,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1751,7 +2379,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1765,7 +2397,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1779,7 +2415,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1793,7 +2433,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1807,7 +2451,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1821,7 +2469,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1835,7 +2487,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1849,7 +2505,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1863,7 +2523,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1877,7 +2541,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1891,7 +2559,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1905,7 +2577,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1919,7 +2595,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1933,7 +2613,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1947,7 +2631,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1961,7 +2649,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1975,7 +2667,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -1989,7 +2685,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2003,7 +2703,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2017,7 +2721,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2031,7 +2739,11 @@
           "redirect": true,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -2045,7 +2757,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2059,7 +2775,11 @@
           "redirect": true,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -2073,7 +2793,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2087,7 +2811,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2101,7 +2829,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2115,7 +2847,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2129,7 +2865,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2143,7 +2883,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2157,7 +2901,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2171,7 +2919,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2185,7 +2937,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2199,7 +2955,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2213,7 +2973,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2227,7 +2991,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2241,7 +3009,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2255,7 +3027,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2269,7 +3045,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2283,7 +3063,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2297,7 +3081,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2311,7 +3099,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2325,7 +3117,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2339,7 +3135,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2353,7 +3153,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2367,7 +3171,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2381,7 +3189,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2395,7 +3207,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2409,7 +3225,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2423,7 +3243,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2437,7 +3261,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2451,7 +3279,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2465,7 +3297,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2479,7 +3315,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2493,7 +3333,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2507,7 +3351,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2521,7 +3369,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2535,7 +3387,11 @@
           "redirect": true,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -2549,7 +3405,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2563,7 +3423,11 @@
           "redirect": true,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -2577,7 +3441,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2591,7 +3459,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2605,7 +3477,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2619,7 +3495,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2633,7 +3513,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2647,7 +3531,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2661,7 +3549,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2675,7 +3567,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2689,7 +3585,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2703,7 +3603,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2717,7 +3621,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2731,7 +3639,155 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--a-ecp.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--a-ecp.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 6379,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--abc-.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--abc-.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 6379,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--bcher-kva.example.com",
+        "fetch": "xn--bcher-kva.example.com",
+        "socket": "xn--bcher-kva.example.com",
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--bcher-kva.example.com",
+        "fetch": "xn--bcher-kva.example.com",
+        "socket": "xn--bcher-kva.example.com",
+        "port": 6379,
+        "hop": 1,
+        "rust": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--ls8h.example.com",
+        "fetch": "xn--ls8h.example.com",
+        "socket": "xn--ls8h.example.com",
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--ls8h.example.com",
+        "fetch": "xn--ls8h.example.com",
+        "socket": "xn--ls8h.example.com",
+        "port": 6379,
+        "hop": 1,
+        "rust": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2745,7 +3801,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2759,7 +3819,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       }
     ]
@@ -2797,7 +3861,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2811,7 +3879,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -2825,7 +3897,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2839,7 +3915,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2853,7 +3933,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2867,7 +3951,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2881,7 +3969,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2895,7 +3987,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2909,7 +4005,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2923,7 +4023,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2937,7 +4041,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2951,7 +4059,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2965,7 +4077,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2979,7 +4095,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -2993,7 +4113,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3007,7 +4131,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3021,7 +4149,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3035,7 +4167,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3049,7 +4185,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3063,7 +4203,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3077,7 +4221,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3091,7 +4239,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3105,7 +4257,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3119,7 +4275,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3133,7 +4293,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3147,7 +4311,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3161,7 +4329,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3175,7 +4347,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3189,7 +4365,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3203,7 +4383,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3217,7 +4401,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3231,7 +4419,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3245,7 +4437,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3259,7 +4455,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3273,7 +4473,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3287,7 +4491,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3301,7 +4509,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3315,7 +4527,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3329,7 +4545,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3343,7 +4563,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3357,7 +4581,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3371,7 +4599,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3385,7 +4617,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3399,7 +4635,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3413,7 +4653,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3427,7 +4671,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3441,7 +4689,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3455,7 +4707,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3469,7 +4725,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3483,7 +4743,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3497,7 +4761,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3511,7 +4779,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3525,7 +4797,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3539,7 +4815,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3553,7 +4833,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -3567,7 +4851,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -3581,7 +4869,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -3595,7 +4887,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -3609,7 +4905,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -3623,7 +4923,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -3637,7 +4941,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3651,7 +4959,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3665,7 +4977,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3679,7 +4995,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3693,7 +5013,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3707,7 +5031,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3721,7 +5049,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3735,7 +5067,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3749,7 +5085,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3763,7 +5103,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3777,7 +5121,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3791,7 +5139,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3805,7 +5157,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3819,7 +5175,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3833,7 +5193,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3847,7 +5211,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3861,7 +5229,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3875,7 +5247,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3889,7 +5265,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3903,7 +5283,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -3917,7 +5301,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -3931,7 +5319,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -3945,7 +5337,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -3959,7 +5355,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -3973,7 +5373,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -3987,7 +5391,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4001,7 +5409,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4015,7 +5427,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4029,7 +5445,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4043,7 +5463,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -4057,7 +5481,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4071,7 +5499,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -4085,7 +5517,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4099,7 +5535,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4113,7 +5553,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4127,7 +5571,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4141,7 +5589,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4155,7 +5607,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4169,7 +5625,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4183,7 +5643,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4197,7 +5661,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4211,7 +5679,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4225,7 +5697,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4239,7 +5715,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4253,7 +5733,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4267,7 +5751,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4281,7 +5769,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4295,7 +5787,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4309,7 +5805,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4323,7 +5823,155 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--a-ecp.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 0,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--a-ecp.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 5432,
+        "hop": 0,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--abc-.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 0,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--abc-.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 5432,
+        "hop": 0,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--bcher-kva.example.com",
+        "fetch": "xn--bcher-kva.example.com",
+        "socket": "xn--bcher-kva.example.com",
+        "port": 443,
+        "hop": 0,
+        "rust": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--bcher-kva.example.com",
+        "fetch": "xn--bcher-kva.example.com",
+        "socket": "xn--bcher-kva.example.com",
+        "port": 5432,
+        "hop": 0,
+        "rust": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--ls8h.example.com",
+        "fetch": "xn--ls8h.example.com",
+        "socket": "xn--ls8h.example.com",
+        "port": 443,
+        "hop": 0,
+        "rust": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--ls8h.example.com",
+        "fetch": "xn--ls8h.example.com",
+        "socket": "xn--ls8h.example.com",
+        "port": 5432,
+        "hop": 0,
+        "rust": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4337,7 +5985,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4351,7 +6003,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       }
     ]
@@ -4381,7 +6037,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4395,7 +6055,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4409,7 +6073,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4423,7 +6091,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4437,7 +6109,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4451,7 +6127,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4465,7 +6145,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4479,7 +6163,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4493,7 +6181,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4507,7 +6199,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4521,7 +6217,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4535,7 +6235,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4549,7 +6253,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4563,7 +6271,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4577,7 +6289,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4591,7 +6307,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4605,7 +6325,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4619,7 +6343,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4633,7 +6361,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4647,7 +6379,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4661,7 +6397,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4675,7 +6415,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4689,7 +6433,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4703,7 +6451,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4717,7 +6469,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4731,7 +6487,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4745,7 +6505,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4759,7 +6523,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4773,7 +6541,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4787,7 +6559,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4801,7 +6577,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4815,7 +6595,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4829,7 +6613,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4843,7 +6631,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4857,7 +6649,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4871,7 +6667,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4885,7 +6685,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4899,7 +6703,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4913,7 +6721,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -4927,7 +6739,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4941,7 +6757,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4955,7 +6775,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4969,7 +6793,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4983,7 +6811,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -4997,7 +6829,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5011,7 +6847,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5025,7 +6865,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5039,7 +6883,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5053,7 +6901,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5067,7 +6919,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5081,7 +6937,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5095,7 +6955,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5109,7 +6973,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5123,7 +6991,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5137,7 +7009,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5151,8 +7027,48 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
+      },
+      {
+        "host": "xn--a-ecp.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--abc-.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
       },
       {
         "host": "xn--bcher-kva.example",
@@ -5165,7 +7081,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5179,7 +7099,47 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--bcher-kva.example.com",
+        "fetch": "xn--bcher-kva.example.com",
+        "socket": "xn--bcher-kva.example.com",
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--ls8h.example.com",
+        "fetch": "xn--ls8h.example.com",
+        "socket": "xn--ls8h.example.com",
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5193,7 +7153,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5207,7 +7171,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       }
     ]
@@ -5247,7 +7215,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5261,7 +7233,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5275,7 +7251,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5289,7 +7269,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5303,7 +7287,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5317,7 +7305,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5331,7 +7323,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5345,7 +7341,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5359,7 +7359,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5373,7 +7377,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5387,7 +7395,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5401,7 +7413,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5415,7 +7431,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5429,7 +7449,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5443,7 +7467,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5457,7 +7485,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5471,7 +7503,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5485,7 +7521,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5499,7 +7539,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5513,7 +7557,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5527,7 +7575,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5541,7 +7593,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5555,7 +7611,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5569,7 +7629,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5583,7 +7647,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5597,7 +7665,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5611,7 +7683,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5625,7 +7701,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -5639,7 +7719,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5653,7 +7737,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5667,7 +7755,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5681,7 +7773,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5695,7 +7791,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5709,7 +7809,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5723,7 +7827,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5737,7 +7845,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5751,7 +7863,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5765,7 +7881,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5779,7 +7899,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -5793,7 +7917,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5807,7 +7935,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5821,7 +7953,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -5835,7 +7971,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5849,7 +7989,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5863,7 +8007,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5877,7 +8025,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5891,7 +8043,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5905,7 +8061,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5919,7 +8079,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5933,7 +8097,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -5947,7 +8115,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -5961,7 +8133,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5975,7 +8151,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -5989,7 +8169,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -6003,7 +8187,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -6017,7 +8205,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6031,7 +8223,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -6045,7 +8241,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -6059,7 +8259,83 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--a-ecp.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--abc-.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--bcher-kva.example.com",
+        "fetch": "xn--bcher-kva.example.com",
+        "socket": "xn--bcher-kva.example.com",
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--ls8h.example.com",
+        "fetch": "xn--ls8h.example.com",
+        "socket": "xn--ls8h.example.com",
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -6073,7 +8349,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       }
     ]
@@ -6117,7 +8397,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -6131,7 +8415,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -6145,7 +8433,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6159,7 +8451,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6173,7 +8469,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6187,7 +8487,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6201,7 +8505,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6215,7 +8523,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6229,7 +8541,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6243,7 +8559,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6257,7 +8577,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6271,7 +8595,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6285,7 +8613,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6299,7 +8631,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6313,7 +8649,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6327,7 +8667,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6341,7 +8685,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6355,7 +8703,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6369,7 +8721,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6383,7 +8739,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6397,7 +8757,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6411,7 +8775,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6425,7 +8793,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6439,7 +8811,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6453,7 +8829,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6467,7 +8847,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6481,7 +8865,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6495,7 +8883,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6509,7 +8901,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6523,7 +8919,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6537,7 +8937,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6551,7 +8955,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6565,7 +8973,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6579,7 +8991,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6593,7 +9009,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6607,7 +9027,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6621,7 +9045,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6635,7 +9063,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6649,7 +9081,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6663,7 +9099,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6677,7 +9117,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6691,7 +9135,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6705,7 +9153,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6719,7 +9171,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6733,7 +9189,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6747,7 +9207,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6761,7 +9225,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6775,7 +9243,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6789,7 +9261,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6803,7 +9279,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6817,7 +9297,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6831,7 +9315,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6845,7 +9333,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6859,7 +9351,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6873,7 +9369,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -6887,7 +9387,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -6901,7 +9405,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -6915,7 +9423,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -6929,7 +9441,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -6943,7 +9459,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -6957,7 +9477,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6971,7 +9495,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6985,7 +9513,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -6999,7 +9531,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7013,7 +9549,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7027,7 +9567,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7041,7 +9585,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7055,7 +9603,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7069,7 +9621,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7083,7 +9639,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7097,7 +9657,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7111,7 +9675,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7125,7 +9693,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7139,7 +9711,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7153,7 +9729,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7167,7 +9747,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7181,7 +9765,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7195,7 +9783,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7209,7 +9801,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7223,7 +9819,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7237,7 +9837,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7251,7 +9855,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -7265,7 +9873,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7279,7 +9891,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7293,7 +9909,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7307,7 +9927,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7321,7 +9945,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7335,7 +9963,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -7349,7 +9981,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7363,7 +9999,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -7377,7 +10017,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7391,7 +10035,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7405,7 +10053,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7419,7 +10071,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -7433,7 +10089,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7447,7 +10107,11 @@
           "redirect": false,
           "tcp": true
         },
-        "rust_raw_tcp": true,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": true
+        },
         "exact": true
       },
       {
@@ -7461,7 +10125,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7475,7 +10143,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7489,7 +10161,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7503,7 +10179,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7517,7 +10197,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7531,7 +10215,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7545,7 +10233,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7559,7 +10251,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7573,7 +10269,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7587,7 +10287,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7601,7 +10305,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7615,7 +10323,155 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--a-ecp.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 0,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--a-ecp.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 5432,
+        "hop": 0,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--abc-.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 0,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--abc-.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 5432,
+        "hop": 0,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--bcher-kva.example.com",
+        "fetch": "xn--bcher-kva.example.com",
+        "socket": "xn--bcher-kva.example.com",
+        "port": 443,
+        "hop": 0,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--bcher-kva.example.com",
+        "fetch": "xn--bcher-kva.example.com",
+        "socket": "xn--bcher-kva.example.com",
+        "port": 5432,
+        "hop": 0,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--ls8h.example.com",
+        "fetch": "xn--ls8h.example.com",
+        "socket": "xn--ls8h.example.com",
+        "port": 443,
+        "hop": 0,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--ls8h.example.com",
+        "fetch": "xn--ls8h.example.com",
+        "socket": "xn--ls8h.example.com",
+        "port": 5432,
+        "hop": 0,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7629,7 +10485,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7643,7 +10503,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       }
     ]
@@ -7675,7 +10539,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -7689,7 +10557,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7703,7 +10575,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7717,7 +10593,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7731,7 +10611,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7745,7 +10629,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7759,7 +10647,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7773,7 +10665,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7787,7 +10683,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7801,7 +10701,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7815,7 +10719,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7829,7 +10737,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7843,7 +10755,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7857,7 +10773,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7871,7 +10791,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7885,7 +10809,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7899,7 +10827,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7913,7 +10845,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7927,7 +10863,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7941,7 +10881,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7955,7 +10899,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7969,7 +10917,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7983,7 +10935,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -7997,7 +10953,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8011,7 +10971,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8025,7 +10989,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8039,7 +11007,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8053,7 +11025,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8067,7 +11043,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8081,7 +11061,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8095,7 +11079,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8109,7 +11097,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8123,7 +11115,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8137,7 +11133,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8151,7 +11151,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8165,7 +11169,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8179,7 +11187,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8193,7 +11205,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8207,7 +11223,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8221,7 +11241,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8235,7 +11259,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8249,7 +11277,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8263,7 +11295,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8277,7 +11313,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8291,7 +11331,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8305,7 +11349,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8319,7 +11367,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8333,7 +11385,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": true,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8347,7 +11403,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8361,7 +11421,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8375,7 +11439,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8389,7 +11457,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8403,7 +11475,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       },
       {
@@ -8417,7 +11493,11 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8431,7 +11511,83 @@
           "redirect": true,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--a-ecp.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--abc-.example.com",
+        "fetch": null,
+        "socket": null,
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
+        "exact": false
+      },
+      {
+        "host": "xn--bcher-kva.example.com",
+        "fetch": "xn--bcher-kva.example.com",
+        "socket": "xn--bcher-kva.example.com",
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
+        "exact": true
+      },
+      {
+        "host": "xn--ls8h.example.com",
+        "fetch": "xn--ls8h.example.com",
+        "socket": "xn--ls8h.example.com",
+        "port": 443,
+        "hop": 1,
+        "rust": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
+        "rust_raw": {
+          "initial": false,
+          "redirect": true,
+          "tcp": false
+        },
         "exact": true
       },
       {
@@ -8445,7 +11601,11 @@
           "redirect": false,
           "tcp": false
         },
-        "rust_raw_tcp": false,
+        "rust_raw": {
+          "initial": false,
+          "redirect": false,
+          "tcp": false
+        },
         "exact": false
       }
     ]

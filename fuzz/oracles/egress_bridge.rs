@@ -83,6 +83,10 @@ pub const FIXED_PROBES: &[&str] = &[
     "a.123",
     "1.2.3.4.5",
     "xn--zz.example.com",
+    "xn--bcher-kva.example.com",
+    "xn--abc-.example.com",
+    "xn--ls8h.example.com",
+    "xn--a-ecp.example.com",
     "a_b.example.com",
     "example.com",
     "%6c%6fcalhost",
@@ -119,9 +123,12 @@ pub struct Probe {
     /// (fetch host for `initial` and `redirect`, socket host for `tcp`;
     /// refused when that spelling is `None`).
     pub rust: Verdicts,
-    /// The Rust policy's TCP verdict on the raw host, which the native
-    /// mediator judges as the guest wrote it.
-    pub rust_raw_tcp: bool,
+    /// The Rust policy's verdicts on the raw host. The native mediator judges
+    /// a TCP host as the guest wrote it, and a URL parser more lenient than
+    /// the `url` crate (newer IDNA rules accept some labels it refuses) hands
+    /// the fetch gate the raw host, so the Node replay holds the gate to
+    /// these when its parser accepts a host the model refuses.
+    pub rust_raw: Verdicts,
     /// The probe names a hostname, not an IP literal, so the gates must
     /// agree exactly rather than the JavaScript one being at most as wide.
     pub exact: bool,
@@ -290,7 +297,11 @@ pub fn probes(policy: &EgressPolicy) -> Vec<Probe> {
                 port,
                 hop,
                 rust,
-                rust_raw_tcp: policy.allows_tcp(&host, port),
+                rust_raw: Verdicts {
+                    initial: policy.allows_initial(&host),
+                    redirect: policy.allows_redirect(&host, hop),
+                    tcp: policy.allows_tcp(&host, port),
+                },
                 exact,
             });
         }
@@ -334,7 +345,7 @@ pub fn check(policy: &EgressPolicy, probe: &Probe, js: Verdicts) {
         label()
     );
     assert!(
-        !js.tcp || probe.rust_raw_tcp,
+        !js.tcp || probe.rust_raw.tcp,
         "tcp wider than Rust on the raw host: {}",
         label()
     );

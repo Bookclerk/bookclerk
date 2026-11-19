@@ -133,7 +133,10 @@ only that. The others check:
   `packages/plugin-sdk/scripts/egress_bridge_vectors.json`
   (`UPDATE_FUZZ_SEEDS=1` rewrites it), and `npm run test:egress-bridge`
   (in the `plugin_sdk_abi` check) replays them against the bridge under
-  Node, which also checks the oracle's model of the URL parser.
+  Node, which also checks the oracle's model of the URL parser. Where a
+  newer Node accepts a host the model refuses (Node 26 passes invalid
+  `xn--` labels through), the replay holds the gate to the Rust verdicts
+  on the raw host instead.
 - **`plugin_manifest`**: `format_manifest` round-trips, and a deny manifest
   yields a deny policy.
 - **`cron_schedule`**: an accepted schedule round-trips through its

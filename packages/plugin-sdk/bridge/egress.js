@@ -282,6 +282,88 @@ function restrictedNameOk(name, policy) {
  * the URL parser or `canonicalSocketHost` printed them; any other numeric
  * spelling, and anything `normalizeHostToken` refuses, fails closed.
  */
+/**
+ * Decodes one Punycode label body (RFC 3492, the part after `xn--`), or
+ * returns null when it is not valid Punycode.
+ */
+function decodePunycode(input) {
+  const base = 36;
+  const tMin = 1;
+  const tMax = 26;
+  const maxCode = 0x10ffff;
+  const out = [];
+  const delimiter = input.lastIndexOf("-");
+  for (let j = 0; j < Math.max(delimiter, 0); j++) {
+    const c = input.charCodeAt(j);
+    if (c >= 0x80) return null;
+    out.push(c);
+  }
+  let n = 128;
+  let bias = 72;
+  let i = 0;
+  for (let k = delimiter > 0 ? delimiter + 1 : 0; k < input.length; ) {
+    const oldi = i;
+    let w = 1;
+    for (let t = base; ; t += base) {
+      if (k >= input.length) return null;
+      const c = input.charCodeAt(k++);
+      let digit;
+      if (c >= 0x30 && c <= 0x39) digit = c - 22;
+      else if (c >= 0x61 && c <= 0x7a) digit = c - 0x61;
+      else return null;
+      i += digit * w;
+      if (i > 0x7fffffff) return null;
+      const th = t <= bias ? tMin : t >= bias + tMax ? tMax : t - bias;
+      if (digit < th) break;
+      w *= base - th;
+      if (w > 0x7fffffff) return null;
+    }
+    const len = out.length + 1;
+    let delta = oldi === 0 ? Math.floor((i - oldi) / 700) : Math.floor((i - oldi) / 2);
+    delta += Math.floor(delta / len);
+    let kk = 0;
+    while (delta > ((base - tMin) * tMax) >> 1) {
+      delta = Math.floor(delta / (base - tMin));
+      kk += base;
+    }
+    bias = kk + Math.floor(((base - tMin + 1) * delta) / (delta + 38));
+    n += Math.floor(i / len);
+    i %= len;
+    if (n > maxCode || (n >= 0xd800 && n <= 0xdfff)) return null;
+    out.splice(i, 0, n);
+    i += 1;
+  }
+  return String.fromCodePoint(...out);
+}
+
+/**
+ * True when every `xn--` label of an ASCII hostname is Punycode for a
+ * non-ASCII label that encodes back to itself, as the Rust policy's IDNA
+ * check demands. URL parsers differ here (newer ones pass `xn--` labels
+ * through unchecked), so the bridge checks rather than trusting the parser.
+ * Where the runtime has `URL`, the decoded label must also survive IDNA
+ * mapping unchanged.
+ */
+function punycodeLabelsOk(name) {
+  for (const label of name.split(".")) {
+    if (!label.startsWith("xn--")) continue;
+    const decoded = decodePunycode(label.slice(4));
+    if (decoded == null || decoded.length === 0 || /^[\x00-\x7f]*$/.test(decoded)) {
+      return false;
+    }
+    if (typeof URL === "function") {
+      let again;
+      try {
+        again = new URL(`http://${decoded}/`).hostname;
+      } catch {
+        return false;
+      }
+      if (again !== label) return false;
+    }
+  }
+  return true;
+}
+
 function classifyHost(host) {
   const token = normalizeHostToken(host);
   if (token == null) return null;
@@ -291,6 +373,7 @@ function classifyHost(host) {
   const v6 = parseIpv6(bare);
   if (v6 != null) return { ip: { v6 }, text: bare };
   if (isIpLiteral(bare)) return null;
+  if (!punycodeLabelsOk(bare)) return null;
   return { name: bare };
 }
 
