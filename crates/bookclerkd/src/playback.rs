@@ -968,14 +968,26 @@ pub(crate) async fn put_progress(
         )
         .await
         .map_err(|err| write_failed(ROUTE, &err))?;
-    let event = if became_finished {
-        PlaybackEvent::Finished
-    } else {
-        PlaybackEvent::Progress
-    };
+    // Every outright write is a progress event; one that finishes the
+    // edition is a finished event as well, as a finishing close is.
     library
-        .publish_playback_event(event, &progress, edition.work_id.as_deref(), None)
+        .publish_playback_event(
+            PlaybackEvent::Progress,
+            &progress,
+            edition.work_id.as_deref(),
+            None,
+        )
         .await;
+    if became_finished {
+        library
+            .publish_playback_event(
+                PlaybackEvent::Finished,
+                &progress,
+                edition.work_id.as_deref(),
+                None,
+            )
+            .await;
+    }
     crate::live::poke(bookclerk_library::control_plane::LiveTopic::Playback);
     Ok(Json(SyncJson {
         progress: progress_json(progress, edition.work_id),

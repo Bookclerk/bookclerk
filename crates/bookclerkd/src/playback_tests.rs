@@ -727,7 +727,24 @@ async fn a_member_keeps_progress_and_bookmarks_of_their_own() {
         .json();
     assert_eq!(page["items"], json!([]));
 
-    // Marked finished by hand, then forgotten.
+    // Marked finished by hand, then forgotten. The write that finishes
+    // the edition publishes a progress event and a finished event.
+    let events = |kind: &'static str| {
+        let store = world.store.clone();
+        async move {
+            store
+                .list_domain_events(200)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|event| event.event_type == kind)
+                .count()
+        }
+    };
+    let (progress_before, finished_before) = (
+        events("playback_progress").await,
+        events("playback_finished").await,
+    );
     let answer = put(
         format!("/api/playback/progress/{first}"),
         "riley",
@@ -735,6 +752,8 @@ async fn a_member_keeps_progress_and_bookmarks_of_their_own() {
     )
     .await;
     assert_eq!(answer.json()["finished_now"], true);
+    assert_eq!(events("playback_progress").await, progress_before + 1);
+    assert_eq!(events("playback_finished").await, finished_before + 1);
     let answer = send(
         &world,
         Method::DELETE,
