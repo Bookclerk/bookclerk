@@ -37,6 +37,7 @@ import { StoreLogo } from "@/components/StoreLogo";
 import { WisherAvatars } from "@/components/WisherAvatars";
 import { WorkStateEditor } from "@/components/WorkStateEditor";
 import { decodeHtmlEntities, parseGuidedReviewBody, prepareDescriptionHtml } from "@/lib/safeHtml";
+import { pricesVisible } from "@/lib/pricesVisible";
 import { cn, titleDetailDialogClass } from "@/lib/utils";
 
 const FALLBACK_COVER = "/bookclerk-mark.svg";
@@ -575,6 +576,10 @@ export function TitleDetailModal({
     initial.work_id,
   ]);
 
+  // The stores that listed the title, so title-meta can ask them for their
+  // own product pages (a stable key for the effect below).
+  const metaEditionsKey = JSON.stringify(initial.store_editions ?? []);
+
   // Public Audnexus / catalog blurb, runtime, publisher, ratings (all detail surfaces).
   useEffect(() => {
     const hasBlurb = descriptionLooksComplete(initial.description);
@@ -605,6 +610,7 @@ export function TitleDetailModal({
           isbn: initial.isbn,
           narrators: initial.narrators,
           length_minutes: initial.length_minutes,
+          store_editions: JSON.parse(metaEditionsKey) as StoreEdition[],
         });
         if (cancelled || !meta) return;
         setDetail((d) => mergePublicMeta(d, meta));
@@ -627,6 +633,7 @@ export function TitleDetailModal({
     initial.publisher,
     initial.categories,
     initial.rating_overall,
+    metaEditionsKey,
   ]);
 
   // Paginated Audible reviews: seed MostHelpful, then continue MostRecent
@@ -801,6 +808,9 @@ export function TitleDetailModal({
           return null;
       }
     };
+    // A patron who may not see store links gets none the app builds, as
+    // the library already drops them from its own answers.
+    const linksVisible = pricesVisible();
     const pushSeed = (source: string, productId: string) => {
       const key = source.toLowerCase();
       if (have.has(key)) return;
@@ -811,7 +821,7 @@ export function TitleDetailModal({
         source: key,
         product_id: productId.trim(),
         title: detail.title,
-        url,
+        url: linksVisible ? url : null,
       });
     };
     for (const e of commerceEditions ?? []) {

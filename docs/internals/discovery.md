@@ -450,6 +450,11 @@ Candidates are **unowned** storefront hits (plus open wishlist items), scored by
    also enjoyed"), and keeps that order when it cuts the list to the
    requested size. It never keyword-searches the seed's title: that matched
    words, not books (*The Great Hunt* found *Turkey Hunting for Kids*).
+   A narrator's other titles are kept only when one shares a top-level
+   genre (the first rung of an Audible genre ladder) with the seed, looked
+   up by the seed's ASIN; a seed with no ASIN or no genres gets none.
+   Narrators also record children's books, so the narrator of *The Silent
+   Patient* brought *Panda Panic*.
 3. Overlap with liked authors
 4. **Genres** the person likes, read from the candidate's own genres
    (`genre_match` in `bookclerk-discover`). The genres of the seed the
@@ -550,13 +555,18 @@ title is **not** in the household library.
   provider title-meta). Title detail loads Audible reviews via paginated
   `POST /api/discover/title-reviews` (`sort_by=MostHelpful|MostRecent`,
   infinite scroll seeds helpful then continues recent); title-meta carries
-  ratings/counts only.   For ISBN-only storefront hits (notably Libro.fm),
-  title-meta gap-fills via source `catalog_detail` (explore audiobook payload
-  or product-page JSON-LD / `.audiobook-genres`: narrator, runtime, description,
-  publisher, genres, abridged). After multi-store search ranks a page, Discover
-  asks the stores that declare `catalog.detailByIsbn` (Libro.fm today) to fill
-  lean rows by ISBN (bounded timeout), so list cards get genres/runtime without
-  N+1 product fetches inside each store’s `search_catalog`. See
+  ratings/counts only. When the provider record is missing or sparse,
+  title-meta gap-fills from storefront `catalog_detail` (narrator, runtime,
+  description, publisher, genres, abridged): the request carries the title's
+  `store_editions` (at most 16), and the host asks each listing store that
+  declares `catalog.detailByProductId` (Libro.fm, GraphicAudio) for its own
+  product (two at most), then the stores that declare `catalog.detailByIsbn`
+  (Libro.fm) for the ISBN, three lookups and 3.5 s at most. No plugin id is
+  named. After multi-store
+  search ranks a page, Discover asks the same stores to fill lean rows, by
+  ISBN or by their own product id (bounded timeout), so list cards get
+  genres/runtime without N+1 product fetches inside each store’s
+  `search_catalog`. See
   [Catalog search capabilities](../plugins/abi.md#catalog-search-capabilities).
 
 Multi-region storefronts are deferred (US default for now).

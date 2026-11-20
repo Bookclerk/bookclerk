@@ -15,8 +15,7 @@ to Bookclerk's Rust HTTP API; TypeScript never hosts the API.
 | **Operator** | The operator token, until an Owner exists; then a sign-in link or Owner elevation | Everything on the server, except connect stores |
 | **Owner** | Invite link, password, passkey, SSO or integration login | Administrator powers, plus elevation to operator and **Settings → Nodes** for the nodes they own |
 | **Administrator** | Invite link, password, passkey, SSO or integration login | Member powers, plus acquire and scan for every store account, jobs, adding users and **Settings → Nodes** for the nodes they own |
-| **Host** | Invite link, password, passkey, SSO or integration return visit | Member powers, plus **Status** and **Settings → Nodes** for the nodes they own |
-| **Member** | Invite link, password, passkey, SSO or integration return visit | Discover, Wishlist, browsing the shared library, **Accounts**, scan and acquire for the store accounts linked to them (through the API), and their own **Settings → Account** |
+| **Member** | Invite link, password, passkey, SSO or integration return visit | Discover, Wishlist, browsing the shared library, **Accounts**, scan and acquire for the store accounts linked to them (through the API), and their own **Settings → Account**; a Member who owns a node (a branch they linked) also gets **Status** and **Settings → Nodes** for the nodes they own |
 
 ### The operator
 
@@ -44,6 +43,21 @@ An Owner can **elevate** to operator, with an IdP step-up, a passkey or
 their password. Elevated, they get **Server** and **Plugins** settings and
 impersonation. Administrators can add users but cannot elevate.
 
+Some changes need elevation because each one decides who can sign in, or
+deletes something hard to rebuild. An Owner's everyday session can read
+these but not change them:
+
+- the second-factor policy (`PUT /api/auth/mfa-policy`);
+- upstream sign-in providers and the public origin
+  (`PUT /api/auth/oidc/config`);
+- Bookclerk-as-identity-provider clients (create, update, rotate the
+  secret, delete);
+- removing a shared branch (`DELETE /api/config/nodes/{node_id}`).
+
+Because the second-factor policy and the sign-in providers need elevation,
+an Owner who can't elevate also can't weaken the checks that guard
+elevation.
+
 Wrong elevation passwords count toward the same lockout as other sign-in
 attempts, both for the client address and for the Owner. After too many
 misses, `POST /api/auth/elevate` answers `429` with a `Retry-After` header,
@@ -52,9 +66,9 @@ still works meanwhile.
 
 The Owner's count is the account's password lockout, which every password
 re-check by a signed-in user shares: elevation, changing your password, and
-the `current_password` that sensitive changes ask for once a session is
-more than fifteen minutes old (authenticator, passkey, sign-in provider and
-OIDC client changes). Misses on any of them add up, and while the account
+the `current_password` that changes to your own sign-in ask for once a
+session is more than fifteen minutes old (authenticator and passkey
+changes). Misses on any of them add up, and while the account
 is locked each answers `429`. A correct password clears the count.
 
 ## Sign-in methods
@@ -335,6 +349,26 @@ An install that is already an active branch of a library reads
 that library's books through its link, so a card for it is refused
 (409 `already_joined`). These routes are for the operator or an Owner.
 
+A card can replace a branch instead. `POST /api/config/clerk/start`
+`{ from_branch, clerk_name? }` (a library id instead of `address` and
+`fingerprint`) signs in to a library this install is an active branch of,
+with the address and pinned certificate of the branch link. Only the
+operator may, as only the operator leaves a library (403 otherwise), and
+the library must still answer with the same library id (409
+`origin_mismatch`) and certificate (409 `fingerprint_unconfirmed`). The
+callback gets the card from the library first, then leaves the branch as
+`POST /api/config/join/leave` does, then seals the card. Both run on their
+own task, so a request cut short still finishes them. The answer's
+`left_branch.owner_notified` says whether the library was told. If the
+person doesn't approve the card, the branch stays. The sign-in remembers
+which enrollment it replaces: if this install left and joined the library
+again before the callback, the callback answers 409 `enrollment_changed`
+and keeps the new branch.
+
+The other way, a branch join of a library this install holds a card for
+signs the card out (see
+[How the sign-in works](branches.md#how-the-sign-in-works)).
+
 In the web app this is Settings → Library → **Library cards**: **Sign in
 with a library card** reads the library, asks for the fingerprint and the
 name, and sends the browser to the library's sign-in page. The library
@@ -342,7 +376,8 @@ sends it back to `/clerk/callback`, which posts the `code` and `state` to
 `POST /api/config/clerk/callback` and removes them from the address bar.
 Only a request that got no answer offers **Try again**; any answer ends
 the pending sign-in. Each card in the list has **Sign out** (**Remove** once
-the library ended it). See
+the library ended it), and for the operator **Make this server a branch**.
+A branch in Settings → Library has **Use a library card instead**. See
 [Sign in with a library card](../guide/branches.md#sign-in-with-a-library-card).
 
 ## API endpoints
@@ -355,20 +390,23 @@ the library ended it). See
 | Profile | `PATCH /api/auth/profile` `{ display_name?, email?, avatar_source? }`; `PUT`/`DELETE /api/auth/profile/avatar`; `GET /api/users/{id}/avatar` (any signed-in user) |
 | Elevation | `POST /api/auth/elevate` `{ password }`, `DELETE /api/auth/elevate`, `GET /api/auth/oidc/elevate`, `POST /api/auth/passkeys/elevate/*` (Owner only) |
 | SSO | `GET /api/auth/oidc/providers`, `/login`, `GET`/`POST /callback` |
-| SSO settings | `GET`/`PUT /api/auth/oidc/config` (providers, `public_origin`, `detected_origin`, issuer URLs; Owner or operator) |
-| Bookclerk as IdP | `GET`/`POST`/`PUT`/`DELETE /api/auth/oidc/clients` |
+| SSO settings | `GET`/`PUT /api/auth/oidc/config` (providers, `public_origin`, `detected_origin`, issuer URLs; Owner or operator reads, operator changes) |
+| Bookclerk as IdP | `GET`/`POST /api/auth/oidc/clients`, `PUT`/`DELETE /api/auth/oidc/clients/{client_id}`, `POST /api/auth/oidc/clients/{client_id}/rotate-secret` (Owner or operator lists, operator changes) |
 | Passkeys | `GET`/`POST`/`DELETE /api/auth/passkeys…` (sign-in, register, elevate) |
 | TOTP | `POST /api/auth/totp/enroll/begin` and `/finish`, `GET`/`DELETE /api/auth/totp`, `POST /api/auth/totp/login` |
-| Second-factor policy | `GET`/`PUT /api/auth/mfa-policy` `{ require_second_factor }` (Owner or operator) |
+| Second-factor policy | `GET`/`PUT /api/auth/mfa-policy` `{ require_second_factor }` (Owner or operator reads, operator changes) |
 | Preferences | `GET`/`PATCH /api/preferences`: `default_view`, `disabled_shelves`, `theme` (subject `user:{id}`, `portal:{identity_id}` or `operator`) |
 | Portal | `/api/portal/*` (Accounts, invite claims) |
 | Library cards | `GET`/`POST /api/auth/clerk-consent` (the consent page, any signed-in user), `POST /api/clerk/v1/token` (the clerk redeems its code), `GET /api/clerk/v1/connect` (the clerk socket) |
 | Library cards (clerk side) | `GET /api/config/clerk`, `POST /api/config/clerk/inspect`, `/start`, `/callback`, `/sign-out` (operator or Owner) |
 
 `GET /api/auth/me` returns
-`{ authenticated, role, default_view, can_acquire, elevated, impersonating?, portal?, user?, second_factor? }`:
+`{ authenticated, role, default_view, can_acquire, elevated, administers_nodes, impersonating?, portal?, user?, second_factor? }`:
 
 - `role` is `operator`, `owner`, `administrator` or `member`.
+- `administers_nodes` is true for the operator, an Owner or Administrator,
+  and a Member who owns a node. The web app shows Status, and the nodes in
+  Settings, only when it is true.
 - `user` is the first-party user, when there is one.
 - `default_view` comes from the caller's preferences.
 - Portal users also get
@@ -476,11 +514,20 @@ Operators also see scan and acquire. Connecting stores stays in
 
 Link and revoke stores, and manage linked sign-in identities.
 
-**Revoke** marks the account revoked (which stops its scans), signs it
-out at the store (best effort), deletes its saved credentials, then
-unlinks it. Books already in the library stay. If a step fails, the store
-stays listed and the page shows the error, so **Revoke** can be tried
-again.
+**Revoke** marks the account revoked (which stops its scans) and signs
+it out at the store (best effort). Then one atomic batch marks it revoked
+again, deletes its saved credentials and unlinks it, so the account is
+never left linked without credentials or unlinked with them. Books already
+in the library stay. If a step fails, the store stays listed and the page
+shows the error, so **Revoke** can be tried again.
+
+A sign-in finishes by linking the account in one atomic batch that needs
+its saved credentials (an account without them is never scanned). If
+another sign-in of the same store account that the operator refused took
+them back first, or a revoke ran meanwhile, nothing is linked: a password
+sign-in answers `409` and asks you to sign in again, and a browser
+(OAuth) sign-in, which finishes after its start route answered, leaves
+the store unlisted and logs why.
 
 ### Settings → Account (everyone)
 
@@ -517,7 +564,7 @@ reset passwords.
 Who can grant which role:
 
 - An Administrator adds Members only.
-- An Owner adds Members, Hosts and Administrators.
+- An Owner adds Members and Administrators.
 - The operator, or an elevated Owner, can grant any role.
 
 Each row shows presence:
@@ -592,7 +639,7 @@ See [Libraries and branches](branches.md).
 The web app keeps one WebSocket open: `GET /api/live`, subprotocol
 `bookclerk-live.v1`. It names topics whose data changed: `library`,
 `jobs`, `deliveries`, `nodes`, `config`, `consents`, `libraries`,
-`users` and `discover`. Status, Library, Discover, Settings → Nodes,
+`users`, `discover` and `playback`. Status, Library, Discover, Settings → Nodes,
 User Management and Settings → Library re-read their data when told.
 
 - The socket carries topic names only.

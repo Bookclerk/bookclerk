@@ -53,9 +53,7 @@ they may do with it. Owners and Administrators are never scoped.
 | --- | --- |
 | Rules | Which books are visible: a list of rules, each a field, a value, and include or exclude |
 | Explicit content | Whether editions marked explicit are visible. Editions gain an `explicit` field, filled from storefront metadata and sidecars. |
-| Download | Download or stream files, including through a library card |
-| Edit metadata | Change book metadata |
-| Upload | Add books by upload |
+| Member controls | What the Member may do, one switch each (see [Member controls](#member-controls)) |
 
 A rule's field is one of collection, tag, genre, series, author or
 narrator, and it matches one value of that field: "genre Kids", "series
@@ -86,6 +84,38 @@ Existing patrons are unrestricted when scopes ship. New patrons get the
 library's default scope, which an Administrator sets; out of the box it
 has no rules and allows explicit content, because
 explicit flags will be incomplete at first.
+
+### Member controls
+
+Beside the rules, six switches say what a Member may do. Each is on out
+of the box.
+
+| Control | Turning it off stops |
+| --- | --- |
+| Link store accounts | Connecting a store account, signing in to one again, and bringing accounts from another library. Accounts already connected keep working, and an Administrator can still remove them. |
+| Download | Taking copies of the library's files: downloads to a branch or clerk, streaming, and library-card sync |
+| Edit metadata | Changing book metadata. Patrons can't change metadata yet, so this switch is stored but does not restrict anything until they can. |
+| Upload | Adding books by upload. Patrons can't upload yet, so this switch is stored but does not restrict anything until they can. |
+| Request books | Asking a branch for a book it listed (interlibrary requests) |
+| See prices | Prices and store links in Discover, catalog search and the Wishlist; the library drops them from its answers, so the patron's browser never receives them, and the app builds no store links of its own |
+
+The library has a default for every switch, which an Administrator
+sets, and an Administrator can set single switches for one Member. A
+switch set for one Member overrides only that switch; the others keep
+following the default, so a later change of the default still reaches
+them. This differs from the rules, where a Member's own rules replace
+the default rules as a whole. A disabled user may do none of it.
+
+An Owner or the operator can also set single switches for an
+Administrator (an Administrator manages Members alone, so never another
+Administrator's switches). The default is for patrons: it never limits
+an Administrator, whom only the switches set for them alone limit.
+Owners are never limited.
+
+"Link store accounts" replaces the earlier per-member rule "may connect
+store accounts here". Like that rule it is checked again inside each
+account's import batch, so turning it off stops a join that is still
+adding accounts.
 
 ### One authority per linked person
 

@@ -185,6 +185,34 @@ downloads from the store as usual. A card has no setting to turn this off.
 A server that is already a branch of a library shows your books there
 through that link, so it can't also hold a card for it.
 
+### Switch between a card and a branch
+
+A card only shows your books. A branch also downloads them with your
+store accounts and runs the library's work. You can switch either way
+without signing out first. Only the server's operator can switch, since
+only the operator joins or leaves a library.
+
+To make a card a branch:
+
+1. In **Settings → Library → Library cards**, choose **Make this server a
+   branch** beside the library.
+2. Approve the branch on the library, as for
+   [Join from a new install](#join-from-a-new-install).
+
+Your server joins with the card's address and certificate, under the
+card's name. Once the library approves, the card is signed out, and your
+books there come through the branch.
+
+To keep only a card instead of a branch:
+
+1. In **Settings → Library**, choose **Use a library card instead** beside
+   the library.
+2. Sign in on the library with your account there, and approve the card.
+
+Once the library hands over the card, your server leaves the library as a
+branch, as **Leave library** does, and shows your books there through the
+card. If you don't approve the card, your server stays a branch.
+
 ## Core and local branches
 
 Every install is a library of its own, with its own database, people and
@@ -216,7 +244,9 @@ A **clerk** is not a branch: it only shows a person their books (see
 
 ## Leave a library
 
-On the branch, open **Settings → Library → Leave library**.
+On the branch, open **Settings → Library → Leave library**. To keep seeing
+your books there, choose **Use a library card instead** (see
+[Switch between a card and a branch](#switch-between-a-card-and-a-branch)).
 
 The library's operator or an Owner can also remove a branch from
 **Settings → Nodes**.

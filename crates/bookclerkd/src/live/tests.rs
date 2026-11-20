@@ -342,7 +342,7 @@ async fn a_write_right_after_hello_is_reported() {
     }
 }
 
-/// A member hears only `library`, `nodes` and `discover`: a jobs poke is
+/// A member hears only `library`, `nodes`, `discover` and `playback`: a jobs poke is
 /// filtered out, library and discover pokes come through; signing the member out closes the
 /// socket with 4401.
 #[tokio::test]
@@ -372,7 +372,8 @@ async fn a_member_hears_only_their_topics_until_signed_out() {
         vec![
             "library".to_string(),
             "nodes".to_string(),
-            "discover".to_string()
+            "discover".to_string(),
+            "playback".to_string()
         ]
     );
 

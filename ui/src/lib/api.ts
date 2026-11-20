@@ -15,7 +15,7 @@ export type AppView = "discover" | "library" | "accounts" | "wishlist" | "status
 /**
  * Session role returned by the daemon auth APIs.
  */
-export type AuthRole = "operator" | "owner" | "administrator" | "host" | "member";
+export type AuthRole = "operator" | "owner" | "administrator" | "member";
 
 /**
  * Linked portal identity attached to a user session.
@@ -82,10 +82,21 @@ export interface AuthSession {
   default_view: AppView;
   can_acquire: boolean;
   elevated?: boolean;
+  /**
+   * Whether the session reaches node administration and the Status page:
+   * the operator, an Owner or Administrator, or a Member who owns a node.
+   */
+  administers_nodes?: boolean;
   impersonating?: AuthMeImpersonating;
   portal?: PortalInfo;
   user?: AuthMeUser;
   second_factor?: AuthSecondFactor;
+  /**
+   * Whether the caller may see prices and store links. When false the
+   * library already drops them from its answers, and the app shows no
+   * store links of its own either.
+   */
+  see_prices: boolean;
 }
 
 /** What a work is: a book, or a podcast (its show). */
@@ -438,6 +449,7 @@ const ANON_SESSION: AuthSession = {
   authenticated: false,
   default_view: "discover",
   can_acquire: false,
+  see_prices: false,
 };
 
 /**
@@ -530,13 +542,7 @@ function normalizeView(raw: string | undefined): AppView {
 }
 
 function normalizeRole(raw: string | undefined): AuthRole | undefined {
-  if (
-    raw === "operator" ||
-    raw === "owner" ||
-    raw === "administrator" ||
-    raw === "host" ||
-    raw === "member"
-  ) {
+  if (raw === "operator" || raw === "owner" || raw === "administrator" || raw === "member") {
     return raw;
   }
   // Legacy portal sessions map to member.
@@ -660,10 +666,16 @@ function toAuthSession(body: {
   default_view?: string;
   can_acquire?: boolean;
   elevated?: boolean;
+  /**
+   * Whether the session reaches node administration and the Status page:
+   * the operator, an Owner or Administrator, or a Member who owns a node.
+   */
+  administers_nodes?: boolean;
   impersonating?: AuthMeImpersonating;
   portal?: PortalInfo;
   user?: AuthMeUser;
   second_factor?: AuthSecondFactor;
+  see_prices?: boolean;
 }): AuthSession {
   return {
     authenticated: body.authenticated,
@@ -671,10 +683,13 @@ function toAuthSession(body: {
     default_view: normalizeView(body.default_view),
     can_acquire: Boolean(body.can_acquire),
     elevated: Boolean(body.elevated),
+    administers_nodes: body.administers_nodes,
     impersonating: body.impersonating,
     portal: body.portal,
     user: body.user,
     second_factor: body.second_factor,
+    // An older server that does not send it never hid prices.
+    see_prices: body.see_prices !== false,
   };
 }
 
@@ -753,10 +768,12 @@ export async function authMe(): Promise<AuthSession> {
     default_view?: string;
     can_acquire?: boolean;
     elevated?: boolean;
+    administers_nodes?: boolean;
     impersonating?: AuthMeImpersonating;
     portal?: PortalInfo;
     user?: AuthMeUser;
     second_factor?: AuthSecondFactor;
+    see_prices?: boolean;
   }>(res);
   return toAuthSession(body);
 }
@@ -789,6 +806,7 @@ export async function login(token: string): Promise<AuthSession> {
     role: normalizeRole(body.role) ?? "operator",
     default_view: normalizeView(body.default_view),
     can_acquire: true,
+    see_prices: true,
   };
 }
 
@@ -973,7 +991,6 @@ export interface OidcBrokerConfigUpdate {
   providers: OidcProviderConfigUpdate[];
   /** Omit to leave unchanged; empty string clears `integrations.public_origin`. */
   public_origin?: string | null;
-  current_password?: string;
 }
 
 /** Registered passkey row. */
@@ -1047,7 +1064,6 @@ export interface OidcAsClientWrite {
   issue_refresh_token: boolean;
   allowed_scopes: string[];
   enabled: boolean;
-  current_password?: string;
 }
 
 /**
@@ -1098,18 +1114,15 @@ export async function updateOidcClient(
 }
 
 /**
- * Deletes a registered OIDC client.
+ * Deletes a registered OIDC client (operator or elevated Owner only).
  *
  * @param clientId - Client to remove.
- * @param currentPassword - Owner re-auth when the session is older than 15 minutes.
  * @returns Resolves when the client is removed.
  */
-export async function deleteOidcClient(clientId: string, currentPassword?: string): Promise<void> {
+export async function deleteOidcClient(clientId: string): Promise<void> {
   const res = await fetch(`/api/auth/oidc/clients/${encodeURIComponent(clientId)}`, {
     method: "DELETE",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ current_password: currentPassword }),
   });
   if (!res.ok) {
     await parseJson(res);
@@ -1117,21 +1130,18 @@ export async function deleteOidcClient(clientId: string, currentPassword?: strin
 }
 
 /**
- * Rotates a confidential client's secret; plaintext is returned once.
+ * Rotates a confidential client's secret (operator or elevated Owner only);
+ * plaintext is returned once.
  *
  * @param clientId - Confidential client to rotate.
- * @param currentPassword - Owner re-auth when required.
  * @returns Client row including the new plaintext secret once.
  */
-export async function rotateOidcClientSecret(
-  clientId: string,
-  currentPassword?: string,
-): Promise<OidcAsClient> {
+export async function rotateOidcClientSecret(clientId: string): Promise<OidcAsClient> {
   const res = await fetch(`/api/auth/oidc/clients/${encodeURIComponent(clientId)}/rotate-secret`, {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ current_password: currentPassword }),
+    body: "{}",
   });
   return parseJson(res);
 }
@@ -1364,8 +1374,8 @@ export interface ListedUser {
     account_id: string;
     label: string | null;
   }[];
-  /** Whether an administrator lets this user connect store accounts here (absent: allowed). */
-  may_connect_accounts?: boolean;
+  /** What the user may do here: the member controls that apply to them. */
+  controls?: MemberControls;
   /** Linked login identities (local + OIDC). */
   identities?: {
     provider: string;
@@ -1562,6 +1572,97 @@ export async function putDefaultScope(scope: PatronScope): Promise<{ scope: Patr
   return parseJson(res);
 }
 
+/** One thing an administrator may allow or refuse a patron. */
+export type MemberControl =
+  "link_accounts" | "download" | "edit_metadata" | "upload" | "request_books" | "see_prices";
+
+/** A value for every member control (`true` = allowed). */
+export type MemberControls = Record<MemberControl, boolean>;
+
+/** One patron's overrides; a missing control follows the library's default. */
+export type ControlOverrides = Partial<Record<MemberControl, boolean>>;
+
+/** A patron's member controls as `GET /api/users/{id}/controls` reports them. */
+export interface UserControls {
+  /** The user. */
+  user_id: number;
+  /** The library's default for every patron. */
+  defaults: MemberControls;
+  /** The controls set for this patron alone. */
+  overrides: ControlOverrides;
+  /** What applies to the user now. */
+  effective: MemberControls;
+  /** False for an Owner, who may always do everything. */
+  applies: boolean;
+  /**
+   * True for a Member, who follows the library default; false for an
+   * Administrator, whom only controls set for them alone limit.
+   */
+  follows_default: boolean;
+}
+
+/**
+ * Reads what a patron may do.
+ *
+ * @param id - The user.
+ * @returns The default, the patron's overrides and what applies.
+ */
+export async function getUserControls(id: number): Promise<UserControls> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/controls`, {
+    credentials: "include",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Sets the controls that differ for one patron; the rest follow the
+ * library's default.
+ *
+ * @param id - The user.
+ * @param overrides - The controls set for them alone (`{}` for none).
+ * @returns The controls after the change.
+ */
+export async function putUserControls(
+  id: number,
+  overrides: ControlOverrides,
+): Promise<UserControls> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/controls`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ overrides }),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Reads the library's default member controls.
+ *
+ * @returns The default.
+ */
+export async function getDefaultControls(): Promise<{ controls: MemberControls }> {
+  const res = await fetch("/api/users/default-controls", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Replaces the library's default member controls.
+ *
+ * @param controls - The new default.
+ * @returns The default after the change.
+ */
+export async function putDefaultControls(
+  controls: MemberControls,
+): Promise<{ controls: MemberControls }> {
+  const res = await fetch("/api/users/default-controls", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(controls),
+  });
+  return parseJson(res);
+}
+
 /**
  * Updates a first-party user role, status, or profile fields.
  *
@@ -1577,8 +1678,6 @@ export async function patchUser(
     display_name?: string;
     login_name?: string;
     email?: string;
-    /** Let the user connect store accounts here, or stop them. */
-    may_connect_accounts?: boolean;
   },
 ): Promise<UserMutationResponse> {
   const res = await fetch(`/api/users/${encodeURIComponent(String(id))}`, {
@@ -1858,24 +1957,20 @@ export async function fetchMfaPolicy(): Promise<{ require_second_factor: boolean
 }
 
 /**
- * Persists whether password login requires TOTP or a passkey.
+ * Persists whether password login requires TOTP or a passkey (operator or
+ * elevated Owner only).
  *
  * @param requireSecondFactor - When true, password-only sign-in is not enough once enrolled.
- * @param currentPassword - Owner step-up; operators omit this.
  * @returns Saved `{ require_second_factor }` flag.
  */
 export async function putMfaPolicy(
   requireSecondFactor: boolean,
-  currentPassword?: string,
 ): Promise<{ require_second_factor: boolean }> {
   const res = await fetch("/api/auth/mfa-policy", {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      require_second_factor: requireSecondFactor,
-      current_password: currentPassword,
-    }),
+    body: JSON.stringify({ require_second_factor: requireSecondFactor }),
   });
   return parseJson(res);
 }
@@ -3175,7 +3270,7 @@ export async function portalRevokeConnection(source: string, accountId: string):
  * @returns Resolves when logout completes.
  */
 export async function signOut(role?: AuthRole): Promise<void> {
-  if (role === "administrator" || role === "host" || role === "member") {
+  if (role === "administrator" || role === "member") {
     await portalLogout();
     return;
   }
@@ -4217,7 +4312,29 @@ export type TitleMetaQuery = {
   narrators?: string | null;
   length_minutes?: number | null;
   region?: string;
+  /**
+   * Store editions that listed the title. The server fills a sparse record
+   * from the stores that answer their own product ids before asking ISBN
+   * stores.
+   */
+  store_editions?: StoreEdition[] | null;
 };
+
+/** Most store editions the server accepts on one title-meta query. */
+const TITLE_META_MAX_STORE_EDITIONS = 16;
+
+/**
+ * The store editions a title-meta query sends: the first
+ * {@link TITLE_META_MAX_STORE_EDITIONS} with a source and product id.
+ *
+ * @param body - The title-meta query.
+ * @returns The editions to send, possibly empty.
+ */
+function titleMetaEditions(body: TitleMetaQuery): StoreEdition[] {
+  return (body.store_editions ?? [])
+    .filter((edition) => edition.source.trim() !== "" && edition.product_id.trim() !== "")
+    .slice(0, TITLE_META_MAX_STORE_EDITIONS);
+}
 
 function titleMetaClientKey(body: TitleMetaQuery): string {
   return [
@@ -4226,10 +4343,14 @@ function titleMetaClientKey(body: TitleMetaQuery): string {
     body.asin ?? "",
     body.isbn ?? "",
     body.region ?? "us",
+    titleMetaEditions(body)
+      .map((edition) => `${edition.source}:${edition.product_id}`)
+      .join(","),
   ].join("|");
 }
 
 function serializeTitleMetaQuery(body: TitleMetaQuery) {
+  const storeEditions = titleMetaEditions(body);
   return {
     title: body.title,
     authors: body.authors ?? undefined,
@@ -4238,6 +4359,7 @@ function serializeTitleMetaQuery(body: TitleMetaQuery) {
     narrators: body.narrators ?? undefined,
     length_minutes: body.length_minutes ?? undefined,
     region: body.region ?? "us",
+    store_editions: storeEditions.length > 0 ? storeEditions : undefined,
   };
 }
 

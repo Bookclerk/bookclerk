@@ -427,36 +427,41 @@ fn inherited_socketpair_echoes_under_deny_and_unlisted_fd_is_closed() {
         let mut buf = [0u8; 4];
         host.read_exact(&mut buf).map(|()| buf)
     });
+    // The guest writes the echo and exits straight away, so the jail can be
+    // reaped before the reader thread finishes `read_exact` (#643). A clean
+    // exit therefore doesn't fail the test by itself: drop the harness's copy
+    // of the guest end, so the read returns the buffered echo or, if the
+    // guest never wrote it, end of file, and only then judge the exit.
+    let mut guest_end = Some(guest_end);
+    let mut exited = None;
     let start = Instant::now();
-    let buf = loop {
+    let read = loop {
         if echo.is_finished() {
-            break echo
-                .join()
-                .expect("echo thread")
-                .unwrap_or_else(|err| panic!("host read echo: {err}"));
+            break echo.join().expect("echo thread");
         }
-        if let Some(status) = child.try_wait().expect("try_wait") {
-            let stdout = child.stdout.take().map(|mut s| {
-                let mut buf = Vec::new();
-                let _ = std::io::Read::read_to_end(&mut s, &mut buf);
-                buf
-            });
-            let stderr = child.stderr.take().map(|mut s| {
-                let mut buf = Vec::new();
-                let _ = std::io::Read::read_to_end(&mut s, &mut buf);
-                buf
-            });
-            panic!(
-                "jail exited {status} before echo\nstdout: {}\nstderr: {}",
-                String::from_utf8_lossy(&stdout.unwrap_or_default()),
-                String::from_utf8_lossy(&stderr.unwrap_or_default())
-            );
+        if exited.is_none() {
+            exited = child.try_wait().expect("try_wait");
+            if exited.is_some() {
+                drop(guest_end.take());
+            }
         }
         assert!(
             start.elapsed() < Duration::from_secs(15),
-            "timed out waiting for inherited-fd echo"
+            "timed out waiting for inherited-fd echo (jail exit: {exited:?})"
         );
         thread::sleep(Duration::from_millis(50));
+    };
+    let buf = match (read, exited) {
+        (Ok(buf), _) => buf,
+        (Err(err), None) => panic!("host read echo: {err}"),
+        (Err(err), Some(status)) => {
+            let output = child.wait_with_output().expect("wait jail");
+            panic!(
+                "jail exited {status} before echo ({err})\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     };
     assert_eq!(&buf, b"ping");
     drop(guest_end);

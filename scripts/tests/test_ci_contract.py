@@ -443,6 +443,21 @@ class WorkflowContractTests(unittest.TestCase):
                     f"the build-only builds for the `{key}` cache changed: set {var} to \"{digest}\" in ci.yml",
                 )
 
+    def test_cached_jobs_prune_other_toolchains_first(self) -> None:
+        """rust-cache hashes every installed toolchain, so each cached job keeps only the pin."""
+        for name, job in self.jobs.items():
+            steps = job.get("steps", [])
+            caches = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("Swatinem/rust-cache@")]
+            if not caches:
+                continue
+            with self.subTest(job=name):
+                install = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("dtolnay/rust-toolchain@")]
+                prune = [i for i, s in enumerate(steps) if "tool_versions.py prune-rust" in s.get("run", "")]
+                self.assertEqual(len(install), 1)
+                self.assertEqual(prune, [install[0] + 1], "prune right after installing the pin")
+                self.assertLess(prune[0], caches[0])
+                self.assertEqual(steps[prune[0]].get("if"), steps[install[0]].get("if"))
+
     def test_build_only_jobs_skip_when_their_saved_cache_is_current(self) -> None:
         """Each cache-saving job looks its own key up first and skips the build on a hit."""
         from ci_plan.execute import BUILD_ONLY_JOBS, SAVED_CACHE_CURRENT_ENV

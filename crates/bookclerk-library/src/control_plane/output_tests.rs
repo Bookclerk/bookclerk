@@ -363,3 +363,30 @@ fn a_legacy_seed_keeps_naming_templates_that_are_valid_together() {
         vec!["folder_template", "file_template", "chapter_file_template"]
     );
 }
+
+#[test]
+fn a_legacy_seed_judges_its_copies_against_its_own_main_output() {
+    let copy = |raw: &str| bookclerk_config::OutputCopy::parse(raw).unwrap();
+    // An M4B copy beside an MP3 main output is valid, although the default
+    // main output is an M4B.
+    let mp3_main = OutputConfig {
+        format: OutputFormat::SingleMp3,
+        copies: vec![copy("m4b:original")],
+        ..OutputConfig::default()
+    };
+    let (settings, replaced) = OutputSettingsV1::from_seed_lenient(&mp3_main);
+    settings.validate().expect("a lenient seed is valid");
+    assert!(replaced.is_empty(), "{replaced:?}");
+    assert_eq!(settings.copies, vec![copy("m4b:original")]);
+
+    // A copy that repeats the seed's own main output goes.
+    let repeat = OutputConfig {
+        format: OutputFormat::SingleMp3,
+        copies: vec![copy("mp3:v2")],
+        ..OutputConfig::default()
+    };
+    let (settings, replaced) = OutputSettingsV1::from_seed_lenient(&repeat);
+    settings.validate().expect("a lenient seed is valid");
+    assert_eq!(replaced, vec!["copies"]);
+    assert!(settings.copies.is_empty());
+}
