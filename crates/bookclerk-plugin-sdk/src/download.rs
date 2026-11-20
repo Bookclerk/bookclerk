@@ -695,6 +695,8 @@ async fn write_meta(path: &Path, meta: &PartMeta) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
+// Test code: a failed assertion is the test failing, not a documented panic.
+#[allow(clippy::missing_panics_doc)]
 mod tests {
     use std::sync::{Arc, Mutex};
 

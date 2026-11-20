@@ -426,3 +426,340 @@ async fn content_type_error(
         expected.join(", ")
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    /// The file every test server holds.
+    const BODY: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+
+    /// Speed limit high enough that throttling never sleeps noticeably.
+    const FAST_KBPS: u32 = 1_000_000;
+
+    /// A client with a valid synthetic token (no refresh, no signing).
+    fn client() -> Client {
+        let auth = audible_rs::auth::Authenticator::from_value(serde_json::json!({
+            "country_code": "us",
+            "bearer": {"access_token": "Atna|synthetic", "expires": 9_999_999_999.0_f64},
+        }))
+        .unwrap();
+        Client::new(auth).unwrap()
+    }
+
+    /// The `Range` header's first byte, if the request sent one.
+    fn range_start(request: &Request) -> Option<usize> {
+        let value = request.headers.get("range")?.to_str().ok()?;
+        value
+            .strip_prefix("bytes=")?
+            .strip_suffix('-')?
+            .parse()
+            .ok()
+    }
+
+    /// Answers like a well-behaved CDN: 206 for a range, 416 past the end.
+    fn ranged(content_type: &'static str) -> impl Fn(&Request) -> ResponseTemplate {
+        move |request: &Request| match range_start(request) {
+            None => ResponseTemplate::new(200).set_body_raw(BODY, content_type),
+            Some(start) if start >= BODY.len() => ResponseTemplate::new(416)
+                .insert_header("content-range", format!("bytes */{}", BODY.len()).as_str()),
+            Some(start) => ResponseTemplate::new(206)
+                .insert_header(
+                    "content-range",
+                    format!("bytes {start}-{}/{}", BODY.len() - 1, BODY.len()).as_str(),
+                )
+                .set_body_raw(&BODY[start..], content_type),
+        }
+    }
+
+    /// Runs one throttled download of the server's `/file`.
+    async fn fetch(
+        server: &MockServer,
+        dest: &Path,
+        version_tag: Option<&str>,
+        ext_overrides: &[(&str, &str)],
+        expected_content_type: &[&str],
+    ) -> Result<(DownloadOutcome, PathBuf)> {
+        download_to_file_limited(
+            &client(),
+            &format!("{}/file", server.uri()),
+            dest,
+            Some(u64::try_from(BODY.len()).unwrap()),
+            false,
+            FAST_KBPS,
+            expected_content_type,
+            ext_overrides,
+            version_tag,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_fresh_download_lands_at_the_overridden_extension() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ranged("audio/vnd.audible.aaxc"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("book.aax");
+        let (outcome, path) = fetch(
+            &server,
+            &dest,
+            Some("v1"),
+            &[("audio/vnd.audible.aaxc", "aaxc")],
+            &["audio/vnd.audible.aaxc"],
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, DownloadOutcome::Downloaded));
+        assert_eq!(path, dir.path().join("book.aaxc"));
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+        assert!(!version_marker_path(&part_path(&dest)).exists());
+
+        // A second call finds the finished file under its corrected name.
+        let (again, same) = fetch(
+            &server,
+            &dest,
+            Some("v1"),
+            &[("audio/vnd.audible.aaxc", "aaxc")],
+            &[],
+        )
+        .await
+        .unwrap();
+        assert!(matches!(again, DownloadOutcome::AlreadyComplete));
+        assert_eq!(same, path);
+    }
+
+    #[tokio::test]
+    async fn a_partial_under_the_same_version_resumes_with_a_range() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ranged("audio/mp4"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("book.m4b");
+        let part = part_path(&dest);
+        std::fs::write(&part, &BODY[..10]).unwrap();
+        std::fs::write(version_marker_path(&part), "v1").unwrap();
+
+        let (_, path) = fetch(&server, &dest, Some("v1"), &[], &[]).await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(range_start(&requests[0]), Some(10));
+    }
+
+    #[tokio::test]
+    async fn a_partial_under_another_version_is_fetched_again_whole() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ranged("audio/mp4"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("book.m4b");
+        let part = part_path(&dest);
+        std::fs::write(&part, b"stale bytes").unwrap();
+        std::fs::write(version_marker_path(&part), "v0").unwrap();
+
+        let (_, path) = fetch(&server, &dest, Some("v1"), &[], &[]).await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(range_start(&requests[0]), None);
+    }
+
+    #[tokio::test]
+    async fn a_complete_partial_finishes_on_416() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ranged("audio/mp4"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("book.m4b");
+        let part = part_path(&dest);
+        std::fs::write(&part, BODY).unwrap();
+        std::fs::write(version_marker_path(&part), "v1").unwrap();
+
+        // `expected_size` unknown, so the already-complete probe cannot
+        // short-circuit and the server's 416 has to finish it.
+        let (outcome, path) = download_to_file_limited(
+            &client(),
+            &format!("{}/file", server.uri()),
+            &dest,
+            None,
+            false,
+            FAST_KBPS,
+            &[],
+            &[],
+            Some("v1"),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, DownloadOutcome::Downloaded));
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+    }
+
+    #[tokio::test]
+    async fn a_complete_partial_of_unknown_type_is_fetched_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ranged("audio/vnd.audible.aaxc"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("book.aax");
+        let part = part_path(&dest);
+        std::fs::write(&part, BODY).unwrap();
+        std::fs::write(version_marker_path(&part), "v1").unwrap();
+
+        let (_, path) = download_to_file_limited(
+            &client(),
+            &format!("{}/file", server.uri()),
+            &dest,
+            None,
+            false,
+            FAST_KBPS,
+            &[],
+            &[("audio/vnd.audible.aaxc", "aaxc")],
+            Some("v1"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(path, dir.path().join("book.aaxc"));
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_refusal_fails_without_retrying() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let err = fetch(&server, &dir.path().join("book.m4b"), None, &[], &[])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("403"), "{err}");
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_multipart_title_answer_names_the_parts() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "Please download the parts of this title individually.",
+                "text/plain",
+            ))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let err = fetch(
+            &server,
+            &dir.path().join("book.aax"),
+            None,
+            &[],
+            &["audio/vnd.audible.aax"],
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("multipart title"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_unexpected_binary_type_is_refused_without_its_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(BODY, "image/png"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let err = fetch(
+            &server,
+            &dir.path().join("book.aax"),
+            None,
+            &[],
+            &["audio/vnd.audible.aax"],
+        )
+        .await
+        .unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("unexpected Content-Type: got image/png"),
+            "{text}"
+        );
+        assert!(!text.contains("0123"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_body_longer_than_the_license_says_is_discarded() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(BODY, "audio/mp4"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("book.m4b");
+        let err = download_to_file_limited(
+            &client(),
+            &format!("{}/file", server.uri()),
+            &dest,
+            Some(4),
+            false,
+            FAST_KBPS,
+            &[],
+            &[],
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("size mismatch"), "{err}");
+        assert!(!part_path(&dest).exists());
+    }
+
+    #[tokio::test]
+    async fn a_server_error_is_retried() {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&calls);
+        let answer = ranged("audio/mp4");
+        Mock::given(method("GET"))
+            .respond_with(move |request: &Request| {
+                if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(503)
+                } else {
+                    answer(request)
+                }
+            })
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let (_, path) = fetch(&server, &dir.path().join("book.m4b"), None, &[], &[])
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn content_types_compare_without_parameters_or_case() {
+        assert!(content_type_matches("Audio/MP4; charset=x", &["audio/mp4"]));
+        assert!(content_type_matches("anything", &[]));
+        assert!(!content_type_matches("text/html", &["audio/mp4"]));
+        assert_eq!(
+            extension_override("AUDIO/X-M4A ; q=1", &[("audio/x-m4a", "m4a")]),
+            Some("m4a")
+        );
+        assert!(is_text_like("application/problem+json"));
+        assert!(is_text_like("application/xml"));
+        assert!(!is_text_like("audio/mp4"));
+    }
+}

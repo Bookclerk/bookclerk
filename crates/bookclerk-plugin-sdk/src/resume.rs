@@ -319,6 +319,8 @@ impl Validator {
 }
 
 #[cfg(test)]
+// Test code: a failed assertion is the test failing, not a documented panic.
+#[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
 

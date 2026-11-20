@@ -3335,4 +3335,107 @@ mod tests {
         assert!(err.to_string().contains("404"), "{err}");
         assert_eq!(seen.lock().expect("log").len(), 1);
     }
+
+    /// The body every resume test serves.
+    fn package_body() -> Vec<u8> {
+        (0..=255u8).cycle().take(4000).collect()
+    }
+
+    #[test]
+    fn a_range_that_does_not_continue_the_partial_starts_over() {
+        let body = package_body();
+        let (url, seen) = serve(vec![
+            raw(
+                "HTTP/1.1 200 OK\nContent-Length: 4000\nConnection: close\n",
+                &body[..1500],
+            ),
+            raw(
+                "HTTP/1.1 206 Partial Content\nContent-Length: 4000\nContent-Range: bytes 0-3999/4000\nConnection: close\n",
+                &body,
+            ),
+            raw(
+                "HTTP/1.1 200 OK\nContent-Length: 4000\nConnection: close\n",
+                &body,
+            ),
+        ]);
+        let dir = tempfile::tempdir().expect("dir");
+        let dest = dir.path().join("plugin.tar.gz");
+        fetch_artifact(&url, &dest, false).expect("download");
+        assert_eq!(fs::read(&dest).expect("read"), body);
+        let seen = seen.lock().expect("log").clone();
+        assert_eq!(seen.len(), 3);
+        assert!(seen[2].is_empty(), "{seen:?}");
+    }
+
+    #[test]
+    fn a_range_that_runs_past_itself_starts_over() {
+        let body = package_body();
+        let (url, seen) = serve(vec![
+            raw(
+                "HTTP/1.1 200 OK\nContent-Length: 4000\nConnection: close\n",
+                &body[..1500],
+            ),
+            raw(
+                "HTTP/1.1 206 Partial Content\nContent-Length: 2500\nContent-Range: bytes 1500-1999/4000\nConnection: close\n",
+                &body[1500..],
+            ),
+            raw(
+                "HTTP/1.1 200 OK\nContent-Length: 4000\nConnection: close\n",
+                &body,
+            ),
+        ]);
+        let dir = tempfile::tempdir().expect("dir");
+        let dest = dir.path().join("plugin.tar.gz");
+        fetch_artifact(&url, &dest, false).expect("download");
+        assert_eq!(fs::read(&dest).expect("read"), body);
+        assert_eq!(seen.lock().expect("log").len(), 3);
+    }
+
+    #[test]
+    fn a_busy_server_is_retried() {
+        let body = package_body();
+        let (url, seen) = serve(vec![
+            raw(
+                "HTTP/1.1 503 Service Unavailable\nContent-Length: 0\nConnection: close\n",
+                b"",
+            ),
+            raw(
+                "HTTP/1.1 200 OK\nContent-Length: 4000\nConnection: close\n",
+                &body,
+            ),
+        ]);
+        let dir = tempfile::tempdir().expect("dir");
+        let dest = dir.path().join("plugin.tar.gz");
+        fetch_artifact(&url, &dest, false).expect("download");
+        assert_eq!(fs::read(&dest).expect("read"), body);
+        assert_eq!(seen.lock().expect("log").len(), 2);
+    }
+
+    #[test]
+    fn a_file_of_unknown_length_finishes_on_416() {
+        let body = package_body();
+        let mut chunked = b"fa0\r\n".to_vec();
+        chunked.extend_from_slice(&body[..1500]);
+        let (url, seen) = serve(vec![
+            raw(
+                "HTTP/1.1 200 OK\nTransfer-Encoding: chunked\nConnection: close\n",
+                &chunked,
+            ),
+            raw(
+                "HTTP/1.1 206 Partial Content\nContent-Length: 2500\nContent-Range: bytes 1500-3999/*\nConnection: close\n",
+                &body[1500..],
+            ),
+            raw(
+                "HTTP/1.1 416 Range Not Satisfiable\nContent-Length: 0\nContent-Range: bytes */4000\nConnection: close\n",
+                b"",
+            ),
+        ]);
+        let dir = tempfile::tempdir().expect("dir");
+        let dest = dir.path().join("plugin.tar.gz");
+        fetch_artifact(&url, &dest, false).expect("download");
+        assert_eq!(fs::read(&dest).expect("read"), body);
+        let seen = seen.lock().expect("log").clone();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[2].to_ascii_lowercase(), "range: bytes=4000-");
+    }
 }
