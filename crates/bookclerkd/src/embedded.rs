@@ -228,8 +228,8 @@ impl EmbeddedHost {
     }
 
     /// Opens a play session's track for the window's own player, decoded
-    /// to PCM by a confined media worker from `start_ms` (see
-    /// [`track`]). The bytes are read through the session's stream route,
+    /// to PCM by a confined media worker from `start_ms`. The bytes are
+    /// read through the session's stream route,
     /// so its checks apply to every block.
     ///
     /// # Arguments
