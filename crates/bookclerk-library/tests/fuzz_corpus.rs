@@ -362,6 +362,30 @@ fn fuzz_corpus_member_controls_request_replays() {
     );
 }
 
+/// The `upload_manifest` oracle, shared with the fuzz target: a manifest
+/// is accepted exactly when it has the documented shape and admissible
+/// paths, and an `Upload-Offset` exactly when it is a plain decimal that
+/// fits `i64`.
+#[path = "../../../fuzz/oracles/upload_manifest.rs"]
+mod upload_manifest_oracle;
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_upload_manifest_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("upload_manifest") {
+        if upload_manifest_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(accepted > 0, "no upload_manifest seed was accepted");
+    assert!(refused > 0, "every upload_manifest seed was accepted");
+}
+
 /// The `patron_scope_request` oracle, shared with the fuzz target: a
 /// patron scope body is accepted exactly when it has the documented shape
 /// and its rules are within bounds and distinct.
@@ -406,6 +430,30 @@ fn fuzz_corpus_work_split_request_replays() {
     // The seeds reach both sides.
     assert!(accepted > 0, "no work_split_request seed was accepted");
     assert!(refused > 0, "every work_split_request seed was accepted");
+}
+
+/// The `playback_request` oracle, shared with the fuzz target: a player's
+/// progress report is accepted exactly when it has the documented shape
+/// and bounded lengths, and a stream path exactly when it is a canonical
+/// session id and a track index below 512.
+#[path = "../../../fuzz/oracles/playback_request.rs"]
+mod playback_request_oracle;
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_playback_request_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("playback_request") {
+        if playback_request_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(accepted > 0, "no playback_request seed was accepted");
+    assert!(refused > 0, "every playback_request seed was accepted");
 }
 
 /// The `sharing_request` oracle, shared with the fuzz target: a branch's

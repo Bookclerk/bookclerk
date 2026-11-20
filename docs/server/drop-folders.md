@@ -22,19 +22,25 @@ destination: acquired books are not written into it.
    `settle_seconds` (one minute by default). A file still being copied
    keeps changing size or modification time, so it keeps waiting. Partial
    downloads (`*.part`, `*.crdownload`, `*.tmp` and similar) are ignored.
-4. Bookclerk hands the ready item to the ingest job as one batch. The job
-   reads the files straight from the folder, checks that they still have
-   the size and signature that settled, and adds the book.
+4. Bookclerk hands the ready item to the ingest job as one batch, the
+   same job an [upload](uploads.md) runs. The job copies the files from the
+   folder, checks that they still have the size that settled, and adds the
+   book. Files it does not keep, such as a stray `.exe`, are refused on
+   their own without failing the book.
 5. When the batch ends, the item is moved to `_imported/<date>/` (the
-   default), deleted, or left where it is. An item that could not be added
-   goes to `_failed/`, with a `<item>.bookclerk-error.txt` note beside it
-   saying why.
+   default, with the date in UTC), deleted, or left where it is. An item
+   that could not be added, or with a file that failed to store, goes to
+   `_failed/`, with a `<item>.bookclerk-error.txt` note beside it saying
+   why (for example `intake_changed` when a file was still growing). An
+   item whose files changed while it was being added stays where it is and
+   settles again.
 
 > [!NOTE]
 > Bookclerk never matches a dropped book by its title alone. A book whose
 > files carry no ASIN, ISBN or other strong identifier is still added and
-> playable, and waits in the **Intake** inbox for someone to confirm which
-> edition it is.
+> playable, as `needs_review`, and waits for an Administrator to confirm
+> which edition it is (see
+> [Review uploaded books](uploads.md#review-uploaded-books)).
 
 Files and folders whose names start with a dot, and the `_imported` and
 `_failed` folders at the top of the drop folder, are always skipped.

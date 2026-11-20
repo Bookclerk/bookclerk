@@ -41,6 +41,7 @@ Classic Libation setting names work as aliases where
 | `[database]`, `[database.sqlite]`, `[database.d1]`, `[database.postgres]` | The library database plugin (`sqlite` by default, Cloudflare D1 or PostgreSQL) |
 | `[auth]` | `[auth].password` to wrap `master.key` (prefer `BOOKCLERK_AUTH_PASSWORD`), and `[auth.oidc]` sign-in providers |
 | `[media]` | The codec worker pool: concurrency and confinement; see [Media worker](media.md) |
+| `[uploads]` | Upload limits on this node: file size, staging quota, free-disk floor and idle pruning; see [Upload limits](#upload-limits) |
 | `[plugins]` | How external plugins are jailed; see [Isolation modes](plugins.md#isolation-modes) |
 | `[output]` | The first-run seed of the `core.output` document, and the host's own `in_progress` scratch folder |
 | `[daemon]` | Listen addresses, JSON logs, trusted proxies, and `[daemon.node_api]` transport |
@@ -441,6 +442,23 @@ processes, each confined to the paths its job declared. `required`
 refuses media work when the jail doesn't engage, including when the
 worker isn't installed. A reload applies changes to new jobs and lets the
 old pool drain, so no restart is needed. See [Media worker](media.md).
+
+## Upload limits
+
+```toml
+[uploads]
+max_file_bytes = 21474836480     # 20 GiB per file
+max_staged_bytes = 21474836480   # 20 GiB per person across live uploads
+free_disk_floor_percent = 10     # refuse bytes that would leave less free
+idle_ttl_hours = 24              # cancel an upload with no new bytes for this long
+```
+
+Each node checks its own limits when an upload starts and before each
+file's bytes are written. A request that would pass one is refused before
+anything is stored. The floor is capped at 90% and the idle time is at
+least an hour. Changes apply to the next request after a reload. Who may
+upload is the **Upload** member control, not this table; see
+[Uploads](uploads.md).
 
 ## Plugin guests
 

@@ -217,6 +217,20 @@ input_from = "storage"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.archive_extract]
+crate = "bookclerk-archive"
+boundary = "Archives people upload (ZIP and tar, plain or gzip): entry names, links, sizes and ratios, expanded in the media worker's extract job"
+input_from = "signed-in user"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.archive_report]
+crate = "bookclerk-archive"
+boundary = "The media worker's extract report, read by the host: written paths, sizes and totals"
+input_from = "media worker"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.tags_wire]
 crate = "bookclerk-tags"
 boundary = "Tag worker frames (requests the worker reads, replies the host reads)"
@@ -385,6 +399,13 @@ input_from = "Owner or operator"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.upload_manifest]
+crate = "bookclerk-library"
+boundary = "What a patron sends to start and fill an upload: the POST /api/uploads manifest and each PATCH's Upload-Offset header"
+input_from = "signed-in user"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.member_controls_request]
 crate = "bookclerk-library"
 boundary = "Member controls an Owner or Administrator sets, from PUT /api/users/default-controls and PUT /api/users/{id}/controls"
@@ -403,6 +424,13 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-library"
 boundary = "An Administrator's choice of expressions to move out of a wrongly merged work, from POST /api/library/works/{id}/split"
 input_from = "Administrator, Owner or operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.playback_request]
+crate = "bookclerk-library"
+boundary = "What a player sends the playback routes: the bodies that open a session, report or set progress and add or change a bookmark, the progress page cursor, and the stream path of GET /api/playback/sessions/{id}/tracks/{n}"
+input_from = "any signed-in patron"
 side = "host"
 artifacts = ["bookclerk"]
 

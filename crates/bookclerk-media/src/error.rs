@@ -58,6 +58,11 @@ pub enum MediaError {
     #[error("embedded tags unreadable: {0}")]
     Tags(String),
 
+    /// An uploaded archive could not be expanded, or the worker's report of
+    /// the expansion did not hold up when the host checked it.
+    #[error("archive refused: {0}")]
+    Archive(String),
+
     /// Local filesystem I/O failure.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

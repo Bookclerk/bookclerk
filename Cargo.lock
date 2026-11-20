@@ -1526,6 +1526,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-archive"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-archive",
+ "flate2",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "unicode-normalization",
+ "zip",
+]
+
+[[package]]
 name = "bookclerk-audible-catalog"
 version = "0.1.0"
 dependencies = [
@@ -1566,6 +1581,7 @@ dependencies = [
  "chrono",
  "clap",
  "csv",
+ "hex",
  "libc",
  "rusqlite",
  "rust_xlsxwriter",
@@ -1573,12 +1589,14 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
  "tokio-postgres",
  "toml 1.2.1+spec-1.1.0",
  "tracing",
  "url",
+ "walkdir",
  "windows-sys 0.61.2",
  "zeroize",
 ]
@@ -1843,6 +1861,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "base64 0.23.1",
+ "bookclerk-archive",
  "bookclerk-config",
  "bookclerk-db-exec",
  "bookclerk-intake",
@@ -1881,6 +1900,7 @@ name = "bookclerk-media"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bookclerk-archive",
  "bookclerk-config",
  "bookclerk-cover",
  "bookclerk-mp4",
@@ -2612,6 +2632,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "bookclerk-acquire",
+ "bookclerk-archive",
  "bookclerk-config",
  "bookclerk-cover",
  "bookclerk-discover",
@@ -2627,6 +2648,7 @@ dependencies = [
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-host",
  "bookclerk-plugin-manifest",
+ "bookclerk-resolve",
  "bookclerk-sandbox",
  "bookclerk-search",
  "bookclerk-source",
@@ -3887,6 +3909,12 @@ name = "deadpool-runtime"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
+
+[[package]]
+name = "deflate64"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac6b926516df9c60bfa16e107b21086399f8285a44ca9711344b9e553c5146e2"
 
 [[package]]
 name = "defmt"
@@ -13629,6 +13657,7 @@ checksum = "e3476fd497ac8af5b1ec7b51acab7bef380f7e8dd8e0487595bafd839417a302"
 dependencies = [
  "constant_time_eq 0.6.1",
  "crc32fast",
+ "deflate64",
  "flate2",
  "getrandom 0.4.3",
  "indexmap 2.14.2",

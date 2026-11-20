@@ -5,8 +5,8 @@
 //! (`bookclerk_intake::ItemGrouper`), and stores how far each item has come
 //! (`control_plane::intake_items`). An item whose files have not changed for
 //! the folder's quiet period is handed to the ingest job as one batch whose
-//! members are storage references into the folder, so nothing is copied to
-//! staging first. When the batch ends, the item is moved to `_imported/`,
+//! members are storage references into the folder; the job copies them
+//! from there. When the batch ends, the item is moved to `_imported/`,
 //! deleted, or left, as the folder's settings say.
 //!
 //! Watching is the storage plugin's own change feed; it only starts a pass
@@ -22,10 +22,11 @@ use async_trait::async_trait;
 use bookclerk_config::{
     AfterIngest, IntakeAttribution, IntakeSettings, FAILED_FOLDER, IMPORTED_FOLDER,
 };
-use bookclerk_intake::{step, ItemGrouper, ItemMember, ListedObject, ObservedItem, Step};
+use bookclerk_intake::{step, ItemGrouper, ListedObject, ObservedItem, Step};
 use bookclerk_library::control_plane::{
-    apply_intake_writes, finish_intake_item, intake_settings, load_intake_items, IntakeFinish,
-    IntakeWrite,
+    apply_intake_writes, batch_members, finish_intake_item, intake_settings, load_batch,
+    load_intake_items, IngestBatchId, IngestMember, IngestState, IntakeFinish, IntakeRef,
+    IntakeWrite, MemberOutcome, MemberSpec,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_storage::{ListRequest, MoveOptions, StorageBackend, MAX_LIST_PAGE};
@@ -46,6 +47,21 @@ pub(crate) enum IntakeHolder {
     Patron(i64),
 }
 
+/// One file of a settled item, as the ingest job is given it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubmittedMember {
+    /// Its path inside the book: the item's own folder and file names,
+    /// without a patron folder (`Dune/01.mp3`, or `Dune.m4b`).
+    pub path: String,
+    /// Its storage key exactly as the folder plugin lists it (prefix
+    /// included), which the job reads.
+    pub key: String,
+    /// Size in bytes when it settled.
+    pub size: u64,
+    /// The backend's change signature when it settled, possibly empty.
+    pub signature: String,
+}
+
 /// One settled item handed to the ingest job.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IntakeSubmission {
@@ -53,14 +69,24 @@ pub(crate) struct IntakeSubmission {
     pub plugin_instance_id: String,
     /// The item's key relative to the folder.
     pub item_key: String,
-    /// The item's members, with storage keys as the folder plugin names
-    /// them (its prefix included), sizes and change signatures.
-    pub members: Vec<ItemMember>,
+    /// The item's files.
+    pub members: Vec<SubmittedMember>,
     /// The signature that settled, as hex; the job compares it before it
     /// reads and fails the item if the files moved.
     pub signature: String,
     /// Who holds the books.
     pub holder: IntakeHolder,
+}
+
+/// Why an item was not handed to the ingest job.
+#[derive(Debug)]
+pub(crate) enum HandOffError {
+    /// The item can never be ingested as it is (a path or reference the
+    /// job refuses, a holder who is not active); it goes to `_failed/`.
+    Refused(String),
+    /// The job could not be queued now (queue full, database error); the
+    /// item stays settled and is offered again on the next pass.
+    Unavailable(anyhow::Error),
 }
 
 /// The ingest job's side of the hand-off.
@@ -74,9 +100,53 @@ pub(crate) trait IngestHandOff: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns an error when the batch could not be queued; the item stays
-    /// settled and is offered again on the next pass.
-    async fn submit(&self, submission: IntakeSubmission) -> anyhow::Result<String>;
+    /// Returns [`HandOffError`] when the batch was refused or not queued.
+    async fn submit(&self, submission: IntakeSubmission) -> Result<String, HandOffError>;
+}
+
+/// The daemon's hand-off: one `ingest_batch` job per item, through
+/// [`crate::uploads::queue_intake_batch`].
+pub(crate) struct QueueHandOff<'a> {
+    /// The daemon state the job is queued through.
+    pub state: &'a AppState,
+}
+
+#[async_trait]
+impl IngestHandOff for QueueHandOff<'_> {
+    async fn submit(&self, submission: IntakeSubmission) -> Result<String, HandOffError> {
+        let IntakeHolder::Patron(user_id) = submission.holder;
+        let mut specs = Vec::with_capacity(submission.members.len());
+        for member in submission.members {
+            let path = bookclerk_archive::EntryPath::admit(&member.path).map_err(|err| {
+                HandOffError::Refused(format!("{} is not a usable file name: {err}", member.path))
+            })?;
+            specs.push(MemberSpec {
+                path,
+                size: member.size,
+                sha256: None,
+                intake: Some(IntakeRef {
+                    key: member.key,
+                    signature: Some(member.signature).filter(|s| !s.is_empty()),
+                }),
+            });
+        }
+        match crate::uploads::queue_intake_batch(
+            self.state,
+            user_id,
+            &submission.plugin_instance_id,
+            &specs,
+        )
+        .await
+        {
+            Ok(id) => Ok(id.as_str().to_string()),
+            Err(crate::uploads::IntakeError::Refused(refusal)) => {
+                Err(HandOffError::Refused(refusal.to_string()))
+            }
+            Err(crate::uploads::IntakeError::Queue(refusal)) => {
+                Err(HandOffError::Unavailable(anyhow::anyhow!("{refusal:?}")))
+            }
+        }
+    }
 }
 
 /// What one pass over a drop folder did.
@@ -89,6 +159,8 @@ pub(crate) struct PassReport {
     /// Items whose patron folder names nobody; they wait for an
     /// Administrator.
     pub unassigned: Vec<String>,
+    /// Items the ingest job refused outright; they went to `_failed/`.
+    pub refused: Vec<String>,
 }
 
 /// The change signature the grouper compares for one listed object: the
@@ -226,17 +298,28 @@ pub(crate) async fn run_pass(
         return Ok(report);
     };
     let mut queued = Vec::new();
+    let mut refused = Vec::new();
     for item in ready {
         let Some(holder) = holder_of(store, settings, item).await? else {
             report.unassigned.push(item.key.clone());
             continue;
         };
+        let patron_folder = item
+            .patron_folder
+            .as_deref()
+            .map(|folder| format!("{folder}/"));
         let members = item
             .members
             .iter()
-            .map(|member| ItemMember {
+            .map(|member| SubmittedMember {
+                path: patron_folder
+                    .as_deref()
+                    .and_then(|folder| member.key.strip_prefix(folder))
+                    .unwrap_or(&member.key)
+                    .to_string(),
                 key: format!("{prefix}{}", member.key),
-                ..member.clone()
+                size: member.size,
+                signature: member.signature.clone(),
             })
             .collect();
         let submission = IntakeSubmission {
@@ -255,7 +338,16 @@ pub(crate) async fn run_pass(
                     batch_id,
                 });
             }
-            Err(err) => warn!(
+            Err(HandOffError::Refused(reason)) => {
+                let batch_id = format!("refused-{}", uuid::Uuid::new_v4().simple());
+                queued.push(IntakeWrite::Queue {
+                    item_key: item.key.clone(),
+                    signature: item.signature,
+                    batch_id: batch_id.clone(),
+                });
+                refused.push((item.key.clone(), batch_id, reason));
+            }
+            Err(HandOffError::Unavailable(err)) => warn!(
                 plugin_instance_id = instance_id,
                 item = %item.key,
                 error = %err,
@@ -264,7 +356,162 @@ pub(crate) async fn run_pass(
         }
     }
     apply_intake_writes(store, instance_id, &queued).await?;
+    let day = day_of(now_ms);
+    for (item_key, batch_id, reason) in refused {
+        warn!(
+            plugin_instance_id = instance_id,
+            item = %item_key,
+            reason = %reason,
+            "drop folder item refused by the ingest job"
+        );
+        finish_item(
+            store,
+            instance_id,
+            backend,
+            prefix,
+            settings,
+            &item_key,
+            &batch_id,
+            &IngestOutcome::Failed(reason),
+            &day,
+        )
+        .await?;
+        report.refused.push(item_key);
+    }
     Ok(report)
+}
+
+/// The `_imported/` day folder name for the unix-millisecond time `ms`.
+fn day_of(ms: u64) -> String {
+    let date = i64::try_from(ms)
+        .ok()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .unwrap_or_default()
+        .date_naive();
+    day_folder(date)
+}
+
+/// How a finished ingest batch went for its drop folder item, from the
+/// batch's final state and its members' outcomes.
+///
+/// The item counts as added when the batch finished and at least one file
+/// was stored (matched, needing review, or already present) with none
+/// failing to store. Files the job refused on their own (an extra it does
+/// not keep) do not fail the item.
+///
+/// # Returns
+///
+/// `None` while the batch has not finished.
+fn outcome_of(state: IngestState, members: &[IngestMember]) -> Option<IngestOutcome> {
+    if !state.is_final() {
+        return None;
+    }
+    let mut stored = false;
+    let mut problems = Vec::new();
+    for member in members {
+        match member.outcome {
+            MemberOutcome::Matched | MemberOutcome::NeedsReview | MemberOutcome::Duplicate => {
+                stored = true;
+            }
+            MemberOutcome::Expanded | MemberOutcome::Refused => {}
+            MemberOutcome::Failed | MemberOutcome::Pending => problems.push(format!(
+                "{}: {}",
+                member.path,
+                member.reason.as_deref().unwrap_or("not stored")
+            )),
+        }
+    }
+    let ended = match state {
+        IngestState::Done => None,
+        IngestState::Failed => Some("the ingest job gave up"),
+        IngestState::Cancelled => Some("the ingest batch was cancelled"),
+        IngestState::Open | IngestState::Committed | IngestState::Running => return None,
+    };
+    if stored && problems.is_empty() && ended.is_none() {
+        return Some(IngestOutcome::Added);
+    }
+    let mut reasons: Vec<String> = ended.map(str::to_string).into_iter().collect();
+    reasons.extend(problems);
+    if !stored && reasons.is_empty() {
+        reasons = members
+            .iter()
+            .filter(|member| member.outcome == MemberOutcome::Refused)
+            .map(|member| {
+                format!(
+                    "{}: {}",
+                    member.path,
+                    member.reason.as_deref().unwrap_or("refused")
+                )
+            })
+            .collect();
+    }
+    if reasons.is_empty() {
+        reasons.push("nothing in the item could be stored".to_string());
+    }
+    Some(IngestOutcome::Failed(reasons.join("\n")))
+}
+
+/// Finishes every item of the drop folder whose ingest batch has ended.
+///
+/// The batch's own rows are the record, so an item finishes even when the
+/// node missed the `ingest_batch_finished` event or restarted meanwhile.
+///
+/// # Returns
+///
+/// How many items were finished.
+///
+/// # Errors
+///
+/// Returns a database, listing or storage error.
+pub(crate) async fn finish_ended(
+    store: &LibraryStore,
+    instance_id: &str,
+    backend: &dyn StorageBackend,
+    prefix: &str,
+    settings: &IntakeSettings,
+    now_ms: u64,
+) -> anyhow::Result<usize> {
+    let queued: Vec<(String, String)> = load_intake_items(store, instance_id)
+        .await?
+        .into_iter()
+        .filter(|(_, record)| record.tracked.state == bookclerk_intake::TrackedState::Queued)
+        .filter_map(|(key, record)| record.batch_id.map(|batch| (key, batch)))
+        .collect();
+    let day = day_of(now_ms);
+    let mut finished = 0;
+    for (item_key, batch_id) in queued {
+        let Some(id) = IngestBatchId::parse(&batch_id) else {
+            continue;
+        };
+        let outcome = match load_batch(store, &id).await? {
+            Some(batch) => {
+                let members = batch_members(store, &id).await?;
+                outcome_of(batch.state, &members)
+            }
+            // The batch row is gone (pruned or never written): the item is
+            // offered again once it is listed unchanged.
+            None => Some(IngestOutcome::Failed(
+                "the ingest batch no longer exists".to_string(),
+            )),
+        };
+        let Some(outcome) = outcome else {
+            continue;
+        };
+        finish_item(
+            store,
+            instance_id,
+            backend,
+            prefix,
+            settings,
+            &item_key,
+            &batch_id,
+            &outcome,
+            &day,
+        )
+        .await?;
+        finished += 1;
+    }
+    Ok(finished)
 }
 
 /// How an ingest batch ended for one drop folder item.
@@ -576,6 +823,24 @@ pub(crate) fn spawn_intake_runner(state: Arc<AppState>) {
                         }
                     }
                 }
+                match finish_ended(
+                    &library,
+                    &id,
+                    intake.backend.as_ref(),
+                    &intake.settings.prefix,
+                    &settings,
+                    now_ms,
+                )
+                .await
+                {
+                    Ok(0) => {}
+                    Ok(finished) => {
+                        info!(plugin_instance_id = %id, finished, "drop folder items finished");
+                    }
+                    Err(err) => {
+                        warn!(plugin_instance_id = %id, error = %err, "finishing drop folder items failed");
+                    }
+                }
                 let interval_ms = u64::from(settings.scan_interval_seconds) * 1_000;
                 let due = clock.last_pass_ms == 0
                     || now_ms.saturating_sub(clock.last_pass_ms) >= interval_ms
@@ -591,7 +856,7 @@ pub(crate) fn spawn_intake_runner(state: Arc<AppState>) {
                     &intake.settings.prefix,
                     &settings,
                     now_ms,
-                    None,
+                    Some(&QueueHandOff { state: &state }),
                 )
                 .await
                 {
@@ -646,8 +911,11 @@ mod tests {
 
     #[async_trait]
     impl IngestHandOff for Recorder {
-        async fn submit(&self, submission: IntakeSubmission) -> anyhow::Result<String> {
-            let mut seen = self.0.lock().map_err(|_| anyhow::anyhow!("poisoned"))?;
+        async fn submit(&self, submission: IntakeSubmission) -> Result<String, HandOffError> {
+            let mut seen = self
+                .0
+                .lock()
+                .map_err(|_| HandOffError::Unavailable(anyhow::anyhow!("poisoned")))?;
             seen.push(submission);
             Ok(format!("batch-{}", seen.len()))
         }
@@ -930,5 +1198,103 @@ mod tests {
         assert!(dir.path().join("_imported/2026-11-19/New/01.mp3").is_file());
         assert!(dir.path().join("_imported/notes/keep.txt").is_file());
         assert!(dir.path().join("_imported/2026-1-01/odd.txt").is_file());
+    }
+    fn member(path: &str, outcome: MemberOutcome, reason: Option<&str>) -> IngestMember {
+        IngestMember {
+            member_no: 0,
+            parent_no: None,
+            path: path.to_string(),
+            size: 1,
+            sha256: None,
+            received: 1,
+            storage_key: None,
+            signature: None,
+            outcome,
+            reason: reason.map(str::to_string),
+            edition_id: None,
+        }
+    }
+
+    #[test]
+    fn a_batch_outcome_decides_imported_or_failed() {
+        let stored = member("Dune/01.mp3", MemberOutcome::Matched, None);
+        let extra = member(
+            "Dune/notes.exe",
+            MemberOutcome::Refused,
+            Some("unsupported"),
+        );
+        let broken = member(
+            "Dune/02.mp3",
+            MemberOutcome::Failed,
+            Some("intake_unavailable"),
+        );
+        assert_eq!(
+            outcome_of(IngestState::Running, std::slice::from_ref(&stored)),
+            None
+        );
+        assert_eq!(
+            outcome_of(IngestState::Done, &[stored.clone(), extra.clone()]),
+            Some(IngestOutcome::Added),
+            "a refused extra does not fail the book"
+        );
+        assert_eq!(
+            outcome_of(IngestState::Done, &[stored.clone(), broken]),
+            Some(IngestOutcome::Failed(
+                "Dune/02.mp3: intake_unavailable".to_string()
+            ))
+        );
+        assert_eq!(
+            outcome_of(IngestState::Done, &[extra]),
+            Some(IngestOutcome::Failed(
+                "Dune/notes.exe: unsupported".to_string()
+            ))
+        );
+        assert_eq!(
+            outcome_of(IngestState::Cancelled, &[stored]),
+            Some(IngestOutcome::Failed(
+                "the ingest batch was cancelled".to_string()
+            ))
+        );
+        assert_eq!(
+            outcome_of(IngestState::Done, &[]),
+            Some(IngestOutcome::Failed(
+                "nothing in the item could be stored".to_string()
+            ))
+        );
+    }
+
+    /// Refuses every submission.
+    struct Refuser;
+
+    #[async_trait]
+    impl IngestHandOff for Refuser {
+        async fn submit(&self, _: IntakeSubmission) -> Result<String, HandOffError> {
+            Err(HandOffError::Refused("the holder is not active".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_item_goes_to_failed_with_the_reason() {
+        let (store, id) = store_and_folder().await;
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Book.m4b", b"book");
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        let settings = IntakeSettings::for_patron(5);
+        run_pass(&store, &id, &backend, "", &settings, 0, Some(&Refuser))
+            .await
+            .unwrap();
+        let report = run_pass(&store, &id, &backend, "", &settings, 60_000, Some(&Refuser))
+            .await
+            .unwrap();
+        assert_eq!(report.refused, ["Book.m4b"]);
+        assert!(dir.path().join("_failed/Book.m4b").is_file());
+        let note = std::fs::read_to_string(dir.path().join("_failed/Book.m4b.bookclerk-error.txt"))
+            .unwrap();
+        assert_eq!(note, "the holder is not active\n");
+    }
+
+    #[test]
+    fn day_folders_are_utc_dates() {
+        assert_eq!(day_of(1_795_132_800_000), "2026-11-20");
     }
 }

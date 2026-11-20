@@ -272,8 +272,11 @@ The host `EventPublisher` writes straight into the library outbox
   the library model resolver in the same batch as the store listing they
   describe, `holding_removed` in the batch that deletes the holding,
   `edition_acquire_changed` with an acquire state change other than
-  becoming acquired, and `wishlist_changed` and `listening_synced` by the library
-  after a wishlist or listening write. A plugin can consume them under
+  becoming acquired, `ingest_batch_finished` when an upload or storage
+  intake batch ends, `wishlist_changed` and `listening_synced` by the
+  library after a wishlist or listening write, and `playback_started`,
+  `playback_progress` and `playback_finished` by the built-in player after
+  a listening write. A plugin can consume them under
   `[[events.consumers]]`, but can't declare them under
   `[[events.producers]]` (`check` and load fail), and the host publisher
   refuses them even from an older grant.
@@ -910,6 +913,14 @@ writes `edition_acquire_changed` (`editionId`, `titleId`, `status`, one of
 `not_acquired`, `queued`, `downloading` or `error`) in the same
 transaction. Its `source` is the book's storefront plugin id too.
 
+**`ingest_batch_finished`.** When an [upload](../server/uploads.md) or a
+storage intake batch reaches a final state, the host writes
+`ingest_batch_finished` (`batchId`; `state`, one of `done`, `failed` or
+`cancelled`; `source`, `upload` or `intake`; `intakeInstance`, the storage
+instance an intake batch read, else `null`; `detail`, why it failed, else
+`null`) in the same transaction. Its `source` is `core.import`. Each file's
+outcome stays with the batch: read `GET /api/uploads/{id}`.
+
 **Library model events.** Recording a store listing publishes, in the same
 batch as its rows:
 
@@ -950,7 +961,14 @@ describe, best effort (a failed publish is logged, and the write stands):
   quarter or finish; its
   `source` is the integration that synced, and `identityIds` names the
   portal identities whose rows changed. A sync that changes none of these
-  publishes nothing.
+  publishes nothing;
+- `playback_started`, `playback_progress` and `playback_finished`
+  (`userId`, `editionId`, `workId`, `sessionId`, `positionMs`,
+  `durationMs`) from the built-in player: when someone opens a play
+  session, when a session closes or progress is set outright (then with a
+  null `sessionId`), and when a listener reaches the end of an edition.
+  `workId` and `durationMs` can be null. The position reports of a playing
+  session publish nothing.
 
 Discover's host consumer reads them to refresh shelves (see
 [Discovery design](../internals/discovery.md#taste-events)).

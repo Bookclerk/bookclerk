@@ -30,6 +30,10 @@ Bookclerk on your own computer first, see
   its database and consent.
 - [Media worker](media.md): the confined process that handles audio
   files.
+- [Uploads](uploads.md): adding books from files, folders and archives,
+  limits and review.
+- [Playback reference](playback.md): what the daemon stores and serves
+  for players.
 - [Backups, updates, import and export](backups.md): native backups,
   schema backups, updating, Libation and PostgreSQL export.
 - [Diagnostics](diagnostics.md): opt-in error reports.

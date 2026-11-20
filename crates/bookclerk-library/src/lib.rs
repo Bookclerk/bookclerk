@@ -131,9 +131,9 @@ pub use models::{
     UserTitleState, WishlistPurchaseHint, WishlistStoreEdition, WorkRecord, CORE_EVENTS_QUEUE,
     EDITION_ACQUIRE_CHANGED, EVENT_DELIVERY_DEFAULT_RETENTION_SECS, EVENT_DELIVERY_MAX_ATTEMPTS,
     EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, HOST_CONSUMER_PREFIX,
-    JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN, MAX_QUEUE_WISHERS,
-    NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES, QUEUE_CONTENT_TYPE_JSON,
-    QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
+    INGEST_BATCH_FINISHED, JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN,
+    MAX_QUEUE_WISHERS, NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES,
+    QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
 };
 pub use named_atomic::{NamedAtomicBackend, NamedAtomicRunner};
 pub use operator_token::{
@@ -187,6 +187,21 @@ pub use store::{
     },
     listening::{ListeningIdentifiers, ListeningMatch, ListeningProgressWrite},
     overrides::{ConflictCursor, PinOutcome, ResolutionConflict, MAX_CONFLICT_PAGE},
+    playback::{
+        reaches_end, Bookmark, NewPlaybackSession, PlaybackChange, PlaybackEdition, PlaybackEvent,
+        PlaybackMs, PlaybackProgress, PlaybackProgressEdit, PlaybackSession, PlaybackSync,
+        PlayerKind, ProgressCursor, MAX_BOOKMARKS_PER_EDITION, MAX_BOOKMARK_TITLE_BYTES,
+        MAX_PLAYBACK_MS, MAX_PLAYER_NAME_BYTES,
+    },
+    playback_request::{
+        parse_bookmark_edit_request, parse_new_bookmark_request, parse_open_session_request,
+        parse_playback_sync_request, parse_progress_cursor, parse_progress_edit_request,
+        parse_track_path, progress_cursor_token, BookmarkEditBody, BookmarkEditRequest,
+        NewBookmarkBody, NewBookmarkRequest, OpenSessionBody, OpenSessionRequest, PlaybackSyncBody,
+        PlayerKindParam, ProgressEditBody, TrackPath, MAX_EDITION_ID_BYTES,
+        MAX_PLAYBACK_BODY_BYTES, MAX_PLAYBACK_SYNC_BYTES, MAX_PLAYBACK_TRACKS,
+        MAX_PROGRESS_CURSOR_BYTES,
+    },
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
     prefer_enrichment_source,

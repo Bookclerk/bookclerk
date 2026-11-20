@@ -15,8 +15,7 @@ to Bookclerk's Rust HTTP API; TypeScript never hosts the API.
 | **Operator** | The operator token, until an Owner exists; then a sign-in link or Owner elevation | Everything on the server, except connect stores |
 | **Owner** | Invite link, password, passkey, SSO or integration login | Administrator powers, plus elevation to operator and **Settings → Nodes** for the nodes they own |
 | **Administrator** | Invite link, password, passkey, SSO or integration login | Member powers, plus acquire and scan for every store account, jobs, adding users and **Settings → Nodes** for the nodes they own |
-| **Host** | Invite link, password, passkey, SSO or integration return visit | Member powers, plus **Status** and **Settings → Nodes** for the nodes they own |
-| **Member** | Invite link, password, passkey, SSO or integration return visit | Discover, Wishlist, browsing the shared library, **Accounts**, scan and acquire for the store accounts linked to them (through the API), and their own **Settings → Account** |
+| **Member** | Invite link, password, passkey, SSO or integration return visit | Discover, Wishlist, browsing the shared library, **Accounts**, scan and acquire for the store accounts linked to them (through the API), and their own **Settings → Account**; a Member who owns a node (a branch they linked) also gets **Status** and **Settings → Nodes** for the nodes they own |
 
 ### The operator
 
@@ -335,6 +334,26 @@ An install that is already an active branch of a library reads
 that library's books through its link, so a card for it is refused
 (409 `already_joined`). These routes are for the operator or an Owner.
 
+A card can replace a branch instead. `POST /api/config/clerk/start`
+`{ from_branch, clerk_name? }` (a library id instead of `address` and
+`fingerprint`) signs in to a library this install is an active branch of,
+with the address and pinned certificate of the branch link. Only the
+operator may, as only the operator leaves a library (403 otherwise), and
+the library must still answer with the same library id (409
+`origin_mismatch`) and certificate (409 `fingerprint_unconfirmed`). The
+callback gets the card from the library first, then leaves the branch as
+`POST /api/config/join/leave` does, then seals the card. Both run on their
+own task, so a request cut short still finishes them. The answer's
+`left_branch.owner_notified` says whether the library was told. If the
+person doesn't approve the card, the branch stays. The sign-in remembers
+which enrollment it replaces: if this install left and joined the library
+again before the callback, the callback answers 409 `enrollment_changed`
+and keeps the new branch.
+
+The other way, a branch join of a library this install holds a card for
+signs the card out (see
+[How the sign-in works](branches.md#how-the-sign-in-works)).
+
 In the web app this is Settings → Library → **Library cards**: **Sign in
 with a library card** reads the library, asks for the fingerprint and the
 name, and sends the browser to the library's sign-in page. The library
@@ -342,7 +361,8 @@ sends it back to `/clerk/callback`, which posts the `code` and `state` to
 `POST /api/config/clerk/callback` and removes them from the address bar.
 Only a request that got no answer offers **Try again**; any answer ends
 the pending sign-in. Each card in the list has **Sign out** (**Remove** once
-the library ended it). See
+the library ended it), and for the operator **Make this server a branch**.
+A branch in Settings → Library has **Use a library card instead**. See
 [Sign in with a library card](../guide/branches.md#sign-in-with-a-library-card).
 
 ## API endpoints
@@ -366,9 +386,12 @@ the library ended it). See
 | Library cards (clerk side) | `GET /api/config/clerk`, `POST /api/config/clerk/inspect`, `/start`, `/callback`, `/sign-out` (operator or Owner) |
 
 `GET /api/auth/me` returns
-`{ authenticated, role, default_view, can_acquire, elevated, impersonating?, portal?, user?, second_factor? }`:
+`{ authenticated, role, default_view, can_acquire, elevated, administers_nodes, impersonating?, portal?, user?, second_factor? }`:
 
 - `role` is `operator`, `owner`, `administrator` or `member`.
+- `administers_nodes` is true for the operator, an Owner or Administrator,
+  and a Member who owns a node. The web app shows Status, and the nodes in
+  Settings, only when it is true.
 - `user` is the first-party user, when there is one.
 - `default_view` comes from the caller's preferences.
 - Portal users also get
@@ -517,7 +540,7 @@ reset passwords.
 Who can grant which role:
 
 - An Administrator adds Members only.
-- An Owner adds Members, Hosts and Administrators.
+- An Owner adds Members and Administrators.
 - The operator, or an elevated Owner, can grant any role.
 
 Each row shows presence:
@@ -592,7 +615,7 @@ See [Libraries and branches](branches.md).
 The web app keeps one WebSocket open: `GET /api/live`, subprotocol
 `bookclerk-live.v1`. It names topics whose data changed: `library`,
 `jobs`, `deliveries`, `nodes`, `config`, `consents`, `libraries`,
-`users` and `discover`. Status, Library, Discover, Settings → Nodes,
+`users`, `discover` and `playback`. Status, Library, Discover, Settings → Nodes,
 User Management and Settings → Library re-read their data when told.
 
 - The socket carries topic names only.

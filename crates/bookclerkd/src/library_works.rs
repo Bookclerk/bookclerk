@@ -43,7 +43,7 @@ const DEFAULT_LIMIT: u64 = 40;
 const MAX_LIMIT: u64 = 200;
 
 /// An error answer of these routes: status and JSON message.
-type WorksError = (StatusCode, Json<ErrorMessage>);
+pub(crate) type WorksError = (StatusCode, Json<ErrorMessage>);
 
 /// How a page of works is ordered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, utoipa::ToSchema)]
@@ -297,6 +297,8 @@ pub(crate) enum EntitlementJson {
     Loan,
     /// Given away by the store.
     Free,
+    /// The holder's own copy, uploaded rather than bought.
+    Own,
 }
 
 impl From<Entitlement> for EntitlementJson {
@@ -306,6 +308,7 @@ impl From<Entitlement> for EntitlementJson {
             Entitlement::Plus => Self::Plus,
             Entitlement::Loan => Self::Loan,
             Entitlement::Free => Self::Free,
+            Entitlement::Own => Self::Own,
         }
     }
 }
@@ -421,6 +424,12 @@ pub(crate) enum HolderJson {
         /// The node id.
         #[schema(example = "9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e")]
         node_id: String,
+    },
+    /// A patron who uploaded the book.
+    Patron {
+        /// The person's user id.
+        #[schema(example = 3)]
+        user_id: i64,
     },
 }
 
@@ -565,7 +574,7 @@ pub(crate) struct WorkDetailJson {
 
 /// The signed-in caller's user (`users.id`); `None` for an operator token
 /// or a session with no user.
-async fn caller_user_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
+pub(crate) async fn caller_user_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
     crate::auth::caller_portal_identity(state, headers)
         .await
         .and_then(|identity| identity.user_id)
@@ -587,7 +596,7 @@ async fn caller_user_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
 /// A 500 when the caller, the user or their scope cannot be read, and a
 /// 401 when the session ended since it was admitted: the library fails
 /// closed rather than show a patron books outside their scope.
-async fn caller_scope(
+pub(crate) async fn caller_scope(
     state: &AppState,
     library: &bookclerk_library::LibraryStore,
     headers: &HeaderMap,
@@ -633,7 +642,7 @@ async fn caller_scope(
 /// # Errors
 ///
 /// A 404 when the work is outside `scope`, a 500 when it cannot be read.
-async fn require_in_scope(
+pub(crate) async fn require_in_scope(
     library: &bookclerk_library::LibraryStore,
     scope: Option<&WorkScope>,
     work_id: &str,
@@ -661,7 +670,7 @@ async fn require_in_scope(
 }
 
 /// Logs a failed read and returns the 500 answer.
-fn read_failed(route: &str, err: &bookclerk_library::LibraryError) -> WorksError {
+pub(crate) fn read_failed(route: &str, err: &bookclerk_library::LibraryError) -> WorksError {
     tracing::error!(error = %err, route, "library works read failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -703,6 +712,7 @@ fn holding_json(holding: ListingHolding) -> HoldingJson {
                 account_id,
             },
             HoldingHolder::Node { node_id } => HolderJson::Node { node_id },
+            HoldingHolder::Patron { user_id } => HolderJson::Patron { user_id },
         },
         entitlement: holding.entitlement.into(),
         purchased_at: holding.purchased_at,

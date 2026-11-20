@@ -220,7 +220,7 @@ fn append_live_bump(
             bump_if_stamped(topic, now).map_err(|err| DbErr::Custom(err.to_string()))?
         }
         // No change stamp to test; no named operation writes these today.
-        LiveTopic::Config | LiveTopic::Libraries => bump(topic),
+        LiveTopic::Config | LiveTopic::Libraries | LiveTopic::Playback => bump(topic),
     };
     plan.statements.push(SqlStmt {
         sql: bump.sql,
@@ -1538,6 +1538,10 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
         "patron_controls",
         "patron_scopes",
         "copy_grants",
+        "holdings",
+        "playback_progress",
+        "playback_sessions",
+        "bookmarks",
     ] {
         let mut p = vec![j_i64(user_id)];
         p.extend(allow_p.clone());
@@ -1546,6 +1550,23 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
             p,
         ));
     }
+
+    // A person's ingest batches go with them: members first.
+    let mut members_p = vec![j_i64(user_id)];
+    members_p.extend(allow_p.clone());
+    statements.push(sql(
+        &format!(
+            "DELETE FROM ingest_members WHERE batch_id IN \
+             (SELECT id FROM ingest_batches WHERE user_id = ?) AND {allow}"
+        ),
+        members_p,
+    ));
+    let mut batches_p = vec![j_i64(user_id)];
+    batches_p.extend(allow_p.clone());
+    statements.push(sql(
+        &format!("DELETE FROM ingest_batches WHERE user_id = ? AND {allow}"),
+        batches_p,
+    ));
 
     let mut totp_p = vec![j_str(&user_id.to_string())];
     totp_p.extend(allow_p.clone());
@@ -4263,7 +4284,7 @@ mod tests {
         use crate::models::JobKind;
         // Exhaustive on purpose: a new variant stops this from compiling
         // until it is added here, and the assertion fails until `ALL` has it.
-        fn every(kind: JobKind) -> [JobKind; 14] {
+        fn every(kind: JobKind) -> [JobKind; 15] {
             match kind {
                 JobKind::Scan
                 | JobKind::Acquire
@@ -4278,6 +4299,7 @@ mod tests {
                 | JobKind::SearchIndexRebuild
                 | JobKind::LibraryIndexRebuild
                 | JobKind::BranchRequest
+                | JobKind::IngestBatch
                 | JobKind::Invalid => [
                     JobKind::Scan,
                     JobKind::Acquire,
@@ -4292,6 +4314,7 @@ mod tests {
                     JobKind::SearchIndexRebuild,
                     JobKind::LibraryIndexRebuild,
                     JobKind::BranchRequest,
+                    JobKind::IngestBatch,
                     JobKind::Invalid,
                 ],
             }

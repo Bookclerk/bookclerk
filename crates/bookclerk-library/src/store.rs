@@ -1441,6 +1441,21 @@ impl LibraryStore {
             .exec(txn)
             .await
             .map_err(LibraryError::Orm)?;
+        crate::entities::playback_progress::Entity::delete_many()
+            .filter(crate::entities::playback_progress::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        crate::entities::playback_sessions::Entity::delete_many()
+            .filter(crate::entities::playback_sessions::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        crate::entities::bookmarks::Entity::delete_many()
+            .filter(crate::entities::bookmarks::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
 
         portal_identities::Entity::delete_many()
             .filter(portal_identities::Column::UserId.eq(id))
@@ -7945,6 +7960,8 @@ pub(crate) mod library_model;
 pub(crate) mod listening;
 pub(crate) mod listing_reads;
 pub(crate) mod overrides;
+pub(crate) mod playback;
+pub(crate) mod playback_request;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
 pub(crate) mod request_queue;

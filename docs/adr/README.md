@@ -45,12 +45,19 @@ a later change supersedes one, its **Status** says so.
 - [Patron scopes and linked sign-in](patron-scopes.md): which part of the
   library a Member sees, and how a linked server's permissions and
   suspensions follow one authority.
+- [Uploads and ingest batches](uploads-and-ingest.md): one batch per
+  upload, patron holdings for uploaded books, identification by strong
+  identifiers only, and archives expanded under caps in the media worker.
 - [Storage destinations](storage-destinations.md): every storage plugin
   instance is a destination with its own template and filter,
   opportunistic change feeds and host-held webhooks.
 - [Drop folders](drop-folders.md): a storage instance can be a watched
   drop folder instead of a destination, settled by the host and added by
   the ingest job.
+
+- [Playback](playback.md): playback is a host feature with one core
+  (progress, sessions, one rights check, one stream route) that the web
+  player, the desktop window and app-compatible clients share.
 
 ## Adding a record
 

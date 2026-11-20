@@ -41,8 +41,9 @@ The daemon on each node that runs a drop folder lists it, groups the
 listing into items (each top-level file or folder), and records each
 item's state in `intake_items`. An item whose files keep the same sizes and
 signatures for `settle_seconds` is handed to the ingest job as one batch of
-storage references into the folder, so nothing is copied to staging first.
-The job checks the signature again before it reads.
+storage references into the folder. The job copies each file and fails
+one that no longer has the size that settled; the runner moves or deletes
+the item afterwards only if its signature has not changed.
 
 Grouping and settling are sans-IO code in `bookclerk-intake`, fuzzed
 against an independent oracle, because the listing is untrusted input.

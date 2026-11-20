@@ -271,11 +271,17 @@ async fn job_pin_plugin(store: &LibraryStore, job: &JobRecord) -> Result<Option<
 /// library database, since the host acquire path does neither. An
 /// interlibrary request ([`JobKind::BranchRequest`]) is never run through
 /// the routed claim: only its branch claims it, over `requests.claim`
-/// (`super::claim_branch_requests`).
+/// (`super::claim_branch_requests`). An ingest batch runs only on a node
+/// that holds the library database.
 #[must_use]
 pub fn claimant_may_run(claimant: Claimant, job: &JobRecord) -> bool {
     if job.kind == JobKind::BranchRequest {
         return false;
+    }
+    // An ingest batch writes the library model and reads staged bytes on
+    // the node that received them.
+    if job.kind == JobKind::IngestBatch {
+        return claimant == Claimant::Local;
     }
     claimant == Claimant::Local
         || !(job.kind == JobKind::Acquire && (job.payload.force || job.payload.pdf_only))

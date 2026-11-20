@@ -1245,7 +1245,7 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
 ///
 /// The group's routes, without auth layers (see [`route_groups`]).
 // Node administration: operators see and edit every node; a user who
-// owns nodes (Host, Administrator, Owner) sees and edits only those. An
+// owns nodes, or is an Administrator or Owner, sees and edits only those. An
 // Owner also sees and removes every shared node (the shared branches).
 #[inline(never)]
 fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
@@ -1273,7 +1273,7 @@ fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
 fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         // Any active user queues scans and acquires; the planner limits a
-        // Member or Host to the store accounts linked to them.
+        // Member to the store accounts linked to them.
         .routes(routes!(trigger_scan))
         .routes(routes!(trigger_acquire))
         // How listings resolve: the handlers admit only the operator, an
@@ -1368,6 +1368,24 @@ fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::library_works::put_work_state))
         .routes(routes!(crate::library_works::list_facet_values))
         .routes(routes!(crate::library_works::get_edition_cover))
+        .routes(routes!(crate::playback::get_edition_playback))
+        .routes(routes!(crate::playback::post_session))
+        .routes(routes!(crate::playback::post_session_sync))
+        .routes(routes!(crate::playback::post_session_close))
+        .routes(routes!(crate::playback::get_session_track))
+        .routes(routes!(crate::playback::list_progress))
+        .routes(routes!(
+            crate::playback::put_progress,
+            crate::playback::delete_progress
+        ))
+        .routes(routes!(
+            crate::playback::list_edition_bookmarks,
+            crate::playback::post_edition_bookmark
+        ))
+        .routes(routes!(
+            crate::playback::put_bookmark,
+            crate::playback::delete_bookmark
+        ))
         .routes(routes!(crate::covers::get_cover))
         .routes(routes!(crate::covers::get_image))
         .routes(routes!(crate::covers::get_gravatar))
@@ -1399,6 +1417,19 @@ fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(crate::profile::get_avatar))
         .routes(routes!(get_preferences, patch_preferences))
+        // Uploads: the handlers resolve the patron who holds the books, and
+        // the review list admits only an Administrator.
+        .routes(routes!(
+            crate::uploads::create_upload,
+            crate::uploads::list_uploads
+        ))
+        .routes(routes!(crate::uploads::list_upload_review))
+        .routes(routes!(
+            crate::uploads::get_upload,
+            crate::uploads::delete_upload
+        ))
+        .routes(routes!(crate::uploads::patch_upload_file))
+        .routes(routes!(crate::uploads::commit_upload))
 }
 
 /// Routes with no auth layer; each handler checks what it needs.

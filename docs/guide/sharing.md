@@ -37,13 +37,12 @@ join the shared library; their passwords stay theirs.
 
 ## Limit what a patron sees
 
-An Owner or Administrator can limit which books a Member or Host sees, for
+An Owner or Administrator can limit which books a Member sees, for
 example to keep a child to the children's shelf. This is their **patron
 scope**. Owners and Administrators always see the whole library.
 
 As with other changes to a person, an Administrator can set the scope of
-a Member, while a Host's scope takes an Owner or the operator. Anyone who
-can set scopes can edit the library's default.
+a Member. Anyone who can set scopes can edit the library's default.
 
 A scope is a list of rules. Each rule names a field (genre, series, author
 or narrator), one value of it, and whether it **shows only** books with
@@ -78,21 +77,20 @@ From the command line, `bookclerk users scope get` and
 ## Limit what a patron may do
 
 Six switches, the **member controls**, say what a Member may do. All are
-on out of the box.
+on out of the box except **Upload**, which is off until you turn it on.
 
 | Control | Turning it off stops |
 | --- | --- |
 | Link store accounts | Connecting a store, signing in to one again, and bringing connections from another library. Connections already here keep working. |
-| Download | Taking copies of the library's files to a branch or a clerk app |
+| Download | Taking copies of the library's files to a branch or a clerk app, and playing them |
 | Edit metadata | Changing a book's details |
-| Upload | Adding books by uploading files |
+| Upload | Adding books by uploading files, folders or ZIP and tar archives |
 | Request books | Asking a branch for a book it listed |
 | See prices and store links | Prices and store links in Discover and the wishlist |
 
 > [!NOTE]
-> Members can't edit metadata or upload books in Bookclerk yet, so those
-> two switches change nothing today. They are kept so the setting is
-> ready when it applies.
+> Members can't edit metadata in Bookclerk yet, so that switch changes
+> nothing today. It is kept so the setting is ready when it applies.
 
 With **See prices and store links** off, Discover, catalog search and
 the wishlist still show which stores carry a book, but no price and no

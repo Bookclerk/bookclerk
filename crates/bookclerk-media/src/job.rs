@@ -66,6 +66,16 @@ pub enum MediaJob {
         /// Waveform-alignment tuning (window sizes, thresholds).
         options: ChapterAlignOptions,
     },
+    /// Expand an uploaded ZIP or tar archive into an empty folder under
+    /// caps ([`bookclerk_archive::extract`]).
+    ExtractArchive {
+        /// Absolute path of the archive.
+        input: PathBuf,
+        /// Absolute path of the empty folder the files go into.
+        output_dir: PathBuf,
+        /// The caps for this archive.
+        limits: bookclerk_archive::Limits,
+    },
 }
 
 /// What a finished job produced.
@@ -89,6 +99,11 @@ pub enum MediaJobOutput {
         /// Chapter titles paired with start offsets in milliseconds.
         chapters: Vec<(String, u64)>,
     },
+    /// What an archive expansion wrote and refused.
+    Extracted {
+        /// The walk's report; the host re-checks it before trusting it.
+        report: Box<bookclerk_archive::ExtractReport>,
+    },
 }
 
 impl MediaJobOutput {
@@ -97,7 +112,7 @@ impl MediaJobOutput {
     pub fn output(&self) -> Option<&Path> {
         match self {
             Self::File { output } | Self::FileWithChapters { output, .. } => Some(output),
-            Self::Chapters { .. } => None,
+            Self::Chapters { .. } | Self::Extracted { .. } => None,
         }
     }
 
@@ -106,7 +121,7 @@ impl MediaJobOutput {
     pub fn chapters(&self) -> Option<&[(String, u64)]> {
         match self {
             Self::FileWithChapters { chapters, .. } | Self::Chapters { chapters } => Some(chapters),
-            Self::File { .. } => None,
+            Self::File { .. } | Self::Extracted { .. } => None,
         }
     }
 }
@@ -132,6 +147,7 @@ impl MediaJob {
             }
             Self::PackageM4b { request } => request.parts.clone(),
             Self::AlignChapters { path, .. } => vec![path.clone()],
+            Self::ExtractArchive { input, .. } => vec![input.clone()],
         }
     }
 
@@ -142,11 +158,14 @@ impl MediaJob {
     /// path and everything beneath it.
     #[must_use]
     pub fn write_dirs(&self) -> Vec<PathBuf> {
+        if let Self::ExtractArchive { output_dir, .. } = self {
+            return vec![output_dir.clone()];
+        }
         let output = match self {
             Self::EncodeMp3 { output, .. } | Self::RemuxTrimmed { output, .. } => Some(output),
             Self::Fixup { request } => Some(&request.output),
             Self::PackageM4b { request } => Some(&request.output),
-            Self::AlignChapters { .. } => None,
+            Self::AlignChapters { .. } | Self::ExtractArchive { .. } => None,
         };
         output
             .and_then(|path| path.parent())
@@ -163,6 +182,7 @@ impl MediaJob {
             Self::Fixup { .. } => "fixup",
             Self::PackageM4b { .. } => "package_m4b",
             Self::AlignChapters { .. } => "align_chapters",
+            Self::ExtractArchive { .. } => "extract_archive",
         }
     }
 
@@ -258,6 +278,17 @@ impl MediaJob {
                 options,
             } => Ok(MediaJobOutput::Chapters {
                 chapters: crate::chapter_align::align_chapter_starts(&path, &chapters, options),
+            }),
+            Self::ExtractArchive {
+                input,
+                output_dir,
+                limits,
+            } => Ok(MediaJobOutput::Extracted {
+                report: Box::new(crate::archive::extract_in_worker(
+                    &input,
+                    &output_dir,
+                    &limits,
+                )?),
             }),
         }
     }
