@@ -404,7 +404,7 @@ describe("Player", () => {
     w.failures.open = new ApiError(404, "not_playable", { code: "not_playable" });
     await w.player.play(TARGET);
     expect(w.player.state.status).toBe("error");
-    expect(w.player.state.error).toBe("This book is not on this server yet.");
+    expect(w.player.state.error).toBe("This book cannot be played from this server.");
     expect(w.player.state.target).toEqual(TARGET);
     w.failures.open = undefined;
     w.player.resume();

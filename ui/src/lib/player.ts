@@ -139,7 +139,7 @@ function idle(speed: number): PlayerState {
  */
 export function playbackErrorText(err: unknown): string {
   if (isApiError(err)) {
-    if (err.code === "not_playable") return "This book is not on this server yet.";
+    if (err.code === "not_playable") return "This book cannot be played from this server.";
     if (err.status === 403) return "Sign in as a library user to listen.";
     if (err.status === 404) return "This book is no longer in your library.";
     if (err.status === 421) return "This book is playing from another server. Start it again.";
