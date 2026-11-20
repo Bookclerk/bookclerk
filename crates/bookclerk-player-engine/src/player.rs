@@ -368,6 +368,12 @@ async fn clock<O: TrackOpener>(shared: Weak<Shared<O>>) {
 }
 
 #[cfg(test)]
+// Test signals are built from small, known values.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 mod tests {
     use super::*;
     use crate::renderer::OutputFormat;

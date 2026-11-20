@@ -331,8 +331,10 @@ pub fn decode_reply(body: &[u8]) -> Result<PcmReply, PcmWireError> {
             }
             PcmReply::Pcm(
                 bytes
-                    .chunks_exact(2)
-                    .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|pair| i16::from_le_bytes(*pair))
                     .collect(),
             )
         }

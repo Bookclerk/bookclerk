@@ -171,7 +171,7 @@ pub struct MediaPool {
     tags: Box<TagWorker>,
     /// Where a player's PCM is decoded: a confined worker per stream, or a
     /// refusal (isolation off counts as one, see [`crate::pcm_stream`]).
-    pcm: PcmRunner,
+    pcm: Box<PcmRunner>,
 }
 
 impl Drop for MediaPool {
@@ -241,7 +241,7 @@ impl MediaPool {
             permits: Arc::new(Semaphore::new(config.workers)),
             covers: Box::new(CoverWorker::new(cover_runner, config.workers)),
             tags: Box::new(TagWorker::new(tag_runner)),
-            pcm,
+            pcm: Box::new(pcm),
             config,
             runner,
         }

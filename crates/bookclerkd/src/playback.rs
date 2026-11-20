@@ -148,11 +148,12 @@ fn write_failed(route: &str, err: &LibraryError) -> PlaybackError {
 
 /// The signed-in library user, or the 403 a session without one gets.
 ///
-/// In the desktop window ([`AppState::in_window`]) every request is the
-/// operator, which is no library user, yet it is the person at this
-/// computer: their listening state is kept as the library's earliest
-/// active Owner. A daemon with a listener never does this, so the operator
-/// token there still has nothing to play as.
+/// In the desktop window ([`AppState::in_window`]) the listener is always
+/// the library's Owner (the earliest active one), whoever the request
+/// acts as: the window is the person at this computer, and their
+/// listening state stays theirs while elevated to the operator or
+/// impersonating a patron. A daemon with a listener never does this, so
+/// the operator token there still has nothing to play as.
 ///
 /// # Errors
 ///
@@ -166,21 +167,18 @@ async fn listener(state: &AppState, headers: &HeaderMap) -> Result<i64, Playback
             "this session has no library user to keep listening state for",
         )
     };
-    if let Some(user_id) = caller_user_id(state, headers).await {
-        return Ok(user_id);
-    }
-    if state.in_window.get().is_none() {
-        return Err(no_user());
-    }
-    let library = state.library_snapshot().await;
-    match crate::auth::caller_subject(state, &library, headers).await {
-        crate::auth::CallerSubject::Operator => library
+    if state.in_window.get().is_some() {
+        // The desktop window always plays as the library's Owner, whether
+        // it acts as the operator, elevated or impersonating someone: the
+        // listening state belongs to the person at this machine.
+        let library = state.library_snapshot().await;
+        return library
             .first_active_owner_id()
             .await
             .map_err(|err| read_failed("playback listener", &err))?
-            .ok_or_else(no_user),
-        _ => Err(no_user()),
+            .ok_or_else(no_user);
     }
+    caller_user_id(state, headers).await.ok_or_else(no_user)
 }
 
 /// The edition `id` when it exists and the caller's patron scope shows
