@@ -55,8 +55,8 @@ impl ChapterJsonMode {
 }
 
 /// Post-download output formatting. Default is enriched M4B (tags + chapters).
-/// `split_mp3_by_size` and `opus` parse but are not implemented yet: the
-/// acquire pipeline rejects a job that selects either before downloading.
+/// `split_mp3_by_size` parses but is not implemented yet: the acquire
+/// pipeline rejects a job that selects it before downloading.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 #[schema(example = "enriched_m4b")]
@@ -71,8 +71,8 @@ pub enum OutputFormat {
     /// Split MP3 by target file size (see `split_mp3_max_mb`). Not yet
     /// implemented: the acquire pipeline rejects it before downloading.
     SplitMp3BySize,
-    /// Opus output. Not yet implemented: the acquire pipeline rejects it
-    /// before downloading.
+    /// One Ogg Opus file (libopus, 64 kbit/s stereo) with Vorbis comment
+    /// tags, chapters and cover.
     Opus,
     /// Leave store-delivered media as-is (no remux/transcode/re-encode).
     None,
@@ -126,7 +126,7 @@ impl OutputFormat {
         matches!(self, Self::None)
     }
 
-    /// True when Opus packaging is selected (not yet implemented).
+    /// True when the format encodes to Ogg Opus.
     #[must_use]
     pub fn wants_opus(self) -> bool {
         matches!(self, Self::Opus)

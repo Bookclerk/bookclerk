@@ -37,6 +37,7 @@ use symphonia::core::meta::MetadataOptions;
 
 use crate::aac_fdk::FdkAacDecoder;
 use crate::error::{MediaError, Result};
+use crate::opus_dec::OpusDecoder;
 
 /// Highest sample rate a decoded stream may report, in Hz. Anything above
 /// is refused as malformed rather than handed to an encoder.
@@ -191,13 +192,14 @@ fn to_i16(sample: f32) -> i16 {
 }
 
 /// The codec registry the decode front uses: Symphonia's enabled decoders,
-/// with FDK preferred for AAC.
+/// with FDK preferred for AAC and libopus for Opus.
 fn codecs() -> &'static CodecRegistry {
     static REGISTRY: OnceLock<CodecRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| {
         let mut registry = CodecRegistry::new();
         symphonia::default::register_enabled_codecs(&mut registry);
         registry.register_audio_decoder_at_tier::<FdkAacDecoder>(Tier::Preferred);
+        registry.register_audio_decoder_at_tier::<OpusDecoder>(Tier::Preferred);
         registry
     })
 }
@@ -658,6 +660,46 @@ mod tests {
             );
             // 4,000 frames, give or take a codec frame of padding.
             assert!((3_000..=6_000).contains(&frames), "{name}: {frames} frames");
+        }
+    }
+
+    #[test]
+    fn ogg_opus_and_vorbis_decode() {
+        // Quarter-second 16 kHz tones, also `media_decode` seeds. Opus always
+        // decodes at 48 kHz; Vorbis keeps the source rate.
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/media_decode");
+        for (name, rate, channels) in [
+            ("tone_1ch.opus", 48_000, 1),
+            ("tone_2ch.opus", 48_000, 2),
+            ("tone_2ch.ogg", 16_000, 2),
+        ] {
+            let bytes = std::fs::read(corpus.join(name)).expect(name);
+            let mut frames = 0usize;
+            let mut peak = 0i16;
+            let format = decode_pcm_bytes(bytes, OutChannels::SourceUpToStereo, |f, pcm| {
+                frames += pcm.len() / usize::from(f.channels);
+                peak = pcm
+                    .iter()
+                    .fold(peak, |peak, s| peak.max(s.saturating_abs()));
+                Ok(())
+            })
+            .unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert_eq!(
+                format,
+                PcmFormat {
+                    sample_rate: rate,
+                    channels
+                },
+                "{name}"
+            );
+            // A quarter second, give or take pre-skip and a packet of padding.
+            let expected = usize::try_from(rate / 4).expect("frames");
+            assert!(
+                (expected * 3 / 4..=expected * 3 / 2).contains(&frames),
+                "{name}: {frames} frames"
+            );
+            // The tone is audible, not decoded silence.
+            assert!(peak > 2_000, "{name}: peak {peak}");
         }
     }
 

@@ -22,6 +22,36 @@ pub const MAX_EXTRA_COPIES: usize = 8;
 /// Longest quality name, in bytes (`320k-mono` is nine).
 pub const MAX_QUALITY_BYTES: usize = 16;
 
+/// The quality of the main output when it is Opus (`format = "opus"`):
+/// 64 kbit/s stereo. Another bitrate takes an Opus extra copy beside an
+/// M4B main output.
+pub const OPUS_MAIN_KBPS: u16 = 64;
+
+/// The bitrates, in kbit/s, an Opus copy is named by. Opus encodes in
+/// variable bitrate around the target, so these are targets, not caps.
+pub const OPUS_KBPS: [u16; 7] = [16, 24, 32, 48, 64, 96, 128];
+
+/// The Opus encoder settings one output is written with.
+///
+/// The main output uses [`OPUS_MAIN_KBPS`] stereo; an Opus copy takes the
+/// bitrate and channel choice its quality names ([`OutputCopy::opus_kbps`]).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpusSettings {
+    /// Target bitrate in kbit/s; Opus encodes in variable bitrate around it.
+    pub kbps: u16,
+    /// When true, the encoder downmixes to one channel.
+    pub mono: bool,
+}
+
+impl Default for OpusSettings {
+    fn default() -> Self {
+        Self {
+            kbps: OPUS_MAIN_KBPS,
+            mono: false,
+        }
+    }
+}
+
 /// The constant bitrates, in kbit/s, the MP3 encoder writes.
 ///
 /// `bookclerk-media` rounds any other requested bitrate up to the next of
@@ -63,11 +93,20 @@ pub enum CopyFormat {
     Mp3Chapters,
     /// The audio as the store delivered it (output format `none`).
     Original,
+    /// One Ogg Opus file with tags and chapters (output format `opus`), an
+    /// advanced format.
+    Opus,
 }
 
 impl CopyFormat {
     /// Every format, in the order the names are documented.
-    pub const ALL: [Self; 4] = [Self::M4b, Self::Mp3, Self::Mp3Chapters, Self::Original];
+    pub const ALL: [Self; 5] = [
+        Self::M4b,
+        Self::Mp3,
+        Self::Mp3Chapters,
+        Self::Original,
+        Self::Opus,
+    ];
 
     /// The format's name in settings, filter rules and file rows.
     #[must_use]
@@ -77,6 +116,18 @@ impl CopyFormat {
             Self::Mp3 => "mp3",
             Self::Mp3Chapters => "mp3_chapters",
             Self::Original => "original",
+            Self::Opus => "opus",
+        }
+    }
+
+    /// True for the advanced formats: ones players and servers read less
+    /// widely than M4B and MP3, which settings screens list apart from the
+    /// common ones.
+    #[must_use]
+    pub fn is_advanced(self) -> bool {
+        match self {
+            Self::Opus => true,
+            Self::M4b | Self::Mp3 | Self::Mp3Chapters | Self::Original => false,
         }
     }
 
@@ -89,8 +140,8 @@ impl CopyFormat {
             .find(|format| format.as_str().eq_ignore_ascii_case(raw))
     }
 
-    /// The copy format an output format produces; `None` for the formats
-    /// the acquire pipeline refuses (`split_mp3_by_size`, `opus`).
+    /// The copy format an output format produces; `None` for the format
+    /// the acquire pipeline refuses (`split_mp3_by_size`).
     #[must_use]
     pub fn of_output(format: OutputFormat) -> Option<Self> {
         match format {
@@ -98,7 +149,8 @@ impl CopyFormat {
             OutputFormat::SingleMp3 => Some(Self::Mp3),
             OutputFormat::SplitMp3ByChapter => Some(Self::Mp3Chapters),
             OutputFormat::None => Some(Self::Original),
-            OutputFormat::SplitMp3BySize | OutputFormat::Opus => None,
+            OutputFormat::Opus => Some(Self::Opus),
+            OutputFormat::SplitMp3BySize => None,
         }
     }
 
@@ -110,15 +162,16 @@ impl CopyFormat {
             Self::Mp3 => OutputFormat::SingleMp3,
             Self::Mp3Chapters => OutputFormat::SplitMp3ByChapter,
             Self::Original => OutputFormat::None,
+            Self::Opus => OutputFormat::Opus,
         }
     }
 
-    /// True for the formats the MP3 encoder writes, whose quality is an
-    /// encoder setting rather than `original`.
+    /// True for the formats an encoder writes (MP3, Opus), whose quality
+    /// is an encoder setting rather than `original`.
     #[must_use]
     pub fn is_encoded(self) -> bool {
         match self {
-            Self::Mp3 | Self::Mp3Chapters => true,
+            Self::Mp3 | Self::Mp3Chapters | Self::Opus => true,
             Self::M4b | Self::Original => false,
         }
     }
@@ -144,10 +197,12 @@ enum Rate {
 /// The quality of one copy, by name.
 ///
 /// The names are `original` (the store's audio, re-packaged without
-/// re-encoding where the format allows), a constant bitrate such as `64k`
-/// (one of the encoder's rates, [`MP3_CBR_KBPS`]) or a LAME VBR quality
-/// `v0` to `v9`; either of the last two may end in `-mono` for a copy mixed
-/// down to one channel. Names are stored in lower case.
+/// re-encoding where the format allows), a bitrate such as `64k` (one of
+/// the MP3 encoder's constant rates, [`MP3_CBR_KBPS`], or an Opus target,
+/// [`OPUS_KBPS`]) or a LAME VBR quality `v0` to `v9`; either of the last
+/// two may end in `-mono` for a copy mixed down to one channel. Which names
+/// suit which format is [`OutputCopy::validate`]'s to say. Names are stored
+/// in lower case.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CopyQuality {
     /// The rate the name gives.
@@ -183,7 +238,7 @@ impl CopyQuality {
                 && kbps.bytes().all(|b| b.is_ascii_digit())
                 && !kbps.starts_with('0');
             let kbps = kbps.parse::<u16>().ok().filter(|_| canonical)?;
-            if !MP3_CBR_KBPS.contains(&kbps) {
+            if !MP3_CBR_KBPS.contains(&kbps) && !OPUS_KBPS.contains(&kbps) {
                 return None;
             }
             Rate::Kbps(kbps)
@@ -200,6 +255,22 @@ impl CopyQuality {
     #[must_use]
     pub fn is_original(&self) -> bool {
         self.rate == Rate::Original
+    }
+
+    /// True for a copy mixed down to one channel (`-mono`).
+    #[must_use]
+    pub fn is_mono(&self) -> bool {
+        self.mono
+    }
+
+    /// The bitrate the name gives, in kbit/s; `None` for `original` and
+    /// the VBR levels.
+    #[must_use]
+    pub fn kbps(&self) -> Option<u16> {
+        match self.rate {
+            Rate::Kbps(kbps) => Some(kbps),
+            Rate::Original | Rate::Vbr(_) => None,
+        }
     }
 
     /// The quality the library's LAME settings give an MP3.
@@ -276,12 +347,14 @@ impl utoipa::PartialSchema for CopyQuality {
         utoipa::openapi::ObjectBuilder::new()
             .schema_type(utoipa::openapi::schema::Type::String)
             .description(Some(
-                "A copy's quality: `original`, a constant bitrate the MP3 encoder \
-                 writes (`64k`, `96k`, `128k`, `160k`, `192k`, `256k` or `320k`), or \
-                 a LAME VBR quality `v0` to `v9`; the last two may end in `-mono`.",
+                "A copy's quality: `original`, a bitrate (for MP3 a constant rate \
+                 the encoder writes: `64k`, `96k`, `128k`, `160k`, `192k`, `256k` or \
+                 `320k`; for Opus a target: `16k`, `24k`, `32k`, `48k`, `64k`, `96k` \
+                 or `128k`), or a LAME VBR quality `v0` to `v9` (MP3 only); the last \
+                 two may end in `-mono`.",
             ))
             .pattern(Some(
-                "^(original|((64|96|128|160|192|256|320)k|v[0-9])(-mono)?)$",
+                "^(original|((16|24|32|48|64|96|128|160|192|256|320)k|v[0-9])(-mono)?)$",
             ))
             .examples(["64k-mono"])
             .into()
@@ -372,38 +445,88 @@ impl std::error::Error for CopyError {}
 
 impl OutputCopy {
     /// The copy the library's main output makes: its format, with
-    /// `original` quality for M4B and as-delivered output and the LAME
-    /// settings' quality for MP3. `None` for an output format the acquire
-    /// pipeline refuses.
+    /// `original` quality for M4B and as-delivered output, the LAME
+    /// settings' quality for MP3 and [`OPUS_MAIN_KBPS`] for Opus. `None`
+    /// for an output format the acquire pipeline refuses.
     #[must_use]
     pub fn main(format: OutputFormat, lame: &LameConfig) -> Option<Self> {
         let format = CopyFormat::of_output(format)?;
-        let quality = if format.is_encoded() {
-            CopyQuality::of_lame(lame)
-        } else {
-            CopyQuality::ORIGINAL
+        let quality = match format {
+            CopyFormat::Mp3 | CopyFormat::Mp3Chapters => CopyQuality::of_lame(lame),
+            CopyFormat::Opus => CopyQuality {
+                rate: Rate::Kbps(OPUS_MAIN_KBPS),
+                mono: false,
+            },
+            CopyFormat::M4b | CopyFormat::Original => CopyQuality::ORIGINAL,
         };
         Some(Self { format, quality })
     }
 
     /// Checks that the quality suits the format: M4B and as-delivered
     /// copies are `original` only (the M4B is re-packaged, not
-    /// re-encoded), and MP3 copies need an encoder setting.
+    /// re-encoded), MP3 copies need one of the MP3 encoder's constant
+    /// rates or a VBR quality, and Opus copies one of the Opus targets.
     ///
     /// # Errors
     ///
     /// Returns a [`CopyError`] naming the copy when they do not suit.
     pub fn validate(&self) -> Result<(), CopyError> {
         match (self.format.is_encoded(), self.quality.is_original()) {
-            (true, true) => Err(CopyError(format!(
-                "a {} copy needs a bitrate or a VBR quality, not `original`",
-                self.format
-            ))),
-            (false, false) => Err(CopyError(format!(
-                "a {} copy keeps the store's audio: its quality is `original`, not `{}`",
+            (true, true) => {
+                return Err(CopyError(format!(
+                    "a {} copy needs a bitrate{}, not `original`",
+                    self.format,
+                    if self.format == CopyFormat::Opus {
+                        ""
+                    } else {
+                        " or a VBR quality"
+                    }
+                )))
+            }
+            (false, false) => {
+                return Err(CopyError(format!(
+                    "a {} copy keeps the store's audio: its quality is `original`, not `{}`",
+                    self.format, self.quality
+                )))
+            }
+            (true, false) | (false, true) => {}
+        }
+        let rates: &[u16] = match self.format {
+            CopyFormat::Opus => &OPUS_KBPS,
+            CopyFormat::Mp3 | CopyFormat::Mp3Chapters => &MP3_CBR_KBPS,
+            CopyFormat::M4b | CopyFormat::Original => return Ok(()),
+        };
+        match (self.quality.rate, self.format) {
+            (Rate::Kbps(kbps), _) if rates.contains(&kbps) => Ok(()),
+            (Rate::Vbr(_), CopyFormat::Mp3 | CopyFormat::Mp3Chapters) | (Rate::Original, _) => {
+                Ok(())
+            }
+            (Rate::Vbr(_), _) => Err(CopyError(format!(
+                "a {} copy is named by a bitrate, not a VBR quality (`{}`)",
                 self.format, self.quality
             ))),
-            (true, false) | (false, true) => Ok(()),
+            (Rate::Kbps(_), _) => Err(CopyError(format!(
+                "`{}` is not a bitrate a {} copy is written at ({})",
+                self.quality,
+                self.format,
+                rates
+                    .iter()
+                    .map(|kbps| format!("{kbps}k"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))),
+        }
+    }
+
+    /// The Opus encoder settings for an Opus copy at this quality; `None`
+    /// for any other format or a quality without a bitrate.
+    #[must_use]
+    pub fn opus_kbps(&self) -> Option<(u16, bool)> {
+        match self.format {
+            CopyFormat::Opus => self.quality.kbps().map(|kbps| (kbps, self.quality.mono)),
+            CopyFormat::M4b | CopyFormat::Mp3 | CopyFormat::Mp3Chapters | CopyFormat::Original => {
+                None
+            }
         }
     }
 
@@ -428,7 +551,7 @@ impl OutputCopy {
             .ok_or_else(|| CopyError(format!("a copy is written format:quality, not `{raw}`")))?;
         let format = CopyFormat::parse(format).ok_or_else(|| {
             CopyError(format!(
-                "`{}` is not a copy format (m4b, mp3, mp3_chapters or original)",
+                "`{}` is not a copy format (m4b, mp3, mp3_chapters, original or opus)",
                 format.trim()
             ))
         })?;
@@ -521,7 +644,7 @@ mod tests {
             "064k",
             "7k",
             "8k",
-            "32k",
+            "40k",
             "80k",
             "321k",
             "1000k",
@@ -542,6 +665,32 @@ mod tests {
     }
 
     #[test]
+    fn each_encoded_format_takes_its_own_rates() {
+        for ok in [
+            "opus:16k",
+            "opus:32k-mono",
+            "opus:128k",
+            "mp3:64k",
+            "mp3:v4-mono",
+        ] {
+            assert!(OutputCopy::parse(ok).is_ok(), "{ok}");
+        }
+        for refused in [
+            "opus:v2",
+            "opus:320k",
+            "opus:original",
+            "mp3:32k",
+            "mp3:16k-mono",
+        ] {
+            assert!(OutputCopy::parse(refused).is_err(), "{refused}");
+        }
+        assert_eq!(copy("opus:32k-mono").opus_kbps(), Some((32, true)));
+        assert_eq!(copy("mp3:64k").opus_kbps(), None);
+        assert!(CopyFormat::Opus.is_advanced());
+        assert!(!CopyFormat::M4b.is_advanced());
+    }
+
+    #[test]
     fn formats_parse_their_names_only() {
         for format in CopyFormat::ALL {
             assert_eq!(CopyFormat::parse(format.as_str()), Some(format));
@@ -549,7 +698,10 @@ mod tests {
         }
         assert_eq!(CopyFormat::parse("MP3"), Some(CopyFormat::Mp3));
         assert_eq!(CopyFormat::parse("enriched_m4b"), None);
-        assert_eq!(CopyFormat::of_output(OutputFormat::Opus), None);
+        assert_eq!(
+            CopyFormat::of_output(OutputFormat::Opus),
+            Some(CopyFormat::Opus)
+        );
         assert_eq!(CopyFormat::of_output(OutputFormat::SplitMp3BySize), None);
     }
 
@@ -575,7 +727,10 @@ mod tests {
             OutputCopy::main(OutputFormat::SplitMp3ByChapter, &lame),
             Some(copy("mp3_chapters:64k-mono"))
         );
-        assert_eq!(OutputCopy::main(OutputFormat::Opus, &lame), None);
+        assert_eq!(
+            OutputCopy::main(OutputFormat::Opus, &lame),
+            Some(copy("opus:64k"))
+        );
         // The encoder rounds 80 kbit/s up to 96, so the main copy says 96k.
         lame.bitrate_kbps = 80;
         assert_eq!(

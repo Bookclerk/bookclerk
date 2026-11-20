@@ -221,7 +221,17 @@ fn block(kind: u8, last: bool, body: &[u8]) -> Vec<u8> {
     out
 }
 
-/// A Vorbis comment block body.
+/// A Vorbis comment block body (vendor `vendor`) holding `items`.
+///
+/// # Panics
+///
+/// When an item is longer than `u32::MAX` bytes.
+#[must_use]
+pub fn vorbis_comments(items: &[&str]) -> Vec<u8> {
+    comments(items)
+}
+
+/// The body of [`vorbis_comments`].
 fn comments(items: &[&str]) -> Vec<u8> {
     let mut out = Vec::new();
     let push = |out: &mut Vec<u8>, s: &[u8]| {
@@ -273,5 +283,123 @@ pub fn tagged_flac() -> Vec<u8> {
     ));
     file.extend(block(PICTURE, true, &pic));
     file.extend_from_slice(&[0xFF, 0xF8, 0, 0, 0, 0]);
+    file
+}
+
+/// The Ogg page checksum: CRC-32 with polynomial `0x04C11DB7`, no
+/// reflection, zero initial value and no final XOR.
+fn ogg_crc(bytes: &[u8]) -> u32 {
+    let mut crc = 0u32;
+    for &byte in bytes {
+        crc ^= u32::from(byte) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ 0x04C1_1DB7
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
+}
+
+/// One Ogg page of stream `serial` with header flags `flags` and granule
+/// position `granule`, holding `packets` laced in order. A packet whose
+/// length is a multiple of 255 ends with a zero lacing value unless it is
+/// the page's last and exactly fills the table (so it continues).
+///
+/// # Panics
+///
+/// When the packets need more than 255 lacing values.
+#[must_use]
+pub fn ogg_page(flags: u8, granule: u64, serial: u32, packets: &[&[u8]]) -> Vec<u8> {
+    let mut lacing = Vec::new();
+    for (index, packet) in packets.iter().enumerate() {
+        let full = packet.len() / 255;
+        lacing.extend(std::iter::repeat_n(255u8, full));
+        let last = index + 1 == packets.len();
+        let fills = last && packet.len() % 255 == 0 && lacing.len() == 255;
+        if !fills {
+            lacing.push(u8::try_from(packet.len() % 255).expect("remainder"));
+        }
+    }
+    let mut page = b"OggS\0".to_vec();
+    page.push(flags);
+    page.extend_from_slice(&granule.to_le_bytes());
+    page.extend_from_slice(&serial.to_le_bytes());
+    page.extend_from_slice(&0u32.to_le_bytes());
+    page.extend_from_slice(&0u32.to_le_bytes());
+    page.push(u8::try_from(lacing.len()).expect("at most 255 lacing values"));
+    page.extend_from_slice(&lacing);
+    for packet in packets {
+        page.extend_from_slice(packet);
+    }
+    let crc = ogg_crc(&page);
+    page[22..26].copy_from_slice(&crc.to_le_bytes());
+    page
+}
+
+/// Standard base64 with padding.
+fn base64(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                let index = usize::try_from((n >> (18 - 6 * i)) & 63).expect("six bits");
+                out.push(char::from(DIGITS[index]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// An Ogg Opus file: 10 s of (silent, empty) audio past a 312-sample
+/// pre-skip, a title, two chapters and a PNG cover as a
+/// `METADATA_BLOCK_PICTURE` comment.
+///
+/// # Panics
+///
+/// Never: the fixed sizes all fit their fields.
+#[must_use]
+pub fn tagged_ogg_opus() -> Vec<u8> {
+    let mut head = b"OpusHead".to_vec();
+    head.extend_from_slice(&[1, 2]);
+    head.extend_from_slice(&312u16.to_le_bytes());
+    head.extend_from_slice(&48_000u32.to_le_bytes());
+    head.extend_from_slice(&0i16.to_le_bytes());
+    head.push(0);
+    let mut pic = Vec::new();
+    pic.extend_from_slice(&3u32.to_be_bytes());
+    pic.extend_from_slice(&9u32.to_be_bytes());
+    pic.extend_from_slice(b"image/png");
+    pic.extend_from_slice(&0u32.to_be_bytes());
+    pic.extend_from_slice(&[0u8; 16]);
+    let png = b"\x89PNG\r\n\x1a\nrest";
+    pic.extend_from_slice(&u32::try_from(png.len()).expect("len").to_be_bytes());
+    pic.extend_from_slice(png);
+    let picture = format!("METADATA_BLOCK_PICTURE={}", base64(&pic));
+    let mut tags = b"OpusTags".to_vec();
+    tags.extend(comments(&[
+        "TITLE=The Book",
+        "ARTIST=An Author",
+        "CHAPTER001=00:00:00.000",
+        "CHAPTER001NAME=Start",
+        "CHAPTER002=00:00:05.000",
+        "CHAPTER002NAME=Later",
+        &picture,
+    ]));
+    let mut file = ogg_page(0x02, 0, 0x4243_4C4B, &[&head]);
+    file.extend(ogg_page(0, 0, 0x4243_4C4B, &[&tags]));
+    // One silent packet (TOC byte only) on the last page.
+    file.extend(ogg_page(0x04, 312 + 480_000, 0x4243_4C4B, &[&[0xF8]]));
     file
 }

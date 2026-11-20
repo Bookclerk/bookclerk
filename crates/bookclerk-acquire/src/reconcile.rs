@@ -788,7 +788,7 @@ pub(crate) fn request_from_title(
 fn planned_extensions() -> &'static [&'static str] {
     // Prefer packaged outputs first; include plain passthrough containers that
     // Chirp / GraphicAudio may store under noop/`as_is` output.
-    &["m4b", "m4a", "mp3", "flac", "aac", "ogg", "oga"]
+    &["m4b", "m4a", "mp3", "opus", "flac", "aac", "ogg", "oga"]
 }
 
 /// Extract Audible-like ASINs and ISBN-13 tokens from a storage key / file path.
@@ -877,7 +877,7 @@ pub(crate) fn media_rank(key: &str) -> u8 {
         "mp3" => 2,
         "flac" => 3,
         "aac" => 4,
-        "ogg" | "oga" => 5,
+        "ogg" | "oga" | "opus" => 5,
         "aaxc" | "aax" => 9,
         _ => 6,
     }

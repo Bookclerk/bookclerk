@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use bookclerk_tags::fixtures::{mp4_box, tagged_flac, tagged_m4b, tagged_mp3};
+use bookclerk_tags::fixtures::{mp4_box, tagged_flac, tagged_m4b, tagged_mp3, tagged_ogg_opus};
 use bookclerk_tags::wire::{encode_reply, encode_request, Reply, Request};
 use bookclerk_tags::{read_all, ByteSpan};
 
@@ -64,6 +64,7 @@ fn read_seeds() -> Vec<(&'static str, Vec<u8>)> {
     let m4b = tagged_m4b();
     let mp3 = tagged_mp3();
     let flac = tagged_flac();
+    let opus = tagged_ogg_opus();
     let mut huge_box = m4b.clone();
     // The moov box (after ftyp and mdat) claims to run past the file.
     let moov_at = huge_box.windows(4).position(|w| w == b"moov").unwrap() - 4;
@@ -84,6 +85,8 @@ fn read_seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("cut.m4b", m4b[..m4b.len() - 100].to_vec()),
         ("cut.mp3", mp3[..mp3.len() / 3].to_vec()),
         ("cut.flac", flac[..flac.len() / 2].to_vec()),
+        ("tagged.opus", opus.clone()),
+        ("cut.opus", opus[..opus.len() / 2].to_vec()),
         ("huge_moov.m4b", huge_box),
         ("huge_id3.mp3", huge_id3),
         ("ftyp_only.m4b", mp4_box(b"ftyp", b"M4B \0\0\0\0")),

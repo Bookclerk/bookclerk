@@ -40,6 +40,7 @@ These options work with every command. Some commands have their own option of th
 - [`bookclerk nodes`](#bookclerk-nodes): Library nodes: liveness, capacity, budgets, and placement labels
 - [`bookclerk users`](#bookclerk-users): The library's people: patron scopes and member controls
 - [`bookclerk queues`](#bookclerk-queues): Plugin-owned queues on the outbox: counters, consumers, messages
+- [`bookclerk media`](#bookclerk-media): What this build's media worker reads and writes
 - [`bookclerk login`](#bookclerk-login): Print a loopback operator sign-in URL (requires a running daemon)
 - [`bookclerk diagnostics`](#bookclerk-diagnostics): Diagnostics ring buffer and opt-in upload
 - [`bookclerk version`](#bookclerk-version): Print version information
@@ -2004,6 +2005,26 @@ bookclerk queues inspect [OPTIONS] <NAME>
 Arguments:
 
 - `<NAME>`: Queue name (`core.events` is the domain-event bus)
+
+## `bookclerk media`
+
+What this build's media worker reads and writes
+
+```text
+bookclerk media [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk media capabilities`](#bookclerk-media-capabilities): List the audio codecs, file types and output formats this build's media worker handles (the daemon's `GET /api/status/media`)
+
+### `bookclerk media capabilities`
+
+List the audio codecs, file types and output formats this build's media worker handles (the daemon's `GET /api/status/media`)
+
+```text
+bookclerk media capabilities [OPTIONS]
+```
 
 ## `bookclerk login`
 

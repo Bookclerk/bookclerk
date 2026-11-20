@@ -125,9 +125,9 @@ pub(crate) fn fixup_audiobook_sync(req: &FixupRequest) -> Result<()> {
     match read_tag_record(&req.output)?.map(|record| record.container) {
         Some(bookclerk_tags::Container::Mp4) => fixup_m4b(req),
         Some(bookclerk_tags::Container::Mp3) => fixup_mp3(req),
-        Some(bookclerk_tags::Container::Flac) => Err(MediaError::Native(
-            "tag writing for FLAC is not supported yet".into(),
-        )),
+        Some(bookclerk_tags::Container::Flac | bookclerk_tags::Container::Ogg) => {
+            crate::vorbis_tags::fixup_vorbis(req)
+        }
         None => Err(MediaError::Native(format!(
             "cannot write tags into {}: not a container this build reads",
             req.output.display()
@@ -136,7 +136,7 @@ pub(crate) fn fixup_audiobook_sync(req: &FixupRequest) -> Result<()> {
 }
 
 /// Encoder/tool tag: request override, or the Bookclerk binary name and version.
-fn tool_string(req: &FixupRequest) -> String {
+pub(crate) fn tool_string(req: &FixupRequest) -> String {
     req.tool
         .clone()
         .filter(|s| !s.is_empty())
@@ -144,7 +144,7 @@ fn tool_string(req: &FixupRequest) -> String {
 }
 
 /// ABS-style album string: `title: subtitle` when a subtitle is present.
-fn album_title(req: &FixupRequest) -> String {
+pub(crate) fn album_title(req: &FixupRequest) -> String {
     // ABS `getFFMetadataObject` uses `title: subtitle` for album when subtitle exists.
     match req.subtitle.as_deref().filter(|s| !s.is_empty()) {
         Some(sub) => format!("{}: {sub}", req.title),
@@ -153,7 +153,7 @@ fn album_title(req: &FixupRequest) -> String {
 }
 
 /// Normalizes catalog genre lists to `; `-separated ABS tags, preserving comma-in-name genres.
-fn genres_for_abs(raw: &str) -> String {
+pub(crate) fn genres_for_abs(raw: &str) -> String {
     // ABS accepts `/`, `//`, or `;` as genre separators.
     // Prefer `;` when present so catalog names that contain commas
     // (e.g. "Movie, TV & Video Game Tie-Ins") stay intact.
@@ -173,7 +173,7 @@ fn genres_for_abs(raw: &str) -> String {
 }
 
 /// ABS grouping string: `series #index` when an index is present.
-fn grouping_for_abs(series: &str, index: Option<&str>) -> String {
+pub(crate) fn grouping_for_abs(series: &str, index: Option<&str>) -> String {
     match index.filter(|s| !s.is_empty()) {
         Some(idx) => format!("{series} #{idx}"),
         None => series.to_string(),
@@ -638,7 +638,7 @@ fn audio_duration(path: &Path) -> Result<Option<bookclerk_tags::Duration>> {
 /// # Errors
 ///
 /// Returns an error when the file cannot be opened or read.
-fn read_tag_record(path: &Path) -> Result<Option<bookclerk_tags::TagRecord>> {
+pub(crate) fn read_tag_record(path: &Path) -> Result<Option<bookclerk_tags::TagRecord>> {
     use std::io::{Read as _, Seek as _, SeekFrom};
 
     let mut file = std::fs::File::open(path)?;
@@ -667,7 +667,7 @@ fn read_tag_record(path: &Path) -> Result<Option<bookclerk_tags::TagRecord>> {
 }
 
 /// Detects PNG/BMP/JPEG from magic bytes, then falls back to the file extension.
-fn guess_img_fmt(path: &Path, bytes: &[u8]) -> ImgFmt {
+pub(crate) fn guess_img_fmt(path: &Path, bytes: &[u8]) -> ImgFmt {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         return ImgFmt::Png;
     }
