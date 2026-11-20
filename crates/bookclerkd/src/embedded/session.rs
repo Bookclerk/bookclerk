@@ -21,6 +21,7 @@ use bookclerk_library::{
     unseal_secret, upsert_secret, LibraryError, LibraryStore, SessionClientInfo, UserStatus,
 };
 use chrono::{Duration as ChronoDuration, Utc};
+use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
 use crate::auth::{PORTAL_SESSION_COOKIE, SESSION_COOKIE};
@@ -79,6 +80,9 @@ pub struct WindowJar {
     /// An operator session token (`bookclerk_operator_session`), present
     /// while the patron is elevated.
     pub operator: Option<String>,
+    /// When the operator cookie's `Max-Age` runs out; `None` for a cookie
+    /// with no `Max-Age`, which lasts until the window closes.
+    pub operator_until: Option<Instant>,
 }
 
 impl std::fmt::Debug for WindowJar {
@@ -108,6 +112,19 @@ impl WindowJar {
         (!pairs.is_empty()).then(|| pairs.join("; "))
     }
 
+    /// Drops the operator cookie once its `Max-Age` has run out, as a
+    /// browser would, so an elevation that ended on its own stops counting.
+    ///
+    /// # Arguments
+    ///
+    /// * `now` - The current time.
+    pub fn drop_expired(&mut self, now: Instant) {
+        if self.operator_until.is_some_and(|until| until <= now) {
+            self.operator = None;
+            self.operator_until = None;
+        }
+    }
+
     /// Applies the router's `Set-Cookie` headers to the jar.
     ///
     /// Only the two session cookies are kept; an empty value or
@@ -128,15 +145,22 @@ impl WindowJar {
             else {
                 continue;
             };
-            let expired = attributes.any(|attribute| {
+            let max_age = attributes.find_map(|attribute| {
                 attribute
                     .split_once('=')
-                    .is_some_and(|(key, age)| key.eq_ignore_ascii_case("max-age") && age == "0")
+                    .filter(|(key, _)| key.eq_ignore_ascii_case("max-age"))
+                    .map(|(_, age)| age.parse::<u64>().unwrap_or(0))
             });
-            let kept = (!expired && !value.is_empty()).then(|| value.to_owned());
+            let kept = (max_age != Some(0) && !value.is_empty()).then(|| value.to_owned());
             match name {
                 PORTAL_SESSION_COOKIE => self.portal = kept,
-                SESSION_COOKIE => self.operator = kept,
+                SESSION_COOKIE => {
+                    self.operator_until = kept
+                        .as_ref()
+                        .and(max_age)
+                        .and_then(|age| Instant::now().checked_add(Duration::from_secs(age)));
+                    self.operator = kept;
+                }
                 _ => {}
             }
         }
@@ -354,13 +378,19 @@ mod tests {
         );
         jar.absorb(&[value("bookclerk_operator_session=; Path=/; Max-Age=0")]);
         assert_eq!(jar.operator, None);
+        jar.absorb(&[value("bookclerk_operator_session=o2; Path=/; Max-Age=900")]);
+        jar.drop_expired(Instant::now());
+        assert_eq!(jar.operator.as_deref(), Some("o2"), "still elevated");
+        jar.drop_expired(Instant::now() + Duration::from_secs(901));
+        assert_eq!((jar.operator.clone(), jar.operator_until), (None, None));
         jar.absorb(&[value("bookclerk_portal_session=p2; Max-Age=0")]);
         assert_eq!(jar, WindowJar::default());
         let shown = format!(
             "{:?}",
             WindowJar {
                 portal: Some("secret".into()),
-                operator: None
+                operator: None,
+                operator_until: None,
             }
         );
         assert!(!shown.contains("secret"), "{shown}");

@@ -116,6 +116,10 @@ pub struct EmbeddedHost {
     sign_in_open_until: Mutex<Option<Instant>>,
     /// The patron's session cookies, which the page never sees.
     jar: Mutex<session::WindowJar>,
+    /// Held across a whole request that may change who the window is
+    /// (writes under `/api/auth/`), so a sign-in that finishes late cannot
+    /// undo a sign-out sent after it.
+    auth_transitions: tokio::sync::Mutex<()>,
     /// This branch's node id, which keys the window's sealed session, or
     /// `None` when the node identity cannot be read (the window then
     /// forgets its sign-in when it closes).
@@ -178,6 +182,7 @@ impl EmbeddedHost {
             app,
             sign_in_open_until: Mutex::new(None),
             jar: Mutex::new(session::WindowJar::default()),
+            auth_transitions: tokio::sync::Mutex::new(()),
             node_id,
         }
     }
@@ -250,6 +255,7 @@ impl EmbeddedHost {
             app: self.app.clone(),
             sign_in_open_until: Mutex::new(None),
             jar: Mutex::new(session::WindowJar::default()),
+            auth_transitions: tokio::sync::Mutex::new(()),
             node_id: self.node_id.clone(),
         }
     }
@@ -262,12 +268,15 @@ impl EmbeddedHost {
         }
     }
 
-    /// A copy of the jar.
+    /// A copy of the jar, without an operator cookie whose `Max-Age` ran
+    /// out.
     fn jar_now(&self) -> session::WindowJar {
-        match self.jar.lock() {
-            Ok(jar) => jar.clone(),
-            Err(poisoned) => poisoned.into_inner().clone(),
-        }
+        let mut jar = match self.jar.lock() {
+            Ok(jar) => jar,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        jar.drop_expired(Instant::now());
+        jar.clone()
     }
 
     /// Answers one request from the window.
@@ -283,6 +292,13 @@ impl EmbeddedHost {
     /// request from another origin, `404` for a refused path, `502` for an
     /// oversized body, `504` on timeout.
     pub async fn handle(&self, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
+        let changes_who = !matches!(*request.method(), Method::GET | Method::HEAD)
+            && request.uri().path().starts_with("/api/auth/");
+        let _transition = if changes_who {
+            Some(self.auth_transitions.lock().await)
+        } else {
+            None
+        };
         let auth = self.state.auth_snapshot().await;
         let (enabled, token) = (auth.enabled, auth.token.clone());
         drop(auth);
@@ -365,6 +381,7 @@ impl EmbeddedHost {
                 Ok(jar) => jar,
                 Err(poisoned) => poisoned.into_inner(),
             };
+            jar.drop_expired(Instant::now());
             let before = jar.clone();
             jar.absorb(set_cookies);
             (before, jar.clone())
@@ -740,6 +757,7 @@ mod tests {
             app,
             sign_in_open_until: Mutex::new(None),
             jar: Mutex::new(session::WindowJar::default()),
+            auth_transitions: tokio::sync::Mutex::new(()),
             node_id: None,
         };
         assert!(format!("{host:?}").starts_with("EmbeddedHost"));
@@ -778,6 +796,7 @@ mod tests {
             app: echo_router(),
             sign_in_open_until: Mutex::new(None),
             jar: Mutex::new(session::WindowJar::default()),
+            auth_transitions: tokio::sync::Mutex::new(()),
             node_id: None,
         };
         let mut frames = Vec::new();
