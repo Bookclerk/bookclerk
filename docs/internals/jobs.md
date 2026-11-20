@@ -564,8 +564,8 @@ holds across plugin instances and every node of the cluster.
   rolling 24 hours, and a minimum gap between downloads in its manifest
   ([`[acquire]`](../plugins/manifest.md#acquire-download-pace)). The
   person an account is linked to may override them on the **Accounts**
-  page (`POST /api/portal/sources/{source}/connections/{account_id}/pace`),
-  and an operator with `bookclerk library set-pace`: the store's pace, a
+  page (`POST /api/portal/sources/{source}/connections/{account_id}/pace`,
+  whose body is at most 4096 bytes), and an operator with `bookclerk library set-pace`: the store's pace, a
   custom budget and gap, or no limit. The override is stored in
   `account_pace`.
 - **Cool-down.** When `fetchTitle` answers `rateLimited`, the host records

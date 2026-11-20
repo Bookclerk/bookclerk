@@ -34575,6 +34575,19 @@
               }
             }
           },
+          "413": {
+            "description": "The body is longer than 4096 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "example": {
+                  "error": "the body is at most 4096 bytes"
+                }
+              }
+            }
+          },
           "415": {
             "description": "The request did not declare an `application/json` body.",
             "content": {

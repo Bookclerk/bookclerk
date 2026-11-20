@@ -985,6 +985,10 @@ async fn pace_view(
     })
 }
 
+/// Largest pace body `set_connection_pace` reads, in bytes; a longer one
+/// is answered `413` before it is parsed.
+const MAX_PACE_BODY_BYTES: usize = 4096;
+
 /// Changes how fast Bookclerk downloads from one of the caller's store
 /// accounts when it starts the downloads itself, and returns the result.
 ///
@@ -1009,6 +1013,7 @@ async fn pace_view(
             ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
             ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
         )),
+        (status = 413, description = "The body is longer than 4096 bytes.", body = PortalErrorBody, example = json!({"error": "the body is at most 4096 bytes"})),
         (status = 415, description = "The request did not declare an `application/json` body.", body = PortalErrorBody, examples(
             ("not_json" = (summary = "No JSON Content-Type.", value = json!({"error": "the body must be sent as application/json"}))),
         )),
@@ -1018,7 +1023,7 @@ async fn set_connection_pace(
     State(state): State<PortalState>,
     headers: HeaderMap,
     Path((source, account_id)): Path<(String, String)>,
-    body: axum::body::Bytes,
+    body: axum::body::Body,
 ) -> Result<Json<PaceView>, PortalError> {
     let identity = require_identity(&state, &headers).await?;
     let declared_json = headers
@@ -1029,6 +1034,10 @@ async fn set_connection_pace(
     if !declared_json {
         return Err(PortalError::not_json());
     }
+    // Read at most the cap before parsing: a pace body is a handful of keys.
+    let body = axum::body::to_bytes(body, MAX_PACE_BODY_BYTES)
+        .await
+        .map_err(|_| PortalError::too_large(MAX_PACE_BODY_BYTES))?;
     let request = bookclerk_library::pacing::parse_pace_request(&body)?;
     let library = state.library_snapshot().await;
     let links = library.list_account_links(identity.id).await?;
@@ -1459,6 +1468,14 @@ impl PortalError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: msg.into(),
+        }
+    }
+
+    /// Builds a 413 response for a body longer than `max` bytes.
+    fn too_large(max: usize) -> Self {
+        Self {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: format!("the body is at most {max} bytes"),
         }
     }
 

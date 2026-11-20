@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use tower::ServiceExt;
 
-use super::{portal_spa_router, PortalState, SESSION_COOKIE};
+use super::{portal_spa_router, PortalState, MAX_PACE_BODY_BYTES, SESSION_COOKIE};
 use crate::registry::IntegrationRegistry;
 use crate::tickets::session_for_identity;
 
@@ -809,6 +809,27 @@ async fn the_pace_route_sets_each_mode_and_refuses_what_it_should() {
         .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    // A body over the cap is refused before it is parsed; one at the cap
+    // is read.
+    let at_cap = |len: usize| {
+        let body = r#"{"mode":"default"}"#;
+        format!("{}{body}", " ".repeat(len - body.len()))
+    };
+    for (len, expected) in [
+        (MAX_PACE_BODY_BYTES, StatusCode::OK),
+        (MAX_PACE_BODY_BYTES + 1, StatusCode::PAYLOAD_TOO_LARGE),
+    ] {
+        let request = Request::builder()
+            .method("POST")
+            .uri(pace)
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(at_cap(len)))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), expected, "{len} bytes");
+    }
 }
 
 /// Overrides the "Link store accounts" member control of `user_id`.
