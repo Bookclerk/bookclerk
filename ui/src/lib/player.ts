@@ -179,6 +179,8 @@ export class Player {
   private syncedAt = 0;
   /** True while a report is in flight. */
   private syncing = false;
+  /** Listened milliseconds the report in flight carries; 0 with none. */
+  private sending = 0;
   /** True when a report was asked for while another was in flight. */
   private reportAgain = false;
   /** Counts loads, so an answer for an earlier one is dropped. */
@@ -476,7 +478,13 @@ export class Player {
       await this.adopt(session, positionMs, generation);
     } catch (err) {
       if (generation === this.generation) {
+        // With no session nothing reports or stops what is buffered, so
+        // the audio goes with it.
         this.session = null;
+        this.wantPlay = false;
+        this.tickedAt = null;
+        this.audio?.pause();
+        if (this.audio) this.audio.src = "";
         this.set({ status: "error", error: playbackErrorText(err) });
       }
     }
@@ -490,7 +498,8 @@ export class Player {
   private reportBody(): PlaybackReport {
     const body: PlaybackReport = {
       position_ms: Math.max(0, Math.round(this.state.positionMs)),
-      listened_ms: Math.round(this.listened),
+      // What a report in flight already carries is not sent twice.
+      listened_ms: Math.round(Math.max(0, this.listened - this.sending)),
     };
     if (this.state.durationMs) body.duration_ms = Math.round(this.state.durationMs);
     return body;
@@ -512,6 +521,7 @@ export class Player {
     this.syncedAt = this.deps.now();
     const body = this.reportBody();
     const sent = this.listened;
+    this.sending = sent;
     try {
       const synced = await this.deps.sync(session.session_id, body);
       // An answer for a session since replaced says nothing about this one.
@@ -526,6 +536,7 @@ export class Player {
       // Anything else is retried by the next report.
     } finally {
       this.syncing = false;
+      this.sending = 0;
     }
     if (this.reportAgain) {
       this.reportAgain = false;

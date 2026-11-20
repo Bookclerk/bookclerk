@@ -584,6 +584,44 @@ describe("Player", () => {
     expect(w.synced[1].report.position_ms).toBe(16_000);
   });
 
+  it("does not send listened time twice when stopped during a report", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    w.holds.sync = new Promise<void>(() => {});
+    w.clock.now = 1000;
+    w.audio.at(1);
+    w.clock.now = SYNC_EVERY_MS;
+    w.audio.at(15);
+    await settle();
+    expect(w.synced[0].report.listened_ms).toBe(3000);
+    w.clock.now += 1000;
+    w.audio.at(16);
+    await w.player.stop();
+    expect(w.closed[0].report).toMatchObject({ position_ms: 16_000, listened_ms: 1000 });
+  });
+
+  it("stops the audio when a session that ended cannot be replaced", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    w.failures.sync = new ApiError(409, "session_ended", { code: "session_ended" });
+    w.failures.open = new ApiError(503, "storage", { code: "storage" });
+    w.clock.now = SYNC_EVERY_MS;
+    w.audio.at(15);
+    await settle();
+    expect(w.player.state.status).toBe("error");
+    expect(w.audio.paused).toBe(true);
+    expect(w.audio.src).toBe("");
+    // Pressing play asks for the book again.
+    w.failures.open = undefined;
+    w.failures.sync = undefined;
+    w.player.toggle();
+    await settle();
+    expect(w.opened).toEqual(["ed1", "ed1"]);
+    expect(w.player.state.status).toBe("loading");
+  });
+
   it("ignores the answer to a report from the book before", async () => {
     const w = world();
     await w.player.play(TARGET);
